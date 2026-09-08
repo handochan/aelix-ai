@@ -13,8 +13,10 @@ an adversarial / empty statusline store can only hide a segment the user
 explicitly unchecked; it can never make the security-visible permission badge
 surface on a model with no provider, and the steering segment stays hidden at the
 default regardless of whether the segment id is enabled. The default-enabled set
-is byte-identical to the pre-ADR-0160 hard-coded order so an out-of-box footer is
-unchanged.
+is the out-of-box footer: permission-mode, steering, pending-queued, current-dir,
+model, thinking-level, context-remaining, git-branch (#248 added ``thinking-level``
+to that set; before it the default set reproduced the pre-ADR-0160 hard-coded
+order exactly).
 
 Extension statuses (``footer.get_extension_statuses()``) are deliberately NOT
 registry segments — they are appended after the registry loop by the caller and
@@ -90,8 +92,8 @@ class FooterSegment:
         rules (badge leading + omit-when-no-provider; steering hidden at default)
         live here, independent of the enabled-set.
     :param default_enabled: whether the segment is rendered out-of-box (no
-        statusline.json on disk). The default-ON set reproduces the pre-ADR-0160
-        footer byte-for-byte.
+        statusline.json on disk). It reaches fresh installs only — an existing
+        statusline.json's enabled list is read verbatim (see #248).
     """
 
     id: str
@@ -104,11 +106,14 @@ class FooterSegment:
 def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
     """Build the ordered footer-segment registry bound over ``ctx``.
 
-    The order is canonical and matches the pre-ADR-0160 hard-coded footer for the
-    default-ON segments: permission-mode (LEADING) → steering → pending-queued →
-    current-dir → model → context-remaining → git-branch. Optional default-OFF
-    segments (tokens / cost) read CACHED scalars (``set_usage_stats``) so the
-    footer producer never awaits.
+    The order is canonical: permission-mode (LEADING) → steering →
+    pending-queued → current-dir → model → thinking-level → context-remaining →
+    git-branch. ``thinking-level`` immediately follows ``model`` in both
+    :data:`_SEGMENT_SPEC` and ``AelixTUIContext._MULTILINE_ROWS[0]``, so the pair
+    reads the same in either layout; the two layouts still order git-branch and
+    context-remaining differently, which #248 did not change. Optional
+    default-OFF segments (tokens / cost) read CACHED scalars
+    (``set_usage_stats``) so the footer producer never awaits.
     """
 
     # Local import avoids a cycle (context imports this module).
@@ -166,10 +171,15 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
         return f"$ {cost:.4f}" if cost else None
 
     def _thinking_level() -> str | None:
-        # The active reasoning effort. Default-OFF opt-in (like cost/tokens), but a
-        # DELIBERATE deviation from them: it SHOWS ``🧠 off`` rather than returning
-        # None on the "off" level — the user opted IN to monitor reasoning effort,
-        # so hiding it exactly when reasoning is off would defeat the purpose. Reads
+        # The active reasoning effort. Default-ON since #248, and it SHOWS
+        # ``🧠 off`` rather than returning None on the "off" level — a DELIBERATE
+        # deviation from cost/tokens that is now MORE load-bearing: out of the box
+        # a session STARTED on a model with no reasoning support renders ``🧠 off``
+        # rather than hiding, which is the honest reading of "how hard is it
+        # thinking". It reports the LEVEL, never the model's capability: nothing
+        # resets AgentState.thinking_level on a /model switch (harness core.py
+        # set_model touches only _state.model), so switching to a non-reasoning
+        # model mid-session keeps showing the level last set. Reads
         # the LIVE harness thinking_level via a provider closure (mirrors _model).
         # Guarded on the provider (None in headless/tests → omit the segment); a
         # None/empty provider result degrades to "off" so it never renders "None".
@@ -209,6 +219,12 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             _model,
         ),
         FooterSegment(
+            "thinking-level",
+            "Thinking level",
+            "The active reasoning effort (🧠 off/low/medium/high/xhigh)",
+            _thinking_level,
+        ),
+        FooterSegment(
             "context-remaining",
             "Context usage",
             "The context-window usage meter (◔ 42% · 84K/200K)",
@@ -241,13 +257,6 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             _cost,
             default_enabled=False,
         ),
-        FooterSegment(
-            "thinking-level",
-            "Thinking level",
-            "The active reasoning effort (🧠 off/low/medium/high/xhigh)",
-            _thinking_level,
-            default_enabled=False,
-        ),
     ]
 
 
@@ -272,14 +281,14 @@ _SEGMENT_SPEC: list[tuple[str, str, str, bool]] = [
     ("current-dir", "Current directory",
      "The home-abbreviated working directory (📂)", True),
     ("model", "Model", "The active model id (✱)", True),
+    ("thinking-level", "Thinking level",
+     "The active reasoning effort (🧠 off/low/medium/high/xhigh)", True),
     ("context-remaining", "Context usage",
      "The context-window usage meter (◔ 42% · 84K/200K)", True),
     ("git-branch", "Git branch", "The current git branch (⎇)", True),
     ("input-tokens", "Input tokens", "Session input token total (↑)", False),
     ("output-tokens", "Output tokens", "Session output token total (↓)", False),
     ("cost", "Cost", "Session cost in USD ($)", False),
-    ("thinking-level", "Thinking level",
-     "The active reasoning effort (🧠 off/low/medium/high/xhigh)", False),
 ]
 
 

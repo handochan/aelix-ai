@@ -48,6 +48,36 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   exactly as it was. The row still spans 3-40 and still applies to the next card
   without a restart. See
   [#247](https://github.com/handochan/aelix-ai/issues/247) and ADR-0112.
+- **The statusline says how hard the model is thinking, without being asked.** The
+  🧠 segment — `off` / `low` / `medium` / `high` / `xhigh` — shipped on 2026-08-07
+  and was off unless you found it in `/statusline`. It is on by default now, and it
+  sits between the model and the context meter:
+  `● default  ·  ⏵⏵ all  ·  📂 ~/dev/aelix-ai  ·  ✱ gpt-5.6-codex  ·  🧠 high  ·  ◔ 24% · 96.4K/400K  ·  ⎇ main`.
+  That is where the multi-line statusline already put it — right after the model —
+  and it is the position that survives a narrow terminal: at the end of the row,
+  where the segment used to sit, it was clipped off the glass at 80 and at 100
+  columns and did not render at all.
+
+  **Who gets it:** anyone installing fresh, and anyone who has never saved
+  `/statusline`. The enabled set is persisted and a file on disk is read verbatim,
+  so if you have saved that picker even once the segment stays off until you check
+  **Thinking level** yourself. Your file is not migrated, deliberately: it cannot
+  tell "never saw this" apart from "turned this off". **If your saved file already
+  has the segment on**, it does move — the footer renders in registry order, so the
+  🧠 leaves the end of the row and lands after the model, and on a narrow terminal
+  it may now be visible where it used to be cut off.
+
+  **What you give up:** one more segment on a row that is clipped, not wrapped.
+  Measured in this repository's own checkout (`📂 ~/dev/aelix-ai` — the numbers
+  move with your cwd): at 80 columns the branch was already off the row before this
+  change and the meter already read `◔ 24% · 96.4K`, and now the meter is down to a
+  bare `◔`; at 100 columns the row loses `⎇ main` outright, which used to fit. And
+  a session started on a model with no reasoning support now reads `🧠 off` rather
+  than hiding the segment — its existing, deliberate behaviour, visible out of the
+  box. Note that the segment reports the level you set, not what the model can do:
+  switching to a non-reasoning model mid-session keeps showing the last level until
+  you change it. See
+  [#248](https://github.com/handochan/aelix-ai/issues/248) and ADR-0160.
 
 - **A command that backgrounds a server now comes back when the command does.**
   `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the

@@ -239,6 +239,59 @@ async def test_the_merged_footer_row_clips_the_path_not_the_live_signals() -> No
         assert row.index(live) < path_at, (live, row)
 
 
+async def test_the_default_thinking_segment_is_on_the_80_column_glass() -> None:
+    """#248 — default-ON only counts if the segment survives the height-1 clip.
+
+    ``statusline_store=None`` on purpose: with a store wired the enabled-set comes
+    off that store, so a revert of the ``default_enabled`` flag would stay green.
+    This is the fresh-install path — the registry default set, no file on disk.
+
+    MEASURED at 80 columns with this repository's own cwd, after the change:
+    ``● default  ·  ⏵⏵ all  ·  📂 ~/dev/aelix-ai  ·  ✱ gpt-5.6-codex  ·  🧠 high  ·  ◔``
+    Before it, at the registry tail, the 🧠 was not on the glass at all here (nor
+    at 100 columns) — which is why #248 moved the entry as well as flipping the
+    bool, and why the ordering assertion below is half the point.
+
+    That row has ZERO slack: the ``◔`` is the last cell that fits (the composed
+    row is 108 cells and the meter glyph lands on column 80 exactly), so the
+    ``◔``-present assertion is explicit — without it, widening any earlier segment
+    would turn the ordering failure into a bare ``ValueError: substring not found``.
+    """
+
+    from aelix_coding_agent.tui.context import AelixTUIContext
+
+    from tests.tui.test_context import _FixedBranchFooter
+
+    footer = _FixedBranchFooter("main")
+
+    def build_state(chrome: AelixChrome) -> None:
+        ctx = AelixTUIContext(
+            chrome,
+            footer,
+            statusline_store=None,
+            cwd="~/dev/aelix-ai",
+            model_provider=lambda: "gpt-5.6-codex",
+            thinking_provider=lambda: "high",
+            permission_badge_provider=lambda: None,  # DEFAULT → "● default"
+            mode_provider=lambda: "all",
+        )
+        ctx.set_context_label("◔ 24% · 96.4K/400K")
+
+    display = await render_chrome_to_screen(rows=24, cols=80, build_state=build_state)
+
+    row_index = next((i for i, row in enumerate(display) if "🧠" in row), None)
+    assert row_index is not None, (
+        "the default-ON thinking segment is not on the glass at 80 columns:\n"
+        + "\n".join(f"{i:>2} {row!r}" for i, row in enumerate(display))
+    )
+    row = display[row_index]
+    assert "🧠 high" in row, row
+    assert "◔" in row, row  # the last cell that fits; see the docstring
+    # Dies both if the default flips back OFF and if the entry moves back to the
+    # registry tail (past the meter, off the 80-column row).
+    assert row.index("🧠") < row.index("◔"), row
+
+
 def test_the_panel_emits_no_escape_the_chrome_will_not_parse() -> None:
     """The panel writes raw SGR itself, so its vocabulary is worth pinning.
 

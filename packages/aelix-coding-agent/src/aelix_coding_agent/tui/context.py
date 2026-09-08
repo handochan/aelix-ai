@@ -315,10 +315,10 @@ class AelixTUIContext:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
-        # Live reasoning-effort provider for the OPTIONAL 🧠 thinking-level footer
-        # segment (default-OFF). Reads the harness's live thinking_level so the
-        # segment reflects the /thinking picker, the /settings row, and RPC
-        # mutations. None in headless/tests → the producer omits the segment.
+        # Live reasoning-effort provider for the 🧠 thinking-level footer segment
+        # (default-ON since #248; /statusline can still uncheck it). Reads the
+        # harness's live thinking_level so the segment reflects the /thinking
+        # picker, the /settings row, and RPC mutations. None in headless → omitted.
         self._thinking_provider = thinking_provider
         # Permission posture badge (WP-0, ADR-0157). Reads the LIVE posture mode
         # → its distinct footer glyph (✎/⏸/⚠/🤖); returns None on DEFAULT so the
@@ -365,8 +365,8 @@ class AelixTUIContext:
 
         self._segments: list[FooterSegment] = build_footer_registry(self)
         # The statusline store gates which segments render. None → the registry
-        # default-enabled set (byte-identical to the pre-ADR-0160 footer); a wired
-        # store reads the user's enabled-id set (load() degrades to defaults).
+        # default-enabled set; a wired store reads the user's enabled-id set
+        # (load() degrades to defaults).
         self._statusline_store = statusline_store
         self._refresh_footer()
 
@@ -1301,8 +1301,8 @@ class AelixTUIContext:
             self.chrome.set_footer_line(sep.join(rendered))
             return
         # WP-2 (ADR-0160) — compose from the named segment registry. The registry
-        # order is canonical (matches the pre-ADR-0160 hard-coded footer); an
-        # enabled-set gates membership. The ADR-0159 invariants (permission badge
+        # order is canonical — a persisted enabled-set gates MEMBERSHIP, never
+        # order (#248). The ADR-0159 invariants (permission badge
         # leading + omit-when-no-provider; steering hidden at default) live INSIDE
         # the producers, so an adversarial/empty enabled-set can only hide a
         # segment the user explicitly unchecked — it can never surface a stray
