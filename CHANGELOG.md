@@ -677,6 +677,120 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   runtime — the `/skill:` gate covers the TUI surface, not the command list an
   RPC client is offered. See
   [#244](https://github.com/handochan/aelix-ai/issues/244) and ADR-0229.
+- **Windows tool output is readable again, and the model is told which shell it
+  is on.** Every child process this agent decodes itself — the bash tool, `!`
+  commands, hooks, `rg`/`fd`, subagent stderr — was decoded as UTF-8 with
+  replacement, so on a Korean Windows box, where PowerShell writes CP949,
+  `위치 줄:1` arrived as `��ġ ��:1` — arithmetic, not a guess, and not even
+  recognisable as corruption, because `c4 a1` is a *valid* UTF-8 sequence.
+  Output is now decoded **run by run**: each stretch of non-ASCII bytes takes
+  UTF-8 strict first, and only a run UTF-8 rejected is offered to the console
+  output code page. So a UTF-8 run standing next to a legacy-code-page run in
+  the same buffer decodes correctly on both sides — measured, `한글` beside a
+  CP949 `오류` comes back as `한글 오류`, where flipping the whole buffer to
+  CP949 would have returned `�븳湲� 오류` and destroyed the half that was
+  already right. With **no** separator between them the two halves are one run,
+  and there the promise is narrower than it sounds: the split saves the UTF-8
+  half only when the code page rejects the run as a whole. `한글` glued to a
+  CP949 `오류` still comes back `한글오류`, but `문자` glued to the same `오류`
+  reads `臾몄옄오류` — CP949 accepts all ten bytes, so it takes them, and the
+  half `U+FFFD` used to get right is now confidently wrong. Measured over 4000
+  glued pairs per shape, that costs the UTF-8 half 13.3% of the time for one
+  character on each side and 38.7% for two. It is left as it is on purpose:
+  telling that buffer apart from `치위` — a real CP949 word whose first two
+  bytes are also valid UTF-8, and the shape this issue was reported from —
+  cannot be done from the bytes. Two
+  details are what make the promise true rather than nearly true. CP932/936/949
+  /950 use ASCII bytes as DBCS *trail* bytes (measured: 3288 of CP932's 9604
+  lead/trail pairs), so a failed run is offered the ASCII that follows it as
+  well — without that, Japanese `エラー` came back exactly as mojibake as
+  before. And a code page that decodes all 256 single bytes (CP437/850/866 —
+  every Western box) is offered nothing at all, because its accepting bytes is
+  no evidence about them: not a whole run, and not the stretch inside a run
+  that UTF-8 could not begin at. That second half is what the Windows CI leg
+  taught us — `b"ok \xff\n"` came back as `ok \xa0`, because CP437 maps `0xFF`
+  to a NO-BREAK SPACE, so the marker that says "these bytes were lost" was not
+  wrong but *invisible*. The rule as it now stands means something simple and
+  checkable: **on a Western Windows box this release changes nothing.** With no
+  DBCS page in the chain the decoder is byte-for-byte the `errors="replace"`
+  call it replaced — measured over 351 exhaustive windows and 20000 random
+  buffers, against six single-byte chains and every combination of the cut-end
+  claims: 488 424 decodes, none of which differs.
+  And where the buffer's own END is a cut rather than something the child
+  chose — a timed-out or aborted command, a stderr ring that scrolled, a child
+  that died mid-line — the severed character stays a visible `U+FFFD` instead
+  of being spelled by the code page: measured over 24 console lines cut at all
+  297 offsets inside a character, 19 read as a confident wrong character on
+  CP949 before that rule and none after. A buffer is only ever repaired at an
+  end its reader really can cut, which is why a bash result claims its tail and
+  not its head.
+  A PowerShell that Aelix spawns itself is additionally asked for UTF-8
+  (`[Console]::OutputEncoding`), but that preamble runs only *after* the shell
+  has parsed your command — measured on pwsh 7.6.5, a parse error discards it
+  unexecuted — so the decoder is what covers children that are not ours **and
+  our own shell's parse errors, which is the failure this issue reported**.
+  `cmd` is asked for nothing at all, and that is a correction made after the
+  Windows CI leg ran: an earlier build of this release prepended
+  `chcp 65001 >nul&` there, and on windows-latest (run 34272507388, py3.11 and
+  py3.12) that prefix stopped an **unquoted space-containing executable path
+  with no arguments** from running — `cmd` answered `'C:\…\a' is not
+  recognized as an internal or external command`. `cmd /c` keeps the quotes
+  `subprocess` puts around such a command only while the whole text between
+  them is the name of an executable file, so any prefix loses them, and there
+  is no spelling of a preamble that is not a prefix. The decoder covers those
+  children instead. On macOS and Linux the decoded bytes are
+  unchanged, provably: with no fallback codec the new path is the old call, and
+  the test pins that through the platform default rather than by passing an
+  empty chain. Separately, the bash tool now tells the model which shell
+  actually resolved here, so it stops sending `a && b` into a Windows PowerShell
+  parser; the sentence advises `;`, which is correct on 5.1, 6 and 7.
+  **What you give up:** on a **CJK** Windows box a child writing genuinely
+  binary bytes may decode as legacy-code-page text instead of `U+FFFD`, where
+  those bytes happen to be a valid DBCS sequence (a buffer holding a NUL byte is
+  exempt — that is a binary file, and it takes the old replacement path whole).
+  On a **Western** box nothing decodes as legacy text, and that is a capability
+  withheld rather than a regression: a German or French console app writing its
+  OEM page reads as `U+FFFD`, exactly as it did under `0.1.0-beta.1`, whose
+  `errors="replace"` marked the same characters — measured over 16 accented
+  console lines, 16 of 16 marked now, 16 of 16 marked in beta.1, and the two
+  decodes equal on all 16. What is given up is what an earlier cut of *this*
+  release briefly did with those lines: offer them the OEM page, which read all
+  16 correctly. It is withheld because the same 16 lines came back *confidently
+  wrong* 16 times out of 16 when the child wrote the ANSI page instead
+  (measured: cp1252 bytes read through cp850) — and on a Western box ANSI and
+  OEM always differ (1252 against 850 or 437), where in the CJK locales this
+  was reported from they are the same number. The single-byte answer is a coin flip the bytes cannot call, and it
+  is the same guess that spelled a binary `0xFF` as an invisible character.
+  Where a buffer's own end is a cut, the **head** claim cannot tell a severed
+  UTF-8 tail from a whole legacy character whose two bytes both lie in
+  `0x80-0xBF` — 31.4% of CP949-encodable Hangul, `가` among them — so the two
+  readers that claim a cut head (subagent stderr, the RPC stderr window) lose
+  such a character to `U+FFFD`, where this same release's *unclaimed* sites keep
+  it. Not a loss against the previous release: both of those readers were
+  `.decode("utf-8", errors="replace")` before this change and answered `U+FFFD
+  U+FFFD` for CP949 `가` too (measured). Accepted because the
+  same claim removes a confidently wrong head from 120 of 192 in-character head
+  cuts on the same Korean corpus, and because only those two readers make it. A
+  CJK run that happens to
+  *open* with a valid UTF-8 pair is still read as CJK, which is right on the box
+  this was reported from and wrong for a genuine one-character UTF-8 prefix; and
+  the first command Aelix runs under PowerShell — the shell the Windows chain
+  resolves first — switches that console to 65001 for the session
+  (`SetConsoleOutputCP`, via `[Console]::OutputEncoding`); under `cmd` nothing
+  does, so a `cmd` child's output stays on the console page and takes the
+  decoder's route. **Against `0.1.0-beta.1` that is no change**, which is the
+  same promise as above: beta.1 decoded those bytes `utf-8`/`errors="replace"`,
+  so an OEM-page character read `U+FFFD` there too (measured: a cp850 `Grüße`
+  comes back identically through both paths, as do 16 of 16 accented
+  German/French console lines). The price the correction above books is
+  therefore against an **intermediate build of this release** and not against
+  anything published — while the `cmd` preamble existed those characters came
+  back as UTF-8, and now they do not. Paid because one mojibake line is worth
+  less than a command that does not run. MCP stdio servers are deliberately
+  untouched: the `mcp` SDK decodes those, not this repo. `!command` credential
+  resolution keeps its argv byte for byte — it gets the decoder and no preamble,
+  because its stdout *is* the key. See
+  [#239](https://github.com/handochan/aelix-ai/issues/239) and ADR-0238.
 
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits
@@ -1005,9 +1119,12 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   (#221). Its stdin is `/dev/null` rather than the terminal Aelix was started
   from, which is the contract this surface has upstream. Output is decoded
   UTF-8 with replacement, so bytes that are not valid text become `U+FFFD`
-  instead of raising out of the extension — on Windows, output in a legacy code
-  page that used to decode correctly under your locale now shows replacement
-  characters — and line endings still normalise to `\n` as they did. A
+  instead of raising out of the extension — and line endings still normalise to
+  `\n` as they did. (This bullet used to add "on Windows, output in a legacy
+  code page that used to decode correctly under your locale now shows
+  replacement characters". #239 pays that back in the same unreleased block:
+  this site decodes run-wise through the console code page now, so the clause
+  was struck rather than shipped contradicting the entry above.) A
   successful exit kills nothing — a helper the command backgrounded before
   exiting **successfully** still survives — while the timeout, an interrupt raised
   inside the call, and a cancelled turn *that lands while the command is still

@@ -7,7 +7,7 @@ user actually sees (``tui/chrome.py:1097-1108`` — multi-row panels are
 
 THREE MEASURED HAZARDS ARE PINNED HERE, and each is invisible in production:
 
-* ``EventBus.emit`` (``extensions/api.py:321-327``) swallows every handler
+* ``EventBus.emit`` (``extensions/api.py:329-335``) swallows every handler
   exception under ``contextlib.suppress(Exception)`` with NO logging, and
   DISCARDS handler return values — so an ``async def`` subscriber's body never
   runs. A broken subscriber produces zero rows and zero diagnostics, which is
@@ -162,7 +162,7 @@ async def test_broken_subscriber_does_not_break_spawn(tmp_path: Path) -> None:
     """The failure this documents is INVISIBLE, which is why it needs a test.
 
     ``EventBus.emit`` swallows subscriber exceptions with no logging
-    (``extensions/api.py:321-327``), so a broken handler is silent. The
+    (``extensions/api.py:329-335``), so a broken handler is silent. The
     guarantee that matters is the other direction: it must not be able to take
     a delegation down with it, and the healthy subscribers must still be served.
     """
@@ -390,7 +390,7 @@ def test_a_hostile_model_string_cannot_break_the_status_row() -> None:
 # THE MEASURED GAP (live QA, main @ 9ed0dde). ``format_status_row`` renders the
 # model when ``SubagentProgress.model`` is set and omits it when it is not — both
 # correct — but that field was fed ONLY from ``_StreamState.model``, which
-# ``stream.py:561-563`` assigns from the child's first ``message_end``. A short
+# ``stream.py:575-577`` assigns from the child's first ``message_end``. A short
 # delegation returns before one arrives, so the field was ``None`` for the whole
 # VISIBLE LIFE of the row and the live statusline read ``agent explorer · 1s``
 # with no model at all — the feature shipped and was invisible in practice.

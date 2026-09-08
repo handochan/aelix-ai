@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -878,10 +878,58 @@ empty, so only the group kill of the paragraph below reaches anything there.
   not a root kill; the command has no controlling terminal where Pi's stays in
   session; and the drain has a cap where Pi's has none. It converges where
   today's behaviour was the bug: stdin is ignored rather than inherited from the
-  TUI, output is decoded utf-8 with `errors="replace"` (so an undecodable byte
-  is U+FFFD instead of the `UnicodeDecodeError` the locale codec raises today —
-  the cost is legacy-codepage output that used to decode correctly), and the
-  drain is Pi's exit-then-idle rule (Pi #5303/#5753). Universal-newline
+  TUI, output is decoded tolerantly instead of raising the `UnicodeDecodeError`
+  the locale codec raises today, and the drain is Pi's exit-then-idle rule
+  (Pi #5303/#5753).
+
+  **#239 pays back the cost this paragraph booked.** It read "the cost is
+  legacy-codepage output that used to decode correctly" — a real cost, and one
+  measured on a Korean Windows box: `"위치 줄:1 문자:14"` in CP949 reached the
+  model as `��ġ ��:1 ����:14`. The decode is no longer a bare
+  `errors="replace"` anywhere a child is read. It is
+  `aelix_ai.utils._child_output.decode_child_output`, which splits the buffer
+  into maximal non-ASCII runs and gives each one UTF-8 strict, then the console
+  output code page (`os.device_encoding(1)`, then `oem`), then `replace` as the
+  floor. Two rules the module's own review added keep that from being a
+  half-fix: a failed run is offered the ASCII bytes that FOLLOW it, because
+  cp932/936/949/950 take `0x40-0x7E` as DBCS trail bytes and the run boundary
+  otherwise cuts a character in half; and a page that decodes all 256 single
+  bytes gets **nothing** — neither a whole run nor the bytes UTF-8 could not
+  begin at — because its accepting them is no evidence about them. The #239 CROSS-REVIEW added a third, and it lands on this
+  ADR's own surface: a buffer whose END is a byte-exact CUT rather than a
+  boundary the child chose says so, and a character the cut severed then stays
+  U+FFFD instead of being spelled by the code page. `exec`'s TIMEOUT branch is
+  such a buffer — `run_contained`'s `TimeoutExpired` carries everything the
+  reader had at the deadline — so `_decode_output` now takes a `ragged_tail`
+  claim and that branch sets it. The success path does not: there the child
+  chose where its output ended. Off win32 the fallback list is empty by
+  construction, so a buffer UTF-8 rejects takes the floor in one call and the
+  site is byte-identical to what this ADR shipped. What is NOT bought back, and this is the FINAL PASS's correction
+  (2026-09-09): a Western box gets nothing back at all. This paragraph read
+  "on a Western box an ANSI byte decodes as its OEM character rather than as
+  U+FFFD (`0xFC` is `ü` in cp1252, `³` in cp850) — accepted because ANSI and OEM
+  agree in the CJK locales where this was reported", and windows-latest refuted
+  the premise: the same single-byte acceptance spelled a binary `0xFF` as
+  cp437's U+00A0, a NO-BREAK SPACE, so the "these bytes were lost" marker became
+  INVISIBLE and `tests/test_extension_issue5_runtime_and_trust.py`'s two
+  `test_exec_replaces_undecodable_bytes_*` cases went red on py3.11 and py3.12
+  (CI run 34238825800). A single-byte page is now offered nothing, which buys a
+  checkable invariant — **with no DBCS page in the chain the decoder is
+  `errors="replace"` byte for byte**, measured over 351 exhaustive windows and
+  20000 random blobs against six single-byte chains and all four cut-end claims
+  (488 424 decodes, 0 differ)
+  — and costs the Western legacy recovery outright: 16 accented console lines a
+  cp850-writing child produced decoded 16/16 correctly under the cut of this
+  decoder that still offered single-byte pages, and 16/16 as U+FFFD now. THAT
+  BASELINE IS AN UNRELEASED ONE: `0.1.0-beta.1` decoded those same bytes
+  `utf-8`/`errors="replace"` and marked 16 of 16 too, so a release note compares
+  against no change at all (re-measured 2026-09-09). Given up because those
+  same 16 come back 16/16 *confidently
+  wrong* when the child writes the ANSI page instead, and on a Western box ANSI
+  and OEM always differ (1252 against 850 or 437) where in the CJK locales they
+  are the same number. #239 is scoped to the DBCS consoles it was reported
+  from.
+  Universal-newline
   translation is kept on BOTH paths; `text=True` gave it only to the success
   path.
 

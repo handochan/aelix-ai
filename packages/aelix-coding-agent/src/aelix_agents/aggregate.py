@@ -119,7 +119,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
     ``SubagentUsage.tokens`` is documented as a context LEVEL, "last message
     wins" (``subagent_contract.py:95-96``), not a running total. Summing four
     children's context levels reports a number several times the real one — the
-    same mistake ``stream.py:214-217`` already warns about — and it is the number
+    same mistake ``stream.py:228-231`` already warns about — and it is the number
     the statusline and any future cost display read. ``max`` is the honest
     aggregate: the largest context any single child reached.
 

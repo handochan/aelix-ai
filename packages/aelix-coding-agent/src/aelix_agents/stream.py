@@ -48,6 +48,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from aelix_ai.utils._child_output import decode_child_output
+
 # Per-line budget. A line longer than this is DISCARDED and counted, never
 # raised on and never buffered — an unbounded line is the one shape in which a
 # malfunctioning (or hostile) child can exhaust parent memory. 4 MiB is ~20x the
@@ -90,9 +92,16 @@ class LineAssembler:
         for line in assembler.flush():   # trailing partial line at EOF
             reduce_line(state, line)
 
-    Decoding is deferred to the line boundary and uses ``errors="replace"``, so
-    a multi-byte code point split across a chunk boundary survives intact and a
-    genuinely malformed byte can never raise into the pump.
+    Decoding is deferred to the line boundary and goes through
+    :func:`~aelix_ai.utils._child_output.decode_child_output`, so a multi-byte
+    code point split across a chunk boundary survives intact and a genuinely
+    malformed byte can never raise into the pump. :meth:`feed` claims NO cut
+    end: a line it emits is bounded by the newline the child wrote, not by a
+    byte-exact trim (an over-budget line is dropped whole, never cut).
+    :meth:`flush` is the carve-out and claims a cut TAIL — its line is the one
+    with no terminator, i.e. exactly the bytes a child that died mid-write got
+    out. (#239 cross-review: this paragraph used to state the ``feed`` rule for
+    both methods, which was false of ``flush``.)
     """
 
     __slots__ = ("_buf", "_dropped", "_max", "_skipping")
@@ -146,7 +155,7 @@ class LineAssembler:
                 # The whole line arrived inside one chunk and is over budget.
                 self._dropped += 1
                 continue
-            lines.append(raw.decode("utf-8", errors="replace"))
+            lines.append(decode_child_output(raw))
         if len(self._buf) > self._max:
             # An in-progress line blew the budget before its newline arrived.
             # Drop it NOW (do not keep growing the buffer) and resync at the
@@ -181,7 +190,12 @@ class LineAssembler:
         if len(raw) > self._max:
             self._dropped += 1
             return []
-        return [raw.decode("utf-8", errors="replace")]
+        # ``ragged_tail=True`` (#239 cross-review): unlike every line ``feed``
+        # emits, this one has no terminator — the child died in the middle of
+        # writing it, so its last character can be half a character. That is a
+        # byte-exact cut and the console code page must not be allowed to spell
+        # it.
+        return [decode_child_output(raw, ragged_tail=True)]
 
 
 @dataclass

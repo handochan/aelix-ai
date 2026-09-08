@@ -109,6 +109,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
@@ -756,7 +757,12 @@ class RpcClient:
     def get_stderr(self) -> str:
         """Return captured stderr (Pi parity ``getStderr``)."""
 
-        return self._stderr_buffer.decode("utf-8", errors="replace")
+        # BOTH ends (#239): a byte-window like ``StderrRing``'s — the overflow
+        # trim in ``_drain_stderr`` is byte-exact, so the head may be a cut
+        # sequence and the tail a half-written one.
+        return decode_child_output(
+            bytes(self._stderr_buffer), ragged_head=True, ragged_tail=True
+        )
 
     # === Command surface (28 methods, Pi parity) ===============================
 

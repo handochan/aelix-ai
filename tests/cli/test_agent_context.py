@@ -402,7 +402,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
     """(d) ``/reload`` does not exist outside the interactive surfaces.
 
     It is parsed ONLY in the TUI (``tui/input.py:47-48``) and the basic REPL
-    (``cli/repl.py:99``) — this test greps the tree for its dispatch sites so a
+    (``cli/repl.py:105``) — this test greps the tree for its dispatch sites so a
     third surface (or a removal) forces the wording to be revisited. Yet this
     block is emitted for ``--print`` / ``--mode json`` / ``--mode rpc`` and for
     delegated subagents, where naming ``/reload`` as something to ask for names

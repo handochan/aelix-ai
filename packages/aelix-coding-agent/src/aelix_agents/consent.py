@@ -69,7 +69,7 @@ the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1195-1196`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1203-1204`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and
@@ -365,7 +365,7 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:437-487``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:444-494``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two

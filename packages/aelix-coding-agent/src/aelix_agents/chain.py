@@ -19,7 +19,7 @@ Truncation therefore stays visible by construction: ``cap_summary``
 literally reads "[Output truncated: … bytes omitted…]". Nothing here strips it.
 
 THE SUBSTITUTION HAPPENS INSIDE THE TASK STRING; IT NEVER TOUCHES ARGV.
-``build_child_argv`` (``print_channel.py:490-548``) documents that the ``"Task: "``
+``build_child_argv`` (``print_channel.py:497-555``) documents that the ``"Task: "``
 prefix ``profile_to_argv`` prepends is load-bearing — ``args.py`` swallows an
 unrecognised ``--`` token into ``parsed.unknown_flags`` with NO diagnostic — so a
 previous summary that begins with ``--`` stays safe only because that prefix is
@@ -54,7 +54,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:508-513``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:515-520``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:30``), so a chain step that
 forwards a whole uncapped previous summary still fits.

@@ -111,7 +111,7 @@ def test_roll_up_sums_the_counters_and_maxes_tokens() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:95-96``), not a running total. Summing three
     children's context levels reports a number three times the real one — the
-    mistake ``stream.py:214-217`` already warns about.
+    mistake ``stream.py:228-231`` already warns about.
     """
 
     results = [

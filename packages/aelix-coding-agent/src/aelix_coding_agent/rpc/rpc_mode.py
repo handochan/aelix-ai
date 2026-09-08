@@ -153,6 +153,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import ImageContent
+from aelix_ai.utils._child_output import decode_child_output
 
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
@@ -583,7 +584,24 @@ async def _handle_bash(
         )
     finally:
         harness.unregister_bash_signal(sig)
-    raw = b"".join(chunks).decode("utf-8", errors="replace")
+    # ``ragged_tail=True`` (#239 cross-review): this is the ONE bash path that
+    # supplies an abort signal, so it is the one whose buffer really does end
+    # wherever the kill landed — ``_watch_signal`` -> ``_end_the_tree`` ->
+    # ``_drain_after_the_exit`` stops the read at a byte, not a character.
+    # The #239 cross-review drove eight real ``.exec`` aborts through this
+    # shape and five cut mid-character. What that costs when the cut is handed
+    # to the code page unclaimed, measured here 2026-09-09 on darwin/CPython
+    # 3.12.13 over 24 realistic console lines cut at all 297 offsets strictly
+    # inside a character: 56 (18.9%) become a confident wrong character on
+    # cp949 (``"위치"`` cut mid-``치`` reads ``위移``), against 0 with the claim.
+    # The ``297 (100%) on cp850`` this comment gave alongside was measured
+    # before #239's final pass and is dead: a page that decodes all 256 single
+    # bytes is offered nothing now, so cp850 gives the U+FFFD with or without
+    # the claim (re-measured 2026-09-09, 0 of 33 in-character cuts on 16
+    # accented Latin lines, against 33 of 33 on cp932). The claim is a DBCS
+    # repair. The head is not claimed for the same reason as the bash tool's:
+    # ``chunks`` is append-only.
+    raw = decode_child_output(b"".join(chunks), ragged_tail=True)
     body, info = truncate_tail(raw, max_lines=256, max_bytes=32 * 1024)
     # Pi ``BashResult`` shape (Pi ``coding-agent/core/bash-executor.ts:29-40``):
     #   ``{output: string, exitCode: number | undefined,
@@ -1214,7 +1232,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
     ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
     (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
     aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
-    at ``extensions/api.py:149-162`` whose snake_case fields
+    at ``extensions/api.py:150-163`` whose snake_case fields
     (``tokens`` / ``context_window`` / ``percent``) map directly into
     the Pi camelCase wire keys.
     """
@@ -1241,7 +1259,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
         cu = stats.context_usage
         # Pi parity: extensions/types.ts ContextUsage = { tokens,
         # contextWindow, percent }. Aelix ContextUsage at
-        # extensions/api.py:149-162 already matches Pi field names
+        # extensions/api.py:150-163 already matches Pi field names
         # (tokens / context_window / percent → snake_case ↔ camelCase
         # mapping).
         out["contextUsage"] = {
@@ -2031,6 +2049,8 @@ async def run_rpc_mode(
                 # ``__stdout__`` may not expose ``.buffer`` in unusual
                 # environments (e.g. captured by pytest); fall back to
                 # the text stream.
+                # NOT ``decode_child_output``: these are bytes WE encoded, four
+                # lines below, and never a child's (#239).
                 real_stdout_fd.write(data.decode("utf-8", errors="replace"))
                 real_stdout_fd.flush()
 

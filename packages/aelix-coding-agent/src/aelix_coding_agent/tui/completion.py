@@ -50,6 +50,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import run_contained
 from prompt_toolkit.completion import Completer, Completion
 
@@ -363,7 +364,9 @@ def _fd_enumerate(fd_bin: str, base: Path, *, no_ignore: bool = False) -> list[s
     if proc.returncode != 0:
         return None
     out: list[str] = []
-    for raw in proc.stdout.decode("utf-8", errors="replace").splitlines():
+    # #239 — a filename in the console's code page is a candidate the user
+    # can actually pick; a U+FFFD one never matched anything.
+    for raw in decode_child_output(proc.stdout).splitlines():
         line = raw.rstrip("/")
         if line.startswith("./"):
             line = line[2:]

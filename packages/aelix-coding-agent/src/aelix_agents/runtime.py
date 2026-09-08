@@ -345,7 +345,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:614``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:621``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -431,7 +431,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:710``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:718``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a
@@ -885,9 +885,9 @@ class _SubagentRuntimeImpl:
             # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
             # is gone from the registry by this line, so the delegation is over
             # by definition — but ``RunningChild.state`` starts at ``"starting"``
-            # (``print_channel.py:201``) and ``PrintChannel.run`` can raise
+            # (``print_channel.py:202``) and ``PrintChannel.run`` can raise
             # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-            # own ``try`` (``print_channel.py:973-974``) and does ``mkdtemp`` +
+            # own ``try`` (``print_channel.py:980-981``) and does ``mkdtemp`` +
             # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
             # ``TMPDIR`` comes straight out — and eight concurrent members each
             # writing a prompt directory is precisely the load that fires it.
@@ -940,7 +940,7 @@ class _SubagentRuntimeImpl:
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
-        containment ``EventBus`` itself applies (``extensions/api.py:321-327``).
+        containment ``EventBus`` itself applies (``extensions/api.py:329-335``).
         """
 
         progress = SubagentProgress(
@@ -959,7 +959,7 @@ class _SubagentRuntimeImpl:
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:561-563``) — authoritative, because it
+            # ``message_end`` (``stream.py:575-577``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured

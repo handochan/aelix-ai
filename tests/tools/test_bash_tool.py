@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aelix_ai.tools import ToolExecutionContext
 from aelix_ai.utils._process_tree import containment_spawn_kwargs
+from aelix_ai.utils._shell import utf8_output_preamble
 from aelix_coding_agent.tools import bash as bash_module
 from aelix_coding_agent.tools import create_bash_tool
 from aelix_coding_agent.tools._truncate import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES
@@ -514,7 +515,17 @@ async def test_the_spawn_asks_for_containment_and_devnull_stdin(tmp_path, monkey
     assert b"".join(chunks) == b"hello\n"
     assert len(spawned) == 1
     shell = _resolve_shell(env)
-    assert spawned[0].argv == [shell.path, shell.command_flag, "echo hi"]
+    # #239: the spawn prepends a UTF-8 preamble once the family is known — ``""``
+    # on POSIX, so this line stays byte-identical here, and on the windows leg
+    # it is the guard that the prepend happened and that nothing else moved.
+    # Written through the helper rather than as a literal so the two cannot
+    # drift; before #239 this assertion had no ``skipif`` and would simply have
+    # failed on windows-latest, where it resolves ``pwsh``.
+    assert spawned[0].argv == [
+        shell.path,
+        shell.command_flag,
+        utf8_output_preamble(shell.path) + "echo hi",
+    ]
     assert spawned[0].kwargs == {
         "cwd": str(tmp_path),
         "env": env,

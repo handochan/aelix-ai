@@ -173,7 +173,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over ``self.flag`` on purpose. The real one
-    (``extensions/api.py:1196`` → ``:1216-1217``) is
+    (``extensions/api.py:1204`` → ``:1224-1225``) is
     ``runtime.ui is not HEADLESS_UI_CONTEXT`` — a TIME-VARYING value, not a
     mode: ``False`` during ``harness.bootstrap()``, ``True`` after the TUI
     binds, re-pointed on every harness rebuild, and ``False`` again on exit
@@ -1310,7 +1310,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
 # (``tui/context.py:140-218``); and ``resolve_child_cwd``
-# (``print_channel.py:437``) validated only containment and is-a-directory,
+# (``print_channel.py:444``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a
 # wholly fabricated dialog. This door has no fit check at all, so there is

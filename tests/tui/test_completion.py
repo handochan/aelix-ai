@@ -495,15 +495,40 @@ def test_fd_never_goes_through_subprocess_run(monkeypatch: Any, tmp_path: Path) 
     assert len(calls) == 1
 
 
-def test_fd_enumerate_replaces_undecodable_bytes(monkeypatch: Any, tmp_path: Path) -> None:
+def test_fd_enumerate_never_raises_on_undecodable_bytes(monkeypatch: Any, tmp_path: Path) -> None:
     # ``text=True`` decoded with the LOCALE codec and STRICT errors, so one
     # latin-1 filename under the tree raised UnicodeDecodeError — a ValueError,
     # which `except (OSError, SubprocessError)` does not catch — out of the
-    # completer on a keystroke. utf-8/replace makes it one wrong candidate
-    # instead (#221 §A.4).
+    # completer on a keystroke. It is one wrong candidate instead (#221 §A.4).
+    #
+    # WHICH wrong candidate depends on the platform (#239). Off win32 it is
+    # U+FFFD, byte for byte the old call. On win32 the console/OEM code page
+    # gets a strict try first — but since #239's FINAL PASS a page that decodes
+    # all 256 single bytes is offered nothing, so a single-byte OEM chain is
+    # ``errors="replace"`` byte for byte and the ``en-US`` runner lands on the
+    # POSIX answer too. This case asserted the opposite until then ("one wrong
+    # character, and not U+FFFD", because ``0xE9`` is ``Θ`` in cp437 and ``Ú``
+    # in cp850); the same acceptance is what spelled a binary ``0xFF`` as an
+    # invisible U+00A0 on windows-latest, CI run 34238825800.
+    #
+    # A DBCS chain is the only one that can still differ, so IT keeps the weak
+    # assertion. Measured 2026-09-09 on darwin/CPython 3.12.13, cp949/cp932 both
+    # reach the floor for this byte too (``0xE9`` is a LEAD byte there and
+    # ``e9 2e`` is not a character), so the arm pins only "one character stands
+    # where the byte was" rather than which one, and it is chosen by asking the
+    # resolved chain.
+    from aelix_ai.utils._child_output import _is_multibyte_page, win32_output_fallbacks
+
+    dbcs = any(_is_multibyte_page(codec) for codec in win32_output_fallbacks())
     calls = _stub_fd(monkeypatch, tmp_path, b"src/caf\xe9.py\n")
-    assert _fd_enumerate("fd", tmp_path) == ["src/caf�.py"]
+    entries = _fd_enumerate("fd", tmp_path)
     assert len(calls) == 1
+    if sys.platform == "win32" and dbcs:
+        assert entries is not None and len(entries) == 1
+        assert entries[0].startswith("src/caf") and entries[0].endswith(".py")
+        assert len(entries[0]) == len("src/cafX.py")
+    else:
+        assert entries == ["src/caf�.py"]
 
 
 def test_enumerate_tree_falls_back_to_walk_without_fd(monkeypatch: Any, tmp_path: Path) -> None:

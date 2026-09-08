@@ -101,6 +101,7 @@ from aelix_agent_core.harness.hooks import (
 )
 from aelix_agent_core.types import AgentTool
 from aelix_ai.streaming import Model, StreamFn
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import AbortHandle, run_contained
 
 from .ext_ui import ExtensionUIContext
@@ -177,7 +178,7 @@ class ExecResult:
     killed: bool
 
 
-def _decode_output(raw: bytes | str | None) -> str:
+def _decode_output(raw: bytes | str | None, *, ragged_tail: bool = False) -> str:
     """Bytes off a contained run → the ``str`` an extension reads (#221 §A.4).
 
     utf-8 with REPLACEMENT, then universal newlines. Both halves are decisions,
@@ -209,11 +210,18 @@ def _decode_output(raw: bytes | str | None) -> str:
     or a raw ``subprocess`` one), and ``exec`` must not raise ``AttributeError``
     at a caller that was only late. A ``str`` passes through for the same
     reason.
+
+    ``ragged_tail`` is the CALLER's claim that this buffer ends at a byte the
+    kill chose rather than where the child stopped writing, and it is off by
+    default because only the ``TimeoutExpired`` legs can say it (#239
+    cross-review). With it, a character the deadline severed stays U+FFFD
+    instead of being spelled by the console code page.
     """
 
     if raw is None:
         return ""
-    text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+    # #239 — ADR-0238's SITE-1 output is a child's, and decodes like one.
+    text = raw if isinstance(raw, str) else decode_child_output(raw, ragged_tail=ragged_tail)
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -620,7 +628,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:580-588``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:588-596``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -2186,8 +2194,12 @@ class ExtensionAPI:
             raise
         except subprocess.TimeoutExpired as exc:
             killed = True
-            stdout = _decode_output(exc.stdout)
-            stderr = _decode_output(exc.stderr)
+            # ``ragged_tail=True`` (#239 cross-review): ``run_contained``
+            # attaches everything the reader had at the deadline, so these two
+            # buffers end at an arbitrary byte. The success path above chose
+            # its own end and stays unclaimed.
+            stdout = _decode_output(exc.stdout, ragged_tail=True)
+            stderr = _decode_output(exc.stderr, ragged_tail=True)
             code = 124
         except FileNotFoundError as exc:
             stdout = ""

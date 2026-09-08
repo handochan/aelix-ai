@@ -235,7 +235,10 @@ def read_all_text(stream: Any) -> str:
         pass
 
     # Neither codec fits. Never raise on the way in — a mangled prompt beats a
-    # traceback the user cannot act on.
+    # traceback the user cannot act on. NOT ``decode_child_output`` (#239):
+    # these are OUR stdin's bytes, not a child's, and this function is already
+    # the same shape one layer up — declared encoding, then strict UTF-8, then
+    # replacement as the floor.
     return raw.decode("utf-8", errors="replace")
 
 

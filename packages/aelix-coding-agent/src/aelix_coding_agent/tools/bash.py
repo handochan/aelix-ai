@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     EXIT_DRAIN_SECONDS,
     INTERRUPT_REAP_SECONDS,
@@ -37,8 +38,12 @@ from aelix_ai.utils._process_tree import (
     containment_spawn_kwargs,
 )
 from aelix_ai.utils._shell import (
+    CMD_NAMES,
+    POWERSHELL_NAMES,
     ShellConfig,
     command_flag_for,
+    shell_basename,
+    utf8_output_preamble,
     windows_command_shells,
 )
 
@@ -233,7 +238,34 @@ class _LocalBashOperations:
             proc = cast(
                 "subprocess.Popen[bytes]",
                 subprocess.Popen(  # noqa: S603
-                    [shell.path, shell.command_flag, command],
+                    # #239: ask THIS family for UTF-8 output, prepended here —
+                    # after ``_resolve_spawn_context``, so the AUTO-mode gate
+                    # and any ``spawn_hook`` still see exactly the command the
+                    # model sent, invisibly by construction. The choice is the
+                    # shell FAMILY's and not the platform's (#239 review):
+                    # every POSIX shell family gets ``""``, but
+                    # ``SHELL=/usr/local/bin/pwsh`` on macOS gets the PowerShell
+                    # statement, deliberately — pwsh's output encoding is
+                    # pwsh's wherever it runs.
+                    # PowerShell is the ONLY family that gets one. The ``cmd``
+                    # arm was deleted on 2026-09-09, after CI run 34272507388
+                    # measured its ``chcp 65001 >nul&`` breaking an unquoted
+                    # spaced executable path on windows-latest: the prefix costs
+                    # ``cmd /c`` rule 1's quotes and ``cmd`` then answers "is
+                    # not recognized". A ``cmd`` child's console-page output
+                    # goes through the decoder instead — see
+                    # ``utf8_output_preamble`` for the leg output and the price.
+                    # It reaches all three callers of
+                    # ``create_local_bash_operations`` (the bash tool, the REPL
+                    # ``!`` escape, RPC ``exec``) deliberately: all three are
+                    # shells AELIX spawns. A ``models.json`` ``!command`` is
+                    # not one of them and gets nothing prepended, because its
+                    # stdout is a credential returned verbatim.
+                    [
+                        shell.path,
+                        shell.command_flag,
+                        utf8_output_preamble(shell.path) + command,
+                    ],
                     cwd=cwd,
                     env=env_dict,
                     # #222 §A.5, and Pi's ``stdio: ["ignore", "pipe", "pipe"]``.
@@ -823,6 +855,69 @@ def _build_bash_parameters(default_timeout: float, max_timeout: float) -> dict[s
     }
 
 
+# Pi parity, and frozen: the description as it stood before #239. On POSIX it
+# is still the whole description, byte for byte — ``_bash_shell_sentence``
+# returns "" there before anything is resolved.
+_BASH_DESCRIPTION = (
+    "Execute a bash command in the current working directory. Returns "
+    "stdout and stderr. Output is truncated to last 2000 lines or 50KB "
+    "(whichever is hit first). If truncated, full output is saved to a "
+    "temp file. Provide a timeout in seconds for long-running commands "
+    "(see the timeout parameter)."
+)
+
+
+def _bash_shell_sentence(
+    env: dict[str, str],
+    shell_path: str | None,
+    *,
+    platform: str | None = None,
+) -> str:
+    """One sentence naming the shell this machine resolved, or ``""`` (#239).
+
+    The tool's PARAMETERS have been per-tool since #11 (the ``timeout`` text
+    states the resolved default and cap); the DESCRIPTION was a frozen literal
+    that named no shell, and the shell is known only at exec time. The cost of
+    that gap, from the issue: the model sent ``uv --version && uv cache dir``,
+    PowerShell answered ``InvalidEndOfLine``, and a whole turn went on finding
+    ``;``.
+
+    WIN32 ONLY, and the platform test comes BEFORE :func:`_resolve_shell` is
+    called — so off Windows there is no filesystem probe, no ``ValueError``
+    risk, and no test policing a string that cannot change. ``platform`` is
+    forwarded to ``_resolve_shell`` rather than monkeypatched, which is the
+    injection point that function's own docstring supports.
+
+    THE POWERSHELL ARM ADVISES ``;`` AND NEVER ``&&``. The basename does not
+    carry the version: ``&&``/``||`` are PowerShell **7.0** features, 6.0-6.2
+    also ship as ``pwsh``/``pwsh.exe`` and reject them with 5.1's parser error,
+    and :func:`shell_basename` strips version suffixes so ``pwsh-6.2.exe``
+    lands here too. ``;`` is correct on 5.1, 6 and 7 and costs no probe; a
+    creation-time ``$PSVersionTable`` spawn to buy one more operator was
+    rejected.
+    """
+
+    if (platform if platform is not None else sys.platform) != "win32":
+        return ""
+    shell = _resolve_shell(env, shell_path, platform="win32")
+    name = shell_basename(shell.path)
+    if name in POWERSHELL_NAMES:
+        return (
+            f" This machine resolved {shell.path}, so your command is parsed by "
+            "PowerShell and not by bash: separate statements with ';', and use "
+            "PowerShell cmdlets, redirection and quoting."
+        )
+    if name in CMD_NAMES:
+        return (
+            f" This machine resolved {shell.path}, so your command is parsed by the "
+            "Windows command interpreter and not by bash: use its syntax and quoting."
+        )
+    return (
+        f" This machine resolved {shell.path}, so that is the shell your command "
+        "runs under."
+    )
+
+
 def create_bash_tool(
     cwd: str, options: dict | None = None
 ) -> AgentTool:
@@ -844,6 +939,30 @@ def create_bash_tool(
     )
     max_timeout = _resolve_timeout_knob(opts.get("max_timeout"), _MAX_TIMEOUT)
     parameters = _build_bash_parameters(default_timeout, max_timeout)
+    # #239 — name the resolved shell, once, at creation. Resolving per request
+    # would put a ``shutil.which`` probe on the hot path of every model call.
+    # ``try/except Exception`` because ``_resolve_shell`` raises ``ValueError``
+    # for a ``shell_path`` setting that points nowhere, and tool CREATION must
+    # not start failing where only exec failed before.
+    #
+    # TWO OPTIONS SUPPRESS THE SENTENCE ENTIRELY. ``operations`` is a
+    # remote/SSH shell this process cannot name. ``spawn_hook`` is the #239
+    # cross-review's finding 7: the sentence is resolved ONCE from
+    # ``get_shell_env()`` while ``_resolve_spawn_context`` calls
+    # ``spawn_hook(base)`` on EVERY request, and a hook that rewrites ``PATH``
+    # or ``COMSPEC`` — which is what the option is for, and what
+    # ``tests/tools/test_bash_tool.py``'s parity cases do — makes the named
+    # shell one that never runs. Saying nothing beats naming the wrong one:
+    # the frozen description is what every model saw before #239. The first
+    # pass declined this as out of scope, which did not hold up next to the
+    # other findings from the same list that were fixed.
+    description = _BASH_DESCRIPTION
+    if not opts.get("operations") and not spawn_hook and sys.platform == "win32":
+        # Suppressing ``Exception``: ``_resolve_shell`` raises ``ValueError``
+        # for a ``shell_path`` setting that points nowhere, and a sentence is
+        # never worth failing a tool creation that used to succeed.
+        with contextlib.suppress(Exception):
+            description += _bash_shell_sentence(get_shell_env(), opts.get("shell_path"))
 
     async def execute(
         args: dict[str, Any], ctx: ToolExecutionContext
@@ -884,7 +1003,31 @@ def create_bash_tool(
             timeout=timeout,
             env=spawn_context.env,
         )
-        raw = b"".join(chunks).decode("utf-8", errors="replace")
+        # ``ragged_tail=True`` (#239 review): this buffer's TAIL is a
+        # byte-exact cut whenever the timeout or an abort kills the child, or
+        # #232's idle drain cap ends the read — the last chunk can stop
+        # mid-character. Without it a truncated trailing sequence is offered
+        # to the console code page and a DBCS page accepts it: measured
+        # 2026-09-09 on darwin/CPython 3.12.13,
+        # ``"ok: 日本語テキスト".encode()[:-1]`` with ``fallbacks=("cp932",)``
+        # reads ``ok: 譌･譛ｬ隱槭ユ繧ｭ繧ｹ繝`` rather than ``ok: 日本語テキス\ufffd``.
+        # The cp437 form of this measurement, which this comment carried until
+        # #239's final pass, no longer holds: a page that decodes all 256
+        # single bytes is offered nothing now, so cp437 gives the U+FFFD either
+        # way (``_child_output``'s ACCEPTANCE).
+        #
+        # The HEAD is NOT claimed (#239 cross-review), and claiming it was a
+        # real bug: ``chunks`` is only ever appended to, so byte 0 of the
+        # child's first write is always here, while the head arm strips
+        # leading ``0x80-0xBF`` bytes — the range cp949's Hangul lead bytes sit
+        # in. Measured 2026-09-09, ``"가짜".encode("cp949")`` came back
+        # ``\ufffd\ufffd¥``, this issue's own mojibake. The ``7.8%`` this comment
+        # gave for "short leading Korean runs" was the rate of the SINGLE
+        # ``ragged`` flag that the split replaced; claiming the head alone
+        # costs 31.4-32.6% of them (three seeds, 20000 cp949 buffers of 1-8
+        # syllables each, common ``b0-c8`` block), because the both-ends guard
+        # that used to rescue those bytes cannot fire from one end.
+        raw = decode_child_output(b"".join(chunks), ragged_tail=True)
         body, info = truncate_tail(
             raw, max_lines=max_lines, max_bytes=max_bytes
         )
@@ -979,13 +1122,7 @@ def create_bash_tool(
             "Be careful with destructive or irreversible shell commands; do "
             "not run them unless the intent is clear.",
         ),
-        description=(
-            "Execute a bash command in the current working directory. Returns "
-            "stdout and stderr. Output is truncated to last 2000 lines or 50KB "
-            "(whichever is hit first). If truncated, full output is saved to a "
-            "temp file. Provide a timeout in seconds for long-running commands "
-            "(see the timeout parameter)."
-        ),
+        description=description,
         parameters=parameters,
         execute=execute,
         execution_mode="sequential",

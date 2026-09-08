@@ -350,7 +350,7 @@ _GRANDCHILD_BODY = (
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
-    ``tools/bash.py:269`` spawns through
+    ``tools/bash.py:301`` spawns through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX, before and after #222 — so a grandchild is the leader of its OWN
     process group and ``os.killpg`` on the child's group cannot reach it
@@ -746,7 +746,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:535-541``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:549-555``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -1121,7 +1121,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1234-1241) and kills the tree.
+        # (print_channel.py:1241-1248) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -1337,8 +1337,8 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     that BLOCKS SIGTERM (pthread_sigmask) -> state='S (sleeping)'`` three seconds
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
-    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:269``
-    and ``tools/_subprocess.py:106`` both spawn through
+    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:301``
+    and ``tools/_subprocess.py:107`` both spawn through
     ``containment_spawn_kwargs(new_session=True)``, which on POSIX is the
     ``start_new_session=True`` both lines used to spell literally, so each
     grandchild leads its own group and nothing outside the child can find them
@@ -1390,7 +1390,7 @@ _PDEATH_CHILD = textwrap.dedent(
     def _bye(*_a):
         # What a REAL aelix child does on SIGTERM:
         # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
-        # abort watcher (bash.py:431-446), which since #222 ends a ProcessTree
+        # abort watcher (bash.py:463-478), which since #222 ends a ProcessTree
         # instead of calling the _kill_group this stub imitates. On POSIX that
         # is still killpg(pgid, SIGKILL), which is why the stub still stands.
         try:
@@ -1590,7 +1590,7 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:269`` and ``tools/_subprocess.py:106`` both spawn through
+    ``tools/bash.py:301`` and ``tools/_subprocess.py:107`` both spawn through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX — so every tool subprocess the child starts is the leader of its
     own group. On the COOPERATIVE leg the child's own
@@ -1846,7 +1846,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:859-863``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:866-870``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -1898,11 +1898,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:973``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:980``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:201``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:202``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 

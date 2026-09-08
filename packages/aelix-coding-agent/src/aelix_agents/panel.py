@@ -173,7 +173,7 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:671-673``) — and the kernel emits that event with the raw
+    (``stream.py:685-687``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
     (``loop.py:734-744``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
@@ -486,7 +486,7 @@ def format_aggregate_status(
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:95-96``, and ``stream.py:214-217``
+    message wins" (``subagent_contract.py:95-96``, and ``stream.py:228-231``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.

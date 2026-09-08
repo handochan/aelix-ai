@@ -46,6 +46,18 @@ Two mechanisms, faithful to pi's "kill the process on abort" model.
   orphan; Esc unwinds the turn). On `FileNotFoundError` → `None` (binary-absent fallback). Decode is
   UTF-8 `errors='replace'` — a documented intentional divergence from the old strict `text=True`
   decode, closer to pi's tolerant Node decode, pinned by a regression test.
+  **NOTE (#239, 2026-09-08):** the divergence from `text=True` stands; the
+  *unconditional* replacement does not. `run_cancellable` now decodes through
+  `aelix_ai.utils._child_output.decode_child_output`, which is provably this
+  same call off win32 and tries the console output code page first on win32 —
+  so `rg`/`fd` output in a **DBCS** code page reads as text there instead of
+  U+FFFD. The regression test named here is one of the two rewritten to state
+  that the answer is platform-shaped. **Corrected by #239's final pass
+  (2026-09-09):** "a legacy code page" was too wide. A page that decodes all 256
+  single bytes is offered nothing, so on a Western box (cp437/cp850/cp1252) this
+  call is `errors="replace"` byte for byte and `rg`/`fd` get exactly what this
+  ADR shipped; only a DBCS console changed. The regression test's win32 arm was
+  asserting the too-wide claim and is corrected with it.
 - **`grep.py` / `find.py`**: `_try_ripgrep` / `_try_fd` are now `async`, calling `run_cancellable`
   instead of `subprocess.run`; the rg/fd argv, parsing (`_relativize_rg_line` / `_relativize`),
   match-count cap, limit/overflow detection, truncation, and all notice strings are **byte-for-byte

@@ -155,7 +155,7 @@ def test_every_member_is_counted_exactly_once() -> None:
 def test_the_aggregate_token_count_is_the_max_and_the_cost_is_the_sum() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:95-96``), so summing it across members would report
-    a number several times the real one — the mistake ``stream.py:214-217``
+    a number several times the real one — the mistake ``stream.py:228-231``
     already warns about, and the rule ``aggregate.roll_up_usage`` follows. Cost
     IS a flow and IS summed."""
 
@@ -1606,7 +1606,7 @@ def test_a_raising_set_widget_still_leaves_the_aggregate_row_on_screen() -> None
 # THE HIGH FINDING, AND THE SURFACE IS NEW IN P3 (P2 shipped no widget at all).
 # ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
 # JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-# (``stream.py:671-673``) — and the kernel emits that event with the raw
+# (``stream.py:685-687``) — and the kernel emits that event with the raw
 # model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
 # (``loop.py:734-744``), so it is not constrained to a real tool name. A child is
 # exactly the process this phase's threat model assumes has read attacker
