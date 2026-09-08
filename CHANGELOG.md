@@ -187,6 +187,26 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Added
 
+- **102 models the catalog was missing since 2026-08-19**, refreshed from
+  models.dev with `scripts/refresh_catalog.py` (1427 → 1529 rows across the
+  same 35 providers; nothing removed, nothing already shipped changed —
+  measured by diffing the two JSONs row by row). Selectable now on their
+  direct providers: `claude-fable-5-1` (anthropic), `gpt-6-astra` (openai),
+  `gemini-3.8-flash` (google), and on github-copilot `claude-fable-5.1` +
+  `gemini-3.8-flash` under the Copilot conventions the pin tests enforce
+  (200K cap on Claude, zero per-token cost). 399 upstream rows were refused
+  by the script's transport rule, as before. **What a refresh cannot do:**
+  models.dev carries no `thinkingLevelMap`, so every added row arrived
+  without one — and a reasoning model without a map has no `xhigh`.
+  `claude-fable-5-1` would have clamped `xhigh` to `high` while
+  `claude-fable-5` beside it kept `xhigh`. Nine flagship rows got their
+  predecessor's map copied by hand (fable-5-1 ← fable-5, gpt-6-astra ←
+  gpt-5.5, gemini-3.8-flash ← gemini-3.5-flash, on each provider where the
+  predecessor had one) and are pinned equal to it in
+  `tests/test_catalog_corrections_are_pinned.py`; the 12 rows whose
+  predecessor has no map either (bedrock, the aggregators) were left as
+  upstream gives them. The refresh pipeline itself (#172) is still not built —
+  this is the manual path it will replace.
 - **`/settings` can put the git-ignored files back in the `@` menu.** Since the `@`
   menu started using the `fd` Aelix downloads, it stops offering what git ignores —
   which is what most people want and is wrong for anyone whose build output,
