@@ -1,7 +1,7 @@
 """#249 — the footer context meter's MID-TURN figure, read off ``message_end``.
 
 ``get_session_stats`` cannot serve a mid-turn read: the harness only extends
-``_state.messages`` once the loop has returned (``harness/core.py:4598``), so
+``_state.messages`` once the loop has returned (``harness/core.py:4643``), so
 the per-round-trip refreshes the TUI already ran all estimated over an
 unchanged list and repainted the PRE-turn number. The fresh figure is carried
 by the ``message_end`` payload itself, and

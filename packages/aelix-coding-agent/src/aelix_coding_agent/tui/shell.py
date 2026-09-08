@@ -176,7 +176,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
 
     ``get_session_stats`` cannot serve a mid-turn read at all. The harness only
     extends ``_state.messages`` once the agent loop has RETURNED
-    (``harness/core.py:4598``), while ``turn_end`` fires once per provider
+    (``harness/core.py:4643``), while ``turn_end`` fires once per provider
     round-trip inside it (``loop.py:240``) — so every one of those refreshes
     estimated over an unchanged list and repainted the pre-turn number, which on
     the first turn of a session is literally ``◔ 0%``. The fresh number is in
@@ -2057,13 +2057,13 @@ async def run_tui(
     # #249 — the tokens of the last assistant response of the RUNNING turn, or
     # ``None`` when no such number is held. It exists because the stats read
     # cannot produce one: ``_state.messages`` is not extended until the loop
-    # returns (``core.py:4598``), so a mid-turn ``get_session_stats`` estimates
+    # returns (``core.py:4643``), so a mid-turn ``get_session_stats`` estimates
     # over the pre-turn list. While this is set the meter is showing a strictly
     # fresher figure than a stats walk could, so ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:221``, ``:260``, ``:271``, plus
     # the abort close-out ``core.py:4548`` and the hook-fail one ``:4591``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
-    # hook-fail paths, which ``return``/``raise`` before ``core.py:4598``.
+    # hook-fail paths, which ``return``/``raise`` before ``core.py:4643``.
     live_tokens: dict[str, int | None] = {"n": None}
 
     def _next_context_usage_seq() -> int:
@@ -2483,7 +2483,7 @@ async def run_tui(
             # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks estimated over a message list the harness
-            # does not extend until the loop returns (``core.py:4598``). Each
+            # does not extend until the loop returns (``core.py:4643``). Each
             # therefore repainted the PRE-turn number on top of a fresher live
             # one: 20% → 5% → 30% → 5%, downward flicker on a segment that has a
             # flicker-regression history.
@@ -2518,7 +2518,7 @@ async def run_tui(
             # stats read. One ``agent_end`` per prompt, on every exit including
             # abort and hook-failure, which is why the clear lives here and not
             # in ``_settled_hook``: ``settled`` is emitted after
-            # ``core.py:4598``, and both of those paths return or raise before
+            # ``core.py:4643``, and both of those paths return or raise before
             # reaching it. ``agent_end`` precedes that extend by microseconds and
             # paints nothing itself, so the success path's authoritative
             # ``settled`` refresh still lands.

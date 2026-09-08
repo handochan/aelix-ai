@@ -3365,7 +3365,7 @@ async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> Non
 # at all: ``turn_end`` already fires once per provider round-trip
 # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop),
 # yet the harness does not extend ``_state.messages`` until the loop has
-# returned (``core.py:4598``) — so a thirty-tool turn ran thirty stats walks
+# returned (``core.py:4643``) — so a thirty-tool turn ran thirty stats walks
 # that every time estimated over the SAME unchanged list and repainted the
 # pre-turn number. The mid-turn figure therefore comes from the ``message_end``
 # payload, and the stats walk is SKIPPED while such a figure is held.
@@ -3419,7 +3419,7 @@ def _record_paints(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 class _TurnStalenessHarness(FakeHarness):
     """``get_session_stats`` reports the PRE-turn figure until the turn settles.
 
-    That is the production shape (``core.py:4598`` extends ``_state.messages``
+    That is the production shape (``core.py:4643`` extends ``_state.messages``
     after the loop returns, and ``settled`` is emitted right after), and it is
     what makes an unconditional per-round-trip refresh a DOWNWARD step rather
     than a harmless duplicate.
