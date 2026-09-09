@@ -6,7 +6,9 @@ for the aelix workspace.
 ## Scope
 
 - Locked runtime dependency closure from `uv.lock` (frozen, no hashes), including all
-  optional extras of the workspace (tui, images) — the full user-facing install.
+  optional extras of the workspace — the full user-facing install. The generator asks
+  uv for `--all-extras`, and `tui` is the only extra there is; this line used to also
+  name `images`, which went away with the renderer it installed (#163, ADR-0223).
 - Dev dependency group excluded.
 - Workspace members themselves are not exported by uv; the umbrella `aelix` package
   (metadata.component) and the four first-party packages (`aelix-ai`, `aelix-agent-core`,

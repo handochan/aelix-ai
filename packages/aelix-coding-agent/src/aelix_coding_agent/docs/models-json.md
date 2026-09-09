@@ -79,10 +79,12 @@ examples got that wrong until it was measured; they are correct above.)
 
 Omitted fields do **not** inherit from a sibling model on the same provider.
 `api` and `baseUrl` come from the provider, but everything else falls back to a
-flat default — which is how `{ "id": "claude-opus-5" }` on the built-in
-`anthropic` provider silently gives you this:
+flat default. A `models` entry **replaces** a built-in row of the same
+`(provider, id)` rather than merging onto it, so `{ "id": "claude-opus-5" }`
+under the built-in `anthropic` provider silently downgrades the shipped entry to
+this:
 
-| field | you get | the real Claude Opus 4.8 entry |
+| field | you get | the built-in `claude-opus-5` row |
 |---|---|---|
 | `contextWindow` | 128000 | 1000000 |
 | `maxTokens` | 16384 | 128000 |
@@ -92,7 +94,9 @@ flat default — which is how `{ "id": "claude-opus-5" }` on the built-in
 
 Nothing warns you. The model appears in `/model` and runs, but the context meter
 is wrong by 8×, thinking is off, images are refused, and `/cost` reports nothing.
-So when you add a current flagship, spell the whole entry out:
+(If all you wanted was to change one field on a row that already exists, use
+`modelOverrides` below — that one does merge.) So when you add a model, spell the
+whole entry out:
 
 ```json
 {

@@ -103,11 +103,12 @@ def test_the_limitations_section_names_every_open_issue_it_describes(
     """A limitation the reader cannot look up is a limitation they cannot track.
 
     #137 and #138 were absent entirely; #188 was the defect the section
-    described without ever naming.
+    described without ever naming. #260 joined the list for `v0.1.0-beta.2`:
+    a silent tail loss is the one limitation a reader cannot notice unaided.
     """
 
     text = _read(name)
-    for issue in (188, 137, 138, 14, 110):
+    for issue in (188, 137, 138, 14, 110, 260):
         assert f"issues/{issue}" in text, f"{name} does not link #{issue}"
 
 
@@ -119,11 +120,11 @@ def test_the_limitation_count_matches_the_bullets(name: str) -> None:
     text = _read(name)
     if name == "README.md":
         section = text.split("## Known limitations (beta)", 1)[1]
-        assert "Five things worth knowing" in section
+        assert "Six things worth knowing" in section
     else:
         section = text.split("## 알려진 한계 (베타)", 1)[1]
-        assert "다섯 가지입니다" in section
+        assert "여섯 가지입니다" in section
     section = section.split("\n## ", 1)[0]
     # Bullets are `**Bold lead-in.**` at the start of a line.
     bullets = [line for line in section.splitlines() if line.startswith("**")]
-    assert len(bullets) == 5, [b[:40] for b in bullets]
+    assert len(bullets) == 6, [b[:40] for b in bullets]

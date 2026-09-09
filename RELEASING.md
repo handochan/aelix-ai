@@ -157,12 +157,13 @@ is needed for subsequent releases.
    git push origin vX.Y.Z
    ```
 
-7. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag:
+8. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag:
    it builds all workspace packages, drops the `aelix-server` artifacts, and —
    after the `pypi` environment gate — publishes the four-package set to PyPI
-   via Trusted Publishing.
+   via Trusted Publishing. The `github-release` job runs in parallel and
+   attaches the wheels, the sdists, `SHA256SUMS` and the SBOM to the Release.
 
-8. **Verify** the new versions appear on PyPI and that
+9. **Verify** the new versions appear on PyPI and that
    `pip install aelix==X.Y.Z` resolves the full lock-step set.
 
 > The tag is the single source of truth for triggering a publish. The version in
@@ -268,15 +269,31 @@ holding in mind before you push the tag:
      approval), and `github-release`; the four names on pypi.org show the new
      pre-version.
    - The GitHub Release `v0.1.0-beta.2` is marked **Pre-release** and carries
-     the four `aelix*` wheels, the four sdists, and `SHA256SUMS`.
-   - The one-liner installs and smoke-tests:
+     the four `aelix*` wheels, the four sdists, `SHA256SUMS`, and the SBOM —
+     the `github-release` job refuses to create the Release unless exactly one
+     `sbom/aelix-<version>.cdx.json` exists and its version matches
+     `pyproject.toml`, so a forgotten step 4 above fails that job.
+   - The one-liner installs and smoke-tests. **Mind the shape.** An
+     `AELIX_VERSION=… curl … | sh` prefix sets the variable for **`curl`**, not
+     for the `sh` on the other side of the pipe — the installer would never see
+     it and would resolve the newest release instead of the pinned tag, so the
+     check would pass while measuring the wrong thing:
 
      ```bash
      AELIX_VERSION=v0.1.0-beta.2 \
-       curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
+       sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
      aelix --version
      ```
 
-Subsequent betas bump the suffix (`0.1.0b2` / `v0.1.0-beta.2`, etc.). The GA cut
+   - On Windows, the same check through `install.ps1`. `iex` runs the script in
+     the current session, so `$env:` assignments before the pipe do reach it:
+
+     ```powershell
+     $env:AELIX_VERSION = 'v0.1.0-beta.2'
+     irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex
+     aelix --version
+     ```
+
+Subsequent betas bump the suffix (`0.1.0b3` / `v0.1.0-beta.3`, etc.). The GA cut
 uses the un-hyphenated tag (`v0.1.0`) and follows the **Cutting a release** flow
-above, which additionally publishes to PyPI.
+above.

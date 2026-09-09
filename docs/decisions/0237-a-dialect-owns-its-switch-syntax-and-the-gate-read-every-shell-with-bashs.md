@@ -435,6 +435,13 @@ under pwsh) and both halves moved together, because the predicate is shared.
   the gating `windows-latest` leg. That is suite coverage, not runtime
   verification, and claiming otherwise is the exact kind of premise this
   repository has had to retract before.
+
+  *Amended 2026-09-09.* `README.md:65` points at the file as it stood when this
+  ADR was written; the platform claim now lives in the README's **Platform
+  support** section, and what AUTO's evidence is on Windows is stated in
+  `SLICE-STATUS.md` ("What AUTO mode's evidence is, exactly"). On that date a
+  person did watch the model write PowerShell syntax on a Windows host; nobody
+  has watched the ASK prompt fail to appear.
 - **Not a complete PowerShell or cmd semantics.** The ALLOW tiers are closed
   allowlists that will be incomplete. Incompleteness costs prompts, which is
   the correct direction. There is no `Get-*` wildcard and there must not be:

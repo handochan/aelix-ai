@@ -60,16 +60,19 @@ jobs:
       - name: Validate release tag is strict semver
         run: |
           tag="${{ github.ref_name }}"
-          # A pre-release MUST be spelled with a HYPHEN. The whole pipeline
-          # decides "is this a pre-release?" by testing for a hyphen — the
-          # publish job's `if: !contains(ref_name, '-')` and the
-          # github-release job's `--prerelease` case both do. The previous
+          # A pre-release MUST be spelled with a HYPHEN. The github-release job
+          # decides "is this a pre-release?" by testing for one — its
+          # `--prerelease` case is the last reader of that signal. (The publish
+          # job used to be the other: `if: !contains(ref_name, '-')` kept
+          # hyphenated tags off PyPI entirely. ADR-0240 removed it — a
+          # pre-release tag publishes its PEP 440 pre-version now, and what
+          # protects `0.1.0` is the version itself.) The previous
           # `([.-][0-9A-Za-z.]+)?` also admitted the DOT form, so a tag like
           # `v0.1.0.rc1` passed this gate, contained no hyphen, and was
-          # therefore treated as a GA release: marked as a full release on
-          # GitHub AND carried into an IRREVERSIBLE PyPI upload
-          # (skip-existing: false). Accepting only `vX.Y.Z` and
-          # `vX.Y.Z-<suffix>` makes "no hyphen" and "is GA" the same fact.
+          # therefore marked a full release on GitHub while carrying an
+          # IRREVERSIBLE PyPI upload (skip-existing: false) of a version PEP 440
+          # reads as GA. Accepting only `vX.Y.Z` and `vX.Y.Z-<suffix>` makes
+          # "no hyphen" and "is GA" the same fact.
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
             echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish. A pre-release must use a hyphen (v0.1.0-beta.1), never a dot (v0.1.0.rc1)."
             exit 1

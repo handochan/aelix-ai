@@ -11,9 +11,12 @@ umbrella meta-package. (`aelix-server`, the Web-UI daemon, is deferred to a
 later release and is not part of this publish set.)
 
 <!--
-No comparison / tag links are defined at the bottom of this file on purpose:
-the repository has no tags and no releases yet, so every `.../compare/vX...HEAD`
-and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
+No comparison / tag links are defined at the bottom of this file. The reason
+recorded here used to be "the repository has no tags and no releases yet", and
+that expired on 2026-08-20 when `v0.1.0-beta.1` was tagged and published as a
+GitHub pre-release: `.../releases/tag/v0.1.0-beta.1` and
+`.../compare/v0.1.0-beta.1...HEAD` both resolve today. They are simply still
+unwritten. Add them with the next release.
 -->
 
 ## [Unreleased]

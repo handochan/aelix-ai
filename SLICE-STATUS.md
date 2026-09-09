@@ -16,14 +16,30 @@
 > legs, `rpc_channel`'s reaper calls and the `SIGBREAK` handler `print_mode`
 > lacked — so items 1 and 2 below are amended in place and marked landed rather
 > than struck.
-> Windows is still not a supported platform — the suite passing is not that
-> claim (README, "Platform support").
+
+> **Amended again (2026-09-09, the `0.1.0-beta.2` candidate).** The flat verdict
+> this document opened with — "Windows is not a supported platform" — is no
+> longer the right summary, and neither is its opposite. What is measured now:
+> the full suite is green on `windows-latest` under 3.11 and 3.12 on every
+> branch, `install.ps1` runs end to end there under pwsh 7 and Windows
+> PowerShell 5.1, and on 2026-09-09 the maintainer checked the agent by hand on
+> a real Windows host — a `bash` call printing Korean renders as Korean (#239's
+> headline; it was mojibake before), the model reports it is on PowerShell and
+> writes PowerShell syntax rather than `&&`, and the TUI paints. What is not:
+> #241, #240 and #243 are CI-and-source only, nobody has watched them on a
+> Windows desk; there is no second machine, no locale beyond Korean and CI's
+> en-US, no long-run data, and no upgrade path — the previous beta had no
+> Windows story, so "installed, notified, upgraded" cannot be exercised until
+> beta.2 is tagged. One person, one machine, one locale, plus a green CI leg.
+> The README's *Platform support* section is the canonical statement.
 
 Branch: `feat/windows-experimental-slice` (Scenario C — parallel, tag-optional).
 
-**Windows is not a supported platform.** This slice lands the parts that are
+**When this slice was written, Windows was not a supported platform** (see the
+amendment above for where that stands now). It lands the parts that are
 verifiable on Linux and writes the first Windows-**asserting** tests, so that a
-future `windows-latest` CI leg is meaningful instead of green-over-broken.
+then-future `windows-latest` CI leg would be meaningful instead of
+green-over-broken.
 
 Before this slice the repository had **zero** Windows-asserting tests: all 12
 `win32` markers were subtractive `skipif`. A Windows leg added then would have
@@ -145,17 +161,23 @@ moved. Anyone extending this slice should follow the pattern.
    `KITTY_WINDOW_ID` / `LC_TERMINAL`; Windows Terminal sets none of them
    (`WT_SESSION`).~~ **Moot** — `tui/images.py` was removed in #163 (ADR-0223);
    nothing rendered inline images on any platform.
-7. **stdout encoding.** Nothing calls `sys.stdout.reconfigure(encoding="utf-8")`.
-   Windows consoles default to a legacy code page, so non-ASCII agent output
-   (and the box-drawing in the TUI chrome) will mojibake or raise
-   `UnicodeEncodeError` on `print`. Cheap to fix, worth doing early — it will
-   otherwise look like a hundred unrelated failures.
-8. **Ctrl+G external editor.** `tui/shell.py:2607` falls back to `vi`,
-8. **Ctrl+G external editor.** `tui/shell.py:2791` falls back to `vi`,
-8. **Ctrl+G external editor.** `tui/shell.py:2588` falls back to `vi`,
-8. **Ctrl+G external editor.** `tui/shell.py:2583` falls back to `vi`,
-8. **Ctrl+G external editor.** `tui/shell.py:2567` falls back to `vi`,
+7. **stdout encoding — LANDED (#110 P7, "N-3").** This item used to read
+   "Nothing calls `sys.stdout.reconfigure(encoding="utf-8")`". That stopped
+   being true when `util/stdio.py` landed: `harden_stdio()` runs first thing in
+   `cli/entry.py`, `src/aelix/__main__.py` and `aelix_server/main.py`. Exactly
+   one case is re-encoded — a **redirected** output stream, which has no code
+   page of its own — while a real console on a legacy page keeps its encoding
+   and has only its error handler relaxed to `backslashreplace`, so an
+   unrenderable glyph prints as an escape instead of killing the run. A stream
+   already on UTF-8 is untouched, which is what keeps the helper inert on every
+   platform that was already correct; input streams are never re-encoded at all
+   (`read_all_text` picks a decoder from the bytes instead).
+8. **Ctrl+G external editor.** `tui/shell.py:2872` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
+   (Until this pass the line was duplicated five times, citing `:2567`,
+   `:2583`, `:2588`, `:2607` and `:2791` — one per branch that ran
+   `check_citations.py --fix` during the beta.2 batch, all five kept by the
+   merge. None of them pointed at the fallback.)
 9. **`Operating System :: OS Independent` classifiers** — untouched on purpose;
    that is a tag-time decision owned elsewhere.
 10. **`rpc_client.stop()` / `subprocess_hooks`** use `proc.terminate()` /
@@ -180,7 +202,9 @@ Adding `windows-latest` is a **decision-gated** step and was deliberately not
 done here. When it is added, expect it to be red and plan a burndown rather
 than treating the first green as a milestone — several items above are
 "silently wrong" rather than "loudly broken", and a green leg that skips them
-is worse than no leg. Items 3, 6, 7 and 8 in particular fail quietly.
+is worse than no leg. Items 3, 6, 7 and 8 in particular fail quietly. Of those
+four, only **3 and 8** are still open: 6 went moot with `tui/images.py` (#163)
+and 7 landed with `harden_stdio` (#110 P7).
 
 **Superseded (2026-09-04).** `install.ps1` is no longer unexecuted: the
 `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
@@ -202,3 +226,74 @@ release can no longer outrank it. The version comes from the wheel FILENAME,
 never the tag — a tag is `v0.1.0-beta.1` while PEP 440 normalizes the same
 release to `0.1.0b1`. `tests/packaging_gate/test_install_ps1_parity.py` fails if
 EITHER installer drops the pin.
+
+## `v0.1.0-beta.2` — the per-fix record the README used to carry
+
+The README's *Platform support* section used to narrate this release's Windows
+work issue by issue; it is now a short claim plus its scope, and the narration
+lives here. Nothing below is new work — it is the same prose, moved, so that
+cutting the README did not cut a caveat. The evidence summary is in the second
+amendment at the top of this file.
+
+**The gate's other half.** The `windows-latest` type gate was still red at
+`beffc2f` on 15 POSIX-only names that only pyright's Windows model sees. Those
+are suppressed at their sites now and `continue-on-error` came off with them, so
+a new `fcntl` import or a hardcoded `/` join fails CI instead of landing green.
+
+**The Windows console is still the child's console.** On POSIX the bash tool's
+child now gets `/dev/null` for stdin instead of the terminal, so it can no longer
+take a keystroke meant for Aelix or leave the terminal with echo turned off —
+measured on macOS, where `!cat` in the TUI used to do exactly that and never
+return (#222). **That is a macOS/Linux sentence.** On Windows there is no session
+to take away: the child keeps the console Aelix was started from, so a program
+that reads `CONIN$` directly (git's credential prompts) or opens the console for
+a masked prompt (`Read-Host -AsSecureString`, `Get-Credential`) can still prompt
+there and still burn the command's whole timeout. Nobody has watched that at a
+Windows console — it is unverified, not fixed, and nothing in this release
+touches it. It is the one Windows caveat the README's short section still keeps,
+because no test on the leg can reach it.
+
+**What AUTO mode's evidence is, exactly.** #204 gave PowerShell and `cmd`
+classifiers of their own (ADR-0237), so a command is read with the switch syntax
+of the shell that will run it instead of being demoted to ASK. The evidence is
+the suite, and it is narrower than it sounds: every dialect test injects the
+resolved shell, so both sides run on every leg and no test lets an unpatched
+Windows `_resolve_shell` feed a real `pwsh`/`cmd` path into the gate end to end.
+What `windows-latest` uniquely proves is that the PowerShell grammar wheel
+installs, loads and parses there. On 2026-09-09 a person did watch the model
+write PowerShell syntax on a Windows host; nobody has watched the ASK prompt
+fail to appear.
+
+**`!command` on Windows.** A `!command` credential helper that tries to prompt
+the terminal itself fails at once with a named reason instead of stalling for ten
+seconds (#226) — measured on macOS and Linux; the Windows console half is
+unverified. And a `!command` no longer needs an `sh` at all there (#227): Aelix
+resolves the shell that box actually has and runs PowerShell `-NonInteractive`,
+so a PowerShell prompt is refused at once and cannot leak its text into your key
+— reasoned from pwsh 7's own switch, measured on macOS, still unwatched at a
+Windows console. The errno allowlist that decides "not a runnable shell" moved
+into the same primitive, so a spawn that fails before the command starts is exit
+127 rather than an exception out of the tool (#243, ADR-0238).
+
+**How the bash tool drains output, and what that costs.** Windows is why #222
+existed: `taskkill /T` follows *live* parent links only, so an MSYS pipeline
+whose per-stage subshells have already exited survives it, and because the tool
+read the command's output until the pipe closed, those survivors held the tool
+call open past its own timeout — and a command that simply *succeeded* after
+backgrounding a helper was held the same way, with no ceiling at all. #222
+bounded the first: after a kill the output is drained only until it falls idle,
+and never more than a second past the kill.
+[#232](https://github.com/handochan/aelix-ai/issues/232) ended the second: after
+an ordinary exit the output is drained by that same idle rule, under a 2-second
+ceiling and — where the call gave one — its own deadline. A job object holds the
+survivors regardless. The same containment covers the three places Aelix runs a
+bounded command of its own — an extension's `exec`, the catalog `git clone` and
+the `fd` tree scan (#221).
+
+That idle rule has a cost, and it is open as
+[#260](https://github.com/handochan/aelix-ai/issues/260): with the reader thread
+starved across the process's exit, the success path can drop up to ~64 KiB from
+the **tail** of output the command really produced, with `exit_code` 0 and
+nothing saying anything was lost — and the tail is the part the tool shows the
+model. It did not reproduce in ordinary conditions (~3,300 rounds, 0 failures).
+It is one line in the README's *Known limitations (beta)*.
