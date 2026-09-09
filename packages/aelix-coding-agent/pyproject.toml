@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aelix-coding-agent"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "Aelix coding agent — ExtensionAPI + built-ins + example tools + TUI. Pi-coding-agent parity."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,12 +28,12 @@ classifiers = [
 dependencies = [
   # Pinned to the shared release version; the workspace sources below are
   # dev-only and stripped from the built metadata.
-  "aelix-ai==0.1.0b1",
-  "aelix-agent-core==0.1.0b1",
+  "aelix-ai==0.1.0b2",
+  "aelix-agent-core==0.1.0b2",
   "pygments>=2.18",
   "markdown-it-py>=3.0",
   # The update check compares a PEP 440 version against a release tag, and the
-  # two are the SAME release spelled differently (`0.1.0b1` vs `v0.1.0-beta.1`).
+  # two are the SAME release spelled differently (`0.1.0b2` vs `v0.1.0-beta.1`).
   # A string compare is wrong in four of the eight orderings that matter and
   # would announce an update the user already has, on every launch. Declared
   # rather than assumed: `packaging` is present in a dev checkout only because

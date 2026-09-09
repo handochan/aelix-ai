@@ -21,6 +21,8 @@ unwritten. Add them with the next release.
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-09-09
+
 ### Changed
 
 - **A tool card now shows 5 lines of output, not 12.** A `read` of a 40-line
@@ -1471,7 +1473,7 @@ unwritten. Add them with the next release.
   unattended.** `DENY` verdicts are still enforced for every shell, and the
   other permission postures are unchanged.
 
-## [0.1.0-beta.1] — not yet released
+## [0.1.0-beta.1] - 2026-08-20
 
 The first published release of Aelix, cut as the tag `v0.1.0-beta.1`
 (distribution version `0.1.0b1`).

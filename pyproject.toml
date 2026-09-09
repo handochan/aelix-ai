@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aelix"
-version = "0.1.0b1"
+version = "0.1.0b2"
 description = "Aelix — a pi-faithful Python agent runtime (providers, tools, compaction, extensions, TUI)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,9 +29,9 @@ classifiers = [
 # `[tool.uv.sources] workspace = true` entries below are dev-only and are
 # stripped from the built metadata — the published wheel uses these pins.
 dependencies = [
-  "aelix-ai==0.1.0b1",
-  "aelix-agent-core==0.1.0b1",
-  "aelix-coding-agent==0.1.0b1",
+  "aelix-ai==0.1.0b2",
+  "aelix-agent-core==0.1.0b2",
+  "aelix-coding-agent==0.1.0b2",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +41,7 @@ dependencies = [
 #
 # There is no `[images]` extra (#163). One existed and installed a renderer that
 # no code path reached, so paying for it bought no behaviour.
-tui = ["aelix-coding-agent[tui]==0.1.0b1"]
+tui = ["aelix-coding-agent[tui]==0.1.0b2"]
 
 [project.urls]
 Homepage = "https://github.com/handochan/aelix-ai"
@@ -223,7 +223,7 @@ dev = [
   # tests run in" and "what `uv sync` produces" the same environment, without
   # `--all-packages`. It does NOT reach the published metadata — dependency
   # groups are a lockfile/dev concept, not build input; `aelix`'s Requires-Dist
-  # is the three `==0.1.0b1` pins above and tests/packaging_gate measures it.
+  # is the three `==0.1.0b2` pins above and tests/packaging_gate measures it.
   "aelix-server",
 ]
 
