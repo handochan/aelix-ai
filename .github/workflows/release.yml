@@ -274,8 +274,23 @@ jobs:
         # twine check/upload rejects SHA256SUMS ('Unknown distribution format');
         # it belongs only on the GitHub Release, never on PyPI.
 
+      # v1.14.0 bundled twine 6.1.0 + packaging 25.0, and its `twine check`
+      # runs BEFORE the upload. hatchling emits `Metadata-Version: 2.5`, which
+      # that packaging does not know, so the very first release to reach this
+      # step died on
+      #     InvalidDistribution: '2.5' is not a valid metadata version
+      # (run 34310880829, tag v0.1.0-beta.2) with nothing uploaded. PyPI itself
+      # accepts 2.5 — hatchling 1.32.0 is on the index carrying it — so the
+      # stale check was the whole failure. v1.14.2 bundles twine 7.0.0 +
+      # packaging 26.2 and accepts it.
+      #
+      # 🔴 A LOCAL `twine check` DOES NOT PREDICT THIS STEP. The rehearsal for
+      # beta.2 ran `uv run --with twine`, resolved twine 7.0.0, passed 8/8, and
+      # said nothing about the 6.1.0 the action would actually use. If you
+      # rehearse, pin the twine in `requirements/runtime.txt` at the action ref
+      # pinned below.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
           # No `password:` — Trusted Publishing (OIDC) is used instead.
@@ -407,6 +422,13 @@ jobs:
           tag='${{ github.ref_name }}'
           prerelease=""
           case "$tag" in *-*) prerelease='--prerelease';; esac
+          # `gh release edit` only touches the flags it is given, so the empty
+          # string that means "not a pre-release" on `create` would mean "leave
+          # the flag alone" on `edit` — a GA tag updating a page left over from
+          # a pre-release run would silently keep the pre-release badge. The
+          # edit path therefore always states the value explicitly.
+          prerelease_edit='--prerelease=false'
+          case "$tag" in *-*) prerelease_edit='--prerelease=true';; esac
 
           # The SBOM was attached via a bare glob. An unmatched glob would be
           # passed through to `gh` as the literal string `sbom/aelix-*.cdx.json`
@@ -436,10 +458,35 @@ jobs:
           fi
           echo "SBOM: ${sboms[0]}"
 
-          gh release create "$tag" \
-            dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
-            "${sboms[0]}" \
-            --repo '${{ github.repository }}' \
-            --title "$tag" \
-            --notes-file "$NOTES_FILE" \
-            $prerelease
+          # Create, or update in place if the Release already exists.
+          #
+          # `gh release create` fails outright on a name that is taken, and this
+          # job is reachable a second time for the same tag: the publish job can
+          # fail on its own (it did — run 34310880829 died in `twine check`
+          # while THIS job succeeded), and the fix is to retag, which replays
+          # every job. Without this branch the replay that finally publishes to
+          # PyPI also reports a failed Release job, so the run that did the
+          # right thing looks red. Assets are re-uploaded with --clobber
+          # because a rebuild produces the same names, and `gh release edit`
+          # rewrites the notes so a corrected CHANGELOG reaches the page.
+          if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
+            echo "Release $tag already exists — updating it in place."
+            gh release upload "$tag" \
+              dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+              "${sboms[0]}" \
+              --repo '${{ github.repository }}' \
+              --clobber
+            gh release edit "$tag" \
+              --repo '${{ github.repository }}' \
+              --title "$tag" \
+              --notes-file "$NOTES_FILE" \
+              "$prerelease_edit"
+          else
+            gh release create "$tag" \
+              dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+              "${sboms[0]}" \
+              --repo '${{ github.repository }}' \
+              --title "$tag" \
+              --notes-file "$NOTES_FILE" \
+              $prerelease
+          fi

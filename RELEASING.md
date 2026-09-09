@@ -224,6 +224,54 @@ holding in mind before you push the tag:
 - **A half-failed upload is a half-release.** If the fourth of eight artifacts
   is rejected, the first three are on the index. Do not retry the same
   version — cut the next one.
+- **A local `twine check` does not predict the publish job.** `twine check`
+  runs inside `gh-action-pypi-publish`, against the twine *that action pins*,
+  before anything is uploaded. Rehearsing with `uv run --with twine` resolves
+  whatever is newest instead. The beta.2 rehearsal passed 8/8 on twine 7.0.0
+  and the tagged run then died on the action's twine 6.1.0:
+
+  ```
+  InvalidDistribution: Invalid distribution metadata:
+    '2.5' is not a valid metadata version
+  ```
+
+  hatchling emits `Metadata-Version: 2.5`; packaging 25.0 (bundled with twine
+  6.1.0) does not know it, packaging 26.2 does, and PyPI itself accepts it.
+  Nothing was uploaded — `twine check` precedes the upload, so this failure
+  mode is safe and the version stays free. To rehearse honestly, read
+  `requirements/runtime.txt` at the `pypa/gh-action-pypi-publish` SHA pinned in
+  `release.yml` and install that exact twine.
+
+Because the second point above means a genuine half-release cannot be retried,
+it is worth being precise about which failures are which: anything that fails
+**before** the upload (the tag gate, the version/pin assert, `twine check`)
+leaves the index untouched and the same version can be re-cut after a retag.
+Only a rejection **during** the upload occupies versions. Check the index
+before assuming the worse case:
+
+```bash
+for p in aelix aelix-ai aelix-agent-core aelix-coding-agent; do
+  curl -s "https://pypi.org/pypi/$p/json" | python3 -c \
+    "import json,sys; print('$p', sorted(json.load(sys.stdin)['releases']))"
+done
+```
+
+#### Retagging after a pre-upload failure
+
+A re-run of the failed job is **not** the fix: GitHub replays a run against the
+workflow file as it stood at the triggering commit, so the correction never
+loads. Land the fix on `main`, wait for CI, then move the tag:
+
+```bash
+git push origin :refs/tags/v0.1.0-beta.2   # delete the remote tag
+git tag -d v0.1.0-beta.2                   # and the local one
+git tag -a v0.1.0-beta.2 -m "…" <new-sha>
+git push origin v0.1.0-beta.2              # re-triggers Release
+```
+
+The GitHub Release page survives a tag deletion and re-attaches when the tag
+comes back, so there is nothing to clean up there — `github-release` updates an
+existing page in place rather than failing on the taken name.
 
 ### Cutting a beta
 
