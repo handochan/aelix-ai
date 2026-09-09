@@ -54,6 +54,21 @@ jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    # Fail closed on a ref DELETION. GitHub models deleting a tag as a `push`
+    # whose payload carries `deleted: true`, and the tag filter above still
+    # matches the deleted ref — while `GITHUB_SHA` reverts to the default
+    # branch. That combination is dangerous here rather than merely noisy:
+    # `main` carries the version that was just tagged, so the pin assert below
+    # would PASS on the reverted SHA and a deletion could walk the whole way to
+    # an irreversible PyPI upload that nobody asked for. `github.event.deleted`
+    # is negated rather than compared to `false` so a payload without the field
+    # (any non-push path) still runs. `publish` and `github-release` inherit the
+    # skip through `needs: build`.
+    #
+    # RELEASING.md's recovery procedure therefore force-UPDATES a tag in a
+    # single ref push instead of deleting and recreating it; this guard is the
+    # backstop for when someone does it the other way.
+    if: ${{ !github.event.deleted }}
     permissions:
       contents: read
     steps:
@@ -469,6 +484,15 @@ jobs:
           # right thing looks red. Assets are re-uploaded with --clobber
           # because a rebuild produces the same names, and `gh release edit`
           # rewrites the notes so a corrected CHANGELOG reaches the page.
+          #
+          # `--clobber` deletes each same-named asset before uploading its
+          # replacement, and it uploads concurrently, so a failure partway
+          # through leaves the live page missing the assets it had already
+          # deleted. That damage is visible (the job goes red) rather than
+          # masked, and the next run restores them from the same build
+          # artifact — but it is real, so do not reach for this path to make a
+          # cosmetic edit. Assets the rebuild does NOT produce are left alone;
+          # only names that collide are replaced.
           if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
             echo "Release $tag already exists — updating it in place."
             gh release upload "$tag" \

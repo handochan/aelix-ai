@@ -259,19 +259,25 @@ done
 #### Retagging after a pre-upload failure
 
 A re-run of the failed job is **not** the fix: GitHub replays a run against the
-workflow file as it stood at the triggering commit, so the correction never
-loads. Land the fix on `main`, wait for CI, then move the tag:
+workflow file *as it stood at the triggering commit*, keeping that run's
+`GITHUB_SHA` and `GITHUB_REF`, so the correction on `main` never loads. Land the
+fix, wait for CI, then move the tag.
+
+🔴 **Move it with a single force-update. Do not delete and recreate it.**
+Deleting a tag is itself a `push` whose payload says `deleted: true`, the tag
+filter still matches the deleted ref, and `GITHUB_SHA` reverts to the default
+branch — which is carrying the very version you just tagged, so the pin assert
+would pass on it. `release.yml` fails closed on that (`if: !github.event.deleted`
+on `build`, inherited by both downstream jobs), but the guard is a backstop, not
+the plan.
 
 ```bash
-git push origin :refs/tags/v0.1.0-beta.2   # delete the remote tag
-git tag -d v0.1.0-beta.2                   # and the local one
-git tag -a v0.1.0-beta.2 -m "…" <new-sha>
-git push origin v0.1.0-beta.2              # re-triggers Release
+git tag -f -a v0.1.0-beta.2 -m "…" <new-sha>   # move it locally
+git push --force origin v0.1.0-beta.2          # ONE ref update, re-triggers Release
 ```
 
-The GitHub Release page survives a tag deletion and re-attaches when the tag
-comes back, so there is nothing to clean up there — `github-release` updates an
-existing page in place rather than failing on the taken name.
+There is nothing to clean up on the GitHub Release page: `github-release`
+updates an existing release in place rather than failing on the taken name.
 
 ### Cutting a beta
 
