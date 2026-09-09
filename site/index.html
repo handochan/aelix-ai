@@ -148,6 +148,19 @@
     overflow-x: auto; max-width: 100%;
   }
   .install .p { color: var(--accent); user-select: none; }
+  /* Two install lines, one per platform, one line each. `.install` is
+     inline-flex and the hero is text-align: center, so a bare pair would sit
+     side by side; the column stacks them. The two rules under it are what keep
+     each line whole: at 14px the 119-char Windows command needs ~1080px against
+     this hero's 1012px content box, so `flex-wrap: wrap` pushed the `PS>`
+     prefix onto a centred row of its own (measured in headless Chrome at
+     1440x1000). nowrap keeps the prefix inline and 12px brings the line inside
+     the column with ~70px to spare -- the margin a mono face wider than 0.6em
+     needs. Below ~985px viewport the box scrolls, which is what
+     `overflow-x: auto` was there for and what wrapping used to pre-empt. */
+  .installs { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .installs .install { flex-wrap: nowrap; white-space: nowrap; font-size: 12px; }
+  .installs .note { margin: 4px 0 0; font-size: 13px; color: var(--fg-muted); }
   .btns { margin-top: 26px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
   .btn {
     font-family: var(--mono); font-size: 14px; letter-spacing: .04em; text-decoration: none;
@@ -231,7 +244,11 @@
   <p class="sub">Aelix is an <b>agent runtime and extension platform</b> in pure Python.
   Self-hosted and auditable, extensible in the language your team already writes,
   on the model budgets you already pay for. It never phones home.</p>
-  <div class="install"><span class="p">$</span>curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh</div>
+  <div class="installs">
+    <div class="install"><span class="p">$</span>curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh</div>
+    <div class="install"><span class="p">PS&gt;</span>powershell -ExecutionPolicy Bypass -c &quot;irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex&quot;</div>
+    <p class="note">Windows is experimental and needs <code>v0.1.0-beta.2</code> or newer.</p>
+  </div>
   <div class="btns">
     <a class="btn primary" href="https://github.com/handochan/aelix-ai">GitHub</a>
     <a class="btn" href="https://github.com/handochan/aelix-ai/blob/main/docs/guides/getting-started.md">Get started</a>

@@ -41,122 +41,69 @@ Aelix는 작은 코어입니다. 플러그인과 확장이 생태계이고, 확�
 
 ## 설치
 
-베타 기간 동안 Aelix는 체크섬을 검증하는 설치 스크립트로 GitHub Releases에서 설치됩니다.
-필요하면 [uv](https://docs.astral.sh/uv/)를 부트스트랩하고, 모든 Aelix 휠을 릴리즈의
-`SHA256SUMS`와 대조한 뒤, 그 매니페스트가 지정한 버전으로 전역 `aelix` 명령을 설치합니다.
+Aelix는 체크섬을 검증하는 설치 스크립트로 GitHub Releases에서 설치됩니다. 필요하면
+[uv](https://docs.astral.sh/uv/)를 부트스트랩하고, 모든 Aelix 휠을 릴리즈의
+`SHA256SUMS`와 대조한 뒤, 그 매니페스트가 지정한 버전으로 전역 `aelix` 명령을
+설치합니다.
 
 ```bash
+# macOS, Linux
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
 ```
 
-`AELIX_VERSION=v0.1.0-beta.1`로 릴리즈를 고정하고, `AELIX_EXTRAS`로 extras를 고릅니다 —
-기본값 `tui`, 비우면(`AELIX_EXTRAS=`) 헤드리스 CLI만 설치됩니다. 같은 줄을 다시 실행하면
-업그레이드되고, 제거는 `uv tool uninstall aelix`입니다.
+```powershell
+# Windows — EXPERIMENTAL, v0.1.0-beta.2 이상 필요 (PowerShell 5.1 이상)
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
+```
 
-> **베타 동안 `pip install aelix`는 쓰지 마세요.** PyPI 이름은 메타데이터만 있는
-> 플레이스홀더로 선점되어 있어서, `pip install aelix`는 **exit 0으로 끝나면서 실행 가능한 것을
-> 아무것도 설치하지 않습니다** — `aelix` 명령도 없고 `import aelix`는 `ModuleNotFoundError`를
-> 냅니다. `pipx`와 `uv tool install`은 그나마 실패를 알리며 죽고, `uv tool install aelix@latest`는
-> **기존 설치를 지웁니다.** 위 설치 스크립트를 쓰시고, 업그레이드도 같은 줄을 다시 실행하세요.
-> 첫 GA 릴리즈가 올라가면 이 명령들이 진짜를 받아옵니다.
+Windows 수정이 전부 들어간 릴리즈가 `v0.1.0-beta.2`이고, 설치 스크립트는 가장 새
+릴리즈를 가져옵니다 — 그보다 오래된 릴리즈에서는 위 줄이 이 문서의 내용이 하나도
+통하지 않는 빌드를 설치합니다. 범위와 근거는 [플랫폼 지원](#플랫폼-지원)에 있습니다.
+
+둘 다 같은 환경 변수를 읽습니다. `AELIX_VERSION`은 릴리즈 태그를 고정하고
+(`vX.Y.Z-beta.N`), `AELIX_EXTRAS`는 extras를 고르며(기본값 `tui`, 빈 값이면 헤드리스
+CLI만 — POSIX에서만 됩니다), `GITHUB_TOKEN`은 익명 GitHub API 요청 한도를 올립니다.
+다만 파이프 *건너편* 셸까지 값이 닿아야 해서, 가장 먼저 떠오르는 표기가 양쪽 다
+틀립니다 — `VAR=x curl … | sh`는 `curl`에만 설정하고, PowerShell 프롬프트에서
+`powershell -c "$env:VAR=…"`는 자식이 보기 전에 바깥 셸이 전개해 버립니다(pwsh 7.6에서
+측정). 각 플랫폼에서 실제로 되는 형태는 [시작하기
+가이드](docs/guides/getting-started.md#windows)에 있습니다. 업그레이드는 같은 줄을 다시
+실행하면 되고, `PATH`에 잡히지 않을 때는 두 설치 스크립트 모두 안내만 하는 대신
+`uv tool update-shell`을 직접 실행합니다. 제거는 `uv tool uninstall aelix`입니다.
+
+> **`0.1.0b2` 전까지 PyPI에는 플레이스홀더가 올라가 있습니다.** 지금은 네 이름 모두
+> 메타데이터만 있는 `0.0.0a0` 선점본이라, `pip install aelix`는 **exit 0으로 끝나면서
+> 실행 가능한 것을 아무것도 설치하지 않고**(`aelix` 명령도 없고 `import aelix`는
+> `ModuleNotFoundError`), `uv tool install aelix@latest`는 **기존 설치를 지웁니다.**
+> `0.1.0b2`부터 그 함정이 닫힙니다: 인덱스의 후보가 전부 pre-release가 되고, 그럴 때
+> pip과 uv는 둘 다 그중 가장 새것을 고르므로 `uv tool install 'aelix[tui]'`와
+> `pipx install aelix`가 진짜를 받아옵니다
+> ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
+> 그래도 권장 경로는 위 설치 스크립트입니다 — 릴리즈의 `SHA256SUMS`를 검사하는 것은
+> 그것뿐이고, 그렇게 설치한 것은 `uv tool upgrade`가 아니라 스크립트를 다시 실행해서
+> 업그레이드합니다.
 
 ## 플랫폼 지원
 
-**macOS와 Linux를 지원합니다. Windows는 지원하지 않습니다 — 테스트 스위트가 통과하는 것과
-지원하는 것은 다른 주장입니다.** CI는 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12로
-전체 스위트를 돌리고, 개발은 macOS에서 이뤄집니다.
+macOS, Linux, Windows. Windows는 `v0.1.0-beta.2`에서 쓸 수 있게 됐고, 셋 중 근거가
+가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12로 전체
+스위트를 돌리고 `install.ps1`을 pwsh와 Windows PowerShell 5.1 양쪽에서 end to end로
+실행하며, 2026-09-09에 사람 한 명이 이 후보를 Windows 머신 한 대에서 직접 돌렸습니다 —
+`bash` 호출이 낸 한국어 출력이 한국어로 나왔고, 모델은 자기가 PowerShell 위에 있다고
+바르게 보고하며 `&&` 대신 PowerShell 문법을 썼고, TUI는 Windows 콘솔에서 제대로
+그려졌습니다. 그게 전부입니다 — 사람 하나, 머신 하나, 로케일 하나, 그리고 초록 레그
+하나. 오래 돌려 본 적도, 두 번째 머신도, 세 번째 로케일도 없고, 이번 릴리즈의 Windows
+수정 중 셋은 소스와 CI만으로 논증한 것입니다.
 
-`windows-latest` 레그는 2026-09-04부터 **차단합니다** — 다른 레그와 똑같이 빌드를 실패시킵니다.
-433건 실패로 시작해 그 숫자가 내려오는 동안은 참고용이었고, `beffc2f`(런 33853043685) 기준
-두 Python 버전 모두 **실패 0건, 통과 9,338건, 스킵 71건**입니다. 타입 게이트는 거기서 아직
-빨간색이었습니다 — pyright의 Windows 모델에서만 보이는 POSIX 전용 이름 15건이고, 지금은 각
-지점에서 억제했습니다. `continue-on-error`도 그것들과 함께 뗐습니다: 이제 새로 들어오는
-`fcntl` import나 하드코딩된 `/` 결합은 초록으로 머지되지 않고 CI를 실패시킵니다.
+Windows 콘솔을 직접 여는 프로그램 — git 자격 증명 프롬프트,
+`Read-Host -AsSecureString`, `Get-Credential` — 은 거기서 여전히 프롬프트를 띄우고
+명령의 타임아웃을 통째로 태울 수 있습니다. 이번 릴리즈가 바꾼 것 중 거기에 닿는 것은
+없고, 그 레그의 어떤 테스트도 거기까지 가지 못합니다.
 
-스위트가 초록인 것이 지원 플랫폼이라는 뜻은 아닙니다. `install.ps1`도 이제 검증되지 않은
-쪽에서 빠집니다 — pwsh와 Windows PowerShell 5.1 양쪽에서 `windows-latest` CI로 end to end
-실행됩니다 (`.github/workflows/ci.yml`의 `install.ps1 e2e (pwsh)` / `install.ps1 e2e
-(powershell)` 잡) —
-[#106](https://github.com/handochan/aelix-ai/issues/106). 아래는 여전히 검증되지 않았습니다.
-
-- Windows **런타임** 확인에 걸린 릴리즈가 없습니다. Windows에서 `aelix`를 띄워 한 턴이
-  도는 것을 본 사람이 아직 없습니다.
-- AUTO 권한 모드를 Windows 호스트에서 사람이 직접 돌려 본 적이 없습니다. 더 이상 쓸 수 없는
-  상태는 아닙니다 — [#204](https://github.com/handochan/aelix-ai/issues/204)에서 PowerShell과
-  `cmd`가 각자의 분류기를 갖게 됐고([ADR-0237](docs/decisions/0237-a-dialect-owns-its-switch-syntax-and-the-gate-read-every-shell-with-bashs.md)),
-  명령은 ASK로 강등되는 대신 실제로 그것을 실행할 셸의 스위치 문법으로 읽힙니다. 근거는
-  스위트뿐이고, 들리는 것보다 좁습니다: 방언 테스트는 전부 해석된 셸을 주입하므로 모든
-  레그에서 양쪽을 다 돌리고, 패치되지 않은 Windows `_resolve_shell`이 진짜 `pwsh`/`cmd`
-  경로를 게이트까지 끝에서 끝으로 흘리는 테스트는 없습니다. `windows-latest`가 유일하게
-  증명하는 것은 PowerShell 문법 휠이 거기서 설치되고 로드되고 파싱된다는 사실입니다.
-  프롬프트가 뜨지 않는 것을 눈으로 본 사람은 아직 없습니다.
-- 위임한 자식을 죽여도 이제 그 자손이 고아로 남지 않습니다 — 2026-09-05부터는 `aelix_agents/`
-  밖의 지점들뿐 아니라 그 **안쪽**에서도 그렇습니다. RPC 위임 채널, subprocess hook,
-  `models.json`의 `!command`는 자식을 Windows에서는 job object에, POSIX에서는 프로세스 그룹에
-  넣고 루트가 아니라 트리를 끝냅니다
-  ([#202](https://github.com/handochan/aelix-ai/issues/202),
-  [ADR-0238](docs/decisions/0238-the-kill-reached-the-child-and-the-tree-is-what-had-to-die.md)).
-  print 채널의 스폰, reaper의 Windows 레그, RPC 채널의 `_reap`/`_eager_abort`, print 자식의
-  시그널 핸들러가 그 뒤를 따랐습니다
-  ([#220](https://github.com/handochan/aelix-ai/issues/220)).
-  job은 모든 자손을 잡지만, POSIX 프로세스 그룹은 자기 세션을 만든 자손 — 모든 tool 자식,
-  모든 MCP 서버 — 은 잡지 못하고, 그것들은 여전히 reaper의 몫입니다.
-  그래서 이 항목이 담고 있던 갈린 판정은 **Windows에서만** 온전해집니다: 거기서는
-  `aelix_agents` 네 지점이 모두 봉쇄되고, 위임한 자식에게 멈추라고 말을 걸 수 있게 된 것도
-  이번이 처음입니다 — `SIGBREAK`으로 협조적으로 빠져나가면 하드 job kill도 똑같이 내는 1이
-  아니라 그 시그널이 함의하는 코드를 냅니다. POSIX에서는 여전히 reaper의 자손 walk가 그 일을
-  하고, `/proc`이 없는 호스트(macOS)에서는 `setsid` 손자가 여전히 살아남습니다.
-  근거는 또 스위트지만 여기서는 진짜 프로세스입니다: 테스트가 손자를 띄우고, 트리를 내리고,
-  손자가 사라졌는지 확인합니다. job object와 `taskkill.exe`가 실제로 실행되는 레그는
-  `windows-latest`뿐입니다.
-  같은 봉쇄가 이제 Aelix가 스스로 시간을 걸고 돌리는 명령 세 곳 — 확장의
-  `exec`, 카탈로그 `git clone`, `fd` 트리 스캔 — 에도 적용됩니다
-  ([#221](https://github.com/handochan/aelix-ai/issues/221)).
-  타임아웃을 넘긴 명령은 파이프라인을 남기지 않고 트리째 사라지고, 헬퍼를
-  백그라운드로 남기고 정상 종료한 명령은 마감이 다 지난 뒤 타임아웃으로
-  보고되는 대신 성공으로 보고됩니다 — 둘 다 macOS에서 쟀고, `exec` 표면은
-  실제 모델로도 쟀습니다. Windows 쪽은 CPython 소스로 추론했고 스위트로만
-  잽니다: 거기서는 `subprocess.run`이 kill 뒤에 bound 없는 `communicate()`를
-  부르므로 자손이 파이프를 쥐고 있는 한 호출이 돌아오지 않았습니다. 새 실제
-  프로세스 테스트가 `main`에서 멈춰 버릴 바로 그 케이스입니다.
-  **bash 도구가 띄운 자식들**도 이제 봉쇄됩니다
-  ([#222](https://github.com/handochan/aelix-ai/issues/222)). tool call이 돌리는 명령이
-  Windows에서는 job object에, POSIX에서는 프로세스 그룹에 들어가고, 타임아웃·Esc·취소된 턴이
-  각각 루트가 아니라 트리를 끝냅니다. 이 이슈가 존재한 이유가 Windows입니다 — `taskkill /T`는
-  *살아 있는* 부모 링크만 따라가므로 단계마다 서브셸을 쓰는 MSYS 파이프라인은 그 서브셸이
-  이미 죽은 뒤라 살아남고, 도구가 파이프가 닫힐 때까지 명령의 출력을 읽었으므로 그 생존자들이
-  tool call을 자기 타임아웃 너머까지 붙잡고 있었습니다 — 헬퍼를 백그라운드로 돌린 뒤 그냥
-  **성공한** 명령도 똑같이, 그것도 아무 상한 없이 붙잡혔습니다
-  (#222가 첫 번째를 묶었습니다: kill 뒤의 출력은 idle해질 때까지만, 그리고 kill로부터 1초를
-  넘기지 않고 드레인됩니다. [#232](https://github.com/handochan/aelix-ai/issues/232)가 두 번째를
-  끝냈습니다: 평범하게 exit한 뒤에는 같은 idle 규칙으로, 2초 상한과 — 여러분이 준 경우에만 —
-  여러분의 데드라인 안에서 드레인됩니다). job은 그것들을 그냥 잡습니다.
-  도구의 자식은 이제 터미널 대신 `/dev/null`을 stdin으로 받습니다. 그래서 Aelix에게 친 키
-  입력을 가로채거나 터미널의 echo를 꺼 놓은 채 끝나는 일이 더는 없습니다 — 둘 다 macOS에서
-  쟀고, TUI의 `!cat`이 정확히 그러면서 영영 돌아오지 않았습니다. **마지막 대목은 macOS/Linux
-  문장입니다.** Windows에는 뺏을 세션이 없어서 자식이 Aelix를 띄운 콘솔을 그대로 물고 있고,
-  `CONIN$`를 직접 읽는 프로그램(git의 자격 증명 프롬프트)이나 콘솔을 직접 열어 가리는
-  프롬프트를 띄우는 것(`Read-Host -AsSecureString`, `Get-Credential`)은 거기서 여전히
-  프롬프트를 띄우고 명령의 타임아웃을 통째로 태울 수 있습니다. 그 장면을 Windows 콘솔에서
-  본 사람은 아직 없습니다 — 고쳐진 것이 아니라 검증되지 않은 것입니다.
-  그리고 터미널에 직접 프롬프트를 띄우려는 `!command` 신용 헬퍼는 이제 10초를 끌지 않고
-  즉시, 이름 붙은 원인과 함께 실패합니다
-  ([#226](https://github.com/handochan/aelix-ai/issues/226)) — macOS와 Linux에서 쟀고,
-  Windows 콘솔 쪽 절반은 이것도 미검증입니다. Windows에서 `!command`는 이제 `sh`를 아예
-  요구하지 않습니다([#227](https://github.com/handochan/aelix-ai/issues/227)). 그 박스가
-  실제로 가진 셸을 찾아 돌리고, PowerShell은 `-NonInteractive`로 띄우므로 PowerShell
-  프롬프트는 즉시 거절되고 그 프롬프트 문구가 키 안으로 새어 들어갈 수 없습니다 — pwsh 7의
-  스위치에서 추론했고 측정은 macOS에서만 했으며, Windows 콘솔에서는 여전히 아무도 못
-  봤습니다.
-
-즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
-않으며, 중단된 위임도 타임아웃을 넘긴 도구 명령도 어느 스폰 지점에서든 자기 트리를 데리고
-갑니다. 남은 것은 Windows 호스트에서 사람이 직접 돌려 보는 일입니다 — 위에 적은 `CONIN$` /
-가리는 프롬프트 경우를 포함해서, 레그의 어떤 테스트도 거기까지 닿지 못합니다. 포팅 현황은
-[#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
-초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 셋 다 이제 스위트의 근거 위에서 충족됩니다(위에
-적은 대로 그 근거는 들리는 것보다 좁습니다). 표기와 CI 레그는
-[#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
+어느 수정이 어떻게 측정됐는지, 그리고 아직 열려 있는 것:
+[시작하기 → Windows](docs/guides/getting-started.md#windows)와
+[`SLICE-STATUS.md`](SLICE-STATUS.md). 포팅 현황은
+[#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다.
 
 ## 빠른 시작
 
@@ -176,19 +123,11 @@ aelix docs                                       # 휠에 함께 실린 가이�
 `grep`이나 `find`를 처음 쓸 때 Aelix는 `ripgrep`과 `fd`를 `~/.aelix/agent/bin`에
 내려받습니다(둘 다 `.gitignore`를 존중하게 하려고). 런타임에 받아오는 바이너리는 이 둘뿐이고,
 `--offline`이 이를 건너뛰며, `PATH`에 이미 있으면 그쪽을 우선합니다.
-`@` 파일 메뉴도 이 `fd`를 찾으면 그대로 씁니다. 그래서 git이 무시하는 파일은 퍼지 매칭에서
-빠집니다(디렉터리를 직접 입력하면 여전히 닿습니다: `@target/`). `fd`가 없으면 무시 규칙을
-전혀 적용하지 않는 평범한 디렉터리 순회로 돌아가므로 더 많이 제안합니다. 얼마나 더인지는
-Aelix가 아니라 당신의 체크아웃에 달렸습니다. 공유 제외 목록이 이미 `.git`·`node_modules`·
-`.venv`·`__pycache__`·`dist`·`build`를 덮으므로 이 저장소를 갓 클론한 트리라면 두 경로가
-같은 목록을 내놓고, 그 목록에 없는 것을 무시하는 트리 — `target/`, `vendor/`, 워크트리
-디렉터리 — 라면 딱 그만큼이 메뉴에서 빠집니다. 두 열거자 모두 20 000개에서 멈추고, 그
-한도에 무시된 파일까지 세는 것은 순회이고, **Gitignore in @ menu**를 끄면 `fd` 쪽도
-마찬가지입니다. 다만 대가가 다릅니다. 순회는 그 자리에서 멈추므로 무시되는 빌드 트리
-하나가 크면 실제 디렉터리에 닿기도 전에 예산을 다 써 버립니다. `fd` 쪽은 어느 경로가
-살아남는지를 병렬 순회가 정하고 매번 같지 않아서, 무시되는 디렉터리가 많은 체크아웃이라면
-`@`를 칠 때마다 실제 디렉터리가 빠질 수 있습니다. 무시 규칙 없이 다 보고 싶으면
-`/settings`의 **Gitignore in @ menu**를 끄면 됩니다. 공유 제외 목록은 그대로 적용됩니다.
+`@` 파일 메뉴도 이 `fd`를 찾으면 그대로 씁니다. 그래서 git이 무시하는 파일은 목록에서
+빠집니다 — 디렉터리를 직접 입력하면 여전히 닿고(`@target/`), 다 보고 싶으면 `/settings`의
+**Gitignore in @ menu**를 끄면 됩니다. `fd`가 없으면 무시 규칙을 전혀 적용하지 않는
+디렉터리 순회로 돌아갑니다. 두 열거자 모두 20 000개에서 멈추고, 무시 규칙이 꺼진 상태에서는
+큰 빌드 트리 하나가 실제 디렉터리에 닿기도 전에 그 예산을 다 써 버릴 수 있습니다.
 
 ## 왜 Aelix인가
 
@@ -308,39 +247,47 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 
 ## 알려진 한계 (베타)
 
-중요한 일에 Aelix를 붙이기 전에 알아둘 것이 다섯 가지입니다.
+중요한 일에 Aelix를 붙이기 전에 알아둘 것이 여섯 가지입니다.
 
-**한 번의 실행에 비용 상한이 없습니다.** 반복 횟수 제한도, 중복 호출 감지도, 누적 토큰·비용
-예산도 없습니다 — 툴을 계속 부르는 모델은 끝나거나 멈출 때까지 계속 돈을 씁니다
+**한 번의 실행에 비용 상한이 없습니다.** 반복 횟수 제한도, 중복 호출 감지도, 누적
+토큰·비용 예산도 없습니다 — 툴을 계속 부르는 모델은 끝나거나 멈출 때까지 계속 돈을
+씁니다. `Esc`, `bash`의 600초 *기본* 타임아웃(호출이 값을 명시하면 최대 1시간까지
+허용됩니다), 자동 컴팩션은 실재하는 안전장치지만 그중 어느 것도 비용을 묶지 않습니다
 ([#14](https://github.com/handochan/aelix-ai/issues/14),
 [#6](https://github.com/handochan/aelix-ai/issues/6),
-[#52](https://github.com/handochan/aelix-ai/issues/52)). `Esc`, `bash`의 600초 *기본* 타임아웃(호출이
-값을 명시하면 최대 1시간까지 허용됩니다), 자동 컴팩션은 실재하는 안전장치지만 그중 어느 것도
-비용을 묶지 않습니다.
+[#52](https://github.com/handochan/aelix-ai/issues/52)).
 
-**헤드리스 모드는 변경 툴을 자동 승인하고, 두 안전망은 내장 툴만 알아봅니다.** `--print`,
-`--mode json`, `--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서 `write`·`edit`·`bash`가
-묻지 않고 실행됩니다 — 그게 스크립트로 쓸 수 있는 이유이기도 합니다. 두 안전망 모두 고정된
-내장 툴 이름 목록으로 판단하므로, MCP 서버·스킬·서드파티 확장이 제공한 툴은
-`GuardrailExtension`에도 `--permission-mode plan` 차단에도 걸리지 않습니다
-([#188](https://github.com/handochan/aelix-ai/issues/188)). 헤드리스 실행에는 컨테이너나
-버려도 되는 체크아웃을 주세요.
+**헤드리스 모드는 변경 툴을 자동 승인하고, 두 안전망은 내장 툴만 알아봅니다.**
+`--print`, `--mode json`, `--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서
+`write`·`edit`·`bash`가 묻지 않고 실행됩니다. 그리고 두 안전망 모두 고정된 내장 툴
+이름 목록으로 판단하므로, MCP 서버·스킬·서드파티 확장이 제공한 툴은
+`GuardrailExtension`에도 `--permission-mode plan` 차단에도 걸리지 않습니다. 헤드리스
+실행에는 컨테이너나 버려도 되는 체크아웃을 주세요
+([#188](https://github.com/handochan/aelix-ai/issues/188)).
 
-**세션 하나에 터미널 하나.** 세션 JSONL은 append-only이고 파일 잠금이 없어서, 같은 세션을 두
-번 열면 한쪽 터미널의 작업이 어떤 `--resume`도 따라가지 않는 가지가 됩니다 — 디스크상으로는
-멀쩡하지만 트랜스크립트에서는 사라집니다
+**세션 하나에 터미널 하나.** 세션 JSONL은 append-only이고 파일 잠금이 없어서, 같은
+세션을 두 번 열면 한쪽 터미널의 작업이 어떤 `--resume`도 따라가지 않는 가지가 됩니다 —
+디스크상으로는 멀쩡하지만 트랜스크립트에서는 사라집니다
 ([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
-**트랜스크립트는 전부, 영구히, 원문 그대로 남습니다.** 모든 프롬프트·툴 인자·툴 결과가 그대로
-기록되며 살균 단계가 없습니다([#138](https://github.com/handochan/aelix-ai/issues/138)).
-파일은 소유자 전용(`0700` 안의 `0600`)이라 같은 머신의 다른 사용자에게 노출되는 건 아닙니다 —
-홈 디렉터리를 복사해 가는 것들, 즉 백업·동기화 클라이언트·지원 번들에 노출됩니다.
+**트랜스크립트는 전부, 영구히, 원문 그대로 남습니다.** 모든 프롬프트·툴 인자·툴 결과가
+그대로 기록되며 살균 단계가 없습니다. macOS와 Linux에서는 소유자 전용(`0700` 안의
+`0600`)이고, Windows에는 Aelix가 걸 수 있는 모드 비트 자체가 없습니다 — 어느 쪽이든
+노출 대상은 홈 디렉터리를 복사해 가는 것들, 즉 백업·동기화 클라이언트·지원 번들입니다
+([#138](https://github.com/handochan/aelix-ai/issues/138)).
 
-**위임은 리눅스 우선이고, 그 비용은 `/cost`에 안 잡힙니다.** 스폰 배관이 POSIX 전용이라
-Windows에서는 위임이 지원되지 않고 macOS에서는 자손 프로세스가 남습니다
-([#110](https://github.com/handochan/aelix-ai/issues/110)). 헤드리스 부모는 스폰 동의를 스스로
-처리하며, 자식의 토큰은 부모 세션에 들어오지 않습니다 — 자식이 쓴 양은 각 위임의 자체 푸터를
-읽으세요.
+**성공한 `bash` 호출이 자기 출력의 꼬리를 조용히 잃을 수 있습니다.** 명령이 종료하는
+구간에서 읽기 스레드가 굶으면 출력 끝에서 최대 64 KiB가량이 버려질 수 있습니다 —
+`exit_code`는 0이고 무엇이 사라졌다는 표시도 없으며, 하필 그 꼬리가 모델에게 보여 주는
+부분입니다. 평범한 조건의 약 3,300회 반복에서는 재현되지 않았습니다
+([#260](https://github.com/handochan/aelix-ai/issues/260)).
+
+**위임의 비용은 `/cost`에 안 잡히고, 정리(cleanup)는 OS마다 같지 않습니다.** 자식의
+토큰은 부모 세션에 들어오지 않으므로 자식이 쓴 양은 각 위임의 자체 푸터를 읽으세요.
+헤드리스 부모는 스폰 동의를 스스로 처리합니다. Aelix 자신이 죽었을 때 자식을 끝내는 것은
+Linux에서는 `PR_SET_PDEATHSIG`, Windows에서는 job object의 `kill_on_close`이고, macOS는
+둘 다 없어서, 자기 세션을 만든 손자는 거기서 유일한 봉쇄 수단인 프로세스 그룹을 빠져나갑니다
+([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## 아키텍처
 

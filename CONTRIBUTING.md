@@ -28,13 +28,19 @@ message) do not need this. Open the PR.
 ## Setting up
 
 ```bash
-uv sync --all-packages
+uv sync
 ```
 
-**Use `--all-packages`.** A bare `uv sync` installs only the root package, and
-the test suite then dies at collection with
-`ModuleNotFoundError: No module named 'aelix_server'`. This is the single most
-common setup mistake here.
+That is enough. This section used to insist on `--all-packages`, because a bare
+`uv sync` left `aelix-server` out and the suite then died at collection with
+`ModuleNotFoundError: No module named 'aelix_server'`. #224 closed that by
+listing `aelix-server` in the root's `dev` dependency group, so what `uv sync`
+produces and what the tests need are the same environment again — measured on a
+fresh copy of this tree, a bare `uv sync` installs all five workspace members.
+CI runs `uv sync --all-packages`, a superset that is still safe to use.
+
+The rule that replaces it: **a new workspace member nothing depends on goes in
+that `dev` group**, or the next fresh checkout will be missing it.
 
 Python 3.11+ is required; CI runs 3.11 and 3.12 on Ubuntu and Windows.
 

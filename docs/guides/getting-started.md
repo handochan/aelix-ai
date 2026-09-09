@@ -9,8 +9,9 @@ see [extension-authoring.md](extension-authoring.md).
 
 ## Install
 
-Aelix installs as a single global `aelix` command. During the beta it comes from
-GitHub Releases via the checksum-verified installer:
+Aelix installs as a single global `aelix` command. The recommended path during
+the beta is the checksum-verified installer, which takes it from GitHub
+Releases:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -22,15 +23,25 @@ downloads the release wheels, verifies each one against the release's
 exact version the manifest named. Third-party dependencies resolve from PyPI as
 usual.
 
+If `aelix` is not on your `PATH` afterwards, the installer runs
+`uv tool update-shell` for you — that appends uv's tool bin to your shell's rc
+file, idempotently. It cannot fix the shell it is running in, so open a new
+terminal.
+
 Two environment variables configure it:
 
-- `AELIX_VERSION` — pin an exact release tag, e.g. `v0.1.0-beta.1`. Recommended
+- `AELIX_VERSION` — pin an exact release tag, copied from the
+  [Releases page](https://github.com/handochan/aelix-ai/releases). Recommended
   during the beta. Without it the installer resolves the newest release from the
   GitHub API.
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
 
+Pass them **through the pipe**, not in front of `curl`. A `VAR=x curl … | sh`
+prefix sets the variable for `curl` only; the `sh` on the other side of the pipe
+never sees it and the installer silently falls back to its default:
+
 ```bash
-AELIX_VERSION=v0.1.0-beta.1 AELIX_EXTRAS=tui \
+AELIX_VERSION=vX.Y.Z-beta.N AELIX_EXTRAS=tui \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
 ```
 
@@ -42,17 +53,23 @@ Extras:
 
 `tui` is the only extra.
 
-> **PyPI carries a placeholder until GA — use the installer above.** Do not
-> reach for `pip install aelix`, `pipx install aelix` or
-> `uv tool install aelix` yet. They do not fail, which is exactly the problem:
-> the distribution names are reserved by a deliberate 1.3 kB metadata-only
-> `0.0.0a0` release, so each command prints a success message and installs
-> nothing runnable — check afterwards and there is no `aelix` on your `PATH`.
-> For the whole beta, real Aelix ships only through GitHub Releases and the
-> checksum-verified installer above. The placeholder is a pre-release, so it can
-> never outrank a real one: when the first GA release is published,
-> `uv tool install 'aelix[tui]'` — or the `pipx` / `pip` equivalent — resolves it
-> and works as usual, with no change needed here.
+> **`pip install aelix` is a trap below `0.1.0b2`.** Until that version the four
+> distribution names hold exactly one file each: a metadata-only `0.0.0a0`
+> release published to reserve them (checked against pypi.org on 2026-09-09 —
+> `aelix` lists `0.0.0a0` and nothing else). pip and uv both take the newest
+> candidate when *every* candidate is a pre-release, so `pip install aelix`,
+> `pipx install aelix` and `uv tool install aelix` all resolve that placeholder.
+> They do not fail, which is the problem: each prints a success message and
+> installs nothing runnable. `uv tool install` is worse than a no-op — finding no
+> entry points in the placeholder it removes the working `aelix` you were trying
+> to upgrade.
+>
+> **From `0.1.0b2` on those commands resolve the real thing.** ADR-0240 removed
+> the workflow gate that kept pre-release tags off PyPI, so `v0.1.0-beta.2`
+> publishes `0.1.0b2` to all four names, and the same "newest pre-release wins"
+> rule that used to pick the placeholder now picks the real release. The
+> installer above stays the recommended path either way: it is the only one that
+> checks the wheels against the release's `SHA256SUMS`.
 
 ### Upgrading and uninstalling
 
@@ -68,31 +85,69 @@ If you are behind a shared IP (CI, corporate NAT), the anonymous GitHub API limi
 of 60 requests/hour can make the release lookup fail. Set `GITHUB_TOKEN`, or pin
 `AELIX_VERSION` — a pinned tag skips that API call entirely.
 
-### Windows (experimental)
+### Windows
 
-Windows is **not a supported platform** — Linux and macOS are. The test suite
-passes on `windows-latest` and that leg gates CI as of 2026-09-04, and the
-`install.ps1` script itself is verified beyond the suite too, but neither is
-a claim about the agent (see the README's Platform support section for what
-is still not verified).
 The repository root carries an `install.ps1` that mirrors `install.sh` step for
-step (same release download, same SHA256SUMS gate, same `uv` install). It now
-runs end to end in CI on `windows-latest`, under both pwsh and Windows
-PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)`
-jobs in `.github/workflows/ci.yml`) —
-[#106](https://github.com/handochan/aelix-ai/issues/106):
+step — same release download, same SHA256SUMS gate, same version-pinned `uv`
+install ([#106](https://github.com/handochan/aelix-ai/issues/106)):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 ```
 
-CI runs the checked-out script through the same `| iex` path under both pwsh 7
-and Windows PowerShell 5.1; the fetch from raw.githubusercontent.com and the
-`-ExecutionPolicy Bypass` flag above are not part of that measurement.
+That line takes the newest release, and every Windows fix on this page landed in
+`v0.1.0-beta.2` — on anything older it installs a build without them.
 
-Known gaps are tracked in `SLICE-STATUS.md` at the repository root. If you want
-Aelix on Windows today, WSL2 is the path that actually works: install there
-exactly as you would on Linux.
+It takes the same knobs as `install.sh`, read from the environment:
+`AELIX_VERSION`, `AELIX_EXTRAS`, `AELIX_REPO`, `UV_VERSION`, `GITHUB_TOKEN`.
+Set them with `$env:` **before** the pipe — `iex` runs the script in the current
+session, so it sees them (measured on PowerShell 7.6.5):
+
+```powershell
+$env:AELIX_VERSION = 'vX.Y.Z-beta.N'
+irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex
+```
+
+One knob differs from POSIX: `AELIX_EXTRAS=` cannot select the bare CLI here.
+Assigning `''` to a Windows environment variable deletes it, so an empty value is
+indistinguishable from unset and falls back to `tui`. For the bare CLI, run
+`uv tool install --force --find-links <dir> aelix` yourself.
+
+**What is measured, and by whom.** CI runs the full test suite on
+`windows-latest` under Python 3.11 and 3.12, and that leg gates every branch;
+it also runs `install.ps1` end to end there, under both pwsh 7 and Windows
+PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)`
+jobs in `.github/workflows/ci.yml`). CI drives the **checked-out** script
+through the same `| iex` path; the fetch from raw.githubusercontent.com and the
+`-ExecutionPolicy Bypass` flag above are not part of that measurement. What that
+job asserts is the launcher and `aelix --version`, and it says so in its own
+header (`.github/scripts/assert-install-ps1.ps1`): no release is gated on a
+Windows runtime check.
+
+On a real Windows host the maintainer checked this release by hand on
+2026-09-09: a `bash` tool call that prints Korean renders as Korean rather than
+mojibake, the model correctly reports it is on PowerShell and writes PowerShell
+syntax instead of `&&`, and the TUI paints (footer, `/thinking` picker, tool
+cards). That is **one person, one machine, one locale**, on top of the CI leg —
+which is what "beta" means here, not a claim of broad coverage. The README's
+*Platform support* section is the canonical statement; `SLICE-STATUS.md` at the
+repository root tracks the remaining Windows gaps.
+
+Three of this release's Windows fixes have no human witness at all — CI and
+source only. Nobody has watched a `pwsh.exe` planted in the working directory
+lose to `PATH` ([#241](https://github.com/handochan/aelix-ai/issues/241)), the
+`!command` credential cache do its caching
+([#240](https://github.com/handochan/aelix-ai/issues/240)), or a shell that will
+not load come back as exit 127
+([#243](https://github.com/handochan/aelix-ai/issues/243)).
+
+Two things are known to still bite. A program that opens the Windows console
+**directly** — a git credential prompt, `Read-Host -AsSecureString`,
+`Get-Credential` — can still put a prompt there that nothing answers, and burn a
+command's whole timeout; nothing in this release changed that. And the upgrade
+path itself is unexercised: the previous beta had no Windows story, so
+"installed, notified, upgraded" cannot be tried until a second release exists.
+WSL2 remains a fine alternative — install there exactly as you would on Linux.
 
 ## Set a provider key
 

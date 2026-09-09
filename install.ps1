@@ -2,14 +2,17 @@
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 #
-# EXPERIMENTAL (#106). Windows support is a parallel, unreleased track. This
-# script now runs end to end in CI on windows-latest, under both pwsh and
-# Windows PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e
-# (powershell)` jobs in .github/workflows/ci.yml; see #106), but that is not
-# the same claim as "Windows is supported" -- see #110 for that bar -- and the agent itself
-# still has known Windows gaps (see SLICE-STATUS.md). Treat a successful
-# install as the beginning of the test, not the end of it. The supported
-# platforms today are Linux and macOS, via install.sh.
+# EXPERIMENTAL (#106). What CI measures: this script runs end to end on
+# windows-latest, under both pwsh 7 and Windows PowerShell 5.1 (the
+# `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
+# .github/workflows/ci.yml), and the full test suite is green on the same
+# runner under 3.11 and 3.12. What CI does not cover: the agent itself. That
+# was hand-checked on one Windows host, by one person, in one locale
+# (2026-09-09) -- no second machine, no long run, and no upgrade path, since
+# the previous beta had no Windows story to upgrade from. Known gaps live in
+# SLICE-STATUS.md; the README's "Platform support" section is the canonical
+# statement. Treat a successful install as the beginning of the test, not the
+# end of it.
 #
 # It mirrors install.sh step for step: download the release wheels from the
 # GitHub Release, verify each one against the published SHA256SUMS manifest (a
@@ -20,12 +23,18 @@
 # what makes the gate binding rather than advisory -- see Step 5.
 #
 # Configuration (all optional, via environment):
-#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.1). Default:
-#                  resolve the newest release from the GitHub API. Pinning is
-#                  the recommended path during the beta.
+#   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.2, the release
+#                  Windows needs). Default: resolve the newest release from the
+#                  GitHub API. Pinning is the recommended path during the beta.
 #   AELIX_EXTRAS   Extras to install, consumed as aelix[$AELIX_EXTRAS].
-#                  Default `tui` (interactive terminal UI). Use `tui,images`
-#                  for inline image rendering.
+#                  Default `tui` (interactive terminal UI), which is the ONLY
+#                  extra. This line used to offer `tui,images` for inline image
+#                  rendering; that extra was deleted with the renderer it
+#                  installed (#163, ADR-0223). Following the old advice would
+#                  not have failed loudly either: uv only WARNS on an extra a
+#                  package does not have ("does not have an extra named ...")
+#                  and installs the rest, so the promise would simply not have
+#                  been kept.
 #                  DIVERGENCE from install.sh: there, a set-but-empty
 #                  AELIX_EXTRAS installs the bare CLI. Windows cannot express
 #                  that -- assigning '' to an environment variable DELETES it,

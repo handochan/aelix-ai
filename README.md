@@ -41,123 +41,71 @@ next launch), the first-use `ripgrep`/`fd` download, and the extension-catalog f
 
 ## Install
 
-During the beta, Aelix installs from GitHub Releases through a checksum-verified installer.
-It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every Aelix wheel against
-the release's `SHA256SUMS` manifest, and installs the global `aelix` command pinned to the
-version that manifest named.
+Aelix installs from GitHub Releases through a checksum-verified installer. It
+bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every Aelix wheel
+against the release's `SHA256SUMS` manifest, and installs the global `aelix`
+command pinned to the version that manifest named.
 
 ```bash
+# macOS, Linux
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
 ```
 
-Pin a release with `AELIX_VERSION=v0.1.0-beta.1`, and pick extras with `AELIX_EXTRAS` —
-default `tui`; empty (`AELIX_EXTRAS=`) installs the headless CLI only. Re-run the same line
-to upgrade; `uv tool uninstall aelix` to remove.
+```powershell
+# Windows — EXPERIMENTAL, and needs v0.1.0-beta.2 or newer (PowerShell 5.1+)
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
+```
 
-> **Do not `pip install aelix` during the beta.** The PyPI names are reserved by a
-> metadata-only placeholder, and `pip install aelix` **exits 0 and installs nothing runnable** —
-> no `aelix` command, and `import aelix` raises `ModuleNotFoundError`. `pipx` and
-> `uv tool install` at least fail loudly (no entry points), and `uv tool install aelix@latest`
-> will **delete an existing install**. Use the installer above; re-run it to upgrade. Once the
-> first GA release is published these commands resolve the real thing.
+`v0.1.0-beta.2` is the release every Windows fix landed in, and the installer
+takes the newest release — so on an older one that line installs a build where
+none of this works. Scope and evidence: [Platform support](#platform-support).
+
+Both read the same environment variables: `AELIX_VERSION` pins a release tag
+(`vX.Y.Z-beta.N`), `AELIX_EXTRAS` picks extras (default `tui`; empty installs the
+headless CLI, POSIX only), `GITHUB_TOKEN` lifts the anonymous GitHub API rate
+limit. Each has to reach the shell on the *far* side of the pipe, which is what
+makes the obvious spelling wrong on both platforms — `VAR=x curl … | sh` sets it
+for `curl` alone, and from a PowerShell prompt `powershell -c "$env:VAR=…"` is
+expanded by the outer shell before the child sees it (measured on pwsh 7.6). The
+[getting-started guide](docs/guides/getting-started.md#windows) gives the form
+that works on each. Re-run the same line to upgrade; on a `PATH` miss both
+installers now run `uv tool update-shell` for you instead of printing it.
+`uv tool uninstall aelix` removes it.
+
+> **PyPI carries a placeholder until `0.1.0b2`.** Today all four names hold a
+> metadata-only `0.0.0a0` reservation, so `pip install aelix` **exits 0 and
+> installs nothing runnable** — no `aelix` command, and `import aelix` raises
+> `ModuleNotFoundError` — while `uv tool install aelix@latest` **deletes an
+> existing install**. From `0.1.0b2` on that trap is closed: every candidate on
+> the index is a pre-release, and pip and uv both take the newest one in that
+> case, so `uv tool install 'aelix[tui]'` and `pipx install aelix` resolve the
+> real thing ([ADR-0240](docs/decisions/0240-a-pre-release-tag-publishes-to-pypi-too.md)).
+> The installer above stays the recommended path — it is the only one that checks
+> the release's `SHA256SUMS` — and an install it made upgrades by re-running it,
+> not by `uv tool upgrade`.
 
 ## Platform support
 
-**macOS and Linux are supported. Windows is not — the test suite passes there, and that is
-not the same claim.** CI runs the full suite on `ubuntu-latest` and `windows-latest` against
-Python 3.11 and 3.12, and development happens on macOS.
+macOS, Linux and Windows. Windows became usable in `v0.1.0-beta.2` and has the
+thinnest evidence of the three: CI runs the full suite on `ubuntu-latest` and
+`windows-latest` under Python 3.11 and 3.12 and runs `install.ps1` end to end
+under both pwsh and Windows PowerShell 5.1, and on 2026-09-09 one person drove
+this candidate on one Windows machine — a `bash` call's Korean output came back
+as Korean, the model reported it was on PowerShell and used PowerShell syntax
+instead of `&&`, and the TUI drew correctly on a Windows console. That is the
+whole of it: one person, one machine, one locale, plus a green leg. No
+long-running use, no second machine, no third locale, and three of this release's
+Windows fixes are argued from source and CI alone.
 
-The `windows-latest` leg **gates** as of 2026-09-04 — it can fail the build like any other leg.
-It opened at 433 failing tests and was advisory while that number came down; at `beffc2f`
-(run 33853043685) it is **0 failed, 9,338 passed, 71 skipped** on both Python versions. The type
-gate was still red there on 15 POSIX-only names that only pyright's Windows model sees; those
-are suppressed at their sites now, and `continue-on-error` came off with them: a new `fcntl`
-import or a hardcoded `/` join now fails CI instead of landing green.
+A program that opens the Windows console directly — a git credential prompt,
+`Read-Host -AsSecureString`, `Get-Credential` — can still prompt there and burn a
+command's whole timeout. Nothing in this release touches that, and no test on the
+leg reaches it.
 
-A green suite is not a supported platform. `install.ps1` is no longer part of what's unverified
-either: it now runs end to end in CI on `windows-latest`, under both pwsh and Windows PowerShell
-5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
-`.github/workflows/ci.yml`) —
-[#106](https://github.com/handochan/aelix-ai/issues/106). What's still unverified:
-
-- No release is gated on a Windows **runtime** check. Nobody has started `aelix` on Windows and
-  watched it do a turn.
-- AUTO permission mode has never been driven by a human on a Windows host. It is no longer
-  unusable there — [#204](https://github.com/handochan/aelix-ai/issues/204) gave PowerShell and
-  `cmd` classifiers of their own ([ADR-0237](docs/decisions/0237-a-dialect-owns-its-switch-syntax-and-the-gate-read-every-shell-with-bashs.md)),
-  so a command is read with the switch syntax of the shell that will run it instead of demoting
-  to ASK. The evidence is the suite, and it is narrower than it sounds: every dialect test
-  injects the resolved shell, so both sides run on every leg and no test lets an unpatched
-  Windows `_resolve_shell` feed a real `pwsh`/`cmd` path into the gate end to end. What
-  `windows-latest` uniquely proves is that the PowerShell grammar wheel installs, loads and
-  parses there. Nobody has watched the prompt not appear.
-- Killing a delegated child no longer orphans its descendants — and since 2026-09-05 that
-  holds inside `aelix_agents/` too, not only at the sites outside it. The RPC delegation
-  channel, subprocess hooks and `models.json`'s `!command` put their child in a job object on
-  Windows and a process group on POSIX and end the tree rather than the root
-  ([#202](https://github.com/handochan/aelix-ai/issues/202),
-  [ADR-0238](docs/decisions/0238-the-kill-reached-the-child-and-the-tree-is-what-had-to-die.md));
-  the print channel's spawn, the reaper's Windows legs, the RPC channel's `_reap`/`_eager_abort`
-  and the print child's signal handlers followed
-  ([#220](https://github.com/handochan/aelix-ai/issues/220)).
-  A job holds every descendant; a POSIX process group does not hold one that made its own
-  session — every tool child, every MCP server — and those remain the reaper's job.
-  So the split verdict this bullet used to carry becomes whole **on Windows only**: the
-  containment is at all four `aelix_agents` sites there, and a delegated child can be asked to
-  stop at all — it exits on `SIGBREAK` with the code that signal implies rather than the 1 a
-  hard job kill also reports. On POSIX the reaper's descendant walk still does the reaching,
-  and on a host with no `/proc` (macOS) a `setsid` grandchild still survives it.
-  The evidence is the suite again, and here it is real processes: the tests spawn a grandchild,
-  tear the tree down and assert the grandchild is gone, and `windows-latest` is the only leg
-  where the job object and `taskkill.exe` actually run.
-  The same containment now covers the three places Aelix runs a bounded command of its own —
-  an extension's `exec`, the catalog `git clone`, and the `fd` tree scan
-  ([#221](https://github.com/handochan/aelix-ai/issues/221)). A command that runs past its
-  timeout takes its whole tree with it instead of leaving the pipeline behind, and a command
-  that exits successfully after backgrounding a helper is reported as the success it was
-  rather than as a timeout once its whole deadline had passed — both measured on macOS,
-  including through a real model at the `exec` surface. On Windows the fix is reasoned from
-  CPython's source and measured only by the suite: `subprocess.run` follows its kill with an
-  unbounded `communicate()` there, so the call never returned while any descendant still held
-  the pipe; the new real-process test is the case that would hang on `main`.
-  The **bash tool's own children** are contained now too
-  ([#222](https://github.com/handochan/aelix-ai/issues/222)): the command a tool call runs goes
-  into a job object on Windows and a process group on POSIX, and a timeout, Esc or a cancelled
-  turn each end the tree rather than the root. Windows is why that issue existed — `taskkill
-  /T` follows *live* parent links only, so an MSYS pipeline whose per-stage subshells have
-  already exited survives it, and because the tool read the command's output until the pipe
-  closed, those survivors held the tool call open past its own timeout — and a command that
-  simply *succeeded* after backgrounding a helper was held the same way, with no ceiling at all
-  (#222 bounded the first: after a kill the output is drained only until it falls idle, and never
-  more than a second past the kill. [#232](https://github.com/handochan/aelix-ai/issues/232)
-  ended the second: after an ordinary exit the output is drained by that same idle rule, under a
-  2-second ceiling and — where you gave one — your own deadline). A job holds them regardless.
-  The tool's child also gets `/dev/null` for stdin now instead of your terminal, so
-  it can no longer take a keystroke you meant for Aelix or leave your terminal with echo turned
-  off — both measured on macOS, where `!cat` in the TUI used to do exactly that and never
-  return. **That last part is a macOS/Linux sentence.** On Windows there is no session to take
-  away: the child keeps the console Aelix was started from, so a program that reads `CONIN$`
-  directly (git's credential prompts) or opens the console for a masked prompt (`Read-Host
-  -AsSecureString`, `Get-Credential`) can still prompt there and still burn the command's
-  whole timeout. Nobody has watched that at a Windows console — it is unverified, not fixed.
-  And a `!command` credential helper that tries to prompt the terminal itself now fails at
-  once with a named reason instead of stalling for ten seconds
-  ([#226](https://github.com/handochan/aelix-ai/issues/226)) — measured on macOS and Linux;
-  the Windows console half of that is unverified too. On Windows a `!command` no longer needs
-  an `sh` at all ([#227](https://github.com/handochan/aelix-ai/issues/227)): Aelix resolves
-  the shell that box actually has, and runs PowerShell `-NonInteractive`, so a PowerShell
-  prompt is refused at once and cannot leak its text into your key — reasoned from pwsh 7's
-  own switch, measured only on macOS, and still unwatched at a Windows console.
-
-So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
-longer demotes, and an aborted delegation and a timed-out tool command each take their tree
-with them at every one of their spawn sites; what's left is a human actually driving it on a
-Windows host — including the `CONIN$` / masked-prompt case above, which no test on the leg can
-reach. Track the port
-in [#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
-`install.ps1` executed + #204's AUTO mode, and all three now hold on the suite's evidence, which
-is the narrower claim described above; the labelling and the CI leg are
-[#103](https://github.com/handochan/aelix-ai/issues/103).
+Which fix is measured how, and what is still open:
+[getting-started → Windows](docs/guides/getting-started.md#windows) and
+[`SLICE-STATUS.md`](SLICE-STATUS.md); the port is tracked in
+[#110](https://github.com/handochan/aelix-ai/issues/110).
 
 ## Quick start
 
@@ -177,22 +125,12 @@ Aelix needs a provider credential: set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 On first use of `grep` or `find`, Aelix downloads `ripgrep` and `fd` into
 `~/.aelix/agent/bin` so both honour `.gitignore`. These are the only binaries fetched at
 runtime, `--offline` skips them, and copies already on your `PATH` are preferred.
-The `@` file menu uses that same `fd` when it can find one, so it stops fuzzy-matching
-the files git ignores (you can still reach them by typing the directory: `@target/`).
-Without an `fd` it falls back to a plain directory walk, which applies no ignore rules,
-so it offers more. How much more depends on your checkout, not on Aelix: the shared
-exclude list already covers `.git`, `node_modules`, `.venv`, `__pycache__`, `dist` and
-`build`, so a clean clone of this repository offers the same list either way, while a
-tree that ignores something the list does not name — `target/`, `vendor/`, a directory
-of worktrees — loses exactly that from the menu. Either enumerator stops after 20 000
-paths, and the ignored files count toward that limit on the walk — and on the `fd` arm
-too once you turn **Gitignore in @ menu** off. What that costs differs: the walk stops
-dead where it stands, so one big ignored build tree can eat the whole budget before your
-real directories are reached at all, while on the `fd` arm which paths survive is decided
-by its parallel walk and is not the same twice — a checkout with many ignored directories
-can lose real ones from one `@` to the next. If you would rather the menu applied no
-ignore rules and offered everything, turn `/settings` → **Gitignore in @ menu** off; the
-shared exclude list still applies.
+The `@` file menu uses that same `fd` when it can find one, so it stops offering the
+files git ignores — type the directory to reach them anyway (`@target/`), or turn
+`/settings` → **Gitignore in @ menu** off. Without an `fd` it falls back to a directory
+walk that applies no ignore rules. Either enumerator stops after 20 000 paths, and with
+ignore rules off a big ignored build tree can eat that budget before your own
+directories are reached.
 
 ## Why Aelix
 
@@ -314,39 +252,50 @@ and its text then goes to your configured provider. `--no-context-files` turns t
 
 ## Known limitations (beta)
 
-Five things worth knowing before you point Aelix at something that matters.
+Six things worth knowing before you point Aelix at something that matters.
 
-**A run has no spend ceiling.** No iteration cap, no duplicate-call detection, no cumulative
-token or cost budget — a model that keeps calling tools keeps costing money until it finishes
-or you stop it ([#14](https://github.com/handochan/aelix-ai/issues/14),
+**A run has no spend ceiling.** No iteration cap, no duplicate-call detection, no
+cumulative token or cost budget — a model that keeps calling tools keeps costing
+money until it finishes or you stop it. `Esc`, the 600 s `bash` *default* timeout
+(an explicit per-call value is honoured up to an hour) and automatic compaction are
+real backstops; none of them bounds spend
+([#14](https://github.com/handochan/aelix-ai/issues/14),
 [#6](https://github.com/handochan/aelix-ai/issues/6),
-[#52](https://github.com/handochan/aelix-ai/issues/52)). `Esc`, the 600 s `bash` *default*
-timeout (an explicit per-call value is honoured up to an hour) and automatic compaction are
-real backstops, but none of them bounds spend.
+[#52](https://github.com/handochan/aelix-ai/issues/52)).
 
-**Headless mode auto-approves mutating tools, and the two safety nets only see built-in
-ones.** `--print`, `--mode json` and `--mode rpc` have no terminal for an approval dialog, so
-`write`, `edit` and `bash` run without asking — that is what makes them scriptable. Both
-backstops match a fixed list of built-in tool names, so a tool from an MCP server, a skill or
-a third-party extension reaches neither `GuardrailExtension` nor the `--permission-mode plan`
-block ([#188](https://github.com/handochan/aelix-ai/issues/188)). Give a headless run a
-container or a checkout you can throw away.
+**Headless mode auto-approves mutating tools, and the two safety nets only see
+built-in ones.** `--print`, `--mode json` and `--mode rpc` have no terminal for an
+approval dialog, so `write`, `edit` and `bash` run without asking; and both
+backstops match a fixed list of built-in tool names, so a tool from an MCP server,
+a skill or a third-party extension reaches neither `GuardrailExtension` nor the
+`--permission-mode plan` block. Give a headless run a container or a checkout you
+can throw away ([#188](https://github.com/handochan/aelix-ai/issues/188)).
 
-**One session, one terminal.** Session JSONL is append-only and nothing locks it, so opening
-the same session twice makes one terminal's work a branch that no `--resume` walks — valid on
-disk, gone from the transcript ([#137](https://github.com/handochan/aelix-ai/issues/137)).
+**One session, one terminal.** Session JSONL is append-only and nothing locks it,
+so opening the same session twice makes one terminal's work a branch that no
+`--resume` walks — valid on disk, gone from the transcript
+([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
-**Transcripts keep everything, forever, unredacted.** Every prompt, tool argument and tool
-result is written verbatim; there is no scrubbing pass
-([#138](https://github.com/handochan/aelix-ai/issues/138)). The files are owner-only (`0600`
-inside `0700`), so the exposure is not to other users of the machine — it is to anything that
-copies your home directory: backups, sync clients, support bundles.
+**Transcripts keep everything, forever, unredacted.** Every prompt, tool argument
+and tool result is written verbatim; there is no scrubbing pass. They are
+owner-only on macOS and Linux (`0600` inside `0700`), and Windows has no mode-bit
+equivalent for Aelix to set — either way the exposure is to whatever copies your
+home directory: backups, sync clients, support bundles
+([#138](https://github.com/handochan/aelix-ai/issues/138)).
 
-**Delegation is Linux-first, and its spend is not in `/cost`.** The spawn plumbing is POSIX
--only, so delegation is unsupported on Windows and leaks descendants on macOS
-([#110](https://github.com/handochan/aelix-ai/issues/110)). A headless parent consents to
-spawns on its own, and a child's tokens never enter the parent's session — read each
-delegation's own footer for what it spent.
+**A successful `bash` call can silently lose the tail of its output.** With the
+reader thread starved across the command's exit, up to ~64 KiB can be dropped from
+the end — `exit_code` is 0, nothing says anything went missing, and the tail is the
+part the model is shown. It did not reproduce in ~3,300 ordinary rounds
+([#260](https://github.com/handochan/aelix-ai/issues/260)).
+
+**Delegation's spend is invisible to `/cost`, and its cleanup is not equal on every
+OS.** A child's tokens never enter the parent's session — read each delegation's
+own footer — and a headless parent consents to spawns on its own. If Aelix itself
+dies, Linux's `PR_SET_PDEATHSIG` and a Windows job object's `kill_on_close` end the
+child; macOS has neither, and a grandchild that made its own session escapes the
+process group that is all the containment there is
+([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## Architecture
 
