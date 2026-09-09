@@ -22,6 +22,7 @@ model does not belong here, and neither does a value nobody deliberated.
 from __future__ import annotations
 
 import pytest
+from aelix_ai.models import get_supported_thinking_levels
 from aelix_ai.models_generated import MODELS
 from aelix_ai.streaming import Model
 
@@ -236,3 +237,34 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
         f"{provider}/{model_id} lost its thinkingLevelMap — a refresh reverted it"
     )
     assert row.thinking_level_map == _row(provider, sibling).thinking_level_map
+
+
+def test_sonnet_5_does_not_declare_thinking_off_unsupported() -> None:
+    """``claude-sonnet-5`` accepts ``thinking: {"type": "disabled"}``; the catalog said it did not.
+
+    models.dev ships ``thinkingLevelMap.off: null`` on three anthropic rows.
+    Measured against ``api.anthropic.com`` on 2026-09-09, that is right for two
+    of them and wrong for this one: ``claude-fable-5`` and ``claude-fable-5-1``
+    reject the disabled shape outright (*"thinking.type.disabled" is not
+    supported for this model*), while ``claude-sonnet-5`` answered normally
+    through it.
+
+    The declaration is not cosmetic. #258 made the request agree with the
+    catalog, so while this row claimed "off" was unsupported, a user selecting
+    **off** was sent ``adaptive`` at the row's lowest effort — billed reasoning
+    they had asked not to have. Dropping the key restores "off" to the picker
+    and sends ``disabled``, which is what the endpoint accepts.
+
+    Pinned because a refresh from upstream would put the null back.
+    """
+
+    row = _row("anthropic", "claude-sonnet-5")
+    thinking_map = row.thinking_level_map or {}
+    assert "off" not in thinking_map, (
+        "claude-sonnet-5 declares thinking-off unsupported again; it accepts "
+        "the disabled shape, and the declaration costs the user billed reasoning"
+    )
+    assert "off" in get_supported_thinking_levels(row)
+    # The two rows the same upstream field is RIGHT about keep their null.
+    for fable in ("claude-fable-5", "claude-fable-5-1"):
+        assert (_row("anthropic", fable).thinking_level_map or {})["off"] is None

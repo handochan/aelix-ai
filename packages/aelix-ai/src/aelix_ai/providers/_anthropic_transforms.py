@@ -29,6 +29,7 @@ from aelix_ai.messages import (
     ToolResultMessage,
     UserMessage,
 )
+from aelix_ai.models import get_supported_thinking_levels
 from aelix_ai.providers._transform_messages import (
     transform_messages as shared_transform_messages,
 )
@@ -331,15 +332,20 @@ def build_params(
 # (``streamSimpleAnthropic`` 728-767, ``mapThinkingLevelToEffort`` 708-726,
 # ``supportsAdaptiveThinking`` 692-702, ``buildParams`` thinking block
 # 939-968) + ``providers/simple-options.ts`` (``clampReasoning`` 22-24,
-# ``adjustMaxTokensForThinking`` 26-50). Three of those diverge as of #250:
+# ``adjustMaxTokensForThinking`` 26-50). Five of those diverge as of #258:
 # ``clampReasoning`` (see :func:`clamp_reasoning`), the budget table
-# (:data:`_DEFAULT_THINKING_BUDGETS`), and the carve plus its ``|| 1024``
+# (:data:`_DEFAULT_THINKING_BUDGETS`), the carve plus its ``|| 1024``
 # fallback (see :func:`adjust_max_tokens_for_thinking` and the disabled
-# branch of :func:`resolve_anthropic_thinking`).
+# branch of :func:`resolve_anthropic_thinking`), the adaptive membership test
+# (:func:`supports_adaptive_thinking`, which reads the catalog before its
+# marker regex) and the handling of a literal ``"off"``
+# (:func:`resolve_anthropic_thinking`). ADR-0235: pi is a verified reference,
+# not a target — divergence needs a reason, not an ADR.
 
 #: Pi ``INTERLEAVED_THINKING_BETA`` (anthropic.ts:165). Sent only for
-#: budget-based reasoning models — adaptive models (Opus 4.6, Opus 4.7,
-#: Sonnet 4.6) have interleaved thinking built-in, so pi skips the header.
+#: budget-based reasoning models — adaptive models (Opus 4.6 and newer, see
+#: :func:`supports_adaptive_thinking`) have interleaved thinking built-in, so
+#: pi skips the header.
 INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
 #: Pi default thinking budgets (simple-options.ts:32-37) plus a fifth row.
@@ -376,64 +382,136 @@ _MIN_OUTPUT_TOKENS = 1024
 _MIN_THINKING_BUDGET = 1024
 
 
-def supports_adaptive_thinking(model_id: str) -> bool:
-    """Pi parity ``supportsAdaptiveThinking`` (anthropic.ts:692-702).
+#: The Claude generations whose ``thinking`` param must be ``adaptive`` — the
+#: FALLBACK for rows the catalog has not flagged, see
+#: :func:`supports_adaptive_thinking`. Matches both id spellings the catalog
+#: uses (``claude-opus-4-8`` first-party, ``claude-opus-4.8`` on
+#: ``github-copilot`` / ``vercel-ai-gateway``) and any suffix
+#: (``anthropic/claude-opus-5-fast``). ``haiku`` is deliberately absent:
+#: ``claude-haiku-4-5`` is a budget row and is the row the ``budget_tokens``
+#: floor was measured on.
+_ADAPTIVE_FAMILY_RE = re.compile(r"claude-(?:opus|sonnet|fable)-(?:4[-.][678]|5)")
 
-    Opus 4.6, Opus 4.7 and Sonnet 4.6 use *adaptive* thinking (Claude decides
-    how much to think, steered by an ``effort`` level); every other reasoning
-    model uses *budget-based* thinking (an explicit ``budget_tokens``
-    allowance). The marker list below is the whole rule and it is a literal
-    whitelist, NOT a "4.6 and newer" test: ``claude-opus-4-8``,
-    ``claude-opus-5``, ``claude-sonnet-5`` and ``claude-fable-5`` take the
-    budget path.
+#: The Claude generation that cannot express "thinking off" AT ALL — the
+#: FALLBACK for rows whose ``thinkingLevelMap`` does not declare it, see
+#: :func:`supports_thinking_off`.
+_ALWAYS_THINKING_FAMILY_RE = re.compile(r"claude-fable-\d")
 
-    **That is wrong, and #250 MEASURED it wrong rather than suspecting it.**
-    The request Aelix builds for those four ids was sent verbatim to
-    ``api.anthropic.com`` on 2026-09-09, at ``high`` and at ``xhigh``, and all
-    eight return ``400 invalid_request_error``: *"``thinking.type.enabled`` is
-    not supported for this model. Use ``thinking.type.adaptive`` and
-    ``output_config.effort`` to control thinking behavior."* — ``claude-opus-5``
-    ``req_011CerQpLuQC5P5Xaw7MzyVQ`` / ``req_011CerQpNc69m6CAsK93KroH``,
-    ``claude-fable-5`` ``req_011CerQpQ3uQqfCeUsKaPg9M`` /
-    ``req_011CerQpRVUJivivpJ9SmDHp``, ``claude-opus-4-8``
-    ``req_011CerQpSw3MHtbeDFKJYEpi`` / ``req_011CerQpUWYMoCu4L9t8WS7w``,
-    ``claude-sonnet-5`` ``req_011CerQpVws2QN9E2uMrD6yC`` /
-    ``req_011CerQpXRAezGeumCSuhkSk``. What is rejected is the ``thinking.type``
-    value, which is the same on every budget-path level, so the two measured
-    levels stand for all five. ``claude-opus-4-7`` — a marker this list *does*
-    carry — answered normally at both levels through the adaptive branch
-    (``req_011CerQpYrVRK4GK5pf5sJ8x``, ``req_011CerQpdX2jsWYUfDcBa1x6``), so
-    the branch itself is sound; only its membership test is wrong. The same
-    400 lands on 0985fcf, so it is neither introduced nor fixed by #250, whose
-    scope is the budget tier.
 
-    **The catalog already knows.** ``models_generated.json`` carries
-    ``compat.forceAdaptiveThinking: true`` on exactly these four ids plus
-    ``claude-opus-4-7`` (ten rows once the ``cloudflare-ai-gateway`` and
-    ``opencode`` mirrors are counted), and **nothing in the package reads that
-    field** — grepped 2026-09-09: outside the catalog the name appears only
-    here (this docstring) and as a fixture in
-    ``tests/providers/test_anthropic_correctness_55.py``; neither is a read. So the fix is to
-    consult the row rather than to lengthen this marker list, which would
-    re-encode by hand a fact the catalog already ships and would still miss
-    the mirrors. Filed as **#258**, not fixed here, because it moves every
-    level on those rows onto a different request shape — a change that
-    deserves its own review and its own live pass, not a line in a
-    docs-correction commit.
+def supports_adaptive_thinking(model: Model) -> bool:
+    """Does this row take ``thinking.type = "adaptive"`` instead of a budget?
+
+    Adaptive models let Claude decide how much to think, steered by
+    ``output_config.effort``; older reasoning models take an explicit
+    ``budget_tokens`` allowance. Sending the wrong one is a 400, not a
+    degraded answer.
+
+    **The catalog decides when it has an opinion** (#258). ``compat.
+    forceAdaptiveThinking`` is the field upstream ships for exactly this
+    question; a row that carries it is believed in both directions, so a
+    catalog that sets it — to ``true`` on a row no fallback would catch, or to
+    ``false`` on one it would — moves that row with no code change. 12 of the
+    rows this release ships carry it: the six first-party
+    ``anthropic`` ids (``claude-opus-4-7``, ``claude-opus-4-8``,
+    ``claude-opus-5``, ``claude-sonnet-5``, ``claude-fable-5``,
+    ``claude-fable-5-1``) plus ``cloudflare-ai-gateway`` and ``opencode``
+    mirrors (counted 2026-09-09).
+
+    **Why a family fallback survives.** Pi's ``supportsAdaptiveThinking``
+    (anthropic.ts:692-702) is a literal marker list of ``opus-4-6`` /
+    ``opus-4-7`` / ``sonnet-4-6``, and dropping it in favour of the flag alone
+    would have pushed rows the catalog does NOT flag back onto the budget
+    path — measured against the catalog at this commit, 25 of the 37 adaptive
+    ``anthropic-messages`` rows reach this branch only through the regex, and
+    two of them are ``claude-opus-4.7`` (``github-copilot``,
+    ``vercel-ai-gateway``), the very generation whose first-party twin is the
+    #258 control. The mirrors are the same models behind a proxy, so the
+    fallback covers the generations Anthropic documents as adaptive
+    (4.6 / 4.7 / 4.8 and the 5 family) rather than only the two the old marker
+    list knew. It is a fallback and not the rule: a flagged row never reaches
+    it.
+
+    **What was measured** (2026-09-09, ``api.anthropic.com``, the request
+    Aelix builds, at ``high`` and at ``xhigh``). Every budget-path level on
+    ``claude-opus-5`` (``req_011CerQpNc69m6CAsK93KroH``,
+    ``req_011CerQpLuQC5P5Xaw7MzyVQ``), ``claude-fable-5``
+    (``req_011CerQpRVUJivivpJ9SmDHp``, ``req_011CerQpQ3uQqfCeUsKaPg9M``),
+    ``claude-opus-4-8`` (``req_011CerQpUWYMoCu4L9t8WS7w``,
+    ``req_011CerQpSw3MHtbeDFKJYEpi``) and ``claude-sonnet-5``
+    (``req_011CerQpXRAezGeumCSuhkSk``, ``req_011CerQpVws2QN9E2uMrD6yC``)
+    returned ``400 invalid_request_error``: *"``thinking.type.enabled`` is not
+    supported for this model. Use ``thinking.type.adaptive`` and
+    ``output_config.effort`` to control thinking behavior."* ``claude-opus-4-7``
+    — carried by the old marker list — answered through the adaptive branch in
+    the same run (``req_011CerQpYrVRK4GK5pf5sJ8x``,
+    ``req_011CerQpdX2jsWYUfDcBa1x6``), so the branch was sound and only its
+    membership test was wrong. The same 400 lands on 0985fcf: pre-existing,
+    not a #250 regression.
+
+    Divergence from pi (ADR-0235: pi is a verified reference, not a target):
+    pi reads neither the flag nor anything but its three markers.
     """
 
-    mid = model_id or ""
-    return any(
-        marker in mid
-        for marker in (
-            "opus-4-6",
-            "opus-4.6",
-            "opus-4-7",
-            "opus-4.7",
-            "sonnet-4-6",
-            "sonnet-4.6",
-        )
-    )
+    compat = getattr(model, "compat", None) or {}
+    flag = compat.get("forceAdaptiveThinking")
+    if flag is not None:
+        return bool(flag)
+    return bool(_ADAPTIVE_FAMILY_RE.search(model.id or model.name or ""))
+
+
+def supports_thinking_off(model: Model) -> bool:
+    """Can this row be asked for NO thinking at all?
+
+    ``thinking: {"type": "disabled"}`` is how every other Claude row spells
+    "off", and on most of them it works — measured 2026-09-09 on
+    ``claude-opus-5``, ``claude-opus-4-8`` and ``claude-sonnet-5``, which all
+    answered with thinking disabled even though their thinking-ON request was
+    a 400. On ``claude-fable-5`` and ``claude-fable-5-1`` it is itself a 400:
+    *"``thinking.type.disabled`` is not supported for this model. Use
+    ``thinking.type.adaptive`` and ``output_config.effort`` to control
+    thinking behavior."* (``req_011CerzNQTwZdGcBeTt9o3Ea``) — those two rows
+    reject BOTH shapes, which is why beta.2 shipped ``claude-fable-5-1``
+    unusable at every level, thinking on or off.
+
+    Two signals, in order:
+
+    * the row's own ``thinkingLevelMap`` — a declared ``"off": null`` means
+      the level is not supported (:func:`aelix_ai.models.
+      get_supported_thinking_levels`, pi ``models.ts:50-59``). Three shipped
+      rows declare it: ``anthropic/claude-fable-5``,
+      ``anthropic/claude-fable-5-1`` and ``anthropic/claude-sonnet-5``
+      (counted 2026-09-09). ``claude-sonnet-5`` is the one the wire and the
+      catalog disagree about — ``disabled`` *is* accepted there — and the
+      catalog wins on purpose: the picker (``get_supported_thinking_levels``)
+      and the clamp (``clamp_thinking_level``) already act on that
+      declaration, so the request is the third place that now agrees with it,
+      and what it sends is a shape the row accepts either way.
+    * the ``fable`` family, for the six mirror rows whose ``thinkingLevelMap``
+      carries no ``off`` key at all — ``claude-fable-5`` and its ``5.1``/
+      ``5-1`` spelling on ``github-copilot``, ``opencode`` and
+      ``vercel-ai-gateway``. An ABSENT key means supported (pi
+      ``models.ts:50-59``), so the map alone would send those six the
+      ``disabled`` request the model behind the proxy rejects.
+    """
+
+    if _ALWAYS_THINKING_FAMILY_RE.search(model.id or model.name or ""):
+        return False
+    return "off" in get_supported_thinking_levels(model)
+
+
+def lowest_thinking_level(model: Model) -> str:
+    """The least thinking this row offers, ``"off"`` excluded.
+
+    Used to answer "thinking off" on a row that cannot be turned off. Reads
+    the row's own supported set, so a ``thinkingLevelMap`` that declares
+    ``"minimal": null`` moves the floor up instead of building a level the row
+    rejects. ``"minimal"`` when the row declares nothing at all.
+    """
+
+    levels = [
+        level for level in get_supported_thinking_levels(model) if level != "off"
+    ]
+    return levels[0] if levels else "minimal"
 
 
 def map_thinking_level_to_effort(model: Model, level: str | None) -> str:
@@ -466,10 +544,11 @@ def clamp_reasoning(level: str, budgets: dict[str, int] | None = None) -> str:
     row, so the only job left is rejecting spellings the table cannot
     resolve. Unvalidated levels do arrive — ``set_thinking_level``
     (harness/core.py) assigns without validation and
-    :class:`SimpleStreamOptions.reasoning` is a public ``str | None`` — and
-    ``"off"`` is the one that really shows up, because
-    :func:`resolve_anthropic_thinking` gates on ``if not reasoning`` and
-    ``"off"`` is truthy (ADR-0135 Context §3).
+    :class:`SimpleStreamOptions.reasoning` is a public ``str | None``. Until
+    #258 the one that really showed up was ``"off"``, because
+    :func:`resolve_anthropic_thinking` gated on ``if not reasoning`` and
+    ``"off"`` is truthy (ADR-0135 Context §3); that function now answers the
+    string itself, so what reaches this clamp is a genuine misspelling.
 
     Unknown spellings clamp to ``"medium"``, not ``"high"``: that is the
     budget they already got from the ``.get`` fallback in
@@ -577,10 +656,16 @@ def resolve_anthropic_thinking(
     ``extra_params`` carries the ``thinking`` request object (plus
     ``output_config`` for adaptive models) to merge into the Anthropic call.
 
-    Behaviour (pi-faithful):
+    Behaviour:
       * non-reasoning model → ``{}`` (never send a thinking param);
-      * reasoning model, no level → ``{"thinking": {"type": "disabled"}}``;
-      * adaptive model → ``thinking.type = "adaptive"`` + ``output_config``;
+      * no level, or the level ``"off"`` → ``{"thinking": {"type":
+        "disabled"}}`` on any row that can express it
+        (:func:`supports_thinking_off`);
+      * no level, or ``"off"``, on a row that CANNOT be turned off →
+        ``thinking.type = "adaptive"`` at the row's lowest effort and NO
+        ``display`` (#258, see below);
+      * adaptive model with a level → ``thinking.type = "adaptive"`` +
+        ``output_config.effort``;
       * older reasoning model → ``thinking.type = "enabled"`` with a
         ``budget_tokens`` carved from ``max_tokens``;
       * older reasoning model whose output cap cannot hold a budget the API
@@ -589,6 +674,33 @@ def resolve_anthropic_thinking(
         ``budget_tokens`` line of its thinking block, read at
         ``pi@032c01c1e`` — not this ADR's pin) builds the rejected request
         instead.
+
+    **"Off" on a row that is always thinking** (#258). ``claude-fable-5`` and
+    ``claude-fable-5-1`` reject ``thinking.type.disabled`` with a 400
+    (``req_011CerzNQTwZdGcBeTt9o3Ea``, measured 2026-09-09), so "off" cannot
+    be expressed there the way it is on every other row. The honest mapping is
+    the least thinking the row does offer: ``thinking.type = "adaptive"`` with
+    ``output_config.effort`` from :func:`lowest_thinking_level` — ``"low"`` on
+    those rows — and ``display`` deliberately omitted, so the API default
+    (``omitted``) keeps the reasoning the user asked not to have out of the
+    transcript. A request that answers beats a request that is honest about
+    an option the model does not have.
+
+    **Divergence from pi, and from this adapter before #258: the literal
+    string ``"off"``.** Pi gates on ``if (!reasoning)`` alone, so ``"off"`` —
+    truthy — reaches the budget path and buys ``"medium"``'s budget: measured
+    on 0985fcf, ``SimpleStreamOptions(reasoning="off")`` sent
+    ``budget_tokens: 8192``. Aelix now treats the string as the level it
+    names. Without this, #258's own fix would have made the defect worse
+    rather than merely visible: on a row that just moved onto the adaptive
+    path, ``map_thinking_level_to_effort(model, "off")`` falls through its
+    coarse mapping to ``"high"``, i.e. asking for no thinking would have
+    bought the most. The harness collapses ``"off"`` to ``None`` before any
+    adapter sees it, so this is an embedder-visible path
+    (``SimpleStreamOptions.reasoning`` is a public ``str | None``). The same
+    string still maps to ``"high"`` in both Google adapters, which is why the
+    cross-adapter contract stays open as #259 — this fixes one adapter
+    because #258 forced it to, not the contract.
 
     ``needs_interleaved_beta`` is True ONLY on the active budget-thinking path
     (non-adaptive reasoning model with a level set). **Deliberate narrower scope
@@ -603,19 +715,32 @@ def resolve_anthropic_thinking(
     tracked as a follow-up, out of ADR-0135's reasoning scope.
     """
 
-    model_id = model.id or model.name or ""
-
     if not getattr(model, "reasoning", False):
         return {}, default_max_tokens, False
 
-    if not reasoning:
+    adaptive = supports_adaptive_thinking(model)
+
+    if not reasoning or reasoning == "off":
+        if supports_thinking_off(model):
+            return {"thinking": {"type": "disabled"}}, default_max_tokens, False
+        if adaptive:
+            # The row cannot stop thinking — ask for as little as it offers.
+            off_extra: dict[str, Any] = {"thinking": {"type": "adaptive"}}
+            floor = map_thinking_level_to_effort(model, lowest_thinking_level(model))
+            if floor:
+                off_extra["output_config"] = {"effort": floor}
+            return off_extra, default_max_tokens, False
+        # A budget row that declares ``"off": null`` — no shipped row does
+        # (counted 2026-09-09: the three that declare it are all adaptive), so
+        # this is only reachable through a ``models.json`` thinkingLevelMap
+        # override. Unmeasured, so it keeps the shape every budget row accepts.
         return {"thinking": {"type": "disabled"}}, default_max_tokens, False
 
     # Pi defaults thinking display to "summarized" so newer models match the
     # API default older Claude 4 models already use (anthropic.ts:943-945).
     display = "summarized"
 
-    if supports_adaptive_thinking(model_id):
+    if adaptive:
         extra: dict[str, Any] = {
             "thinking": {"type": "adaptive", "display": display}
         }

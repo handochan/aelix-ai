@@ -633,15 +633,15 @@
   "packages/aelix-ai/src/aelix_ai/oauth/auth_storage.py:184-184": [
    "if _fcntl is None:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:374-393": [
-   "#: fact — one is the API's rule, the other is aelix's reserve for the visible",
-   "#: answer.",
-   "_MIN_THINKING_BUDGET = 1024",
+  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:517-535": [
+   "def map_thinking_level_to_effort(model: Model, level: str | None) -> str:",
+   "\"\"\"Pi parity ``mapThinkingLevelToEffort`` (anthropic.ts:708-726).",
    "",
-   "",
-   "def supports_adaptive_thinking(model_id: str) -> bool:",
-   "\"\"\"Pi parity ``supportsAdaptiveThinking`` (anthropic.ts:692-702).",
-   ""
+   "Prefer the model's ``thinkingLevelMap`` native string (e.g. ``xhigh`` →",
+   "``\"max\"`` on Opus 4.6, ``\"xhigh\"`` on Opus 4.7); otherwise fall back to a",
+   "coarse mapping (minimal/low → ``\"low\"``, medium → ``\"medium\"``, else",
+   "``\"high\"``).",
+   "\"\"\""
   ],
   "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:1024-1024": [
    "yield ThinkingDeltaEvent("
@@ -680,10 +680,10 @@
   "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:207-207": [
    "_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:621-621": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:624-624": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:906-906": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:909-909": [
    "yield ThinkingDeltaEvent("
   ],
   "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:307-307": [
