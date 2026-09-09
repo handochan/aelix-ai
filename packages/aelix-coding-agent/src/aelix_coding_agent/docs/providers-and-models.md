@@ -163,18 +163,28 @@ which case the budget shrinks to leave 1024 tokens for the answer and the two
 levels can come out equal (`openai/gpt-5.2-chat` and `openai/gpt-5.3-chat`,
 output cap 16384, are the shipped examples). Equal is as close as they get: a
 higher level never sends a *smaller* budget than a lower one, whatever you
-override `maxTokens` to. On an adaptive model (Opus 4.6, Opus 4.7 and Sonnet
-4.6) it selects the model's own top effort rather than a token count. On Gemini
-2.x there is nothing above `high`: that level is already the API's
-`thinkingBudget` ceiling.
+override `maxTokens` to. On an adaptive model — Opus 4.6 and everything after
+it (4.7, 4.8, Opus 5, Sonnet 5, Fable 5), plus any row the catalog marks
+`compat.forceAdaptiveThinking` — it selects the model's own top effort rather
+than a token count. On Gemini 2.x there is nothing above `high`: that level is
+already the API's `thinkingBudget` ceiling.
 
 A model that does not list `xhigh` gets `high` instead — `--thinking` accepts
 the level on any model, and each provider clamps it to what the model offers.
 
-Override a Claude-style row's `maxTokens` below 2048 and thinking is **off**
-for it, whatever level you pick: the API wants a thinking budget of at least
-1024 that is still smaller than the request, and below 2048 no such number
-also leaves the answer its 1024 tokens.
+Override the `maxTokens` of a Claude-style row that thinks with a *budget*
+below 2048 and thinking is **off** for it, whatever level you pick: the API
+wants a thinking budget of at least 1024 that is still smaller than the
+request, and below 2048 no such number also leaves the answer its 1024 tokens.
+An adaptive row is not affected — it carries no budget for the cap to squeeze,
+so the override bounds the answer and nothing else.
+
+Two adaptive rows cannot be asked to stop thinking at all: `claude-fable-5`
+and `claude-fable-5-1` reject the "thinking off" request outright (measured
+2026-09-09), so `off` there buys the least thinking they offer and asks the API
+not to show it. `anthropic/claude-sonnet-5` behaves the same way because its
+catalog row says it has no `off` level — which is also why the picker does not
+offer you one.
 
 ## Offline
 

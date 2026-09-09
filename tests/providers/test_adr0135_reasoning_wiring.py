@@ -466,7 +466,7 @@ def test_a_long_prompt_alone_reaches_the_carve_hole_on_a_shipped_row() -> None:
         for model in provider_models.values()
         if model.api == "anthropic-messages"
         and model.reasoning
-        and not supports_adaptive_thinking(model.id)
+        and not supports_adaptive_thinking(model)
         and (model.max_tokens or 0) > 0
         and (model.context_window or 0) > 0
         and (model.max_tokens or 0) >= (model.context_window or 0)
@@ -504,8 +504,8 @@ def test_a_long_prompt_alone_reaches_the_carve_hole_on_a_shipped_row() -> None:
 def test_a_caller_max_tokens_caps_the_answer_not_the_payload() -> None:
     """#250 Codex cross-review, finding 1 — the contract, pinned as intended.
 
-    ``SimpleStreamOptions(reasoning="xhigh", max_tokens=16384)`` on
-    ``claude-opus-5`` builds ``max_tokens: 49152`` with
+    ``SimpleStreamOptions(reasoning="xhigh", max_tokens=16384)`` on a
+    128000-cap budget row builds ``max_tokens: 49152`` with
     ``budget_tokens: 32768``, i.e. a payload larger than the caller's number.
     That is pi's contract and not drift: ``adjustMaxTokensForThinking``
     (simple-options.ts:26-50) computes ``min(base + budget, model.maxTokens)``
@@ -514,10 +514,17 @@ def test_a_caller_max_tokens_caps_the_answer_not_the_payload() -> None:
     What the caller's number bounds is the VISIBLE answer, and that is the
     invariant asserted here — the review read the field as a payload cap
     because the docstring said so; the docstring was fixed, not the maths.
+
+    #258 moved the subject. The numbers were measured on
+    ``anthropic/claude-opus-5``, which now takes the *adaptive* path and never
+    builds a budget; the row below is one of the 13 that still offer ``xhigh``
+    on the budget path (counted 2026-09-09) and carries the same 128000 cap,
+    so every number in this test is unchanged.
     """
 
-    model = get_model("anthropic", "claude-opus-5")
+    model = get_model("vercel-ai-gateway", "openai/gpt-5.2")
     assert model is not None and model.max_tokens == 128000
+    assert model.api == "anthropic-messages" and not supports_adaptive_thinking(model)
     extra, max_tokens, _beta = resolve_anthropic_thinking(model, "xhigh", 16384)
     budget = extra["thinking"]["budget_tokens"]
     assert (max_tokens, budget) == (49152, 32768)
@@ -545,9 +552,14 @@ def test_no_output_cap_can_build_a_request_anthropic_rejects() -> None:
     both >= 1024 and leaves an answer. This walk is the "unconstructible"
     claim: every cap from 1 to 40000 either disables thinking or produces a
     pair the API accepts.
+
+    #258 re-pointed the id: those measurements were taken while
+    ``claude-opus-5`` still took the budget path, and it no longer does, so
+    the walk runs on ``claude-opus-4-1`` — a row that does. The branch under
+    test is the carve, which never read the id.
     """
 
-    model = _ant_model(id="claude-opus-5", reasoning=True)
+    model = _ant_model(id="claude-opus-4-1", reasoning=True)
     caps = list(range(1, 2200)) + list(range(2200, 40001, 13))
     disabled = 0
     for cap in caps:
@@ -575,9 +587,11 @@ def test_thinking_disables_itself_only_below_the_two_minimums() -> None:
     2048 = ``_MIN_THINKING_BUDGET`` (Anthropic's floor for ``budget_tokens``)
     + ``_MIN_OUTPUT_TOKENS`` (aelix's reserve for the visible answer). Below
     it there is no valid request; at it there is exactly one.
+
+    On ``claude-opus-4-1`` for the same reason as the walk above (#258).
     """
 
-    model = _ant_model(id="claude-opus-5", reasoning=True)
+    model = _ant_model(id="claude-opus-4-1", reasoning=True)
     for cap in (1, 512, 1024, 2047):
         capped = replace(model, max_tokens=cap)
         extra, max_tokens, needs_beta = resolve_anthropic_thinking(
@@ -593,38 +607,58 @@ def test_thinking_disables_itself_only_below_the_two_minimums() -> None:
     assert (max_tokens, needs_beta) == (2048, True)
 
 
-def test_off_passed_as_a_string_still_enables_thinking() -> None:
-    """Characterisation of a KNOWN, PRE-EXISTING defect — not a fix.
+def test_off_passed_as_a_string_turns_thinking_off() -> None:
+    """#258 — the string ``"off"`` now means off on this adapter.
 
-    ``reasoning="off"`` through the public ``SimpleStreamOptions`` does NOT
-    turn thinking off on this adapter: ``resolve_anthropic_thinking`` gates on
-    ``if not reasoning`` and ``"off"`` is truthy (ADR-0135 Context §3), so it
-    reaches the budget path and ``clamp_reasoning`` sends it to ``"medium"``.
-    #250 did not change that number and the Codex cross-review fixes did not
-    either — the assertions below are 0985fcf's behaviour.
+    It did not on 0985fcf: ``resolve_anthropic_thinking`` gated on ``if not
+    reasoning`` and ``"off"`` is truthy (ADR-0135 Context §3), so it reached
+    the budget path and ``clamp_reasoning`` bought it ``"medium"``'s 8192
+    — the behaviour this test characterised while #259 was open.
 
-    Filed as #259, not fixed here, because it is NOT an Anthropic-adapter bug:
-    ``google_generative_ai._thinking_for_simple`` and its Vertex twin map
-    ``"off"`` to ``"high"`` explicitly, which is worse, and both inherit it
-    from pi. Fixing it means deciding one cross-adapter contract for the
-    literal string on a public field, plus the ADR-0135 amendment that goes
-    with it. The harness never sends the string (it collapses ``"off"`` to
-    ``None``), so the reachable surface is embedders.
+    #258 could not leave it there. Moving the 5-family rows onto the adaptive
+    path makes ``map_thinking_level_to_effort(model, "off")`` the thing that
+    answers, and its coarse fallback returns ``"high"``: asking for no
+    thinking would have bought the most. So the string is answered where it
+    arrives, and the walk below covers both shapes it can be answered in.
+
+    #259 stays open on its own terms: both Google adapters still map ``"off"``
+    to ``"high"``, and that cross-adapter contract is not this issue's.
     """
 
-    model = _ant_model(id="claude-opus-5", reasoning=True, max_tokens=64000)
-    extra, _max, needs_beta = resolve_anthropic_thinking(model, "off", 64000)
-    assert extra["thinking"]["type"] == "enabled"
-    assert extra["thinking"]["budget_tokens"] == 8192
-    assert needs_beta is True
+    # Budget row: "off" is a disabled request, not a medium-sized budget.
+    budget_row = _ant_model(id="claude-opus-4-1", reasoning=True, max_tokens=64000)
+    extra, max_tokens, needs_beta = resolve_anthropic_thinking(
+        budget_row, "off", 64000
+    )
+    assert extra == {"thinking": {"type": "disabled"}}
+    assert (max_tokens, needs_beta) == (64000, False)
 
-    # The other half of the same defect: on a row that declares ``"off": null``
-    # the level is not supported at all, so ``clamp_thinking_level`` — which
-    # ``stream_anthropic`` now applies (#250) — moves it UP to "minimal".
+    # Adaptive row that CAN be turned off: same disabled request. Measured
+    # 2026-09-09 — ``claude-opus-5`` answers with thinking disabled.
+    opus5 = get_model("anthropic", "claude-opus-5")
+    assert opus5 is not None
+    assert resolve_anthropic_thinking(opus5, "off", 64000)[0] == {
+        "thinking": {"type": "disabled"}
+    }
+
+    # Adaptive row that CANNOT: ``claude-fable-5`` declares ``"off": null``
+    # and 400s on ``thinking.type.disabled`` (``req_011CerzNQTwZdGcBeTt9o3Ea``),
+    # so "off" becomes the least thinking it offers. ``clamp_thinking_level``
+    # — which ``stream_anthropic`` applies (#250) — moves "off" UP to
+    # "minimal" on that row, and both spellings land on the same request, so
+    # the clamp can no longer smuggle thinking back in through ``budget_tokens:
+    # 1024``.
     fable = get_model("anthropic", "claude-fable-5")
     assert fable is not None
     assert (fable.thinking_level_map or {}).get("off", "absent") is None
     assert clamp_thinking_level(fable, "off") == "minimal"
+    off_request = {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "low"},
+    }
+    assert resolve_anthropic_thinking(fable, "off", 64000)[0] == off_request
+    assert resolve_anthropic_thinking(fable, "minimal", 64000)[0] != off_request
+    assert resolve_anthropic_thinking(fable, None, 64000)[0] == off_request
 
 
 def test_adjust_honours_a_custom_budget_key_outside_the_table() -> None:
@@ -646,12 +680,18 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
     than a roster, so a catalog refresh that adds another tight-cap row does
     not fail with no bug present.
 
-    Beta2 (#250): the walk covers all 272 non-adaptive rows, not only the 20
+    Beta2 (#250): the walk covers every non-adaptive row, not only the ones
     that offer ``xhigh``. Filtering on the offering rows hid the regression the
-    review found — the 32768 row reaching the other 252 through
-    ``--thinking xhigh``, which on the 28 rows whose cap sits in (16384, 32768]
-    cut the answer allowance from 15616 to 1024. The level is therefore taken
+    review found — the 32768 row reaching the rest through
+    ``--thinking xhigh``, which on a row whose cap sits in (16384, 32768] cut
+    the answer allowance from 15616 to 1024. The level is therefore taken
     through ``clamp_thinking_level``, the way ``stream_anthropic`` takes it.
+
+    #258 shrank the subject: 282 budget rows, 13 of them offering ``xhigh``
+    (counted 2026-09-09; 304 and 23 before, the difference being the 22 Claude
+    rows that moved to the adaptive path). The counts are asserted as
+    behaviour, not as numbers, so the next catalog refresh moves them without
+    failing here.
     """
 
     def expected(cap: int, budget: int) -> int:
@@ -669,10 +709,11 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
         for model in provider_models.values()
         if model.api == "anthropic-messages"
         and model.reasoning
-        and not supports_adaptive_thinking(model.id)
+        and not supports_adaptive_thinking(model)
     ]
-    # 272 rows on 0985fcf, 20 of which offer xhigh: 4 anthropic + 4
-    # github-copilot mirrors + 12 vercel-ai-gateway openai/gpt-5.2…5.5.
+    # 282 rows at this commit, 13 of which offer xhigh — all
+    # vercel-ai-gateway rows serving OpenAI ids over the Anthropic Messages
+    # API, since #258 moved every Claude row of that generation to adaptive.
     assert rows, "no budget-path reasoning model — the walk lost its subject"
     offering = 0
     for model in rows:
@@ -682,7 +723,7 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
         _xmax, xhigh_budget = adjust_max_tokens_for_thinking(cap, cap, effective)
         assert high_budget == expected(cap, 16384), model.id
         if "xhigh" not in get_supported_thinking_levels(model):
-            # 252 rows: the picker never offers xhigh, so an xhigh that arrives
+            # 269 rows: the picker never offers xhigh, so an xhigh that arrives
             # anyway must land on high's budget — 0985fcf behaviour exactly.
             assert effective == "high", model.id
             assert xhigh_budget == high_budget, model.id
@@ -691,7 +732,7 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
         assert effective == "xhigh", model.id
         assert xhigh_budget == expected(cap, 32768), model.id
         if cap > 16384 + _MIN_OUTPUT_TOKENS:
-            # 18 of the 20 offering rows (caps 64000 / 128000).
+            # 11 of the 13 offering rows (cap 128000).
             assert xhigh_budget > high_budget, model.id
         else:
             # ``openai/gpt-5.2-chat`` / ``openai/gpt-5.3-chat``, cap 16384:

@@ -643,6 +643,56 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **Thinking works on Claude Opus 5, Opus 4.8, Sonnet 5 and both Fable rows —
+  and `claude-fable-5` / `claude-fable-5-1` can be used at all.** Ask any of
+  them to think and the request came back `400 invalid_request_error`:
+  *"`thinking.type.enabled` is not supported for this model. Use
+  `thinking.type.adaptive` and `output_config.effort` to control thinking
+  behavior."* Measured against `api.anthropic.com` on 2026-09-09 at `high` and
+  at `xhigh` — and since what is rejected is the `thinking.type` value, which
+  every budget level sends identically, thinking was unusable on those rows at
+  **every** level. The two `fable` rows reject `thinking.type.disabled` too
+  (`req_011CerzNQTwZdGcBeTt9o3Ea`), so they answered nothing at all, thinking
+  on or off — including `claude-fable-5-1`, a row this release's own catalog
+  refresh (#172) added. The defect is older than this release: it reproduces on
+  `0985fcf`, where the adaptive-vs-budget split was a literal id whitelist of
+  `opus-4-6` / `opus-4-7` / `sonnet-4-6`.
+
+  The split now asks the model row. `compat.forceAdaptiveThinking` — a field
+  the catalog already ships, on 12 rows, and that nothing read — decides, in
+  both directions, so a catalog refresh can move a row with no code change. A
+  family fallback (`claude-(opus|sonnet|fable)-(4.6|4.7|4.8|5)`) covers the
+  mirrors upstream has not flagged: without it `github-copilot`,
+  `vercel-ai-gateway` and `opencode` would keep sending the rejected request
+  for the same models behind a proxy — 25 of the 37 adaptive rows reach the
+  branch that way, `github-copilot/claude-opus-4.7` among them. **What was
+  measured is six first-party `anthropic` ids** — the five that changed shape
+  plus the `claude-opus-4-7` control; the other 17 rows that changed are
+  mirrors, they need credentials this repo does not have, and they were equally
+  unverified while they were building a request their model rejects.
+
+  **Thinking `off` now means off here.** On any row that accepts it that is
+  still `thinking: {"type": "disabled"}` — measured to work on `claude-opus-5`,
+  `claude-opus-4-8` and `claude-sonnet-5`. On a row that cannot be turned off
+  the honest answer is the least thinking it offers: the `fable` rows get
+  `thinking: {"type": "adaptive"}` with `output_config: {"effort": "low"}` and
+  no `display`, so the reasoning you asked not to have stays out of the
+  transcript. A literal `SimpleStreamOptions(reasoning="off")` is answered the
+  same way instead of buying `medium`'s token budget, which is what it did
+  before; `--thinking off` and `/thinking off` were never affected, because the
+  harness turns them into "no level" before any adapter runs.
+
+  **What you give up:** on those rows `xhigh` is now an *effort* and not a
+  token budget, so a `maxTokens` override in `models.json` no longer bounds how
+  much they think — the model decides, which is what `adaptive` means. The two
+  rows that genuinely cannot be turned off (`claude-fable-5`,
+  `claude-fable-5-1` — both answer *"thinking.type.disabled" is not supported
+  for this model*) send the lowest adaptive effort for "off" instead, which is
+  the least thinking those rows offer. `claude-sonnet-5` is NOT one of them:
+  upstream declared `"off": null` for it too, but the endpoint accepts
+  `disabled` there (measured), so the catalog row was corrected and "off" on
+  that model still means no thinking and no reasoning bill. See
+  [#258](https://github.com/handochan/aelix-ai/issues/258) and ADR-0135.
 - **The context meter moves during a turn, and after `/model`.** The footer's
   `◔ 42% · 84K/200K` sat on the previous turn's number for a whole
   ten-minute multi-tool turn, and `/model` changed the denominator without
@@ -848,25 +898,22 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   `xhigh` is now a budget tier of its own at **32768**, twice `high`.
 
   **What that changes on the wire, enumerated from the catalog this release
-  ships: 21 rows.** Twenty-three rows offer `xhigh` and take the budget path;
-  on 19 of them (output cap 128000) and on 2 more (`github-copilot`'s
-  `claude-opus-4.8` and `claude-opus-5`, cap 64000) the request goes from
-  `budget_tokens: 16384` to `32768`. Counted against the catalog AFTER the
-  same release's refresh (#172), which is what ships: on `main` the numbers
-  were 20 and 18, and the refresh added `anthropic/claude-fable-5-1` and
-  `github-copilot/claude-fable-5.1` — rows that offer `xhigh` only because
-  that refresh hand-copied their predecessor's `thinkingLevelMap`. The
-  `github-copilot` rows are derived from the catalog, not measured on the
-  wire: reaching that endpoint needs a Copilot seat, and nobody ran it. The
-  other two **do not change**:
-  `vercel-ai-gateway`'s `openai/gpt-5.2-chat` and `openai/gpt-5.3-chat` cap
-  output at 16384, where the rule that leaves 1024 tokens for the visible
-  answer shrinks either tier to 15360.
+  ships: 11 rows.** Thirteen rows offer `xhigh` and take the budget path; on 11
+  of them (output cap 128000, all `vercel-ai-gateway` rows serving OpenAI ids
+  over the Anthropic Messages API) the request goes from `budget_tokens: 16384`
+  to `32768`. The other two **do not change**: `openai/gpt-5.2-chat` and
+  `openai/gpt-5.3-chat` cap output at 16384, where the rule that leaves 1024
+  tokens for the visible answer shrinks either tier to 15360. Counted against
+  the catalog AFTER the same release's refresh (#172) **and** after the same
+  release's #258, which is what ships. Before #258 the count was 21 of 23,
+  because ten Claude rows — five `anthropic` ids and five `github-copilot`
+  mirrors — took the budget path too; they now think adaptively, where a
+  budget is not what steers the model.
 
-  **On 8 of those 18 the bigger budget never reaches the model — and neither
-  did the old one.** The request Aelix builds was sent verbatim to
-  `api.anthropic.com` on 2026-09-09, at `high` and at `xhigh`, and all eight
-  return `400 invalid_request_error`: *"`thinking.type.enabled` is not
+  **The ten Claude rows that left this tier were never receiving it.** The
+  request Aelix built for them was sent verbatim to `api.anthropic.com` on
+  2026-09-09, at `high` and at `xhigh`, and all eight first-party attempts
+  returned `400 invalid_request_error`: *"`thinking.type.enabled` is not
   supported for this model. Use `thinking.type.adaptive` and
   `output_config.effort` to control thinking behavior."* — `claude-opus-5`
   (`req_011CerQpNc69m6CAsK93KroH`, `req_011CerQpLuQC5P5Xaw7MzyVQ`),
@@ -875,24 +922,20 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   (`req_011CerQpUWYMoCu4L9t8WS7w`, `req_011CerQpSw3MHtbeDFKJYEpi`) and
   `claude-sonnet-5` (`req_011CerQpXRAezGeumCSuhkSk`,
   `req_011CerQpVws2QN9E2uMrD6yC`). What is rejected is the `thinking.type`
-  value, which is the same on every budget-path level, so **thinking has never
-  worked on those four rows at any level** — not just `xhigh`. They take the
-  budget path only because `supports_adaptive_thinking` is a literal whitelist
-  of `opus-4-6` / `opus-4-7` / `sonnet-4-6`; the same 400 lands on 0985fcf, so
-  this release neither introduces nor fixes it, and it is now filed as
-  [#258](https://github.com/handochan/aelix-ai/issues/258) with the catalog
-  field (`compat.forceAdaptiveThinking`) that already records the right answer.
-  `claude-opus-4-7` — a whitelisted id — answered normally at both levels in
-  the same run (`req_011CerQpYrVRK4GK5pf5sJ8x`,
-  `req_011CerQpdX2jsWYUfDcBa1x6`), so the adaptive path is fine. The four
-  `github-copilot` mirrors are the same models behind a proxy and were **not**
-  measured.
+  value, which is the same on every budget-path level, so **thinking never
+  worked on those rows at any level** — not just `xhigh`. The same 400 lands on
+  0985fcf, so this tier neither introduced the failure nor is what repairs it:
+  [#258](https://github.com/handochan/aelix-ai/issues/258), in this same
+  release, moves them onto the adaptive request they accept — see its own entry
+  below. `claude-opus-4-7`, which was already adaptive, answered normally at
+  both levels in the same run (`req_011CerQpYrVRK4GK5pf5sJ8x`,
+  `req_011CerQpdX2jsWYUfDcBa1x6`). The `github-copilot` mirrors are the same
+  models behind a proxy and were **not** measured.
 
-  So the tier's larger budget is what actually ships on the **ten**
-  `vercel-ai-gateway` `openai/gpt-5.2`…`gpt-5.5` rows served over the Anthropic
-  Messages API. No request was made against that gateway; there, what is
-  measured is the request Aelix builds. Opus 4.6/4.7 and Sonnet 4.6 use
-  *adaptive* thinking and were never affected. On a call that carries its own
+  So the tier's larger budget is what actually ships on the **eleven**
+  `vercel-ai-gateway` `openai/*` rows served over the Anthropic Messages API.
+  No request was made against that gateway; there, what is measured is the
+  request Aelix builds. The adaptive rows were never affected. On a call that carries its own
   `max_tokens` the request's `max_tokens` rises with the budget — with a 32000-token base on `claude-opus-5`, 48384 before and
   **64768** now. What you pass there caps the *visible answer*, not the
   payload: the thinking budget is added on top and the sum clamped to the
@@ -907,20 +950,19 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   clamps the level against the model row the way the Google and OpenAI adapters
   already did.
   That clamp has one other **embedder-visible** effect, on a path no CLI flag
-  reaches: a literal `SimpleStreamOptions(reasoning="off")` is now clamped to
-  `"minimal"` on the two catalog rows that declare `"off": null`
-  (`anthropic/claude-fable-5`, `anthropic/claude-sonnet-5`), so those two send
-  `budget_tokens: 1024` where they sent **8192** before. `off` as a string
-  still does **not** turn thinking off here — `resolve_anthropic_thinking`
-  gates on `if not reasoning` and `"off"` is truthy — it just buys a smaller
-  budget than it used to. The harness collapses `off` to `None` long before any
-  adapter sees it, so `--thinking off` and `/thinking off` are unaffected; only
-  a direct caller of the provider API can reach this. The underlying defect is
-  cross-adapter — both Google adapters map `"off"` to `"high"`, which is worse
-  — so it is left to
-  [#259](https://github.com/handochan/aelix-ai/issues/259) rather than patched
-  in one adapter, and is characterised in the meantime by
-  `test_off_passed_as_a_string_still_enables_thinking`.
+  reaches: a literal `SimpleStreamOptions(reasoning="off")` is clamped to
+  `"minimal"` on the three catalog rows that declare `"off": null`
+  (`anthropic/claude-fable-5`, `anthropic/claude-fable-5-1`,
+  `anthropic/claude-sonnet-5`). On this release that no longer buys thinking:
+  #258, below, answers the string `"off"` where it arrives, so those rows send
+  their lowest adaptive effort and every other row sends
+  `thinking: {"type": "disabled"}` — against `budget_tokens: 8192` on 0985fcf,
+  where `resolve_anthropic_thinking` gated on `if not reasoning` and `"off"` is
+  truthy. The harness collapses `off` to `None` long before any adapter sees
+  it, so `--thinking off` and `/thinking off` were never affected either way;
+  only a direct caller of the provider API can reach this. Both Google adapters
+  still map `"off"` to `"high"`, which is worse, so the cross-adapter contract
+  stays open as [#259](https://github.com/handochan/aelix-ai/issues/259).
   **What you give up:** a top tier that is slower and costs more than it did
   when it was `high` under another name. And if you override `maxTokens` or
   `contextWindow` in `models.json` so an *xhigh-offering* row's effective

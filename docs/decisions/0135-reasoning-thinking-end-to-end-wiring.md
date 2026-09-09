@@ -4,8 +4,11 @@ Status: Accepted (**#250 amendment 2026-09-08** — `xhigh` is a budget tier of 
 own, 32768, on the rows that offer it, and `stream_anthropic` clamps the level
 against the model row like every sibling adapter; **Correction 2, 2026-09-09** —
 the carve is capped so tiers cannot invert, an unbuildable budget disables
-thinking, and the Gemini fallback is `-1` rather than the family ceiling; see
-the Amendment and Correction 2 below)
+thinking, and the Gemini fallback is `-1` rather than the family ceiling;
+**#258 amendment 2026-09-09** — `supports_adaptive_thinking` reads the model row
+(`compat.forceAdaptiveThinking`, then a family fallback) instead of pi's marker
+list, and `"off"` is answered by this adapter rather than falling through to a
+budget; see the Amendments and Correction 2 below)
 Date: 2026-06-17
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -243,7 +246,10 @@ Anthropic ids (`claude-fable-5`, `claude-opus-4-8`, `claude-opus-5`,
 `openai/gpt-5.2-chat`, `openai/gpt-5.3-chat`, cap 16384 — are unchanged,
 because the carve shrinks both tiers to 15360 there, so the request Aelix
 builds differs on **18**. The adaptive path (Opus 4.6/4.7, Sonnet 4.6) is
-untouched.
+untouched. (Both counts are as of 2026-09-08. The **#258 amendment below**
+re-counts them for what ships: the ten Claude rows here take the adaptive path
+now, leaving 13 rows that offer `xhigh` on the budget path and 11 whose request
+changes.)
 
 **Correction 2 turned the "note as a finding" here into a measurement, and it
 takes 8 of those 18 out of the count that matters.**
@@ -428,9 +434,11 @@ change that number and neither does this correction — but the adapter-side
 `clamp_thinking_level` added above **does** change what two rows send, which
 the beta2 re-review found missing from the CHANGELOG. Measured across all 287
 `anthropic-messages` reasoning rows, that clamp differs from its input in
-exactly two ways: `xhigh → high` on 257 rows, and `off → minimal` on the two
-that declare `"off": null` (`anthropic/claude-fable-5`,
-`anthropic/claude-sonnet-5`). On those two a literal `reasoning="off"` now
+exactly two ways: `xhigh → high` on 257 rows, and `off → minimal` on the rows
+that declare `"off": null` (`anthropic/claude-fable-5` and
+`anthropic/claude-fable-5-1`; `anthropic/claude-sonnet-5` carried that
+declaration too until #258 measured the endpoint accepting `disabled` there and
+corrected the row). On those a literal `reasoning="off"` now
 sends `budget_tokens: 1024` where 0985fcf sent 8192. Still embedder-only — the
 harness collapses `off` to `None` first — and now stated in the CHANGELOG. It
 is filed as [#259](https://github.com/handochan/aelix-ai/issues/259) rather
@@ -443,3 +451,101 @@ field, with the ADR amendment that goes with it. The harness collapses `"off"`
 to `None` before any adapter sees it, so the reachable surface is embedders.
 `tests/providers/test_adr0135_reasoning_wiring.py::test_off_passed_as_a_string_still_enables_thinking`
 characterises it so the next change to this code cannot make it worse silently.
+
+## Amendment (#258, 2026-09-09) — the catalog decides who thinks adaptively, and "off" is answered here
+
+**What was wrong.** Layer 3's split above (`supports_adaptive_thinking`) was pi's
+literal marker list — `opus-4-6` / `opus-4-7` / `sonnet-4-6` — so every other
+Claude id built the budget request. Correction 2 measured what that costs on
+four ids and filed it; the same run, re-read for this amendment, shows the
+failure is wider than that table:
+
+| model | thinking on | thinking off |
+|---|---|---|
+| `claude-opus-5` | 400 | works |
+| `claude-opus-4-8` | 400 | works |
+| `claude-sonnet-5` | 400 | works |
+| `claude-fable-5` | 400 | **400** |
+| `claude-fable-5-1` | 400 | **400** |
+| `claude-opus-4-7` (control) | works | works |
+
+The `fable` rows reject `thinking.type.disabled` as well —
+*"`thinking.type.disabled` is not supported for this model. Use
+`thinking.type.adaptive` and `output_config.effort` to control thinking
+behavior."* (`req_011CerzNQTwZdGcBeTt9o3Ea`) — so they could not be used **at
+all**, at any level, thinking on or off. `claude-fable-5-1` is a row the same
+release added (#172's catalog refresh), so beta.2 was about to ship a brand-new
+row that answers nothing. The bug itself is pre-existing (it reproduces on
+`0985fcf`); what the release added is another row exposed to it.
+
+**Decision 1 — the row answers, not a marker list.**
+`supports_adaptive_thinking` takes the `Model`, not `model_id: str`, and reads
+`compat.forceAdaptiveThinking` first. The flag is believed in **both**
+directions, so a catalog refresh can move a row onto or off the adaptive path
+with no code change. 12 shipped rows carry it (2026-09-09): the six first-party
+`anthropic` ids and the `cloudflare-ai-gateway` / `opencode` mirrors.
+
+**Decision 2 — a family regex stays, as a fallback, and it is widened.** The
+flag alone was measured to be insufficient, which is the whole reason the marker
+list survives: `github-copilot` and `vercel-ai-gateway` serve the same models
+over the same API and carry **no** `compat` at all — including
+`github-copilot/claude-opus-4.7`, whose first-party twin is this issue's
+control. 25 of the 37 adaptive `anthropic-messages` rows reach the branch only
+through the regex. It is therefore `claude-(opus|sonnet|fable)-(4[-.][678]|5)`
+— the generations where `budget_tokens` is removed or deprecated — rather than
+the three markers pi knows. `haiku` is deliberately absent: `claude-haiku-4-5`
+is a budget row, and is the row Anthropic's 1024-token `budget_tokens` floor was
+measured on.
+
+**Decision 3 — "off" is a level this function answers.** Two shapes, because
+the rows differ:
+
+* the row supports `off` (its `thinkingLevelMap` does not declare `"off":
+  null`) → `thinking: {"type": "disabled"}`, exactly as before. Measured:
+  `claude-opus-5`, `claude-opus-4-8` and `claude-sonnet-5` all answer to it.
+* the row does not → `thinking: {"type": "adaptive"}` with
+  `output_config.effort` at the row's **lowest** supported level (`"low"` on
+  the `fable` rows), and **no `display`**, so the API default (`omitted`) keeps
+  reasoning the user asked not to have out of the transcript. The signal is the
+  catalog's `"off": null` (three rows declare it) plus a `claude-fable-\d`
+  fallback for the mirrors upstream left mapless — same reason as Decision 2.
+
+`claude-sonnet-5` is where the wire and the catalog disagree: `disabled` is
+accepted there, but the row declares `"off": null`, and the catalog wins on
+purpose. The picker (`get_supported_thinking_levels`) and the clamp
+(`clamp_thinking_level`) already act on that declaration; the request is simply
+the third place that now agrees with them, and what it sends is accepted either
+way.
+
+**This closes the #250 follow-up on the `"off"` string for this adapter, because
+#258 could not leave it open.** The correction above recorded that
+`SimpleStreamOptions(reasoning="off")` bought `"medium"`'s budget, and that
+`clamp_thinking_level` moved `off → minimal` on the rows declaring `"off":
+null`. Both die here — but the reason is not tidiness. Once those rows take the
+adaptive path, the function that answers `"off"` is
+`map_thinking_level_to_effort`, whose coarse fallback returns `"high"`: asking
+for **no** thinking would have bought the **most**. That is not hypothetical —
+measured on `0985fcf`, `claude-opus-4-7` (already adaptive there) did exactly
+that. [#259](https://github.com/handochan/aelix-ai/issues/259) stays open on its
+own terms: both Google adapters still map `"off"` to `"high"`, and the
+cross-adapter contract for the literal string is not this issue's to settle.
+
+**Rejected.** *The flag alone* — leaves 15 mirror rows of the same models
+building the rejected request; the "read the catalog" thesis is right about
+where the answer lives and wrong about the catalog being complete. *Lengthening
+the literal id list* — re-encodes by hand what the flag already ships, and still
+misses a spelling. *Adaptive-at-lowest-effort for every adaptive row's "off"* —
+throws away a real `disabled` on the rows that accept it, which is the level the
+user actually asked for.
+
+**Consequences.** Adaptive `anthropic-messages` rows: 15 → 37; the budget path:
+304 → 282; rows that offer `xhigh` on the budget path: 23 → 13, all
+`vercel-ai-gateway` rows serving OpenAI ids (counted 2026-09-09, after #172's
+refresh). Every count is asserted as behaviour rather than as a number in
+`tests/providers/test_adaptive_thinking_258.py`, so the next refresh moves them
+without failing. 22 rows changed shape — 5 `anthropic`, 5 `github-copilot`,
+5 `opencode`, 7 `vercel-ai-gateway`. What was measured on the wire is six
+first-party ids: those five plus the `claude-opus-4-7` control. The 17 mirror
+rows need credentials nobody in this repo has and are unverified in both
+directions (they were also unverified while they were building a request their
+underlying model rejects).

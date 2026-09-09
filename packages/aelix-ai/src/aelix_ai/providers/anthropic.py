@@ -426,7 +426,8 @@ async def stream_anthropic(
     # Pi (``providers/anthropic.ts``) OAuth branch.
     oauth_mode = is_oauth_token(opts.api_key)
     # ADR-0135 (P0 #1): resolve the per-turn thinking level into the Anthropic
-    # request thinking param (adaptive effort for Opus 4.6+/Sonnet 4.6,
+    # request thinking param (adaptive effort for the rows
+    # ``supports_adaptive_thinking`` claims — #258 reads the catalog for that —
     # budget_tokens for older reasoning models) and decide whether the
     # interleaved-thinking beta header is needed. Computed before client
     # creation so the header can be attached to the SDK client default headers.
@@ -462,16 +463,18 @@ async def stream_anthropic(
     # a row that does NOT offer xhigh) sent ``budget_tokens: 30976`` and left
     # the visible answer 1024 tokens, against 16384/15616 on 0985fcf.
     # Every count in this comment is over the
-    # 272 budget-path rows (``anthropic-messages`` + ``reasoning`` + not
-    # adaptive), re-derived from ``models_generated.json`` in the beta2
-    # re-review: 28 of them declare a cap inside that (16384, 32768] window and
-    # 46 more are clamped into it by ``_effective_output_cap``
-    # (``_UNSAT_ABSOLUTE_OUTPUT_CEILING`` = 32000). ``clamp_thinking_level`` is
-    # the identity on the 20 that offer ``xhigh``, maps ``xhigh`` back to
-    # ``high`` on the other 252 (backward scan), and leaves ``None`` as ``None``
-    # so the "no reasoning requested" signal survives. (Over the wider 287
-    # reasoning rows the identity set is 30 and the ``high`` set 257 — the extra
-    # 15 are adaptive rows that never build a budget at all.)
+    # 282 budget-path rows (``anthropic-messages`` + ``reasoning`` + not
+    # adaptive), re-derived from ``models_generated.json`` at this commit
+    # (#258; the beta2 re-review said 272, over a catalog #172's refresh has
+    # since grown and #258 has since moved 22 rows out of): 32 of them declare
+    # a cap inside that (16384, 32768] window and 60 more are clamped into it
+    # by ``_effective_output_cap`` (``_UNSAT_ABSOLUTE_OUTPUT_CEILING`` =
+    # 32000). ``clamp_thinking_level`` is the identity on the 13 that offer
+    # ``xhigh``, maps ``xhigh`` back to ``high`` on the other 269 (backward
+    # scan), and leaves ``None`` as ``None`` so the "no reasoning requested"
+    # signal survives. (Over the wider 319 reasoning rows the identity set is
+    # 33 and the ``high`` set 286 — the extra 20 are adaptive rows that never
+    # build a budget at all.)
     clamped_reasoning = clamp_thinking_level(model, opts.reasoning)
     # The SAME clamped ceiling is handed to the thinking math as its hard clamp.
     # Passing only the clamped *base* would not be enough: the budget path
