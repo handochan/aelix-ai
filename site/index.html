@@ -119,8 +119,20 @@
   }
   .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
 
-  header.hero { padding: 96px 0 72px; text-align: center; }
-  .lockup { width: min(620px, 88vw); height: auto; margin: 0 auto 40px; display: block;
+  /* `padding-block`, not `padding`. The shorthand here is more specific than
+     .wrap's, so `96px 0` silently zeroed the 24px side gutter for everything in
+     the hero -- 1060px of content against the 1012px the sections below get,
+     and flush to both screen edges on a phone. Centred text hid it; the install
+     card, which has an edge, did not. Restating `24px` here would fix today and
+     re-break the day .wrap changes, so this longhand cannot touch the sides at
+     all and .wrap stays the one place the gutter is written.
+
+     `.lockup` moves off `88vw` for the same reason: 88vw was solved against a
+     hero with no padding, and 0.88vw exceeds the new content box below 400px --
+     +1.2px at 390 (where this was first checked, hence invisible), +9.6px at
+     320. `100%` is the content box by definition. */
+  header.hero { padding-block: 96px 72px; text-align: center; }
+  .lockup { width: min(620px, 100%); height: auto; margin: 0 auto 40px; display: block;
     animation: rise .9s ease-out both; }
   /* The mark (deep frame + gradient strand) is theme-neutral by construction
      and is byte-identical in lockup-dark.svg and lockup-light.svg. Only the
@@ -141,26 +153,81 @@
   .sub { max-width: 62ch; margin: 0 auto 36px; color: var(--fg); font-size: 17px; }
   .sub b { color: var(--fg-strong); font-weight: 600; }
 
-  .install {
-    display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center;
-    background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 20px; font-family: var(--mono); font-size: 14px; color: var(--fg-strong);
-    overflow-x: auto; max-width: 100%;
+  /* The install block: two commands, one card, one row each. They used to be
+     two `inline-flex` boxes that shrank to their own text, so the 84-character
+     POSIX line and the 119-character Windows line drew two boxes of visibly
+     different width, ragged inside a centred hero. A block-level card makes
+     that width structural instead of a coincidence of content length, and its
+     edges land on the same grid as the section cards further down.
+
+     Each command sits on a row of its OWN, under its platform label, because a
+     copy button beside it would take the horizontal room the Windows line
+     needs: at 12px that line measures 860px plus a 29px prefix (measured in
+     Chrome at 1440x1000, SF Mono) against 970px of usable card width -- 81px
+     of slack for a mono face wider than 0.6em. Narrower than that and `.cmd`
+     scrolls rather than wraps, which is the case the copy button is for: a
+     clipped line is still a line the reader never has to retype. */
+  .installs {
+    text-align: left; background: var(--bg-elev);
+    border: 1px solid var(--border); border-radius: 12px;
   }
-  .install .p { color: var(--accent); user-select: none; }
-  /* Two install lines, one per platform, one line each. `.install` is
-     inline-flex and the hero is text-align: center, so a bare pair would sit
-     side by side; the column stacks them. The two rules under it are what keep
-     each line whole: at 14px the 119-char Windows command needs ~1080px against
-     this hero's 1012px content box, so `flex-wrap: wrap` pushed the `PS>`
-     prefix onto a centred row of its own (measured in headless Chrome at
-     1440x1000). nowrap keeps the prefix inline and 12px brings the line inside
-     the column with ~70px to spare -- the margin a mono face wider than 0.6em
-     needs. Below ~985px viewport the box scrolls, which is what
-     `overflow-x: auto` was there for and what wrapping used to pre-empt. */
-  .installs { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  .installs .install { flex-wrap: nowrap; white-space: nowrap; font-size: 12px; }
-  .installs .note { margin: 4px 0 0; font-size: 13px; color: var(--fg-muted); }
+  .install { padding: 15px 20px 17px; }
+  .install + .install { border-top: 1px solid var(--border); }
+  .install .head { display: flex; align-items: center; gap: 12px; margin-bottom: 7px; }
+  .os {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--fg-muted);
+  }
+  /* `tabindex="0"` in the markup, and the ring that makes it visible. Below
+     ~979px the Windows line is clipped, and Chrome is the only engine that
+     makes a childless scroll container focusable on its own -- without this a
+     keyboard reader on Safari or Firefox cannot scroll the line to read it, and
+     with script off there is no copy button to redeem that. */
+  .cmd {
+    display: block; overflow-x: auto; white-space: pre; padding-bottom: 2px;
+    font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--fg-strong);
+  }
+  .cmd:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 3px; }
+  .cmd .p { color: var(--accent); user-select: none; }
+  /* The caveat lives OUTSIDE the card. Inside it -- under the command, at the
+     `PS>` prompt's own indent and carrying a mono version string -- it read as
+     one more line of the thing to run. Out here there is nothing to mistake it
+     for: the card holds commands and the buttons that copy them, and nothing
+     else. Its own class, not `.note`, because `.feat .more .note` is a
+     different element and a bare `.note` rule would resize it.
+
+     Centred, with the rest of the hero: out of the box it belongs to the page
+     rather than to the card, so it joins the hero's rhythm instead of the
+     card's left edge. Its subject is back in the sentence, because out here it
+     no longer sits in the Windows row to say which platform it means. */
+  .install-note {
+    margin: 12px 0 0; text-align: center; font-size: 12.5px; color: var(--fg-muted);
+  }
+  .install-note code { font-family: var(--mono); }
+  /* The copy button borrows the secondary `.btn`'s border and its accent hover
+     step, so the two read as one family. `min-width` is sized for the longest
+     label it ever carries -- "Copied" and "Failed", six tracked characters at
+     11px -- because without it the header row twitches on every copy. */
+  .copy {
+    margin-left: auto; min-width: 76px; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    padding: 5px 11px; border-radius: 6px; background: none;
+    border: 1px solid var(--border); color: var(--fg-muted);
+  }
+  .copy[hidden] { display: none; }
+  /* The result is announced from here, not from the button. A control that is
+     its own live region announces its own revert 1.6s later with no user
+     action, and its accessible name would change out from under a voice-control
+     user mid-command -- so the button's name is pinned to "Copy" and this
+     carries what happened. */
+  .copy-status {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    border: 0; overflow: hidden; white-space: nowrap; clip-path: inset(50%);
+  }
+  .copy:hover { border-color: var(--accent-hover); color: var(--fg-strong); }
+  .copy:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+  /* Never colour alone -- the label itself becomes "Copied". */
+  .copy[data-state="done"] { border-color: var(--accent); color: var(--accent); }
   .btns { margin-top: 26px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
   .btn {
     font-family: var(--mono); font-size: 14px; letter-spacing: .04em; text-decoration: none;
@@ -245,10 +312,24 @@
   Self-hosted and auditable, extensible in the language your team already writes,
   on the model budgets you already pay for. It never phones home.</p>
   <div class="installs">
-    <div class="install"><span class="p">$</span>curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh</div>
-    <div class="install"><span class="p">PS&gt;</span>powershell -ExecutionPolicy Bypass -c &quot;irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex&quot;</div>
-    <p class="note">Windows is experimental and needs <code>v0.1.0-beta.2</code> or newer.</p>
+    <div class="install">
+      <div class="head">
+        <span class="os" id="os-posix">macOS · Linux</span>
+        <button class="copy" type="button" hidden aria-label="Copy" aria-describedby="os-posix">Copy</button>
+        <span class="copy-status" role="status"></span>
+      </div>
+      <code class="cmd" tabindex="0"><span class="p" aria-hidden="true">$ </span><span class="c">curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh</span></code>
+    </div>
+    <div class="install">
+      <div class="head">
+        <span class="os" id="os-windows">Windows</span>
+        <button class="copy" type="button" hidden aria-label="Copy" aria-describedby="os-windows">Copy</button>
+        <span class="copy-status" role="status"></span>
+      </div>
+      <code class="cmd" tabindex="0"><span class="p" aria-hidden="true">PS&gt; </span><span class="c">powershell -ExecutionPolicy Bypass -c &quot;irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex&quot;</span></code>
+    </div>
   </div>
+  <p class="install-note">Windows is experimental and needs <code>v0.1.0-beta.2</code> or newer.</p>
   <div class="btns">
     <a class="btn primary" href="https://github.com/handochan/aelix-ai">GitHub</a>
     <a class="btn" href="https://github.com/handochan/aelix-ai/blob/main/docs/guides/getting-started.md">Get started</a>
@@ -316,6 +397,104 @@
     <p><a href="https://github.com/handochan/aelix-ai">github.com/handochan/aelix-ai</a></p>
   </div>
 </footer>
+
+<script>
+  /* The copy buttons are revealed by script and never by markup: a button that
+     cannot reach the clipboard is worse than no button at all, and `site/` is
+     published to Pages verbatim -- there is no build step to feature-test for
+     one. Each button copies the text of the `.c` span in its own row, so what
+     lands on the clipboard is exactly what the reader is looking at; there is
+     no second copy of the command anywhere that could drift out of step with
+     the one on screen. */
+  (function () {
+    var HOLD = 1600;
+
+    function viaTextarea(text) {
+      var area = document.createElement('textarea');
+      var previous = document.activeElement;
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(area);
+      area.select();  /* which also focuses it -- that is why the trick works */
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (error) { ok = false; }
+      area.remove();
+      /* ...and focus would land on <body>, returning a keyboard reader to the
+         top of the tab order to walk the whole hero again. */
+      if (previous && previous.focus) previous.focus({ preventScroll: true });
+      return ok;
+    }
+
+    /* The async API first: it is the one that survives a permission prompt and
+       the one browsers are keeping. It needs a secure context, though, and Pages
+       is https while a colleague reading a copy off a plain file:// or http://
+       host is not -- there the textarea runs inside the click's own task and
+       works. On the REJECTION path it is a long shot rather than a floor: both
+       Blink and Gecko scope user activation to the task, and that one resumes
+       after a cross-process clipboard round trip. It costs nothing to try, and
+       when it fails the selection below is what the reader is left holding. */
+    function copy(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; },
+          function () { return viaTextarea(text); }
+        );
+      }
+      return Promise.resolve(viaTextarea(text));
+    }
+
+    /* Both paths refused: leave the command selected so ctrl/cmd-C still works
+       rather than leaving the reader with a button that only says no. */
+    function select(node) {
+      var selection = window.getSelection();
+      if (!selection) return;
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    var buttons = document.querySelectorAll('.installs .copy');
+    Array.prototype.forEach.call(buttons, function (button) {
+      var row = button.closest('.install');
+      var command = row && row.querySelector('.cmd .c');
+      var status = row && row.querySelector('.copy-status');
+      if (!command) return;  /* the markup moved: better no button than a dead one */
+      /* The word it reverts to is the one the markup shipped, read once. A
+         constant up top would be a second copy of the label, and second copies
+         drifting is the whole reason the command itself is read from the page. */
+      var label = button.textContent;
+      button.hidden = false;
+      var timer;
+
+      function settle(ok) {
+        if (!ok) select(command);
+        button.textContent = ok ? 'Copied' : 'Failed';
+        /* Clearing it on failure is the point: a copy that fails inside the
+           previous one's hold would otherwise keep the success accent and paint
+           the word "Failed" in it. */
+        if (ok) { button.dataset.state = 'done'; } else { delete button.dataset.state; }
+        if (status) status.textContent = ok ? 'Copied to clipboard' : 'Copy failed';
+        window.clearTimeout(timer);
+        timer = window.setTimeout(function () {
+          button.textContent = label;
+          delete button.dataset.state;
+          /* Emptied rather than reset to another sentence: a live region
+             announces additions, so clearing it says nothing and a second
+             announcement 1.6s after the click would be noise. */
+          if (status) status.textContent = '';
+        }, HOLD);
+      }
+
+      button.addEventListener('click', function () {
+        /* Both arms, so nothing this returns can become an unhandled rejection
+           on a page that has no way to report one. */
+        copy(command.textContent.trim()).then(settle, function () { settle(false); });
+      });
+    });
+  })();
+</script>
 
 </body>
 </html>

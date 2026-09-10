@@ -32,6 +32,11 @@ WHAT IT MEASURES.
 6. The inline lockup matches the canonical brand vectors, checked against the
    bytes of ``lockup-dark.svg`` and ``lockup-light.svg`` themselves, so the page
    cannot drift from BRAND.md.
+7. The install block still has the shape its copy buttons need, the Windows
+   caveat still sits outside the card rather than inside a command row, and the
+   command each button hands to the clipboard is the one the READMEs document. A
+   reader who clicks Copy never retypes the line and never proofreads it, so a
+   command that has drifted from the docs is one nobody will catch by eye.
 
 Points 2, 3 and the both-rule-sets half of 5 exist because an adversarial review
 demonstrated the earlier version passing while the page was broken.
@@ -43,6 +48,7 @@ otherwise pass by seeing nothing.
 from __future__ import annotations
 
 import re
+from html import unescape
 from pathlib import Path
 
 import pytest
@@ -50,6 +56,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGE = REPO_ROOT / "site" / "index.html"
 BRAND = REPO_ROOT / "docs" / "assets" / "brand"
+#: Every place the same two install commands are written down. The homepage is
+#: published to Pages and these are read on GitHub, so nothing but a test puts
+#: them in the same room.
+DOCS = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "README.ko.md",
+    REPO_ROOT / "docs" / "guides" / "getting-started.md",
+)
 
 #: WCAG 2.2 AA for normal-size text.
 AA_TEXT = 4.5
@@ -634,3 +648,164 @@ def test_the_browser_chrome_colour_matches_the_page(scheme: str) -> None:
         f"the {scheme} theme-color is {by_scheme[scheme]} but the page ground is "
         f"{SCHEMES[scheme]['--bg']}"
     )
+
+
+# --------------------------------------------------------------------------
+# the install block, and what the copy button actually hands over
+# --------------------------------------------------------------------------
+
+_INSTALL_ROW = re.compile(r'<div class="install">')
+_COPY_BUTTON = re.compile(r'<button class="copy"([^>]*)>')
+_PROMPT = re.compile(r'<span class="p"([^>]*)>')
+#: What the script copies, addressed the way the script addresses it. Matching
+#: the `.c` span ALONE would leave `.cmd` -- half of `row.querySelector('.cmd
+#: .c')` -- named nowhere in this file: renaming that class would take both
+#: buttons off the page and every test here would still pass.
+_COMMAND = re.compile(
+    r'<code class="cmd"[^>]*>.*?<span class="c">(.*?)</span>.*?</code>', re.S
+)
+
+#: The two commands the homepage prints, in page order.
+COMMANDS = [unescape(found) for found in _COMMAND.findall(HTML)]
+
+
+def test_the_install_block_still_has_the_shape_its_buttons_need() -> None:
+    """The buttons are revealed by script, which finds them through ``.copy``
+    and finds what to copy through ``.cmd .c``. Rename either and the page loses
+    its buttons in silence: it still renders, still passes every colour test
+    above, and quietly stops doing the thing the block was rebuilt for."""
+
+    rows = _INSTALL_ROW.findall(HTML)
+    buttons = _COPY_BUTTON.findall(HTML)
+    assert len(rows) == 2, f"expected two install rows, found {len(rows)}"
+    assert len(COMMANDS) == len(rows), (
+        f"{len(rows)} install rows but {len(COMMANDS)} `.cmd .c` spans -- a row "
+        "has nothing for its button to copy"
+    )
+    for command in COMMANDS:
+        # An EMPTY span is the degenerate case every other test here waves
+        # through: it carries no prompt, and it is "contained" in any document
+        # that has a blank line in it. The button would copy nothing at all.
+        assert command.strip(), "a `.cmd .c` span is empty -- its button copies nothing"
+    assert len(buttons) == len(rows), f"{len(rows)} install rows but {len(buttons)} copy buttons"
+    for attrs in buttons:
+        assert " hidden" in attrs, (
+            "a copy button ships visible in the markup. It is revealed by script "
+            "on purpose -- a button that cannot reach the clipboard is worse than "
+            "no button, and `site/` has no build step to feature-test for one."
+        )
+        assert 'type="button"' in attrs, "a copy button without type=button submits"
+        described = re.search(r'aria-describedby="([^"]+)"', attrs)
+        assert described, (
+            "a copy button has no aria-describedby. Both are named `Copy`, so "
+            "without one a screen reader offers two identical buttons."
+        )
+        assert f'id="{described.group(1)}"' in HTML, (
+            f'aria-describedby points at "{described.group(1)}", which nothing carries'
+        )
+    for attrs in _PROMPT.findall(HTML):
+        assert 'aria-hidden="true"' in attrs, (
+            'a `$`/`PS>` prompt is not hidden from assistive tech, so it is read '
+            'aloud as part of the command it decorates'
+        )
+    assert HTML.count('<code class="cmd" tabindex="0">') == len(rows), (
+        "a `.cmd` is not focusable. Below ~979px the Windows line is clipped, "
+        "and outside Chrome a scroll container is only keyboard-scrollable if "
+        "something makes it focusable -- with script off there is no button to "
+        "fall back on"
+    )
+
+
+@pytest.mark.parametrize("command", COMMANDS, ids=lambda command: (command.split() or ["<empty>"])[0])
+def test_the_prompt_is_not_part_of_what_gets_copied(command: str) -> None:
+    """``$`` and ``PS>`` are decoration. They live in a span of their own,
+    outside the one the script reads, so a paste into a shell cannot begin with
+    a stray prompt character."""
+
+    assert not command.startswith(("$", "PS>", " ")), (
+        f"the copied command starts with a prompt or a space: {command!r}"
+    )
+
+
+@pytest.mark.parametrize("source", DOCS, ids=lambda path: path.name)
+@pytest.mark.parametrize("command", COMMANDS, ids=lambda command: (command.split() or ["<empty>"])[0])
+def test_every_install_command_is_the_documented_one(command: str, source: Path) -> None:
+    """A reader who clicks Copy never retypes the line and never proofreads it.
+    That is the point of the button and it is also the risk: the homepage is
+    published straight to Pages while the READMEs are read on GitHub, and the
+    two drift apart in silence. A command here that no longer appears in the
+    docs is either a fix that never reached them, or a line nobody verified.
+
+    Whole LINES, not substrings. `command in text` passes for any prefix of a
+    documented line, so dropping the trailing `| sh` -- turning a one-click
+    install into a one-click download-to-stdout -- would have gone out green."""
+
+    lines = {
+        stripped
+        for stripped in (line.strip() for line in source.read_text(encoding="utf-8").splitlines())
+        if stripped  # every document has blank lines; an empty command is not "documented"
+    }
+    assert command in lines, (
+        f"the homepage offers a command {source.name} does not carry as a whole "
+        f"line:\n  {command}"
+    )
+
+
+def test_the_command_probe_can_see_a_drifted_command() -> None:
+    """Positive control. A probe that silently stopped matching would report a
+    clean sheet for a page with no commands on it at all."""
+
+    assert COMMANDS, "the probe found no install commands on the page"
+    doctored = COMMANDS[0] + " --yes-really"
+    assert not any(doctored in path.read_text(encoding="utf-8") for path in DOCS)
+
+
+def _card_span() -> tuple[int, int]:
+    """Where the install card opens and closes, by counting its ``div`` tags.
+
+    Tag counting over raw text, so it assumes well-formed markup: it cannot see
+    a ``<div`` inside a comment or an attribute value. Every way that misreads
+    points the safe way -- an unclosed tag widens the span, which fails the test
+    below loudly rather than passing it wrongly."""
+
+    start = HTML.find('<div class="installs">')
+    assert start != -1, "the install card is gone"
+    depth = 0
+    for found in re.finditer(r"<div\b|</div>", HTML[start:]):
+        depth += 1 if found.group().startswith("<div") else -1
+        if depth == 0:
+            return start, start + found.end()
+    raise AssertionError("the install card is never closed")
+
+
+def test_the_caveat_sits_outside_the_command_card() -> None:
+    """The Windows caveat used to sit INSIDE the Windows row, under the command,
+    at the ``PS>`` prompt's own indent and carrying a mono version string -- a
+    second line of the thing to run rather than something to know first. Type
+    and colour said otherwise and were not enough; being out of the box is what
+    settles it, and being out of the box is a fact about document structure
+    rather than about the stylesheet, which is why it is checked here and not
+    left to a rule someone can rewrite."""
+
+    at = HTML.find('<p class="install-note">')
+    assert at != -1, "the Windows caveat is gone entirely"
+    start, end = _card_span()
+    assert not start < at < end, (
+        "the caveat is back inside the install card, where it reads as one more line to run"
+    )
+    body = HTML[start:end]
+    assert "Experimental" not in body and "experimental" not in body, (
+        "the card carries the caveat's words even if not its element"
+    )
+
+
+def test_the_card_span_probe_can_see_the_card() -> None:
+    """Positive control. A probe that returned an empty span would call every
+    placement of the caveat correct, including the one this test exists for."""
+
+    start, end = _card_span()
+    body = HTML[start:end]
+    rows = body.count('<div class="install">')
+    assert rows == 2, f"the probe spans {end - start} characters holding {rows} rows"
+    assert body.endswith("</div>")
+    assert '<p class="install-note">' not in body
