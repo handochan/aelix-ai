@@ -21,6 +21,40 @@ unwritten. Add them with the next release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The installers no longer hand you an interpreter nothing has ever tested.**
+  `uv tool install` consults neither `.python-version` nor `uv.lock` — it
+  resolves an interpreter fresh and takes the newest one on the machine.
+  Measured on a box carrying 3.11 through 3.14, `install.sh` built its
+  environment on **Python 3.14.5**, which CI has never executed. There the
+  pinned `openai<2.0` dies: 3.14 made `typing.Union[...]` slotted while the SDK
+  still writes `union.__discriminator__ = …` onto it, so an agent turn ends in
+  `AttributeError: 'typing.Union' object has no attribute '__discriminator__'`
+  (#262). It is a latent failure — `construct_type` validates through pydantic
+  first and only falls through to that write when validation fails, so
+  `-p "say OK"` succeeds on 3.14 and real work does not. Both installers now
+  pass `--python '>=3.11,<3.14'`, overridable with the new `AELIX_PYTHON` knob;
+  re-running the install line moves an existing 3.14 environment onto a matching
+  3.11-3.13 interpreter (measured, both directions). An empty `AELIX_PYTHON`
+  means the default, not "no constraint" — `uv tool install --python ""`
+  silently keeps picking the newest interpreter, so the `AELIX_EXTRAS=` habit
+  must not carry over; widen it explicitly instead, `AELIX_PYTHON='>=3.11'`.
+
+  The flag is permanent rather than a stopgap: `uv tool install` chooses the
+  interpreter before it resolves, so a published wheel's own `Requires-Python`
+  ceiling does not steer it (measured — a wheel declaring `<3.14,>=3.11` still
+  installed onto 3.14.5 through `--find-links`, while `pip` refused the same
+  wheel outright). #192's metadata bound is still worth having for the `pip`
+  path, but it does not retire this.
+
+  **It also does not cover `uv tool install` typed by hand.** `uv tool install
+  aelix@latest` builds on 3.14.5, and re-running `uv tool install --force
+  'aelix==0.1.0b2'` overwrites a correct 3.13 environment with a 3.14 one — both
+  measured — while `uv tool upgrade aelix` suggests the first command on its own.
+  Upgrade by re-running the install line. Closing that path needs a runtime guard
+  in aelix, which is filed separately. (#263)
+
 ## [0.1.0-beta.2] - 2026-09-09
 
 ### Changed

@@ -62,7 +62,11 @@ Windows 수정이 전부 들어간 릴리즈가 `v0.1.0-beta.2`이고, 설치 �
 
 둘 다 같은 환경 변수를 읽습니다. `AELIX_VERSION`은 릴리즈 태그를 고정하고
 (`vX.Y.Z-beta.N`), `AELIX_EXTRAS`는 extras를 고르며(기본값 `tui`, 빈 값이면 헤드리스
-CLI만 — POSIX에서만 됩니다), `GITHUB_TOKEN`은 익명 GitHub API 요청 한도를 올립니다.
+CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요청하고(기본값
+`>=3.11,<3.14`, 고정된 OpenAI SDK가 견디는 범위 — 두면 `uv tool install`이 그
+머신에서 가장 새 인터프리터를 집고, 3.14에서는 OpenAI Responses 경로가 턴 도중에
+죽습니다),
+`GITHUB_TOKEN`은 익명 GitHub API 요청 한도를 올립니다.
 다만 파이프 *건너편* 셸까지 값이 닿아야 해서, 가장 먼저 떠오르는 표기가 양쪽 다
 틀립니다 — `VAR=x curl … | sh`는 `curl`에만 설정하고, PowerShell 프롬프트에서
 `powershell -c "$env:VAR=…"`는 자식이 보기 전에 바깥 셸이 전개해 버립니다(pwsh 7.6에서
@@ -70,6 +74,10 @@ CLI만 — POSIX에서만 됩니다), `GITHUB_TOKEN`은 익명 GitHub API 요청
 가이드](docs/guides/getting-started.md#windows)에 있습니다. 업그레이드는 같은 줄을 다시
 실행하면 되고, `PATH`에 잡히지 않을 때는 두 설치 스크립트 모두 안내만 하는 대신
 `uv tool update-shell`을 직접 실행합니다. 제거는 `uv tool uninstall aelix`입니다.
+**업그레이드는 그 줄로 하세요. `uv tool install aelix@latest`로 하지 마세요** — uv가
+직접 그 명령을 안내하지만, 그건 그 머신에서 가장 새 Python으로 환경을 다시 만들고
+오늘 기준 그건 3.14, 즉 턴 도중 크래시입니다(#262). 실측: 올바르게 깔린 3.13 설치를
+덮어씁니다.
 
 > **`0.1.0b2` 전까지 PyPI에는 플레이스홀더가 올라가 있습니다.** 지금은 네 이름 모두
 > 메타데이터만 있는 `0.0.0a0` 선점본이라, `pip install aelix`는 **exit 0으로 끝나면서

@@ -119,7 +119,41 @@ if ($tools -notmatch "(?m)^aelix v$([regex]::Escape($expected))\b") {
     Assert-Fail "'uv tool list' does not report 'aelix v$expected':`n$tools"
 }
 
-# -- (3) The temp dir was cleaned ---------------------------------------------
+# -- (3) The interpreter is one CI has actually executed ----------------------
+# install.ps1 Step 5 passes `--python $AelixPython` (default `>=3.11,<3.14`),
+# because `uv tool install` otherwise resolves an interpreter fresh and takes
+# the NEWEST one on the box. Measured on a dev machine carrying 3.11 through
+# 3.14, the unflagged command built the environment on 3.14.5, where the pinned
+# `openai<2.0` raises "'typing.Union' object has no attribute
+# '__discriminator__'" in the middle of a turn (#262, #263).
+#
+# That is a post-condition now, so it is asserted HERE -- on the one host this
+# repo cannot execute the script on locally. tests/packaging_gate/ proves the
+# FLAG is in the text; only this proves the flag did something.
+#
+# pyvenv.cfg rather than running python.exe: the value uv wrote IS the fact
+# being asserted, and reading it cannot be confused by a PATH surprise.
+$toolDir = (& uv tool dir | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $toolDir) {
+    Assert-Fail "'uv tool dir' failed (exit $LASTEXITCODE)."
+}
+$cfg = Join-Path (Join-Path $toolDir 'aelix') 'pyvenv.cfg'
+if (-not (Test-Path -LiteralPath $cfg)) {
+    Assert-Fail "no pyvenv.cfg at '$cfg'; cannot tell which interpreter the tool environment was built on."
+}
+$cfgText = Get-Content -Raw -LiteralPath $cfg
+$vm = [regex]::Match($cfgText, '(?m)^\s*version_info\s*=\s*([0-9]+)\.([0-9]+)')
+if (-not $vm.Success) {
+    Assert-Fail "no parseable 'version_info' in '$cfg':`n$cfgText"
+}
+$pyMajor = [int]$vm.Groups[1].Value
+$pyMinor = [int]$vm.Groups[2].Value
+if ($pyMajor -ne 3 -or $pyMinor -lt 11 -or $pyMinor -gt 13) {
+    Assert-Fail "the tool environment is on Python $pyMajor.$pyMinor; install.ps1 Step 5 requests '>=3.11,<3.14'. Outside that range nothing in CI has executed the interpreter, and on 3.14 the pinned openai<2.0 dies mid-turn (#262, #263)."
+}
+Write-Host "tool interpreter: Python $pyMajor.$pyMinor (inside >=3.11,<3.14)"
+
+# -- (4) The temp dir was cleaned ---------------------------------------------
 # install.ps1 creates `aelix-install-<guid>` under GetTempPath() before Step 1,
 # and the `finally { Remove-Item ... }` block removes it. This is the ONLY assertion that proves the
 # finally still runs when the whole file is Invoke-Expression'd -- the same call

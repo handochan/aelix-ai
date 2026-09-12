@@ -62,14 +62,20 @@ none of this works. Scope and evidence: [Platform support](#platform-support).
 
 Both read the same environment variables: `AELIX_VERSION` pins a release tag
 (`vX.Y.Z-beta.N`), `AELIX_EXTRAS` picks extras (default `tui`; empty installs the
-headless CLI, POSIX only), `GITHUB_TOKEN` lifts the anonymous GitHub API rate
-limit. Each has to reach the shell on the *far* side of the pipe, which is what
+headless CLI, POSIX only), `AELIX_PYTHON` requests the interpreter (default
+`>=3.11,<3.14`, the range the pinned OpenAI SDK survives — left alone,
+`uv tool install` takes the newest interpreter on the machine, and on 3.14 the
+OpenAI Responses path dies mid-turn), `GITHUB_TOKEN` lifts the anonymous GitHub API rate limit. Each has to reach the shell on the *far* side of the pipe, which is what
 makes the obvious spelling wrong on both platforms — `VAR=x curl … | sh` sets it
 for `curl` alone, and from a PowerShell prompt `powershell -c "$env:VAR=…"` is
 expanded by the outer shell before the child sees it (measured on pwsh 7.6). The
 [getting-started guide](docs/guides/getting-started.md#windows) gives the form
 that works on each. Re-run the same line to upgrade; on a `PATH` miss both
 installers now run `uv tool update-shell` for you instead of printing it.
+**Upgrade through that line, not through `uv tool install aelix@latest`** — uv
+suggests the latter itself, and it rebuilds the environment on the newest Python
+on the machine, which today means 3.14 and a mid-turn crash (#262). Measured: it
+overwrites a correct 3.13 install.
 `uv tool uninstall aelix` removes it.
 
 > **PyPI carries a placeholder until `0.1.0b2`.** Today all four names hold a

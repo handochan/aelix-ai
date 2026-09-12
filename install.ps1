@@ -42,6 +42,14 @@
 #                  back to `tui`. For the bare CLI, install `aelix` yourself:
 #                  `uv tool install --force --find-links <dir> aelix`.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
+#   AELIX_PYTHON   uv interpreter request for the tool environment. Default
+#                  `>=3.11,<3.14`, the range the pinned openai<2.0 survives.
+#                  NOT "the range CI runs": CI runs 3.11 and 3.12, and 3.13 is
+#                  in here because it works, not because anything gates it
+#                  (#192 adds it to the matrix). Step 5 explains the ceiling.
+#                  Set it to override, e.g. AELIX_PYTHON=3.12. An EMPTY
+#                  value means the default, not "no constraint"; widen it
+#                  explicitly with AELIX_PYTHON='>=3.11'.
 #   UV_VERSION     Optional pin for the uv bootstrap (Astral installer).
 #   GITHUB_TOKEN   Optional; sent as a Bearer token on GitHub API calls to
 #                  avoid the 60/hr unauthenticated rate limit.
@@ -68,6 +76,7 @@ $ErrorActionPreference = 'Stop'
 $AelixVersion = if ($env:AELIX_VERSION) { $env:AELIX_VERSION } else { '' }
 $AelixExtras  = if ($null -ne $env:AELIX_EXTRAS) { $env:AELIX_EXTRAS } else { 'tui' }
 $AelixRepo    = if ($env:AELIX_REPO) { $env:AELIX_REPO } else { 'handochan/aelix-ai' }
+$AelixPython  = if ($env:AELIX_PYTHON) { $env:AELIX_PYTHON } else { '>=3.11,<3.14' }
 $UvVersion    = if ($env:UV_VERSION) { $env:UV_VERSION } else { '' }
 $GithubToken  = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { '' }
 
@@ -265,9 +274,58 @@ try {
     # the default PyPI index stays enabled so third-party dependencies resolve.
     # Never use --no-index (it would make transitive deps unresolvable).
     # --force makes re-runs idempotent.
-    & uv tool install --force --find-links $tmp $target
+    #
+    # --python IS THE INTERPRETER GATE (#263). `uv tool install` consults
+    # NEITHER .python-version (3.12) NOR uv.lock; it resolves an interpreter
+    # fresh and takes the NEWEST one it can find. Measured on a box carrying
+    # 3.11 through 3.14, the unflagged `uv tool install --force
+    # aelix==0.1.0b2` built its environment on Python 3.14.5, an interpreter
+    # CI has never executed. There `openai<2.0` dies, because 3.14 made
+    # `typing.Union[...]` slotted while openai/_models.py:697 still writes an
+    # attribute onto it:
+    #
+    #   AttributeError: 'typing.Union' object has no attribute
+    #                   '__discriminator__' and no __dict__ for setting new
+    #                   attributes                                      (#262)
+    #
+    # That failure is LATENT, which is why no smoke test caught it:
+    # construct_type validates the union through pydantic FIRST and only falls
+    # through to that write when validation fails. So `-p "say OK"` SUCCEEDS
+    # on 3.14 and a real agent turn does not, measured both ways against the
+    # model named in #262.
+    #
+    # A RANGE, not `--python 3.13`: a single version forces a download even on
+    # a box where 3.12 is installed and fine. With the range uv takes any local
+    # 3.11-3.13 and downloads only when it has none (measured both ways).
+    #
+    # THIS FLAG IS PERMANENT, NOT A STOPGAP. An earlier draft of this comment
+    # said the opposite, that #192's `requires-python` bound would retire it.
+    # That was measured on the wrong path and is false. `uv tool install`
+    # chooses the interpreter BEFORE it resolves, so a published wheel's own
+    # Requires-Python ceiling never steers it. Against a wheel declaring
+    # `Requires-Python: <3.14,>=3.11`, on a box carrying 3.11 through 3.14:
+    #
+    #   uv tool install --find-links <dir> pkg==0.1.0 -> 3.14.5, exit 0, and
+    #                                                    the package IMPORTS
+    #   uv tool install <the .whl file>               -> 3.14.5
+    #   uv tool install <a local project dir>         -> 3.13.13  <- only one
+    #   pip install --find-links <dir> pkg            -> refuses, "requires a
+    #                                                    different Python"
+    #
+    # The first line is this script's path. Only the project-directory path
+    # reads the ceiling, and no user of this script takes it. #192's bound is
+    # still worth having, because it makes `pip install aelix` refuse cleanly
+    # instead of breaking later, but it does not retire this flag.
+    #
+    # WIDENING IS NOT A ONE-LINE EDIT. When 3.14 becomes supported (#262: the
+    # floor is openai>=2.7.2), raising the default here reaches EVERY release
+    # this script can install, and AELIX_VERSION pins arbitrarily old tags:
+    # 0.1.0b2 will carry openai<2.0 forever. The default can widen only once
+    # no installable release breaks on the wider range, or once the request is
+    # derived from the release being installed.
+    & uv tool install --force --find-links $tmp --python $AelixPython $target
     if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "uv tool install failed for '$target'."
+        Stop-WithError "uv tool install failed for '$target' (interpreter request: '$AelixPython'). If uv reported no interpreter for that range, this machine has no Python 3.11-3.13 and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON -- but read Step 5 first, widening past 3.13 is not free."
     }
 
     # -- Step 6: post-install smoke + PATH hint ------------------------------

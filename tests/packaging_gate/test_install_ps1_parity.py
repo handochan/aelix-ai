@@ -15,6 +15,7 @@ CP1252 em dash below — which is the calibration for how much this file proves.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -49,7 +50,19 @@ def test_marked_experimental(ps1: str) -> None:
 # === same configuration surface =============================================
 
 
-_ENV_VARS = ["AELIX_VERSION", "AELIX_EXTRAS", "AELIX_REPO", "UV_VERSION", "GITHUB_TOKEN"]
+_ENV_VARS = [
+    "AELIX_VERSION",
+    "AELIX_EXTRAS",
+    "AELIX_REPO",
+    "AELIX_PYTHON",
+    "UV_VERSION",
+    "GITHUB_TOKEN",
+]
+
+# The interpreter range both installers request. Kept here as ONE constant so a
+# drift between the two scripts fails as a parity error rather than as a user
+# report from whichever platform was edited second (#263).
+_PY_REQUEST = ">=3.11,<3.14"
 
 
 @pytest.mark.parametrize("name", _ENV_VARS)
@@ -69,7 +82,10 @@ def test_no_extra_env_vars_in_ps1(ps1: str) -> None:
 
 @pytest.mark.parametrize(
     ("var", "default"),
-    [("AELIX_EXTRAS", "tui"), ("AELIX_REPO", "handochan/aelix-ai")],
+    [
+        ("AELIX_EXTRAS", "tui"),
+        ("AELIX_REPO", "handochan/aelix-ai"),
+    ],
 )
 def test_same_defaults(sh: str, ps1: str, var: str, default: str) -> None:
     assert f"{{{var}-{default}}}" in sh  # ${AELIX_EXTRAS-tui}
@@ -136,6 +152,109 @@ def test_never_uses_no_index(sh: str, ps1: str) -> None:
 
     for text in (sh, ps1):
         assert not [line for line in _code_lines(text) if "--no-index" in line]
+
+
+def test_both_installers_constrain_the_interpreter(sh: str, ps1: str) -> None:
+    """#263 -- ``uv tool install`` consults neither ``.python-version`` nor
+    ``uv.lock``; it resolves an interpreter fresh and takes the newest it finds.
+    Measured on a box carrying 3.11 through 3.14, the unflagged command built the
+    tool environment on 3.14.5, where ``openai<2.0`` raises
+    ``'typing.Union' object has no attribute '__discriminator__'`` mid-turn
+    (#262).
+
+    SABOTAGE: drop ``--python`` from either script. The platform that kept it
+    installs a tested interpreter and the other ships the crash, which is exactly
+    the one-sided drift this file exists to catch -- so the assertion is on BOTH,
+    and on the same request.
+    """
+
+    # ON THE INVOCATION LINE, not anywhere in the file. A review sabotaged the
+    # first version of this test by deleting the flag from the real command and
+    # parking the string in a TRAILING comment on an unrelated line --
+    # `_code_lines` drops whole-line comments only, `sh -n` still said OK, and
+    # the suite came back byte-identical to baseline. The line is the thing that
+    # runs, so the line is the thing asserted.
+    for name, text, prefix, want in (
+        ("install.sh", sh, "uv tool install", '--python "$AELIX_PYTHON"'),
+        ("install.ps1", ps1, "& uv tool install", "--python $AelixPython"),
+    ):
+        hits = [ln.strip() for ln in _code_lines(text) if ln.strip().startswith(prefix)]
+        assert len(hits) == 1, f"{name}: expected one {prefix!r} line, found {hits}"
+        # The flag must carry the KNOB, not a hard-coded literal: a literal would
+        # silently win over AELIX_PYTHON and make the documented override a lie.
+        assert want in hits[0], f"{name}: {want!r} is not on the invocation line: {hits[0]!r}"
+
+
+def test_an_empty_python_request_does_not_disarm_the_gate(sh: str, ps1: str) -> None:
+    """``uv tool install --python ""`` does NOT fail. uv ignores an empty request
+    and goes back to the newest interpreter -- measured: exit 0, environment on
+    3.14.5, which is the state #263 exists to prevent.
+
+    That is reachable by accident rather than by malice: the sibling knobs use
+    ``${VAR-default}`` because a set-but-empty value is meaningful for them
+    (``AELIX_EXTRAS=`` installs the bare CLI, and the README teaches that
+    spelling), so the same habit applied here would silently turn the gate off.
+
+    Asserted by EXECUTION, not by substring: the shell is the thing that has to
+    agree. install.ps1 gets the substring form because ``if ($env:X)`` is already
+    false for an empty string and there is no pwsh on every runner.
+    """
+
+    import subprocess
+
+    line = next(
+        ln for ln in sh.splitlines() if ln.startswith("AELIX_PYTHON=")
+    )
+    for value, expected in ((None, _PY_REQUEST), ("", _PY_REQUEST), ("3.12", "3.12")):
+        env = {"PATH": os.environ.get("PATH", "")}
+        if value is not None:
+            env["AELIX_PYTHON"] = value
+        out = subprocess.run(
+            ["sh", "-c", f'{line}; printf "%s" "$AELIX_PYTHON"'],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+        ).stdout
+        assert out == expected, f"AELIX_PYTHON={value!r} resolved to {out!r}"
+
+    # ps1 gets a regex rather than an execution because this file is designed to
+    # run where there is no PowerShell at all (see the module docstring). It ties
+    # BOTH halves: the truthiness test, which is what makes empty behave like
+    # unset there, AND the literal it falls back to. A cross-review caught the
+    # first version of this assertion checking only `if ($env:AELIX_PYTHON)` --
+    # with that alone, changing the ps1 default to `3.14` still passed, which is
+    # the precise drift this file exists to catch.
+    assert re.search(
+        r"\$env:AELIX_PYTHON\s*\)\s*\{\s*\$env:AELIX_PYTHON\s*\}\s*else\s*\{\s*"
+        + re.escape(repr(_PY_REQUEST).replace('"', "'"))
+        + r"\s*\}",
+        ps1,
+    ), f"install.ps1 must fall back to {_PY_REQUEST!r} when AELIX_PYTHON is unset or empty"
+
+
+def test_the_windows_postcondition_asserts_the_same_range() -> None:
+    """The range literal lives in FOUR places, not the two the ADR used to claim:
+    both installers, ``_PY_REQUEST`` here, and -- since the Windows e2e grew an
+    interpreter post-condition -- ``assert-install-ps1.ps1`` twice, once as the
+    numeric bounds it compares and once as the literal in its failure message.
+
+    A review flagged that as a maintenance trap: move the ceiling and the next
+    editor is sent to two of four sites. It fails CLOSED (a stale post-condition
+    rejects a now-valid interpreter rather than accepting a broken one), so it is
+    a cost rather than a hazard -- but a checked invariant costs less than a
+    comment asking people to remember.
+    """
+
+    text = (_REPO_ROOT / ".github" / "scripts" / "assert-install-ps1.ps1").read_text()
+
+    m = re.fullmatch(r">=3\.(\d+),<3\.(\d+)", _PY_REQUEST)
+    assert m, f"_PY_REQUEST is not the shape this test knows how to check: {_PY_REQUEST!r}"
+    lo, hi = int(m.group(1)), int(m.group(2)) - 1
+
+    assert f"-lt {lo}" in text, f"post-condition floor is not {lo} (from {_PY_REQUEST!r})"
+    assert f"-gt {hi}" in text, f"post-condition ceiling is not {hi} (from {_PY_REQUEST!r})"
+    assert _PY_REQUEST in text, "the post-condition's failure message must name the request it enforces"
 
 
 def test_both_installers_pin_the_exact_version(sh: str, ps1: str) -> None:
