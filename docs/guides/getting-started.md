@@ -28,13 +28,35 @@ If `aelix` is not on your `PATH` afterwards, the installer runs
 file, idempotently. It cannot fix the shell it is running in, so open a new
 terminal.
 
-Two environment variables configure it:
+Three environment variables configure it:
 
 - `AELIX_VERSION` — pin an exact release tag, copied from the
   [Releases page](https://github.com/handochan/aelix-ai/releases). Recommended
   during the beta. Without it the installer resolves the newest release from the
   GitHub API.
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
+- `AELIX_PYTHON` — the interpreter uv builds the tool environment on, as a uv
+  Python request. Default `>=3.11,<3.14` — the range the pinned OpenAI SDK
+  survives. It is **not** "the range CI runs": CI runs 3.11 and 3.12, and 3.13
+  is in the range because the suite passes on it, not because anything gates it
+  (#192 adds 3.13 to the matrix).
+  `uv tool install` reads neither `.python-version` nor `uv.lock`; left to
+  itself it takes the newest interpreter on the machine, and on Python 3.14
+  `openai<2.0` raises `'typing.Union' object has no attribute
+  '__discriminator__'` in the middle of a turn (#262, #263). Override it if you
+  need a specific one, e.g. `AELIX_PYTHON=3.12`.
+
+  Unlike `AELIX_EXTRAS`, **an empty value is not "no constraint"** — it falls
+  back to the default. `uv tool install --python ""` does not fail; uv ignores
+  the empty request and goes back to the newest interpreter, so an empty
+  `AELIX_PYTHON` would silently undo the thing the knob is for. To genuinely
+  widen the range, say what you mean: `AELIX_PYTHON='>=3.11'`.
+
+  **The knob only covers this script.** `uv tool install aelix@latest` — which
+  `uv tool upgrade aelix` suggests by itself — rebuilds the environment on the
+  newest Python on the machine and today lands on 3.14. Measured: it overwrites
+  an environment this installer had correctly built on 3.13. Upgrade by
+  re-running the install line.
 
 Pass them **through the pipe**, not in front of `curl`. A `VAR=x curl … | sh`
 prefix sets the variable for `curl` only; the `sh` on the other side of the pipe
@@ -99,7 +121,8 @@ That line takes the newest release, and every Windows fix on this page landed in
 `v0.1.0-beta.2` — on anything older it installs a build without them.
 
 It takes the same knobs as `install.sh`, read from the environment:
-`AELIX_VERSION`, `AELIX_EXTRAS`, `AELIX_REPO`, `UV_VERSION`, `GITHUB_TOKEN`.
+`AELIX_VERSION`, `AELIX_EXTRAS`, `AELIX_REPO`, `AELIX_PYTHON`, `UV_VERSION`,
+`GITHUB_TOKEN`.
 Set them with `$env:` **before** the pipe — `iex` runs the script in the current
 session, so it sees them (measured on PowerShell 7.6.5):
 
