@@ -455,6 +455,27 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # ``test_kernel_has_no_subagent_surface`` still passes. A session-format
         # question created the requirement; delegation did not.
         "packages/aelix-agent-core/src/aelix_agent_core/session/context.py",
+        # ADR-0243, #199. ``harness/core.py`` and ``harness/_session_stats.py``
+        # (both listed above) changed AGAIN, and it is recorded here for the
+        # reason the ADR-0211 note gives: an already-listed path would otherwise
+        # let a behavioural change through with no written reason.
+        # ``get_session_stats`` reads the branch ONCE — the read
+        # ``_cost_is_complete`` already made, now shared with it — and hands the
+        # ``data`` of the branch's ``aelix.usage`` custom entries to the
+        # aggregator. ``_session_stats.fold_usage_records`` folds them (last line
+        # per key wins; a key left ``pending`` adds nothing and clears
+        # ``cost_known``; a missing, non-finite or negative number is ignored and
+        # clears it; flows only, never a context level) into the totals every
+        # consumer already reads, and breaks them out as an Aelix-only
+        # ``SessionStats.tool_usage`` that stays off the RPC wire. Before it,
+        # stats summed ``_state.messages`` alone, so spend a tool incurred
+        # outside the session's own model calls could never be counted — no
+        # message carries it. This is the one entry where delegation created the
+        # requirement (a delegated child's spend, #199), but not the vocabulary:
+        # the kernel learns "usage a tool reported", a neutral ADR-0242 rule-1
+        # record any tool may write. No ``aelix_agents`` import, no spawn site, no
+        # cap, no consent path and no registry surface —
+        # ``test_kernel_has_no_subagent_surface`` still passes.
     }
 )
 

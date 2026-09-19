@@ -21,8 +21,63 @@ unwritten. Add them with the next release.
 
 ## [Unreleased]
 
+### Added
+
+- **A delegated agent's session is now recorded.** Every delegation — the
+  `agent` tool (single, parallel or chain) and `/agents run` — now runs its
+  child with a session file of its own, created beside the parent session in a
+  directory named after it (`<parent>.jsonl` → `<parent>/sub-<id>.jsonl`), so
+  the child's whole transcript outlives the run. Until now it existed nowhere
+  once the delegation ended. The parent session keeps a receipt for each child:
+  the profile, the model that actually ran, the child's file, how it ended (ok,
+  error, timeout, aborted or cancelled) and what it spent. A delegation you
+  cancel with Ctrl+C is recorded too, with the spend the child had reported by
+  then — marked as a floor, because a request still in flight at the cancel may
+  have been billed without ever reporting back. `--continue`, `/resume` and the
+  session pickers never offer a child
+  file. A parent without a session file (`--no-session`), or whose file is not
+  inside a sessions directory's per-project folder (one you opened with
+  `--session /some/where/file.jsonl`, say), still runs its children without
+  one, and so does any child whose file could not be created (a disk error, a
+  path too long). **Nothing deletes these files:** like sessions themselves
+  they stay until you remove them — one per delegation, up to 12 per prompt
+  through the `agent` tool and one per `/agents run` — and deleting a parent
+  session by hand leaves its directory of children behind. (#199)
+- **`aelix --export <child file>` is how you read a delegated agent's
+  session**, as an HTML page, without running anything. Opening one with
+  `--session` (or `--fork`) now prints a one-line warning instead of looking
+  like a resume: the file does not carry what bounded the child — its
+  permission clamp, its narrowed tools, `--no-agents` — so it would run as an
+  ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
+
 ### Changed
 
+- **Session totals now include what delegated agents spent, so totals from
+  this release on — History's included — are higher than the same work was
+  before.** The footer, `/cost`, `/session`, `/stats`, the History tab and RPC
+  `get_session_stats` counted the parent's own model calls only; a child's cost
+  appeared in the tool result's text and nowhere else. Each child's recorded
+  spend is now added once, and the `/stats` session tab (`Tools & delegated
+  agents: 12.3k in / 1.1k out · $0.0110 (2 runs)`) and `/cost` (a `tools &
+  agents` row) break it out on a line of its own, already included in the
+  totals above it. While a delegation is still running, when one was cut short
+  (Ctrl+C, a timeout) before its child finished, or when its spend could not be
+  priced, the session cost reads as a floor (`≥ $…`) rather than a figure that
+  is short of the bill. Sessions recorded before this release have nothing to
+  add and read as they did. (#199)
+- **A parallel or chain delegation now shares one 64 KiB budget for what it
+  hands back.** Each child's summary was capped at its profile's `output_cap`
+  (51,200 bytes by default) and nothing capped the call, so eight children
+  could return one 410 KB tool result — about 102,600 estimated tokens, 92% of
+  `gpt-4o`'s auto-compaction threshold, and compaction cannot remove a tool
+  result from its turn. The members now split 64 KiB evenly (8,192 bytes each
+  for eight), and a member's share holds everything it says — its summary and
+  any error note — so eight children at their cap now return about 67 KB. A
+  single delegation keeps `output_cap`, a chain step still hands the next one
+  its whole capped summary, and what a member loses to the budget is in its
+  child's session file when it has one. In both modes, an error message longer
+  than the cap is no longer repeated in full after the summary it already
+  began. (#199)
 - **Session files are now written LF-only on Windows too.** Aelix opened them
   through text-mode descriptors there, so every line it wrote ended in `\r\n`;
   every descriptor that writes session bytes is now binary, and the bytes on disk
@@ -37,6 +92,17 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A truncated delegation summary no longer points at something nobody can
+  read.** It ended "Full output preserved in tool details." — true only until
+  the call returned, because a tool result's details are never saved. It now
+  says "The full output is recorded in the delegated session." when the child
+  has a session file and the summary came from the child itself, and says
+  nothing about where the rest went otherwise. (#199)
+- **`/agents run` right after `/new`, `/resume` or `/fork` no longer fails
+  before asking.** Typed before the new session's first prompt, it read the
+  previous session's hook context, which had already been shut down, and
+  stopped with a stale-context error. It now behaves as the first `/agents run`
+  of a fresh session always has. (#199)
 - **A fork or an import that fails part-way no longer leaves a truncated session
   for `--continue` to resume.** A fork was written as the header followed by one
   append per entry, so a failure in the middle left, say, two of five entries on

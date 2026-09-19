@@ -19,10 +19,21 @@ interface byte-for-byte:
 The aggregator walks an in-memory message list; the harness owns the
 plumbing (reading ``self._session.messages`` / ``self.session_file``)
 and forwards the data via :func:`aggregate_session_stats`.
+
+ADR-0243 (#199) adds one input the messages cannot supply: spend a TOOL
+reported for work it ran outside this session's own model calls — another
+model, a paid service. Such a tool writes ``aelix.usage`` records
+(:data:`USAGE_RECORD_TYPE`, one ``CustomEntry`` line each — ADR-0242 rule 1),
+the harness collects their ``data`` from the session branch, and
+:func:`fold_usage_records` folds them into :class:`ToolUsage`. The fold is added
+into ``tokens`` and ``cost`` so every consumer sees one total, and is kept
+apart as ``SessionStats.tool_usage`` so a display can break it out.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +60,40 @@ class SessionStatsTokens:
     cache_read: int = 0
     cache_write: int = 0
     total: int = 0
+
+
+#: ``customType`` of a usage record (ADR-0243). Its ``data`` is
+#: ``{"v": 1, "key": str, "state": "pending"}`` before the work can spend, then
+#: ``{"v": 1, "key": str, "state": "final", "usage": {"input", "output",
+#: "cache_read", "cache_write", "cost"}, "cost_known": bool}`` once it settled.
+#: :func:`fold_usage_records` states exactly what is read and how.
+USAGE_RECORD_TYPE = "aelix.usage"
+
+
+@dataclass(frozen=True)
+class ToolUsage:
+    """Usage that tools reported through ``aelix.usage`` records (ADR-0243).
+
+    Aelix-only and off the RPC wire. It is a BREAKDOWN, not an addition:
+    :func:`aggregate_session_stats` has already added it into
+    ``SessionStats.tokens`` and ``SessionStats.cost``.
+
+    - ``tokens`` — flows only (input / output / cache read / cache write),
+      summed, with ``total`` their sum. A context LEVEL is never folded in.
+    - ``cost`` — USD, summed over the settled (``final``) records.
+    - ``cost_known`` — ``False`` when ``cost`` is short of what the tools spent:
+      a record is still pending, one says its own cost is unknown, or one could
+      not be read. Same meaning as ``SessionStats.cost_known``.
+    - ``runs`` — records after the fold: one per ``key``, one per keyless line.
+    - ``pending`` — how many of ``runs`` never settled: spend that exists but
+      was never confirmed (still running, or a process that died mid-run).
+    """
+
+    tokens: SessionStatsTokens = field(default_factory=SessionStatsTokens)
+    cost: float = 0.0
+    cost_known: bool = True
+    runs: int = 0
+    pending: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,6 +131,10 @@ class SessionStats:
     # ``cost`` as an authoritative figure. A wrong bill is worse than an absent
     # one. ``True`` on an all-zero session is correct — nothing was spent.
     cost_known: bool = True
+    # Aelix-additive, off the Pi wire for the same reason as ``cost_known``: the
+    # share of ``tokens`` / ``cost`` that tools reported (ADR-0243). Already
+    # INSIDE those totals — a display that adds it again double counts.
+    tool_usage: ToolUsage = field(default_factory=ToolUsage)
 
 
 def _read(obj: Any, key: str, default: Any = 0) -> Any:
@@ -173,12 +222,138 @@ def _message_cost(msg: Any, usage: Any) -> float | None:
     )
 
 
+#: The four token FLOWS a usage record carries, in :class:`SessionStatsTokens`
+#: order. Nothing else in a record is summed as tokens.
+_USAGE_FLOWS = ("input", "output", "cache_read", "cache_write")
+
+
+def _record_flow(value: Any) -> int | None:
+    """A token count from a record, or :data:`None` when it cannot be one.
+
+    A count is a whole, finite, non-negative JSON number. ``bool`` is refused
+    although Python calls it an ``int``; ``12.0`` is accepted as ``12`` (a JSON
+    writer may spell a whole number that way), ``12.5`` is not. Never raises.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
+def _record_amount(value: Any) -> float | None:
+    """A USD amount from a record, or :data:`None` when it cannot be one.
+
+    NaN and ±Infinity are written bare and read back (ADR-0242 rule 1.7), so the
+    finite check is load-bearing, not paranoia. Never raises: an integer too
+    large for a float is refused rather than overflowing.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        amount = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(amount) or amount < 0:
+        return None
+    return amount
+
+
+def fold_usage_records(records: Iterable[Any]) -> ToolUsage:
+    """Fold ``aelix.usage`` payloads (``CustomEntry.data``, root→leaf order).
+
+    Exactly what is read, and how:
+
+    - ``state`` — ``"pending"`` or ``"final"``. A line with any other ``state``,
+      or whose ``data`` is not an object, is skipped and makes the cost unknown:
+      it may be spend a newer writer recorded in a shape this reader predates.
+    - ``key`` — a non-empty string. Lines are grouped by it and the LAST line of
+      a key wins, so a line appended twice (the store is at-least-once,
+      ADR-0242 §3) counts once and a ``final`` supersedes its ``pending``. A
+      line without one counts on its own.
+    - A key whose last line is ``pending`` adds nothing, is counted in
+      ``pending``, and makes the cost unknown: the spend was never confirmed.
+    - A ``final`` adds ``usage.input`` / ``output`` / ``cache_read`` /
+      ``cache_write`` to the token flows and ``usage.cost`` to the cost. A
+      number that is missing, non-finite, negative, or (for a token count) not
+      whole adds nothing and makes the cost unknown; a ``usage`` that is not an
+      object adds nothing and makes the cost unknown.
+    - ``cost_known`` on a ``final`` — anything but ``true`` makes the cost
+      unknown. The priced part is still added, so a display can say "at least".
+
+    Nothing else is read. ``v`` is not consulted: a later version keeps these
+    fields' meaning or it is a different ``customType`` (ADR-0242 rule 1.3).
+    Unknown keys are ignored (rule 1.6), which is how a context LEVEL such as
+    ``tokens`` / ``context_tokens`` stays out: only the four flows are summed.
+    """
+
+    # First-appearance order with last-wins values: re-assigning a dict key keeps
+    # its original position, so the sums below run in the order the records
+    # were first written. A keyless line gets its own integer slot, which can
+    # never collide with a string key.
+    latest: dict[str | int, dict[str, Any]] = {}
+    readable = True
+    for index, data in enumerate(records):
+        if not isinstance(data, dict) or data.get("state") not in ("pending", "final"):
+            readable = False
+            continue
+        key = data.get("key")
+        latest[key if isinstance(key, str) and key else index] = data
+
+    flows = [0, 0, 0, 0]
+    cost = 0.0
+    cost_known = readable
+    pending = 0
+    for data in latest.values():
+        if data["state"] == "pending":
+            pending += 1
+            cost_known = False
+            continue
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            cost_known = False
+            continue
+        for position, name in enumerate(_USAGE_FLOWS):
+            count = _record_flow(usage.get(name))
+            if count is None:
+                cost_known = False
+            else:
+                flows[position] += count
+        amount = _record_amount(usage.get("cost"))
+        if amount is None:
+            cost_known = False
+        else:
+            cost += amount
+        if data.get("cost_known") is not True:
+            cost_known = False
+
+    tokens_in, tokens_out, cache_r, cache_w = flows
+    return ToolUsage(
+        tokens=SessionStatsTokens(
+            input=tokens_in,
+            output=tokens_out,
+            cache_read=cache_r,
+            cache_write=cache_w,
+            total=tokens_in + tokens_out + cache_r + cache_w,
+        ),
+        cost=cost,
+        cost_known=cost_known,
+        runs=len(latest),
+        pending=pending,
+    )
+
+
 def aggregate_session_stats(
     session_id: str,
     messages: list[Message],
     session_file: str | None = None,
     context_usage: Any | None = None,
     cost_complete: bool = True,
+    usage_records: Iterable[Any] = (),
 ) -> SessionStats:
     """Pi parity: ``agent-session.ts:2901-2945`` ``getSessionStats``.
 
@@ -211,6 +386,14 @@ def aggregate_session_stats(
     branch (``core.py:1683-1687`` via ``select_display_entries``, which drops
     everything before ``first_kept_entry_id``), so the summarized-away turns are
     no longer countable here and nothing in ``messages`` reveals their absence.
+
+    ``usage_records`` are the ``data`` payloads of the branch's ``aelix.usage``
+    records (ADR-0243), in root→leaf order. :func:`fold_usage_records` folds
+    them; the result is ADDED to ``tokens`` and ``cost``, clears ``cost_known``
+    when its own cost is not known, and is returned as ``tool_usage``.
+    ``cost_complete`` does not touch that part: the caller reads the records
+    over the whole branch, compacted entries included, so compaction removes
+    none of them.
     """
 
     user = 0
@@ -247,6 +430,16 @@ def aggregate_session_stats(
         elif isinstance(msg, ToolResultMessage):
             tool_results_count += 1
 
+    # Tool-reported spend joins the same totals, so every consumer — footer,
+    # ``/cost``, ``/stats``, History, RPC — reads one number and none of them has
+    # to know the records exist. Counted once: no message carries this spend.
+    tool = fold_usage_records(usage_records)
+    tokens_in += tool.tokens.input
+    tokens_out += tool.tokens.output
+    cache_r += tool.tokens.cache_read
+    cache_w += tool.tokens.cache_write
+    cost += tool.cost
+
     tokens_total = tokens_in + tokens_out + cache_r + cache_w
     return SessionStats(
         session_id=session_id,
@@ -270,14 +463,19 @@ def aggregate_session_stats(
         cost=cost,
         session_file=session_file,
         context_usage=context_usage,
-        # Known only if every message with usage could be priced AND the caller
-        # says the message list is the whole spend.
-        cost_known=unpriced == 0 and cost_complete,
+        # Known only if every message with usage could be priced, the caller
+        # says the message list is the whole spend, AND every tool-reported
+        # record settled with a known cost.
+        cost_known=unpriced == 0 and cost_complete and tool.cost_known,
+        tool_usage=tool,
     )
 
 
 __all__ = [
+    "USAGE_RECORD_TYPE",
     "SessionStats",
     "SessionStatsTokens",
+    "ToolUsage",
     "aggregate_session_stats",
+    "fold_usage_records",
 ]

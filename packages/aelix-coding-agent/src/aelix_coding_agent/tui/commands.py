@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+from aelix_coding_agent.tui.stats_dashboard import format_session_cost, format_tool_usage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -471,15 +471,15 @@ async def _cost_handler(ctx: CommandContext, args: str) -> None:
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         ctx.commit(Text(f"✖ cost failed: {exc}", style="bold red"))
         return
-    tokens = getattr(stats, "tokens", None)
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
     table.add_row("messages", str(getattr(stats, "total_messages", 0)))
-    table.add_row("input tokens", str(getattr(tokens, "input", 0)))
-    table.add_row("output tokens", str(getattr(tokens, "output", 0)))
-    table.add_row("total tokens", str(getattr(tokens, "total", 0)))
+    for name in ("input", "output", "total"):
+        table.add_row(f"{name} tokens", str(getattr(getattr(stats, "tokens", None), name, 0)))
     table.add_row("cost (USD)", format_session_cost(stats, prefix=""))
+    if (tool_usage := format_tool_usage(stats, prefix="")) is not None:  # already inside the totals
+        table.add_row("tools & agents", tool_usage)
     ctx.commit(Panel(table, title="Session usage", box=ROUNDED, border_style="cyan"))
 
 
@@ -1018,7 +1018,7 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
     ``model``/``provider`` are read off the child's own ``message_end`` verbatim
-    (``stream.py:573-577`` → ``envelope.py:398-399``), so they are attacker
+    (``stream.py:619-623`` → ``envelope.py:524-525``), so they are attacker
     controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
     parsing but writes raw content ESC / C1 straight to the terminal — a
     ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its

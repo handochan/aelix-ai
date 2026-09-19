@@ -45,6 +45,7 @@ from aelix_ai.tools import ToolResult
 from rich.cells import cell_len, set_cell_size
 
 from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
+from aelix_agents.envelope import error_repeats_summary
 from aelix_agents.panel import _flatten
 from aelix_agents.print_channel import AGENT_TOOL_NAME
 
@@ -107,7 +108,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:627-630``), and NO process is
+into a blocked call the model reads (``extension.py:704-707``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -184,7 +185,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:627-630``) with no process created.
+    # (``extension.py:704-707``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -422,7 +423,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:627-630``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:704-707``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:529-542``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -660,7 +661,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:575-577`` → ``envelope.py:398``), which makes it attacker-supplied
+(``stream.py:621-623`` → ``envelope.py:524``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""
@@ -699,7 +700,7 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     """The ``[agent … ]`` footer both renderers print.
 
     ``status`` overrides ``result.status`` and exists for exactly one caller:
-    ``aggregate._member_block`` (``aggregate.py:170-196``) rendering a member
+    ``aggregate._member_block`` (``aggregate.py:219-266``) rendering a member
     that NEVER STARTED. Its envelope carries ``status="error"`` like every other
     refusal, so without the override the footer says ``error`` one line under a
     heading that says ``did not start``. Keyword-only with a ``None`` default so
@@ -833,19 +834,24 @@ def _room_for(field: str, text: str) -> int:
 def render_subagent_result(result: SubagentResult) -> ToolResult:
     """Fold the envelope into what the parent's model reads.
 
-    ``details`` carries the UNCAPPED raw material (finding B8) so the truncation
-    marker in ``summary`` is true on both doors — the tool card can show
-    everything the 50 KiB cap removed without the model paying for it.
+    ``details`` carries the UNCAPPED raw material (finding B8), so a live tool
+    card can show what the 50 KiB cap removed without the model paying for it.
+    It is never persisted (#168); the durable copy is the child's session file,
+    which is what the truncation marker points at when there is one (#199).
 
     ``is_error`` follows ``result.ok`` and nothing else. The envelope has
     already tightened its own outcome (``envelope.build_result``: a child that
     exits 0 while its stream carries ``stop_reason: "error"`` is a failure), so
     re-deriving a verdict here could only disagree with it.
+
+    The ``Error:`` note is left out when it would only repeat the summary —
+    including when the summary is that error cut at ``output_cap``
+    (:func:`~aelix_agents.envelope.error_repeats_summary`).
     """
 
     body = result.summary or "(no output)"
     notes: list[str] = []
-    if result.error and result.error not in body:
+    if result.error and not error_repeats_summary(body, result.error, truncated=result.truncated):
         notes.append(f"Error: {result.error}")
     if result.dropped_tools:
         notes.append(

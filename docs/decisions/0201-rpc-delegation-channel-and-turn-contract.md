@@ -3,6 +3,9 @@
 Status: Accepted (2026-07-31) — owner-ratified protocol fork (D2), owner-ratified
 band reading (D1), owner-ratified kernel scope (D3/D4). Design record that lands
 **after** the implementation, deliberately: see *Why this record was written last*.
+**Amended 2026-09-19 (ADR-0243, #199): the channel's own session flag is
+`--session <path>` when the parent allocated a child file — see the note under
+*Two argv/env decisions that are not obvious*.**
 Date: 2026-07-31
 Builds on: ADR-0197 (the subagent-runtime seam and the 3-band rule this ADR
 re-reads rather than amends), ADR-0198 (**this ADR delivers the `rpc` half its
@@ -283,6 +286,16 @@ real cost and this record does not hide it.
   `~/.aelix/sessions/…jsonl` even with `AELIX_CODING_AGENT_DIR` pointed elsewhere,
   and under ADR-0199's `MAX_DELEGATIONS_PER_PROMPT = 12` that is twelve session
   files per prompt in the user's `/resume` picker that they never started.
+
+  > **Amendment (2026-09-19, ADR-0243).** The channel still appends the session
+  > flag itself, but the flag is now `--session <absolute path>` — the file the
+  > parent published for this child beside its own, in a directory no picker
+  > scans — and `--no-session` only when there is none
+  > (`build_rpc_child_argv(…, session_path=…)`). The reason above still holds
+  > for the fallback. This half is pinned by argv tests and by one scripted
+  > `RpcChannel.run` that records the argv it builds; no rpc child, scripted or
+  > real, has ever appended to a session file, and the channel has not run a
+  > real model (#123).
 * **`AELIX_STDIN_TIMEOUT` is deleted, not set.** It is inert on this path today
   (`entry.py` reads piped stdin only for print/json), but here stdin is the
   **transport**, so the two ways of being wrong are not symmetric: if that flag

@@ -10,7 +10,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 ``snapshots[k] is None`` means member ``k`` has published nothing yet — it is
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``) and has no spawn id at
 all, because ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:827``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:915``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -59,7 +59,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:832-833``), which for a chatty child is hundreds per
+stdout line (``runtime.py:920-921``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 2
@@ -70,7 +70,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 """The ``set_widget`` slot the batch panel owns.
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
-declares ``execution_mode="sequential"`` (``tool.py:604``), which makes the
+declares ``execution_mode="sequential"`` (``tool.py:605``), which makes the
 kernel run the whole tool batch sequentially (``loop.py:706-716``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
@@ -116,7 +116,7 @@ PANEL_MAX_ROWS = 9
 """Hard ceiling on the panel's HEIGHT, in rows (finding F2, HIGH).
 
 One header plus ``tool.MAX_PARALLEL_TASKS`` (= 8) member rows, which is every
-legal batch — the parser refuses a ninth task outright (``tool.py:392-398``), so
+legal batch — the parser refuses a ninth task outright (``tool.py:393-399``), so
 this never fires on input a model can actually get past the door. Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
@@ -173,7 +173,7 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:685-687``) — and the kernel emits that event with the raw
+    (``stream.py:734-736``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
     (``loop.py:734-744``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
@@ -338,7 +338,7 @@ def _format_tokens(tokens: int) -> str:
 
     Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
     importing it — the same call ``aggregate._format_count`` makes
-    (``aggregate.py:145-155``) and for the same reason: these are three
+    (``aggregate.py:189-199``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
     only move the divergence. The threshold and the single decimal place are
     kept identical so a per-child row and an aggregate row never disagree about
@@ -486,7 +486,7 @@ def format_aggregate_status(
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:95-96``, and ``stream.py:228-231``
+    message wins" (``subagent_contract.py:95-96``, and ``stream.py:245-248``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
@@ -1094,7 +1094,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:827``).
+        (``runtime.py:915``).
         """
 
         if index < 0:

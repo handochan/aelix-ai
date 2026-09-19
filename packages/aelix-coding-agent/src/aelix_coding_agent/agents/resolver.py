@@ -3,11 +3,12 @@
 AELIX-ORIGINAL. One profile has to reach the runtime through TWO channels that
 must never disagree:
 
-* :func:`profile_to_flags` / :func:`profile_to_argv` — an argv, used in P1 only
-  to RENDER a dry run (``/agents show``) and, in P2, to launch a child process.
+* :func:`profile_to_flags` / :func:`profile_to_argv` — an argv. The flags alone
+  are what the ``/agents show`` dry run renders; the full argv is what the two
+  delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2282-2289``).
+  (``cli/entry.py:2283-2290``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -291,20 +292,35 @@ def profile_to_argv(
     oneshot: bool,
     task: str | None = None,
     parent_model: Model | None = None,
+    session_path: str | None = None,
 ) -> list[str]:
     """Full argv for a profile-driven aelix invocation.
 
-    ``oneshot`` → the JSON one-shot channel (``--mode json -p --no-session``);
-    otherwise the long-lived headless channel (``--mode rpc``).
+    ``oneshot`` → the JSON one-shot channel (``--mode json -p`` plus a session
+    flag); otherwise the long-lived headless channel (``--mode rpc``).
 
-    P1 uses this ONLY for ``/agents show`` dry-run rendering — nothing spawns
-    (that is P2). It exists in P1 so the rendered command is the same command
-    P2 will run, which is the whole point of an auditable dry run.
+    ``session_path`` is the ONE-SHOT prefix's session flag (#199): the session
+    file the parent allocated for this child, emitted as ``--session <path>``,
+    or ``--no-session`` when there is none (a parent with no session file, or an
+    allocation that failed). It is an absolute path by construction — the child
+    may run in a subdirectory, where a relative one would name nothing. The rpc
+    prefix never carried a session flag; the rpc channel appends its own.
+
+    The callers are the two channels' argv builders
+    (``aelix_agents.print_channel.build_child_argv``,
+    ``aelix_agents.rpc_channel.build_rpc_child_argv``). ``/agents show`` renders
+    :func:`profile_to_flags` alone: the session flag, like ``--permission-mode``,
+    the trust flags and ``--no-agents``, is spawn-time state that no dry run can
+    know.
     """
 
-    prefix = (
-        ["--mode", "json", "-p", "--no-session"] if oneshot else ["--mode", "rpc"]
-    )
+    if oneshot:
+        session_flags = (
+            ["--session", session_path] if session_path else ["--no-session"]
+        )
+        prefix = ["--mode", "json", "-p", *session_flags]
+    else:
+        prefix = ["--mode", "rpc"]
     argv = [
         *prefix,
         *profile_to_flags(
@@ -335,7 +351,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2684-2688``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2686-2690``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

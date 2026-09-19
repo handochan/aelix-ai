@@ -232,7 +232,7 @@ def should_offer_first_run_login(
         return False
     if subagent_depth_value > 0:
         # Belt-and-braces: delegated children are already non-interactive
-        # (profile_to_argv prefixes --mode json -p --no-session, or --mode rpc),
+        # (profile_to_argv prefixes --mode json -p + a session flag, or --mode rpc),
         # but a subagent must never be droppable into a modal under any argv.
         return False
     if (
@@ -434,14 +434,14 @@ async def _build_session(
                 "not_found",
                 f"No session matching --session {parsed.session!r}",
             )
-        return await repo.open(meta, cwd_override=cwd)
+        return await _warn_if_delegated_child(await repo.open(meta, cwd_override=cwd), meta.path)
     if parsed.fork is not None:
         meta = await _resolve_session_metadata(repo, fs, parsed.fork, cwd)
         if meta is None:
             raise SessionError(
                 "not_found", f"No session matching --fork {parsed.fork!r}"
             )
-        return await repo.fork_from(meta, cwd)
+        return await _warn_if_delegated_child(await repo.fork_from(meta, cwd), meta.path)
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
 
 
@@ -2253,6 +2253,7 @@ async def _async_main(argv: list[str]) -> int:
     # the two points touches ``agents_ext``, and ``_harness_factory`` (defined
     # below) reads this closure variable at CALL time.
     agents_ext: Any = None
+    session_host: dict[str, Any] = {}  # #199 — the runtime host, once built (below)
     if _agents_delegation_enabled(parsed, settings_manager):
         try:
             from aelix_agents import AgentsExtension
@@ -2289,6 +2290,7 @@ async def _async_main(argv: list[str]) -> int:
                 # Measured on one object: same ``id()``, False→True on the
                 # overlay and True→False on the next reset.
                 no_context_files=lambda: parsed.no_context_files,
+                session=lambda: _live_session_of(session_host),  # #199: live host session
             )
 
     # === Agent profile identity (ADR-0196) ===================================
@@ -2959,6 +2961,7 @@ async def _async_main(argv: list[str]) -> int:
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs
     )
+    session_host["runtime"] = runtime
 
     # === Unrunnable-startup-model gate (#98) ===
     # Placed AFTER the harness build so ``bind_model_registry`` has replayed the
@@ -3288,6 +3291,69 @@ def main_sync() -> None:
             pass
         raise
     sys.exit(exit_code)
+
+
+# === #199 — delegated child sessions ======================================
+
+
+def _live_session_of(host: dict[str, Any]) -> Session | None:
+    """#199 — the runtime host's CURRENT session, or ``None`` before it exists.
+
+    ``AgentSessionRuntime.session`` reads through to whichever harness the host
+    holds NOW, so this follows ``/new``, ``/resume`` and ``/fork``. The
+    delegation extension calls it once per spawn and keeps what it got.
+    """
+
+    runtime = host.get("runtime")
+    if runtime is None:
+        return None
+    return runtime.session
+
+
+_CHILD_ORIGIN_TYPE = "aelix.child_origin"
+"""#199 — the ``customType`` of a delegated child's FIRST session entry.
+
+Spelled here rather than imported: product-core names the bundled extension at
+one site only (``tests/cli/test_p2_import_direction.py``). The extension writes
+it (``aelix_agents.child_session.CHILD_ORIGIN_TYPE``) and a test pins the two
+equal."""
+
+
+async def _warn_if_delegated_child(session: Session, path: str) -> Session:
+    """One stderr line when a HUMAN opens a delegated child's session file (#199).
+
+    A child file is a RECORD, not a resumable identity. Everything that bounded
+    the child — its ``--permission-mode`` clamp, its narrowed tools,
+    ``--no-agents``, the depth guard — was argv and environment, none of it is
+    in the file, so ``--session <child file>`` runs it as an ordinary top-level
+    session with the user's full posture. A warning rather than a refusal:
+    reopening one is legitimate, it just must not look like resuming the child.
+    ``aelix --export`` is named because it reads the file and writes nothing.
+
+    Silent inside a delegation: the child itself is launched with
+    ``--session <its own file>``, and a line on its stderr would become part of
+    the tail a failed delegation is diagnosed from. Returns ``session``, so
+    ``_build_session``'s two call sites stay one line each.
+    """
+
+    if subagent_depth() > 0:
+        return session
+    try:
+        entries = await session.get_entries()
+    except Exception:  # noqa: BLE001 — a warning is never worth a startup
+        return session
+    first = entries[0] if entries else None
+    if getattr(first, "type", None) != "custom":
+        return session
+    if getattr(first, "custom_type", None) != _CHILD_ORIGIN_TYPE:
+        return session
+    print(
+        f"Warning: {path} is a delegated agent's session record; it runs here "
+        "as a top-level session, without the permission clamp and tool limits "
+        f"the child ran with. To read it without running it: aelix --export {path}",
+        file=sys.stderr,
+    )
+    return session
 
 
 __all__ = [

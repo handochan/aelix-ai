@@ -595,7 +595,7 @@ in-process 확장을 sandbox로 표현하는 약속은 제품 근거와 맞지 �
 | 2·3 | 다음 배포와 내구성 범위 모두 **안정성·내구성 우선** | 차단 기준은 데이터 손실·보안·기록 누락. §5의 1단계(기록 보존)가 다음 배포의 약속 |
 | 4 | **권고 범위 채택**: `contributes.agents`·`contributes.skills` + 로더의 extension tier + `aelix install`/`aelix run` + manifest 호환 버전 범위. theme·settings 프리셋·`default_agent`는 후속 | Analytics 공개 전에 ADR로 확정(#253에 기록) |
 | 5 | 서버는 **개인 범위부터 순차적으로**: 기본 세션 관리 → cron 등 예약 작업 → 웹(세션·프로젝트, 파일 미리보기, 확장 관리, TUI가 지원하는 기능 전반) | 세션 관리는 RPC 목록·승인 브리지가 선행(부록 B 9). 파일 미리보기는 현재 RPC 29개에 없는 **읽기 전용·workspace 경계 안의 새 명령**이 필요하다(`bash`는 웹에 그대로 열 수 없다). cron은 무인 실행의 권한 규칙(§8)이 먼저 |
-| 6 | agents 기본 on의 조건: 내구성·안정성, **자식 세션이 기록될 것**, **자식의 구체 내용은 부모 컨텍스트에 들어가지 않고 결과만 들어갈 것**, 프로필이 상세하게 지원될 것 | 아래 확인 결과 참조. 첫 둘은 미충족, 셋째·넷째는 충족 |
+| 6 | agents 기본 on의 조건: 내구성·안정성, **자식 세션이 기록될 것**, **자식의 구체 내용은 부모 컨텍스트에 들어가지 않고 결과만 들어갈 것**, 프로필이 상세하게 지원될 것 | 아래 확인 결과 참조. 첫째(내구성·안정성)는 미충족, 둘째(자식 세션 기록)는 #199 [ADR-0243](decisions/0243-a-delegated-child-keeps-its-own-session-and-the-parent-keeps-the-receipt.md)로 충족, 셋째·넷째는 충족 |
 | 7 | Copilot Enterprise 좌석 **작동은 확인됨** | 확인된 것은 기능이다. #86이 적은 ToS 서면 검증은 별개의 사업 판단으로 남는다 — 문구는 "보유한 좌석으로 동작한다"까지, 보증 표현은 쓰지 않는다 |
 | 8 | **동시에 활성화하는 큰 작업 흐름은 둘** — A = 안정성·내구성, B = Analytics pack과 그것이 요구하는 Pack 계약. 서버·웹은 A의 자식 세션 기록 뒤에 잇는다 | 같은 파일을 동시에 고치지 않고 이슈별 변경을 분리 |
 | 9 | **Ruff `C901` 상한 20 + 함수별 기준선 파일, `# noqa` 금지** | 게이트 이슈 #293, 40 초과 여섯은 #284 아래 개별 이슈 |
@@ -634,6 +634,11 @@ Python 3.12.13.
   `details` 키가 없고(#168), 자식의 비용 $0.0110은 결과 텍스트 footer에만 있으며 세션 usage 기록에는 없다. 즉 자식의 구체 내용은
   실행이 끝나면 **어디에도 남지 않는다.** 오너의 요구(구체 내용은 부모 밖에, 그러나 기록은 될 것)는 지금의 content/details 분리
   위에 그대로 얹힌다: `details` 자리에 **자식 세션을 가리키는 링크**를 두고 구체 내용은 자식 세션 파일이 갖는다(부록 B 2~4).
+  **→ 충족 (2026-09-19, #199, [ADR-0243](decisions/0243-a-delegated-child-keeps-its-own-session-and-the-parent-keeps-the-receipt.md)).** 자식마다 세션 파일이 부모 파일 옆 `<stem>/sub-<id>.jsonl`에
+  생기고(picker·`--continue`에는 보이지 않는다), 부모는 `aelix.child_session`(start·settle)과 `aelix.usage`(pending·final)
+  레코드로 링크·상태·사용량·비용을 남긴다. 자식 지출은 세션 통계에 한 번만 더해진다(`/cost`·`/stats`에 한 줄). 읽기는
+  `aelix --export <자식 파일>`, TUI 뷰어는 #296. 위 bullet의 `output_cap` 주의는 오너 결정 (c) — parallel/chain 호출 하나가
+  64 KiB를 나눠 쓴다 — 로 정리했다.
 - **프로필 17개 키는 전부 소비처가 있다 — 충족(코드 확인).** 자식 argv로 가는 것: `model`·`provider`·`tools`·`builtin_tools`·`skills`·
   `inherit_skills`·`extensions`·`inherit_extensions`·`context_files`·`thinking`·`system_prompt`(append/replace)+본문
   (`agents/resolver.py` `profile_to_flags`). 부모 쪽에서 집행하는 것: `role`(`print_channel.py`, leaf면 위임 도구를 주지 않음),
@@ -748,9 +753,9 @@ provider 층은 세 번째 군집이다(Radon: `stream_openai_completions` 82 ·
 | # | 변경 | 앵커 | 주의 |
 | --- | --- | --- | --- |
 | 1 | #262 재현·수정·실제 모델 검증 | `aelix_agents/` | 자식 기록 기능보다 먼저 |
-| 2 | 두 채널의 `--no-session` 제거 | `agents/resolver.py` `profile_to_argv` · `aelix_agents/rpc_channel.py` | 저장 위치·보관·권한 정책이 같이 온다 |
-| 3 | 자식 세션과 부모의 spawn 계보 기록 | `CustomEntry` + `aelix.` `custom_type` (ADR-0242) — 새 type은 출시본이 후손까지 가지치기하고, 기존 type의 새 필드는 출시본의 fork가 버린다 | `SessionInfoEntry.parent_id`(엔트리 트리 부모)와 `parent_session_path`(fork/clone)를 재사용하지 않는다 |
-| 4 | `aggregate.roll_up_usage`를 세션 통계에 연결 | `harness/_session_stats.py` | 부모/자식 이중 합산 금지, `tokens`는 최대값 |
+| 2 | 두 채널의 `--no-session` 제거 — **완료(#199, [ADR-0243](decisions/0243-a-delegated-child-keeps-its-own-session-and-the-parent-keeps-the-receipt.md))**: 부모가 할당한 자식 파일로 `--session <절대 경로>`, 파일이 없을 때만 `--no-session` | `agents/resolver.py` `profile_to_argv` · `aelix_agents/rpc_channel.py` | 저장 위치·보관·권한 정책이 같이 온다 |
+| 3 | 자식 세션과 부모의 spawn 계보 기록 — **완료(#199, ADR-0243)**: 자식 파일 첫 엔트리 `aelix.child_origin` + 부모의 `aelix.child_session` start·settle, `parentSession`·`parent_id` 재사용 없음 | `CustomEntry` + `aelix.` `custom_type` (ADR-0242) — 새 type은 출시본이 후손까지 가지치기하고, 기존 type의 새 필드는 출시본의 fork가 버린다 | `SessionInfoEntry.parent_id`(엔트리 트리 부모)와 `parent_session_path`(fork/clone)를 재사용하지 않는다 |
+| 4 | `aggregate.roll_up_usage`를 세션 통계에 연결 — **완료(#199, ADR-0243), 방식은 다름**: `roll_up_usage`는 표시 전용으로 남고 커널이 `aelix.usage` 레코드를 fold한다 | `harness/_session_stats.py` | 부모/자식 이중 합산 금지, `tokens`는 최대값 |
 | 5 | `Contributes`에 `skills`·`agents` 추가 | `contracts/manifest.py` `Contributes`(`extra="forbid"`) | schema·가이드·카탈로그·ADR이 같이 움직인다(#253) |
 | 6 | skills·profile 로더에 extension tier | `cli/entry.py` `_resolve_skill_dirs` · `agents/discovery.py` | 출처·trust·동명 우선순위·재로드·제거 검증 |
 | 7 | `default_agent` 설정 키 | `cli/args.py` `--agent` 읽는 자리 | 후속 범위(§6) |

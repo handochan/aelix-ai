@@ -118,11 +118,12 @@ class SubagentResult:
     """UNCAPPED raw material behind ``summary`` — the full extracted text plus,
     on a failure path, the raw (unsanitized) stderr tail.
 
-    Added in review (finding B8): ``summary`` is capped at ``output_cap`` and
-    its truncation marker promises "full output preserved in tool details".
-    Without this field that promise is false on the ``/agents run`` door, which
-    never builds a ``ToolResult``, and a P4 dashboard or Web UI — both of which
-    consume ``SubagentResult``, not ``ToolResult`` — could never show it.
+    Added in review (finding B8): ``summary`` is capped at ``output_cap``, and
+    without this field a P4 dashboard or Web UI — both of which consume
+    ``SubagentResult``, not ``ToolResult`` — could never show what the cap
+    removed. It is live-only: ``ToolResult.details`` is never persisted (#168),
+    so since #199 the truncation marker points at the delegated child's session
+    file instead of here (see :attr:`output_recorded`).
     Consumers must treat this as potentially large; it is NOT sent to the model
     by the ``agent`` tool (it rides ``ToolResult.details`` there)."""
     dropped_lines: int = 0
@@ -170,6 +171,21 @@ class SubagentResult:
     Populated from ``_StreamState.provider``/``.model``, which the reducer
     already fills from every ``message_end`` (``stream.py``), so no new parsing.
     Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
+    output_recorded: bool = False
+    """Is the text behind :attr:`summary` kept in a delegated session file? (#199)
+
+    ``True`` only when BOTH hold: the child ran with a session file its parent
+    allocated for it, and ``summary`` came from the child's own stream (its
+    answer or its own error message) rather than from its stderr or a spawn
+    failure — the one case in which a truncated summary may say that the rest
+    is recorded. A renderer that re-caps the summary (the batch renderer's
+    shared budget) reads it to keep its truncation marker honest; it carries no
+    path, so nothing here can put a home directory into the model's context.
+
+    ``False`` on every envelope built without a child file: a ``--no-session``
+    parent, an allocation that failed, a refusal, a decline. Additive +
+    defaulted: does NOT bump ``CONTRACT_VERSION``."""
 
 
 @dataclass(frozen=True)

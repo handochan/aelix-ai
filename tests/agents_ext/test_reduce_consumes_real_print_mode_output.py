@@ -28,12 +28,19 @@ WHAT IT PROVES, concretely:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.runtime import AgentSessionRuntime
-from aelix_agent_core.session import JsonlSessionRepo, LocalFileSystem
+from aelix_agent_core.session import (
+    JsonlSessionRepo,
+    JsonlSessionStorage,
+    LocalFileSystem,
+    Session,
+)
+from aelix_agent_core.session.entries import CustomEntry
 from aelix_agents.stream import LineAssembler, _StreamState, reduce_line
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
@@ -81,11 +88,12 @@ def _stream(
     return fn
 
 
-def _new_harness(stream_fn: Any) -> AgentHarness:
+def _new_harness(stream_fn: Any, session: Session | None = None) -> AgentHarness:
     return AgentHarness(
         AgentHarnessOptions(
             model=Model(id="mock", provider="mock"),
             stream_fn=stream_fn,
+            session=session,
         )
     )
 
@@ -103,9 +111,12 @@ def _new_runtime(harness: AgentHarness) -> AgentSessionRuntime:
 
 
 async def _emit(
-    capsys: pytest.CaptureFixture[str], **stream_kwargs: Any
+    capsys: pytest.CaptureFixture[str],
+    *,
+    session: Session | None = None,
+    **stream_kwargs: Any,
 ) -> tuple[str, int]:
-    harness = _new_harness(_stream(**stream_kwargs))
+    harness = _new_harness(_stream(**stream_kwargs), session)
     runtime = _new_runtime(harness)
     exit_code = await run_print_mode(
         runtime,
@@ -166,10 +177,11 @@ async def test_the_typeless_header_is_absent_under_no_session_and_harmless(
 
     ``print_mode.py``'s JSON header emit is guarded by
     ``if session is not None`` and wrapped in a best-effort ``try/except``. A
-    subagent runs with ``--no-session``, so the typeless session-metadata line
-    is NOT the first line of a child's stream — the first line is
-    ``agent_start``. A reducer that treated the header as a required preamble
-    (or that indexed the first line at all) would be wrong for every delegation.
+    child with NO session — the ``--no-session`` fallback #199 keeps for a parent
+    that has no session file — has no header: its first line is
+    ``agent_start``. A sessioned child (the #199 default) DOES emit one; see the
+    next test. A reducer that treated the header as a required preamble (or that
+    indexed the first line at all) would be wrong for one of the two.
 
     The reducer therefore depends on neither its presence nor its absence: every
     read goes through ``event.get("type")``, and a line with no ``type`` folds
@@ -187,6 +199,53 @@ async def test_the_typeless_header_is_absent_under_no_session_and_harmless(
     reduce_line(state, json.dumps({"id": "sess-1", "created_at": "now"}))
     assert state.summary == ""
     assert state.saw_agent_start is False
+
+
+async def test_a_sessioned_child_leads_with_its_header_and_the_reduce_is_unchanged(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """MOVED DELIBERATELY by #199: a delegated child now runs on a session file.
+
+    The parent publishes the child's file (header + ``aelix.child_origin``) and
+    launches it with ``--session <that file>``, so the child's harness HAS a
+    session and the typeless header IS the first stdout line. Pinned on the real
+    emitter: the header comes first, it names the child's own session, and the
+    fold over the whole stream is exactly the fold without it. The same run also
+    shows the other half of #199 in-process: the child's transcript lands in the
+    file the parent allocated, after the origin record.
+    """
+
+    import json
+
+    path = tmp_path / "sub-0123456789ab.jsonl"
+    origin = CustomEntry(
+        id="00000001",
+        parent_id=None,
+        timestamp="2026-09-19T00:00:00.000Z",
+        custom_type="aelix.child_origin",
+        data={"v": 1, "key": "sub-0123456789ab"},
+    )
+    storage = await JsonlSessionStorage.create(
+        LocalFileSystem(), str(path), cwd=str(tmp_path), session_id="child-1", entries=[origin]
+    )
+
+    out, exit_code = await _emit(capsys, session=Session(storage), usage=_USAGE)
+    assert exit_code == 0
+    lines = [line for line in out.splitlines() if line.strip()]
+    header = json.loads(lines[0])
+    assert "type" not in header
+    assert header["id"] == "child-1" and header["path"] == str(path)
+
+    sessioned = _reduce_through_the_pump(out)
+    plain_out, _ = await _emit(capsys, usage=_USAGE)
+    plain = _reduce_through_the_pump(plain_out)
+    for field in ("summary", "input", "output", "cache_read", "cache_write", "tokens", "turns"):
+        assert getattr(sessioned, field) == getattr(plain, field), field
+
+    written = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert written[1]["customType"] == "aelix.child_origin"
+    roles = [e["message"]["role"] for e in written if e.get("type") == "message"]
+    assert roles[:2] == ["user", "assistant"]
 
 
 async def test_the_wire_is_snake_case_not_pi_camel_case(

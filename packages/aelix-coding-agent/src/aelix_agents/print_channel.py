@@ -65,6 +65,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import math
 import os
 import sys
 import time
@@ -268,6 +269,15 @@ class SpawnPlan:
     state, and ``no_context_files`` appeared nowhere in this package."""
     timeout_ms: int | None = None
     output_cap: int | None = None
+    session_path: str | None = None
+    """The ABSOLUTE path of the session file the parent allocated for this child
+    (#199, ADR-0243), or ``None`` for a child that runs ``--no-session``.
+
+    Filled by ``runtime._run`` with ``dataclasses.replace`` once the file exists
+    — after the plan was built and published, because allocation is a write and
+    the admission block before it must stay await-free. Both channels turn it
+    into the child's session flag, and hand it to the envelope builder so a
+    truncation marker only ever claims the rest is recorded when it is."""
 
 
 @dataclass(frozen=True)
@@ -415,7 +425,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:274-275``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:275-276``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -503,6 +513,7 @@ def build_child_argv(
     child_cwd: str,
     parent_cwd: str,
     parent_model: Any | None = None,
+    session_path: str | None = None,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -512,18 +523,25 @@ def build_child_argv(
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
 
-    ``profile_to_argv`` supplies ``--mode json -p --no-session`` and appends
-    ``f"Task: {task}"``. THE ``"Task: "`` PREFIX IS LOAD-BEARING and must not be
-    stripped: ``args.py`` swallows an unrecognised ``--`` token into
+    ``profile_to_argv`` supplies ``--mode json -p``, the session flag and the
+    trailing ``f"Task: {task}"``. THE ``"Task: "`` PREFIX IS LOAD-BEARING and
+    must not be stripped: ``args.py`` swallows an unrecognised ``--`` token into
     ``parsed.unknown_flags`` with NO diagnostic, so a bare task beginning with
     ``--`` would silently become a flag and the child would run with an empty
     prompt.
 
-    ``child_trust_argv`` may legitimately return ``[]`` (§(g) clause 1) — the
-    same call the ``/agents show`` dry-run renders, so the dry run stays the
-    truth. ``--no-agents`` is belt-and-braces with :data:`DEPTH_ENV_VAR`: the
-    env var stops the extension loading, the flag stops the settings gate
-    turning it back on.
+    ``session_path`` (#199) is the child's own session file, allocated by the
+    parent beside its own file (``child_session.py``) and passed as ``--session
+    <abs path>``; ``None`` keeps ``--no-session``. Nothing forwards
+    ``--session-dir``: the file is chosen here, so the child never picks a place
+    in any sessions root a picker scans.
+
+    ``child_trust_argv`` may legitimately return ``[]`` (§(g) clause 1).
+    ``/agents show`` renders the profile's flags only (``profile_to_flags``):
+    the session flag, ``--permission-mode``, the trust flags and ``--no-agents``
+    are spawn-time state a dry run cannot know. ``--no-agents`` is
+    belt-and-braces with :data:`DEPTH_ENV_VAR`: the env var stops the extension
+    loading, the flag stops the settings gate turning it back on.
 
     ``parent_model`` is the parent's LIVE ``ExtensionContext.model``, forwarded
     only when the profile declares no model of its own (``resolver``'s emission
@@ -547,6 +565,7 @@ def build_child_argv(
             oneshot=True,
             task=task,
             parent_model=parent_model,
+            session_path=session_path,
         ),
         "--permission-mode",
         permission_mode.value,
@@ -604,7 +623,7 @@ def build_child_env(
     return env
 
 
-def apply_cost_fallback(state: _StreamState, registry: Any | None) -> None:
+def apply_cost_fallback(state: _StreamState, registry: Any | None) -> bool:
     """Fill :attr:`_StreamState.cost` when the child's adapter reported none.
 
     ADR-0198 §D2 rule 9. ``usage["cost"]["total"]`` is already summed by
@@ -614,28 +633,44 @@ def apply_cost_fallback(state: _StreamState, registry: Any | None) -> None:
     ``stream.py`` because it needs a model-registry lookup — disk I/O, which a
     pure reducer may not do.
 
+    RETURNS WHETHER IT PRICED THE RUN (#199, A.3b), and records the same fact on
+    :attr:`_StreamState.cost_priced`. It used to return ``None`` on every path,
+    so "the registry had no such model" and "the registry priced it at $0.00" (a
+    ``:free`` model) both left ``cost == 0.0`` and nobody could tell a free run
+    from an unpriced one — which is exactly what a recorded ``cost_known`` has
+    to tell apart. A run that already carries a cost is not re-priced, and
+    answers ``False``: the fallback did nothing.
+
+    Synchronous and total: ``runtime._run`` calls it once more on a cancelled or
+    errored run, which never reached an envelope, so its spend is priced too.
+
     Best-effort by construction: a delegation must never fail because a price
     could not be looked up.
     """
 
     if state.cost or registry is None or not state.provider or not state.model:
-        return
+        return False
     try:
         from aelix_ai.models import calculate_cost
         from aelix_ai.streaming import Usage
 
         model = registry.find(state.provider, state.model)
         if model is None:
-            return
+            return False
         usage = Usage(
             input=state.input,
             output=state.output,
             cache_read=state.cache_read,
             cache_write=state.cache_write,
         )
-        state.cost = float(calculate_cost(model, usage).total)
+        price = float(calculate_cost(model, usage).total)
     except Exception:  # noqa: BLE001 — a price is never worth failing a run over
-        return
+        return False
+    if not math.isfinite(price) or price < 0:
+        return False
+    state.cost = price
+    state.cost_priced = True
+    return True
 
 
 async def _pump_stdout(
@@ -972,6 +1007,7 @@ class PrintChannel:
                 permission_mode=plan.permission_mode.value,
                 dropped_tools=narrowing.dropped,
                 error=error,
+                session_recorded=plan.session_path is not None,
             )
 
         # Written BEFORE the process starts and recorded on the row in the same
@@ -996,6 +1032,7 @@ class PrintChannel:
                 parent_model=(
                     self._parent_model() if self._parent_model else None
                 ),
+                session_path=plan.session_path,
             )
             env = self._env_builder(profile)
             try:

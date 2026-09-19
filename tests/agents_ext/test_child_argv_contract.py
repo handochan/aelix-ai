@@ -88,9 +88,46 @@ def test_child_is_launched_as_a_module_not_as_the_console_script(tmp_path: Path)
 
 
 def test_the_oneshot_json_channel_is_requested(tmp_path: Path) -> None:
+    """MOVED DELIBERATELY by #199: ``--no-session`` is now the FALLBACK.
+
+    A child whose parent allocated it a session file runs ``--session <that
+    file>`` (the next test); ``--no-session`` remains for a parent with no file
+    of its own, or an allocation that failed — this builder's default.
+    """
+
     argv = _argv(tmp_path)
     for flag in ("--mode", "json", "-p", "--no-session"):
         assert flag in argv
+    assert "--session" not in argv
+
+
+def test_a_child_with_a_session_file_is_launched_on_it(tmp_path: Path) -> None:
+    """#199 — ``--session <abs path>`` REPLACES ``--no-session``, and parses.
+
+    Both spellings would be a contradiction a child resolves silently
+    (``--no-session`` wins in ``_build_session``), so exactly one must appear.
+    A Windows-shaped path with a space is parsed too: it is one argv element,
+    never split, because the argv is a list and no shell is involved.
+    """
+
+    child = str(tmp_path / "s" / "--b--" / "p" / "sub-0123456789ab.jsonl")
+    for path in (child, "C:\\Users\\a b\\s\\--b--\\p\\sub-0123456789ab.jsonl"):
+        argv = build_child_argv(
+            _profile(tools=("read", "ls")),
+            prompt_path=str(tmp_path / "prompt-scout.md"),
+            task="list the files",
+            permission_mode=PermissionMode.PLAN,
+            child_cwd=str(tmp_path),
+            parent_cwd=str(tmp_path),
+            session_path=path,
+        )
+        assert "--no-session" not in argv
+        assert argv[argv.index("--session") + 1] == path
+        parsed = parse_args(argv[_LAUNCH_PREFIX:])
+        assert parsed.session == path
+        assert parsed.no_session is False
+        assert parsed.unknown_flags == {}
+        assert parsed.messages == ["Task: list the files"]
 
 
 def test_the_task_keeps_its_prefix(tmp_path: Path) -> None:
@@ -497,3 +534,33 @@ def test_the_rpc_channel_forwards_it_the_same_way(tmp_path: Path) -> None:
     parsed = parse_args(argv[_LAUNCH_PREFIX:])
     assert parsed.model == "claude-haiku-4-5"
     assert parsed.provider == "anthropic"
+
+
+def test_the_rpc_channel_swaps_its_own_no_session_for_the_same_file(
+    tmp_path: Path,
+) -> None:
+    """#199 on the second channel: one session flag, the one the parent chose.
+
+    The rpc builder appends its own session flag (the rpc prefix has none), so
+    it is the one place the swap could be forgotten. Stub-tested only — the
+    rpc channel has no production caller (#123).
+    """
+
+    common: dict[str, object] = {
+        "prompt_path": str(tmp_path / "p.md"),
+        "task": "go",
+        "permission_mode": PermissionMode.PLAN,
+        "child_cwd": str(tmp_path),
+        "parent_cwd": str(tmp_path),
+    }
+    child = str(tmp_path / "s" / "--b--" / "p" / "sub-0123456789ab.jsonl")
+    sessioned = build_rpc_child_argv(_profile(), session_path=child, **common)  # pyright: ignore[reportArgumentType]
+    assert "--no-session" not in sessioned
+    assert sessioned[sessioned.index("--session") + 1] == child
+    parsed = parse_args(sessioned[_LAUNCH_PREFIX:])
+    assert parsed.mode == "rpc"
+    assert parsed.session == child and parsed.no_session is False
+    assert parsed.unknown_flags == {}
+
+    fallback = build_rpc_child_argv(_profile(), **common)  # pyright: ignore[reportArgumentType]
+    assert "--no-session" in fallback and "--session" not in fallback

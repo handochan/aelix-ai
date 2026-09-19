@@ -171,7 +171,8 @@ def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
     ``cost_known`` is ``False`` when the figure is short of the real spend —
     either some usage had no price in the registry, or the message list no
     longer covers the whole session (after a ``/compact`` the summarized-away
-    turns are gone from ``state.messages`` but were still paid for). Three
+    turns are gone from ``state.messages`` but were still paid for), or a
+    tool-reported run is still pending or came back unpriced (ADR-0243). Three
     outcomes, none of which can state something false:
 
     - known → the exact figure, ``$0.0127``.
@@ -198,6 +199,69 @@ def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
     return f"{PARTIAL_COST_PREFIX}{prefix}{cost:.4f}"
 
 
+#: Label of the one line ``/cost`` and the ``/stats`` session tab add for the
+#: usage tools reported (``SessionStats.tool_usage``, ADR-0243). Delegated agents
+#: are what reports it today; the kernel's record belongs to no one tool, which
+#: is why "tools" leads.
+TOOL_USAGE_LABEL = "Tools & delegated agents"
+
+
+def _compact_count(value: Any) -> str:
+    """``987`` / ``1.1k`` / ``12.3k`` / ``4.6M`` — token counts on the tool-usage line.
+
+    Up to a million this spells a number the way the delegated batch's
+    ``[total]`` line and the live statusline do (one decimal from 1,000 up), so
+    the same tokens never read two ways; a whole session can outgrow that line's
+    range, hence the ``M``. Not :func:`_compact_tokens`, whose ``k`` starts at
+    10,000 for the History tab's column.
+    """
+
+    try:
+        count = max(0, int(value))
+    except (TypeError, ValueError):
+        return "0"
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}k"
+    return str(count)
+
+
+def format_tool_usage(stats: Any, *, prefix: str = "$") -> str | None:
+    """The tool-usage breakdown, or :data:`None` when no tool reported any.
+
+    ``12.3k in / 1.1k out · $0.0110 (2 runs)``, with ``, 1 pending`` added while
+    a run has not settled. The cost goes through :func:`format_session_cost`, so
+    a pending or unpriced run reads ``≥ $X`` or ``n/a`` exactly as the session
+    cost does — never a confident figure that is short of the bill. ``prefix``
+    is passed through, so a table whose cost column is already labelled USD
+    (``/cost``) renders the figure the same way that row does.
+
+    A BREAKDOWN, never an addition: ``SessionStats.tokens`` / ``cost`` already
+    include it, so a caller gives it its own line and adds it to nothing. Read
+    through ``getattr`` — stats without ``tool_usage`` (an embedder's, a sparse
+    fake) get no line.
+    """
+
+    usage = getattr(stats, "tool_usage", None)
+    try:
+        runs = int(getattr(usage, "runs", 0) or 0)
+        pending = int(getattr(usage, "pending", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if runs <= 0:
+        return None
+    tokens = getattr(usage, "tokens", None)
+    tally = f"{runs} run" if runs == 1 else f"{runs} runs"
+    if pending > 0:
+        tally += f", {pending} pending"
+    return (
+        f"{_compact_count(getattr(tokens, 'input', 0))} in"
+        f" / {_compact_count(getattr(tokens, 'output', 0))} out"
+        f" · {format_session_cost(usage, prefix=prefix)} ({tally})"
+    )
+
+
 def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     """Session-summary tab: tool calls (ok/fail), success %, tokens, cost, etc.
 
@@ -220,6 +284,7 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     success = _pct(getattr(snapshot, "success_rate", None))
 
     cost_str = format_session_cost(stats)
+    tool_usage = format_tool_usage(stats)
 
     avg_latency = _dur(_avg_tool_seconds(getattr(snapshot, "per_tool", [])))
 
@@ -233,6 +298,9 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
         f"Cache read    {_num(cache_read)}",
         f"Cache write   {_num(cache_write)}",
         f"Cost          {cost_str}",
+        # The tools' share of the totals just above (ADR-0243) — one line, and
+        # only when a tool reported usage. Already counted above; never added.
+        *([f"{TOOL_USAGE_LABEL}: {tool_usage}"] if tool_usage is not None else []),
         "",
         f"Messages      {_num(getattr(stats, 'total_messages', 0))}"
         f"  (you {_num(getattr(stats, 'user_messages', 0))} ·"
@@ -585,11 +653,13 @@ async def run_stats(
 
 __all__ = [
     "PARTIAL_COST_PREFIX",
+    "TOOL_USAGE_LABEL",
     "UNPRICED_COST",
     "build_activity_tab",
     "build_efficiency_tab",
     "build_history_tab",
     "build_session_tab",
     "format_session_cost",
+    "format_tool_usage",
     "run_stats",
 ]

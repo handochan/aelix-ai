@@ -283,7 +283,8 @@ so opening the same session twice makes one terminal's work a branch that no
 ([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
 **Transcripts keep everything, forever, unredacted.** Every prompt, tool argument
-and tool result is written verbatim; there is no scrubbing pass. They are
+and tool result is written verbatim — a delegated agent's too, in a session file
+of its own beside yours ([#199](https://github.com/handochan/aelix-ai/issues/199)) — and there is no scrubbing pass. They are
 owner-only on macOS and Linux (`0600` inside `0700`), and Windows has no mode-bit
 equivalent for Aelix to set — either way the exposure is to whatever copies your
 home directory: backups, sync clients, support bundles
@@ -295,13 +296,11 @@ the end — `exit_code` is 0, nothing says anything went missing, and the tail i
 part the model is shown. It did not reproduce in ~3,300 ordinary rounds
 ([#260](https://github.com/handochan/aelix-ai/issues/260)).
 
-**Delegation's spend is invisible to `/cost`, and its cleanup is not equal on every
-OS.** A child's tokens never enter the parent's session — read each delegation's
-own footer — and a headless parent consents to spawns on its own. If Aelix itself
-dies, Linux's `PR_SET_PDEATHSIG` and a Windows job object's `kill_on_close` end the
-child; macOS has neither, and a grandchild that made its own session escapes the
-process group that is all the containment there is
-([#110](https://github.com/handochan/aelix-ai/issues/110)).
+**Delegation's cleanup is not equal on every OS.** A headless parent consents to
+spawns on its own. If Aelix itself dies, Linux's `PR_SET_PDEATHSIG` and a Windows
+job object's `kill_on_close` end the child; macOS has neither, and a grandchild
+that made its own session escapes the process group that is all the containment
+there is ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## Architecture
 

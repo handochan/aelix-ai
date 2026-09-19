@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -59,6 +61,11 @@ from aelix_coding_agent.subagent_contract import (
     SubagentStatus,
 )
 
+from aelix_agents.child_session import (
+    TASK_PREVIEW_CHARS,
+    SpawnReceipt,
+    append_records,
+)
 from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import declined_result
 from aelix_agents.posture import posture_rank
@@ -68,6 +75,7 @@ from aelix_agents.print_channel import (
     SpawnPlan,
     SubagentChannel,
     abort_child,
+    apply_cost_fallback,
     resolve_child_cwd,
 )
 from aelix_agents.prompt_file import remove_prompt_dir
@@ -78,6 +86,8 @@ if TYPE_CHECKING:
     from aelix_coding_agent.subagent_contract import SubagentMode
 
     from aelix_agents.stream import _StreamState
+
+logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_MODE = (
     "mode {mode!r} is not a per-spawn topology: one spawn is one child. "
@@ -114,7 +124,7 @@ _SESSION_DRAINING = (
 
 WITHOUT IT, ``stop_all`` CANNOT STOP A BATCH — it makes it bigger. Every abort
 ``stop_all`` performs RELEASES a member parked on the batch semaphore
-(``batch.py:459-462``), and every ``await`` in ``stop_all`` is a chance for that
+(``batch.py:467-470``), and every ``await`` in ``stop_all`` is a chance for that
 member to reach ``create_subprocess_exec``. Draining alone is not enough and a
 flag held only FOR THE DURATION of the drain is not enough either: MEASURED with
 real processes, a wave-1 member's ``PrintChannel.run`` routinely returns — and
@@ -129,7 +139,7 @@ SESSION IS ALIVE AGAIN — the next user prompt
 (:meth:`~_SubagentRuntimeImpl.reset_delegation_budget`, called from
 ``AgentsExtension._on_before_agent_start``) or a human typing ``/agents run``
 (:meth:`~_SubagentRuntimeImpl.spawn`). Both matter, because the SAME runtime
-instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:176-178``) and
+instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:177-179``) and
 every one of those emits ``session_shutdown`` first.
 
 The check is not an ``await``, so it does not disturb ``_run``'s critical
@@ -327,6 +337,41 @@ class SubagentHost:
     is a ``SubagentProgress`` to carry it. ``None`` (the default, and every host
     that predates #196) makes both doors silent, which is correct for a host
     with no statusline to write to."""
+    session: Callable[[], Any | None] = lambda: None
+    """The parent's CURRENT ``Session`` — where a delegation's records go (#199).
+
+    THE ONE FIELD HERE THAT IS READ ONCE PER SPAWN, not at every use, and the
+    exception is the point (design critique, BLOCKER 1). ``_run`` reads it at the
+    top of its ``try`` and every record of that spawn — start, pending, settle,
+    final — goes to the object it got. A settle can arrive after ``/new``,
+    ``/resume`` or quit has swapped the session out (``stop_all`` runs at
+    ``session_shutdown`` and the channel still drains afterwards); read again
+    then, it would land in a session that never ran the child and bill it for
+    spend it did not have.
+
+    ``None`` records nothing and spawns the child ``--no-session`` — the
+    default, and every host that predates #199."""
+
+
+@dataclass(frozen=True)
+class SpawnRecordMeta:
+    """The three facts about a spawn that only its CALLER knows (#199, A.3c).
+
+    The model door knows the ``tool_call_id`` and the topology; the batch
+    executor knows each member's ``index``. ``_run`` knows none of them, so they
+    ride in on this — a PRIVATE keyword of ``spawn_granted`` and
+    ``batch.run_batch``, never the ``SubagentRuntime`` Protocol's ``spawn``
+    (S2, ``test_protocol_has_no_consent_parameter``). ``/agents run`` passes no
+    record at all, and its receipt carries ``null`` for all three.
+    """
+
+    tool_call_id: str | None
+    mode: str
+    """``"single"``, ``"parallel"`` or ``"chain"`` — the CALL's topology."""
+    index: int | None = None
+    """0-based position in the call (``batch._member``'s index); 0 in single
+    mode. ``None`` on the template ``run_batch`` receives, before a member is
+    bound to one."""
 
 
 @dataclass
@@ -345,7 +390,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:621``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:651``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -356,7 +401,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:290``/``tool.py:749`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:360``/``tool.py:750`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -385,6 +430,9 @@ class _SubagentRuntimeImpl:
     _closed: bool = field(default=False, init=False)
     """The delegation door, shut by :meth:`stop_all` until someone alive reopens
     it. See :data:`_SESSION_DRAINING` for why it outlives the drain."""
+    _settling: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    """Settles in flight (:func:`_shielded_append`): the strong references the
+    loop does not keep, and what :meth:`stop_all` joins before it returns."""
 
     # ── Admission (P2 review, MEDIUM #2) ──────────────────────────
 
@@ -404,7 +452,7 @@ class _SubagentRuntimeImpl:
         user prompt is the evidence that the session ``stop_all`` tore down is
         alive again — and it has to be somebody's job, because the same runtime
         instance survives ``/new`` / ``/fork`` / ``/resume``
-        (``extension.py:176-178``) and each of those emits ``session_shutdown``
+        (``extension.py:177-179``) and each of those emits ``session_shutdown``
         first, so a permanently-shut door would silently kill delegation for the
         rest of the process.
         """
@@ -534,7 +582,7 @@ class _SubagentRuntimeImpl:
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
         # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
         # emit ``session_shutdown`` on a runtime instance that SURVIVES them
-        # (``extension.py:176-178``), and the user's next act may well be this
+        # (``extension.py:177-179``), and the user's next act may well be this
         # command rather than a prompt — refusing it would be a bug the user
         # cannot diagnose. It is not a bypass: :meth:`_reopen` declines while a
         # ``stop_all`` is still executing.
@@ -598,6 +646,8 @@ class _SubagentRuntimeImpl:
                 # ``/agents run`` is already the gate, and rate-limiting them
                 # would be theatre — see :data:`MAX_DELEGATIONS_PER_PROMPT`.
                 charge_budget=False,
+                # No tool call, no topology, no index: the receipt says null.
+                record=None,
             )
         finally:
             if grant.disclosure and announce is not None:
@@ -616,6 +666,7 @@ class _SubagentRuntimeImpl:
         background: bool = False,
         permission_floor: PermissionMode | None = None,
         on_event: Callable[[SubagentProgress], None] | None = None,
+        record: SpawnRecordMeta | None = None,
     ) -> SubagentResult:
         """The MODEL-DRIVEN door — implementation-private, grant REQUIRED.
 
@@ -640,6 +691,10 @@ class _SubagentRuntimeImpl:
         ``"single"``: the parallel/chain topologies are composed by
         :mod:`aelix_agents.batch`, which calls this method once per member. See
         :data:`_UNSUPPORTED_MODE`.
+
+        ``record`` carries the call's ``tool_call_id``, topology and this
+        member's index into the parent's records (#199, :class:`SpawnRecordMeta`)
+        — the CALL's topology, which is why it is not the ``mode`` above.
         """
 
         _reject_unsupported(mode, background=background)
@@ -670,6 +725,7 @@ class _SubagentRuntimeImpl:
             permission_floor=permission_floor,
             on_event=on_event,
             charge_budget=True,
+            record=record,
         )
 
     # ── Registry ──────────────────────────────────────────────────
@@ -716,7 +772,7 @@ class _SubagentRuntimeImpl:
         been aborted there was nothing left that could start another, and a
         single pass followed by ``self._children.clear()`` was correct. Under P3
         a batch's later waves are parked on the batch semaphore and are released
-        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:459-462``): killing
+        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:467-470``): killing
         wave 1 frees four permits, wave 2 reaches ``create_subprocess_exec``
         during this method's own ``await``\\ s, and the unconditional ``clear()``
         then dropped the only handle on them. Measured, with real processes:
@@ -737,6 +793,13 @@ class _SubagentRuntimeImpl:
         Idempotent, and a raise inside the drain cannot brick the session: only
         :attr:`_draining` is held by the ``finally``, and every reopen door
         remains reachable.
+
+        THEN THE SETTLES STILL IN FLIGHT ARE JOINED (#199, ADR-0243). A second
+        cancel releases ``_run`` from its shielded wait while the settle it
+        started keeps writing (:func:`_shielded_append`). Nothing awaits that
+        task any more, and a loop torn down under it would cancel it
+        part-written. This is the last owner that runs before teardown, so it
+        waits here, bounded by :data:`SETTLE_JOIN_SECONDS`.
         """
 
         self._draining = True
@@ -763,6 +826,7 @@ class _SubagentRuntimeImpl:
                     # would drop a row the ``_draining`` gate let through in the
                     # window before it was set.
                     self._children.pop(child.id, None)
+            await _join_settles(self._settling)
         finally:
             self._draining = False
 
@@ -779,6 +843,7 @@ class _SubagentRuntimeImpl:
         on_event: Callable[[SubagentProgress], None] | None,
         permission_floor: PermissionMode | None = None,
         charge_budget: bool,
+        record: SpawnRecordMeta | None = None,
     ) -> SubagentResult:
         """Register the row, drive the channel, deregister. Always deregisters.
 
@@ -786,6 +851,29 @@ class _SubagentRuntimeImpl:
         every path into the registry — both doors today, any later door —
         passes it. It is checked at the last moment before the row is published,
         which is also the only moment at which :attr:`_children` is authoritative.
+
+        THE PARENT KEEPS A RECEIPT FOR EVERY ADMITTED SPAWN (#199, ADR-0243), in
+        this order, and the order is the design:
+
+        1. the admission block and the first progress publish, unchanged — the
+           receipt is built after both, synchronously;
+        2. inside the ``try``: capture the parent session ONCE
+           (:attr:`SubagentHost.session`), allocate the child's session file,
+           append ``start`` + ``pending``, launch with ``--session <file>``,
+           then append ``settle`` + ``final`` from the envelope;
+        3. in the ``finally``, when step 2 never settled — a cancel, or an
+           exception out of the channel — ONE settle + final built from the live
+           stream (priced first), under ``asyncio.shield`` so a second Ctrl+C
+           cannot lose it; then the row is popped and the terminal snapshot
+           published exactly as before.
+
+        Allocation and every append sit INSIDE the ``try`` because they await:
+        placed between the registry insert and the ``try`` they would leak the
+        row on a cancel (``_admit_live`` would count it forever), and above the
+        first publish they would make ``batch._member`` misread an admitted
+        member as never started. None of them can change the result: every
+        append is logged and swallowed (``child_session.append_records``), and
+        a failed allocation is a ``--no-session`` child. No lock — see there.
 
         THE ADMISSION BLOCK BELOW CONTAINS NO ``await``, AND THAT IS LOAD BEARING
         (S5 / dossier H12). ``_admit_live()`` → budget check → ``+= 1`` →
@@ -866,7 +954,27 @@ class _SubagentRuntimeImpl:
             timeout_ms=timeout_ms,
         )
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+        # THE RECEIPT (#199). Built here, with no ``await``, so it exists on every
+        # path a registry row exists on and on no other — refusals above spent
+        # nothing and get no records.
+        receipt = SpawnReceipt(
+            key=spawn_id,
+            tool_call_id=record.tool_call_id if record is not None else None,
+            index=record.index if record is not None else None,
+            mode=record.mode if record is not None else None,
+            profile=resolved.name,
+            task_preview=task[:TASK_PREVIEW_CHARS],
+            requested_model=spawn_model,
+            # ``.value``: a record is JSON, and an enum is not (ADR-0242 rule 1.7).
+            permission_mode=plan.permission_mode.value,
+        )
+        closing: list[tuple[str, dict[str, Any]]] | None = None
+        settled = False
+        failure: BaseException | None = None
         try:
+            await receipt.open(self._parent_session(), cwd=child_cwd)
+            if receipt.child is not None:
+                plan = dataclasses.replace(plan, session_path=receipt.child.path)
             # ``channel`` is declared optional because ``None`` is the documented
             # request for the default (``__post_init__`` builds a
             # ``PrintChannel``), so it is never ``None`` here — unless something
@@ -879,31 +987,126 @@ class _SubagentRuntimeImpl:
                     "subagent channel is unset — it was cleared after "
                     "__post_init__ built the default"
                 )
-            return await channel.run(plan, child=child, on_stream=_emit)
+            result = await channel.run(plan, child=child, on_stream=_emit)
+            # Built BEFORE the append, so a cancel that lands inside a yielding
+            # append still settles with what the envelope said — not with a
+            # ``cancelled`` guess about a delegation that had already finished.
+            closing = self._settled_records(receipt, child, result)
+            await append_records(receipt.session, closing)
+            settled = True
+            return result
+        except BaseException as exc:
+            failure = exc
+            raise
         finally:
-            self._children.pop(spawn_id, None)
-            # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
-            # is gone from the registry by this line, so the delegation is over
-            # by definition — but ``RunningChild.state`` starts at ``"starting"``
-            # (``print_channel.py:202``) and ``PrintChannel.run`` can raise
-            # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-            # own ``try`` (``print_channel.py:980-981``) and does ``mkdtemp`` +
-            # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
-            # ``TMPDIR`` comes straight out — and eight concurrent members each
-            # writing a prompt directory is precisely the load that fires it.
-            # Published non-terminal, that snapshot makes
-            # ``SubagentProgressBridge`` take its live branch and WRITE a
-            # statusline row nothing will ever clear, and leak the id in
-            # ``_tools`` (``progress.py:316-320``) — "a statusline segment
-            # outliving the delegation that owns it is a lie the user cannot
-            # dismiss", in that module's own words.
-            #
-            # ``"error"`` rather than ``"stopped"``: nobody asked for this to
-            # end. Only ever a promotion — a channel that set ``done`` /
-            # ``error`` / ``stopped`` is left exactly as it was.
-            if child.state not in _TERMINAL_STATES:
-                child.state = "error"
-            self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+            try:
+                if not settled and not isinstance(failure, GeneratorExit):
+                    records = (
+                        closing
+                        if closing is not None
+                        else self._unsettled_records(receipt, child, failure)
+                    )
+                    await _shielded_append(receipt.session, records, self._settling)
+            finally:
+                self._children.pop(spawn_id, None)
+                # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
+                # is gone from the registry by this line, so the delegation is over
+                # by definition — but ``RunningChild.state`` starts at ``"starting"``
+                # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
+                # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
+                # own ``try`` (``print_channel.py:1016-1017``) and does ``mkdtemp`` +
+                # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
+                # ``TMPDIR`` comes straight out — and eight concurrent members each
+                # writing a prompt directory is precisely the load that fires it.
+                # Published non-terminal, that snapshot makes
+                # ``SubagentProgressBridge`` take its live branch and WRITE a
+                # statusline row nothing will ever clear, and leak the id in
+                # ``_tools`` (``progress.py:316-320``) — "a statusline segment
+                # outliving the delegation that owns it is a lie the user cannot
+                # dismiss", in that module's own words.
+                #
+                # ``"error"`` rather than ``"stopped"``: nobody asked for this to
+                # end. Only ever a promotion — a channel that set ``done`` /
+                # ``error`` / ``stopped`` is left exactly as it was.
+                if child.state not in _TERMINAL_STATES:
+                    child.state = "error"
+                self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+
+    def _parent_session(self) -> Any | None:
+        """The parent's session RIGHT NOW — read once per spawn, by ``_run``.
+
+        A host getter that raises is "no session": the child runs
+        ``--no-session`` and nothing is recorded, which is the pre-#199
+        behaviour, rather than a delegation killed by bookkeeping.
+        """
+
+        try:
+            return self.host.session()
+        except Exception:  # noqa: BLE001 — recording never costs a spawn
+            logger.debug("the host's session getter raised", exc_info=True)
+            return None
+
+    def _settled_records(
+        self,
+        receipt: SpawnReceipt,
+        child: RunningChild,
+        result: SubagentResult,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Settle + final from the envelope, and it never raises.
+
+        The delegation already HAS its result here; a record that cannot be
+        built must not turn that into an exception out of ``_run``. So
+        :meth:`SpawnReceipt.bare_records` stands in and logs why.
+        """
+
+        try:
+            return receipt.outcome_records(result, state=child.stream)
+        except Exception:  # noqa: BLE001 — a record never costs a delegation its result
+            logger.debug("could not build the settle for %s", receipt.key, exc_info=True)
+            return receipt.bare_records(result.usage, status=result.status)
+
+    def _unsettled_records(
+        self,
+        receipt: SpawnReceipt,
+        child: RunningChild,
+        failure: BaseException | None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """The settle a delegation gets when it never returned an envelope.
+
+        A cancel builds no envelope, so the registry fallback never priced what
+        the child had spent — it is priced here first (A.3b; synchronous and
+        total), or the record would carry ``cost: 0`` for real spend.
+
+        NEVER RAISES, like :meth:`_settled_records`: this runs in ``_run``'s
+        ``finally``, where a raise would replace the cancel or the exception on
+        its way out and lose the settle with it. The builders are total, and if
+        one ever is not, :meth:`SpawnReceipt.bare_records` records the status
+        and the spend anyway.
+        """
+
+        status = "cancelled" if isinstance(failure, asyncio.CancelledError) else "error"
+        try:
+            registry: Any | None = None
+            with contextlib.suppress(Exception):
+                registry = self.host.model_registry()
+            apply_cost_fallback(child.stream, registry)
+            if isinstance(failure, asyncio.CancelledError):
+                error = None
+            elif failure is None:
+                error = "the delegation ended without a result"
+            else:
+                error = f"{type(failure).__name__}: {failure}"
+            proc = child.proc
+            return receipt.unsettled_records(
+                child.stream,
+                status=status,
+                error=error,
+                elapsed_ms=int((_now() - child.started_at) * 1000),
+                exit_code=getattr(proc, "returncode", None) if proc is not None else None,
+            )
+        except Exception:  # noqa: BLE001 — a record never costs a delegation its exit
+            logger.debug("could not build the settle for %s", receipt.key, exc_info=True)
+            return receipt.bare_records(child.stream, status=status)
 
     def _spawn_model(self, resolved: ResolvedProfile) -> str | None:
         """The model id THIS SPAWN ASKS FOR, read off the emission table itself.
@@ -953,13 +1156,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:398-399``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:524-525``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:575-577``) — authoritative, because it
+            # ``message_end`` (``stream.py:621-623``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -978,6 +1181,53 @@ class _SubagentRuntimeImpl:
                 continue
             with contextlib.suppress(Exception):
                 tap(progress)
+
+
+SETTLE_JOIN_SECONDS = 5.0
+"""How long :meth:`_SubagentRuntimeImpl.stop_all` waits for settles in flight.
+
+A settle is a few appends to a local file, which never yield, so the wait is
+normally zero. The bound is for a session store that does yield and then hangs:
+teardown must still finish."""
+
+
+async def _shielded_append(
+    session: Any | None,
+    records: list[tuple[str, dict[str, Any]]],
+    owner: set[asyncio.Task[None]],
+) -> None:
+    """Append the ``finally``'s records so that a SECOND cancel cannot lose them.
+
+    The write runs as its own task and ``_run`` awaits it through
+    ``asyncio.shield``: a second Ctrl+C (which re-cancels every batch member)
+    cancels the WAIT, not the write. Measured in the design critique (probe
+    P.3): with a shield both settles of a two-member batch survived a second
+    cancel (case D); a lock and no shield lost both (case C).
+
+    ``owner`` is the runtime's :attr:`~_SubagentRuntimeImpl._settling`. It holds
+    the task — the loop keeps only a weak reference, and once a second cancel
+    has abandoned the wait nobody else does — and it is what ``stop_all`` joins,
+    so the write finishes before the session is torn down.
+    """
+
+    if session is None or not records:
+        return
+    task = asyncio.ensure_future(append_records(session, records))
+    owner.add(task)
+    task.add_done_callback(owner.discard)
+    await asyncio.shield(task)
+
+
+async def _join_settles(owner: set[asyncio.Task[None]]) -> None:
+    """Wait, bounded, for every settle ``owner`` still holds. Never cancels one.
+
+    ``asyncio.wait`` rather than ``gather``: if the caller is itself cancelled,
+    the settles keep running rather than being cancelled with it.
+    """
+
+    pending = [task for task in owner if not task.done()]
+    if pending:
+        await asyncio.wait(pending, timeout=SETTLE_JOIN_SECONDS)
 
 
 def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMode:
@@ -1043,7 +1293,9 @@ def _now() -> float:
 __all__ = [
     "MAX_DELEGATIONS_PER_PROMPT",
     "MAX_LIVE_CHILDREN",
+    "SETTLE_JOIN_SECONDS",
     "ProjectScopeProfileError",
+    "SpawnRecordMeta",
     "SubagentHost",
     "_SubagentRuntimeImpl",
 ]

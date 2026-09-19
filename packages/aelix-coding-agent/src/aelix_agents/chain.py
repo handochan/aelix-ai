@@ -6,20 +6,20 @@ module needs arrives as a string argument, so the grammar, the escape, the fence
 and the size ceiling are all pinned without creating a process.
 
 WHAT FEEDS THE NEXT LINK IS ``SubagentResult.summary``, verbatim, including any
-truncation marker. NOT ``details``: ``subagent_contract.py:117-127`` declares
+truncation marker. NOT ``details``: ``subagent_contract.py:117-128`` declares
 ``details`` the "UNCAPPED raw material behind ``summary`` … it is NOT sent to the
 model by the ``agent`` tool", and ``envelope._build_details``
-(``envelope.py:252-272``) appends the RAW, unsanitized stderr tail on every
+(``envelope.py:364-385``) appends the RAW, unsanitized stderr tail on every
 failure path — provider SDK logging and SIGTERM tracebacks. Feeding that into
 the next step's task would silently change both the token cost and the
 prompt-injection surface of every chain.
 
 Truncation therefore stays visible by construction: ``cap_summary``
-(``envelope.py:91-123``) appends its marker INSIDE ``summary``, so the next child
+(``envelope.py:144-171``) appends its marker INSIDE ``summary``, so the next child
 literally reads "[Output truncated: … bytes omitted…]". Nothing here strips it.
 
 THE SUBSTITUTION HAPPENS INSIDE THE TASK STRING; IT NEVER TOUCHES ARGV.
-``build_child_argv`` (``print_channel.py:497-555``) documents that the ``"Task: "``
+``build_child_argv`` (``print_channel.py:507-574``) documents that the ``"Task: "``
 prefix ``profile_to_argv`` prepends is load-bearing — ``args.py`` swallows an
 unrecognised ``--`` token into ``parsed.unknown_flags`` with NO diagnostic — so a
 previous summary that begins with ``--`` stays safe only because that prefix is
@@ -28,7 +28,7 @@ element.
 
 THE SUBSTITUTED TEXT IS NOT HUMAN-APPROVED, AND THIS MODULE SAYS SO (§3.1.1).
 The consent grant is taken once, in the hook, BEFORE step 1 exists
-(``extension.py:683-685``, frozen into ``PendingSpawn`` at ``:697-699``), and
+(``extension.py:760-762``, frozen into ``PendingSpawn`` at ``:774-776``), and
 ``build_consent_title`` renders the task verbatim (``consent.py:573-630``) — so
 what the human read on screen for step 2 is the literal string ``{previous}``.
 What actually reaches child *k ≥ 2* is text minted mid-call by a child process
@@ -54,7 +54,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:515-520``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:526-531``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:30``), so a chain step that
 forwards a whole uncapped previous summary still fits.

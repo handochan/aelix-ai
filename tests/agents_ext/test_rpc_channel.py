@@ -271,6 +271,42 @@ async def test_a_scripted_turn_produces_an_ok_envelope(tmp_path: Path) -> None:
     assert row.state == "done"
 
 
+@pytest.mark.parametrize("allocated", [True, False], ids=["child-file", "no-file"])
+async def test_the_session_file_the_parent_allocated_reaches_the_rpc_argv(
+    tmp_path: Path, allocated: bool
+) -> None:
+    """#199 through ``RpcChannel.run`` itself, not only the argv builder.
+
+    The builder here is the REAL ``build_rpc_child_argv`` — recorded — before
+    the scripted child replaces the command, so what is pinned is what
+    ``run`` hands it from the plan, and what the envelope then claims: the
+    marker may name the delegated session only when there is one. No rpc
+    child, scripted or real, appends to a session file here; that half has
+    never run (#123).
+    """
+
+    built: list[list[str]] = []
+    script = _rpc_stub()
+
+    def _build(*args: Any, **kwargs: Any) -> list[str]:
+        built.append(build_rpc_child_argv(*args, **kwargs))
+        return [sys.executable, "-c", script]
+
+    child_file = str(tmp_path / "p" / "sub-test.jsonl")
+    channel = RpcChannel(grace=5.0, argv_builder=_build)
+    plan = _plan(tmp_path, session_path=child_file if allocated else None)
+    result = await channel.run(plan, child=RunningChild(id="sub-test", profile="scout"))
+
+    assert result.ok is True and result.summary == "the answer"
+    argv = built[0]
+    if allocated:
+        assert argv[argv.index("--session") + 1] == child_file
+        assert "--no-session" not in argv
+    else:
+        assert "--no-session" in argv and "--session" not in argv
+    assert result.output_recorded is allocated
+
+
 async def test_the_task_reaches_the_child_over_the_wire(tmp_path: Path) -> None:
     """The other half of ``test_the_task_is_NOT_on_the_argv``.
 

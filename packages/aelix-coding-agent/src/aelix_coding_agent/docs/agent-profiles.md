@@ -96,7 +96,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `context_files` | bool | `true` | Whether `AGENTS.md` and friends are loaded. |
 | `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. A bad value here **rejects the profile**. |
 | `role` | `leaf` \| `orchestrator` | `leaf` | A `leaf` child cannot delegate further. See the note below. |
-| `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. |
+| `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. A parallel or chain call also shares one 64 KiB budget, split evenly across its tasks (8 192 bytes each for eight) and covering each task's summary and error note together, so a member can be cut shorter than its own cap. A single delegation gets this cap alone. When the child has a session file, the full text is kept there. |
 | `timeout_ms` | int | none | Wall clock for the whole delegation. The `agent` tool bounds a caller-supplied value to 1 000 … 1 800 000 ms. |
 | `approval_mode` | `inherit` \| `ask` \| `auto` \| `deny` | `inherit` | How the profile **declares** it needs write authority. |
 
@@ -184,6 +184,30 @@ stops before its first turn with `No API key found for <provider>` and that
 message reaches you in the delegation's summary. Set the environment variable or
 run `/login` as well.
 
+## What a delegation leaves behind
+
+Each delegated child gets a session file of its own, next to yours: a session
+saved as `<name>.jsonl` keeps its children in a directory beside it,
+`<name>/sub-<id>.jsonl`, one per delegation. The child's whole transcript is
+there. Your own session keeps only a receipt for each child — the profile, the
+model that ran, how it ended, what it spent — and the summary it handed back;
+the child's intermediate steps never enter your context.
+
+- `--continue`, `/resume` and the session pickers never offer a child file.
+- To read one, export it: `aelix --export <child file>` writes an HTML page and
+  runs nothing. Opening it with `--session` prints a warning, because the file
+  does not carry what bounded the child — its permission clamp, its narrowed
+  tools — and would run as an ordinary session at your own posture.
+- What the children spent is part of your session's totals in `/cost` and
+  `/stats`, broken out on a line of its own. While one is still running, the
+  cost reads as a floor (`≥ $…`).
+- A session started with `--no-session`, or whose file is not inside a
+  sessions directory's per-project folder (`--session /some/where/file.jsonl`,
+  or a file placed straight in the sessions directory), delegates without child
+  files, as before. So does a delegation whose child file could not be created
+  — a disk error, or a path too long.
+- Nothing deletes child files. They stay until you remove them, as sessions do.
+
 ## A second example
 
 Exercising `system_prompt: replace`, an empty tool set, and an absolute skill
@@ -215,7 +239,9 @@ job is text.
 ## Checking your work
 
 - `/agents list` — what is discovered, and from which tier.
-- `/agents show <name>` — the parsed fields, plus the exact command a delegation
-  would run. Nothing spawns.
+- `/agents show <name>` — the parsed fields, plus the flags the profile puts on
+  a delegated child's command line. Nothing spawns. The rest of that command
+  line — the child's session file, `--permission-mode`, the trust flags,
+  `--no-agents` — is decided when a delegation actually runs.
 - `--agent <name>` — launch as that identity yourself, which is the fastest way
   to find out whether the prompt and tool set do what you intended.

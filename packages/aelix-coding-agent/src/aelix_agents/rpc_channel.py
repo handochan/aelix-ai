@@ -56,10 +56,16 @@ THE TASK GOES OVER THE WIRE, NOT ON THE ARGV
 trailing ``Task: …`` positional is appended only on the oneshot branch. That is
 correct for rpc (the child is a server, not a one-shot), but it means the task
 must be delivered as a ``prompt`` command and that a future author "fixing" the
-argv would change nothing. It also means this channel must append
-``--no-session`` itself, which the oneshot prefix supplies and the rpc prefix
-does not: without it the child writes a real session file into the user's
-history, and P3 allows twelve delegations per prompt.
+argv would change nothing. It also means this channel must append its own
+session flag, which the oneshot prefix supplies and the rpc prefix does not:
+``--session <path>`` for the file the parent allocated beside its own (#199),
+or ``--no-session`` when there is none. Without either the child writes a real
+session file into the user's history — in a bucket the ``/resume`` picker
+scans — and P3 allows twelve delegations per prompt.
+
+STUB-TESTED ONLY. Nothing in the product constructs this channel (#123). Its #199
+session flag is pinned by argv tests and one scripted ``run`` that records the
+argv; no rpc child, scripted or real, has ever appended to a session file.
 """
 
 from __future__ import annotations
@@ -116,7 +122,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:143``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:153``) and
 ``progress._TERMINAL_STATES`` (``progress.py:97``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -153,6 +159,7 @@ def build_rpc_child_argv(
     child_cwd: str,
     parent_cwd: str,
     parent_model: Any | None = None,
+    session_path: str | None = None,
 ) -> list[str]:
     """The rpc child's exact command line.
 
@@ -174,6 +181,10 @@ def build_rpc_child_argv(
     docstring's warning that "the model has to come from the profile's
     ``--model`` / ``--provider``" is no longer the whole truth: it may also come
     from the parent.
+
+    ``session_path`` is the same #199 child file the print channel passes: the
+    rpc child gets ``--session <path>`` in place of the ``--no-session`` this
+    builder has always appended itself.
     """
 
     del task  # delivered over the wire; see the docstring
@@ -187,10 +198,12 @@ def build_rpc_child_argv(
             oneshot=False,
             parent_model=parent_model,
         ),
-        # The rpc prefix omits this and the oneshot prefix supplies it. Without
-        # it every delegated child writes a session file the user never started
-        # and then finds in their /resume picker.
-        "--no-session",
+        # The rpc prefix omits a session flag and the oneshot prefix supplies
+        # one. Without it every delegated child writes a session file the user
+        # never started and then finds in their /resume picker; with the
+        # parent's allocation it writes into the file the parent chose, which
+        # no picker scans (#199).
+        *(["--session", session_path] if session_path else ["--no-session"]),
         "--permission-mode",
         permission_mode.value,
         *child_trust_argv(Path(child_cwd), Path(parent_cwd)),
@@ -313,6 +326,7 @@ class RpcChannel:
                 permission_mode=plan.permission_mode.value,
                 dropped_tools=narrowing.dropped,
                 error=error,
+                session_recorded=plan.session_path is not None,
             )
 
         def _listener(payload: dict[str, Any]) -> None:
@@ -335,7 +349,7 @@ class RpcChannel:
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:322-326``) is NOT gated on the caller's
+            # disjunct (``envelope.py:443-447``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:
@@ -384,7 +398,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1241-1248``); this channel
+            # ``_eager_abort`` (``print_channel.py:1278-1285``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -430,6 +444,7 @@ class RpcChannel:
                         parent_model=(
                             self._parent_model() if self._parent_model else None
                         ),
+                        session_path=plan.session_path,
                     ),
                     cwd=plan.cwd,
                     env_base=self._env_builder(profile),

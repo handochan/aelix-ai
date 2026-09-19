@@ -34,10 +34,27 @@ NO_OUTPUT = "(no output)"
 string: an empty ``summary`` renders as a blank panel and reads like a bug,
 whereas "(no output)" is a fact the model and the user can both act on."""
 
-_TRUNCATION_MARKER = (
-    "\n\n[Output truncated: {omitted} bytes omitted. "
-    "Full output preserved in tool details.]"
-)
+_TRUNCATION_MARKER = "\n\n[Output truncated: {omitted} bytes omitted.{where}]"
+"""The marker a capped summary ends with — and it says only what is TRUE (#199).
+
+It used to end "Full output preserved in tool details." That was false the
+moment the call returned: ``ToolResult.details`` is never persisted
+(``loop._to_tool_result_message`` drops it, #168) and nothing in the TUI renders
+it for ``agent``, so neither the model nor a human could follow it.
+
+``{where}`` is :data:`_RECORDED_WHERE` when the full text is kept in a delegated
+session file the parent allocated (see :attr:`SubagentResult.output_recorded`),
+and EMPTY otherwise — no claim, rather than a claim nobody can check. No path is
+ever written here: a path would put the user's home directory and name into the
+model's context, and the parent's session records already carry it."""
+
+_RECORDED_WHERE = " The full output is recorded in the delegated session."
+
+_MARKER_RE = re.compile(r"\n\n\[Output truncated: (\d+) bytes omitted\.(?: [^\]\n]*)?\]\Z")
+"""A marker :func:`cap_summary` wrote, at the very END of a summary.
+
+Read back by :func:`recap_summary` only when the envelope says it was truncated,
+so a child whose answer merely ends in similar-looking text is never parsed."""
 
 # Lines a task-borne exception in the child emits that are NORMAL and must not
 # be shown as the child's failure reason. Surfacing an asyncio "Task exception
@@ -88,7 +105,45 @@ def sanitize_stderr(text: str, *, outcome: SubagentOutcome) -> str:
     return "\n".join(kept).strip()
 
 
-def cap_summary(summary: str, cap: int) -> tuple[str, bool, int]:
+def _cut(summary: str, cap: int) -> tuple[str, int]:
+    """``summary`` cut to ``cap`` UTF-8 bytes on a code-point boundary.
+
+    Returns ``(kept, omitted_bytes)``; ``omitted_bytes == 0`` means nothing was
+    cut (``cap <= 0`` disables the cap, as it always has).
+
+    ``surrogatepass`` on every encode and decode, so it never raises. A lone
+    surrogate is a legal ``str`` that a child's JSON can carry (``"\\ud83d"``),
+    and so can an ``OSError`` naming an undecodable path; a bare
+    ``encode("utf-8")`` raised ``UnicodeEncodeError`` out of the envelope
+    builder, and out of the batch renderer once an error note went through
+    here (#199). Such a code point counts as the three bytes it takes.
+    """
+
+    raw = summary.encode("utf-8", "surrogatepass")
+    if cap <= 0 or len(raw) <= cap:
+        return summary, 0
+    head = raw[:cap]
+    # At most three iterations — a UTF-8 code point is at most 4 bytes.
+    while head:
+        try:
+            kept = head.decode("utf-8", "surrogatepass")
+            break
+        except UnicodeDecodeError:
+            head = head[:-1]
+    else:
+        kept = ""
+    return kept, len(raw) - len(kept.encode("utf-8", "surrogatepass"))
+
+
+def _marker(omitted: int, *, recorded: bool) -> str:
+    return _TRUNCATION_MARKER.format(
+        omitted=omitted, where=_RECORDED_WHERE if recorded else ""
+    )
+
+
+def cap_summary(
+    summary: str, cap: int, *, recorded: bool = False
+) -> tuple[str, bool, int]:
     """Apply the output budget. Returns ``(text, truncated, omitted_bytes)``.
 
     The budget is measured in UTF-8 BYTES, not characters, and the cut is backed
@@ -101,26 +156,83 @@ def cap_summary(summary: str, cap: int) -> tuple[str, bool, int]:
     bytes would make the truncation invisible at exactly the sizes where it
     matters most.
 
+    ``recorded`` decides whether the marker may say where the rest is — see
+    :data:`_TRUNCATION_MARKER`. It defaults to the claim-free marker, which is
+    true of every caller.
+
     Deliberate fix of a pi gap: pi's ``truncateParallelOutput`` has a single
     call site (``index.ts:649``) on the parallel path only, so pi's single-mode
     delegation returns uncapped output.
     """
 
-    raw = summary.encode("utf-8")
-    if cap <= 0 or len(raw) <= cap:
+    kept, omitted = _cut(summary, cap)
+    if not omitted:
         return summary, False, 0
-    head = raw[:cap]
-    # At most three iterations — a UTF-8 code point is at most 4 bytes.
-    while head:
-        try:
-            kept = head.decode("utf-8")
-            break
-        except UnicodeDecodeError:
-            head = head[:-1]
-    else:
-        kept = ""
-    omitted = len(raw) - len(kept.encode("utf-8"))
-    return kept + _TRUNCATION_MARKER.format(omitted=omitted), True, omitted
+    return kept + _marker(omitted, recorded=recorded), True, omitted
+
+
+def recap_summary(
+    summary: str, cap: int, *, truncated: bool, recorded: bool = False
+) -> tuple[str, bool, int]:
+    """Cap an envelope's summary AGAIN, to a smaller budget (#199, A.9 (c)).
+
+    The batch renderer gives every member an even share of one per-call budget
+    (``aggregate.BATCH_OUTPUT_BUDGET_BYTES``), after the channel has already
+    capped each summary at the profile's ``output_cap``. Capping the capped text
+    with :func:`cap_summary` alone would cut the first marker off and report
+    only the bytes cut the SECOND time, understating what the model is missing.
+    So a marker this module wrote is stripped first — only when ``truncated``
+    (the envelope's own flag) says there is one — and the two counts are added.
+
+    Returns ``(text, truncated, omitted_bytes)`` with the same meaning as
+    :func:`cap_summary`; a summary that already fits is returned untouched,
+    marker and all.
+    """
+
+    body, prior = _split_marker(summary, truncated=truncated)
+    kept, omitted = _cut(body, cap)
+    if not omitted:
+        return summary, prior > 0, prior
+    total = prior + omitted
+    return kept + _marker(total, recorded=recorded), True, total
+
+
+def _split_marker(summary: str, *, truncated: bool) -> tuple[str, int]:
+    """``summary`` without the marker :func:`cap_summary` ended it with, and that
+    marker's count — or ``(summary, 0)``. Read only when ``truncated`` (the
+    envelope's own flag) says a marker is there."""
+
+    if truncated:
+        match = _MARKER_RE.search(summary)
+        if match is not None:
+            return summary[: match.start()], int(match.group(1))
+    return summary, 0
+
+
+def error_repeats_summary(summary: str, error: str, *, truncated: bool) -> bool:
+    """Would an ``Error:`` note only repeat what ``summary`` already says?
+
+    Yes when the error is inside the summary — the rule both renderers always
+    had — and ALSO when the summary is the error cut short. A failed child's
+    summary IS its own error message (:func:`_select_summary`'s first rung),
+    capped at ``output_cap``; an error longer than the cap is then never "in"
+    the summary, so it came back in full as a note after the cut it began.
+    Measured before this: one 60,000-byte error message made a single
+    delegation return 111,336 bytes and an eight-member batch 546,832, past
+    every cap either had (#199 review). Nothing but the reducer's 4 MiB line
+    limit bounds such an error.
+
+    Only a TRUNCATED summary can be a cut: an uncut one that merely begins an
+    error (a stderr ``Error`` beside ``Error: the details``) still gets its
+    note.
+    """
+
+    if error in summary:
+        return True
+    if not truncated:
+        return False
+    body, _omitted = _split_marker(summary, truncated=True)
+    return bool(body) and error.startswith(body)
 
 
 def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
@@ -144,7 +256,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     exactly as specified, including the zero-stdout case it exists for.
 
     THE ``error_message`` RUNG IS GATED THE SAME WAY, AND FOR THE TWIN REASON.
-    ``_reduce_message_end`` (``stream.py:566-570``) is last-NON-EMPTY-wins per
+    ``_reduce_message_end`` (``stream.py:612-616``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` means "SOME turn errored", never "the run
     failed" — the harness's own auto-retry (``harness/core.py:518-519``, default
     ON, 3 attempts) recovers turn 1 on turn 2 and the child answers correctly.
@@ -252,10 +364,11 @@ def render_tool_trail(state: _StreamState) -> str | None:
 def _build_details(state: _StreamState, stderr_raw: str, *, ok: bool) -> str | None:
     """The UNCAPPED material behind ``summary`` (finding B8).
 
-    ``summary`` is capped and its truncation marker promises "full output
-    preserved in tool details". Without this field that promise is false on the
-    ``/agents run`` door, which never builds a ``ToolResult`` at all, and no
-    dashboard or Web UI consuming :class:`SubagentResult` could ever show it.
+    ``summary`` is capped, and without this field no dashboard or Web UI
+    consuming :class:`SubagentResult` could ever show what the cap removed. It
+    lives only as long as the call: ``ToolResult.details`` is never persisted
+    (#168), which is why the truncation marker points at the delegated session
+    file instead (:data:`_TRUNCATION_MARKER`).
 
     The stderr half is the RAW text, not the sanitized one: whoever is reading
     details is debugging, and that is exactly when the SIGTERM traceback stops
@@ -285,6 +398,7 @@ def build_result(
     permission_mode: str | None = None,
     dropped_tools: tuple[str, ...] = (),
     error: str | None = None,
+    session_recorded: bool = False,
 ) -> SubagentResult:
     """Fold a finished (or abandoned) child run into its envelope.
 
@@ -292,6 +406,13 @@ def build_result(
     happen to the process. It may be tightened here but never loosened: a run
     the spawner believed succeeded is still reported as an error when the
     stream says so.
+
+    ``session_recorded`` is the channel's statement that the child ran with a
+    session file its parent allocated (``SpawnPlan.session_path``, #199). It is
+    necessary but not sufficient for :attr:`SubagentResult.output_recorded`:
+    the summary must also have come from the child's own stream, because a
+    stderr tail or a spawn error is not in that file — a child that never got
+    as far as its first turn left only the header and the origin record there.
 
     NEVER TRUST THE RETURN CODE ALONE (§9.1). ``print_mode.py``'s
     ``stop_reason in ("error", "aborted") → exit_code = 1`` mapping is guarded
@@ -301,7 +422,7 @@ def build_result(
     code reports that as a success with an empty summary.
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:245-249``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:262-266``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -310,7 +431,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:549-555``), so a child that read a large file emits a
+    # line (``stream.py:595-601``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare
@@ -336,9 +457,14 @@ def build_result(
     ok = not failed
 
     stderr_clean = sanitize_stderr(stderr_tail, outcome=status)
-    summary, truncated, _omitted = cap_summary(
-        _select_summary(state, stderr_clean, ok=ok), output_cap
-    )
+    selected = _select_summary(state, stderr_clean, ok=ok)
+    # FROM THE CHILD'S OWN STREAM, i.e. text its harness wrote into its session
+    # file: its answer, or its own error message. Compared by value because
+    # ``_select_summary`` returns one of these objects or a stderr/sentinel
+    # string; a stderr tail that happens to equal the answer is that answer.
+    from_stream = bool(selected) and selected in (state.summary, state.error_message)
+    recorded = session_recorded and from_stream
+    summary, truncated, _omitted = cap_summary(selected, output_cap, recorded=recorded)
 
     resolved_error = error
     if resolved_error is None and not ok:
@@ -346,7 +472,7 @@ def build_result(
         # ``state.error_message``, never this argument, so nothing computed here
         # can displace the child's partial answer — that displacement is exactly
         # the defect the ``not ok and`` gate above fixes. Both renderers print
-        # ``error`` as a SEPARATE note gated on ``result.error not in body``
+        # ``error`` as a SEPARATE note unless :func:`error_repeats_summary`
         # (``tool.render_subagent_result``, ``aggregate._member_block``).
         #
         # The sentinel fires only when the missing terminator is the SOLE
@@ -397,6 +523,7 @@ def build_result(
         # the far end. This is the only value that survives that.
         model=state.model,
         provider=state.provider,
+        output_recorded=recorded,
     )
 
 
@@ -440,5 +567,7 @@ __all__ = [
     "build_result",
     "cap_summary",
     "declined_result",
+    "error_repeats_summary",
+    "recap_summary",
     "sanitize_stderr",
 ]

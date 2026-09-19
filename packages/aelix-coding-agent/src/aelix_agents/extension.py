@@ -79,6 +79,7 @@ from aelix_agents.progress import SubagentProgressBridge
 from aelix_agents.prompt_file import sweep_stale_prompt_dirs
 from aelix_agents.runtime import (
     MAX_DELEGATIONS_PER_PROMPT,
+    SpawnRecordMeta,
     SubagentHost,
     _SubagentRuntimeImpl,
 )
@@ -184,7 +185,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2250-2265`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2250-2266`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -251,6 +252,22 @@ class AgentsExtension:
     ``None`` is the unwired default and means "no evidence", which resolves to
     "the parent loads context files" — the behaviour every child had before
     this field existed."""
+
+    session: Callable[[], Any | None] | None = None
+    """The parent's CURRENT harness session, where delegations record (#199).
+
+    Wired in ``cli/entry.py`` to the runtime host's live session — the same
+    late-bound shape as :attr:`no_context_files` — and read by ``runtime._run``
+    exactly ONCE per spawn (:attr:`~aelix_agents.runtime.SubagentHost.session`
+    explains why once). It is the PRIMARY source, and ``self._ctx`` is only the
+    fallback, because a hook's context is the wrong thing to ask on the two
+    paths #199 cares most about: ``/agents run`` typed before any hook fired
+    (``_ctx`` is ``None``, or the previous session's after ``/new``), and a
+    settle arriving after teardown invalidated it (every read raises
+    ``ExtensionError("stale")``).
+
+    ``None`` is the unwired default: records then go wherever the most recent
+    hook's context points, if anywhere."""
 
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
@@ -374,13 +391,14 @@ class AgentsExtension:
             posture=self._host_posture,
             active_tools=self._host_active_tools,
             context_files=self._host_context_files,
-            consent_context=lambda: self._ctx,
+            consent_context=self._host_consent_context,
             project_trusted=self._host_project_trusted,
             agent_dir=lambda: self.agent_dir,
             model_registry=self._host_model_registry,
             model=self._host_model,
             on_progress=self._publish_progress,
             on_disclosure=self._publish_disclosure,
+            session=self._host_session,
         )
 
     def _host_cwd(self) -> str:
@@ -417,6 +435,37 @@ class AgentsExtension:
         """
 
         return bool(getattr(self._ctx, "has_ui", False))
+
+    def _host_consent_context(self) -> Any:
+        """The context the consent gate reads — or ``None`` once it is stale.
+
+        ``request_spawn_consent`` reads ``getattr(ctx, "has_ui", False)``, and a
+        context from a torn-down session raises ``ExtensionError("stale")`` on
+        EVERY attribute, which ``getattr``'s default does not catch. ``/agents
+        run`` typed right after ``/new``, ``/resume`` or ``/fork`` — before the
+        new session's first hook refreshes :attr:`_ctx` — therefore failed with
+        ``stale`` before consent was even asked (measured, #199). A stale
+        context is treated exactly as NO context, which is the state the very
+        first ``/agents run`` of a fresh session is already in: the documented
+        headless default (``runtime._default_consent_context``) takes the
+        clamp, never prompts and never widens. No new authority state — the
+        pre-hook one, reached from one more door.
+        """
+
+        ctx = self._ctx
+        if ctx is None:
+            return None
+        # ``assert_active`` is the one name a context answers without checking
+        # staleness first (``ExtensionContext._INTERNAL_NAMES``); a duck-typed
+        # host context without it is taken as it is.
+        check = getattr(ctx, "assert_active", None)
+        if check is None:
+            return ctx
+        try:
+            check()
+        except Exception:  # noqa: BLE001 — a stale context is no context
+            return None
+        return ctx
 
     def _host_active_tools(self) -> list[str] | None:
         ctx = self._ctx
@@ -500,6 +549,34 @@ class AgentsExtension:
             return ctx.model
         except Exception:  # noqa: BLE001 — a stale ctx must not brick a spawn
             return None
+
+    def _host_session(self) -> Any | None:
+        """The session a spawn records into — asked ONCE per spawn (#199, A.3a).
+
+        The wired getter (:attr:`session`) first: it follows the runtime host,
+        so it is right before any hook has run and right after ``/new``. The
+        most recent hook's context only when the getter is unwired or has
+        nothing yet (the window before ``cli/entry.py`` has built the runtime),
+        and read under ``suppress(ExtensionError)``: a context from a torn-down
+        session raises ``stale`` on every attribute, and a harness with no
+        session raises ``invalid_state`` — both mean "no session to record
+        into", never a failed spawn.
+        """
+
+        getter = self.session
+        if getter is not None:
+            try:
+                live = getter()
+            except Exception:  # noqa: BLE001 — a broken getter is "not yet"
+                live = None
+            if live is not None:
+                return live
+        ctx = self._ctx
+        if ctx is None:
+            return None
+        with contextlib.suppress(ExtensionError):
+            return ctx.session_manager.get_session()
+        return None
 
     def _publish_progress(self, progress: SubagentProgress) -> None:
         bridge = self._progress
@@ -653,7 +730,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:818-826``),
+        # inside ``runtime._run``'s admission block (``runtime.py:906-914``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -679,7 +756,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:271-273``), so the single and batch doors are
+        # always non-empty (``tool.py:272-274``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -828,7 +905,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:844-853``).
+        seam is released on teardown, ``extension.py:921-930``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -911,7 +988,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:304-321``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:305-322``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -976,7 +1053,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:827``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:915``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1008,7 +1085,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:976-980``) with no ``await`` between them, so THIS
+            # (``runtime.py:1179-1183``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a
@@ -1077,6 +1154,9 @@ class AgentsExtension:
                     cwd=pending.cwd,
                     timeout_ms=pending.call.timeout_ms,
                     on_event=lambda progress: _on_event(0, progress),
+                    record=SpawnRecordMeta(
+                        tool_call_id=key, mode=pending.call.mode, index=0
+                    ),
                 )
                 return render_subagent_result(result)
 
@@ -1105,6 +1185,8 @@ class AgentsExtension:
                 # close, and nothing in the executor could detect it.
                 posture=self._host_posture,
                 on_event=_on_event,
+                # #199 — the template; the executor binds each member's index.
+                record=SpawnRecordMeta(tool_call_id=key, mode=pending.call.mode),
             )
             return render_batch_result(
                 pending.resolved.name,

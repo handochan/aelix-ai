@@ -189,6 +189,13 @@ def test_session_stats_has_ten_fields_pi_shape() -> None:
     so an unplanned one still fails. ``cost_known`` reports whether a price could
     be found for the session's token usage — Pi needs no equivalent because its
     adapters always price a turn — and it is not emitted on the RPC wire.
+
+    ``tool_usage`` joined the set DELIBERATELY with #199 (ADR-0243): the share of
+    ``tokens``/``cost`` that tools reported through ``aelix.usage`` records,
+    already inside those totals. Pi sums tool-reported ``usage`` into the same
+    totals without a separate field, so this too is Aelix-only, and it is not on
+    the RPC wire either (``_session_stats_to_dict`` enumerates its keys;
+    ``tests/harness/test_tool_usage_stats.py`` pins the wire key set).
     """
 
     fields = set(SessionStats.__dataclass_fields__.keys())
@@ -205,7 +212,9 @@ def test_session_stats_has_ten_fields_pi_shape() -> None:
         "context_usage",
     }
     assert expected <= fields
-    assert fields - expected == {"cost_known"}
+    # Moved from {"cost_known"} on purpose (#199, ADR-0243) — not loosened: a
+    # third Aelix-only field must still be named here before it can land.
+    assert fields - expected == {"cost_known", "tool_usage"}
 
 
 def test_session_stats_tokens_has_five_fields_pi_shape() -> None:

@@ -4,6 +4,8 @@ Status: Accepted (2026-07-28) — owner-ratified scope (S1), owner-ratified
 topology (S3), owner-ratified UI surfaces (S10) and owner-ratified stop story
 (S11). Design record that lands with the P3 implementation (same pattern as
 ADR-0196/0197/0198).
+**Amended 2026-09-19 (ADR-0243, #199, owner decision (c)): a parallel or chain
+call shares one 64 KiB summary budget — see the note closing §(i).**
 Date: 2026-07-28
 Builds on: ADR-0196 (the agent-profile identity every child runs under),
 ADR-0197 (the subagent-runtime seam, the clamp, the consent gate, the caps this
@@ -681,6 +683,20 @@ failing member does **not** cancel its siblings (`batch.py:263-308`).
   `tool.py:587` (model-facing) and `tui/commands.py` → `_render_subagent_result`
   (human-facing `/agents run`) — and the second stays single-task because
   `/agents run` does.
+
+> **Amendment (2026-09-19, ADR-0243 — owner decision (c)).** One `ToolResult`
+> per call now also means one summary budget per call:
+> `aggregate.BATCH_OUTPUT_BUDGET_BYTES` (64 KiB), split evenly over the members
+> rendered and applied in `render_batch_result`, where
+> `envelope.recap_summary` re-caps each member's already-capped summary and
+> adds the two omitted counts. A member's share also holds its `Error:` note
+> (at most half of it), and an error the summary already is — a failed
+> child's summary is its own error message, cut at `output_cap` — is not
+> repeated at all, in either mode. Single mode keeps `output_cap` alone, and a
+> chain's `{previous}` still receives each step's envelope summary, which only
+> `output_cap` bounds. `details` stay uncapped as above, but they live only as
+> long as the call (#168); the durable copy of a member's full output is its
+> child session file, when it has one.
 
 ### (j) Cancellation, and the timeout numbers
 

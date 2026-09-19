@@ -225,6 +225,23 @@ class _StreamState:
     cache_write: int = 0
     cost: float = 0.0
 
+    cost_reported: bool = False
+    """Did any ``message_end`` carry a ``cost`` of its own? (#199, A.3b)
+
+    The first of the three pieces of evidence behind a recorded ``cost_known``.
+    A KEY, not a non-zero value: a provider that wrote ``cost: {"total": 0}``
+    for a free turn has answered, exactly as the kernel's own stats read a
+    persisted ``cost`` key (``_session_stats._message_cost``). No first-party
+    adapter writes one today (they leave pricing to a higher layer), so this is
+    ``False`` for almost every real child and the fallback below is what prices
+    it."""
+
+    cost_priced: bool = False
+    """Did :func:`~aelix_agents.print_channel.apply_cost_fallback` price this
+    run from the model registry? The second piece of evidence (#199, A.3b).
+    Set by the fallback itself, because its return value is consumed inside the
+    channel's envelope builder and ``_run`` only ever sees this object."""
+
     tokens: int = 0
     """Context LEVEL, not a flow — the last ``total_tokens`` WINS rather than
     summing, because each message reports the whole context, not its own
@@ -247,6 +264,14 @@ class _StreamState:
     """``agent_end`` is the child's own terminator. Its absence in a stream
     that reached EOF is how a mid-flight death is distinguished from a clean
     finish that merely produced no text."""
+
+    run_open: bool = False
+    """Is the child's LATEST run still open — ``agent_start`` seen, its
+    ``agent_end`` not yet? Last event wins, unlike the latched
+    :attr:`saw_agent_end`: an auto-retry is a second run (``agent_start`` →
+    ``agent_end`` → ``agent_start``), and a stream cut during it must still
+    read as unfinished. Consumed by ``child_session.usage_is_complete``; the
+    two latched flags keep their existing meanings for the channels."""
 
     dropped_lines: int = 0
     """Folded in from :attr:`LineAssembler.dropped_lines` by the pump, so the
@@ -512,6 +537,27 @@ def _usage_cost(usage: dict[str, Any] | None) -> float:
     return _as_finite_float(cost)
 
 
+def _usage_reports_cost(usage: dict[str, Any]) -> bool:
+    """Is there a cost ANSWER in this ``usage``, zero included? NEVER raises.
+
+    The same two shapes :func:`_usage_cost` reads, but asked about presence: a
+    finite number under ``cost.total`` or a flat ``cost``. A value that
+    :func:`_as_finite_float` would have discarded (``NaN``, ``Infinity``, a
+    400-digit integer, a string) is not an answer, so it cannot make a bill
+    look exact.
+    """
+
+    cost = usage.get("cost")
+    if isinstance(cost, dict):
+        cost = cost.get("total")
+    if isinstance(cost, bool) or not isinstance(cost, int | float):
+        return False
+    try:
+        return math.isfinite(float(cost))
+    except (OverflowError, ValueError):
+        return False
+
+
 def _extract_text(content: Any) -> str:
     """Concatenate the ``type == "text"`` blocks of one message body.
 
@@ -593,6 +639,8 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
     total = _usage_field(usage, "total_tokens", "totalTokens")
     if total:
         state.tokens = total
+    if _usage_reports_cost(usage):
+        state.cost_reported = True
     state.cost += _usage_cost(usage)
 
 
@@ -672,6 +720,7 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
     kind = event.get("type")
     if kind == _AGENT_START:
         state.saw_agent_start = True
+        state.run_open = True
     elif kind == _TURN_START:
         # A new turn begins with nothing executing. Clearing here means a
         # statusline row can never be left showing a tool that finished during
@@ -695,6 +744,7 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         _close_trail_entry(state, event)
     elif kind == _AGENT_END:
         state.saw_agent_end = True
+        state.run_open = False
         state.current_tool = None
     return state
 

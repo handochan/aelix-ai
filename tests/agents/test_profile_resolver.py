@@ -359,3 +359,25 @@ def test_argv_channel_prefix_oneshot_and_rpc() -> None:
     # A one-shot with no task carries no trailing message.
     bare = profile_to_argv(profile, prompt_path="/tmp/p.md", oneshot=True)
     assert not any(token.startswith("Task: ") for token in bare)
+
+
+def test_argv_channel_prefix_takes_the_childs_session_file() -> None:
+    """#199 — the one-shot prefix carries the file the parent allocated.
+
+    ``--session <path>`` REPLACES ``--no-session`` (never both); the rpc prefix
+    carries no session flag at all — the rpc channel appends its own.
+    """
+
+    profile = _profile(model="m1")
+    child = "/abs/sessions/--b--/p/sub-0123456789ab.jsonl"
+
+    oneshot = profile_to_argv(
+        profile, prompt_path="/tmp/p.md", oneshot=True, task="x", session_path=child
+    )
+    assert oneshot[:5] == ["--mode", "json", "-p", "--session", child]
+    assert "--no-session" not in oneshot
+
+    rpc = profile_to_argv(
+        profile, prompt_path="/tmp/p.md", oneshot=False, session_path=child
+    )
+    assert "--session" not in rpc and "--no-session" not in rpc

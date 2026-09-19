@@ -15,21 +15,21 @@ the child stream produces out to two places:
   :mod:`aelix_agents.panel`).
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
-is minted inside ``runtime._run`` (``runtime.py:827``) — after ``spawn_granted``
+is minted inside ``runtime._run`` (``runtime.py:915``) — after ``spawn_granted``
 has already been entered, and for members 5-8 of an 8-task batch not until
 wave 2 — so nothing can hand this object a list of ids when the batch starts.
 Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:976-980``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:1179-1183``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
 per-child row, which is what a concurrent ``/agents run`` child is.
 
 THE EVENT-BUS HALF IS UNCHANGED BY GROUPING. ``SubagentProgress``
-(``subagent_contract.py:175-203``) gains no ``batch_id`` field in P3 (§3.6:
+(``subagent_contract.py:191-219``) gains no ``batch_id`` field in P3 (§3.6:
 the product-core delta is zero), so a subscriber sees N interleaved starts with
 no grouping. That residual is named in ADR-0199; it is not something this file
 papers over with an ``aelix_agents``-private channel.
@@ -365,7 +365,7 @@ class SubagentProgressBridge:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:976-980``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:1179-1183``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.

@@ -122,7 +122,7 @@ async def test_never_fires_when_stdout_is_not_a_tty(tmp_path: Path) -> None:
 
 async def test_never_fires_in_a_subagent_child(tmp_path: Path) -> None:
     """AELIX_SUBAGENT_DEPTH > 0. Delegated children are already non-interactive
-    (profile_to_argv forces --mode json -p --no-session or --mode rpc); this arm
+    (profile_to_argv forces --mode json -p plus a session flag, or --mode rpc); this arm
     means no future argv can ever drop a child into a modal."""
 
     registry = await _registry(tmp_path)

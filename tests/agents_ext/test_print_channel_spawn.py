@@ -746,7 +746,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:549-555``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:595-601``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -1121,7 +1121,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1241-1248) and kills the tree.
+        # (print_channel.py:1278-1285) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -1618,7 +1618,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
-    which, since ``agents/resolver.py:314-315`` makes the whole task the initial
+    which, since ``agents/resolver.py:330-331`` makes the whole task the initial
     prompt, is the only thing a subagent ever does.
 
     Driven through a HELPER parent so the test process is not the one killed.
@@ -1846,7 +1846,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:866-870``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:901-905``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -1898,11 +1898,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:980``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1016``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:202``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:203``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2118,8 +2118,8 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:749`` and
-    ``aggregate.py:290`` both gate on ``if usage.cost:``, so a structurally-zero
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:750`` and
+    ``aggregate.py:360`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
     ``build_child_argv`` is patched BEFORE the runtime is constructed because

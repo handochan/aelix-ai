@@ -5,7 +5,7 @@ outcome classification both arrive as arguments, so the whole batch layout, the
 ``is_error`` rule and the usage roll-up are pinned without spawning anything.
 
 ONE ``ToolResult`` PER ``agent`` CALL, ALWAYS. ``mode="single"`` never reaches
-this module — it stays on ``render_subagent_result`` (``tool.py:833-865``)
+this module — it stays on ``render_subagent_result`` (``tool.py:834-867``)
 byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:454-459``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:502-507``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -32,9 +32,14 @@ from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
 from aelix_coding_agent.subagent_contract import SubagentUsage
 
-from aelix_agents.envelope import NO_OUTPUT
+from aelix_agents.envelope import (
+    NO_OUTPUT,
+    cap_summary,
+    error_repeats_summary,
+    recap_summary,
+)
 
-# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:698-783``
+# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:699-784``
 # already owns that format and ``render_subagent_result`` prints it for the
 # single-mode path; a second spelling here would drift the moment either is
 # edited, and a batch whose member lines disagree with a single call's line is
@@ -54,6 +59,40 @@ _DID_NOT_START_TAG = "did not start"
 phrase rather than a ``SubagentOutcome`` value on purpose: ``SubagentOutcome``
 (``subagent_contract.py:67``) has no member for "no process was ever created",
 and inventing one would be a product-core edit (S2)."""
+
+BATCH_OUTPUT_BUDGET_BYTES = 64 * 1024
+"""The budget ONE parallel or chain call shares for what its members say —
+owner decision (c), 2026-09-19 (#199 design §A.9).
+
+Split evenly across the members rendered (:func:`member_output_budget`): 8
+members get 8 192 bytes each, about 2 048 estimated tokens and still several
+times a typical report. A member's share covers its summary AND its ``Error:``
+note (:func:`_member_block`); the frame around them — the header, each member's
+heading, truncation marker and usage line, the ``[total]`` line — is outside it,
+about 200 bytes a member. Before it, only each child was capped (the profile's
+``output_cap``, 51 200 bytes), so an eight-task batch could hand the parent one
+~410 KB tool result — about 102 579 estimated tokens, 92% of ``gpt-4o``'s
+auto-compaction threshold — and a tool result is never a compaction cut point,
+so that turn could not shed it. Measured now: eight members at their cap render
+67 193 bytes with realistic usage lines, about 6.1× less.
+
+Applied HERE, at render time, and nowhere earlier: the chain's ``{previous}``
+hand-off reads each step's envelope summary, which keeps its own ``output_cap``,
+so a step still passes the next one everything a single delegation would have.
+Single mode never comes here and keeps the profile's cap alone. What a member
+loses to this budget is in that child's session file when it has one, and the
+marker says so exactly then (:func:`~aelix_agents.envelope.recap_summary`).
+
+Lives in the extension band: a delegation cap is ``aelix_agents``' policy, and
+the band gates forbid one in product-core."""
+
+
+def member_output_budget(members: int) -> int:
+    """Each member's even share of :data:`BATCH_OUTPUT_BUDGET_BYTES`.
+
+    Never below 1: a cap of 0 means "no cap" to ``envelope._cut``."""
+
+    return max(BATCH_OUTPUT_BUDGET_BYTES // max(members, 1), 1)
 
 
 @dataclass(frozen=True)
@@ -119,12 +158,17 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
     ``SubagentUsage.tokens`` is documented as a context LEVEL, "last message
     wins" (``subagent_contract.py:95-96``), not a running total. Summing four
     children's context levels reports a number several times the real one — the
-    same mistake ``stream.py:228-231`` already warns about — and it is the number
+    same mistake ``stream.py:245-248`` already warns about — and it is the number
     the statusline and any future cost display read. ``max`` is the honest
     aggregate: the largest context any single child reached.
 
     Everything else — ``input``, ``output``, ``cache_read``, ``cache_write``,
     ``cost``, ``turns`` — is a genuine counter and is summed.
+
+    DISPLAY ONLY (#199, ADR-0243): its one job is the ``[total]`` line. What a
+    session's stats count is each child's ``aelix.usage`` final record, folded by
+    the kernel (``harness/_session_stats.py``) — the same flows, summed the same
+    way, and never a context level.
     """
 
     total = SubagentUsage()
@@ -157,25 +201,51 @@ def _format_count(value: int) -> str:
     return f"{value / 1000:.1f}k"
 
 
-def _member_block(index: int, total: int, member: MemberOutcome) -> str:
+def _member_block(
+    index: int, total: int, member: MemberOutcome, *, budget: int
+) -> str:
     """One member's paragraph: heading + summary, notes, then the usage line.
 
     Single newlines inside a member, blank lines BETWEEN members. That differs
     from ``render_subagent_result``, which joins with blank lines
-    (``tool.py:860``) — there it has the whole tool result to itself, whereas
+    (``tool.py:866``) — there it has the whole tool result to itself, whereas
     here a blank line is the only thing separating one child's answer from the
     next one's, and reusing it would make the two levels indistinguishable.
+
+    ``budget`` is this member's share of :data:`BATCH_OUTPUT_BUDGET_BYTES`, and
+    it covers EVERYTHING the member says: its summary and its ``Error:`` note.
     """
 
     tag = _DID_NOT_START_TAG if not member.started else member.result.status
-    body = member.result.summary or NO_OUTPUT
-    lines = [f"[{index}/{total} {tag}] {body}"]
-
-    # The note set mirrors ``render_subagent_result`` (``tool.py:847-859``) so a
+    summary = member.result.summary or NO_OUTPUT
+    error = member.result.error
+    # The note set mirrors ``render_subagent_result`` (``tool.py:853-865``) so a
     # batch member never says less about itself than the same child would say on
-    # the single-mode path.
-    if member.result.error and member.result.error not in body:
-        lines.append(f"Error: {member.result.error}")
+    # the single-mode path. Asked of the UNCAPPED summary: an error that the
+    # budget cut out of the body is part of the summary still, and re-adding it
+    # in full here would undo the cap it was cut by — as would an error the
+    # summary is a cut of (:func:`~aelix_agents.envelope.error_repeats_summary`).
+    #
+    # An error the summary does NOT say — a spawn failure, the stream-ended
+    # sentinel — comes out of the member's own share, at most half of it, and
+    # the summary gets the rest. Before, a separate note was added uncapped,
+    # so eight 20,000-byte errors made one call return 226,400 bytes.
+    note: str | None = None
+    room = budget
+    if error and not error_repeats_summary(
+        summary, error, truncated=member.result.truncated
+    ):
+        note, _cut_note, _lost = cap_summary(error, max(budget // 2, 1))
+        room = max(budget - len(note.encode("utf-8", "surrogatepass")), 1)
+    body, _truncated, _omitted = recap_summary(
+        summary,
+        room,
+        truncated=member.result.truncated,
+        recorded=member.result.output_recorded,
+    )
+    lines = [f"[{index}/{total} {tag}] {body}"]
+    if note is not None:
+        lines.append(f"Error: {note}")
     if member.result.dropped_tools:
         lines.append(
             "Tools not granted to this agent: "
@@ -186,14 +256,14 @@ def _member_block(index: int, total: int, member: MemberOutcome) -> str:
         lines.append(f"{member.result.dropped_lines} oversize output line(s) were dropped.")
     # THE USAGE LINE MUST NOT CONTRADICT THE HEADING ONE LINE ABOVE IT. Every
     # never-started envelope carries ``status="error"`` — ``_refusal_envelope``
-    # (``batch.py:681-696``) and ``runtime._error_result`` both mint one that way
+    # (``batch.py:694-709``) and ``runtime._error_result`` both mint one that way
     # — so printing ``result.status`` verbatim renders
     # ``[2/2 did not start] …`` immediately above ``[agent scout · error · 0.0s]``.
     # That is the exact conflation this module exists to prevent (see the
     # "FAILED AND NEVER STARTED" paragraph in the module docstring): the reader
     # is told twice, in two words, and the second one is wrong. The override is
     # passed rather than the status re-spelled here so ``tool._usage_line``
-    # stays the single owner of the format (``tool.py:698-783``).
+    # stays the single owner of the format (``tool.py:699-784``).
     lines.append(
         _usage_line(
             member.result, status=None if member.started else _DID_NOT_START_TAG
@@ -216,7 +286,7 @@ def _not_run_line(
     chain, and the reason is read off it rather than assumed. A chain has two
     ways to stop and only one of them is a failure: a step whose RENDERED text
     exceeded ``MAX_TASK_BYTES`` after ``{previous}`` substitution never starts a
-    child at all (``batch.py:355-365``), so "the chain stopped at the first
+    child at all (``batch.py:363-373``), so "the chain stopped at the first
     failure" is a statement about an event that did not happen — printed
     directly beneath a heading that says ``did not start``, and beneath a header
     counting ``0 failed``. A model reading three mutually inconsistent sentences
@@ -301,11 +371,12 @@ def _join_details(profile: str, total: int, members: Sequence[MemberOutcome]) ->
     """The members' ``details``, separated and labelled by position.
 
     UNCAPPED, exactly as on the single-mode path: ``details`` rides
-    ``ToolResult.details`` and is not sent to the model, so the truncation marker
-    inside each ``summary`` keeps its promise that the full output was preserved.
-    Empty ones are omitted rather than rendered as an empty section, and an
-    all-empty batch yields ``None`` — which is what ``render_subagent_result``
-    passes when a single child had nothing (``tool.py:863``).
+    ``ToolResult.details``, is not sent to the model and is never persisted
+    (#168) — a live tool card can show it, but the durable copy of each
+    member's full output is its child session file (#199). Empty ones are
+    omitted rather than rendered as an empty section, and an all-empty batch
+    yields ``None`` — which is what ``render_subagent_result`` passes when a
+    single child had nothing (``tool.py:869``).
     """
 
     chunks = [
@@ -362,8 +433,11 @@ def render_batch_result(
         counts[member.outcome] += 1
 
     usage = roll_up_usage(member.result for member in members)
+    # ONE budget for the call, split over the members that have a block; the
+    # steps a chain never ran render nothing and take no share.
+    budget = member_output_budget(len(members))
     blocks = [
-        _member_block(index, total, member)
+        _member_block(index, total, member, budget=budget)
         for index, member in enumerate(members, start=1)
     ]
 
@@ -385,8 +459,10 @@ def render_batch_result(
 
 
 __all__ = [
+    "BATCH_OUTPUT_BUDGET_BYTES",
     "MemberClass",
     "MemberOutcome",
+    "member_output_budget",
     "render_batch_result",
     "roll_up_usage",
 ]

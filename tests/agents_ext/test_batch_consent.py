@@ -992,7 +992,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:514-517`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:562-565`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards
@@ -1027,7 +1027,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:271``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:272``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.
@@ -1136,7 +1136,7 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # --- F1: the dialog may not be forgeable by any interpolated value ------------
 #
 # THE CRITICAL FINDING, AND IT IS AN INVARIANT, NOT AN EXAMPLE. ``cwd`` is
-# model-chosen; ``resolve_child_cwd`` (``print_channel.py:444``) validated only
+# model-chosen; ``resolve_child_cwd`` (``print_channel.py:454``) validated only
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title

@@ -186,6 +186,8 @@ def test_session_stats_has_ten_fields() -> None:
     ``cost_known`` is additive because Pi needs no equivalent — its adapters
     always price a turn, so it never has to say "no price known" — and it stays
     off the RPC wire, which enumerates its keys in ``_session_stats_to_dict``.
+    ``tool_usage`` (#199, ADR-0243) is the tool-reported share of ``tokens`` /
+    ``cost``, already inside them, and stays off the wire the same way.
     """
 
     pi_fields = {
@@ -202,7 +204,8 @@ def test_session_stats_has_ten_fields() -> None:
     }
     fields = set(SessionStats.__dataclass_fields__.keys())
     assert pi_fields <= fields
-    assert fields - pi_fields == {"cost_known"}
+    # Moved deliberately with #199 — same set as the pi_parity pin.
+    assert fields - pi_fields == {"cost_known", "tool_usage"}
 
 
 def test_session_stats_tokens_has_five_fields() -> None:

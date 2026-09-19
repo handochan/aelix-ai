@@ -5,6 +5,9 @@ Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
 authority is at stake, and the widening option is offered only to a profile that
 DECLARED it needs write authority — see `#### Amendment (2026-07-27, owner)` in
 §(i) and residual R7.**
+**Amended 2026-09-19 (ADR-0243, #199): a child runs with a session file its
+parent allocated (`--session <path>`), and `--no-session` is only the
+fallback — see the amendment under the argv paragraph.**
 Design record that lands with the P2 implementation (same pattern as
 ADR-0186/0187/0188/0189/0196).
 Date: 2026-07-26
@@ -514,6 +517,15 @@ is silent about unknown long flags, the spawner's exact argv is fed through
 `parse_args` in a test that asserts `unknown_flags == {}` — a renamed or typo'd
 `--permission-mode` would otherwise ship an auto-approving child with a green
 suite.
+
+> **Amendment (2026-09-19, ADR-0243).** The one-shot prefix no longer always
+> ends in `--no-session`. The parent now publishes a session file for every
+> admitted child beside its own (`<stem>/<spawn id>.jsonl`) before spawning it,
+> and the prefix becomes `["--mode","json","-p","--session",<absolute path>]`;
+> `--no-session` remains the fallback for a parent with no session file or an
+> allocation that failed. `profile_to_argv` takes the path as `session_path=`,
+> and the exact-argv `parse_args` test covers both forms. `/agents show` still
+> renders the profile's flags only: the session flag is spawn-time state.
 
 env is `dict(os.environ)` plus: `AELIX_SUBAGENT_DEPTH` (§(c));
 `AELIX_STDIN_TIMEOUT="1"` (an inherited `"0"` means *wait forever*,

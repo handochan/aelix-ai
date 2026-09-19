@@ -279,7 +279,8 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 ([#137](https://github.com/handochan/aelix-ai/issues/137)).
 
 **트랜스크립트는 전부, 영구히, 원문 그대로 남습니다.** 모든 프롬프트·툴 인자·툴 결과가
-그대로 기록되며 살균 단계가 없습니다. macOS와 Linux에서는 소유자 전용(`0700` 안의
+그대로 기록되며 살균 단계가 없습니다 — 위임된 에이전트의 것도 부모 옆의 자기 세션 파일에
+남습니다([#199](https://github.com/handochan/aelix-ai/issues/199)). macOS와 Linux에서는 소유자 전용(`0700` 안의
 `0600`)이고, Windows에는 Aelix가 걸 수 있는 모드 비트 자체가 없습니다 — 어느 쪽이든
 노출 대상은 홈 디렉터리를 복사해 가는 것들, 즉 백업·동기화 클라이언트·지원 번들입니다
 ([#138](https://github.com/handochan/aelix-ai/issues/138)).
@@ -290,11 +291,10 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 부분입니다. 평범한 조건의 약 3,300회 반복에서는 재현되지 않았습니다
 ([#260](https://github.com/handochan/aelix-ai/issues/260)).
 
-**위임의 비용은 `/cost`에 안 잡히고, 정리(cleanup)는 OS마다 같지 않습니다.** 자식의
-토큰은 부모 세션에 들어오지 않으므로 자식이 쓴 양은 각 위임의 자체 푸터를 읽으세요.
-헤드리스 부모는 스폰 동의를 스스로 처리합니다. Aelix 자신이 죽었을 때 자식을 끝내는 것은
-Linux에서는 `PR_SET_PDEATHSIG`, Windows에서는 job object의 `kill_on_close`이고, macOS는
-둘 다 없어서, 자기 세션을 만든 손자는 거기서 유일한 봉쇄 수단인 프로세스 그룹을 빠져나갑니다
+**위임의 정리(cleanup)는 OS마다 같지 않습니다.** 헤드리스 부모는 스폰 동의를 스스로
+처리합니다. Aelix 자신이 죽었을 때 자식을 끝내는 것은 Linux에서는 `PR_SET_PDEATHSIG`,
+Windows에서는 job object의 `kill_on_close`이고, macOS는 둘 다 없어서, 자기 세션을 만든
+손자는 거기서 유일한 봉쇄 수단인 프로세스 그룹을 빠져나갑니다
 ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## 아키텍처

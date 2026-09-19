@@ -2587,79 +2587,79 @@ class AgentHarness:
     # state — they do not mutate the session.
 
     async def get_session_stats(self) -> Any:
-        """Pi parity: ``session.getSessionStats()``
-        (``agent-session.ts:2901-2945``).
+        """Pi parity: ``session.getSessionStats()`` (``agent-session.ts:2901-2945``).
 
-        Sprint 6h₃ (ADR-0073, P-269/P-271) aggregates per-role message
-        counts, token totals, cost, and ``context_usage`` from the
-        in-memory harness session. Returns a
-        :class:`aelix_agent_core.harness._session_stats.SessionStats`
-        frozen dataclass.
+        Sprint 6h₃ (ADR-0073, P-269/P-271): per-role message counts, token
+        totals, cost and ``context_usage`` over ``self._state.messages`` — pi's
+        ``session.messages``; ``Session`` is a storage wrapper with no message
+        list of its own (W6 W4 HIGH, P-292). ``context_usage`` is :data:`None`
+        until a model is wired, as pi's ``getContextUsage`` is undefined for an
+        unknown model. Returns a frozen
+        :class:`aelix_agent_core.harness._session_stats.SessionStats`.
 
-        Reads ``self._state.messages`` directly — Pi parity: Pi's
-        ``session.messages`` corresponds to Aelix's in-memory
-        ``AgentState.messages`` (canonical accessor via the
-        ``messages`` property at line 673). ``Session`` is a storage
-        wrapper with no ``.messages`` attr; the prior ``hasattr``
-        branch was dead code (W6 W4 HIGH, P-292).
-
-        ``context_usage`` is :data:`None` when the model registry is
-        not yet wired (Pi parity — Pi's ``getContextUsage`` also
-        returns undefined when the model is unknown).
+        ADR-0243, #199: the ``aelix.usage`` records on the current branch —
+        spend a tool reported for work it ran outside this session's own model
+        calls, which no message here carries — are folded into the same totals
+        and broken out as ``tool_usage``. They are read over the whole root→leaf
+        path, INCLUDING entries before the latest compaction; a record that a
+        tree move left off the path stops counting, as its messages do. pi sums
+        every entry of the file, every branch (ADR-0235 divergence).
         """
 
-        # Local import keeps the harness import graph free of
-        # ``_session_stats`` at module load time (defensive — the
-        # module is tiny but the import-cycle policy stays consistent
-        # with the rest of the harness).
+        # Local imports keep the harness import graph free of these modules at
+        # load time, the import-cycle policy the rest of the harness follows.
         from aelix_agent_core.harness._session_stats import (
+            USAGE_RECORD_TYPE,
             aggregate_session_stats,
         )
+        from aelix_agent_core.session.entries import CustomEntry
 
-        # Pi parity: Pi's `session.messages` corresponds to Aelix's
-        # in-memory `AgentState.messages` (canonical accessor via the
-        # `messages` property at line 673). `Session` is a storage
-        # wrapper, no `.messages` attr.
         messages: list[Any] = list(self._state.messages)
-        session_file = self.session_file  # Sprint 6f P-118 public property
-        session_id = self._state.session_id or ""
         context_usage = await self._get_context_usage_safe()
-        # After a ``/compact`` (or on resuming a compacted session)
-        # ``_state.messages`` holds only the post-compaction branch — ``compact``
-        # rebuilds it at :1591-1595 from ``select_display_entries``, which drops
-        # everything before ``first_kept_entry_id``. The summarized-away turns
-        # were still PAID FOR, so summing what remains yields a real but PARTIAL
-        # figure. Flag it so the cost renders as a floor rather than a bill; the
-        # compaction entry records ``tokens_before`` (a context LEVEL, not a
-        # per-model spend), which is not enough to reconstruct the missing cost,
-        # so we mark it incomplete rather than invent one.
-        cost_complete = await self._cost_is_complete()
+        # ONE branch read serves both the compaction check and the records
+        # (``_get_context_usage_safe`` reads it for its own reasons): ``[]``
+        # without a session, ``None`` when it cannot be read — which
+        # ``_cost_is_complete`` turns into a floor and which yields no records.
+        branch: list[Any] | None = []
+        if self._session is not None:
+            try:
+                branch = await self._session.get_branch()
+            except Exception:  # noqa: BLE001 — unreadable branch → cannot claim complete
+                branch = None
         return aggregate_session_stats(
-            session_id=session_id,
+            session_id=self._state.session_id or "",
             messages=messages,
-            session_file=session_file,
+            session_file=self.session_file,  # Sprint 6f P-118 public property
             context_usage=context_usage,
-            cost_complete=cost_complete,
+            cost_complete=self._cost_is_complete(branch),
+            usage_records=[
+                entry.data
+                for entry in branch or ()
+                if isinstance(entry, CustomEntry)
+                and entry.custom_type == USAGE_RECORD_TYPE
+            ],
         )
 
-    async def _cost_is_complete(self) -> bool:
+    def _cost_is_complete(self, branch: list[Any] | None) -> bool:
         """Does ``_state.messages`` still cover everything the session spent?
 
-        ``False`` once the branch carries a compaction entry. Fails CLOSED: if
-        the branch cannot be read we cannot show that it is complete, and
-        "at least $X" stays a true statement either way, whereas an exact figure
-        might not.
+        ``False`` once ``branch`` carries a compaction entry. After a ``/compact``
+        (or on resuming a compacted session) ``_state.messages`` holds only the
+        post-compaction branch: ``compact`` rebuilds it from
+        ``select_display_entries``, which drops everything before
+        ``first_kept_entry_id``. The summarized-away turns were still PAID FOR,
+        so what remains is real but PARTIAL, and the cost renders as a floor.
+        The compaction entry records ``tokens_before`` — a context LEVEL, not a
+        per-model spend — so the missing cost is flagged, never invented. Fails
+        CLOSED: an unreadable branch (``None``) cannot show that it is complete,
+        and "at least $X" stays true either way, whereas an exact figure might
+        not. Tool-reported records are read over the whole branch, so this
+        judgement does not apply to them.
         """
 
-        if self._session is None:
-            return True
         from aelix_agent_core.session.compaction import get_latest_compaction_entry
 
-        try:
-            branch = await self._session.get_branch()
-        except Exception:  # noqa: BLE001 — unreadable branch → cannot claim complete
-            return False
-        return get_latest_compaction_entry(branch) is None
+        return branch is not None and get_latest_compaction_entry(branch) is None
 
     def export_to_html(self, output_path: str | None = None) -> str:
         """Pi parity: ``session.exportToHtml(outputPath?)``

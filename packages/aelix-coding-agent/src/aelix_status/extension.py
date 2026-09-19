@@ -8,7 +8,7 @@ runtime, the loaded-extension list or the trust decision, so a tool under
 ``tools/`` structurally cannot see the runtime state this tool exists to report.
 An extension can: ``ExtensionAPI`` and ``ExtensionContext`` are the only objects
 that carry it. ``aelix_agents`` already does exactly this for the ``agent`` tool
-(``aelix_agents/extension.py:314`` ``register_tool``), and this follows it.
+(``aelix_agents/extension.py:331`` ``register_tool``), and this follows it.
 
 WHERE THIS PACKAGE SITS, AND THE RULE APPLIED. ADR-0197 §(a) splits the tree into
 kernel / product-core / bundled-extension, and ADR-0208 states what that split
@@ -104,7 +104,7 @@ def create_status_tool(execute: Any) -> AgentTool:
     """Build the ``aelix_status`` tool.
 
     NO ``execution_mode="sequential"``. The ``agent`` tool sets it as a security
-    control (``aelix_agents/tool.py:580-589``: it downgrades the whole batch so a
+    control (``aelix_agents/tool.py:581-590``: it downgrades the whole batch so a
     modal consent dialog cannot race), and this tool has no dialog, no process
     and no mutation to protect. Declaring it here would silently serialise every
     batch that happens to contain a status call — a real cost for a fabricated
