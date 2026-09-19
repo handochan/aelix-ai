@@ -599,7 +599,7 @@ in-process 확장을 sandbox로 표현하는 약속은 제품 근거와 맞지 �
 | 7 | Copilot Enterprise 좌석 **작동은 확인됨** | 확인된 것은 기능이다. #86이 적은 ToS 서면 검증은 별개의 사업 판단으로 남는다 — 문구는 "보유한 좌석으로 동작한다"까지, 보증 표현은 쓰지 않는다 |
 | 8 | **동시에 활성화하는 큰 작업 흐름은 둘** — A = 안정성·내구성, B = Analytics pack과 그것이 요구하는 Pack 계약. 서버·웹은 A의 자식 세션 기록 뒤에 잇는다 | 같은 파일을 동시에 고치지 않고 이슈별 변경을 분리 |
 | 9 | **Ruff `C901` 상한 20 + 함수별 기준선 파일, `# noqa` 금지** | 게이트 이슈 #293, 40 초과 여섯은 #284 아래 개별 이슈 |
-| 10 | 권고안 채택: **JSONL 유지 + operation record 추가** | 아래 "저장 방식" 참조. 적합성 스위트와 `CustomEntry` 규칙은 #294 |
+| 10 | 권고안 채택: **JSONL 유지 + operation record 추가** | 아래 "저장 방식" 참조. 적합성 스위트와 `CustomEntry` 규칙은 [ADR-0242](decisions/0242-every-prefix-of-a-session-file-is-a-session-and-a-new-kind-of-record-is-a-custom-entry.md) (#294) |
 
 **4번이 묻는 것.** 확장 작성자가 manifest에 무엇을 선언할 수 있고(agents·skills 기여, profile 필드, hook 이름), Aelix가 버전이 올라가도
 그중 무엇을 깨지 않겠다고 약속하며(`requires_aelix` 같은 호환 범위), 사용자가 무엇을 타이핑해 설치·실행하는가(`aelix install <pack>` →
@@ -661,7 +661,8 @@ Python 3.12.13.
   쓰는 중의 일관된 읽기다 — 전부 서버 트랙의 요구이고 단일 사용자 TUI의 요구가 아니다. 비용은 grep·복사·내보내기가 되는 세션 파일을
   잃는 것, Windows·NFS에서의 WAL sidecar, 베타 사용자 세션 마이그레이션이다.
 - **모델 전환의 이득은 초기일수록 크다.** format 3으로 쓰인 세션은 영원히 읽어야 한다(Pi가 legacy-v3를 들고 가는 이유). 그래서 지금 할 것은
-  (1) spawn 계보·usage ledger·operation record(시작/정산)를 **새 entry 타입으로 추가**하고 헤더 버전과 마이그레이션 훅을 두는 것,
+  (1) spawn 계보·usage ledger·operation record(시작/정산)를 **`CustomEntry`의 새 `aelix.` `custom_type`으로 추가**하고 헤더는 `version: 3`을
+  유지하는 것(올리면 출시된 모든 Aelix가 파일 전체를 거부한다 — [ADR-0242](decisions/0242-every-prefix-of-a-session-file-is-a-session-and-a-new-kind-of-record-is-a-custom-entry.md)),
   (2) "트랜잭션 하나 = 물리적 한 줄" 규칙과 찢어진 마지막 줄 폐기(ADR-0208이 절반을 이미 했다), (3) 기존 `SessionStorage` Protocol 위에
   **JSONL·Memory 공통 적합성 스위트**를 두는 것이다. (3)이 있으면 서버가 색인을 요구하는 날 SQLite는 **마이그레이션이 아니라 백엔드 추가**가
   된다. **새 기록은 새 `type`이 아니라 기존 `CustomEntry`(`type: "custom"` + `custom_type`)에 싣는다.** 확인한 바로는
@@ -748,7 +749,7 @@ provider 층은 세 번째 군집이다(Radon: `stream_openai_completions` 82 ·
 | --- | --- | --- | --- |
 | 1 | #262 재현·수정·실제 모델 검증 | `aelix_agents/` | 자식 기록 기능보다 먼저 |
 | 2 | 두 채널의 `--no-session` 제거 | `agents/resolver.py` `profile_to_argv` · `aelix_agents/rpc_channel.py` | 저장 위치·보관·권한 정책이 같이 온다 |
-| 3 | 자식 세션과 부모의 spawn 계보 기록 | 새 필드 또는 새 entry 타입 | `SessionInfoEntry.parent_id`(엔트리 트리 부모)와 `parent_session_path`(fork/clone)를 재사용하지 않는다 |
+| 3 | 자식 세션과 부모의 spawn 계보 기록 | `CustomEntry` + `aelix.` `custom_type` (ADR-0242) — 새 type은 출시본이 후손까지 가지치기하고, 기존 type의 새 필드는 출시본의 fork가 버린다 | `SessionInfoEntry.parent_id`(엔트리 트리 부모)와 `parent_session_path`(fork/clone)를 재사용하지 않는다 |
 | 4 | `aggregate.roll_up_usage`를 세션 통계에 연결 | `harness/_session_stats.py` | 부모/자식 이중 합산 금지, `tokens`는 최대값 |
 | 5 | `Contributes`에 `skills`·`agents` 추가 | `contracts/manifest.py` `Contributes`(`extra="forbid"`) | schema·가이드·카탈로그·ADR이 같이 움직인다(#253) |
 | 6 | skills·profile 로더에 extension tier | `cli/entry.py` `_resolve_skill_dirs` · `agents/discovery.py` | 출처·trust·동명 우선순위·재로드·제거 검증 |

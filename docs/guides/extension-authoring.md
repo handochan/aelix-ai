@@ -108,6 +108,7 @@ The handle exposes more than tools and commands. The most useful members:
 | `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). A user sets one on the command line — see [Flags](#flags). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
+| `append_entry(custom_type, data=None)` | Record a `CustomEntry` in the session file. The model never sees it. Name it with your own `custom_type` (the `aelix.` namespace is for first-party records) and keep `data` to JSON values: lists rather than tuples, string keys, finite floats. See ADR-0242. |
 
 `on(...)` subscribes to the harness hook events (the same lifecycle the core
 `HookBus` drives — `before_agent_start`, the tool-call hooks, context mutations,

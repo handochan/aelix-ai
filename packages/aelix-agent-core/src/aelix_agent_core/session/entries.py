@@ -2,7 +2,7 @@
 
 Pi source: ``packages/agent/src/harness/types.ts:339-419`` (SHA ``734e08e``).
 
-There are 11 entry types. All are ``@dataclass(frozen=True)`` and share the
+There are 10 entry types. All are ``@dataclass(frozen=True)`` and share the
 common base fields ``type``, ``id``, ``parent_id``, ``timestamp``. The JSON
 on-disk representation uses **camelCase** keys for Pi cross-runtime
 compatibility (``parentId``, ``thinkingLevel``, ``firstKeptEntryId``,
@@ -158,6 +158,12 @@ class LeafEntry:
     type: Literal["leaf"] = "leaf"
 
 
+# The set is CLOSED at these ten (ADR-0242). Every released Aelix meets an
+# unknown ``type`` by skipping the line AND pruning every entry parented below
+# it (ADR-0208's orphan pass), so a new member here would cost an older reader
+# the rest of the conversation. A new kind of record is a ``CustomEntry`` with
+# an ``aelix.``-prefixed ``custom_type`` and everything durable inside ``data``.
+# ``tests/session/test_jsonl_write_discipline.py`` fails when this union grows.
 SessionTreeEntry = (
     MessageEntry
     | ThinkingLevelChangeEntry
@@ -462,7 +468,14 @@ def entry_to_json(entry: SessionTreeEntry) -> dict[str, Any]:
 
 
 def entry_from_json(data: dict[str, Any]) -> SessionTreeEntry:
-    """Translate a camelCase wire dict to a snake_case dataclass entry."""
+    """Translate a camelCase wire dict to a snake_case dataclass entry.
+
+    The ``type`` set is closed (ADR-0242): an unknown ``type`` raises, which
+    every released loader turns into a skipped line plus the pruning of its
+    descendants — so a new record rides on ``CustomEntry`` rather than adding
+    a branch here. Unknown KEYS are ignored on read, and a fork (which
+    re-encodes through :func:`entry_to_json`) drops them.
+    """
 
     entry_type = data.get("type")
     # Common fields shared by every entry type.

@@ -70,7 +70,14 @@ TMetadata = TypeVar("TMetadata", bound=SessionMetadata)
 
 @runtime_checkable
 class SessionStorage(Protocol[TMetadata]):
-    """Pi ``SessionStorage<TMetadata>`` (``types.ts:438-452``). 10 methods."""
+    """Pi ``SessionStorage<TMetadata>`` (``types.ts:438-452``). 10 methods.
+
+    The signatures below are the shape; the contract is executable. Every
+    backend must pass ``tests/session/test_storage_conformance.py``
+    unchanged — a new backend is added by registering its factory there —
+    and ADR-0242 is its prose: what one write is, why every prefix of the
+    log must be a session, and how a new kind of record is added.
+    """
 
     async def get_metadata(self) -> TMetadata: ...
     async def get_leaf_id(self) -> str | None: ...

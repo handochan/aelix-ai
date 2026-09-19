@@ -21,8 +21,42 @@ unwritten. Add them with the next release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Session files are now written LF-only on Windows too.** Aelix opened them
+  through text-mode descriptors there, so every line it wrote ended in `\r\n`;
+  every descriptor that writes session bytes is now binary, and the bytes on disk
+  are the same on every platform. Session files written before this still load
+  and take new entries — they just end up with mixed line endings, which the
+  reader has always accepted. (#294)
+- **A custom session `FileSystem` must now provide `rename_file(source,
+  destination)`** — atomically replace `destination` with `source` in the same
+  directory (`os.replace` in `LocalFileSystem`). Creating a session and forking
+  one now publish the whole file through it, so an implementation without it
+  fails at the first `create`. (#294)
+
 ### Fixed
 
+- **A fork or an import that fails part-way no longer leaves a truncated session
+  for `--continue` to resume.** A fork was written as the header followed by one
+  append per entry, so a failure in the middle left, say, two of five entries on
+  disk — and `--continue`, which picks the newest file whose header parses, took
+  it. Forks are now published as one file that appears whole or not at all
+  (staged beside its destination, then renamed into place). Import was worse: it
+  emptied the destination first and then copied onto it, so re-importing over an
+  existing session and failing lost that session outright; it now copies into a
+  temp file, syncs it to disk, and only then replaces the destination. On
+  Windows, where a virus scanner or the search indexer can hold a just-written
+  file for a moment and make the rename fail, the rename is retried for about a
+  second before the error is reported. (#294)
+- **One failed write to a session file no longer costs every turn after it.** If
+  an append failed part-way (a full disk, a second Ctrl-C), the next entry was
+  glued onto the fragment, the fused line could not be read back, and on the next
+  load every entry after it was dropped with it. Measured: three turns in memory,
+  one after reloading. The next write now starts on a fresh line, so only the
+  fragment is lost. A short write — the operating system accepting fewer bytes
+  than it was given, which it reports only in a return value that was ignored —
+  silently cut a line the same way; writes are now completed. (#294)
 - **The installers no longer hand you an interpreter nothing has ever tested.**
   `uv tool install` consults neither `.python-version` nor `uv.lock` — it
   resolves an interpreter fresh and takes the newest one on the machine.

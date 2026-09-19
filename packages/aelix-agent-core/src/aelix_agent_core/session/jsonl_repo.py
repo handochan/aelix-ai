@@ -383,9 +383,19 @@ class JsonlSessionRepo:
         """Pi `fork` (``jsonl-repo.ts:133-159``) — Sprint 4b §E.
 
         Opens ``source``, computes the fork-cut entry list via
-        :func:`get_entries_to_fork`, creates a NEW JSONL session under
-        ``options.cwd`` and appends the cut entries to the new file. The
+        :func:`get_entries_to_fork`, and publishes a NEW JSONL session under
+        ``options.cwd`` holding those entries. The
         ``parent_session_path`` defaults to the source path (Pi parity).
+
+        The fork appears whole or not at all (ADR-0242): header and entries
+        go out in ONE publish (:meth:`JsonlSessionStorage.create` with
+        ``entries``), staged in a temp file and renamed into place. It used
+        to be the header followed by one append per entry, so a write that
+        failed part-way left a truncated session that ``--continue`` then
+        resumed (#294). A failed write or rename still raises
+        ``SessionError("storage")``; what changed is that no file is left
+        behind. An interrupt that lands just after the rename leaves the
+        complete fork in place, never a partial one.
 
         Raises :class:`SessionError("invalid_fork_target")` when
         ``options.entry_id`` is set but does not resolve to a valid target
@@ -416,9 +426,8 @@ class JsonlSessionRepo:
             cwd=options.cwd,
             session_id=session_id,
             parent_session_path=options.parent_session_path or source.path,
+            entries=forked_entries,
         )
-        for entry in forked_entries:
-            await storage.append_entry(entry)
         return Session(storage)
 
     async def fork_from(
@@ -449,6 +458,10 @@ class JsonlSessionRepo:
         resolution; useful for callers that already own a resolved
         directory (e.g. tests pinning a tmp_path, or future TUI work
         that pre-computes per-workspace dirs).
+
+        Like :meth:`fork`, the new session appears whole or not at all: one
+        atomic publish of header plus entries, never a header followed by a
+        per-entry append loop (#294, ADR-0242).
         """
 
         session_id = _create_session_id()
@@ -494,9 +507,8 @@ class JsonlSessionRepo:
             cwd=target_cwd,
             session_id=session_id,
             parent_session_path=source.path,
+            entries=all_entries,
         )
-        for entry in all_entries:
-            await storage.append_entry(entry)
         return Session(storage)
 
     async def _list_session_dirs(self) -> list[str]:

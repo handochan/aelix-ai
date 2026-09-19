@@ -2027,7 +2027,16 @@ class ExtensionAPI:
         self._runtime.actions.send_user_message(content, deliver_as=deliver_as)
 
     def append_entry(self, custom_type: str, data: Any = None) -> None:
-        """Pi ``appendEntry`` (``types.ts:1195``). Throwing stub in Sprint 5a."""
+        """Pi ``appendEntry`` (``types.ts:1195``): record a ``CustomEntry``.
+
+        The entry is written to the session file but never sent to the model.
+        Pick a ``custom_type`` outside the ``aelix.`` namespace, which
+        first-party records use, and keep ``data`` to JSON values (lists
+        rather than tuples, string keys, finite floats): a tuple comes back a
+        list after a reload, and what ``json.dumps`` cannot encode is not
+        stored at all (ADR-0242). The write runs in the background, so such a
+        failure is logged at DEBUG, not raised here.
+        """
 
         self._runtime.assert_active()
         self._runtime.actions.append_entry(custom_type, data)

@@ -8,16 +8,25 @@ session file round-trips through Aelix and back.
 Aelix-additive (per ADR-0022): per-instance ``asyncio.Lock`` around
 appends. Pi has no lock; the Aelix lock is a strict superset safety net
 that lets concurrent ``append_*`` calls serialize cleanly under asyncio.
-The underlying POSIX ``O_APPEND`` write still provides byte-level atomicity
-for writes ≤ PIPE_BUF.
+
+The write contract (ADR-0242, #294). Every storage call that writes —
+``append_entry``, ``set_leaf_id`` — appends exactly one ``\\n``-terminated
+JSON object with exactly one ``FileSystem.append_file`` call, so the file can
+end after any line and every such prefix is itself a valid session. A whole
+file (``create``, and a fork built through it) is published atomically:
+staged in ``<path>.tmp`` and renamed into place, so it appears whole or not
+at all. A write that fails part-way re-arms the healing newline, so it never
+costs the entry appended after it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -93,6 +102,85 @@ def _iso_now() -> str:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _encode_line(payload: dict[str, Any], what: str) -> str:
+    """``payload`` as one ``\\n``-terminated JSON line, or ``invalid_entry``.
+
+    ``json.dumps`` escapes every control character inside a string (a
+    newline in ``data`` is written as the two characters ``\\`` ``n``) and,
+    with its default ``ensure_ascii``, every non-ASCII one, so the
+    terminator is the only raw newline in the line. It raises on what it
+    cannot encode — a dataclass, a ``set``, ``bytes``, a circular reference
+    — and that has to surface before a single byte reaches the file
+    (ADR-0242). What it can encode it writes its own way, unchecked: a tuple
+    as a list, a non-string key as a string, ``NaN`` bare. Those come back
+    changed on reload, and keeping payloads to JSON values is the caller's
+    job.
+    """
+
+    try:
+        return json.dumps(payload) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise SessionError(
+            "invalid_entry",
+            f"Cannot persist session {what}: not a JSON value ({exc})",
+            cause=exc,
+        ) from exc
+
+
+def _encode_entry(entry: SessionTreeEntry, what: str) -> str:
+    """``entry`` as one line, or ``invalid_entry`` from either conversion.
+
+    :func:`entry_to_json` can fail before ``json.dumps`` is reached: a
+    ``message`` that is not a dataclass makes ``asdict`` raise ``TypeError``.
+    Nothing has been written at that point either, so it is the same refusal
+    as a payload ``json.dumps`` cannot encode rather than a raw ``TypeError``.
+    """
+
+    try:
+        payload = entry_to_json(entry)
+    except (TypeError, ValueError) as exc:
+        raise SessionError(
+            "invalid_entry",
+            f"Cannot persist session {what}: not a JSON value ({exc})",
+            cause=exc,
+        ) from exc
+    return _encode_line(payload, what)
+
+
+async def _publish_file(fs: FileSystem, path: str, content: str) -> None:
+    """Make ``path`` appear holding exactly ``content``, or not at all.
+
+    Pi ``publishFileAtomically`` (``jsonl/io.ts``): stage ``<path>.tmp``,
+    then rename it over ``path`` (ADR-0242). Creating the file directly and
+    appending to it — what ``create`` plus a per-entry ``append_entry`` loop
+    did for every fork — left a truncated session behind when a write failed
+    part-way, and ``find_most_recent`` then resumed it (#294).
+
+    The temp name does not end in ``.jsonl``, so ``list`` and
+    ``find_most_recent`` never see it. On any failure it is removed best
+    effort; a crash between staging and the rename can still leave it
+    behind (owner-only, never listed, overwritten by the next publish to the
+    same path — nothing sweeps it). An exception does not prove the rename
+    did not happen: an interrupt can land just after it, and then ``path``
+    holds the whole ``content``. That file is never rolled back.
+    """
+
+    temp = f"{path}.tmp"
+    try:
+        await fs.write_file(temp, content)
+        await fs.rename_file(temp, path)
+    except BaseException as exc:
+        with contextlib.suppress(OSError):
+            await fs.remove(temp, force=True)
+        if isinstance(exc, OSError):
+            raise SessionError(
+                "storage",
+                f"Failed to create session {path}: {exc}",
+                cause=exc,
+            ) from exc
+        raise
 
 
 def _generate_entry_id(by_id: dict[str, SessionTreeEntry]) -> str:
@@ -418,8 +506,16 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
     """Pi ``JsonlSessionStorage`` (``jsonl-storage.ts:161-293``).
 
     Per-instance ``asyncio.Lock`` is the Aelix-additive safety net around
-    appends — Pi has no lock. POSIX ``O_APPEND`` atomicity for ≤ PIPE_BUF
-    writes still provides the underlying byte-level guarantee.
+    appends — Pi has no lock. It orders this instance's writers; it knows
+    nothing of a second process on the same file (#137).
+
+    One ``append_entry`` or ``set_leaf_id`` is one line in one
+    ``append_file`` call. The line is serialized before the file is touched
+    (an entry that cannot be encoded raises ``invalid_entry`` with nothing
+    written), and the in-memory state changes only once the write
+    returned. A write that fails part-way leaves at most a fragment with no
+    newline; the next append opens a fresh line first, so the loader skips
+    the fragment alone and prunes nothing (ADR-0242, extending ADR-0208).
     """
 
     def __init__(
@@ -456,20 +552,39 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         # newline has been written.
         self._needs_newline = not ends_with_newline
 
-    async def _append_line(self, payload: dict[str, Any], what: str) -> None:
-        """Append one JSON line, healing an unterminated tail first."""
+    async def _append_line(self, entry: SessionTreeEntry, what: str) -> None:
+        """Append ``entry`` as one JSON line in one ``append_file`` call, healing first.
 
-        line = json.dumps(payload) + "\n"
+        Serialized before the file is touched, so an entry that cannot be
+        encoded — ``entry_to_json`` or ``json.dumps`` refusing it — raises
+        ``invalid_entry`` with nothing written and the heal flag as it was.
+        After that, ANY exception out of the write — an
+        ``OSError``, a ``KeyboardInterrupt`` between two ``os.write`` calls, a
+        cancelled awaiting ``FileSystem`` — may have left a fragment with no
+        newline, so the flag is re-armed before re-raising and the next append
+        opens a fresh line. It used to stay down: the next entry was glued onto
+        the fragment, the fused line failed to parse, and every entry parented
+        below it was pruned on the next load (#294, ADR-0242). Only
+        ``OSError`` is translated; anything else propagates as itself. This
+        relies on the ``FileSystem`` contract that the write is over once the
+        call is: the lock is released here, and bytes a background writer
+        added later would land inside the next line.
+        """
+
+        line = _encode_entry(entry, what)
         if self._needs_newline:
             line = "\n" + line
         try:
             await self._fs.append_file(self._file_path, line)
-        except OSError as exc:
-            raise SessionError(
-                "storage",
-                f"Failed to append session {what}: {exc}",
-                cause=exc,
-            ) from exc
+        except BaseException as exc:
+            self._needs_newline = True
+            if isinstance(exc, OSError):
+                raise SessionError(
+                    "storage",
+                    f"Failed to append session {what}: {exc}",
+                    cause=exc,
+                ) from exc
+            raise
         self._needs_newline = False
 
     @classmethod
@@ -496,7 +611,20 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         cwd: str,
         session_id: str,
         parent_session_path: str | None = None,
+        entries: Sequence[SessionTreeEntry] = (),
     ) -> JsonlSessionStorage:
+        """Publish a new session file holding the header and ``entries``.
+
+        One publish (:func:`_publish_file`): the file appears with every
+        line or does not appear. The bytes are the ones the header followed
+        by one ``append_entry`` per entry would have written; the returned
+        instance holds ``entries`` and the leaf those appends would have
+        left. Every line is serialized before anything is staged, so an
+        entry that cannot be encoded raises ``invalid_entry`` and no
+        file — no ``.jsonl``, no ``.tmp`` — is written. A failed write or
+        rename raises ``storage``.
+        """
+
         header = _SessionHeader(
             id=session_id,
             timestamp=_iso_now(),
@@ -512,15 +640,19 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         }
         if header.parent_session is not None:
             wire["parentSession"] = header.parent_session
-        try:
-            await fs.write_file(file_path, json.dumps(wire) + "\n")
-        except OSError as exc:
-            raise SessionError(
-                "storage",
-                f"Failed to create session {file_path}: {exc}",
-                cause=exc,
-            ) from exc
-        return cls(fs, file_path, header, [], None)
+        lines = [json.dumps(wire) + "\n"]
+        leaf_id: str | None = None
+        for entry in entries:
+            lines.append(_encode_entry(entry, f"entry {entry.id}"))
+            leaf_id = _leaf_id_after_entry(entry)
+        content = "".join(lines)
+        # ``lines`` and ``content`` are each a whole copy of the file, and
+        # ``write_file`` encodes a third. Dropping the list before staging
+        # keeps a fork's peak memory at three times the file, where the
+        # append loop this replaced had it, not four.
+        del lines
+        await _publish_file(fs, file_path, content)
+        return cls(fs, file_path, header, list(entries), leaf_id)
 
     async def get_metadata(self) -> JsonlSessionMetadata:
         return self._metadata
@@ -543,7 +675,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             target_id=leaf_id,
         )
         async with self._lock:
-            await self._append_line(entry_to_json(entry), f"leaf {entry.id}")
+            await self._append_line(entry, f"leaf {entry.id}")
             self._entries.append(entry)
             self._by_id[entry.id] = entry
             self._current_leaf_id = leaf_id
@@ -553,7 +685,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
 
     async def append_entry(self, entry: SessionTreeEntry) -> None:
         async with self._lock:
-            await self._append_line(entry_to_json(entry), f"entry {entry.id}")
+            await self._append_line(entry, f"entry {entry.id}")
             self._entries.append(entry)
             self._by_id[entry.id] = entry
             _update_label_cache(self._labels_by_id, entry)

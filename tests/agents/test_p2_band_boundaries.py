@@ -335,6 +335,30 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_repo.py",
+        # ADR-0242, #294. The three ADR-0208 session paths just above changed
+        # AGAIN, and the change is recorded here for the reason the ADR-0211
+        # note below gives: a path that is already listed would otherwise let a
+        # second behavioural change through with no written reason. Measured on
+        # ``main``: a fork interrupted part-way left a truncated session that
+        # ``--continue`` resumed, and one failed append cost every turn after it
+        # on the next load. ``session/fs.py`` — ``rename_file`` on the
+        # ``FileSystem`` Protocol, a write-all loop for short ``os.write``
+        # returns, ``O_BINARY`` descriptors (Windows session files become
+        # LF-only), ``copy_file`` staged in a per-call temp and renamed over its
+        # destination (the store's one fsync), and a rename refused with
+        # ``PermissionError`` retried for about a second on Windows only (a
+        # scanner holding the just-closed temp). ``session/jsonl_storage.py`` —
+        # serialize before writing (``invalid_entry``), re-arm the healing
+        # newline after ANY failed append, and ``create(entries=...)`` publishes
+        # the whole file atomically. ``session/jsonl_repo.py`` —
+        # ``fork``/``fork_from`` publish through that ``create`` instead of
+        # looping ``append_entry``. ``entries.py``, ``storage.py`` and
+        # ``session_cwd.py`` changed docstrings and comments only, which this
+        # gate's prose filter already passes. Session I/O correctness only: no
+        # ``aelix_agents`` import, no spawn site, no cap, no consent path, no
+        # registry — ``test_kernel_has_no_subagent_surface`` is unaffected and
+        # still passes. Child-session records (#199) are the first consumer of
+        # the ADR's record rules and are NOT authorised by this entry.
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
         # ADR-0209, #122. A resumed session's persisted history must seed
         # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``
