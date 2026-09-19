@@ -4,17 +4,17 @@ Status: 방향 문서 합본 + 오너 결정 기록 + 보드 반영까지 완료
 
 ## 기준점
 
-- `main` = `origin/main` = `026bd15` (2026-09-13, #263 머지). 세션 내내 움직이지 않았다.
-- main CI run 34705932974: 여섯 레그 전부 success. **이 세션은 풀 스위트를 돌리지 않았다.**
+- `main` = `origin/main` = **`356d939`** (2026-09-19, 이 문서들의 머지 커밋. 직전은 `026bd15`). 그 사이 다른 커밋은 들어오지 않았다.
+- main CI run **35421121286**(`356d939`): 여섯 레그 전부 success(ubuntu·windows × py3.11·py3.12, install.ps1 e2e × 2).
+  **이 세션은 로컬에서 풀 스위트를 돌리지 않았다** — 풀 스위트 증거는 CI뿐이다.
   돌린 것: `uv run --no-sync pytest tests/agents tests/agents_ext -q` → 1712 passed / 11 skipped (96 s).
 - 계획 정본: **`docs/05-post-beta-direction.md`** (Codex 초안 + Claude 초안 합본, §11에 오너 결정 기록과 실행 기록).
   세션 기록: `.omc/specs/direction-post-beta2-2026-09-15.md`, Codex 교차 검토 `.omc/specs/review-direction-post-beta2-codex-2026-09-15.md`.
-- 문서 커밋은 브랜치 `docs/post-beta-direction`에 있다. **main에는 머지하지 않았다 — 오너 승인 대기.**
-  커밋은 공유 체크아웃의 HEAD를 건드리지 않으려고 worktree에서 만들었다. 그래서 main 체크아웃에는 같은 내용이 **미추적/수정 상태로
-  남아 있고**, 그대로 머지하면 git이 "untracked working tree files would be overwritten"으로 거부한다. 머지 절차(내용은 브랜치와 동일):
-  `git checkout -- docs/README.md` → 미추적 다섯 파일(`docs/05-post-beta-direction.md`, `.omc/specs/direction-post-beta2-2026-09-15.md`,
-  `.omc/specs/review-direction-post-beta2-codex-2026-09-15.md`, `.omc/specs/handoff-post-beta-direction-2026-09-15.md`,
-  `.omc/specs/handoff-post-beta-plan-2026-09-19.md`) 삭제 → `git merge --no-ff docs/post-beta-direction` → `git push origin main`(각각 단독 명령으로).
+- 문서는 오너 승인으로 **main에 머지됐다**(`356d939` ← 브랜치 `docs/post-beta-direction`의 `c7fd5e0`·`b2c8c08`). 공유 체크아웃의 HEAD를
+  건드리지 않으려고 커밋은 worktree에서 만들었고, 머지 전에 체크아웃의 사본이 브랜치와 같은지 비교한 뒤 지웠다.
+  브랜치 CI의 두 번째 커밋(`b2c8c08`, 게이트 밖 마크다운 두 파일)에서 `ubuntu py3.11` 레그가
+  `test_every_byte_is_delivered_under_a_loaded_loop`(`assert 2089984 == 2097152`, 7,168바이트 손실)로 실패했다 — #260/#261의 알려진
+  간헐 손실이고 #261에 재현으로 기록했다. 같은 run의 py3.12와 첫 커밋 여섯 레그, 그리고 머지 뒤 main CI는 전부 통과.
 - 보드: 열린 이슈 134(세션 도중 다른 세션이 #73을 종결했다 — 오너는 세션을 동시에 돌린다). 마일스톤 `v0.1.0-beta.3`(open 24, 날짜 없음 — #137·#188을 오너 결정으로 `v0.1.0`에서 당겨 옴). 닫힌 12건은 Done.
 
 ## 바로 시작할 것
