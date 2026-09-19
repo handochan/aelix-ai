@@ -15,7 +15,7 @@ Status: 방향 문서 합본 + 오너 결정 기록 + 보드 반영까지 완료
   `git checkout -- docs/README.md` → 미추적 다섯 파일(`docs/05-post-beta-direction.md`, `.omc/specs/direction-post-beta2-2026-09-15.md`,
   `.omc/specs/review-direction-post-beta2-codex-2026-09-15.md`, `.omc/specs/handoff-post-beta-direction-2026-09-15.md`,
   `.omc/specs/handoff-post-beta-plan-2026-09-19.md`) 삭제 → `git merge --no-ff docs/post-beta-direction` → `git push origin main`(각각 단독 명령으로).
-- 보드: 열린 이슈 134. 마일스톤 `v0.1.0-beta.3`(open 22, 날짜 없음). 닫힌 12건은 Done.
+- 보드: 열린 이슈 134(세션 도중 다른 세션이 #73을 종결했다 — 오너는 세션을 동시에 돌린다). 마일스톤 `v0.1.0-beta.3`(open 24, 날짜 없음 — #137·#188을 오너 결정으로 `v0.1.0`에서 당겨 옴). 닫힌 12건은 Done.
 
 ## 바로 시작할 것
 
@@ -29,14 +29,15 @@ Status: 방향 문서 합본 + 오너 결정 기록 + 보드 반영까지 완료
 
 ## 이후 순서
 
-- 흐름 A(안정성·내구성): #294 → #199(+#168) → #194 → #260/#261 → #131. 그 사이 독립 배치로 #285 · #286 · #259/#256 · #157.
+- 흐름 A(안정성·내구성): #294 → #199(+#168) → #137 → #194 → #260/#261 → #131. **#188(권한 게이트 기본값 뒤집기)은 Pack 계약 #253보다
+  먼저** — 지금은 모든 확장·pack 도구가 승인과 PLAN을 우회한다. MCP를 번들 확장으로 옮기는 #295는 #188 뒤, beta.3 밖. 그 사이 독립 배치로 #285 · #286 · #259/#256 · #157.
 - 흐름 B(Analytics pack + Pack 계약): #253 ADR(범위는 오너가 확정: agents·skills 기여 + extension tier + `aelix install`/`aelix run` +
   호환 버전 범위) → Analytics 어댑터의 실제 모델 E2E 하나. Analytics는 `requires-python >=3.12`이므로 본체 환경에 넣지 않는다.
 - 게이트 #292 · #293 · #279는 **셋 다 `.github/workflows/ci.yml`을 건드린다** — 같은 배치 금지, 순차.
 - #289 + #288은 `cli/entry.py` early-exit 체인(부록 A) 분리와 한 묶음. `cli/args.py` `parse_args`(Ruff 80)도 같은 뿌리.
 - 문서 #266 → #265 → #267. #266에 #86 태그라인 정직성(원격 모델을 쓰면 "never leave your network"는 거짓)이 들어간다.
 - 서버·웹은 #199 뒤. 첫 전제는 #290(승인 브리지·`list_sessions`·제한된 명령 실행), 웹 파일 미리보기는 #291.
-- 오너 판단 대기: **#137·#188을 `v0.1.0`에서 `v0.1.0-beta.3`로 당길지**(둘 다 P0, 옮기지 않았다) · 영역 라벨을 못 붙인 35건 트리아지
+- 오너 판단 대기: 영역 라벨을 못 붙인 35건 트리아지
   (목록은 docs/05 §11) · #142의 `pypi` environment required reviewer · Copilot 좌석 ToS(기능은 오너가 확인).
 
 ## 이 레포에서 실제로 물린 규칙
@@ -66,4 +67,6 @@ Status: 방향 문서 합본 + 오너 결정 기록 + 보드 반영까지 완료
 - **"SQLite로 가면 #137이 풀린다"** — pi 명세가 직접 적는다: 어느 백엔드도 두 번째 writer를 감지하지 못하고 소유권은 호스트 책임이다.
 - **"로더가 모르는 줄을 건너뛰니 새 entry type은 하위 호환이다"** — 건너뛰면서 후손을 가지치기한다. `CustomEntry`로 싣는다.
 - **"자식 비용을 재지 않는다"** — 잰다(`SubagentUsage`, footer에 표시). 저장과 세션 통계 롤업이 없을 뿐이다.
+- **"MCP를 확장으로 빼면 #188이 닫힌다"** — 아니다. 구멍은 게이트의 기본값(`_MUTATING` 이름 목록에 없으면 읽기 전용 취급)이고,
+  확장으로 옮긴 MCP 도구도 `register_tool`로 같은 이름을 달고 똑같이 통과한다. 모든 확장·pack 도구가 같은 경로다.
 - **"자식의 구체 내용이 부모 컨텍스트를 오염시킨다"** — 아니다. 부모 모델은 최종 요약만 받는다(라이브 129자). 다만 상한 기본값이 51,200바이트다.
