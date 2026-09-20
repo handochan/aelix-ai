@@ -174,3 +174,97 @@ async def test_fork_writes_new_jsonl_with_parent_session_header(
     await runtime.fork(entry_id, position="at")
     new_meta = await runtime.session.get_metadata()  # type: ignore[union-attr]
     assert new_meta.parent_session_path == source_metadata.path
+
+
+# === #300 — forking before the FIRST user message ===========================
+#
+# A session made by print mode (`-p`) starts `header → user → assistant`, so
+# its first user message is the first entry in the file and has no parent. The
+# runtime passed that bare `parent_id=None` to `ForkOptions.entry_id`, where it
+# means "copy the whole source session", and the "empty" fork came back holding
+# every turn. Measured on `db796b2` before the fix: 2 entries, expected 0.
+#
+# This is also the open-time shape: a fork taken the moment a session is opened
+# sits at the current leaf, and a leaf is `None` for any empty branch — a fresh
+# session, or one rewound to the root by `Session.move_to(None)`.
+
+
+async def _runtime_over_print_mode_shaped_session(
+    tmp_path: Path,
+) -> tuple[AgentSessionRuntime, str, Session]:
+    """A session whose FIRST entry is a user message, then a reply."""
+
+    fs = LocalFileSystem()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=str(tmp_path))
+    source = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    first_id = await source.append_message(
+        UserMessage(content=[TextContent(text="first")])
+    )
+    await source.append_message(
+        AssistantMessage(
+            content=[TextContent(text="reply")], stop_reason="end_turn"
+        )
+    )
+
+    async def _factory(new_sess: Session) -> AgentHarness:
+        return _new_harness(session=new_sess)
+
+    runtime = AgentSessionRuntime(
+        _new_harness(session=source), _factory, repo=repo, fs=fs
+    )
+    return runtime, first_id, source
+
+
+async def test_fork_before_the_first_user_message_is_empty(
+    tmp_path: Path,
+) -> None:
+    """#300 — the fork inherits the parent link and no entries.
+
+    Red before the fix: the new session held both of the source's entries,
+    because the first entry's ``parent_id`` is ``None`` and ``None`` meant
+    "whole session" to :func:`get_entries_to_fork`.
+    """
+
+    runtime, first_id, source = await _runtime_over_print_mode_shaped_session(
+        tmp_path
+    )
+    source_meta = await source.get_metadata()
+
+    result = await runtime.fork(first_id, position="before")
+
+    assert result.cancelled is False
+    forked = runtime.session
+    assert forked is not None
+    assert await forked.get_entries() == []
+    assert await forked.get_storage().get_leaf_id() is None
+
+    forked_meta = await forked.get_metadata()
+    assert forked_meta.path != source_meta.path
+    assert forked_meta.parent_session_path == source_meta.path
+    # Header only — one line, no entry lines.
+    assert (
+        Path(forked_meta.path).read_text(encoding="utf-8").strip().count("\n")
+        == 0
+    )
+    # The source keeps everything it had: header + two entries.
+    assert (
+        Path(source_meta.path).read_text(encoding="utf-8").strip().count("\n")
+        == 2
+    )
+
+
+async def test_fork_before_the_first_user_message_still_returns_its_text(
+    tmp_path: Path,
+) -> None:
+    """The composer is still refilled with the message forked away from.
+
+    Green before the fix too — this guards the rewrite, not the defect: an
+    "empty fork" implemented by bailing out early would drop the text the TUI
+    puts back in the prompt.
+    """
+
+    runtime, first_id, _ = await _runtime_over_print_mode_shaped_session(
+        tmp_path
+    )
+    result = await runtime.fork(first_id, position="before")
+    assert result.selected_text == "first"

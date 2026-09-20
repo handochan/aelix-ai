@@ -115,7 +115,7 @@ class Session:
 
         Mirrors the cached-metadata access pattern used by
         :attr:`AgentSessionRuntime.cwd`
-        (``runtime/agent_session_runtime.py:252-262``).
+        (``runtime/agent_session_runtime.py:257-267``).
         """
 
         storage = self._storage

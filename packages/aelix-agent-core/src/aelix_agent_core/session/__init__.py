@@ -68,7 +68,10 @@ from aelix_agent_core.session.jsonl_storage import (
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.repo_utils import (
+    FORK_FROM_ROOT,
+    ForkEntryId,
     ForkPosition,
+    fork_at_leaf,
     get_entries_to_fork,
 )
 from aelix_agent_core.session.session import Session, SessionContext
@@ -94,9 +97,11 @@ __all__ = [
     "CustomEntry",
     "CustomMessage",
     "CustomMessageEntry",
+    "FORK_FROM_ROOT",
     "FileInfo",
     "FileKind",
     "FileSystem",
+    "ForkEntryId",
     "ForkOptions",
     "ForkPosition",
     "JsonlSessionCreateOptions",
@@ -132,6 +137,7 @@ __all__ = [
     "create_display_custom_message",
     "entry_from_json",
     "entry_to_json",
+    "fork_at_leaf",
     "generate_branch_summary",
     "get_entries_to_fork",
     "load_jsonl_session_metadata",

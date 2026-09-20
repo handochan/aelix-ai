@@ -95,7 +95,12 @@ from aelix_agent_core.session.jsonl_repo import (
     JsonlSessionRepo,
 )
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
-from aelix_agent_core.session.repo_utils import ForkOptions, ForkPosition
+from aelix_agent_core.session.repo_utils import (
+    ForkEntryId,
+    ForkOptions,
+    ForkPosition,
+    fork_at_leaf,
+)
 from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
 if TYPE_CHECKING:
@@ -905,8 +910,15 @@ class AgentSessionRuntime:
              - ``position=="at"`` → ``target_leaf_id = selected_entry.id``,
                ``selected_text = None``.
              - ``position=="before"`` → require ``selected_entry`` is a
-               user message; ``target_leaf_id = selected_entry.parent_id``,
+               user message; ``target_leaf_id =
+               fork_at_leaf(selected_entry.parent_id)``,
                ``selected_text = _extract_user_message_text(...)``.
+               The first entry in a file has no parent, and a bare ``None``
+               there reaches :func:`get_entries_to_fork` as "copy the whole
+               session" — so forking before the first user message used to
+               reproduce the session instead of starting an empty one
+               (#300). :func:`fork_at_leaf` maps that ``None`` to
+               :data:`FORK_FROM_ROOT`, which is the empty branch.
           4. Resolve current session metadata for ``ForkOptions.cwd`` +
              ``parent_session_path``.
           5. ``new_session = await repo.fork(source_metadata,
@@ -935,7 +947,7 @@ class AgentSessionRuntime:
 
         selected_text: str | None = None
         if position == "at":
-            target_leaf_id: str | None = selected_entry.id
+            target_leaf_id: ForkEntryId = selected_entry.id
         else:
             # position == "before"
             if (
@@ -943,7 +955,10 @@ class AgentSessionRuntime:
                 or selected_entry.message.role != "user"  # type: ignore[union-attr]
             ):
                 raise ValueError("Invalid entry ID for forking")
-            target_leaf_id = selected_entry.parent_id
+            # `fork_at_leaf`, not the raw `parent_id`: the first entry in a
+            # file has none, and `entry_id=None` means "copy the whole
+            # source session" downstream (#300).
+            target_leaf_id = fork_at_leaf(selected_entry.parent_id)
             selected_text = _extract_user_message_text(
                 selected_entry.message.content  # type: ignore[union-attr]
             )

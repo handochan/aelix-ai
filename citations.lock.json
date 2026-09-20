@@ -541,7 +541,7 @@
   "packages/aelix-agent-core/src/aelix_agent_core/loop.py:900-900": [
    "ordered_results: list[_Finalized] = await asyncio.gather("
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:252-262": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:257-267": [
    "@property",
    "def cwd(self) -> str | None:",
    "\"\"\"Pi parity (``:87-89``). Reads through harness session metadata.\"\"\"",
@@ -551,10 +551,10 @@
    "if session is None:",
    "return None"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:496-496": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:501-501": [
    "await self._teardown_current(reason, target_session_file)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:817-853": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:822-858": [
    "# 6. ACTIVE-TOOL ROUND-TRIP (#24-FU). Restore the user's pre-reload active",
    "# filter over the REBUILT registry, unioned with the current extension",
    "# tools — pi ``reload`` passes ``includeAllExtensionTools: true`` so a",

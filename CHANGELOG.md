@@ -92,6 +92,17 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`/fork` before the first message of a session now gives you an empty
+  session, not a copy of the one you were in.** Forking cuts the conversation
+  just before a message you pick, and picking the very first one is how you
+  start over while keeping the thread you came from on record. It did the
+  opposite: the new session came back holding the entire original. A session
+  started with `-p` begins with your message, so in those the first message is
+  also the first thing in the file — and "the entry before it" and "the whole
+  session" were the same value inside, with the whole session winning. The
+  session you forked away from was never touched, so nothing was lost; the fork
+  was simply not the fresh start it claimed to be. Forking before any later
+  message was, and stays, unaffected. (#300)
 - **`--continue` after a fork now resumes the fork, not the file you forked
   away from.** In a deep directory the fork was invisible to it. A session's
   header line carries its working directory, and a fork's carries the path of

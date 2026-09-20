@@ -174,7 +174,7 @@ class AgentProfileService:
            check. Without the rollback that raise left ``parsed.tools`` poisoned
            and the prompt already swapped, so the failure was reported in red
            while the next ``/new`` — which disposes the live harness BEFORE
-           rebuilding (``agent_session_runtime.py:496``) — died in
+           rebuilding (``agent_session_runtime.py:501``) — died in
            ``AgentHarness.__init__`` against the same validator and left the REPL
            with a disposed harness. Proven end to end.
         2. **Reset to the pristine baseline.** Mandatory, not hygiene:

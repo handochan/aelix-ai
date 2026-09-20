@@ -426,6 +426,11 @@ class JsonlSessionRepo:
         ``options.cwd`` holding those entries. The
         ``parent_session_path`` defaults to the source path (Pi parity).
 
+        ``options.entry_id=FORK_FROM_ROOT`` is the empty branch: the new file
+        is a header with a ``parentSession`` link and nothing else. That is a
+        different request from ``entry_id=None``, which copies the whole
+        source session, and the two used to be spelled the same way (#300).
+
         The fork appears whole or not at all (ADR-0242): header and entries
         go out in ONE publish (:meth:`JsonlSessionStorage.create` with
         ``entries``), staged in a temp file and renamed into place. It used

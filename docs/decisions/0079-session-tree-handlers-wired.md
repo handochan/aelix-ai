@@ -361,3 +361,68 @@ byte-for-byte:
 ## Phase
 
 Sprint 6h₄c / Phase 4.13 / W6 (shipped — **PHASE 4 RPC CLOSURE**).
+
+## Amendment (2026-09-20, #300) — "fork at the root" is not "fork everything"
+
+P-325 above records the fork body as a single
+`repo.fork(source, ForkOptions(cwd, entry_id=target_leaf_id, position="at",
+parent_session_path))` call, and adds that `JsonlSessionRepo.fork` "internally
+handles the 'no targetLeafId' case via `get_entries_to_fork`". It does handle
+it — as a **whole-session copy**, which is the wrong answer for the way the
+runtime produces that value. **The waveform stands. The overloaded `None` is
+struck.**
+
+`position="before"` sets `target_leaf_id = selected_entry.parent_id`: the entry
+the forked session should resume at. The first entry in a file has no parent, so
+that is `None` — and `None` on `ForkOptions.entry_id` already meant "copy the
+entire source session" (`repo_utils.py`, ported from
+`repo-utils.ts:32-50`). Two opposite intents met on one value and the copy won.
+
+A session written by print mode (`-p`) begins `header → user → assistant`, so its
+first user message *is* the first entry. `/fork` there — and the TUI's `/fork`
+targets the most recent user message, which in a one-turn session is that
+one — handed back the whole conversation instead of an empty branch. Measured on
+`db796b2` through `AgentSessionRuntime.fork(first_id, position="before")`: 2
+entries in the "empty" fork, expected 0.
+
+What ships:
+
+- `FORK_FROM_ROOT`, a module-level sentinel, is the empty branch:
+  `get_entries_to_fork` returns `[]` for it, checked **before** the `None` case.
+  `ForkOptions.entry_id` is now `ForkEntryId = str | _ForkFromRoot | None`.
+- `fork_at_leaf(leaf_id)` maps a leaf pointer to a fork target — `None` (and
+  `""`) to `FORK_FROM_ROOT`, anything else through unchanged. This is the
+  conversion every "fork where I am" caller makes, and it is where the trap is
+  documented, because a leaf is `None` for *any* empty branch: a fresh session,
+  one rewound by `Session.move_to(None)`, or the parent of a file's first entry.
+  The distinction matters most at open time, where a fork is taken at the
+  current leaf and nothing has been typed yet.
+- `entry_id=None` keeps meaning the whole source session. It is the right
+  spelling for "inherit this conversation", and it is what a second terminal
+  forking an owned session (#137) asks for — that request must not become an
+  empty file by accident either.
+- `ForkPosition` is untouched. A fork at the root is still `position="before"`
+  from the user's side, so `session_before_fork`'s payload
+  (`harness/hooks.py`, `Literal["before", "at"]`) keeps telling the truth; the
+  ambiguity was in `entry_id`, and that is where the discriminator went.
+
+Pi arrived at the same outcome by a different route. Its current tree drops
+`repo-utils.ts` and splits the two meanings onto a separate axis —
+`scope: "branch"` (with `entryId ?? tip`) versus `scope: "tree"` — in
+`session/fork-policy.ts`, whose `selectBranchFork` sets
+`destinationTip = parentId` for `position === "before"` and selects no entries
+when the target is the root. Its conformance suite pins exactly the assertion
+this amendment adds (`session/testing/conformance/session-repo.ts`, case
+`before-root`: null tip, zero entries). So this moves toward Pi and the pin
+(ADR-0034) is not advanced.
+
+Tests: `tests/runtime/test_fork.py` —
+`test_fork_before_the_first_user_message_is_empty` is the gate and was red on
+`db796b2`; `test_fork_before_the_first_user_message_still_returns_its_text` was
+green before and guards the rewrite (`selected_text` still refills the
+composer). `tests/test_jsonl_repo_fork.py` —
+`test_fork_from_root_yields_an_empty_branch`,
+`test_fork_at_leaf_maps_an_empty_branch_to_the_root_sentinel`, and
+`test_fork_at_the_leaf_of_a_session_rewound_to_the_root_is_empty` (the
+open-time shape). The pre-existing `test_fork_full_copy_when_entry_id_none`
+already pins the other half and was left alone.

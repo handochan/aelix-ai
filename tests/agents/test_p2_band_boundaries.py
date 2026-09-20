@@ -378,6 +378,29 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # unaffected and still passes. The single-writer lock (#137) and the
         # empty-fork sentinel (#300) are the rest of this lane and are NOT
         # authorised by this entry.
+        #
+        # ADR-0079 amendment (2026-09-20), #300 — the empty-fork sentinel the
+        # #297 note above explicitly withheld. ``session/repo_utils.py`` is NEW
+        # to this list; ``session/__init__.py``, ``session/jsonl_repo.py`` and
+        # ``runtime/agent_session_runtime.py`` are already listed and changed
+        # again here, which is recorded for the reason the ADR-0242 note gives.
+        # ``ForkOptions.entry_id=None`` carried two meanings at once: the
+        # documented "copy the whole source session", and — arriving from
+        # ``selected_entry.parent_id`` — "this entry has no parent". Forking
+        # before a session's FIRST user message therefore reproduced the whole
+        # session instead of starting an empty one (#300; a print-mode session
+        # begins ``header → user → assistant``, so its first user message is the
+        # first entry). ``FORK_FROM_ROOT`` is now the empty branch and
+        # ``fork_at_leaf`` is the one conversion every "fork where I am" caller
+        # makes; ``entry_id=None`` keeps meaning the whole session. Pi separates
+        # the same two meanings on a different axis (``scope: "branch"`` vs
+        # ``scope: "tree"``, ``session/fork-policy.ts``) and pins the same
+        # outcome for the root case. A sentinel, a helper and one call site in
+        # the session layer: no ``aelix_agents`` import, no spawn site, no cap on
+        # delegation, no consent path, no registry —
+        # ``test_kernel_has_no_subagent_surface`` is unaffected and still
+        # passes. The single-writer lock (#137) is still NOT authorised here.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/repo_utils.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
         # ADR-0209, #122. A resumed session's persisted history must seed
         # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``
