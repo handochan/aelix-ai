@@ -145,6 +145,17 @@ delegate. `create_entry_id` is **not** refused — it is a pure function over th
 id set and writes nothing, so refusing it would only move the error somewhere
 less informative.
 
+**The viewer is the whole TUI, not a dump (owner, 2026-09-20).** The one thing
+this lane merged without an owner answer was the *shape* of "open read-only":
+the full chrome with the composer refusing, or printing the transcript and
+exiting. It shipped as the former and the owner confirmed it after seeing it
+live. The reason it is not the cheaper dump: the three doors the refusal
+advertises — `/fork`, `/resume`, `/new` — only exist if the terminal is still
+running a TUI, and §"What the review pass corrected" 2 is the measurement that
+they really do open. A dump would have to end with those three as instructions
+to retype, which is the same session lost that #137 is about. **Do not reopen
+this as an open question.**
+
 ### 5. `SessionErrorCode` gains `read_only` (ADR-0035)
 
 Seven codes now, six of them pi's. A caller needs to branch on "you may not
