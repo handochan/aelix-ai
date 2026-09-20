@@ -127,9 +127,67 @@ path.
    only ever a renderer key and a display label — nothing parses it. The one
    existing first-party type, `bash_execution`, predates the rule and keeps its
    name. Documented, not enforced.
+
+   **Amended 2026-09-20 (#299).** `bash_execution` keeps its name and is no
+   longer a `CustomEntry`: a `!cmd` record is a `CustomMessageEntry`, because
+   rule 1.1 says a record that must reach the model is one. When this ADR was
+   written it was the standing example of a `custom` entry, and that framing
+   was the defect — the output of `!cmd` never reached the model, which made
+   `!cmd` and `!!cmd` ("exclude from context") the same command. `!!cmd` is
+   still recorded as nothing at all. Sessions written before this hold a
+   `custom` `bash_execution` entry; they load exactly as they always did,
+   under rule 6, and their output stays invisible. Nothing reads the old
+   shape, so there is no migration.
+
+   Moving a record onto the message tier makes its SIZE the session's problem,
+   which the first cut of this change had not noticed: the entry is re-sent on
+   every later turn and every resume, so `!python3 -c "print('x'*1000000)"`
+   wrote a 1,000,047-char `UserMessage` and a 2,000,455-byte session file.
+   `content` now carries a capped copy (pi's own numbers for this path, 2000
+   lines / 50KB via `truncate_tail`) with a visible notice of what was cut, and
+   `details` carries the command, the exit code and the truncation counts — not
+   a second copy of the output, which is what doubled the file. The full output
+   still reaches the user's screen. **The general rule this is an instance of:
+   what a `CustomMessageEntry` records is context, so it is bounded at the
+   writer the way a tool result is** — a `CustomEntry` only has to be small
+   enough to store.
+
+   **Corrected 2026-09-21 (#299), before the branch merged.** The paragraph
+   above was written about a cap that was not yet one. A cross-review measured
+   nine shapes of `!` output against it and five came back wrong, four of them
+   for one reason: the cap ran `truncate_tail` over text it had stripped a
+   single `"\n"` from. That helper splits on `"\n"` raw, so the empty element a
+   trailing newline leaves behind is a LINE that costs 0 bytes — it is the one
+   line that fits, and the long line above it is dropped whole. Stripping one
+   `"\n"` hides that for exactly one shape. `print('x'*60000); print()`
+   recorded `(no output)` for 60KB the user had just watched go past, which is
+   worse than the defect this issue was filed about because it is silent and it
+   looks like an answer; and on Windows the `\r` of a CRLF survived as content
+   and ate a byte of the cap, which is how the windows CI legs found it. The
+   writer now strips the WHOLE trailing terminator run, counts it, and decides
+   the cap against the ORIGINAL bytes — that last part closes the fifth shape,
+   `"x" * 50KB + "\n"`, which was recorded at 51,201 bytes with no notice: a
+   cap that did not cap. The helper's own bug is #309; it has five callers and
+   pinned parity tests, so it is its own change.
+
+   The command is capped too, at 1024 characters, and it is the same rule.
+   `!#` followed by 60,000 characters produced a 60,019-byte model message
+   with no output in it at all — an unbounded record through a different door.
+   This half is a divergence from pi (ADR-0235), which renders
+   ``Ran `${msg.command}` `` with whatever it was handed.
 6. **A reader ignores a `customType` it does not know and `data` keys it does
    not know.** Already true: `build_session_context` and
    `build_display_messages` skip `custom` entries.
+
+   **Clarified 2026-09-20 (#299): this is a reader rule, and reading it as a
+   writer rule is what cost #299.** "A reader skips `custom`" is not "a
+   `custom` entry is a fine place to keep something the model needs" — it is
+   the opposite, and it is why rule 1.1 puts such a record in
+   `custom_message`. A writer choosing between the two asks one question: must
+   this reach the model or the transcript? `custom_message` if yes (it becomes
+   a `UserMessage` in `build_session_context` and a rich `CustomMessage` in
+   `build_display_messages`), `custom` if no. The rule itself is unchanged: a
+   `custom` entry still contributes no message on either tier.
 7. **Payloads are JSON values** — lists not tuples, string keys, finite
    floats, no dataclasses — in `data`, `details`, `content` and message
    fields, and keeping them that way is the writer's job. JSONL refuses only

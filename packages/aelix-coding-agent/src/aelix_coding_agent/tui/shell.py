@@ -3910,9 +3910,13 @@ async def _input_loop(
         # #137 / ADR-0244 — read-only. Everything that only READS has already
         # run and ``continue``d above: ``/``-commands, /quit, /reload, the
         # descriptor modals. What is left is the two kinds of line that append
-        # to the session — a ``!`` bash line (it records a custom entry) and a
-        # prompt (it records the user message and every entry the turn
-        # produces). Refused here rather than letting the storage raise, so the
+        # to the session — a ``!`` bash line (#299: a ``custom_message`` entry,
+        # so its output reaches the model in this turn and on every later
+        # resume) and a prompt (it records the user message and every entry the
+        # turn produces). ``!!`` records nothing and is still refused with them:
+        # a read-only terminal is read-only, and admitting one of the two bash
+        # forms would be a worse answer than one consistent
+        # sentence. Refused here rather than letting the storage raise, so the
         # user gets one sentence instead of a ``SessionError`` surfacing
         # mid-turn under a live spinner.
         if parsed.kind in (

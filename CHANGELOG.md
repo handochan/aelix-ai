@@ -110,6 +110,26 @@ unwritten. Add them with the next release.
   call. When you are *asked* about a delegation, and what it is then permitted
   to change, are unchanged; the tool list a child is handed is now the one you
   actually have, in that window too. (#304)
+- **`!command` output now reaches the model.** Typing `!ls` or `!git status`
+  ran the command and printed it on screen, and that was all it did: the
+  output was recorded in a shape nothing reads back, so the model never saw
+  it. `!cmd` and `!!cmd` — the form documented as "out of context" — were the
+  same command, and `/help`'s "in / out of context" was a distinction that did
+  not exist. Ask "what did that print?" after a `!` line and the answer was
+  that it could see no command output. That output is now part of the
+  conversation, in this turn and after a `--continue` or `/resume` of the same
+  session, and it is drawn into the transcript on a replay. Two things come
+  with it. **Your screen still gets every byte, but the copy the model carries
+  is capped** at the last 2000 lines or 50KB — the same cap the agent's own
+  bash tool uses — with a line saying what was left out, so one `!cat
+  server.log` does not ride along in every later request of the session. A very
+  long command line is shortened in the record the same way. And a
+  command that **fails now says so**: the record appends "Command exited with
+  code N", where before `!test -f missing` and `!test -f present` reached the
+  model as the same two lines. `!!cmd` is unchanged and still records nothing
+  at all: it prints on your screen and the model never sees it. Sessions
+  recorded before this keep loading; their old `!` output stays invisible.
+  (#299)
 - **Two terminals on one session no longer lose a whole turn.** Opening the
   same session twice was easy to do by accident — `aelix --continue` picks the
   same file for every terminal in a directory — and both terminals appeared to

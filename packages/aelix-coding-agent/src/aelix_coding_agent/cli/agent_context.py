@@ -811,7 +811,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         "it via bash and do not write elsewhere to dodge it.\n"
     )
     # MINOR 3: ``/reload`` is implemented ONLY in the TUI (``tui/input.py:47-48``)
-    # and the basic REPL (``cli/repl.py:105``). This block is also emitted for
+    # and the basic REPL (``cli/repl.py:519``). This block is also emitted for
     # ``--print`` / ``--mode json`` / ``--mode rpc`` and for delegated subagents,
     # where telling the user to "run /reload" names a command that does not
     # exist. Made mode-agnostic: the fallback is the one thing that is always

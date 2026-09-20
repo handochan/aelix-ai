@@ -178,6 +178,17 @@
    "turn_messages: list[AgentMessage] = list(session_ctx.messages)",
    "turn_session_id = self._state.session_id"
   ],
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4333-4336": [
+   "if self._session is not None:",
+   "session_ctx = await self._session.build_context()",
+   "turn_messages: list[AgentMessage] = list(session_ctx.messages)",
+   "turn_session_id = self._state.session_id"
+  ],
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4337-4339": [
+   "else:",
+   "turn_messages = list(self._state.messages)",
+   "turn_session_id = self._state.session_id"
+  ],
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4383-4389": [
    "# F-9: apply the active-tool filter without mutating ``_state.tools``.",
    "active = self._state.active_tool_names",
@@ -2339,7 +2350,7 @@
    "# Cancelled (Esc / Ctrl+C) → deny.",
    "return False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:100-126": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:514-540": [
    "stripped = line.strip()",
    "if not stripped:",
    "continue",
@@ -2349,7 +2360,7 @@
    "await harness.reload_resources()",
    "continue"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:105-105": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/repl.py:519-519": [
    "if stripped == \"/reload\":"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py:128-128": [
@@ -2708,6 +2719,9 @@
    "if not line.strip():",
    "return"
   ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:605-605": [
+   "body, info = truncate_tail(raw, max_lines=256, max_bytes=32 * 1024)"
+  ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/subagent_contract.py:117-128": [
    "details: str | None = None",
    "\"\"\"UNCAPPED raw material behind ``summary`` — the full extracted text plus,",
@@ -2747,6 +2761,18 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:12-12": [
    "DEFAULT_MAX_BYTES = 50 * 1024"
   ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:137-137": [
+   "def truncate_line(line: str, max_length: int) -> str:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:148-148": [
+   "def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:199-199": [
+   "class BashOperations(Protocol):"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:210-210": [
+   "async def exec("
+  ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:324-324": [
    "**containment_spawn_kwargs(new_session=True),"
   ],
@@ -2759,6 +2785,12 @@
    "there is no ``await``, so the whole leg runs to completion on the",
    "loop thread before ``_wait``'s ``to_thread`` callback can resume the",
    "coroutine below — including ``_end_the_tree``'s blocking"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:61-61": [
+   "# Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB."
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:779-779": [
+   "def _format_truncation_notice("
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:975-977": [
    "operations: BashOperations = opts.get(",
@@ -3028,6 +3060,15 @@
    "_THINKING_TAIL_LINE_SLACK = 2",
    "",
    ""
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1481-1487": [
+   "content = getattr(msg, \"content\", None)",
+   "text = content if isinstance(content, str) else _join_text(content or [])",
+   "label = Text(f\"[{getattr(msg, 'custom_type', '') or 'custom'}]\", style=\"bold magenta\")",
+   "if text.strip():",
+   "self._commit(Group(label, Text(text)))",
+   "else:",
+   "self._commit(label)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:163-166": [
    "became dynamic would have made the CJK case drift further, not less.",
