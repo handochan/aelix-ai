@@ -359,6 +359,25 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # registry — ``test_kernel_has_no_subagent_surface`` is unaffected and
         # still passes. Child-session records (#199) are the first consumer of
         # the ADR's record rules and are NOT authorised by this entry.
+        #
+        # ADR-0092 amendment (2026-09-20), #297. ``session/jsonl_repo.py`` —
+        # already listed twice above — changed a THIRD time, and the reason is
+        # written here for the same reason the ADR-0242 note gives: a listed path
+        # would otherwise let a behavioural change through unrecorded.
+        # ``_is_valid_session_file`` read a fixed ``f.read(512)``; a fork's header
+        # carries ``cwd`` AND ``parentSession`` (which embeds the encoded cwd
+        # again), so under a deep directory it ran past 512 bytes, the truncated
+        # first line failed ``json.loads``, and ``find_most_recent`` dropped the
+        # fork — so ``--continue`` resumed the file the user had just forked away
+        # from. Measured live: a 143-character cwd, a 557-byte fork header, the
+        # turn in the original. It now reads the whole first line, capped at 64
+        # KiB, refusing a line that reaches the cap unterminated. One private
+        # module constant and one method body in the session layer: no
+        # ``aelix_agents`` import, no spawn site, no cap on delegation, no consent
+        # path, no registry — ``test_kernel_has_no_subagent_surface`` is
+        # unaffected and still passes. The single-writer lock (#137) and the
+        # empty-fork sentinel (#300) are the rest of this lane and are NOT
+        # authorised by this entry.
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
         # ADR-0209, #122. A resumed session's persisted history must seed
         # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``

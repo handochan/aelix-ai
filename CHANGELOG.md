@@ -92,6 +92,18 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`--continue` after a fork now resumes the fork, not the file you forked
+  away from.** In a deep directory the fork was invisible to it. A session's
+  header line carries its working directory, and a fork's carries the path of
+  the session it came from as well — which contains that directory a second
+  time — so from about a hundred characters of path onward the header ran past
+  the 512 bytes `--continue` read when deciding whether a file was a session at
+  all. The truncated line would not parse, the fork was skipped as "not a
+  session", and the next `--continue` picked the original and kept writing
+  there. Measured in a 143-character directory: the fork's header was 557 bytes
+  and the turn landed in the original. The check now reads the whole first line
+  instead of a fixed number of bytes. The same applies to any session whose
+  header is long for another reason. (#297)
 - **A truncated delegation summary no longer points at something nobody can
   read.** It ended "Full output preserved in tool details." — true only until
   the call returned, because a tool result's details are never saved. It now

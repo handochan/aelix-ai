@@ -136,7 +136,8 @@ JsonlSessionMetadata | None`** in
 - Filters each candidate through new `_is_valid_session_file`
   private helper (Pi parity `session-manager.ts:464-478` — read first
   512 bytes + parse first line JSON + validate `type == "session"`
-  AND `id` non-empty string).
+  AND `id` non-empty string). **The 512-byte read is no longer what
+  ships — see the #297 amendment at the end of this ADR.**
 - Returns `None` when no valid sessions exist (silent fallback in
   caller).
 
@@ -281,3 +282,51 @@ No code changes; this decision formally closes ADR-0089 P-403.
 ## Phase
 
 Sprint 6h₈ / Phase 5a-iv (shipped).
+
+## Amendment (2026-09-20, #297) — the sniff reads the first line, not the first 512 bytes
+
+§D above ports `isValidSessionFile` as "read first 512 bytes + parse first line
+JSON". The port was faithful to the pinned Pi SHA and it was wrong for Aelix's
+own file layout. **The decision — filter candidates through a cheap header sniff
+before the full metadata parse — stands. The byte cap is struck.**
+
+What 512 bytes cost, measured live today before the fix (a 143-character cwd, a
+real model, `--session-dir` isolated):
+
+```
+origin header bytes = 283
+fork   header bytes = 557
+CONTINUED landed in origin: 2
+CONTINUED landed in fork  : 0
+```
+
+A fork's header carries `cwd` **and** `parentSession`, and `parentSession` is an
+absolute path whose directory component is the encoded cwd — so the cwd is in
+the line twice and a fork's header is roughly twice the origin's. Past 512 bytes
+`f.read(512)` returned a truncated first line, `json.loads` raised, and
+`find_most_recent` dropped the file as "not a session". The user forked and the
+next `--continue` silently resumed the **original**.
+
+The cap was also an internal disagreement, not just a small number:
+`load_jsonl_session_metadata` reads the same line through
+`FileSystem.read_text_lines(max_lines=1)` and has never had a cap. Two readers of
+one line, and the sniff was the stricter one. Raising the constant would only
+move the cliff; reading the line removes it.
+
+`_is_valid_session_file` now does `f.readline(65536)` on the binary handle and
+refuses a line that reaches that cap **without** a terminating newline. 64 KiB is
+derived from the header's two unbounded fields (`cwd` at `PATH_MAX` 4096, plus
+`parentSession` at roughly twice that), and it is a bound on a file that is not a
+session at all — a newline-free blob that happens to be named `*.jsonl` — not a
+bound on a header. ADR-0208's unterminated-final-line tolerance and ADR-0242's
+CRLF compatibility both survive, pinned by tests.
+
+Divergence from the Pi pin: none that matters. ADR-0034's roster row is annotated
+rather than the pin advanced. Pi's current leader reads the whole first line too
+(`jsonl/io.ts` `readJsonlHeader`), so this moves toward Pi, and ADR-0235 in any
+case no longer requires an ADR for divergence.
+
+Gates: `tests/session/test_find_most_recent.py` — a fork under a deep cwd is
+found and is what `--continue` resolves to; a header between 512 bytes and the
+cap sniffs; a line that runs past the cap is refused; a line ending exactly on
+the cap is accepted; an unterminated header and a CRLF header both still sniff.

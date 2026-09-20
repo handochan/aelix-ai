@@ -32,6 +32,16 @@ from aelix_agent_core.session.storage import (
     SessionError,
 )
 
+#: Byte cap on the header line read by
+#: :meth:`JsonlSessionRepo._is_valid_session_file`. Derived, not picked: the
+#: header's two unbounded fields are ``cwd`` (``PATH_MAX`` is 4096 on Linux)
+#: and ``parentSession`` — an absolute path whose directory component is the
+#: encoded cwd, so roughly 2×4096 — plus fixed keys and JSON escaping. 64 KiB
+#: is an order of magnitude over that worst case and still bounds the read on a
+#: file that is not a session at all (a multi-gigabyte newline-free blob that
+#: happens to be named ``*.jsonl``).
+_HEADER_LINE_MAX_BYTES = 65536
+
 
 def _encode_cwd(cwd: str) -> str:
     """Pi ``encodeCwd`` (``jsonl-repo.ts:34-36``).
@@ -323,10 +333,14 @@ class JsonlSessionRepo:
         # full metadata parse succeeds. Sprint 6h₈ W5 MAJOR-1 fold-in:
         # previously the loader only tried the single most-recent file
         # and silently fell back to "no session" if its metadata parse
-        # failed, losing access to older valid sessions. The 512-byte
+        # failed, losing access to older valid sessions. The
         # ``_is_valid_session_file`` sniff and the full header parse in
-        # ``load_jsonl_session_metadata`` share the same JSON line, so
-        # the divergence window is narrow — but observable in principle.
+        # ``load_jsonl_session_metadata`` now read the SAME bytes — the
+        # whole first line — so a file the sniff admits is a file the
+        # loader can parse, except on content the header itself is
+        # missing fields for (the case this loop exists for). Until
+        # #297 the sniff stopped at 512 bytes and the loader did not,
+        # so the two disagreed on any header longer than that.
         for _, candidate_path in candidates:
             try:
                 return await load_jsonl_session_metadata(
@@ -340,14 +354,39 @@ class JsonlSessionRepo:
     def _is_valid_session_file(path: Path) -> bool:
         """Pi parity: ``isValidSessionFile`` (``session-manager.ts:464-478``).
 
-        Reads the first 512 bytes of the file, parses the first line as
-        JSON, and validates ``type == "session"`` AND ``id`` is a
-        non-empty string. Any exception returns :data:`False`.
+        Reads the file's **whole first line** — capped at
+        :data:`_HEADER_LINE_MAX_BYTES` (64 KiB) — parses it as JSON, and
+        validates ``type == "session"`` AND ``id`` is a non-empty string.
+        Any exception returns :data:`False`.
+
+        #297: this used to read a fixed ``f.read(512)`` and take what came
+        before the first newline. A fork's header carries ``cwd`` **and**
+        ``parentSession``, and ``parentSession`` embeds the encoded cwd a
+        second time, so under a deep directory it runs past 512 bytes —
+        measured 557 bytes live against a 143-character cwd. The truncated
+        first line then failed ``json.loads`` and the fork was dropped as
+        "not a session", so the next ``--continue`` skipped it and resumed
+        the **original**. ``load_jsonl_session_metadata``
+        (``jsonl_storage.py``) has never had such a cap — it reads a whole
+        line through ``FileSystem.read_text_lines(max_lines=1)`` — so the
+        two readers of the same line disagreed, and the sniff was the wrong
+        one. Raising the constant would only move the cliff; reading the
+        line removes it.
+
+        The cap is a bound on a file that is not a session at all, not on a
+        header: a line that reaches it **without** a terminating newline is
+        refused. A complete but unterminated final line is still accepted
+        (ADR-0208), and a CRLF header written by pre-ADR-0242 Windows Aelix
+        still parses, because the trailing ``\\r`` is whitespace to
+        ``json.loads``.
         """
 
         try:
             with open(path, "rb") as f:
-                buf = f.read(512)
+                buf = f.readline(_HEADER_LINE_MAX_BYTES)
+            if len(buf) >= _HEADER_LINE_MAX_BYTES and not buf.endswith(b"\n"):
+                # The first line ran past the cap: not a session header.
+                return False
             decoded = buf.decode("utf-8", errors="replace")
             first_line = decoded.split("\n", 1)[0]
             if not first_line:

@@ -745,11 +745,13 @@ _PUBLISH_FAILURES = pytest.mark.parametrize(
 
 
 #: Short synthetic cwds, as ``tests/test_jsonl_repo_fork.py`` uses. A fork's header
-#: carries its cwd AND the source path (which embeds the source cwd again), and
-#: ``find_most_recent`` sniffs only a session's first 512 bytes: under a long
-#: ``tmp_path`` a real cwd pushes a complete fork past that and it is not found
-#: at all — which would make the ``is None`` assertions below pass for the wrong
-#: reason. ``test_a_fork_is_a_complete_owner_only_copy`` proves this setup IS found.
+#: carries its cwd AND the source path (which embeds the source cwd again), so under
+#: a long ``tmp_path`` a real cwd pushes it past 512 bytes. Until #297 that alone
+#: made ``find_most_recent`` drop the fork, which would have made the ``is None``
+#: assertions below pass for the wrong reason; the sniff now reads the whole first
+#: line, so header length no longer decides. The short cwds stay because
+#: ``test_a_fork_is_a_complete_owner_only_copy`` compares against them, and
+#: that test proves this setup IS found.
 SRC_CWD = "/src"
 DST_CWD = "/dst"
 
