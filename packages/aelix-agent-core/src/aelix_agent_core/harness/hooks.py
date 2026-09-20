@@ -598,9 +598,39 @@ class SavePointHookEvent(HookEvent):
 
     Pi parity: ``types.ts:480-483`` (SHA 734e08e), emitted at
     ``agent-harness.ts:417``. Sprint 3a: type only; emit Sprint 3b.
+
+    ``failed_writes`` is Aelix-additive (issue #301, ADR-0245) and has no Pi
+    counterpart: it is how many of those pending mutations raised out of their
+    ``session.append_*`` call during the flush this save point closes.
+    Defaulted, so a handler written against the Pi shape is unaffected.
+
+    It counts refusals. It is **not** a count of records missing from the
+    session, and this wording says so because a cross-review pass measured
+    both directions (``.omc/specs/301-failed-writes-accounting.py``):
+
+    * A counted write can still be **there**. A disk that fills between a
+      record's last byte and its newline leaves the record readable; the JSONL
+      store re-arms its healing newline on any failed append precisely because
+      it cannot tell a fragment from a whole record (ADR-0242), so the next
+      append opens a fresh line and a reload returns the record this count
+      called lost. Measured: ``failed_writes=1`` with that ``custom`` entry
+      present both in the bytes on disk and in the reloaded entries.
+    * An **uncounted** write can be gone. A flush cancelled by an abort
+      re-raises instead of returning, so failures it had already accumulated
+      reach no save point at all; the close-out's second flush counts only the
+      requeued tail it attempts itself. Measured: one write refused, then a
+      cancellation, and the only save point read ``had_pending_mutations=True,
+      failed_writes=0`` with that record on no disk.
+
+    So ``failed_writes=0`` says this flush refused nothing — not that the
+    session is whole. The ``WARNING`` records from
+    :meth:`AgentHarness.flush_pending_session_writes` are the fuller account:
+    one per refused write, plus one naming the running total when a
+    cancellation takes the count with it.
     """
 
     had_pending_mutations: bool = False
+    failed_writes: int = 0
     type: Literal["save_point"] = "save_point"
 
 

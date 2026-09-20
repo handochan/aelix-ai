@@ -289,12 +289,12 @@ class AgentHarnessOptions:
     project_trusted: bool = True
 
 
-# === Sprint 4a — pending session writes (Pi parity, agent-harness.ts:414-432 + 459-481) ===
+# === Sprint 4a — pending session writes (Pi: agent-harness.ts:414-432 + 459-481) ===
 #
 # Pi defers state mutations that happen DURING a turn (set_model, set_thinking_level,
 # append_message) onto a per-harness ``pendingSessionWrites`` queue. The queue is
-# drained when the turn ends.
-#
+# drained when the turn ends. The DRAIN's failure handling diverges from Pi on
+# purpose — ``flush_pending_session_writes`` below, and ADR-0245 (issue #301).
 # **P-11 LOAD-BEARING REVERSAL (Sprint 4a):** Sprint 3b W4 MAJOR-1 introduced a
 # ``PendingActiveToolsChangeWrite`` variant claiming Pi pushes an active-set
 # change onto ``pendingSessionWrites``. **Verified at SHA 734e08e**: Pi
@@ -343,7 +343,7 @@ class PendingCustomWrite:
     """Defensive flush arm — Pi has no push site for ``custom`` at this SHA.
 
     The variant exists so the 8-arm dispatcher in
-    ``flush_pending_session_writes`` matches Pi
+    ``_apply_pending_session_write`` matches Pi
     ``agent-harness.ts:459-481`` exactly. Future Pi versions or
     Aelix-additive callers may inject one via the queue directly.
     """
@@ -3027,7 +3027,64 @@ class AgentHarness:
         else:
             self._pending_session_writes.append(PendingMessageWrite(message=message))
 
-    async def flush_pending_session_writes(self) -> None:
+    async def _apply_pending_session_write(self, entry: PendingSessionWrite) -> None:
+        """Route one queued write to its ``session.append_*`` call.
+
+        Split out of :meth:`flush_pending_session_writes` so that method can
+        wrap exactly one item at a time (issue #301). Raises whatever the
+        session raises.
+        """
+
+        if self._session is not None:
+            # Pi parity branch — every variant routes to a session
+            # append_* call. Match exhaustiveness is enforced by
+            # ``assert_never`` so adding a future variant without a
+            # dispatcher arm fails the type check.
+            match entry:
+                case PendingMessageWrite():
+                    await self._session.append_message(entry.message)
+                case PendingModelChangeWrite():
+                    await self._session.append_model_change(
+                        entry.provider, entry.model_id
+                    )
+                case PendingThinkingLevelChangeWrite():
+                    await self._session.append_thinking_level_change(
+                        entry.thinking_level
+                    )
+                case PendingCustomWrite():
+                    await self._session.append_custom_entry(
+                        entry.custom_type, entry.data
+                    )
+                case PendingCustomMessageWrite():
+                    await self._session.append_custom_message_entry(
+                        entry.custom_type,
+                        entry.content,
+                        entry.display,
+                        entry.details,
+                    )
+                case PendingLabelWrite():
+                    await self._session.append_label(entry.target_id, entry.label)
+                case PendingSessionInfoWrite():
+                    await self._session.append_session_name(entry.name or "")
+                case PendingLeafWrite():
+                    # Pi: ``this.session.getStorage().setLeafId(...)``.
+                    await self._session.get_storage().set_leaf_id(entry.target_id)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        else:
+            # Aelix-additive backward-compat path (no session attached).
+            # ``message`` lands in ``state.messages`` to preserve the
+            # Sprint 3b behavior used by existing tests; the other 7
+            # variants are dropped with a debug log.
+            if isinstance(entry, PendingMessageWrite):
+                self._state.messages.append(entry.message)
+            else:
+                _log.debug(
+                    "dropping %r (no session attached — Sprint 4a fallback)",
+                    entry,
+                )
+
+    async def flush_pending_session_writes(self) -> int:
         """Drain ``_pending_session_writes`` FIFO. Pi: ``agent-harness.ts:459-481``.
 
         Sprint 4a 8-arm match dispatcher (P-12). When a :class:`Session` is
@@ -3036,67 +3093,111 @@ class AgentHarness:
         ADR-0022), :class:`PendingMessageWrite` is mirrored into
         ``state.messages`` (transitional behavior so existing tests keep
         passing) and the other 7 variants are dropped with a debug log.
+
+        Returns how many writes raised out of their ``session.append_*`` call.
+        That is a count of refusals, not of records missing from the session —
+        :class:`SavePointHookEvent`, which carries it, documents the two
+        measured ways the two differ, and the ``WARNING`` records below are the
+        fuller account.
+
+        Issue #301 / ADR-0245: the queue is detached before the loop runs, so
+        one raising item used to end the loop and take every already-detached
+        item behind it with it — a label, a leaf move and a model-change record
+        vanished together, and the only report was that ``prompt()`` raised.
+        Each item is now attempted independently and a failure is logged at
+        ``WARNING`` and counted rather than ending the drain. The failed item
+        itself is dropped, not requeued: ADR-0242 makes the storage layer's
+        refusals a property of the entry (an ``invalid_entry`` raises
+        identically on every retry) while guaranteeing the *next*, different
+        append still lands, so a requeued head could stall the queue forever
+        while delivering nothing.
+
+        ``BaseException`` (notably :class:`asyncio.CancelledError` from an
+        abort) is deliberately **not** caught — a cancelled flush must stay
+        cancelled. It does, however, hand the queue back: the items after the
+        cancelled one were never attempted, and the list they came from is
+        already detached, so re-raising without them is the #301 loss wearing
+        an abort for a costume. They go back on the queue and something does
+        flush them before ``prompt()`` returns — measured by wrapping this
+        method and reading the caller's line number: on an abort it is this
+        method AGAIN, called at ``:4613`` by the turn_end projection that the
+        close-out's synthetic ``TurnEndEvent`` (``:4700-4705``) drives. The
+        ``finally`` safety net in :meth:`_run` (``:4786``) runs uncancelled but
+        finds the queue already empty; it is the backstop, and it does deliver
+        when that ``TurnEndEvent`` is suppressed or when the cancellation is
+        not an abort (the ``raise`` at ``:4713``). A later turn's ``turn_end``
+        flush is the backstop after that. The cancelled item itself is not put
+        back: its ``append_*`` was already in flight and may have landed.
+
+        :class:`AssertionError` is not caught either. The only one that can
+        reach here is ``assert_never`` in
+        :meth:`_apply_pending_session_write` meeting a
+        :class:`PendingSessionWrite` variant with no dispatcher arm — a
+        programming error, which must not be reported as a storage refusal.
+
+        **Divergence from Pi, recorded per ADR-0235.** Pi at 734e08e loops
+        ``while (this.pendingSessionWrites.length > 0)``, peeking ``[0]`` and
+        ``shift()``-ing only once the await returns, so a raising write stays
+        at the head with the whole queue behind it and the flush propagates —
+        Pi's shape *is* the requeue rejected above, and the stall is why. Pi's
+        own tree has since dropped ``pendingSessionWrites`` entirely, so there
+        is nothing newer upstream to follow here.
         """
 
         if not self._pending_session_writes:
-            return
+            return 0
         pending = self._pending_session_writes
         self._pending_session_writes = []
-        for entry in pending:
-            if self._session is not None:
-                # Pi parity branch — every variant routes to a session
-                # append_* call. Match exhaustiveness is enforced by
-                # ``assert_never`` so adding a future variant without a
-                # dispatcher arm fails the type check.
-                match entry:
-                    case PendingMessageWrite():
-                        await self._session.append_message(entry.message)
-                    case PendingModelChangeWrite():
-                        await self._session.append_model_change(
-                            entry.provider, entry.model_id
-                        )
-                    case PendingThinkingLevelChangeWrite():
-                        await self._session.append_thinking_level_change(
-                            entry.thinking_level
-                        )
-                    case PendingCustomWrite():
-                        await self._session.append_custom_entry(
-                            entry.custom_type, entry.data
-                        )
-                    case PendingCustomMessageWrite():
-                        await self._session.append_custom_message_entry(
-                            entry.custom_type,
-                            entry.content,
-                            entry.display,
-                            entry.details,
-                        )
-                    case PendingLabelWrite():
-                        await self._session.append_label(
-                            entry.target_id, entry.label
-                        )
-                    case PendingSessionInfoWrite():
-                        await self._session.append_session_name(
-                            entry.name or ""
-                        )
-                    case PendingLeafWrite():
-                        # Pi: ``this.session.getStorage().setLeafId(...)``.
-                        await self._session.get_storage().set_leaf_id(
-                            entry.target_id
-                        )
-                    case _ as unreachable:
-                        assert_never(unreachable)
-            else:
-                # Aelix-additive backward-compat path (no session attached).
-                # ``message`` lands in ``state.messages`` to preserve the
-                # Sprint 3b behavior used by existing tests; the other 7
-                # variants are dropped with a debug log.
-                if isinstance(entry, PendingMessageWrite):
-                    self._state.messages.append(entry.message)
-                else:
-                    _log.debug(
-                        "dropping %r (no session attached — Sprint 4a fallback)",
-                        entry,
+        failed = 0
+        for index, entry in enumerate(pending):
+            try:
+                await self._apply_pending_session_write(entry)
+            except asyncio.CancelledError:
+                # Give the un-attempted tail back before the abort leaves.
+                # Prepend rather than assign: an ``append_message`` that
+                # landed during one of the awaits above is already on the new
+                # queue and must stay behind these, FIFO.
+                self._pending_session_writes[0:0] = pending[index + 1 :]
+                if failed:
+                    # This method raises instead of returning, so ``failed``
+                    # dies here and no ``save_point`` will ever carry it: the
+                    # close-out's second flush counts only what it attempts
+                    # itself, which is the requeued tail, and reports 0.
+                    # Measured in ``.omc/specs/301-failed-writes-accounting.py``
+                    # ARM 1 — one refusal, then a cancellation, and the only
+                    # save point said ``had_pending=True failed_writes=0``.
+                    # The WARNING is what keeps that from being silent.
+                    _log.warning(
+                        "session write flush cancelled after %d of %d writes "
+                        "had already failed; that count reaches no save_point "
+                        "— these WARNING records are the whole report",
+                        failed,
+                        len(pending),
                     )
+                raise
+            except AssertionError:
+                # ``assert_never`` met a variant with no dispatcher arm. A
+                # broken dispatcher is a bug in this file, not a write the
+                # storage refused, and logging it as one would hide it.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                _log.warning(
+                    "session write lost: %s could not be persisted (%r); "
+                    "%d of %d writes in this flush have failed so far, the "
+                    "rest are still being attempted",
+                    type(entry).__name__,
+                    exc,
+                    failed,
+                    len(pending),
+                    # One traceback per flush, on the first failure. The tree
+                    # installs no logging handler, so these reach
+                    # ``logging.lastResort`` → stderr, and N tracebacks would
+                    # paint over a live TUI when a disk fills. The variant,
+                    # the repr and the count are on every record regardless.
+                    exc_info=failed == 1,
+                )
+        return failed
 
     async def wait_for_idle(self) -> None:
         await self._idle_event.wait()
@@ -4504,10 +4605,18 @@ class AgentHarness:
                 # ``save_point`` with the had-pending flag.
                 if event.type == "turn_end":
                     had_pending = bool(self._pending_session_writes)
-                    await self.flush_pending_session_writes()
+                    # Issue #301: the flush no longer raises when one write
+                    # fails, so this call site can no longer take the turn
+                    # down with it — but the save point must stop claiming
+                    # everything was committed. ``failed_writes`` carries the
+                    # count of records that did not reach the session.
+                    failed_writes = await self.flush_pending_session_writes()
                     try:
                         await self._hooks.emit(
-                            SavePointHookEvent(had_pending_mutations=had_pending)
+                            SavePointHookEvent(
+                                had_pending_mutations=had_pending,
+                                failed_writes=failed_writes,
+                            )
                         )
                     except Exception as exc:  # noqa: BLE001
                         _log.debug(
@@ -4654,11 +4763,31 @@ class AgentHarness:
         finally:
             # Safety net: guarantee a flush even if the loop crashed before
             # turn_end fired. Idempotent if turn_end already drained the queue.
+            # Issue #301: a write that the session refuses is now handled
+            # inside the flush (logged at WARNING, counted, drain continues),
+            # and ``assert_never`` on an unhandled variant is the only
+            # ``Exception`` left that can reach here — a broken dispatcher,
+            # not a storage failure, and not worth hiding at DEBUG. There is
+            # no ``save_point`` on this path, so the per-item WARNING the
+            # flush already logged is the only report.
+            # This is the abort tail's BACKSTOP, not where it normally lands.
+            # The flush does hand the un-attempted remainder back on
+            # ``CancelledError``, but on an abort the close-out's synthetic
+            # ``TurnEndEvent`` (``:4680-4685``) has already re-run the turn_end
+            # projection's flush at ``:4593``, and THAT is what writes the tail
+            # inside the same ``prompt()`` — measured by wrapping the flush and
+            # reading the caller's line number: by the time this runs the queue
+            # is empty and it writes nothing. Suppress that ``TurnEndEvent``
+            # and this net delivers the tail itself (measured); it is also what
+            # delivers when the cancellation is NOT an abort (the ``raise`` at
+            # ``:4693``). A later turn's ``turn_end`` flush is the backstop
+            # after that.
             try:
                 await self.flush_pending_session_writes()
             except Exception:  # noqa: BLE001
-                _log.debug(
-                    "flush_pending_session_writes raised in finally",
+                _log.warning(
+                    "flush_pending_session_writes raised in finally — "
+                    "pending session writes were lost",
                     exc_info=True,
                 )
             self._phase = "idle"

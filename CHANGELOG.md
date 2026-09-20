@@ -130,6 +130,21 @@ unwritten. Add them with the next release.
   at all: it prints on your screen and the model never sees it. Sessions
   recorded before this keep loading; their old `!` output stays invisible.
   (#299)
+- **One session record that cannot be written no longer takes the rest of the
+  turn's records with it.** Switching model or thinking level while the agent
+  is working, and any message an extension adds to the conversation mid-turn,
+  are held until the turn ends and then written to the session together. If any
+  one of them was refused — by a full disk, or by an entry Aelix could not
+  encode — the ones queued behind it were dropped at the same moment: not
+  written, not retried, and not mentioned anywhere. Each record is now written
+  on its own, so a refusal costs that record and nothing else, and it is
+  reported: a warning naming what was lost and why, and a count on the
+  save-point event extensions can watch, where until now that event said there
+  had been nothing to save. Interrupting the agent while those records are
+  being written no longer drops the ones it had not reached yet. The same
+  failure also used to end the turn, surfacing the disk error as though the
+  model had failed; it no longer does — the conversation carries on and only
+  the record is missing. (#301)
 - **Two terminals on one session no longer lose a whole turn.** Opening the
   same session twice was easy to do by accident — `aelix --continue` picks the
   same file for every terminal in a directory — and both terminals appeared to
@@ -923,7 +938,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:4643`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:4752`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

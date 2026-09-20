@@ -3231,7 +3231,7 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
 # That ran on ``turn_end`` alone, which is too early AND too rare:
 #
 #  - too EARLY on the success path: the harness extends ``_state.messages`` with
-#    the turn's messages at ``harness/core.py:4643``, AFTER the loop has already
+#    the turn's messages at ``harness/core.py:4752``, AFTER the loop has already
 #    emitted ``turn_end``, so a turn_end refresh estimates over a message list
 #    missing the turn that just finished — the footer sat one turn behind. The
 #    ``settled`` hook fires immediately after that extend, so it is the first
@@ -3310,8 +3310,8 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
 
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
-    (``hooks.py:1349``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:4651-4652`` swallows it in
+    (``hooks.py:1379``), and a one-parameter handler raises ``TypeError`` here
+    instead of being swallowed at DEBUG the way ``core.py:4760-4761`` swallows it in
     production.
     """
 
@@ -3408,7 +3408,7 @@ class _OutOfOrderStatsHarness(FakeHarness):
     """First stats read is SLOW and STALE; every later read is fast and fresh.
 
     Reproduces the real interleaving: ``turn_end`` fires first and snapshots
-    ``state.messages`` BEFORE ``core.py:4643`` extends it, then ``settled`` fires
+    ``state.messages`` BEFORE ``core.py:4752`` extends it, then ``settled`` fires
     and reads the extended list — but the first read can still FINISH last,
     because each awaits ``get_branch`` file I/O.
     """
@@ -3586,7 +3586,7 @@ async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> Non
 # at all: ``turn_end`` already fires once per provider round-trip
 # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop),
 # yet the harness does not extend ``_state.messages`` until the loop has
-# returned (``core.py:4643``) — so a thirty-tool turn ran thirty stats walks
+# returned (``core.py:4752``) — so a thirty-tool turn ran thirty stats walks
 # that every time estimated over the SAME unchanged list and repainted the
 # pre-turn number. The mid-turn figure therefore comes from the ``message_end``
 # payload, and the stats walk is SKIPPED while such a figure is held.
@@ -3640,7 +3640,7 @@ def _record_paints(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 class _TurnStalenessHarness(FakeHarness):
     """``get_session_stats`` reports the PRE-turn figure until the turn settles.
 
-    That is the production shape (``core.py:4643`` extends ``_state.messages``
+    That is the production shape (``core.py:4752`` extends ``_state.messages``
     after the loop returns, and ``settled`` is emitted right after), and it is
     what makes an unconditional per-round-trip refresh a DOWNWARD step rather
     than a harmless duplicate.
@@ -4064,7 +4064,7 @@ async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
     skipping the stats walk, and on a provider that stopped reporting usage the
     meter would freeze on the last figure it ever saw. ``agent_end`` is the
     right boundary because it is emitted on EVERY exit — including the abort
-    (``core.py:4548``) and hook-failure (``core.py:4591``) close-outs, neither
+    (``core.py:4702``) and hook-failure (``core.py:4745``) close-outs, neither
     of which reaches ``settled`` at all.
 
     Asserted on the PAINTS rather than on ``get_session_stats`` calls: the
@@ -4203,7 +4203,7 @@ async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus(
 
     Through the bus either mechanism alone satisfies T7b, so neither was pinned:
     deleting the suppress left every meter test green. Both catch exactly
-    ``Exception`` (``hooks.py:1349-1354``), so the suppress is deliberate
+    ``Exception`` (``hooks.py:1379-1384``), so the suppress is deliberate
     redundancy — a local guard that survives a registration which loses the
     kwarg. Invoking the handler directly is the only way to assert it.
     """

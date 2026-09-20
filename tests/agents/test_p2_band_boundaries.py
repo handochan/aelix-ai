@@ -441,6 +441,38 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/session_lock.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/read_only.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/storage.py",
+        #
+        # ADR-0245 (2026-09-20), #301 — ADR-0242's rule ("a failed append must
+        # not break the next append") applied one layer up, in the harness.
+        # ``harness/core.py`` is already listed at the top and changed again
+        # here, which is recorded for the reason the ADR-0242 note gives:
+        # ``flush_pending_session_writes`` detached the whole queue before
+        # writing it, so one refused write ended the drain and every
+        # already-detached write behind it was gone with no log, no event and
+        # no exception naming it. Measured on the branch base ``91eeb12``
+        # (``.omc/specs/301-measure.py``): 8 queued, 1 written, 1 refused, 6
+        # COLLATERAL — and the storage error came out of ``prompt()``, so a
+        # full disk cost the user's turn as well. The drain now attempts every
+        # item, logs a refusal at WARNING with the variant and the exception,
+        # counts it, and returns the count; ``BaseException`` stays uncaught so
+        # an abort still aborts.
+        #
+        # ``harness/hooks.py`` is NEW to this list, for one defaulted field:
+        # ``SavePointHookEvent.failed_writes: int = 0``. ``save_point`` is the
+        # event that says "the pending mutations are committed now", and on the
+        # base build it said ``had_pending_mutations=False`` immediately after
+        # throwing six records away. The field is how it stops lying. It is
+        # Aelix-additive (pi ``types.ts:480-483`` has no counterpart), defaulted
+        # so a handler written against the pi shape is unaffected, and read only
+        # at the one emit site in ``harness/core.py``.
+        #
+        # Session-write durability only: no ``aelix_agents`` import, no spawn
+        # site, no cap on delegation, no consent path, no registry —
+        # ``test_kernel_has_no_subagent_surface`` is unaffected and still
+        # passes. The ``message_end`` append that swallows its failure at DEBUG,
+        # and the ``_pin_task`` done-callback that does the same, are the same
+        # silence in a different shape and are NOT authorised by this entry.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/hooks.py",
         # ADR-0209, #122. A resumed session's persisted history must seed
         # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``
         # do not read zero after ``/resume``. The fix moves an existing

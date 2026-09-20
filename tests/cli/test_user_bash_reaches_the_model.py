@@ -592,7 +592,7 @@ async def test_a_failed_session_write_costs_this_turn_as_well(
 
     This is the assertion the fix pass was missing. ``AgentHarness._run``
     derives the turn's messages from ``session.build_context()`` whenever a
-    session is attached (``harness/core.py:4333-4336``, pinned by
+    session is attached (``harness/core.py:4434-4437``, pinned by
     ``tests/test_state_messages_derived.py``), so the live append is not a
     second chance at the same turn: when the entry cannot be written, the
     output reaches nothing. The suppression is deliberate — an unwritable
@@ -633,7 +633,7 @@ async def test_without_a_session_the_live_append_is_what_reaches_the_provider(
     """The other half of the same measurement — why the live append stays.
 
     On ``--no-session`` there is no entry to write and ``_state.messages`` IS
-    the turn's list (``harness/core.py:4337-4339``), so the append is the only
+    the turn's list (``harness/core.py:4438-4440``), so the append is the only
     thing carrying the output. Delete it and this test fails while the
     session-backed ones still pass.
     """
