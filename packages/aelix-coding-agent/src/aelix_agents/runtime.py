@@ -139,7 +139,7 @@ SESSION IS ALIVE AGAIN — the next user prompt
 (:meth:`~_SubagentRuntimeImpl.reset_delegation_budget`, called from
 ``AgentsExtension._on_before_agent_start``) or a human typing ``/agents run``
 (:meth:`~_SubagentRuntimeImpl.spawn`). Both matter, because the SAME runtime
-instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:177-179``) and
+instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:188-190``) and
 every one of those emits ``session_shutdown`` first.
 
 The check is not an ``await``, so it does not disturb ``_run``'s critical
@@ -318,14 +318,22 @@ class SubagentHost:
     model_registry: Callable[[], Any | None] = lambda: None
     """Read live for the cost fallback — rebound on ``/reload``."""
     model: Callable[[], Any | None] = lambda: None
-    """The parent's EFFECTIVE model (``ExtensionContext.model``), inherited by a
-    child whose profile declares none.
+    """The parent's EFFECTIVE model, inherited by a child whose profile declares
+    none.
 
     Live, like everything else here, and for a sharper reason than most:
     ``/model`` rebinds it mid-session, so a captured value would send every
     later delegation to whatever the parent started with. The default answers
     ``None``, which inherits nothing and leaves the child to its own cascade —
-    the pre-fix behaviour, and the only safe thing to do with no evidence."""
+    the pre-fix behaviour, and the only safe thing to do with no evidence.
+
+    THIS USED TO SAY ``ExtensionContext.model``, AND THAT WAS THE BUG (#304).
+    A context's ``model`` is a SNAPSHOT taken when the context was built, and
+    contexts are built by HOOKS; ``/agents run`` and ``/model`` are slash
+    commands and fire none, so "live" was a claim the wiring did not keep.
+    ``AgentsExtension`` now answers this from a getter ``cli/entry.py`` binds to
+    the runtime host's current harness, with the last hook's context behind it —
+    the shape :attr:`session` has had since #199."""
     on_progress: Callable[[SubagentProgress], None] | None = None
     """Host-wide progress tap (the extension's event-bus + statusline bridge).
     Called in ADDITION to any per-spawn ``on_event``, never instead of it."""
@@ -390,7 +398,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:651``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:653``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -452,7 +460,7 @@ class _SubagentRuntimeImpl:
         user prompt is the evidence that the session ``stop_all`` tore down is
         alive again — and it has to be somebody's job, because the same runtime
         instance survives ``/new`` / ``/fork`` / ``/resume``
-        (``extension.py:177-179``) and each of those emits ``session_shutdown``
+        (``extension.py:188-190``) and each of those emits ``session_shutdown``
         first, so a permanently-shut door would silently kill delegation for the
         rest of the process.
         """
@@ -582,7 +590,7 @@ class _SubagentRuntimeImpl:
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
         # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
         # emit ``session_shutdown`` on a runtime instance that SURVIVES them
-        # (``extension.py:177-179``), and the user's next act may well be this
+        # (``extension.py:188-190``), and the user's next act may well be this
         # command rather than a prompt — refusing it would be a bug the user
         # cannot diagnose. It is not a bypass: :meth:`_reopen` declines while a
         # ``stop_all`` is still executing.
@@ -1014,7 +1022,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1016-1017``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1018-1019``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

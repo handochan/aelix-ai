@@ -557,7 +557,7 @@ def pdeathsig() -> None:
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
     ``break`` (``:302-307``) plus the ``raise BrokenPipeError`` (``:316-319``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``
-    (``:283-287``). Since ``agents/resolver.py:330-331`` makes the whole task the
+    (``:283-287``). Since ``agents/resolver.py:332-333`` makes the whole task the
     initial prompt, the EPIPE guard covers nothing a subagent does.
 
     Composes with ``start_new_session=True``: ``setsid()`` does not clear the

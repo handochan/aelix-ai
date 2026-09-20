@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:502-507``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:510-515``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates

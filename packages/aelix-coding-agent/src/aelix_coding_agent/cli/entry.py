@@ -2349,6 +2349,17 @@ async def _async_main(argv: list[str]) -> int:
                 # overlay and True→False on the next reset.
                 no_context_files=lambda: parsed.no_context_files,
                 session=lambda: _live_session_of(session_host),  # #199: live host session
+                # #304 — the parent's EFFECTIVE model, the same late-bound way
+                # and through the same holder. #199 gave ``session`` this
+                # treatment and left ``model`` on the hook-context path, where
+                # it was wrong in three measured states: no context at all
+                # (``/agents run`` first in a fresh TUI), a stale one (right
+                # after ``/new``), and a LIVE one whose ``model`` is the
+                # snapshot from the last hook (``/model <id>`` then
+                # ``/agents run`` — neither fires a hook). The child then ran on
+                # its OWN cascade, which for the reporter was a global default
+                # that refuses the request outright.
+                model=lambda: _live_model_of(session_host),
             )
 
     # === Agent profile identity (ADR-0196) ===================================
@@ -3382,6 +3393,28 @@ def _live_session_of(host: dict[str, Any]) -> Session | None:
     if runtime is None:
         return None
     return runtime.session
+
+
+def _live_model_of(host: dict[str, Any]) -> Model | None:
+    """#304 — the runtime host's CURRENT model, or ``None`` before it exists.
+
+    The model sibling of :func:`_live_session_of`, reading the same holder.
+    ``AgentSessionRuntime.harness`` is the LIVE harness — replaced on ``/new``,
+    ``/resume``, ``/fork`` and ``/reload`` — and ``current_model`` is a thin
+    reader over ``_state.model``, which ``/model`` writes directly
+    (``harness/core.py`` ``set_current_model``). So this follows every way the
+    parent's model can move, including the two that fire no hook and therefore
+    never refresh the delegation extension's ``ExtensionContext``.
+
+    ``None`` before the runtime exists (startup, and any embedder that never
+    builds one), which leaves the extension on its ``_ctx`` fallback exactly as
+    it was.
+    """
+
+    runtime = host.get("runtime")
+    if runtime is None:
+        return None
+    return runtime.harness.current_model
 
 
 _CHILD_ORIGIN_TYPE = "aelix.child_origin"

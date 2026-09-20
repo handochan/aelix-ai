@@ -8,7 +8,7 @@ runtime, the loaded-extension list or the trust decision, so a tool under
 ``tools/`` structurally cannot see the runtime state this tool exists to report.
 An extension can: ``ExtensionAPI`` and ``ExtensionContext`` are the only objects
 that carry it. ``aelix_agents`` already does exactly this for the ``agent`` tool
-(``aelix_agents/extension.py:331`` ``register_tool``), and this follows it.
+(``aelix_agents/extension.py:373`` ``register_tool``), and this follows it.
 
 WHERE THIS PACKAGE SITS, AND THE RULE APPLIED. ADR-0197 §(a) splits the tree into
 kernel / product-core / bundled-extension, and ADR-0208 states what that split

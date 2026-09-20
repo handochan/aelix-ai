@@ -11,7 +11,9 @@ a reference, not a target, so the divergences below are recorded, not argued).
 Owner decision #6 in `docs/05-post-beta-direction.md` §11: agents default-on
 needs, among other things, **child sessions recorded** and **only the result in
 the parent's context**.
-Issue: #199. Follow-up: #296 (a TUI viewer for child sessions).
+Issue: #199. Follow-up: #296 (a TUI viewer for child sessions), #304 (the same
+late-binding rule, applied to the four host getters A.3a and §9 left behind —
+recorded in §9).
 Design spec: `.omc/specs/199-design-2026-09-19.md` (rev 1), with its critique
 (`199-design-critique-2026-09-19.md`) and research map
 (`199-surface-map-2026-09-19.md`) beside it.
@@ -381,6 +383,47 @@ attribute, and `getattr`'s default catches only `AttributeError`. A stale
 context is now treated as no context — the state the first `/agents run` of a
 fresh session was already in (the documented headless default: the clamp, no
 prompt, never widened). No new authority state.
+
+**Both fixes were applied to one getter each, and the neighbours had the same
+defect (#304, 2026-09-21).** A.3a late-bound `session`; §9 above made
+`consent_context` treat a stale context as none. Neither was generalised, and
+`SubagentHost` has five more values the extension derives from the same
+`ExtensionContext`. Audited in #304 — the probe is
+`.omc/specs/304-probe-ctx-audit.py`, which runs unmodified on either side of
+the fix — **five of ten host getters answered differently without a live hook
+context**, which is the state every `/agents run` is in:
+
+| getter | `_ctx` is `None` or stale | should be |
+|---|---|---|
+| `model` | no `--model` on the child argv at all | the parent's |
+| `active_tools` | `None` = **no narrowing, every tool** | the parent's grant |
+| `project_trusted` | `False` — the `.aelix/agents` tier vanished | the trust decision |
+| `has_ui` | **raised** `ExtensionError` (`getattr`'s default again) | `False` |
+| `consent_context` | `None` | `None` — correct, see below |
+
+`model` was the reported bug and the worst-behaved: `ExtensionContext.model` is
+a **snapshot**, not a live read (`_make_context_kwargs` passes
+`"model": self._state.model` by value), so it was wrong in a third state the
+other rows do not have — a *live* context built before a `/model` that moved
+the harness on. Neither `/model` nor `/agents run` fires a hook, so nothing
+refreshed it in between. The reporter's child therefore fell back to its own
+model cascade, which resolved to a global default that refuses the request
+outright (`400 — Reasoning is mandatory for this endpoint`).
+
+The rule is now one rule: **ask the live harness; the last hook's context is
+the fallback.** `model` gets the A.3a treatment (a getter wired in
+`cli/entry.py` to `AgentSessionRuntime.harness.current_model`);
+`active_tools` reads the live `ExtensionAPI`, which `_invoke_factory` replaces
+on every harness rebuild while `_ctx` is not; `project_trusted` falls back to
+the value `cli/entry.py`'s trust gate already passed in; `has_ui` goes through
+the same staleness check §9 wrote, so it errs toward `False` as it always
+claimed to.
+
+`consent_context` is **deliberately left as it is**. It decides whether a human
+is *asked*, and the live-UI handle that would make it current would turn §9's
+documented pre-hook state — take the clamp, never prompt, never widen — into a
+dialog. That is a change to an authority surface and it gets its own issue and
+its own ADR, not a line in a model fix.
 
 ## Measured on the branch
 

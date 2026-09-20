@@ -92,6 +92,24 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A delegated agent now runs on the model you are running, whenever you start
+  it.** `/agents run` inherited your `--model` only if a tool call had already
+  happened in that session. Start Aelix and run it as your first command, or run
+  it straight after `/new`, `/resume`, `/fork` or `/reload`, and the child was
+  launched with no model at all — it fell back to its own default, which for a
+  reasoning-mandatory default meant the delegation died on a provider error
+  instead of doing the work. Switching with `/model` and then delegating had the
+  same problem the other way round: the child got the model you had just
+  switched *away* from. Three other things a child inherits were wrong in the
+  same window and are fixed with it: it could be handed **more tools than you
+  have** (a session started with `--tools` lost that limit after `/new`), it
+  stopped seeing this project's `.aelix/agents` profiles in a directory you had
+  trusted, and one delegation inside a parallel or chain call failed to start
+  outright, handing back an error where its work should have been — **that one
+  now runs**, read-only, with no more authority than anything else in the same
+  call. When you are *asked* about a delegation, and what it is then permitted
+  to change, are unchanged; the tool list a child is handed is now the one you
+  actually have, in that window too. (#304)
 - **Two terminals on one session no longer lose a whole turn.** Opening the
   same session twice was easy to do by accident — `aelix --continue` picks the
   same file for every terminal in a directory — and both terminals appeared to

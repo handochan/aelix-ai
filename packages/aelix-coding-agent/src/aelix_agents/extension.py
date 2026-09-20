@@ -31,13 +31,24 @@ parent's posture is one shift+tab away from changing, the active tool set is
 rebuilt by every ``register_tool``, and the model registry is rebound on
 ``/reload``. Nothing is captured; everything is read at the moment it is used.
 
-WHY ``self._ctx`` EXISTS. ``ExtensionContext`` is only handed to HOOKS, and
-``execute()`` needs the cwd, the tool grant and the trust decision that live on
-it. The context of the most recent hook is therefore kept — the OBJECT, never
-any value read off it, so ``has_ui`` and friends stay live. The ``tool_call``
-hook that approves a spawn always runs immediately before the ``execute()``
-that performs it, so the context an ``agent`` call uses is always the one from
-its own call.
+WHY ``self._ctx`` EXISTS, AND WHY IT IS NOW THE FALLBACK. ``ExtensionContext``
+is only handed to HOOKS, and ``execute()`` needs the cwd, the tool grant and the
+trust decision that live on it. The context of the most recent hook is therefore
+kept — the OBJECT, never any value read off it. The ``tool_call`` hook that
+approves a spawn always runs immediately before the ``execute()`` that performs
+it, so the context an ``agent`` call uses is always the one from its own call,
+and for the MODEL DOOR that is the whole story.
+
+``/agents run`` IS THE OTHER DOOR AND IT FIRES NO HOOK. A human typing it can be
+first in a fresh TUI (``_ctx`` is ``None``) or one keystroke after ``/new`` /
+``/resume`` / ``/fork`` / ``/reload`` (``_ctx`` belongs to a torn-down runtime
+and raises ``ExtensionError("stale")`` on every attribute). #199 fixed the
+SESSION getter for exactly this and left its neighbours; #304 finished the job
+after measuring what each of them answered in those states. Everything the host
+can ask the LIVE harness instead — ``model``, ``active_tools``,
+``project_trusted``, ``has_ui`` — now does, with ``_ctx`` behind it, and
+``_live_ctx`` holds the one rule they all share: a stale context is no context.
+``consent_context`` is deliberately NOT among them; its own docstring says why.
 """
 
 from __future__ import annotations
@@ -269,6 +280,37 @@ class AgentsExtension:
     ``None`` is the unwired default: records then go wherever the most recent
     hook's context points, if anywhere."""
 
+    model: Callable[[], Any | None] | None = None
+    """The parent's EFFECTIVE model, for a child whose profile names none (#304).
+
+    The same late-binding shape as :attr:`session`, wired in ``cli/entry.py`` to
+    the runtime host's current harness (``AgentSessionRuntime.harness
+    .current_model``), and for the same reason: a hook's ``ExtensionContext`` is
+    the wrong thing to ask. #199 gave the SESSION getter this treatment and left
+    the model on the old path; #304 is the bill for that.
+
+    ``ExtensionContext.model`` is wrong in THREE measured states, not one
+    (``.omc/specs/304-probe-parent-model-inherit.py``, run against the branch
+    base):
+
+    * ``_ctx is None`` — ``/agents run`` is the first thing typed in a new TUI;
+    * ``_ctx`` is STALE — ``/agents run`` right after ``/new`` / ``/resume`` /
+      ``/fork`` / ``/reload``, where every attribute raises
+      ``ExtensionError("stale")``;
+    * ``_ctx`` is LIVE but its model is a SNAPSHOT. ``_make_context_kwargs``
+      passes ``"model": self._state.model`` BY VALUE and
+      ``ExtensionContext.model`` reads it back with
+      ``object.__getattribute__(self, "_model")`` — so ``/model <id>`` followed
+      by ``/agents run``, with no turn in between (a slash command fires no
+      hook), sends the child the model the parent was on BEFORE the switch.
+
+    The first two cost the child its inheritance entirely; the third sends it
+    somewhere the parent is not. All three were measured as
+    ``3/4 states do NOT inherit the parent's model``.
+
+    ``None`` is the unwired default: the most recent hook's context answers, as
+    it always did."""
+
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
@@ -432,24 +474,30 @@ class AgentsExtension:
         it is handed the ``ctx`` explicitly and decides only whether to ask.
         Errs toward FALSE, which clamps ``approval_mode: "ask"`` to ``PLAN``
         (``posture.py:201-204``) — the read-only direction.
+
+        READS THROUGH :meth:`_live_ctx`, and before #304 it did not — it was a
+        bare ``getattr(self._ctx, "has_ui", False)``, whose default catches
+        ``AttributeError`` and NOTHING else. A stale context raises
+        ``ExtensionError`` from ``__getattribute__``, so this RAISED rather than
+        erring toward ``False`` as the paragraph above claims (measured, #304
+        audit: ``_host_has_ui`` was the one row in the table that raised). The
+        raise is caught two frames up by ``batch._member``'s blanket
+        ``except BaseException``, so it cost that member its delegation with a
+        ``delegation failed to start: ExtensionError`` envelope instead of the
+        documented read-only clamp.
         """
 
-        return bool(getattr(self._ctx, "has_ui", False))
+        return bool(getattr(self._live_ctx(), "has_ui", False))
 
-    def _host_consent_context(self) -> Any:
-        """The context the consent gate reads — or ``None`` once it is stale.
+    def _live_ctx(self) -> Any:
+        """The most recent hook's context, or ``None`` once it is stale.
 
-        ``request_spawn_consent`` reads ``getattr(ctx, "has_ui", False)``, and a
-        context from a torn-down session raises ``ExtensionError("stale")`` on
-        EVERY attribute, which ``getattr``'s default does not catch. ``/agents
-        run`` typed right after ``/new``, ``/resume`` or ``/fork`` — before the
-        new session's first hook refreshes :attr:`_ctx` — therefore failed with
-        ``stale`` before consent was even asked (measured, #199). A stale
-        context is treated exactly as NO context, which is the state the very
-        first ``/agents run`` of a fresh session is already in: the documented
-        headless default (``runtime._default_consent_context``) takes the
-        clamp, never prompts and never widens. No new authority state — the
-        pre-hook one, reached from one more door.
+        A STALE CONTEXT IS NO CONTEXT — the rule #199 settled, lifted out of
+        :meth:`_host_consent_context` in #304 so that every ``_ctx`` reader
+        obeys it rather than the one that happened to need it first. A context
+        from a torn-down session raises ``ExtensionError("stale")`` on EVERY
+        attribute, and ``getattr``'s default does not catch that, so each caller
+        that forgot re-learned it as a different symptom.
         """
 
         ctx = self._ctx
@@ -467,7 +515,61 @@ class AgentsExtension:
             return None
         return ctx
 
+    def _host_consent_context(self) -> Any:
+        """The context the consent gate reads — or ``None`` once it is stale.
+
+        ``request_spawn_consent`` reads ``getattr(ctx, "has_ui", False)``, and a
+        context from a torn-down session raises ``ExtensionError("stale")`` on
+        EVERY attribute, which ``getattr``'s default does not catch. ``/agents
+        run`` typed right after ``/new``, ``/resume`` or ``/fork`` — before the
+        new session's first hook refreshes :attr:`_ctx` — therefore failed with
+        ``stale`` before consent was even asked (measured, #199). A stale
+        context is treated exactly as NO context, which is the state the very
+        first ``/agents run`` of a fresh session is already in: the documented
+        headless default (``runtime._default_consent_context``) takes the
+        clamp, never prompts and never widens. No new authority state — the
+        pre-hook one, reached from one more door.
+
+        DELIBERATELY NOT LATE-BOUND in #304, unlike :meth:`_host_model` and the
+        two beside it. The others answer a question about the parent that has
+        one true answer the extension can fetch from the live harness; this one
+        decides WHETHER A HUMAN IS ASKED, and the live-UI handle that would make
+        it "current" (``_api.runtime.ui``) would turn the documented pre-hook
+        state — take the clamp, never prompt, never widen — into a dialog. That
+        is a change to an authority surface and it belongs in its own issue with
+        its own ADR, not in the model lane.
+        """
+
+        return self._live_ctx()
+
     def _host_active_tools(self) -> list[str] | None:
+        """The parent's LIVE tool grant, narrowed onto the child (#304).
+
+        THE LIVE ``ExtensionAPI`` FIRST, the hook context only as a fallback —
+        the same precedence as :meth:`_host_model` and for a sharper reason,
+        because this one fails OPEN. ``ctx.get_active_tools()`` is
+        ``AgentHarness._action_get_active_tools`` bound to the harness THAT
+        CONTEXT came from, and a ``None`` here means "no narrowing, every tool"
+        (``SubagentHost.active_tools``). So a parent launched with
+        ``--tools read`` who typed ``/new`` and then ``/agents run`` spawned a
+        child with the FULL tool set: measured in the #304 audit as
+        ``_ctx=STALE → None`` against ``_ctx=LIVE → ['read', 'bash']``.
+
+        ``ExtensionAPI.get_active_tools`` calls
+        ``runtime.actions.get_active_tools`` — literally the same bound method
+        ``_make_context_kwargs`` puts on the context (``core.py:656``), only on
+        the CURRENT harness rather than a dead one, since ``self._api`` is
+        replaced by ``_invoke_factory`` on every rebuild while ``self._ctx`` is
+        not. An unbound runtime raises ``ExtensionError`` (measured), so a host
+        that has no harness yet falls through to the context exactly as before.
+        """
+
+        api = self._api
+        if api is not None:
+            try:
+                return list(api.get_active_tools())
+            except Exception:  # noqa: BLE001 — no harness bound yet; ask the ctx
+                pass
         ctx = self._ctx
         if ctx is None:
             return None
@@ -512,7 +614,31 @@ class AgentsExtension:
             return False
 
     def _host_project_trusted(self) -> bool:
-        ctx = self._ctx
+        """Is this directory trusted? — the ``.aelix/agents`` discovery tier.
+
+        A STALE CONTEXT FALLS BACK TO :attr:`project_trusted`, and before #304 it
+        did not: the bare ``self._ctx`` read reached ``is_project_trusted()``,
+        which raises ``ExtensionError("stale")`` on a torn-down context, and the
+        ``except`` turned that into ``False``. So ``/agents run`` right after
+        ``/new`` in a TRUSTED project lost the project tier — its profiles
+        vanished from the roster and ``resolve_profile`` refused them — until the
+        next turn refreshed ``_ctx``. Measured in the #304 audit as
+        ``_ctx=STALE → False`` against ``_ctx=LIVE → True``.
+
+        NO LATE-BINDING GETTER FOR THIS ONE, unlike :meth:`_host_model`. The
+        trust decision is taken once by ``cli/entry.py``'s gate and passed by
+        value into BOTH this extension and every harness build
+        (``entry.py`` ``_harness_factory`` → ``_build_harness_options
+        (project_trusted=…)``), and ``AgentHarness.set_project_trusted`` has no
+        production caller. The constructor value and the harness flag are
+        therefore the same fact, and a getter would be wiring for a mutator that
+        does not exist. What was broken was the PRECEDENCE, not the source.
+
+        The ``except`` stays for a LIVE context that fails for some other
+        reason: no evidence of trust means untrusted.
+        """
+
+        ctx = self._live_ctx()
         if ctx is None:
             return bool(self.project_trusted)
         try:
@@ -532,17 +658,37 @@ class AgentsExtension:
     def _host_model(self) -> Any | None:
         """The parent's model RIGHT NOW, for a child whose profile names none.
 
-        ``ExtensionContext.model`` is ``harness/core.py``'s ``_state.model``,
-        re-read every time a context is built, and ``self._ctx`` is refreshed on
-        every tool call — so this is the model the parent's own next turn would
-        use, not the one it booted with.
+        The wired getter (:attr:`model`) FIRST and the hook context only as a
+        fallback — the same precedence, and the same argument, as
+        :meth:`_host_session` (#199, ADR-0243 A.3a). This getter follows the
+        runtime host, so it is right before any hook has run, right after
+        ``/new``, and right after ``/model``.
 
-        ``None`` before the first hook has run (there is no context to ask) and
-        ``None`` on a stale one. Both mean "no evidence", and the child then
-        runs its own cascade exactly as it did before this seam existed.
+        THE OLD BODY READ ``ctx.model`` AND ITS DOCSTRING WAS FALSE. It claimed
+        the value was "re-read every time a context is built … the model the
+        parent's own next turn would use". Only the first half holds:
+        ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
+        (``core.py:3512``) and ``ExtensionContext.model`` hands back
+        ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
+        hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
+        are slash commands that fire none, so the parent's next turn could
+        already be on a different model than the one this returned. See
+        :attr:`model` for the three measured failing states.
+
+        ``None`` when the getter is unwired and there is no live context to ask.
+        That means "no evidence", and the child then runs its own model cascade
+        exactly as it did before this seam existed.
         """
 
-        ctx = self._ctx
+        getter = self.model
+        if getter is not None:
+            try:
+                live = getter()
+            except Exception:  # noqa: BLE001 — a broken getter is "not yet"
+                live = None
+            if live is not None:
+                return live
+        ctx = self._live_ctx()
         if ctx is None:
             return None
         try:
@@ -730,7 +876,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:906-914``),
+        # inside ``runtime._run``'s admission block (``runtime.py:914-922``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -905,7 +1051,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:921-930``).
+        seam is released on teardown, ``extension.py:1067-1076``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1053,7 +1199,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:915``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:923``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1085,7 +1231,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1179-1183``) with no ``await`` between them, so THIS
+            # (``runtime.py:1187-1191``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a

@@ -425,7 +425,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:275-276``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:277-278``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -543,11 +543,13 @@ def build_child_argv(
     belt-and-braces with :data:`DEPTH_ENV_VAR`: the env var stops the extension
     loading, the flag stops the settings gate turning it back on.
 
-    ``parent_model`` is the parent's LIVE ``ExtensionContext.model``, forwarded
-    only when the profile declares no model of its own (``resolver``'s emission
-    table owns that rule). Without it a parent launched with ``--model`` on argv
-    spawns a child with no model at all: the flag is run scope, the bundled
-    profiles declare none, and nothing in between persists it.
+    ``parent_model`` is the parent's LIVE effective model (``SubagentHost.model``
+    — the runtime host's current harness, NOT ``ExtensionContext.model``, which
+    is a per-hook snapshot; #304), forwarded only when the profile declares no
+    model of its own (``resolver``'s emission table owns that rule). Without it
+    a parent launched with ``--model`` on argv spawns a child with no model at
+    all: the flag is run scope, the bundled profiles declare none, and nothing
+    in between persists it.
 
     ``--no-context-files`` does NOT appear here even though the parent's ``-nc``
     is inherited (#121): it rides in on ``child_profile.context_files``, which

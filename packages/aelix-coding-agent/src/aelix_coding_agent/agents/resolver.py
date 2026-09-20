@@ -160,9 +160,11 @@ def parent_model_flags(parent_model: Model | None) -> list[str]:
     """The parent's run-scope model as child flags, or ``[]`` if it has none.
 
     Reads structurally (``getattr``) because the value arrives through the
-    ``SubagentHost`` seam as ``Any``: it is ``ExtensionContext.model``, which a
-    P4 host is free to supply differently, and a host that hands us something
-    unreadable must cost the child its model inheritance, not its spawn.
+    ``SubagentHost.model`` seam as ``Any``: the bundled host answers it from the
+    runtime host's CURRENT harness (#304 — not ``ExtensionContext.model``, whose
+    per-hook snapshot is the defect that issue fixed), a P4 host is free to
+    supply it differently, and a host that hands us something unreadable must
+    cost the child its model inheritance, not its spawn.
 
     The provider half is emitted only alongside a usable id, and only when it is
     itself resolved. ``--model`` on its own is a supported invocation (the
@@ -351,7 +353,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2744-2748``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2755-2759``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

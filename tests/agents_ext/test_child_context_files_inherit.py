@@ -14,7 +14,7 @@ Independent of #121's injection policy: on ANY policy the flag the user typed ha
 to survive one hop.
 
 WHY THE FLAG IS NOT ASSERTED ON ``build_child_argv``'s OWN OUTPUT. It does not
-belong there. ``resolver.profile_to_flags`` (``resolver.py:275-276``) already
+belong there. ``resolver.profile_to_flags`` (``resolver.py:277-278``) already
 owns the one place a profile becomes ``--no-context-files``, so the inherit is a
 CLAMP on the profile that reaches the builder — see
 :func:`~aelix_agents.print_channel.narrow_context_files`. The tests below

@@ -191,7 +191,7 @@ def test_child_argv_parses_clean(trust_flags: list[str], mode: str) -> None:
     spelled.
 
     ``profile_to_argv`` is called rather than mirrored — the spawner builds the
-    child argv from that same function (``agents/resolver.py:288-332``), so a
+    child argv from that same function (``agents/resolver.py:290-334``), so a
     change to the prefix or the prompt-file flags is caught here too.
     """
 
@@ -220,7 +220,7 @@ def test_child_argv_parses_clean(trust_flags: list[str], mode: str) -> None:
     assert parsed.print_mode is True
     assert parsed.no_session is True
     assert parsed.project_trust_override is (False if trust_flags else None)
-    # The task rides as the single positional (``resolver.py:330-331``).
+    # The task rides as the single positional (``resolver.py:332-333``).
     assert parsed.messages == ["Task: list the files in packages/"]
 
 
