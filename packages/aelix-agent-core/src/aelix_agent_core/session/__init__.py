@@ -67,6 +67,10 @@ from aelix_agent_core.session.jsonl_storage import (
     load_jsonl_session_metadata,
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
+from aelix_agent_core.session.read_only import (
+    READ_ONLY_MESSAGE,
+    ReadOnlySessionStorage,
+)
 from aelix_agent_core.session.repo_utils import (
     FORK_FROM_ROOT,
     ForkEntryId,
@@ -75,6 +79,12 @@ from aelix_agent_core.session.repo_utils import (
     get_entries_to_fork,
 )
 from aelix_agent_core.session.session import Session, SessionContext
+from aelix_agent_core.session.session_lock import (
+    DEFAULT_ACQUIRE_TIMEOUT,
+    LOCK_SUFFIX,
+    SessionWriterLock,
+    lock_path_for,
+)
 from aelix_agent_core.session.storage import (
     JsonlSessionMetadata,
     SessionError,
@@ -91,6 +101,7 @@ __all__ = [
     "BranchSummaryPreparation",
     "COMPACTION_SUMMARY_PREFIX",
     "COMPACTION_SUMMARY_SUFFIX",
+    "DEFAULT_ACQUIRE_TIMEOUT",
     "CompactResult",
     "CompactionEntry",
     "CompactionPreparation",
@@ -109,12 +120,15 @@ __all__ = [
     "JsonlSessionMetadata",
     "JsonlSessionRepo",
     "JsonlSessionStorage",
+    "LOCK_SUFFIX",
     "LabelEntry",
     "LeafEntry",
     "LocalFileSystem",
     "MemorySessionStorage",
     "MessageEntry",
     "ModelChangeEntry",
+    "READ_ONLY_MESSAGE",
+    "ReadOnlySessionStorage",
     "Session",
     "SessionContext",
     "SessionError",
@@ -124,6 +138,7 @@ __all__ = [
     "SessionRecovery",
     "SessionStorage",
     "SessionTreeEntry",
+    "SessionWriterLock",
     "SummarizerOverride",
     "SummaryEntry",
     "ThinkingLevelChangeEntry",
@@ -141,6 +156,7 @@ __all__ = [
     "generate_branch_summary",
     "get_entries_to_fork",
     "load_jsonl_session_metadata",
+    "lock_path_for",
     "prepare_compaction",
     "resolve_resumed_thinking_level",
     "select_display_entries",

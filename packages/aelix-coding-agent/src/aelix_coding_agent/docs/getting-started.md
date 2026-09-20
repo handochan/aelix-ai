@@ -238,6 +238,41 @@ aelix @path/to/file.py "explain this"   # inline a file into the first message
 
 Run `aelix --help` for the complete, authoritative list.
 
+## Two terminals on one session
+
+`aelix --continue` picks the same session file for every terminal you run it in
+from the same directory, so opening a second tab lands on the session the first
+one is already using. Only one of them can write to it: a session records where
+each turn attaches, and two terminals writing at once used to leave one
+terminal's turns on a branch nothing ever replayed again.
+
+So the second terminal asks:
+
+```
+This session is already open in another terminal.
+  ~/.aelix/sessions/<project>/2026-09-20T…jsonl
+
+→ Fork and continue here (a new session file, same history)
+  Open read-only (view only; this terminal cannot write)
+  Cancel
+```
+
+- **Fork and continue** copies the conversation into a new session file and
+  works there. The first terminal keeps the original. The fork is now the most
+  recent session in this directory, so the next `aelix --continue` here comes
+  back to it.
+- **Open read-only** shows the session without writing to it. You can read,
+  scroll and use the read-only commands; `/fork` gives you a writable copy.
+- **Cancel** exits.
+
+`-p`, `--mode json` and `--mode rpc` cannot ask, so they stop with an error
+naming `--fork <path>`, `--session <other>` and `--no-session`.
+
+Quitting a terminal frees its session immediately, and so does killing one —
+the lock is held by the operating system, so there is nothing to clean up. You
+will see an empty `<session>.jsonl.lock` file beside each session on macOS and
+Linux; it is not a session and never appears in `--resume` or `--continue`.
+
 ## Inside the interactive TUI
 
 The TUI accepts slash commands (type `/` to see completion). Highlights:

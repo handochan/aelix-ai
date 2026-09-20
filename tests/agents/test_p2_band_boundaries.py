@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1135``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1181``,
 # ``rpc/rpc_mode.py:1494``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -400,8 +400,47 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # delegation, no consent path, no registry —
         # ``test_kernel_has_no_subagent_surface`` is unaffected and still
         # passes. The single-writer lock (#137) is still NOT authorised here.
+        #
+        # ADR-0244 (2026-09-20), #137 — the single-writer lock the three notes
+        # above each withheld, and the last of this lane. THE DEFECT IS REAL
+        # DATA LOSS and it lives in the kernel session layer: ``append_entry``
+        # reparents every entry onto a PROCESS-LOCAL ``_current_leaf_id``
+        # (``session/jsonl_storage.py``), so two terminals on one session both
+        # write valid JSON and one terminal's entire turn becomes an orphan
+        # branch no replay ever shows again. Measured on this branch's parent:
+        # appends ``A-1``, ``B-1``, ``A-2`` all land, all four lines parse, and
+        # the reload replays ``['A-turn-1', 'A-turn-2']``.
+        #
+        # ``session/session_lock.py`` (NEW) — ``SessionWriterLock``, an OS lock
+        # on a ``<session>.jsonl.lock`` sidecar. ``session/read_only.py`` (NEW)
+        # — a ``SessionStorage`` wrapper whose two writes raise.
+        # ``session/storage.py`` — one Literal widened with ``read_only``
+        # (ADR-0035's rule; ADR-0244 is the owning ADR).
+        # ``runtime/agent_session_runtime.py`` (already listed below, changed
+        # again here) — two injection setters and the lock handoff across the
+        # four replace APIs, so ``/new`` and ``/fork`` let go of the file they
+        # leave and ``/resume`` and ``/import`` do not land on one somebody
+        # else owns. ``pyproject.toml`` (already listed above, changed again
+        # here) — one dependency line, ``filelock>=3.12,<5``: MIT, zero
+        # transitive dependencies, one pure-python wheel, and a floor measured
+        # against twelve releases rather than guessed.
+        #
+        # It is a kernel change because the defective code IS the kernel
+        # session layer and the mechanism cannot live above it. The POLICY —
+        # what the second terminal is asked, in what words, and what a
+        # non-interactive run is told instead — stays in ``aelix-coding-agent``
+        # and is injected through setters; the kernel learns only "a file can
+        # be owned, and someone else decides what to do about it". No
+        # ``aelix_agents`` import, no spawn site, no cap on delegation, no
+        # consent path, no registry — ``test_kernel_has_no_subagent_surface``
+        # is unaffected and still passes. Delegated child sessions (#199) are
+        # locked by this same code with no special case, which is not a new
+        # delegation surface: it is the absence of one.
         "packages/aelix-agent-core/src/aelix_agent_core/session/repo_utils.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/session_lock.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/read_only.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/storage.py",
         # ADR-0209, #122. A resumed session's persisted history must seed
         # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``
         # do not read zero after ``/resume``. The fix moves an existing

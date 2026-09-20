@@ -12,7 +12,14 @@ from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from aelix_agent_core.session.entries import SessionTreeEntry
 
-# Pi 6-code taxonomy (``types.ts:190-196``).
+# Pi 6-code taxonomy (``types.ts:190-196``), plus one Aelix-only code.
+#
+# ``read_only`` is the widening ADR-0244 owns (#137). Pi has no equivalent:
+# pi's own cross-process ownership work refuses the second opener outright,
+# while Aelix asks, and "open it without writing" is one of the three answers.
+# The refusal a :class:`ReadOnlySessionStorage` raises therefore needs a code a
+# caller can branch on rather than a ``storage`` it would have to string-match.
+# ADR-0035's rule is that a Literal widening is recorded by an owning ADR.
 SessionErrorCode = Literal[
     "not_found",
     "invalid_session",
@@ -20,6 +27,7 @@ SessionErrorCode = Literal[
     "invalid_fork_target",
     "storage",
     "unknown",
+    "read_only",
 ]
 
 

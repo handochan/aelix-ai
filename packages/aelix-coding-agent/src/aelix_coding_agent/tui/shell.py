@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aelix_agent_core.session.compaction import calculate_context_tokens
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
+from aelix_agent_core.session.read_only import ReadOnlySessionStorage
 from prompt_toolkit.application.run_in_terminal import in_terminal
 from prompt_toolkit.utils import get_cwidth
 from rich.box import ROUNDED
@@ -101,7 +102,10 @@ from aelix_coding_agent.tui.width import terminal_columns
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.harness.core import AgentHarness
-    from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
+    from aelix_agent_core.runtime.agent_session_runtime import (
+        AgentSessionRuntime,
+        SessionContendedChoice,
+    )
     from aelix_ai.oauth import AuthStorage
     from aelix_ai.settings import SettingsManager
     from aelix_ai.settings.types import ThinkingLevel
@@ -449,6 +453,47 @@ def _compose_thinking_level(harness: Any) -> str | None:
     return _thinking_display(harness, level)
 
 
+def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
+    """Whether the session this terminal is on **right now** refuses writes.
+
+    #137 — asked once per line, not remembered from startup. ``at_startup`` is
+    what ``run_tui`` was told when the process came up; it describes the
+    session it *launched* on. ``/fork``, ``/new`` and ``/resume`` each move the
+    process onto a different file and take that file's writer lock
+    (``agent_session_runtime`` acquires one for every newly published file),
+    so the startup answer expires the moment any of them runs.
+
+    Review found ``_input_loop`` refusing on the startup flag, which made the
+    refusal's own text a lie: "/fork makes a writable copy of it; /resume and
+    /new switch to another session" — all three ran, all three really did hand
+    this process a writable, locked file, ``⎇ Forked session`` was printed, and
+    the very next prompt was still refused, about a file nobody else had. The
+    only way out was to kill aelix and relaunch.
+
+    Read off the STORAGE rather than off the lock, because the storage is what
+    refuses: :class:`ReadOnlySessionStorage` *is* the read-only state, and the
+    kernel hands one back from ``_resolve_contended_target`` as well, so an
+    in-session swap that lands read-only is covered by the same line.
+
+    ``getattr`` for the reason every other optional runtime surface in this
+    module is read that way: ``tests/tui/`` drives the loop with duck-typed
+    ``FakeRuntime`` doubles that have no session at all. Those keep the answer
+    they were given rather than being silently promoted to writable.
+    """
+
+    try:
+        # Inside the ``try`` from the first read, not just around the call:
+        # ``AgentSessionRuntime.session`` is a property that reaches through
+        # the harness, and a double's can raise on attribute access alone.
+        session = getattr(runtime_host, "session", None)
+        get_storage = getattr(session, "get_storage", None)
+        if not callable(get_storage):
+            return at_startup
+        return isinstance(get_storage(), ReadOnlySessionStorage)
+    except Exception:  # noqa: BLE001 — a double that raises is not a verdict
+        return at_startup
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -467,6 +512,7 @@ async def run_tui(
     thinking_level_restored: bool = False,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
+    read_only: bool = False,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -1695,7 +1741,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3048``) always passes one, so this is
+            # production caller (``entry.py:3117``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2635,6 +2681,48 @@ async def run_tui(
 
     runtime_host.set_rebind_session(_rebind)
 
+    async def _ask_session_contended(path: str) -> SessionContendedChoice:
+        """#137 / ADR-0244 — ``/resume`` (or ``/import``) onto an owned file.
+
+        Two options, not the three ``entry.py`` offers at startup. "Open
+        read-only" there means the whole terminal comes up in read-only chrome;
+        there is no supported way to turn a live writable REPL into that
+        mid-session, and offering a button that half-works would be worse than
+        not offering it. The kernel implements all three — a surface that CAN
+        honour read-only says so — and this one honestly offers the two it can.
+
+        Esc (``select`` returns ``None``) is cancel, for the same reason it is
+        deny at every other consent gate here.
+        """
+
+        fork_label = "Fork and continue here (a new session file, same history)"
+        choice = await context.select(
+            f"That session is already open in another terminal:\n  {path}",
+            [fork_label, "Cancel"],
+        )
+        if choice != fork_label:
+            return "cancel"
+        # The user picked one file and is about to land in a different one.
+        # ``/resume``'s own tail only says "Resumed session (N messages)", so
+        # without this the swap looks like it did what was asked.
+        _commit(
+            Text(
+                "Forking it into a new session — the other terminal keeps the "
+                "original.",
+                style="yellow",
+            )
+        )
+        return "fork"
+
+    # ``getattr`` for the same reason every other optional runtime surface in
+    # this module is read that way: ``run_tui`` is driven by duck-typed
+    # ``FakeRuntime`` doubles across ``tests/tui/``, and a hard call would
+    # take the whole REPL down inside a task whose exception nobody retrieves
+    # — which is exactly how it failed when this landed unguarded.
+    _install_contended = getattr(runtime_host, "set_on_session_contended", None)
+    if callable(_install_contended):
+        _install_contended(_ask_session_contended)
+
     def _on_interrupt() -> None:
         asyncio.ensure_future(_safe_abort(runtime_host.harness))
 
@@ -3034,6 +3122,18 @@ async def run_tui(
         # the same trap the replay chunking below exists for.
         update_task = _start_update_check(settings_manager)
         _commit(_build_banner(runtime_host.harness, cwd))
+        # #137 / ADR-0244 — said ONCE, straight under the banner, before the
+        # transcript replay paints a conversation this terminal cannot add to.
+        # The input loop repeats it per refused line; this is the one that
+        # explains the state the session opened in.
+        if read_only:
+            _commit(
+                Text(
+                    "READ-ONLY — this session is open in another terminal. "
+                    "You can read it, and /fork gives you a writable copy.",
+                    style="bold yellow",
+                )
+            )
         # Issue #165 — the STARTUP analogue of the /resume repaint. #122 already
         # seeds ``harness.state.messages`` (``cli/entry.py``'s
         # ``_seed_startup_state``) so /context, /cost and /stats read right
@@ -3114,6 +3214,7 @@ async def run_tui(
             dispatch=dispatch,
             settings_manager=settings_manager,
             save_implicit_trust_after_reload=save_implicit_trust_after_reload,
+            read_only=read_only,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -3382,11 +3483,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1294``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1311``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1295`` already printed at startup, and one that
+    #       what ``entry.py:1312`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3624,6 +3725,7 @@ async def _input_loop(
     dispatch: CommandDispatchService | None = None,
     settings_manager: SettingsManager | None = None,
     save_implicit_trust_after_reload: Callable[[], bool] | None = None,
+    read_only: bool = False,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -3648,6 +3750,7 @@ async def _input_loop(
         emit_text=lambda s: output_queue.put_nowait(("commit", Text(s))),
         emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
     )
+
 
     # #189 — imported once per loop, not once per turn. Local rather than
     # module-level for the same reason the other three call sites in this file
@@ -3804,6 +3907,32 @@ async def _input_loop(
             # receives. Echoing the expansion would paste a whole SKILL.md body
             # into the transcript on every invocation.
             prompt_text = expanded
+        # #137 / ADR-0244 — read-only. Everything that only READS has already
+        # run and ``continue``d above: ``/``-commands, /quit, /reload, the
+        # descriptor modals. What is left is the two kinds of line that append
+        # to the session — a ``!`` bash line (it records a custom entry) and a
+        # prompt (it records the user message and every entry the turn
+        # produces). Refused here rather than letting the storage raise, so the
+        # user gets one sentence instead of a ``SessionError`` surfacing
+        # mid-turn under a live spinner.
+        if parsed.kind in (
+            "bash",
+            "bash_transient",
+            "prompt",
+        ) and _session_refuses_writes(runtime_host, at_startup=read_only):
+            output_queue.put_nowait(
+                (
+                    "commit",
+                    Text(
+                        "This session is open in another terminal, so this one "
+                        "is read-only. /fork makes a writable copy of it; "
+                        "/resume and /new switch to another session.",
+                        style="yellow",
+                    ),
+                )
+            )
+            continue
+
         if parsed.kind in ("bash", "bash_transient"):
             if parsed.text:
                 output = await handle_user_bash(
@@ -3836,7 +3965,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3000-3016 and
+            # Two audiences, discriminated exactly as entry.py:3069-3085 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

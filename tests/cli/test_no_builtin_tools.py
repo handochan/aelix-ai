@@ -1,7 +1,7 @@
 """ADR-0196 — ``--no-builtin-tools`` is honored (it was parsed-but-ignored).
 
 The flag existed in ``args.py`` and reached ``parsed.no_builtin_tools``, but
-nothing consumed it: ``_resolve_active_tools`` (``cli/entry.py:719-741``)
+nothing consumed it: ``_resolve_active_tools`` (``cli/entry.py:736-758``)
 deliberately refuses to express it, because ``active_tool_names`` is seeded
 BEFORE extensions register their tools — a filter written there would also
 disable every extension and ``<server>__<tool>`` MCP tool. The faithful
@@ -19,7 +19,7 @@ failure modes an "obvious" implementation walks into:
 3. ``--tools`` still intersects — the allowlist applies, it just cannot readmit
    a built-in;
 4. the filter survives ``AgentSessionRuntime.reload()``, whose step 6
-   (``agent_session_runtime.py:822-858``) restores
+   (``agent_session_runtime.py:1128-1164``) restores
    ``(active_before ∩ current) ∪ (ext ∩ current)``.
 
 Everything is driven through the REAL ``_async_main`` because the filter lives
@@ -48,7 +48,7 @@ _BUILT = 42
 """Sentinel exit code meaning "the run reached the first harness build".
 
 Not a real ``_async_main`` return value: the spy raises out of
-``create_agent_session_runtime`` (``cli/entry.py:2926``), which is AFTER the
+``create_agent_session_runtime`` (``cli/entry.py:2984``), which is AFTER the
 factory has built and filtered the harness and BEFORE ``run_print_mode`` would
 attempt a turn. Any other code means the run bailed earlier, which is itself the
 assertion for the negative tests.
@@ -290,7 +290,7 @@ async def test_filter_never_raises_on_removed_tool(
     unknown name (``core.py:3738-3744``). On the reload path that raise would be
     unrecoverable — ``reload()`` has already disposed the old harness by then —
     which is exactly why the reloaded build is unfiltered (``on_reload=True``,
-    ``cli/entry.py:1410-1423``). The ``--no-builtin-tools`` filter runs on that
+    ``cli/entry.py:1427-1440``). The ``--no-builtin-tools`` filter runs on that
     same rebuild, and it computes its names FROM the live ``state.tools`` before
     intersecting with ``parsed.tools``, so a since-removed name can only be
     dropped, never re-asserted.

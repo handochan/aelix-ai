@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2283-2290``).
+  (``cli/entry.py:2341-2348``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -139,7 +139,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the OpenRouter-env path (#98,
-``cli/entry.py:1381-1386``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1398-1403``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -257,7 +257,7 @@ def profile_to_flags(
         if not profile.tools:
             # ``()`` means NO tools. ``--tools ''`` would mean the OPPOSITE:
             # ``parse_args`` yields ``[]``, which ``_resolve_active_tools``
-            # (``entry.py:719-741``) reads as falsy → ``None`` → every tool active.
+            # (``entry.py:736-758``) reads as falsy → ``None`` → every tool active.
             flags.append("--no-tools")
         else:
             flags += ["--tools", ",".join(profile.tools)]
@@ -351,7 +351,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2686-2690``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2744-2748``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

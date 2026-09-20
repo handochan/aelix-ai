@@ -92,6 +92,31 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Two terminals on one session no longer lose a whole turn.** Opening the
+  same session twice was easy to do by accident — `aelix --continue` picks the
+  same file for every terminal in a directory — and both terminals appeared to
+  work. They did not: each one attached its turns to wherever it last thought
+  the conversation ended, so the second terminal's entire turn became a dead
+  branch that no reload, `--continue` or `/resume` ever showed again. The text
+  was in the file and unreachable. A session file now has one live writer. When
+  you open one that another terminal already has, Aelix asks: carry on in a
+  fork of it (a new session file with the same history), open it read-only to
+  look without writing, or stop. A terminal that chose read-only is not stuck
+  that way: `/fork`, `/new` and `/resume` each move it onto a session it owns,
+  and it can type again. `-p`, `--mode json` and `--mode rpc` cannot
+  ask, so they stop with a message naming `--fork`, `--session` and
+  `--no-session` rather than choosing for you. The same check now covers
+  `/resume` and `/import` from inside a session, and opening a delegated
+  agent's session file while that agent is still running. Quitting one terminal
+  frees its session for the next immediately, and a terminal that is killed
+  outright frees it too — the lock is held by the operating system, so there is
+  nothing to clean up and nothing to wait for. On a filesystem with no file
+  locking at all (some network mounts), Aelix says once that it cannot tell,
+  and carries on; if the lock file beside a session is one Aelix cannot use —
+  left root-owned by a `sudo aelix`, say — it says which file and stops, rather
+  than blaming the filesystem and writing anyway. One empty
+  `<session>.jsonl.lock` file now sits beside each session on macOS and Linux;
+  it is not a session and never appears in any session list. (#137)
 - **`/fork` before the first message of a session now gives you an empty
   session, not a copy of the one you were in.** Forking cuts the conversation
   just before a message you pick, and picking the very first one is how you

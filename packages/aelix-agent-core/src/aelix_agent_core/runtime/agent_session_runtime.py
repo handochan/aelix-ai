@@ -95,6 +95,7 @@ from aelix_agent_core.session.jsonl_repo import (
     JsonlSessionRepo,
 )
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
+from aelix_agent_core.session.read_only import ReadOnlySessionStorage
 from aelix_agent_core.session.repo_utils import (
     ForkEntryId,
     ForkOptions,
@@ -102,10 +103,22 @@ from aelix_agent_core.session.repo_utils import (
     fork_at_leaf,
 )
 from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
+from aelix_agent_core.session.session_lock import (
+    SessionWriterLock,
+    resolve_session_path,
+)
+from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 
 if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.session.session import Session
+
+#: What a surface answers when the file a swap targets is already owned by
+#: another live process (#137, ADR-0244 D1). The kernel implements all three;
+#: which of them a given surface OFFERS is the surface's call — the in-session
+#: TUI prompt offers ``fork`` and ``cancel``, because turning a live writable
+#: REPL into read-only chrome mid-session is a different change.
+SessionContendedChoice = Literal["fork", "read_only", "cancel"]
 
 _log = logging.getLogger(__name__)
 
@@ -231,6 +244,16 @@ class AgentSessionRuntime:
             Callable[[AgentHarness, str], Awaitable[None]] | None
         ) = None
         self._before_session_invalidate: Callable[[], None] | None = None
+        # #137 / ADR-0244. Injected, never constructed here — the CLI takes
+        # the startup lock before any runtime exists (it has to: a session
+        # that is already owned may never get a harness at all) and hands it
+        # over. ``None`` therefore means "this embedder does not participate
+        # in session ownership", which is what tests and library callers want.
+        self._writer_lock: SessionWriterLock | None = None
+        self._manages_writer_lock = False
+        self._on_session_contended: (
+            Callable[[str], Awaitable[SessionContendedChoice]] | None
+        ) = None
 
     # === Public getters (Pi `:79-97`) ===========================================
 
@@ -301,6 +324,193 @@ class AgentSessionRuntime:
         Pi signature is sync (``() => void``). Aelix mirrors.
         """
         self._before_session_invalidate = cb
+
+    # === Session ownership (#137, ADR-0244) — Aelix-additive ====================
+    #
+    # Two setters rather than ``__init__`` keywords, for the reason
+    # ``set_rebind_session`` above is one: the CLI does not construct this
+    # class. It calls ``create_agent_session_runtime``, whose parameter list is
+    # fixed and shared with every other caller. A new required kwarg there
+    # would have to be threaded through a factory that has no business knowing
+    # about UI decisions, and an optional one would be silently dropped by any
+    # caller that forgets it — which is exactly how an injected callback ends
+    # up permanently ``None`` and every ``/resume`` refuses instead of asking.
+
+    def set_writer_lock(self, lock: SessionWriterLock | None) -> None:
+        """Adopt the lock the CLI took on the startup session.
+
+        The runtime becomes responsible for moving it on every session swap
+        and for releasing it in :meth:`dispose`. Calling this AT ALL — even
+        with ``None``, which is what a read-only viewer passes — is what
+        opts this runtime into enforcing ownership; a runtime nobody calls it
+        on (an embedder, a test, ``--no-session``) neither takes locks nor
+        leaves sidecars behind.
+        """
+        self._writer_lock = lock
+        self._manages_writer_lock = True
+
+    def set_on_session_contended(
+        self, cb: Callable[[str], Awaitable[SessionContendedChoice]] | None
+    ) -> None:
+        """Install the "this file is owned — what now?" question (D1).
+
+        The callback receives the contended session path and answers
+        ``"fork"``, ``"read_only"`` or ``"cancel"``. Left unset, an in-session
+        swap onto an owned file raises ``SessionError("storage", …)``, which
+        is the right default for every non-interactive surface: a process that
+        cannot ask must not choose data loss on the user's behalf. That is
+        also what keeps RPC honest — ``rpc_mode`` never installs this, so
+        ``_handle_switch_session`` turns the refusal into a structured error
+        on the wire instead of painting a full-screen selector into its own
+        JSONL response stream.
+        """
+        self._on_session_contended = cb
+
+    @property
+    def writer_lock(self) -> SessionWriterLock | None:
+        """The lock this runtime currently holds, if any."""
+        return self._writer_lock
+
+    def _acquire_writer_lock(self, path: str) -> SessionWriterLock | None:
+        """Take the writer lock for ``path``; ``None`` when someone else owns it.
+
+        Only ever called when :attr:`_manages_writer_lock`, so ``None`` has
+        exactly one meaning here: **another live process owns the file**. A
+        sidecar we cannot use at all raises instead — see
+        :attr:`SessionWriterLock.error` — because telling the user their
+        session is open in another terminal when the truth is a root-owned
+        lock file sends them looking for a terminal that does not exist.
+
+        Returns the CURRENT lock unchanged when ``path`` is the file we
+        already hold: re-acquiring our own file is not contention, and
+        releasing first in order to re-take it would open a window for a
+        third terminal to slip in. Compared on the RESOLVED path, so a second
+        spelling of the file we already own (a symlink, ``..``) is recognised
+        as ours rather than deadlocking against our own descriptor.
+        """
+
+        current = self._writer_lock
+        if current is not None and current.resolved_path == resolve_session_path(path):
+            return current
+        candidate = SessionWriterLock(path)
+        if not candidate.try_acquire():
+            if candidate.error is not None:
+                raise SessionError(
+                    "storage",
+                    f"cannot take the writer lock for {path}: {candidate.error}",
+                    cause=candidate.error,
+                )
+            return None
+        return candidate
+
+    def _writer_lock_for_new_file(self, session: Session) -> SessionWriterLock | None:
+        """The lock for a session file this process has just created.
+
+        Brand-new files cannot be contended, so this is a move of ownership
+        rather than a question. ``None`` means "no ownership to move" and
+        nothing else: this runtime does not manage locks, or the new session
+        has no file (in-memory storage).
+
+        A brand-new file that IS owned is not the D1 question — it is another
+        terminal's ``--continue`` having picked up the newest file by mtime
+        microseconds after we published it. Review found that case folded into
+        the same ``None`` as the two above, so the caller released the old
+        lock, installed nothing, and carried on writing: fail-open, silent,
+        into a file someone else owns. It raises now. Nothing has been torn
+        down at this point, so the caller keeps the session it already owns.
+        """
+
+        if not self._manages_writer_lock:
+            return None
+        path = session.session_file
+        if path is None:
+            return None
+        lock = self._acquire_writer_lock(path)
+        if lock is None:
+            raise SessionError(
+                "storage",
+                "the session file this process just created is already open "
+                f"in another terminal: {path}",
+            )
+        return lock
+
+    def _release_unadopted(self, lock: SessionWriterLock | None) -> None:
+        """Drop a lock a failed swap took but never adopted.
+
+        :meth:`_finish_session_replacement` installs the target lock the
+        instant the new harness goes live, so reaching here with it still
+        un-adopted means the swap died *before* that point and this process is
+        still on the old session holding the old lock. Releasing is then the
+        only way the kernel lock ever goes away — the object is a local, so
+        after the frame unwinds nothing is left that can release it, and the
+        file stays unopenable by every terminal including this one until the
+        process exits. (``filelock``'s ``__del__`` is not a guarantee: the
+        lock stays reachable from the traceback for as long as the exception
+        is being handled.)
+        """
+
+        if lock is None or lock is self._writer_lock:
+            return
+        lock.release()
+
+    def _install_writer_lock(self, lock: SessionWriterLock | None) -> None:
+        """Adopt ``lock`` and let go of the previous one.
+
+        Called only after a replacement has actually succeeded, so a refused
+        swap keeps both the old session AND its lock — a live harness writing
+        to a file it no longer owns is the defect this whole lane exists to
+        remove.
+        """
+
+        previous = self._writer_lock
+        if previous is not None and previous is not lock:
+            previous.release()
+        self._writer_lock = lock
+
+    async def _resolve_contended_target(
+        self,
+        path: str,
+        metadata: JsonlSessionMetadata,
+        opened: Session,
+    ) -> tuple[Session | None, SessionWriterLock | None]:
+        """Ask what to do about ``path``, which another live process owns.
+
+        ``opened`` is the target the caller has already loaded — reading it
+        was never the problem, so the read-only answer wraps that rather than
+        loading the same file a second time.
+
+        Returns ``(session, lock)``; ``(None, None)`` is "cancel", the
+        caller's signal to return ``RuntimeReplaceResult(cancelled=True)``
+        without touching the live session.
+        """
+
+        from aelix_agent_core.session.session import Session as _Session
+
+        ask = self._on_session_contended
+        if ask is None:
+            raise SessionError(
+                "storage",
+                f"session is already open in another terminal: {path}",
+            )
+        choice = await ask(path)
+        if choice == "cancel":
+            return None, None
+        if choice == "fork":
+            # Fork the TARGET, not the live session: the user asked to carry
+            # on *that* conversation. ``fork_from`` publishes the whole of it
+            # into a brand-new file under the same cwd — a file nobody can be
+            # holding, so its lock always succeeds. (:meth:`fork` is
+            # hard-wired to ``self.session`` and would have branched the wrong
+            # history here; that is the mechanism the design was missing.)
+            forked = await self._repo.fork_from(metadata, metadata.cwd)
+            # Same seam ``/new`` and ``/fork`` use, for the same reason: a
+            # brand-new file that somehow IS owned must fail closed rather
+            # than hand back a ``None`` the caller cannot tell from "no
+            # ownership to move".
+            return forked, self._writer_lock_for_new_file(forked)
+        # read_only — no lock at all. A shared-reader lock would exclude the
+        # legitimate owner, which is the one situation this option exists for.
+        return _Session(ReadOnlySessionStorage(opened.get_storage())), None
 
     # === Private replace seam (Pi `:115-173`) ===================================
 
@@ -454,8 +664,13 @@ class AgentSessionRuntime:
         target_session_file: str | None = None,
         setup: Callable[[Any], Awaitable[None]] | None = None,
         with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
+        writer_lock: SessionWriterLock | None = None,
     ) -> None:
         """Pi parity: ``finishSessionReplacement`` (``agent-session-runtime.ts:166-173``).
+
+        ``writer_lock`` (#137, Aelix-additive) is the lock the caller took for
+        ``new_session``; it is adopted immediately after ``_apply`` — see the
+        comment there for why that is the only safe instant.
 
         Order:
           1. ``_teardown_current(reason, target_session_file)`` (Sprint
@@ -500,6 +715,24 @@ class AgentSessionRuntime:
 
         await self._teardown_current(reason, target_session_file)
         await self._apply(new_session)
+
+        # #137 / ADR-0244 — ownership moves in the same breath as the harness,
+        # and here rather than at the four call sites. ``_apply`` has just put
+        # the live harness on ``new_session``; everything below this line
+        # writes to it. Installing after the whole method returned — which is
+        # what review found — meant that any raise below (ENOSPC on the
+        # ``append_thinking_level_change`` a few lines down, a ``rebind_session``
+        # that throws, ``with_session``) left this process live on the NEW
+        # session while still holding the OLD file's lock, with the new lock a
+        # dead local that nothing could ever release. Measured: two
+        # ``FileLock``s on one path inside one process are mutually exclusive
+        # under ``fcntl.flock``, so a retry of the same ``/import`` was then
+        # told "open in another terminal" — about this process's own orphan.
+        #
+        # Before this point a raise leaves us on the OLD session, and the
+        # caller's ``_release_unadopted`` drops the lock it took.
+        if self._manages_writer_lock:
+            self._install_writer_lock(writer_lock)
 
         # P-359 — setup AFTER apply, BEFORE rebind.
         if setup is not None:
@@ -553,7 +786,22 @@ class AgentSessionRuntime:
             target_has_level = any(
                 e.type == "thinking_level_change" for e in entries
             )
-            if not target_has_level and restored_level != "off":
+            # #137 — and not when the session we just landed on refuses
+            # writes. ``_resolve_contended_target``'s read-only arm hands this
+            # method a :class:`ReadOnlySessionStorage`, whose whole purpose is
+            # that this process does not append to a file another terminal
+            # owns; an unguarded append here would raise
+            # ``SessionError("read_only")`` at the one point where the old
+            # harness is already disposed and the new one is already live —
+            # a half-swap. Same guard, same reason, as ``entry.py``'s
+            # ``_seed_startup_state(read_only=…)`` on the startup path.
+            if (
+                not target_has_level
+                and restored_level != "off"
+                and not isinstance(
+                    new_session.get_storage(), ReadOnlySessionStorage
+                )
+            ):
                 await new_session.append_thinking_level_change(restored_level)
 
         if self._rebind_session is not None:
@@ -627,28 +875,76 @@ class AgentSessionRuntime:
 
         # Pi parity: load metadata + open + assert cwd FIRST (Pi lines 185-186).
         metadata = await load_jsonl_session_metadata(self._fs, path)
-        new_session = await self._repo.open(metadata)
 
-        # P-337 — Pi ``session-cwd.ts:1-59``. Run AFTER ``repo.open`` so
-        # ``new_session.session_file`` is populated; pass
-        # ``fallback_cwd=self.cwd`` for actionable diagnostic context.
-        await assert_session_cwd_exists(
-            new_session, fallback_cwd=self.cwd, fs=self._fs
-        )
+        # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
+        # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
+        # (``jsonl_storage.py:692`` reparents every later append onto it), so a
+        # turn the other terminal appends between our read and the moment we
+        # own the file is reparented away by our next append — which is #137
+        # itself, reproduced by the guard meant to prevent it. Review measured
+        # it end to end ("stored: shared, A-final, B-next; replay: shared,
+        # B-next"), and it is precisely the handoff
+        # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
+        # releases the lock *just after* writing its last turn. Locking first
+        # costs nothing — the metadata read above is a header sniff — and it
+        # needs no tail re-read, because after this line nobody else may
+        # append. ASKING about a contended file still happens below, after the
+        # cancel hook: taking a lock is silent, putting a question in front of
+        # a user an extension was about to overrule is not.
+        target_lock: SessionWriterLock | None = None
+        contended = False
+        if self._manages_writer_lock:
+            target_lock = self._acquire_writer_lock(path)
+            contended = target_lock is None
 
-        # Pi parity: emit cancel hook SECOND (Pi line 189).
-        if await self._emit_before_switch(
-            reason="resume", target_session_file=path
-        ):
-            return RuntimeReplaceResult(cancelled=True)
+        # From here the lock is live, so every exit path has to account for it.
+        try:
+            new_session = await self._repo.open(metadata)
 
-        await self._finish_session_replacement(
-            new_session,
-            reason="resume",
-            previous_session_file=previous_session_file,
-            target_session_file=path,
-            with_session=with_session,
-        )
+            # P-337 — Pi ``session-cwd.ts:1-59``. Run AFTER ``repo.open`` so
+            # ``new_session.session_file`` is populated; pass
+            # ``fallback_cwd=self.cwd`` for actionable diagnostic context.
+            await assert_session_cwd_exists(
+                new_session, fallback_cwd=self.cwd, fs=self._fs
+            )
+
+            # Pi parity: emit cancel hook SECOND (Pi line 189).
+            if await self._emit_before_switch(
+                reason="resume", target_session_file=path
+            ):
+                self._release_unadopted(target_lock)
+                return RuntimeReplaceResult(cancelled=True)
+
+            # The contended question is the only step here that can change
+            # WHICH session we end up on — a "fork and continue" answer swaps
+            # in a different file — so the target path is re-read from the
+            # session we actually landed on. Handing the ORIGINAL path to
+            # ``_finish_session_replacement`` told every ``session_shutdown``
+            # handler this process had switched to the file it deliberately
+            # did not switch to, the one the other terminal still owns.
+            target_session_file = path
+            if contended:
+                resolved, target_lock = await self._resolve_contended_target(
+                    path, metadata, new_session
+                )
+                if resolved is None:
+                    return RuntimeReplaceResult(cancelled=True)
+                new_session = resolved
+                target_session_file = new_session.session_file or path
+
+            await self._finish_session_replacement(
+                new_session,
+                reason="resume",
+                previous_session_file=previous_session_file,
+                target_session_file=target_session_file,
+                with_session=with_session,
+                writer_lock=target_lock,
+            )
+        except BaseException:
+            # The swap never adopted the lock, so this process is still on the
+            # old session and the target's kernel lock has no owner left.
+            self._release_unadopted(target_lock)
+            raise
         return RuntimeReplaceResult(cancelled=False)
 
     async def new_session(
@@ -705,14 +1001,24 @@ class AgentSessionRuntime:
                 cwd=cwd, parent_session_path=parent_session
             )
         )
-        await self._finish_session_replacement(
-            new_session,
-            reason="new",
-            previous_session_file=previous_session_file,
-            target_session_file=None,
-            setup=setup,
-            with_session=with_session,
-        )
+        # #137 — a file that has just been published cannot be contended, so
+        # this never prompts; what it DOES do is move ownership, so the
+        # session this terminal just walked away from becomes openable by
+        # another one.
+        new_lock = self._writer_lock_for_new_file(new_session)
+        try:
+            await self._finish_session_replacement(
+                new_session,
+                reason="new",
+                previous_session_file=previous_session_file,
+                target_session_file=None,
+                setup=setup,
+                with_session=with_session,
+                writer_lock=new_lock,
+            )
+        except BaseException:
+            self._release_unadopted(new_lock)
+            raise
         return RuntimeReplaceResult(cancelled=False)
 
     async def reload(self) -> RuntimeReplaceResult:
@@ -977,13 +1283,22 @@ class AgentSessionRuntime:
                 parent_session_path=metadata.path,
             ),
         )
-        await self._finish_session_replacement(
-            new_session,
-            reason="fork",
-            previous_session_file=previous_session_file,
-            target_session_file=None,  # Pi fork has no targetSessionFile
-            with_session=with_session,
-        )
+        # #137 — same as ``new_session``: the fork is a fresh file, so this
+        # cannot contend, but the lock must follow us onto it and off the
+        # file we forked away from.
+        new_lock = self._writer_lock_for_new_file(new_session)
+        try:
+            await self._finish_session_replacement(
+                new_session,
+                reason="fork",
+                previous_session_file=previous_session_file,
+                target_session_file=None,  # Pi fork has no targetSessionFile
+                with_session=with_session,
+                writer_lock=new_lock,
+            )
+        except BaseException:
+            self._release_unadopted(new_lock)
+            raise
         return RuntimeReplaceResult(
             cancelled=False, selected_text=selected_text
         )
@@ -1053,37 +1368,72 @@ class AgentSessionRuntime:
             self.session.session_file if self.session is not None else None
         )
 
-        # Step 6 — copy when paths differ.
-        if resolved_path != destination_path:
-            await self._fs.copy_file(resolved_path, destination_path)
+        # #137 / ADR-0244 — BEFORE the copy, not after. The destination is
+        # ``<sessions root>/<encoded cwd>/<source basename>``, so re-importing
+        # a file that has already been imported here targets a path another
+        # terminal may be writing to right now — and step 6's ``copy_file``
+        # replaces its destination wholesale (ADR-0242: staged in a temp, then
+        # renamed over). Resolving ownership afterwards would mean the other
+        # terminal's session is already gone by the time we ask.
+        #
+        # Deliberately no "fork and continue" here: the answer to an owned
+        # destination is to leave it alone, and an import already produces a
+        # new file whenever the basename is free.
+        import_lock: SessionWriterLock | None = None
+        if self._manages_writer_lock:
+            import_lock = self._acquire_writer_lock(destination_path)
+            if import_lock is None:
+                raise SessionError(
+                    "storage",
+                    "cannot import over a session that is open in another "
+                    f"terminal: {destination_path}",
+                )
 
-        # Step 7 — load metadata + cwd override.
-        metadata = await load_jsonl_session_metadata(self._fs, destination_path)
-        if cwd is not None:
-            metadata = replace(metadata, cwd=cwd)
+        # From here the lock is live and every exit path has to account for it
+        # — five awaits below can raise (``copy_file``, the metadata load,
+        # ``repo.open``, the cwd assertion, the replacement itself) and review
+        # found each of them dropping it on the floor: neither released nor
+        # stored, so the kernel held it for the life of the process with no
+        # object left to let go. A retried ``/import`` then hit its own
+        # orphan and was told the destination was "open in another terminal".
+        try:
+            # Step 6 — copy when paths differ.
+            if resolved_path != destination_path:
+                await self._fs.copy_file(resolved_path, destination_path)
 
-        # Step 8 — open + assert cwd exists. Pi parity:
-        # ``SessionManager.open(path, dir, cwdOverride)`` threads the
-        # override into the loaded session's ``cwd`` field. Aelix routes
-        # the override via the repo-seam ``cwd_override`` keyword (Sprint
-        # 6h₅b W6 P-367 W5 MINOR fix) instead of mutating
-        # ``storage._metadata`` from outside the repo — the writeback
-        # now lives on the single owner (:meth:`JsonlSessionRepo.open`)
-        # so the private-attribute touch stays encapsulated.
-        new_session = await self._repo.open(
-            metadata, cwd_override=cwd if cwd is not None else None
-        )
-        await assert_session_cwd_exists(
-            new_session, fallback_cwd=current_cwd, fs=self._fs
-        )
+            # Step 7 — load metadata + cwd override.
+            metadata = await load_jsonl_session_metadata(
+                self._fs, destination_path
+            )
+            if cwd is not None:
+                metadata = replace(metadata, cwd=cwd)
 
-        # Step 9 — finish replacement (Pi: no with_session for import).
-        await self._finish_session_replacement(
-            new_session,
-            reason="resume",
-            previous_session_file=previous_session_file,
-            target_session_file=destination_path,
-        )
+            # Step 8 — open + assert cwd exists. Pi parity:
+            # ``SessionManager.open(path, dir, cwdOverride)`` threads the
+            # override into the loaded session's ``cwd`` field. Aelix routes
+            # the override via the repo-seam ``cwd_override`` keyword (Sprint
+            # 6h₅b W6 P-367 W5 MINOR fix) instead of mutating
+            # ``storage._metadata`` from outside the repo — the writeback
+            # now lives on the single owner (:meth:`JsonlSessionRepo.open`)
+            # so the private-attribute touch stays encapsulated.
+            new_session = await self._repo.open(
+                metadata, cwd_override=cwd if cwd is not None else None
+            )
+            await assert_session_cwd_exists(
+                new_session, fallback_cwd=current_cwd, fs=self._fs
+            )
+
+            # Step 9 — finish replacement (Pi: no with_session for import).
+            await self._finish_session_replacement(
+                new_session,
+                reason="resume",
+                previous_session_file=previous_session_file,
+                target_session_file=destination_path,
+                writer_lock=import_lock,
+            )
+        except BaseException:
+            self._release_unadopted(import_lock)
+            raise
         return RuntimeReplaceResult(cancelled=False)
 
     # === Dispose (Pi `:366-373`) ===============================================
@@ -1149,6 +1499,14 @@ class AgentSessionRuntime:
 
         # DISPOSE THIRD (Pi line 372).
         await self._harness.dispose()
+
+        # #137 / ADR-0244 — LAST, and after ``harness.dispose()``: an
+        # extension's ``session_shutdown`` handler is allowed to write a final
+        # entry, and it must still be writing to a file this process owns.
+        # The kernel would drop the lock anyway when the process exits; this
+        # is what makes `/quit` release it while the process lives on (the
+        # TUI returns to ``entry.py``, which has more to do).
+        self._install_writer_lock(None)
 
 
 async def create_agent_session_runtime(

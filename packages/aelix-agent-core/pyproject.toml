@@ -34,6 +34,21 @@ dependencies = [
   # Sprint 6h₉a (ADR-0094/0095/0096): contracts Pydantic models for the
   # 4-tier extension architecture (descriptor envelope, manifest, primitives).
   "pydantic>=2.7,<3",
+  # ADR-0244, #137: one live writer per session file. MIT, zero runtime
+  # dependencies of its own, one pure-python wheel for every platform, and
+  # ``py.typed``. It is here rather than hand-rolled because the Windows half
+  # is real ``LockFileEx``/``UnlockFileEx`` with a reparse-point refusal, and
+  # #46 is this repo's standing precedent for getting that half wrong.
+  #
+  # The floor is MEASURED, not guessed. ``thread_local=`` — which the lock
+  # passes so the owner of a session file is the process and not the thread
+  # that happened to open it — first exists in 3.12.0; 3.11.0 raises
+  # ``TypeError`` on it. Every property the lock relies on (native and not
+  # soft, a second handle contends, re-acquire after release, a killed
+  # holder's lock reclaimed with no cleanup code of ours) was run against
+  # 3.12.0, 3.12.2, 3.12.4, 3.13.4, 3.16.1, 3.18.0, 3.20.0, 3.25.2, 3.29.0,
+  # 3.32.3, 3.32.7 and 4.0.1. See ADR-0244 §"The floor is measured".
+  "filelock>=3.12,<5",
 ]
 
 [project.urls]

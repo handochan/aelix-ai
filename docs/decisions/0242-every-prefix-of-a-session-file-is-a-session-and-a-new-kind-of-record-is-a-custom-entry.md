@@ -242,6 +242,16 @@ missing), so it stays as it is — pi v3 does the same.
   writer's line mid-write; rewriting would publish a file without that line,
   and the writer's completed append would then land in the replaced inode and
   be lost. Recovery stays non-destructive (ADR-0208).
+  **Amended 2026-09-20 (#137, ADR-0244): the decision stands, half of the
+  reason no longer holds.** A session file now has at most one live writer, so
+  an opener that took the write lock could not race anyone by rewriting — that
+  half of the premise is gone. The other half is untouched and is now the whole
+  reason: a terminal that chose **Open read-only** holds no lock at all, the
+  owner keeps appending underneath it, and a rewrite by that reader would
+  destroy exactly the line described above; and on a filesystem without
+  `flock`, ADR-0244 degrades to no ownership check, so there is no single
+  writer to appeal to. Turning it on would also be a destructive operation,
+  which is a separate decision from either ADR.
 
 ## The suite: a backend is a fixture
 
@@ -324,5 +334,7 @@ one.
   still accepts them), so `/import` of such a pi session prunes today. Follow-up
   candidate.
 - Duplicate-id and missing-parent rejection in `append_entry`.
-- A cross-process single writer (#137); fsync of appends; `move_to` as one
-  line; rejecting `NaN`.
+- ~~A cross-process single writer (#137)~~ — **done, 2026-09-20: ADR-0244.**
+  A session file now has at most one live writer; the second terminal is asked
+  whether to fork it, view it read-only, or stop.
+- fsync of appends; `move_to` as one line; rejecting `NaN`.

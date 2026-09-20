@@ -225,6 +225,11 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # proving that the router passes what it claims to. The cost is that a
         # new kwarg breaks this test once, on purpose.
         save_implicit_trust_after_reload: object = None,
+        # #137 (ADR-0244) — whether this terminal is looking at a session
+        # another one owns. Accepted here for the reason the comment just
+        # above gives: the double must keep proving what the router passes, so
+        # a new kwarg breaks this test once, on purpose.
+        read_only: bool = False,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.

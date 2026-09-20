@@ -61,7 +61,9 @@ from aelix_agent_core.session.jsonl_repo import (
 )
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
+from aelix_agent_core.session.read_only import ReadOnlySessionStorage
 from aelix_agent_core.session.session import Session
+from aelix_agent_core.session.session_lock import SessionWriterLock
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
 
@@ -446,7 +448,11 @@ async def _build_session(
 
 
 async def _seed_startup_state(
-    harness: AgentHarness, session: Session, *, cli_level: str | None
+    harness: AgentHarness,
+    session: Session,
+    *,
+    cli_level: str | None,
+    read_only: bool = False,
 ) -> bool:
     """Seed a startup harness's live transcript AND thinking level from its
     resumed session. Returns whether a thinking level was applied.
@@ -499,8 +505,19 @@ async def _seed_startup_state(
         # already recorded a level keeps its own: the flag outranks it for this
         # process only. ``off`` is the kernel's unset sentinel, so a launch at
         # ``off`` leaves a fresh session clean.
-        if cli_level != "off" and not any(
-            e.type == "thinking_level_change" for e in entries
+        #
+        # #137 — ``read_only`` suppresses the RECORD, not the flag. A viewer
+        # of someone else's session still runs at the level they asked for;
+        # it just does not write that level into a file it does not own. This
+        # is not politeness: ``_seed_startup_state`` is called from
+        # ``_async_main`` at function-body indentation, outside every ``try``,
+        # so the ``SessionError("read_only")`` an unguarded append raises
+        # would leave ``aelix --session <owned file> --thinking high`` with a
+        # traceback and no viewer at all.
+        if (
+            not read_only
+            and cli_level != "off"
+            and not any(e.type == "thinking_level_change" for e in entries)
         ):
             await session.append_thinking_level_change(cli_level)
         return True
@@ -1696,7 +1713,18 @@ async def _prompt_one_shot_select(body: str, options: list[str]) -> str | None:
 
     app: Any = Application(
         layout=Layout(
-            Window(FormattedTextControl(_render, focusable=True, key_bindings=kb))
+            # ``wrap_lines=True`` because the body of every caller is a PATH and
+            # the path is the actionable half. Measured live at 110 columns
+            # (#137): the session-ownership prompt printed
+            # ``…/T/tmpqkz8hd9y/sessions/`` and stopped — the file the question
+            # was about was off the right edge, clipped rather than wrapped,
+            # because that is ``Window``'s default. The project-trust gate shows
+            # a cwd and the project-agent confirmation shows a file, so both
+            # gain the same way.
+            Window(
+                FormattedTextControl(_render, focusable=True, key_bindings=kb),
+                wrap_lines=True,
+            )
         ),
         full_screen=False,
     )
@@ -2159,6 +2187,36 @@ async def _async_main(argv: list[str]) -> int:
     except SessionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    # === Session ownership (#137, ADR-0244) ==================================
+    # Placed here because this is the first line at which the session is
+    # resolved and nothing has yet been written to it, and because it runs
+    # BEFORE the trust gate: a terminal that is going to be told the file is
+    # taken should not first be asked to trust a directory.
+    #
+    # Every path above is funnelled through one resolution on purpose. A fresh
+    # session and a ``--fork`` both produce a brand-new file, so their
+    # acquisition always succeeds and no user sees anything; ``--continue``,
+    # ``--resume`` and ``--session`` open an existing one and are the three
+    # that can contend. One rule, one widget, one test matrix — a special case
+    # per flag would be a second code path with its own bugs, for a difference
+    # the user cannot see.
+    ownership = await _resolve_session_ownership(
+        session,
+        repo,
+        cwd,
+        app_mode=app_mode,
+        named_exactly=parsed.session is not None,
+        # The same three flags this comment block names as "the three that
+        # can contend" — and for the same reason they are also the three that
+        # read the file before they own it.
+        opened_existing=bool(
+            parsed.resume or parsed.continue_session or parsed.session
+        ),
+    )
+    if ownership is None:
+        return 1
+    session, session_lock, session_read_only = ownership
 
     # === Project Trust gate (Sprint P0 #10) — resolve ONCE, BEFORE any =======
     # project-local code executes (MCP subprocess spawn + extension
@@ -2956,11 +3014,22 @@ async def _async_main(argv: list[str]) -> int:
     # the return says whether a level was applied. It is read here, upstream of
     # the mode dispatch, so TUI / ``--print`` / ``--mode json`` / RPC share it.
     thinking_level_restored = await _seed_startup_state(
-        harness, session, cli_level=parsed.thinking
+        harness, session, cli_level=parsed.thinking, read_only=session_read_only
     )
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs
     )
+    # #137 / ADR-0244 — hand the startup lock over. From here the runtime
+    # moves it on every ``/new``, ``/fork``, ``/resume`` and ``/import``, and
+    # releases it in ``dispose``.
+    #
+    # UNCONDITIONAL, including the two cases where ``session_lock`` is
+    # ``None``: calling this AT ALL is what opts the runtime into enforcing
+    # ownership, and both of those cases can still swap onto an owned file
+    # later. A read-only viewer can ``/resume``, and so can a
+    # ``--no-session`` REPL — gating this on ``--no-session`` would have left
+    # that one door open onto the exact defect.
+    runtime.set_writer_lock(session_lock)
     session_host["runtime"] = runtime
 
     # === Unrunnable-startup-model gate (#98) ===
@@ -3088,6 +3157,11 @@ async def _async_main(argv: list[str]) -> int:
                 # dialog callables, which only exist once the chrome runs), so
                 # entry.py only ever passes the boolean.
                 first_run_login=offer_first_run_login,
+                # #137 / ADR-0244 — this terminal is looking at a session
+                # another one owns. The chrome says so and the input loop
+                # refuses to drive a turn; everything that only reads still
+                # works.
+                read_only=session_read_only,
             )
 
         if app_mode == "rpc":
@@ -3354,6 +3428,188 @@ async def _warn_if_delegated_child(session: Session, path: str) -> Session:
         file=sys.stderr,
     )
     return session
+
+
+# === Session ownership (#137, ADR-0244) =====================================
+
+
+def _session_owned_message(path: str) -> str:
+    """The refusal, with the three flags that get you past it.
+
+    One string, used by the non-interactive refusal AND by the cancel arm of
+    the interactive prompt, so the two can never drift into telling the user
+    different things about the same situation.
+    """
+
+    return (
+        "Error: this session is already open in another terminal.\n"
+        f"  {path}\n"
+        f"Use --fork {path} to branch it, --session <other> to pick another "
+        "session, or --no-session to run without one."
+    )
+
+
+async def _prompt_session_owned_interactive(
+    path: str, *, default_read_only: bool
+) -> Literal["fork", "read_only", "cancel"]:
+    """D1's three-way question, on the same widget as the trust gate.
+
+    Reuses :func:`_prompt_one_shot_select` rather than growing a second
+    hand-rolled dialog: it already returns ``None`` on Esc / Ctrl-C **and**
+    when the ``[tui]`` extra is missing, and both must mean cancel here for
+    exactly the reason they mean deny there — "no answer" may never be read as
+    consent to write into a file another terminal owns.
+
+    The default cursor is the only thing that varies. ``--continue`` /
+    ``--resume`` mean "the session I was working in here", and a fork of it is
+    the honest continuation. ``--session <file>`` named *that* file, and a fork
+    is a different one, so the cursor sits on the option that gives them what
+    they asked for.
+    """
+
+    fork_label = "Fork and continue here (a new session file, same history)"
+    read_only_label = "Open read-only (view only; this terminal cannot write)"
+    cancel_label = "Cancel"
+    options = (
+        [read_only_label, fork_label, cancel_label]
+        if default_read_only
+        else [fork_label, read_only_label, cancel_label]
+    )
+    chosen = await _prompt_one_shot_select(
+        f"This session is already open in another terminal.\n  {path}\n",
+        options,
+    )
+    if chosen == fork_label:
+        return "fork"
+    if chosen == read_only_label:
+        return "read_only"
+    return "cancel"
+
+
+async def _resolve_session_ownership(
+    session: Session,
+    repo: JsonlSessionRepo,
+    cwd: str,
+    *,
+    app_mode: AppMode,
+    named_exactly: bool,
+    opened_existing: bool,
+) -> tuple[Session, SessionWriterLock | None, bool] | None:
+    """Give this terminal a session it may write to, or ``None`` to exit 1.
+
+    Returns ``(session, lock, read_only)``. ``lock`` is ``None`` only for a
+    read-only viewer and for a session with no file at all (``--no-session``).
+    A *degraded* lock — a filesystem with no ``flock`` — is a real object that
+    reports :attr:`SessionWriterLock.degraded`, because "nobody else has it"
+    and "we could not check" are different answers and the user is told which
+    one they got.
+
+    ``opened_existing`` says the session came off disk (``--continue`` /
+    ``--resume`` / ``--session``) rather than having been created by this
+    process, which is the only case that has to re-read; see below.
+    """
+
+    path = session.session_file
+    if path is None:
+        # ``--no-session``: in-memory storage, no file, nothing to own.
+        return session, None, False
+
+    lock = SessionWriterLock(path)
+    if lock.try_acquire():
+        if lock.degraded:
+            print(
+                "Warning: this filesystem has no file locking, so Aelix "
+                "cannot tell whether another terminal already has this "
+                "session open. Two terminals on one session lose a turn "
+                "(#137).",
+                file=sys.stderr,
+            )
+        if opened_existing:
+            # #137 — the file was READ above and is only OWNED here, and the
+            # gap between the two is exactly the handoff
+            # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
+            # appends its last turn and *then* releases, on ``/new`` or
+            # ``/quit``. We win the lock a few milliseconds later still
+            # holding the process-local leaf from before that append, and our
+            # next append reparents onto it — the other terminal's final turn
+            # vanishes from the replay. That is #137 reproduced by the guard
+            # meant to prevent it; review measured it end to end ("stored:
+            # shared, A-final, B-next; replay: shared, B-next").
+            #
+            # Re-reading under the lock closes the window: past this line
+            # nobody else may append. The in-session path needs no equivalent
+            # — ``switch_session`` locks BEFORE ``repo.open`` — but at startup
+            # three different flags resolve the session before ownership is
+            # even a question, so the honest fix is one extra read of a file
+            # we now own. ``cwd_override=cwd`` repeats what ``_build_session``
+            # and ``_resume_session_startup`` already pass, so the reopened
+            # session differs from the old one in nothing but freshness.
+            session = await repo.open(
+                await session.get_metadata(), cwd_override=cwd
+            )
+        return session, lock, False
+
+    if lock.error is not None:
+        # Not contention: the sidecar itself is unusable — a root-owned
+        # ``<session>.jsonl.lock`` left by a ``sudo aelix``, a sessions
+        # directory shared across accounts, a read-only mount, a symlinked
+        # lock path that filelock's ``O_NOFOLLOW`` refuses. "Already open in
+        # another terminal" would send the user hunting for a terminal that
+        # does not exist, and what this used to do was worse: every ``OSError``
+        # out of filelock was read as "this filesystem cannot lock" and the
+        # session was handed over anyway, while its real owner kept appending.
+        print(
+            "Error: this session's lock file cannot be used.\n"
+            f"  {lock.lock_path}\n"
+            f"  {lock.error}\n"
+            "Fix its permissions (or remove it, if no other terminal has this "
+            "session open), or pick another session with --session <other>.",
+            file=sys.stderr,
+        )
+        return None
+
+    # Owned by a live process. D1: ask if we can, refuse if we cannot.
+    if app_mode != "interactive":
+        # A process that cannot ask must not choose data loss on the user's
+        # behalf, and must not silently scatter session files through
+        # someone's loop. Narrower than it sounds: a bare ``-p`` creates a new
+        # file and never reaches this line.
+        print(_session_owned_message(path), file=sys.stderr)
+        return None
+
+    choice = await _prompt_session_owned_interactive(
+        path, default_read_only=named_exactly
+    )
+    if choice == "cancel":
+        print(_session_owned_message(path), file=sys.stderr)
+        return None
+    if choice == "read_only":
+        return Session(ReadOnlySessionStorage(session.get_storage())), None, True
+
+    # Fork and continue. ``fork_from`` publishes the whole source into a NEW
+    # file under this cwd; the original stays the first terminal's. The fork is
+    # then the newest file by mtime, so the next ``--continue`` here lands on
+    # it — which is only true because #297 stopped the header sniff from
+    # dropping a fork header over 512 bytes.
+    metadata = await session.get_metadata()
+    forked = await repo.fork_from(metadata, cwd)
+    forked_path = forked.session_file
+    if forked_path is None:  # pragma: no cover — fork_from always writes a file
+        return forked, None, False
+    forked_lock = SessionWriterLock(forked_path)
+    if not forked_lock.try_acquire():  # pragma: no cover — a file published
+        # microseconds ago. Not reachable by a user action, but the return
+        # value used to be discarded outright, and "we published a file and
+        # somebody already owns it" is the one shape that must never end in
+        # this process writing to it anyway.
+        print(
+            "Error: the session this fork just created is already open in "
+            f"another terminal:\n  {forked_path}",
+            file=sys.stderr,
+        )
+        return None
+    print(f"Forked into a new session: {forked_path}", file=sys.stderr)
+    return forked, forked_lock, False
 
 
 __all__ = [
