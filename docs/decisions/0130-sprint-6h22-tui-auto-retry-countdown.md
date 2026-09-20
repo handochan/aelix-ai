@@ -151,6 +151,35 @@ Pure TUI consumer sprint: no protected-core touch.
 - Unit tests: 5 new smoke tests cover the full state machine — appearance,
   label refresh, idempotent end, shutdown cancellation, Esc handler swap +
   restoration. All deterministic (no real wall-clock dependencies).
+
+  > **Correction (2026-09-21, #303).** "No real wall-clock dependencies" was
+  > wrong for one of the five, and the one it was wrong about is the shutdown
+  > gate. `test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff` armed a
+  > 10 s backoff and asserted `asyncio.wait_for(task, timeout=2)`, so "the
+  > ticker was cancelled" was inferred from "the shutdown finished inside 2 s" —
+  > a wall clock deciding a verdict. It flaked on the windows-latest py3.11 leg
+  > (run 35435149407, commit `8aaede2`) and passed on a re-run.
+  >
+  > It is now caused rather than timed, the way ADR-0225 fixed the interrupt
+  > handover: the end-of-backoff `_hand_back_retry_interrupt` swaps
+  > `chrome.on_interrupt` and paints the "now…" widget, and a ticker cancelled
+  > mid-backoff does neither, so the test reads those instead of the clock. The
+  > bound that survives is an anti-hang bound and decides nothing. What that
+  > buys is a **10 s margin where there was a 2 s one**, not immunity to a slow
+  > box: the cause being read is still produced by the product's own 10 s
+  > backoff. Measured on a correct build, /quit delayed after the widget is up —
+  > 9.5 s → green, 10.5 s → red.
+  >
+  > The same pass closed a gap the LOW-3 entry above implies was covered: "no
+  > orphan task" had no gate at all. Measured — deleting BOTH the `cancel()`
+  > and the `await` from `run_tui`'s `finally` leaves the ticker running after
+  > `run_tui` returns, and the old test still passed. The test now also asserts
+  > that no `_tick_retry_countdown` task survives the shutdown — and, because
+  > that assertion matches a coroutine name as a *string*, it first asserts that
+  > exactly one such task is alive mid-backoff. Without that guard a rename
+  > hollows it out silently: measured, with the ticker orphaned AND
+  > `_tick_retry_countdown` renamed in `shell.py`, the test went back to
+  > `1 passed in 0.17s`. It now fails on the mid-backoff assertion instead.
 - Pi-port fidelity: every block cites `interactive-mode.ts:2919-2948`. The
   widget label format, Esc → `abort_retry` routing, and transcript commit
   on terminal events match pi's countdown behavior.

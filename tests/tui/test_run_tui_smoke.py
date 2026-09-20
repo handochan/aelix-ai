@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -97,16 +98,126 @@ class FakeRuntime:
         self.disposed += 1
 
 
-async def _wait(predicate, *, timeout: float = 3.0) -> None:
-    """Poll until ``predicate()`` is true (deterministic; no fixed sleeps)."""
+# === #303 — the wall-clock bounds in this file ===============================
+#
+# Two of them flaked on the windows-latest leg and passed on re-run
+# (runs 35435149407 and 35435949615). That leg takes ~15 min and starves the
+# event loop, and a 2-3 s bound does not survive it.
+#
+# The distinction that decides what a bound may be raised to: **is it a gate, or
+# an anti-hang bound?**
+#
+#   * Every ``_wait`` here asserts PRESENCE — the app came up, a widget
+#     appeared, a counter moved. Load cannot manufacture any of those, and the
+#     regression each one guards against ("it never happens") is UNBOUNDED, so
+#     the number is not what makes the test a test. Raising it can only remove
+#     false failures. ``_wait_slow`` below has made this argument since the
+#     Sprint 6h flakes; #303 promotes it to the default.
+#   * The same reading covers ``_quit_within``: "run_tui never returns after
+#     /quit" is unbounded too.
+#   * A bound that DOES decide a verdict — "this finished fast, so the thing we
+#     care about was cancelled rather than awaited" — is a gate, and raising it
+#     hollows the test out. There was exactly one of those in this file
+#     (``test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff``); its
+#     verdict no longer comes from a clock at all. See its docstring.
+#
+# Measured on this tree, idle, before any of this changed: the statusline smoke
+# test spent 1.05 s of its 3 s budget on prompt_toolkit's ~1 s ``timeoutlen``
+# flush for a bare Esc, leaving under 2 s for everything else. The margin
+# probe (.omc/specs/303-wallclock-margin-probe.py) reproduces both failures by
+# injecting loop starvation, the way ADR-0225 measured the retry handover.
+
+_WAIT_CEILING = 10.0
+"""Anti-hang bound for ``_wait`` (not a gate — see the note above)."""
+
+_QUIT_CEILING = 20.0
+"""Anti-hang bound for awaiting a ``run_tui`` task after /quit or Ctrl+D."""
+
+_SHUTDOWN_CEILING = 20.0
+"""Anti-hang bound for the mid-backoff /quit test. Must stay ABOVE the 10 s
+backoff that test arms, so a regressed shutdown REACHES the causal assertion
+instead of being cut short by a timeout that says nothing."""
+
+
+def _describe(predicate) -> str:
+    """Best-effort source text for a ``_wait`` predicate, for the failure line.
+
+    A lambda's source is what makes a windows flake readable in the ``-q`` log —
+    "condition not met within timeout" named neither the predicate nor the
+    bound, so run 35435949615 could not be diagnosed from its log at all.
+    """
+
+    import inspect
+
+    try:
+        text = " ".join(inspect.getsource(predicate).split())
+    except (OSError, TypeError):  # pragma: no cover — no source (exec'd, C, …)
+        return repr(predicate)
+    return text[:160]
+
+
+async def _wait(predicate, *, timeout: float = _WAIT_CEILING, what: str | None = None) -> None:
+    """Poll until ``predicate()`` is true (deterministic; no fixed sleeps).
+
+    ``timeout`` is an anti-hang bound, not a gate (see the #303 note above).
+
+    On a bound hit the message carries what was waited for, the bound, the
+    measured wall clock and the poll count. A wait that burns more than half
+    its bound and THEN succeeds warns with the number, so a windows leg that is
+    about to flake says so a run BEFORE it does — ``warnings.warn`` is what
+    surfaces numbers in a ``-q`` run here.
+    """
 
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    started = loop.time()
+    deadline = started + timeout
+    polls = 0
     while loop.time() < deadline:
+        polls += 1
         if predicate():
+            waited = loop.time() - started
+            if waited > timeout / 2:
+                warnings.warn(
+                    f"_wait took {waited:.2f}s of its {timeout:.1f}s bound "
+                    f"({polls} polls) for: {what or _describe(predicate)}",
+                    stacklevel=2,
+                )
             return
         await asyncio.sleep(0.005)
-    raise AssertionError("condition not met within timeout")
+    raise AssertionError(
+        f"waited {loop.time() - started:.2f}s (bound {timeout:.1f}s, {polls} polls) "
+        f"for: {what or _describe(predicate)}"
+    )
+
+
+async def _quit_within(task: asyncio.Task[int], *, ceiling: float = _QUIT_CEILING) -> int:
+    """Await a ``run_tui`` task after /quit (or Ctrl+D) under an anti-hang bound.
+
+    Replaces ``asyncio.wait_for(task, timeout=5)``. Two things it adds:
+
+    * the bound is named and documented as an anti-hang bound, so nobody reads
+      5 s as "the shutdown is asserted to be fast" — it never was;
+    * a bound hit reports the measured wall clock instead of a bare
+      ``TimeoutError``, which in a ``-q`` log is indistinguishable from any
+      other timeout in the file.
+    """
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        code = await asyncio.wait_for(task, timeout=ceiling)
+    except TimeoutError as exc:  # asyncio.TimeoutError is this, since 3.11
+        raise AssertionError(
+            f"run_tui did not return within {ceiling:.0f}s of /quit "
+            f"(waited {loop.time() - started:.2f}s)"
+        ) from exc
+    waited = loop.time() - started
+    if waited > ceiling / 2:
+        warnings.warn(
+            f"run_tui took {waited:.2f}s of its {ceiling:.0f}s bound to return after /quit",
+            stacklevel=2,
+        )
+    return code
 
 
 async def _esc_until_settings_closed(
@@ -120,6 +231,12 @@ async def _esc_until_settings_closed(
     settle into "closed"; if it re-opened, send another Esc. Crucially we wait for
     EACH Esc to be processed before sending the next, so we never out-pace the key
     queue (which previously corrupted the input buffer).
+
+    #303: the 0.5 s below is deliberately NOT raised with the rest. It is the
+    retry driver's step, not a bound on the test — a longer step just means
+    fewer Esc presses inside the same ``tries`` budget, and the AssertionError
+    it raises is caught, so it never reaches a log. The bound that actually
+    fails this helper is ``tries`` running out.
     """
 
     for _ in range(tries):
@@ -172,7 +289,7 @@ async def test_run_tui_drives_prompt_and_quits() -> None:
         pipe.send_text("hello world\n")
         await _wait(lambda: runtime.harness.prompts == [("hello world", "interactive")])
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert runtime.harness.bootstrapped == 1
@@ -186,7 +303,7 @@ async def test_run_tui_binds_then_unbinds_ui() -> None:
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     bound = runtime.harness.runtime.bound
     assert isinstance(bound[0], AelixTUIContext)  # real UI bound first
@@ -202,7 +319,7 @@ async def test_run_tui_reload_command() -> None:
         # factory rebuild) by default, not harness.reload_resources().
         await _wait(lambda: runtime.reloads == 1)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.reloads == 1
     assert runtime.harness.reloads == 0  # the kill-switch path was NOT taken
     assert runtime.harness.prompts == []
@@ -284,7 +401,7 @@ async def test_run_tui_paints_manifest_widgets(
         await runtime.rebind_cb(FakeHarness(), "reload")
         assert "manifest-widget-line" not in str(chrome._render_widgets_above())
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_eof_exits() -> None:
@@ -292,7 +409,7 @@ async def test_run_tui_eof_exits() -> None:
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("\x04")  # Ctrl+D on an empty buffer → EOF
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
     assert runtime.disposed == 1
     assert runtime.harness.prompts == []
@@ -310,7 +427,7 @@ async def test_run_tui_survives_turn_exception() -> None:
         pipe.send_text("boom\n")
         await _wait(lambda: runtime.harness.prompts == [("boom", "interactive")])
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0  # a failed turn did not kill the REPL
     assert runtime.disposed == 1
 
@@ -338,7 +455,7 @@ async def test_run_tui_ctrl_c_during_turn_aborts_and_survives() -> None:
         pipe.send_text("\x03")  # Ctrl+C mid-turn → on_interrupt → abort
         await _wait(lambda: runtime.harness.aborts == 1)
         pipe.send_text("/quit\n")  # REPL must still accept input
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
     assert runtime.harness.aborts == 1
 
@@ -399,7 +516,7 @@ async def test_run_tui_management_modal_command_opens_not_prompts() -> None:
             pipe.send_text("/deploy\n")  # matches the stored management-modal
             await _wait(lambda: len(opened) == 1)
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         DescriptorRenderer.open_modal = orig  # type: ignore[method-assign]
 
@@ -417,7 +534,7 @@ async def test_run_tui_unknown_slash_is_not_sent_to_model() -> None:
         pipe.send_text("real prompt\n")  # a real prompt DOES reach the model
         await _wait(lambda: runtime.harness.prompts == [("real prompt", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     # The unknown /x was never forwarded to the harness.
     assert runtime.harness.prompts == [("real prompt", "interactive")]
 
@@ -434,7 +551,7 @@ async def test_run_tui_help_command_runs_handler_not_prompt() -> None:
         pipe.send_text("hi\n")
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -466,7 +583,7 @@ async def test_run_tui_mode_command_sets_and_reflects_footer() -> None:
         await _wait(lambda: runtime.harness.mode_calls == ["all"])  # type: ignore[attr-defined]
         await _wait(lambda: "⏵⏵ all" in chrome._footer_line)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.mode_calls == ["all"]
     assert harness.prompts == []  # never sent to the model
 
@@ -487,7 +604,7 @@ async def test_run_tui_clear_command_runs_handler_not_prompt() -> None:
         pipe.send_text("/clear\n")
         await _wait(lambda: cleared == [1])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == []
 
 
@@ -509,7 +626,7 @@ async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None
         pipe.send_text("!ls\n")
         await _wait(lambda: calls == [("ls", False, "/work")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert calls == [("ls", False, "/work")]
 
 
@@ -576,7 +693,7 @@ async def test_run_tui_echoes_user_prompt_into_transcript() -> None:
         await _wait(lambda: runtime.harness.prompts == [("what is 2+2", "interactive")])
         await _wait(lambda: any("» what is 2+2" in c for c in commits))
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     # The user's own line is echoed (role-marked) before the assistant reply.
     assert any(c == "» what is 2+2" for c in commits)
 
@@ -639,7 +756,7 @@ async def test_run_tui_echo_bar_is_capped_at_the_render_width() -> None:
         await _wait(lambda: runtime.harness.prompts == [(long_turn, "interactive")])
         await _wait(lambda: any(_plain_of(c).startswith("» please") for c in captured))
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     echoes = [c for c in captured if _plain_of(c).startswith("» please")]
     assert echoes, "the echo never reached the chrome"
@@ -667,7 +784,7 @@ async def test_run_tui_does_not_echo_bash_command_or_empty(
         await _wait(lambda: runtime.harness.prompts == [("real", "interactive")])
         await _wait(lambda: any(c == "» real" for c in commits))
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     # Only the prompt path echoed; no `» !ls`, `» /help`, or `» ` blank echo.
     # The barrier prompt "real" is the only model-bound line, hence the only echo.
     echoed = [c for c in commits if c.startswith("» ")]
@@ -688,7 +805,7 @@ async def test_run_tui_resume_command_degrades_without_repo() -> None:
         pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -710,7 +827,7 @@ async def test_run_tui_wp7_commands_degrade_and_survive() -> None:
         pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -808,7 +925,7 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
         pipe.send_text("\r")
         await _wait(lambda: bool(runtime.switch_calls))
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert repo.list_cwds == ["."]  # listed cwd-scoped
     # active.jsonl excluded; #1 = the newest remaining (new.jsonl), not active.
     assert runtime.switch_calls == ["/s/new.jsonl"]
@@ -887,7 +1004,7 @@ async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
             pipe.send_text("/resume\n")
             await _wait(lambda: bool(runtime.switch_calls))
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         monkeypatch.setattr(AelixTUIContext, "select", real_select)
 
@@ -974,7 +1091,7 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
             pipe.send_text("/resume\n")
             await _wait(lambda: bool(runtime.switch_calls))
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         monkeypatch.setattr(AelixTUIContext, "select", real_select)
 
@@ -1066,7 +1183,7 @@ async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_byte
             pipe.send_text("/resume\n")
             await _wait(lambda: bool(runtime.switch_calls))
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         monkeypatch.setattr(AelixTUIContext, "select", real_select)
 
@@ -1163,7 +1280,7 @@ async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
                 pipe.send_text("/resume\n")
                 await _wait(lambda r=runtime: bool(r.switch_calls))
                 pipe.send_text("/quit\n")
-                await asyncio.wait_for(task, timeout=5)
+                await _quit_within(task)
         finally:
             monkeypatch.setattr(AelixTUIContext, "select", real_select)
 
@@ -1197,7 +1314,7 @@ async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
         pipe.send_text("hi\n")  # barrier: REPL still reaches the model
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.switch_calls == []  # nothing to switch to
 
 
@@ -1230,7 +1347,7 @@ async def test_run_tui_new_command_starts_fresh_session() -> None:
         pipe.send_text("/new\n")
         await _wait(lambda: runtime.new_calls == 1)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.new_calls == 1
 
 
@@ -1307,7 +1424,7 @@ async def test_run_tui_settings_toggles_steering_mode() -> None:
         await _esc_until_settings_closed(chrome, pipe)
         chrome.request_eof()
         chrome.exit()
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.steer_set == ["all"]  # live dual-write
     assert sm.get_steering_mode() == "all"  # persisted dual-write
 
@@ -1334,7 +1451,7 @@ async def test_run_tui_settings_cycles_thinking_level() -> None:
         await _esc_until_settings_closed(chrome, pipe)
         chrome.request_eof()
         chrome.exit()
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.level_set == ["low"]  # live half
     assert sm.get_default_thinking_level() == "low"  # persisted default
 
@@ -1356,7 +1473,7 @@ async def test_run_tui_seeds_theme_from_persisted_setting() -> None:
         context = runtime.harness.runtime.bound[0]
         await _wait(lambda: getattr(context._theme, "name", None) == "dark")
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert getattr(context._theme, "name", None) == "dark"
 
 
@@ -1377,7 +1494,7 @@ async def test_run_tui_unknown_persisted_theme_falls_back_to_default() -> None:
         await asyncio.sleep(0.05)
         assert context._theme is _themes.DEFAULT_THEME
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_restores_persisted_manifest_theme(tmp_path: Path) -> None:
@@ -1441,7 +1558,7 @@ async def test_run_tui_restores_persisted_manifest_theme(tmp_path: Path) -> None
                 lambda: getattr(context._theme, "name", None) == "solarized"
             )
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
         assert getattr(context._theme, "name", None) == "solarized"
     finally:
         _themes.register_themes([])  # keep the process-global registry clean
@@ -1482,7 +1599,7 @@ async def test_run_tui_seeds_visible_thinking_from_persisted_setting(
         await _wait(lambda: bool(captured))
         await _wait(lambda: captured[0].hide_thinking is False)  # type: ignore[attr-defined]
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert captured[0].hide_thinking is False  # type: ignore[attr-defined]
 
 
@@ -1501,7 +1618,7 @@ async def test_run_tui_seeds_hidden_thinking_from_persisted_setting(
         await _wait(lambda: bool(captured))
         await _wait(lambda: captured[0].hide_thinking is True)  # type: ignore[attr-defined]
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert captured[0].hide_thinking is True  # type: ignore[attr-defined]
 
 
@@ -1545,7 +1662,7 @@ async def test_run_tui_seeds_default_thinking_level_when_supported() -> None:
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: harness.level_set == ["medium"])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.level_set == ["medium"]
 
 
@@ -1581,7 +1698,7 @@ async def test_run_tui_settings_seed_skips_when_level_was_restored() -> None:
         pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.level_set == []
 
 
@@ -1608,7 +1725,7 @@ async def test_run_tui_seed_still_fills_untouched_case() -> None:
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: harness.level_set == ["medium"])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.level_set == ["medium"]
 
 
@@ -1627,7 +1744,7 @@ async def test_run_tui_skips_default_thinking_level_when_unsupported() -> None:
         pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert harness.level_set == []  # unsupported level was skipped
 
 
@@ -1661,7 +1778,7 @@ async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(
         pipe.send_text("\x03")  # Ctrl+C clears the editor
         await _wait(lambda: chrome.get_editor_text() == "")
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_ctrl_v_silent_noop_when_clipboard_has_no_image(
@@ -1679,7 +1796,7 @@ async def test_run_tui_ctrl_v_silent_noop_when_clipboard_has_no_image(
         await asyncio.sleep(0.1)
         assert chrome.get_editor_text() == ""  # no insertion, no error
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:
@@ -1697,7 +1814,7 @@ async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:
         pipe.send_text("\x03")  # Ctrl+C clears the editor (idle)
         await _wait(lambda: chrome.get_editor_text() == "")
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 # === Sprint 6h₂₁ (ADR-0129) — /fork shell smoke test =======================
@@ -1782,7 +1899,7 @@ async def test_run_tui_fork_picks_most_recent_user_message() -> None:
         pipe.send_text("/fork\n")
         await _wait(lambda: runtime.fork_calls == [("u2", "before")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_fork_with_no_user_message_degrades_gracefully() -> None:
@@ -1811,7 +1928,7 @@ async def test_run_tui_fork_with_no_user_message_degrades_gracefully() -> None:
         await asyncio.sleep(0.05)
         assert runtime.fork_calls == []
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 # === Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown subscriber ============
@@ -1871,7 +1988,7 @@ async def test_run_tui_auto_retry_countdown_shows_and_clears_widget() -> None:
         await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_auto_retry_esc_calls_abort_retry_not_abort() -> None:
@@ -1916,7 +2033,7 @@ async def test_run_tui_auto_retry_esc_calls_abort_retry_not_abort() -> None:
         assert harness.retry_aborts == 1  # unchanged
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_auto_retry_end_without_prior_start_is_idempotent() -> None:
@@ -1945,16 +2062,68 @@ async def test_run_tui_auto_retry_end_without_prior_start_is_idempotent() -> Non
         # without raising is the actual contract.
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff() -> None:
-    # W-review LOW-3 (Sprint 6h₂₂): /quit during the auto-retry backoff sleep
-    # must cancel the ticker via the ``finally`` block (no orphan task, fast
-    # shutdown). A 10s delay would hang the test for 10s without the cleanup.
+    """/quit mid-backoff CANCELS the countdown ticker instead of awaiting it out.
+
+    W-review LOW-3 (Sprint 6h₂₂): the ``finally`` in ``run_tui`` must cancel
+    ``retry_countdown_ref["task"]``; without the cancel it falls through to the
+    ``await countdown_task`` on the next line and the shutdown sits out the
+    whole auto-retry backoff.
+
+    #303 — THIS TEST USED TO BE DECIDED BY A CLOCK, AND THE CLOCK FLAKED.
+    It armed a 10 s backoff and asserted ``asyncio.wait_for(task, timeout=2)``,
+    i.e. "cancelled" was inferred from "finished in under 2 s". On the
+    windows-latest leg (run 35435149407, py3.11, commit 8aaede2) that inference
+    lost its margin and the test failed; it passed on a re-run.
+
+    The gate is now CAUSAL, in ADR-0225's sense ("caused, not timed"): a ticker
+    that reaches the END of its backoff runs ``_hand_back_retry_interrupt`` —
+    which swaps ``chrome.on_interrupt`` back to the full-turn handler and paints
+    "⟳ Retrying (1/3) now… Esc to interrupt" (shell.py ``_tick_retry_countdown``
+    / ``_hand_back_retry_interrupt``). A ticker cancelled mid-backoff does
+    neither, so the test reads those two facts instead of a stopwatch.
+
+    That buys a 10 s margin where there was a 2 s one, plus a regression that
+    names itself — NOT immunity to a slow box. The cause being read is still
+    produced by the product's own 10 s backoff, so a box slow enough to sit that
+    backoff out before /quit is processed still turns a correct build red.
+    MEASURED here on a correct build, /quit delayed after the widget is up:
+    9.5 s → GREEN, 10.5 s → RED (handler swapped, "now…" painted). Loop
+    starvation — the windows shape — is weaker than a plain delay: a 12 s block
+    across the /quit window let ``run_tui`` take 12.02 s to return and still came
+    back GREEN, because the expired ticker timer and the queued /quit become
+    runnable in the same turn and the teardown gets there first.
+
+    The surviving bound (``_SHUTDOWN_CEILING``) is an anti-hang bound and must
+    stay ABOVE the 10 s backoff: a regressed shutdown has to be allowed to
+    finish so it reaches the assertions below, rather than being cut off by a
+    timeout that would only say "timed out".
+
+    SABOTAGE THAT TURNS THIS RED (measured, see the #303 commit body): delete
+    ``countdown_task.cancel()`` from ``run_tui``'s ``finally`` and leave the
+    ``await countdown_task`` — the handover fires and both assertions below
+    report it by name.
+    """
+
     from aelix_agent_core.types import AutoRetryStartEvent
 
     async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        # Record every line the retry widget is ever given. Installed BEFORE
+        # run_tui so nothing can be missed, and it delegates, so the widget
+        # dict the waits below read stays real.
+        retry_paints: list[list[str] | None] = []
+        _real_set_widget = chrome.set_widget
+
+        def _spy_set_widget(key: str, lines: list[str] | None, *, above: bool = True) -> None:
+            if key == "__auto_retry__":
+                retry_paints.append(None if lines is None else list(lines))
+            _real_set_widget(key, lines, above=above)
+
+        chrome.set_widget = _spy_set_widget  # type: ignore[method-assign]
+
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: bool(runtime.harness.subscribers))
@@ -1968,11 +2137,59 @@ async def test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff() -> None:
             )
         )
         await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+        # Mid-backoff the interrupt is wired to ``_on_retry_interrupt``. Capture
+        # it by identity: the end-of-backoff handover is the only thing that can
+        # replace it from here, and it does so under any wording.
+        interrupt_mid_backoff = chrome.on_interrupt
 
-        # /quit mid-backoff. If the finally block doesn't cancel the ticker,
-        # this hangs ~10s; the timeout=2 makes a regression loud.
+        # The orphan check below matches a coroutine name as a STRING, and a
+        # string that nothing gates is an assertion that can stop asserting.
+        # MEASURED (#303 review): orphan the ticker for real — delete BOTH the
+        # ``cancel()`` and the ``await`` from ``run_tui``'s ``finally`` — AND
+        # rename ``_tick_retry_countdown`` in shell.py, and this test went back
+        # to ``1 passed in 0.17s``. So the same list is built HERE, where the
+        # ticker is provably alive mid-backoff, and asserted to hold exactly one
+        # task. A rename now fails loudly on this line instead of quietly
+        # hollowing out the one after /quit.
+        def _live_tickers() -> list[asyncio.Task[Any]]:
+            return [
+                t
+                for t in asyncio.all_tasks()
+                if getattr(t.get_coro(), "__qualname__", "").endswith("_tick_retry_countdown")
+            ]
+
+        armed = _live_tickers()
+        assert len(armed) == 1, (
+            "expected exactly one live _tick_retry_countdown task while the 10 s "
+            f"backoff runs, found {armed}. If shell.py renamed the ticker "
+            "coroutine, the orphan assertion below matches nothing and asserts "
+            "nothing — rename it in BOTH places."
+        )
+
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=2)
+        await _quit_within(task, ceiling=_SHUTDOWN_CEILING)
+
+        # The other half of the stated intent — "no orphan task" — had no gate
+        # at all: deleting BOTH the cancel and the await leaves the ticker
+        # running and the OLD test passed, because run_tui still returned
+        # promptly. Clock-free, so it costs nothing to keep.
+        orphans = _live_tickers()
+        assert not orphans, f"/quit left the countdown ticker running: {orphans}"
+
+    painted = [line for lines in retry_paints if lines for line in lines]
+    assert painted, (
+        "the countdown never painted, so this test never reached the state it "
+        "gates — the set_widget spy or the auto-retry wiring is broken"
+    )
+    assert chrome.on_interrupt is interrupt_mid_backoff, (
+        "/quit sat out the 10 s auto-retry backoff instead of cancelling the "
+        "ticker: the ticker reached its end-of-backoff handover and swapped the "
+        f"interrupt handler back. painted={painted}"
+    )
+    assert not any("now…" in line for line in painted), (
+        "/quit sat out the 10 s auto-retry backoff instead of cancelling the "
+        f"ticker: the end-of-backoff widget was painted. painted={painted}"
+    )
 
 
 async def test_run_tui_ctrl_g_external_editor_round_trips_through_subprocess(
@@ -2169,7 +2386,7 @@ async def test_run_tui_auto_retry_back_to_back_starts_cancel_prior_ticker() -> N
         await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def _wait_slow(predicate) -> None:  # type: ignore[no-untyped-def]
@@ -2179,6 +2396,10 @@ async def _wait_slow(predicate) -> None:  # type: ignore[no-untyped-def]
     longer bound can only remove false failures. Two of these gates flaked at the
     3 s default during a full-suite run that shared the box with a seven-agent
     workflow, which is the shape of load CI actually has.
+
+    #303 took that argument and applied it to ``_wait`` itself, whose default is
+    now ``_WAIT_CEILING`` (10 s). This wrapper survives for the handful of waits
+    that were singled out as the slowest, and keeps the wider 20 s bound.
     """
 
     await _wait(predicate, timeout=20.0)
@@ -2259,7 +2480,7 @@ async def test_run_tui_retry_agent_start_hands_the_interrupt_back_at_once() -> N
         assert harness.retry_aborts == 1, "the turn abort must not be a second abort_retry"
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_retry_countdown_expiry_still_hands_the_interrupt_back() -> None:
@@ -2291,7 +2512,7 @@ async def test_run_tui_retry_countdown_expiry_still_hands_the_interrupt_back() -
         assert harness.retry_aborts == 0, "after the backoff Esc must abort the TURN"
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_agent_start_outside_a_retry_leaves_the_chrome_alone() -> None:
@@ -2316,7 +2537,7 @@ async def test_run_tui_agent_start_outside_a_retry_leaves_the_chrome_alone() -> 
         assert "__auto_retry__" not in chrome._widgets_above
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_a_finished_retry_is_not_repainted_by_the_next_turn() -> None:
@@ -2347,7 +2568,7 @@ async def test_run_tui_a_finished_retry_is_not_repainted_by_the_next_turn() -> N
         assert "__auto_retry__" not in chrome._widgets_above
 
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 # === WP-8 — /login + /logout + /stats + /extension wiring ===================
@@ -2367,7 +2588,7 @@ async def test_run_tui_wp8_commands_resolve_and_survive() -> None:
         pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -2385,7 +2606,7 @@ async def test_run_tui_extension_command_opens_tabbed_viewer_and_closes() -> Non
         pipe.send_text("hi\n")  # barrier: REPL still alive
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -2456,7 +2677,7 @@ async def test_run_tui_extension_command_renders_populated_installed_tab() -> No
             pipe.send_text("/extension\n")
             await _wait(lambda: "tabs" in captured)
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
 
     assert captured["title"] == "Extensions"
     tabs = dict(captured["tabs"])  # type: ignore[arg-type]
@@ -2500,7 +2721,7 @@ async def test_run_tui_stats_command_opens_dashboard_and_closes() -> None:
         pipe.send_text("hi\n")  # barrier
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
@@ -2539,7 +2760,7 @@ async def test_run_tui_extension_command_runs_not_prompts() -> None:
         pipe.send_text("/hello world\n")
         await _wait(lambda: ran == ["world"])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     # The extension command ran with raw args and was NOT sent to the model.
     assert ran == ["world"]
@@ -2560,7 +2781,7 @@ async def test_run_tui_builtin_wins_over_extension_command() -> None:
         pipe.send_text("ping\n")
         await _wait(lambda: runtime.harness.prompts == [("ping", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert ran == []  # the built-in won; the extension's /help never ran
 
@@ -2579,7 +2800,7 @@ async def test_run_tui_rebind_rebinds_ui_to_new_harness() -> None:
         assert new_harness.runtime.bound, "new harness runtime was not re-bound"
         assert isinstance(new_harness.runtime.bound[-1], AelixTUIContext)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_extension_command_throw_survives() -> None:
@@ -2594,7 +2815,7 @@ async def test_run_tui_extension_command_throw_survives() -> None:
         pipe.send_text("ping\n")
         await _wait(lambda: runtime.harness.prompts == [("ping", "interactive")])
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     # The thrown command did not fall through to the model.
     assert runtime.harness.prompts == [("ping", "interactive")]
@@ -2693,7 +2914,7 @@ async def test_run_tui_resume_replays_custom_message_via_extension_renderer() ->
         await _wait(lambda: bool(runtime.switch_calls))
         await _wait(lambda: bool(calls))  # renderer dispatched during replay
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     # DISPLAY tier taken, not build_context (which would leave this at 0). Two
     # readers now: the replay itself, plus the /stats baseline the swap seeds
     # from the arriving branch so Turns / Active time aren't 0 after a resume.
@@ -2772,7 +2993,7 @@ async def test_run_tui_fork_replays_custom_via_renderer_second_callsite() -> Non
         await _wait(lambda: len(calls) == 2)
         assert calls == ["status", "status"]
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 async def test_run_tui_registers_manifest_theme_on_startup(
@@ -2832,7 +3053,7 @@ async def test_run_tui_registers_manifest_theme_on_startup(
             await runtime.rebind_cb(FakeHarness(), "reload")
             assert theme_registry.get_theme("smoke-solar") is None
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         theme_registry.register_themes([])  # module-global cleanup
 
@@ -2905,7 +3126,7 @@ async def test_run_tui_settings_theme_picker_selects_manifest_theme(
             await _esc_until_settings_closed(chrome, pipe)
             chrome.request_eof()
             chrome.exit()
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
         assert sm.get_theme() == "solarized"  # picker enumerated the manifest theme
     finally:
         _themes.register_themes([])  # module-global cleanup
@@ -2981,7 +3202,7 @@ async def test_run_tui_seeds_stats_baseline_from_the_resumed_branch(
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert len(seeded) == 1, "startup must seed the /stats baseline exactly once"
@@ -2999,7 +3220,7 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
 
@@ -3075,10 +3296,10 @@ async def test_compaction_end_refreshes_the_footer_context_meter() -> None:
         from types import SimpleNamespace
 
         listener(SimpleNamespace(type="compaction_end"))
-        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+        await _wait(lambda: harness.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.stats_calls > before, "compaction_end must refresh the meter"
@@ -3108,10 +3329,10 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
 
         # Real emit — this is the production call shape, not a hand-rolled one.
         await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
-        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+        await _wait(lambda: harness.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.stats_calls > before, "settled must refresh the meter"
@@ -3168,7 +3389,7 @@ async def test_settled_hook_moves_to_the_new_harness_on_a_session_swap() -> None
 
         before = second.stats_calls
         await second.hooks.emit(SettledHookEvent(next_turn_count=0))
-        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+        await _wait(lambda: second.stats_calls > before)
 
         # …and the OLD bus must no longer drive the meter.
         stale = second.stats_calls
@@ -3176,7 +3397,7 @@ async def test_settled_hook_moves_to_the_new_harness_on_a_session_swap() -> None
         await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert second.stats_calls > before, "the resumed harness must refresh the meter"
@@ -3271,7 +3492,7 @@ async def test_a_slow_stale_refresh_cannot_paint_over_a_newer_one(
         await asyncio.sleep(0.45)  # both have completed by now
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.calls - calls_before >= 2, "both refreshes must have run"
@@ -3324,7 +3545,7 @@ async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> Non
         await _wait(lambda: runtime.harness.prompts == [(turn, "interactive")])
         await _wait(lambda: "» refactor" in buf.getvalue())
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     screen = pyte.Screen(80, 24)
     pyte.Stream(screen).feed(buf.getvalue())
@@ -3470,7 +3691,7 @@ async def test_a_mid_turn_message_end_moves_the_meter_without_a_stats_walk(
         harness.subscribers[0](_message_end(96_900))
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert painted and painted[0] == "◔ 48% · 96.9K/200K", painted
@@ -3502,7 +3723,7 @@ async def test_a_slow_stale_refresh_cannot_paint_over_a_live_mid_turn_paint(
         await asyncio.sleep(0.45)  # the stale reader has finished by now
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     labels = [p for p in painted if p]
@@ -3528,10 +3749,10 @@ async def test_a_model_switch_at_idle_refreshes_the_meter() -> None:
         before = harness.stats_calls
 
         await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+        await _wait(lambda: harness.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.stats_calls > before, "model_select must refresh the meter"
@@ -3577,7 +3798,7 @@ async def test_the_model_select_registration_is_error_isolated() -> None:
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     model_select = [kw for name, kw in harness.hooks.registrations if name == "model_select"]
@@ -3620,7 +3841,7 @@ async def test_a_raising_meter_repaint_cannot_fail_the_model_switch(
 
         monkeypatch.undo()
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     # Without the registration this test is vacuous — emit would return for the
@@ -3651,14 +3872,14 @@ async def test_the_model_select_hook_moves_to_the_new_harness_on_a_swap() -> Non
 
         before = second.stats_calls
         await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+        await _wait(lambda: second.stats_calls > before)
 
         stale = second.stats_calls
         await first.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
         await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert second.stats_calls > before, "the resumed harness must drive the meter"
@@ -3692,7 +3913,7 @@ async def test_a_mid_turn_model_change_reuses_the_cached_live_tokens(
         await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert painted[:2] == ["◔ 48% · 96.9K/200K", "◔ 10% · 96.9K/1M"], painted
@@ -3736,10 +3957,10 @@ async def test_the_meter_never_steps_down_inside_a_turn(
         harness.settled_tokens = 70_100
         listener(SimpleNamespace(type="agent_end"))
         await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
-        await _wait(lambda: any("70.1K" in (p or "") for p in painted), timeout=2.0)
+        await _wait(lambda: any("70.1K" in (p or "") for p in painted))
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     labels = [p for p in painted if p]
@@ -3785,10 +4006,10 @@ async def test_a_session_swap_drops_the_cached_live_tokens(
 
         before = second.stats_calls
         await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+        await _wait(lambda: second.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert second.stats_calls > before, "the swap must drop the cache and re-read"
@@ -3823,10 +4044,10 @@ async def test_compaction_end_drops_the_cached_live_tokens(
         before = harness.stats_calls
 
         await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+        await _wait(lambda: harness.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.stats_calls > before, "the else branch must have run"
@@ -3871,13 +4092,10 @@ async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
         # A new turn whose provider reports no usage: the meter must go back to
         # the stats read rather than holding the previous turn's live figure.
         listener(SimpleNamespace(type="turn_end"))
-        await _wait(
-            lambda: any("10.1K" in (p or "") for p in painted),
-            timeout=2.0,
-        )
+        await _wait(lambda: any("10.1K" in (p or "") for p in painted))
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert painted[0] == "\u25d4 20% \u00b7 40.1K/200K", painted
@@ -3916,14 +4134,14 @@ async def test_a_reload_moves_the_model_select_hook_to_the_rebuilt_bus() -> None
 
         before = second.stats_calls
         await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+        await _wait(lambda: second.stats_calls > before)
 
         stale = second.stats_calls
         await first.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
         await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert second.stats_calls > before, "the reloaded harness must drive the meter"
@@ -3970,7 +4188,7 @@ async def test_a_reload_keeps_the_cached_live_tokens(
         await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert painted[-1] == "◔ 10% · 96.9K/1M", painted
@@ -4016,7 +4234,7 @@ async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus(
 
         monkeypatch.undo()
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert exploded, "the handler never reached the formatter"
@@ -4043,7 +4261,7 @@ async def test_the_model_select_hook_is_unsubscribed_at_teardown() -> None:
         assert harness.hooks.unsub_calls == []
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert "model_select" in harness.hooks.unsub_calls, harness.hooks.unsub_calls
@@ -4083,10 +4301,10 @@ async def test_a_model_with_no_window_falls_back_to_the_stats_read(
 
         harness.current_model = windowless
         await harness.hooks.emit(ModelSelectHookEvent(model=windowless))
-        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+        await _wait(lambda: harness.stats_calls > before)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert harness.stats_calls > before, (
@@ -4132,7 +4350,7 @@ async def test_a_mid_turn_model_repaint_claims_a_generation(
         await asyncio.sleep(0.45)  # the stale reader has finished by now
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     labels = [p for p in painted if p]

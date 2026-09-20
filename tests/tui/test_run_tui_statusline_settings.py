@@ -20,17 +20,25 @@ from prompt_toolkit.input.base import PipeInput
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from tests.tui.test_run_tui_smoke import FakeHarness, FakeRuntime
-
-
-async def _wait(predicate, *, timeout: float = 3.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("condition not met within timeout")
+# #303 — this file used to carry its own 8-line copy of ``_wait``, with the same
+# 3 s bound and the same "condition not met within timeout" message. That copy is
+# what failed on the windows-latest py3.12 leg (run 35435949615, commit 0f57a80)
+# with a log line naming neither the predicate nor the bound. It now shares the
+# sibling module's helper, so the bounds and the diagnostics have ONE definition
+# and cannot drift apart again — the reasoning for the numbers is in the
+# "#303 — the wall-clock bounds in this file" note there.
+#
+# Measured here, idle: this file's first test spends 1.05 s of its budget inside
+# ``_wait(lambda: not chrome.is_modal_open())``, waiting out prompt_toolkit's ~1 s
+# ``timeoutlen`` flush for the bare Esc the test sends. That is a fixed cost of
+# driving Esc through the real key pipeline, not a defect — but it is a third of
+# the old 3 s bound gone before the assertion it guards is even reachable.
+from tests.tui.test_run_tui_smoke import (
+    FakeHarness,
+    FakeRuntime,
+    _quit_within,
+    _wait,
+)
 
 
 @asynccontextmanager
@@ -65,7 +73,7 @@ async def test_run_tui_threads_settings_manager_and_statusline(tmp_path) -> None
         pipe.send_text("\x1b")  # Esc the picker (no write)
         await _wait(lambda: not chrome.is_modal_open())
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
 
 
@@ -102,7 +110,7 @@ async def test_run_tui_seeds_the_store_with_the_spec_defaults(tmp_path, monkeypa
         )
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
     assert captured, "run_tui never constructed a StatuslineStore"
     # The equality is the load-bearing one: it is what dies when the kwarg goes.
@@ -195,7 +203,7 @@ async def test_settings_opens_modal_through_run_tui(tmp_path) -> None:
         pipe.send_text("\x1b")  # Esc closes the settings menu
         await _wait(lambda: not chrome.is_modal_open())
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
 
 
@@ -219,7 +227,7 @@ async def test_settings_unavailable_without_settings_manager(tmp_path) -> None:
         await asyncio.sleep(0.1)
         assert not chrome.is_modal_open()
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
 
 
@@ -245,7 +253,7 @@ async def test_scoped_models_command_routes_through_run_tui(tmp_path) -> None:
         # No registry → degrade path; just confirm the REPL survives + quits.
         await asyncio.sleep(0.1)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
 
 
@@ -337,7 +345,7 @@ async def test_run_tui_wires_the_composed_thinking_provider(tmp_path) -> None:
         runtime.harness.state.thinking_level = None
         assert ctx._thinking_provider() is None  # → the producer renders "🧠 off"
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
 
 
@@ -388,7 +396,7 @@ async def test_settings_thinking_row_confirms_with_the_tier(tmp_path) -> None:
         pipe.send_text("/settings\n")
         await _wait(lambda: any("thinking level →" in c for c in commits))
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
     assert code == 0
     assert [c for c in commits if "thinking level →" in c] == [
         "thinking level → xhigh (max) (persisted as default)"
