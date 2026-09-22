@@ -84,7 +84,10 @@ jobs:
             the test suite.
           - `uv run python scripts/check_citations.py --fix` — any patch that
             shifts line numbers fails `tests/test_citation_drift.py` in files
-            you never touched.
+            you never touched. If it exits non-zero it has named the citations
+            it could not place on its own and left the gate red on purpose:
+            those need a line number read off the file by hand. It does not
+            guess, by design.
           - Editing a guide means editing **both** copies: `docs/guides/` and
             the wheel-bundled one under `packages/aelix-coding-agent/`.
 

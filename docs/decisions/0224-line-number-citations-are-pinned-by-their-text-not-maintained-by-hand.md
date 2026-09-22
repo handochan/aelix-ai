@@ -131,6 +131,13 @@ the near-match printed as an advisory hint that is never applied.
 It is generated once, after the repair, and the repair is what carries the correctness
 claim.
 
+**Amended by ADR-0248 (#310).** Reporting a block for a human was only half of it: `--fix`
+then rebuilt the whole lock from the tree, which re-anchored the very citations it had just
+declined to relocate onto whatever text now sat at the stale line number, and the next
+`--check` went green over them. `--fix` now keeps the old anchor for anything it could not
+relocate; `--lock` keeps the override, because a block edited *in place* needs it, but
+prints every anchor it replaces.
+
 ## 6. ADR-0197's anchor convention is amended, not overruled
 
 `aelix_status/snapshot.py` states the convention this practice grew up under:
@@ -162,3 +169,10 @@ cited by line at all — remains the better answer where it applies.
   date is the only warning.
 - **Deleted-then-recreated files.** A target removed and re-added under the same path
   relocates against the new content with no signal that it is a different file.
+- **`--fix` used to re-lock what it could not relocate**, turning its own reported failures
+  green on the next `--check`. Closed by ADR-0248 (#310).
+- **Anchors too generic to gate.** Nineteen citations rest on text their own target file
+  repeats, so the check succeeds against whichever line the drift lands on. Measured and
+  frozen by ADR-0248 §3; not repaired. The count belongs to the tree rather than to that
+  change — it is a literal in `tests/test_citation_drift.py`, and a rebase that brings new
+  citations in can raise it, as one already has.

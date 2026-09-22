@@ -5,7 +5,9 @@
   "gated": 950,
   "unresolved": 43,
   "citing_files": 159,
-  "out_of_range": 0
+  "out_of_range": 0,
+  "blank_line": 0,
+  "ambiguous": 19
  },
  "anchors": {
   "packages/aelix-agent-core/src/aelix_agent_core/contracts/api_level.py:9-9": [
@@ -595,9 +597,6 @@
    "# ``set_active_tools`` validates names and would otherwise raise). A",
    "# ``None`` snapshot (\"all tools were active\") is preserved when the"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:266-266": [
-   ""
-  ],
   "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:280-290": [
    "@property",
    "def cwd(self) -> str | None:",
@@ -607,6 +606,11 @@
    "session = self._harness.session",
    "if session is None:",
    "return None"
+  ],
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:288-290": [
+   "storage = session.get_storage()",
+   "metadata = getattr(storage, \"_metadata\", None)",
+   "return getattr(metadata, \"cwd\", None) if metadata is not None else None"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:716-716": [
    "await self._teardown_current(reason, target_session_file)"
@@ -3227,8 +3231,8 @@
   "tests/agents_ext/test_child_trust_argv.py:189-189": [
    "@pytest.mark.skipif(sys.platform == \"win32\", reason=\"POSIX symlink semantics\")"
   ],
-  "tests/agents_ext/test_spawn_consent.py:1292-1292": [
-   ""
+  "tests/agents_ext/test_spawn_consent.py:1346-1346": [
+   "assert title.count(\"\\n\") == 8"
   ],
   "tests/agents_ext/test_tool_and_security.py:671-683": [
    "async def test_the_hook_refuses_at_depth_before_any_consent(",

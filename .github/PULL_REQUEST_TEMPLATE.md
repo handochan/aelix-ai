@@ -48,6 +48,9 @@ model, not a mock.
 - [ ] `uv run python scripts/check_citations.py --fix` if this shifts line
       numbers (it fails `tests/test_citation_drift.py` in files you never
       touched — this has caught most outside PRs so far)
+- [ ] `--fix` exited non-zero? It named the citations it could not place on its
+      own and left the gate red deliberately — re-derive those numbers by hand.
+      See CONTRIBUTING.md; it will not guess, by design
 - [ ] Edited a guide? Both copies — `docs/guides/` and the wheel-bundled
       `packages/aelix-coding-agent/src/aelix_coding_agent/docs/`
 - [ ] Touched `.gitignore` or a `pyproject.toml` `exclude`? Ran

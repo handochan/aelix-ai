@@ -160,7 +160,7 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
 
     A MULTI-ROW TITLE KEEPS THE OLD SHAPE, and that is load-bearing rather than
     tidy. The spawn-consent dialog passes a NINE-row title
-    (``tests/agents_ext/test_spawn_consent.py:1292`` pins ``title.count("\\n")
+    (``tests/agents_ext/test_spawn_consent.py:1346`` pins ``title.count("\\n")
     == 8``) and ``aelix_agents/consent.py`` writes its height budget down as
     ``title_rows + option_rows + 4``, gated by
     ``tests/agents_ext/test_batch_consent.py:344``. Nine rows cannot ride a rule,

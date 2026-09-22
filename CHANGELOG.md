@@ -127,6 +127,30 @@ unwritten. Add them with the next release.
   one more than the file has. A `!command` whose output runs long shares the
   same cap and does not change either way: it carried a local workaround for
   this defect, which the fix makes unnecessary and removes. (#309)
+
+- **The citation gate no longer turns its own failures green.**
+  `scripts/check_citations.py --fix` relocates citations whose target moved and
+  hands back the ones it cannot place — and then rebuilt the lock from the tree,
+  which re-anchored those very citations onto whatever text happened to be at the
+  stale line number. Measured at `fad2e28`, where it was found: six lines inserted
+  into `harness/core.py` plus one edited comment drifted 71 citations; `--fix`
+  relocated 59, named 12 as needing a human, and re-locked all six of the lock keys
+  they share — one onto the single character `)` — after which `--check` reported
+  `citations OK — 937 gated, none drifted.` (The totals follow the tree, the defect
+  does not: the same probe at `96f93c0c` drifts 77 and relocates 65, against the
+  same 12 and the same 6.) A citation `--fix` could not relocate now keeps the text it was written
+  against, so the gate stays red until someone re-derives the number. **That makes
+  `--fix` no longer the whole repair**, so the three places documenting it as one
+  command — `CONTRIBUTING.md`, the pull-request template and the first-PR welcome bot
+  — now say what to do with the citations it names instead. `--lock` can still
+  override, for a block edited where it stands, and now prints every anchor it
+  replaces — under `--lock` alone, because under `--fix` the same report could
+  announce an in-place edit that had not happened. Two further citations pointed at
+  **blank lines** — 15 and 54 lines away
+  from the constructs their sentences named, green since the lock was written
+  because an empty anchor matches any empty line — and are repaired; anchors that
+  say nothing are refused outright from now on (ADR-0248, #310).
+
 - **A delegated agent now runs on the model you are running, whenever you start
   it.** `/agents run` inherited your `--model` only if a tool call had already
   happened in that session. Start Aelix and run it as your first command, or run

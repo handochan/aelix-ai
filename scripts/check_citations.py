@@ -27,6 +27,42 @@ applies those relocations to the citing files and rewrites the lock. ``--lock``
 accepts the tree as it stands — which is only ever correct straight after a
 repair, because it enshrines whatever is there, right or wrong.
 
+WHAT ``--fix`` REFUSES TO DO, AND WHY (#310). ``--fix`` used to rewrite the
+whole lock afterwards, including the entries it had just reported as *not*
+relocatable — enshrining whatever text happened to be sitting at the stale line
+number as the new right answer. Measured at ``fad2e28``, where the defect was
+found: inserting six lines into ``harness/core.py`` and editing one cited
+comment drifted 71 citations; ``--fix`` relocated 59, named the other 12 as
+needing a human, and then re-locked all 12 anyway, so the very next ``--check``
+printed ``citations OK — 937 gated, none drifted.`` over twelve citations nobody
+had repaired. (The totals track the tree, not the defect: the same probe against
+this branch's base ``96f93c0c`` drifts 77, relocates 65, sticks on the same 12
+and goes green at ``950 gated``.) One of them was re-locked
+onto the single character ``)``. A gate that converts its own failures into
+green is worse than no gate, so an anchor ``--fix`` could not relocate now keeps
+its OLD text and ``--check`` stays red until a human re-derives the number.
+
+``--lock`` may still overwrite such an anchor — it is the escape hatch for the
+one case nothing else covers, a cited block edited *in place* whose citation is
+still correct — but it now prints every anchor it replaces, so the act is
+explicit rather than silent. That report is ``--lock``'s alone: under ``--fix``
+the same list can fill up with citations that merely relocated ONTO a range some
+other citation used to hold, which is a key changing hands and not an edit at
+all (``.omc/specs/310-overwrite.py``). A repair pass may not narrate an edit it
+cannot see, for the same reason it may not re-lock a failure.
+
+AN ANCHOR THAT CANNOT IDENTIFY ITS TARGET IS NOT A GATE (#310). ``--check``
+passes a citation when the text at the cited range still equals the locked text.
+If that text is ``)``, or a blank line, the comparison succeeds against any line
+the drift happens to land on, and the citation rots under a green gate. Measured
+over the 552 anchors this branch's base ``96f93c0c`` locked: 21 match more than
+one place in the file they point into, and two of those were *blank lines*
+matching 344 and 181 places — both of those citations were already wrong (off by
+15 and 54 lines) and the gate had never been able to say so. Repairing those two
+is what takes this tree to 19. A blank- or punctuation-only anchor is therefore
+refused outright at lock time; the merely ambiguous ones are counted here and
+pinned in ``tests/test_citation_drift.py`` so the set can only shrink.
+
 WHAT IS GATED, AND WHAT DELIBERATELY IS NOT.
 
 Gated: ``packages/**``, ``tests/**``, ``docs/guides/**`` and root ``*.md``.
@@ -257,6 +293,22 @@ def norm(s: str) -> str:
     return _WS.sub(" ", s).strip()
 
 
+def is_trivial_anchor(anchor: list[str]) -> bool:
+    """Does this anchor assert anything at all about where the citation points?
+
+    A blank line, a lone ``)``, a bare ``#``, a docstring's closing quotes —
+    each occurs by the hundred in the file it is supposed to pin, so
+    ``have == want`` succeeds
+    against whatever line the drift lands on and the citation rots green. Two
+    such anchors were live in this tree, both the empty string, and both of
+    their citations were already pointing somewhere their own sentence was not
+    about. The repair is not a cleverer anchor, it is a wider citation: cite the
+    construct, not the blank line under it.
+    """
+
+    return not anchor or all(_TRIVIAL.match(a) for a in anchor)
+
+
 def split_lines(text: str) -> list[str]:
     """Line numbering the way every OTHER tool counts, i.e. on ``\\n`` alone.
 
@@ -343,6 +395,34 @@ class Tree:
 # --- the lock -----------------------------------------------------------------
 
 
+def ambiguous_anchors(anchors: dict[str, list[str]], tree: Tree) -> list[str]:
+    """Anchors that match more than one place in the file they point into.
+
+    The boundary is uniqueness in the target, not length or token count, and
+    that was chosen by measuring both. BOTH LOCKS HOLD 552 ANCHORS — the repair
+    in this commit swapped two, it did not add any — so the anchor count cannot
+    say which lock a figure was taken from, and each figure below names its own.
+    At the branch base ``96f93c0c``, where 21 anchors were ambiguous, a
+    24-character threshold on the anchor's text flags 27, and 21 of those name
+    exactly one place perfectly well, so it reaches 6 of the 21. On THIS tree,
+    with the two blank anchors repaired, the same threshold flags 25, the same
+    21 are innocent, and it reaches 4 of the 19. Either way length is wrong
+    about 21 to reach a handful, and it is not a weaker version of the right
+    question but a different one. Re-derive both with
+    ``.omc/specs/310-threshold.py``, which also sweeps 10 readings of "length"
+    across thresholds 4..64 so neither number rests on a single lucky metric.
+    ``relocate`` already answers the real question — "can this text name one
+    place?" — and the answer is free, because a gate that cannot locate the
+    block it is watching cannot check it either.
+
+    These are not refused (that would fail 19 live citations whose repair is a
+    prose change in another lane's files); they are counted, and the count is
+    pinned by ``tests/test_citation_drift.py`` so it can only shrink.
+    """
+
+    return sorted(k for k, a in anchors.items() if len(tree.relocate(k.rsplit(":", 1)[0], a)) > 1)
+
+
 def load_lock() -> dict[str, list[str]]:
     if not LOCK_PATH.exists():
         return {}
@@ -413,8 +493,15 @@ def cmd_check() -> int:
         print("citations.lock.json is missing or empty — run --lock once.", file=sys.stderr)
         return 2
     drifted, unlocked = find_drift(cites, anchors, tree)
+    generic = ambiguous_anchors(anchors, tree)
+    note = (
+        f"\n{len(generic)} locked anchor(s) match more than one place in their own target — "
+        "those citations are recorded, not gated. `--report` names them."
+        if generic
+        else ""
+    )
     if not drifted and not unlocked:
-        print(f"citations OK — {build_stats(cites)['gated']} gated, none drifted.")
+        print(f"citations OK — {build_stats(cites)['gated']} gated, none drifted.{note}")
         return 0
     for d in drifted:
         c = d.cite
@@ -430,9 +517,19 @@ def cmd_check() -> int:
             where = f" (its most distinctive line is now near {hint[0]})" if len(hint) == 1 else ""
             print(f"    moved to  : the block was EDITED, not moved{where} — re-derive by hand.")
     for c in unlocked:
+        have = tree.anchor(c.target or "", c.start, c.end)
+        if have is not None and is_trivial_anchor(have):
+            # Refused at lock time, so it can never become locked by running
+            # --fix; saying "new citation" here would send the reader in a loop.
+            print(
+                f"\n{c.where}: `{c.target_raw}:{c.num_text}` cites a blank or "
+                "punctuation-only line — there is nothing to anchor on. Widen it "
+                "to the construct the sentence is about; --fix cannot."
+            )
+            continue
         print(f"\n{c.where}: `{c.target_raw}:{c.num_text}` is a NEW citation with no locked anchor.")
     print(
-        f"\n{len(drifted)} drifted, {len(unlocked)} unlocked. "
+        f"\n{len(drifted)} drifted, {len(unlocked)} unlocked.{note} "
         "Run `python scripts/check_citations.py --fix` to relocate what can be relocated.",
         file=sys.stderr,
     )
@@ -496,31 +593,82 @@ def cmd_fix() -> int:
 
     # Re-scan: the rewrite moved nothing in the citing files' own line numbering,
     # but the citations now name different ranges, so the lock is rebuilt fresh.
-    return cmd_lock(quiet=False, remaining=len(stuck))
+    #
+    # KEEP, and this is the whole of #310. Rebuilding an anchor means reading
+    # whatever is at the cited range NOW — which for a citation this run just
+    # failed to relocate is, by definition, not what it cited. Locking that text
+    # makes the next --check green over a citation nobody repaired, which is the
+    # exact failure this file exists to prevent, arriving from inside the tool.
+    # The old text stays, so the gate keeps failing until a human re-derives.
+    return cmd_lock(quiet=False, remaining=len(stuck), keep={d.cite.key: d.expected for d in stuck})
 
 
-def cmd_lock(quiet: bool = False, remaining: int = 0) -> int:
+def cmd_lock(
+    quiet: bool = False, remaining: int = 0, keep: dict[str, list[str]] | None = None
+) -> int:
     tree = Tree()
     cites = iter_citations()
+    previous = load_lock()
     anchors: dict[str, list[str]] = {}
     unanchorable = 0
+    blank: list[Citation] = []
     for c in cites:
         if not c.target:
+            continue
+        if keep is not None and c.key in keep:
+            # ``--fix`` could not relocate this one. See the note at its call.
+            anchors[c.key] = keep[c.key]
             continue
         a = tree.anchor(c.target, c.start, c.end)
         if a is None:
             unanchorable += 1
             continue
+        if is_trivial_anchor(a):
+            blank.append(c)
+            continue
         anchors[c.key] = a
+    ambiguous = ambiguous_anchors(anchors, tree)
     stats = build_stats(cites)
     stats["out_of_range"] = unanchorable
+    stats["blank_line"] = len(blank)
+    stats["ambiguous"] = len(ambiguous)
+    # Anchors kept under the SAME key with different text. Under ``--lock`` that
+    # is the override this command exists for: a block edited WHERE IT STOOD.
+    #
+    # It is not only that, and an earlier revision of this comment asserted it
+    # was — "under ``--fix`` this list is empty by construction" — which is
+    # false, and the print below inherited the falsehood. Ten lines reproduce it
+    # (``.omc/specs/310-overwrite.py``): two citations, both blocks pushed down,
+    # the first one relocates ONTO the exact range the second used to hold. The
+    # key changes hands with nothing edited anywhere, the lock that gets written
+    # is correct, and the report called it an in-place edit and sent the reader
+    # after a bug in ``keep`` that is not there.
+    #
+    # So the report belongs to ``--lock`` alone — the verb where overwriting is a
+    # human decision — and it now states only what it knows: this range was
+    # pinned to other text. ``keep is None`` IS that test: ``cmd_fix`` always
+    # passes a dict, empty when nothing was stuck. Under ``--fix`` a genuine
+    # in-place edit cannot reach here at all, because it fails to relocate and
+    # leaves through ``keep`` with its old text intact — which is #310.
+    replaced = sorted(k for k, a in anchors.items() if k in previous and previous[k] != a)
     save_lock(anchors, stats)
     if not quiet:
         print(
             f"locked {len(anchors)} anchor(s) over {stats['gated']} gated citation(s) "
-            f"({stats['unresolved']} ungated, {unanchorable} out of range)."
+            f"({stats['unresolved']} ungated, {unanchorable} out of range, "
+            f"{len(ambiguous)} too generic to gate)."
         )
-    return 1 if (unanchorable or remaining) else 0
+        if replaced and keep is None:
+            print(f"\nOVERWROTE {len(replaced)} anchor(s) — this range was pinned to other text:")
+            for k in replaced:
+                print(f"  {k}\n      was: {previous[k][0][:90] if previous[k] else '(empty)'}")
+        for c in blank:
+            print(
+                f"\n{c.where}: `{c.target_raw}:{c.num_text}` cites a blank or "
+                "punctuation-only line — there is nothing to anchor on, so the gate "
+                "cannot tell this citation from any other. Widen it to the construct."
+            )
+    return 1 if (unanchorable or remaining or blank) else 0
 
 
 def cmd_report() -> int:
@@ -535,6 +683,13 @@ def cmd_report() -> int:
     print("\n  ungated targets:")
     for t, n in sorted(ungated.items(), key=lambda kv: -kv[1]):
         print(f"    {n:4}  {t}")
+    tree = Tree()
+    locked = load_lock()
+    generic = ambiguous_anchors(locked, tree)
+    print(f"\n  too generic to gate ({len(generic)}) — the anchor names more than one line:")
+    for k in generic:
+        hits = tree.relocate(k.rsplit(":", 1)[0], locked[k])
+        print(f"    {len(hits):4}x  {k}  {locked[k][0][:60]!r}")
     return 0
 
 

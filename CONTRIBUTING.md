@@ -66,13 +66,29 @@ pointed at. Any patch that *inserts or deletes lines* shifts every citation
 anchored below it and fails `tests/test_citation_drift.py`, in files you never
 touched. (Do not write a made-up path-and-line example in prose either — the
 scanner reads those as real citations and they become permanently ungated.)
-This has caught two of the three external PRs so far. The repair is one command:
+This has caught two of the three external PRs so far. The repair starts with one
+command:
 
 ```bash
 uv run python scripts/check_citations.py --fix
 ```
 
-Commit the result with your change. The diff is line numbers only.
+Commit the result with your change; that diff is line numbers only.
+
+`--fix` moves a citation only where it can still find the cited text in exactly
+one place. If your patch *edited* a cited block rather than moving it, or the
+text it cited now appears twice, there is no mechanical answer — so `--fix`
+prints those citations by name, exits non-zero, and leaves the lock holding the
+old text. **The gate stays red on purpose until you fix them, and that is the
+end of the automatic part.** (It used to re-pin them against whatever line had
+drifted into their place, which made the next run green over a citation nobody
+had repaired; ADR-0248.)
+
+For each one it names: open the file, find the construct the sentence is about,
+and use that line number. Never add a delta to the old one. If the block was
+edited where it stands — same lines, new words, so the number is still right —
+`uv run python scripts/check_citations.py --lock` re-pins the text and prints
+every anchor it replaced. Check that list before committing it.
 
 **2. The docs bundle is duplicated.** `docs/guides/` also ships inside the wheel
 at `packages/aelix-coding-agent/src/aelix_coding_agent/docs/`, and
