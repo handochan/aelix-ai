@@ -215,6 +215,7 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
     from aelix_coding_agent.tools._truncate import (
         DEFAULT_MAX_BYTES,
         DEFAULT_MAX_LINES,
+        split_lines_for_counting,
     )
 
     block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
@@ -227,11 +228,14 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
     for guide in guides:
         size = guide.stat().st_size
         assert size < DEFAULT_MAX_BYTES, f"{guide.name} is {size}B, over the read cap"
-        # ``read`` splits on "\n", so the line count that matters is
-        # ``text.split("\n")`` — one more than the number of newlines when the
-        # file ends in one. Counted the same way here rather than with
-        # ``splitlines()``, which would be off by one against the tool.
-        lines = len(guide.read_text(encoding="utf-8").split("\n"))
+        # The count that matters is the one ``truncate_head`` decides with,
+        # and since #309 that is ``split_lines_for_counting``: the newline a
+        # guide ends with terminates its last line instead of starting
+        # another. This line counted with ``text.split("\n")`` — which is what
+        # ``read`` still uses for its OWN ``total_lines``, and what the tool
+        # capped on before #309 — and that rejects a guide of exactly 2000
+        # lines the tool now returns whole.
+        lines = len(split_lines_for_counting(guide.read_text(encoding="utf-8")))
         assert lines <= DEFAULT_MAX_LINES, (
             f"{guide.name} is {lines} lines, over `read`'s "
             f"DEFAULT_MAX_LINES={DEFAULT_MAX_LINES}. It is under the byte cap "

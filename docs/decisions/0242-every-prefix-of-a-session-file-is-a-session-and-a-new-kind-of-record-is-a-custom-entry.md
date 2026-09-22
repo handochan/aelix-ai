@@ -170,6 +170,38 @@ path.
    cap that did not cap. The helper's own bug is #309; it has five callers and
    pinned parity tests, so it is its own change.
 
+   **Amended 2026-09-22 (#309), and the workaround above is gone.** The helper
+   counts lines the way pi does now (ADR-0137, amended), so this writer no
+   longer has to: `_cap_for_the_record` is `truncate_tail` and a notice. The
+   nine shapes are unchanged, body for body and notice for notice — they are
+   asserted in `tests/cli/test_user_bash_reaches_the_model.py` and were
+   re-measured across the removal — and the counts in the record's `details`
+   are the helper's own now, except `original_bytes`, which stays the
+   COMMAND's: the pair reads "it printed this much, the record keeps this
+   much". What survives here is one line of CRLF normalisation of the trailing
+   run, which is not about truncation at all — it is about a Windows child and
+   a POSIX child recording the same thing.
+
+   Two claims in the paragraph above were also wrong on the facts. The helper
+   has SEVEN callers, not five, and the list above misses two of them. One is
+   `rpc/rpc_mode.py` `_handle_bash`, which caps an ad-hoc RPC `bash` at 256
+   lines / 32KB and lost the same bodies (measured: a single line of 40,000
+   bytes — 40,001 with its terminator — came back as `output: ""` with
+   `truncated: true`). The other is `_cap_for_the_record` itself, the writer
+   this entry documents: the workaround wrapped `truncate_tail` rather than
+   replacing it, so the function whose docstring counted the helper's callers
+   was itself one of them — and neither that docstring nor the paragraph above
+   counted it. Counted on both trees with
+   `grep -rn "_truncate import\|truncate_tail(\|truncate_head(" packages/`:
+   `tools/bash.py`, `tools/grep.py`, `tools/find.py`, `tools/ls.py`,
+   `tools/read.py`, `cli/repl.py` and `rpc/rpc_mode.py`. The hit in
+   `cli/agent_context.py` is a docstring, not a call.
+   And it had no pinned parity tests — `grep -rn truncat tests/pi_parity/*.py`
+   matches nothing. Its behaviour was pinned in `tests/tools/test_bash_tool.py`,
+   whose truncation cases all used `printf` WITHOUT a trailing newline, one of
+   them saying so in a comment ("→ exactly 100 lines (deterministic)"). That is
+   how a defect in every ordinary command's output survived them.
+
    The command is capped too, at 1024 characters, and it is the same rule.
    `!#` followed by 60,000 characters produced a 60,019-byte model message
    with no output in it at all — an unbounded record through a different door.

@@ -105,6 +105,28 @@ unwritten. Add them with the next release.
   conversation can still see what went wrong. This covers the terminal, live
   and resumed; the HTML `/export` writes still shows the `[error] ` prefix
   (and never showed the `✖` line), which is a separate fix. (#194)
+
+- **A command whose output is one long line now reaches the model, instead of
+  a note saying it was cut.** `bash` caps what it hands back at 2000 lines or
+  50KB and says what it dropped. That cap counted the newline at the end of the
+  output as a line of its own — and an empty line costs no bytes, so it was the
+  only "line" that fit the byte budget, and the real one above it was dropped
+  whole. `python3 -c "print('x'*1000000)"` ran for real and the model received
+  133 bytes: none of the output, under a note reading `[Showing lines 2-2 of 2
+  (50.0KB limit)]` about a command that printed one line. Every `print`, every
+  `echo`, ends in that newline. The last 50KB now arrives, under a note that
+  names the line it came from and how long that line really is: `[Showing last
+  50.0KB of line 1 (line is 976.6KB)]`. The line counts in that note are right
+  too — 3000 printed lines now read `lines 1001-3000 of 3000` where they read
+  `1002-3001 of 3001` before. Two more surfaces share the cap and shared the
+  defect: an RPC client's `bash`, which handed back 0 bytes of a 40,000-byte
+  line under its own 32KB cap, and `read`, which called a file of exactly 2000
+  lines truncated, cut its last newline and offered to continue from line 2001,
+  where there is nothing — such a file is now read whole. When `read` does
+  still truncate, the line count in its own notice is unchanged and still says
+  one more than the file has. A `!command` whose output runs long shares the
+  same cap and does not change either way: it carried a local workaround for
+  this defect, which the fix makes unnecessary and removes. (#309)
 - **A delegated agent now runs on the model you are running, whenever you start
   it.** `/agents run` inherited your `--model` only if a tool call had already
   happened in that session. Start Aelix and run it as your first command, or run

@@ -54,6 +54,7 @@ from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_LINES,
     TruncationInfo,
     format_size,
+    split_lines_for_counting,
     truncate_tail,
 )
 from aelix_coding_agent.util.shell_env import get_shell_env
@@ -789,9 +790,14 @@ def _format_truncation_notice(
     Maps aelix :class:`TruncationInfo` onto pi's ``TruncationResult`` fields:
     ``totalLines = original_lines``, ``outputLines = kept_lines``,
     ``outputBytes = kept_bytes``. The partial-line branch (pi's ``lastLinePartial``
-    tail edge case, when a single line exceeds the byte cap) reports the FULL
-    byte size of that last line via ``last_line_bytes`` — pi's
+    tail edge case, when nothing whole fits the byte cap) reports the FULL byte
+    size of the line the fragment came from via ``last_line_bytes`` — pi's
     ``getLastLineBytes()`` — NOT the whole-output byte total.
+
+    That line is the FIRST kept one, ``start_line``, which is pi's last line
+    whenever the fragment is the whole body. It stops being the last line when
+    blank lines sit under it (``print(big); print()``), and naming the blank
+    one there would report a 0B line while showing 50KB of it (#309).
     """
 
     total_lines = info.original_lines
@@ -800,7 +806,7 @@ def _format_truncation_notice(
     end_line = total_lines
     if info.last_line_partial:
         return (
-            f"\n\n[Showing last {format_size(info.kept_bytes)} of line {end_line} "
+            f"\n\n[Showing last {format_size(info.kept_bytes)} of line {start_line} "
             f"(line is {format_size(last_line_bytes)}). "
             f"Full output: {full_output_path}]"
         )
@@ -1085,8 +1091,23 @@ def create_bash_tool(
         if info.truncated:
             full_output_path = _write_full_output(raw)
             # Pi parity ``getLastLineBytes()`` — the FULL byte length of the
-            # final raw line (used only by the partial-line notice branch).
-            last_line_bytes = len(raw.rsplit("\n", 1)[-1].encode("utf-8"))
+            # line the partial fragment came from (used only by the
+            # partial-line notice branch). ``raw.rsplit("\n", 1)[-1]`` is the
+            # line pi's version names, and it is the empty string for every
+            # output that ends in a newline. That cost nothing before #309,
+            # because ``last_line_partial`` could not be SET for such an
+            # output — the phantom line always "fit", so this branch never
+            # ran. Now that it can be, keeping the rsplit would make the
+            # notice read "(line is 0B)" over 50KB of that line. The counting
+            # split is the one ``truncate_tail`` decided with, so
+            # ``original_lines - kept_lines`` indexes the line it names (#309).
+            counted = split_lines_for_counting(raw)
+            partial_index = info.original_lines - info.kept_lines
+            last_line_bytes = (
+                len(counted[partial_index].encode("utf-8"))
+                if info.last_line_partial and 0 <= partial_index < len(counted)
+                else 0
+            )
             body += _format_truncation_notice(
                 info,
                 full_output_path=full_output_path,

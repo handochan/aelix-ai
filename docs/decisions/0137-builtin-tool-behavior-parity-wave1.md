@@ -38,6 +38,55 @@ workflow (19 agents). All findings were folded back in (see *Review*).
   splitting a line or a multibyte UTF-8 char (char-safe `errors="ignore"` only
   on the single-line-exceeds edge); `truncate_line` suffix is ASCII
   `"... [truncated]"`.
+
+  **Amended 2026-09-22 (#309).** One half of the port was missing and it cost
+  the body of every capped output that ends in a newline. Pi splits with
+  `splitLinesForCounting` (`core/tools/truncate.ts:47-56`), which pops the
+  empty element a trailing `"\n"` leaves behind; this port called
+  `text.split("\n")` and kept it. That element IS a line to the rest of the
+  function, and it costs 0 bytes — so it is the one line that fits a byte
+  budget, and the real line above it is dropped whole. MEASURED on the
+  pre-fix tree through the bash tool (`.omc/specs/309-measure.py`),
+  `print('x'*1000000)` → `original_lines=2, kept_lines=1,
+  original_bytes=1000001, kept_bytes=0`: a megabyte run and a 133-byte notice
+  with nothing under it. `truncate_head` counted the same way, so `read` of a
+  file of exactly `DEFAULT_MAX_LINES` newline-terminated lines called it
+  truncated and offered an offset with nothing behind it; such a file now comes
+  back whole and silent. What the helper decided there was only WHETHER a
+  notice appeared — the `2001` printed inside it is `read`'s own `total_lines`
+  (`tools/read.py:194-195`, a raw `split("\n")`, pi parity `read.ts:130`),
+  which this amendment does not touch and which still says one more for any
+  newline-terminated file `read` still truncates. Its notice and the
+  `original_lines` in the same `ToolResult`'s `details` therefore disagree by
+  one in that case; the details are the corrected count. Fixing `read`'s own
+  count is a separate change, because `all_lines` is also what its `offset`
+  and `limit` index into. Three rules now, in both directions:
+
+  1. **Counting is `split_lines_for_counting` (exported).** Exactly one
+     trailing element is dropped, because exactly one terminator produces it:
+     `"a\n\n"` is two lines, as `wc -l` says, and `""` is none.
+  2. **A trailing terminator that is the ONLY thing over the byte cap is not a
+     truncation.** The body is the text without it, `truncated=False`, no
+     notice: `"x"*50KB + "\n"` arrives whole, and is still counted, so it
+     cannot slip past the cap at 51,201 bytes either.
+  3. **`truncate_tail`'s partial-line fallback asks whether anything with
+     CONTENT fit**, not whether any line did — a blank line always fits and
+     buys nothing (`print(big); print()` kept one newline out of a megabyte).
+     When nothing whole fits it keeps the tail's last `max_bytes`, char-safe,
+     and splits it back into the lines it stands for, so `last_line_partial`
+     now means "the FIRST kept line is a fragment"; its index is
+     `original_lines - kept_lines + 1`, which is pi's last line whenever the
+     fragment is the whole body. `truncate_head` deliberately does NOT mirror
+     this: a head truncation hands its caller a place to continue from and a
+     tail truncation is the end of the output, so a fragment there would trade
+     `read`'s actionable empty body for one that silently drops the rest of a
+     line the next offset skips.
+
+  A DIVERGENCE from pi in rules 2 and 3 (ADR-0235 — parity is not the goal);
+  pi has the same two holes. It keeps `\r` as line content, and so does this:
+  a CRLF tail is normalised where the record is written
+  (`cli/repl.py` `_normalise_trailing_terminators`), not here, because `read`
+  has to round-trip the bytes it was given.
 - `_path_utils.py`: `expand_path` (NFC + unicode-space collapse + single leading
   `@` strip + leading `~`/`~/` home expansion) with `resolve_to_cwd` routed
   through it; `relativize_to_posix` (pi `formatPath` — POSIX-relative, basename

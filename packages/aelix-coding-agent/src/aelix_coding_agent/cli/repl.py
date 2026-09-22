@@ -24,6 +24,7 @@ from aelix_ai.utils._child_output import decode_child_output
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
+    TruncationInfo,
     format_size,
     truncate_line,
     truncate_tail,
@@ -50,7 +51,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: ``DEFAULT_MAX_BYTES`` in ``core/tools/truncate.ts:11-12``), this function is
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
-#: ``tools/bash.py:61``; ad-hoc RPC bash tighter at 256 lines / 32KB,
+#: ``tools/bash.py:62``; ad-hoc RPC bash tighter at 256 lines / 32KB,
 #: ``rpc/rpc_mode.py:605``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
@@ -87,7 +88,7 @@ _FULL_OUTPUT_IS_ON_SCREEN = (
 def _recorded_command(command: str) -> str:
     """The command as the RECORD carries it — bounded, like the output.
 
-    ``truncate_line`` (``tools/_truncate.py:137``) keeps the HEAD and marks the
+    ``truncate_line`` (``tools/_truncate.py:254``) keeps the HEAD and marks the
     cut in place, which is the right half here: the head of a command line is
     what identifies it.
     """
@@ -95,70 +96,61 @@ def _recorded_command(command: str) -> str:
     return truncate_line(command, _MAX_COMMAND_CHARS)
 
 
-def _truncation_notice(
-    *,
-    truncated_by: str,
-    last_line_partial: bool,
-    partial_line: int,
-    partial_bytes: int,
-    original_lines: int,
-    kept_lines: int,
-) -> str:
+def _truncation_notice(info: TruncationInfo) -> str:
     """The bracketed line that makes the cut VISIBLE in the record.
 
     Same shape as the model-facing bash tool's notice
-    (``tools/bash.py:779`` ``_format_truncation_notice``) and of pi's
+    (``tools/bash.py:780`` ``_format_truncation_notice``) and of pi's
     ``[Output truncated. Full output: …]``, with the one substitution this
     path forces: there is no ``fullOutputPath`` to cite, so the sentence names
     where the rest went instead. Silence here would be the defect #299 is
     about in miniature — a record that ends mid-stream and does not say so
     reads to the model as a command that printed that much and stopped.
 
-    The counts are the WHOLE output's, not the sub-slice ``truncate_tail`` was
-    handed: :func:`_cap_for_the_record` splits the trailing blank lines off
-    before it truncates, and a notice that reported the helper's own totals
-    would undercount every output that ends in one (the first cut of this
-    reported a 60,001-byte output as 60,000). ``partial_line`` is which line
-    the partial tail came from, which is NOT ``original_lines`` once there are
-    blank lines under it.
+    The counts are ``truncate_tail``'s own. They could not be until #309: the
+    helper counted the newline an output ends with as a line of its own, so
+    every count it reported about an ordinary command was one too many, and
+    this writer kept its own arithmetic over a sub-slice to work around it.
     """
 
-    if last_line_partial:
-        # A single line longer than the byte budget: ``truncate_tail`` keeps
-        # its tail, so there is no line RANGE to report, only how much of
-        # which line survived.
+    start_line = info.original_lines - info.kept_lines + 1
+    if info.last_line_partial:
+        # Nothing whole fit the byte budget, so there is no line RANGE to
+        # report — only how much of which line survived. The fragment opens
+        # the body, so the line it came from is the FIRST kept one
+        # (``tools/_truncate.py:41`` ``TruncationInfo.last_line_partial``).
         return (
-            f"\n\n[Showing the last {format_size(partial_bytes)} of line "
-            f"{partial_line} ({format_size(_MAX_BYTES)} limit). "
+            f"\n\n[Showing the last {format_size(info.kept_bytes)} of line "
+            f"{start_line} ({format_size(_MAX_BYTES)} limit). "
             f"{_FULL_OUTPUT_IS_ON_SCREEN}]"
         )
-    start_line = original_lines - kept_lines + 1
     limit = (
         f"{_MAX_LINES} line limit"
-        if truncated_by == "lines"
+        if info.truncated_by == "lines"
         else f"{format_size(_MAX_BYTES)} limit"
     )
     return (
-        f"\n\n[Showing lines {start_line}-{original_lines} of "
-        f"{original_lines} ({limit}). {_FULL_OUTPUT_IS_ON_SCREEN}]"
+        f"\n\n[Showing lines {start_line}-{info.original_lines} of "
+        f"{info.original_lines} ({limit}). {_FULL_OUTPUT_IS_ON_SCREEN}]"
     )
 
 
-def _split_trailing_terminators(output: str) -> tuple[str, int]:
-    """Split a command's output into its content and its trailing line endings.
+def _normalise_trailing_terminators(output: str) -> str:
+    """Make the record's trailing line endings the same on every platform.
 
-    A line terminator ENDS a line; it does not begin another. So the FIRST
-    terminator of the trailing run belongs to the last line of ``content``, and
-    every one after it is a trailing BLANK line — which is content, and content
-    that costs almost nothing to keep. :func:`_cap_for_the_record` needs the two
-    apart, and this is where they come apart.
+    ``\\r\\n`` ends a line exactly as ``\\n`` does, so what a command printed
+    should not depend on which one the child wrote. The windows CI legs found
+    this at ``51199 == 51200`` (run 35522838940): there the ``\\r`` of the
+    final CRLF survived as the content of the last line and ate a byte of the
+    cap, where the POSIX legs recorded the full 50KB.
 
-    ``\\r\\n`` counts as ONE terminator, so what a Windows child prints and what
-    a POSIX child prints produce the same record.
+    Only the TRAILING run is rewritten. The interior is the command's own
+    output and the record keeps it byte for byte; a terminator at the very end
+    is the one place where the platform, not the command, chose the bytes.
     """
 
     content = output.rstrip("\r\n")
-    return content, len(output[len(content) :].replace("\r\n", "\n"))
+    return content + output[len(content) :].replace("\r\n", "\n")
 
 
 @dataclass(frozen=True)
@@ -176,93 +168,55 @@ class _Record:
 def _cap_for_the_record(output: str) -> _Record:
     """Bound the recorded copy of ``output`` at ``_MAX_LINES``/``_MAX_BYTES``.
 
-    ``truncate_tail`` alone cannot do this, and the ``removesuffix("\\n")`` the
-    first cut of #299 reached for is not enough either. The helper splits on
-    ``"\\n"`` raw, so a trailing newline leaves an empty final element that IS a
-    line: it costs 0 bytes, so it is the one line that fits, and the long line
-    above it is dropped whole. Stripping one ``"\\n"`` hides that for the single
-    commonest case and for nothing else — CROSS-REVIEWED and MEASURED on the
-    first cut, the recorded body for a ``!`` output of:
+    This is ``truncate_tail`` and a notice, and #309 is what it took to make
+    that true. Until then the helper split on ``"\\n"`` raw, so the empty
+    element a trailing newline leaves behind was a LINE that cost 0 bytes: it
+    was the one line that fit, and the long line above it was dropped whole.
+    Every ``print()`` ends in a newline, so this writer could not use the
+    helper as it stood, and it worked around it here — splitting the trailing
+    terminator run off, reserving a byte and a line of both budgets for each
+    blank line, capping the remainder and doing its own counting over the
+    whole. MEASURED on that arrangement, and unchanged by its removal, the
+    recorded body for a ``!`` output of:
 
-    * ``"x"*60000 + "\\n"`` — 51,200 ``x``, right;
-    * ``"x"*60000 + "\\n\\n"`` — EMPTY, recorded as ``(no output)``;
-    * ``"x"*60000 + "\\r\\n"`` — 51,199 ``x`` and a ``\\r``, a byte short of the
-      cap, which is what made the windows CI legs red where the POSIX ones
-      were green;
-    * ``"x"*60000 + "\\r\\n\\r\\n"`` — a lone ``\\r``;
-    * ``"x"*51200 + "\\n"`` — 51,201 bytes and NO notice: not a cap at all.
+    * ``"x"*60000 + "\\n"`` — 51,200 ``x``;
+    * ``"x"*60000 + "\\n\\n"`` — 51,199 ``x`` and the blank line under them;
+    * ``"x"*60000 + "\\r\\n"`` — 51,200 ``x``, the same as the LF row;
+    * ``"x"*51200 + "\\n"`` — whole, and no notice: a line ending is not a line
+      and does not need announcing, but it is COUNTED, so the row cannot slip
+      past the cap at 51,201 bytes the way the first cut of #299 let it.
 
-    The first four are one bug: a trailing terminator is not a line, and the
-    run of them is not one character. This strips the WHOLE run and counts it,
-    so a blank final line and a CRLF stop being special cases. ``print()`` +
-    ``print()`` is an ordinary command, and it was the one that lost 60KB of
-    output behind the word ``(no output)``.
-
-    The blank lines are then kept, because they are the END of the output and
-    the end is the half ``truncate_tail`` keeps. They are paid for out of both
-    budgets before the content is — one byte each — so an output that is
-    nothing but newlines still records its last ``_MAX_LINES`` of them.
-
-    The fifth is the other half of the same normalisation and the reason the
-    caps are decided against the ORIGINAL bytes: strip first and ask afterwards
-    whether the stripped text fits, and a record one byte over the cap answers
-    yes. ``truncate_tail`` asks the same question the same way
-    (``truncate.ts:172-177``: ``totalBytes`` is the whole content's, trailing
-    newline included). What is not restored is the terminator itself: it is put
-    back only when the output fits whole, because a record already at the cap
-    has no room for a line ending that carries nothing.
-
-    The helper's own bug is #309 — it has five callers (bash/read/grep/find/ls)
-    and pinned ``tests/pi_parity/`` tests, so it is its own issue and its own
-    commit. pi is immune to the first row (``splitLinesForCounting`` pops that
-    element, ``truncate.ts:47-56``) and not to the others.
+    Those rows now come out of the helper, which is where every caller of it
+    gets them — the model-facing ``bash`` tool had the identical hole and no
+    workaround at all (``print('x'*1000000)`` reached the model as a notice
+    over an empty body). What stays here is
+    :func:`_normalise_trailing_terminators`, which is not about truncation:
+    it is about a Windows child and a POSIX child recording the same thing.
     """
 
-    content, terminators = _split_trailing_terminators(output)
-    blanks = max(terminators - 1, 0)
-    original_lines = content.count("\n") + 1 + blanks
-    original_bytes = len(output.encode())
+    text = _normalise_trailing_terminators(output)
+    body, info = truncate_tail(text, max_lines=_MAX_LINES, max_bytes=_MAX_BYTES)
+    if not info.truncated:
+        # Either the whole output fits and the record is it verbatim, or the
+        # only thing over the cap was the trailing terminator, which
+        # ``truncate_tail`` drops without announcing: "[Showing lines 1-1 of
+        # 1]" over a complete output would be the same kind of false record
+        # this issue is about.
+        return _Record(body, "", None)
 
-    kept_blanks = min(blanks, _MAX_LINES - 1)
-    capped, info = truncate_tail(
-        content,
-        max_lines=_MAX_LINES - kept_blanks,
-        max_bytes=_MAX_BYTES - kept_blanks,
-    )
-    if not info.truncated and kept_blanks == blanks:
-        # Nothing of the CONTENT was dropped. Either the whole output fits, and
-        # the record is it verbatim — terminator, blank lines and all — or the
-        # only thing over the cap is that terminator, which is a line ending
-        # and not a line, so it goes without a notice: there is nothing to
-        # announce, and "[Showing lines 1-1 of 1]" over a complete output would
-        # be the same kind of false record this issue is about.
-        if original_bytes <= _MAX_BYTES:
-            return _Record(output, "", None)
-        return _Record(capped + "\n" * kept_blanks, "", None)
-
-    body = capped + "\n" * kept_blanks
-    kept_lines = info.kept_lines + kept_blanks
-    # ``truncated_by`` is ``None`` exactly when the helper did not cut and the
-    # blank tail alone blew the LINE budget.
-    truncated_by = info.truncated_by or "lines"
     return _Record(
         body,
-        _truncation_notice(
-            truncated_by=truncated_by,
-            last_line_partial=info.last_line_partial,
-            # The partial line is the last line of ``content``, which is the
-            # helper's own total; the blank lines below it are not it.
-            partial_line=info.original_lines,
-            partial_bytes=info.kept_bytes,
-            original_lines=original_lines,
-            kept_lines=kept_lines,
-        ),
+        _truncation_notice(info),
         {
-            "truncated_by": truncated_by,
-            "original_lines": original_lines,
-            "kept_lines": kept_lines,
-            "original_bytes": original_bytes,
-            "kept_bytes": len(body.encode()),
+            "truncated_by": info.truncated_by,
+            "original_lines": info.original_lines,
+            "kept_lines": info.kept_lines,
+            # The COMMAND's bytes, not the normalised text's: the pair reads
+            # "it printed this much, the record keeps this much", and folding
+            # a trailing CRLF would shave the first number by a byte for no
+            # reason a reader of the record could see.
+            "original_bytes": len(output.encode()),
+            "kept_bytes": info.kept_bytes,
         },
     )
 
@@ -280,13 +234,13 @@ def bash_execution_to_text(
     order it appends in: output block, then status, then truncation notice.
 
     ``output`` is the ALREADY-CAPPED body and ``notice`` the line describing
-    what that cut dropped — :func:`_cap_for_the_record` produces both, and the
-    arithmetic behind them is why they arrive made rather than as a
-    ``TruncationInfo`` to re-derive here. ``command`` is capped HERE, by
+    what that cut dropped — :func:`_cap_for_the_record` produces both, and a
+    renderer that took the ``TruncationInfo`` instead would be the second
+    place deciding how a cut is worded. ``command`` is capped HERE, by
     :func:`_recorded_command`, so no caller can put an unbounded one in the
     record.
 
-    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:210``, which
+    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:211``, which
     returns an :class:`ExecExitResult`, not just the byte stream) or the one
     an intercepting extension's ``result`` carries. Without it ``!test -f
     missing`` and ``!test -f present`` both reach the model as
