@@ -145,6 +145,17 @@ unwritten. Add them with the next release.
   failure also used to end the turn, surfacing the disk error as though the
   model had failed; it no longer does — the conversation carries on and only
   the record is missing. (#301)
+- **A message queued for the next turn is no longer thrown away when an
+  extension fails as that turn starts.** An extension can line up a message to
+  be sent with your next prompt. Those queued messages were taken off the queue
+  before the turn was built, so an extension that raised while Aelix was
+  starting the turn — one watching the queue to redraw an indicator, or one
+  rewriting the system prompt — took them with it: the prompt failed, and the
+  queued text was gone from the queue, from the request and from the session
+  file, with nothing in the error naming it. It now goes back on the queue,
+  ahead of anything queued in the meantime, and is sent with the next prompt
+  instead. A turn that fails after it has reached the model is unchanged: the
+  message was already sent, so it is not queued again. (#311)
 - **Two terminals on one session no longer lose a whole turn.** Opening the
   same session twice was easy to do by accident — `aelix --continue` picks the
   same file for every terminal in a directory — and both terminals appeared to
@@ -938,7 +949,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:4752`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:4783`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

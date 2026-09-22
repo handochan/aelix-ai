@@ -1288,25 +1288,56 @@ class AgentHarness:
             # during the previous turn) are prepended to this turn's prompt.
             drained_next = self._next_turn_queue
             self._next_turn_queue = []
-            # F-3b-3 (W5 should-fix): Pi emits ``queue_update`` when the
-            # next_turn queue is drained at start of the next turn (Pi
-            # ``executeTurn`` L487). Emit before ``before_agent_start`` so
-            # observers see the empty queue snapshot consistent with Pi.
-            if drained_next:
-                await self._emit_queue_update()
-            # Fire the before_agent_start hook so extensions can inject messages
-            # or rewrite the system prompt before the first turn.
-            injected = await self._emit_before_agent_start(text)
-            prompts: list[AgentMessage] = []
-            if injected and injected.messages:
-                prompts.extend(injected.messages)
-            prompts.extend(drained_next)
-            prompts.append(user_msg)
-            system_prompt = (
-                injected.system_prompt
-                if injected and injected.system_prompt is not None
-                else self._state.system_prompt
-            )
+            # Issue #311 (ADR-0246) — from the detach above until ``agent_loop``
+            # receives the list, the drained messages live in a LOCAL and nowhere
+            # else. Two awaits sit between here and the ``_run`` call and both
+            # convert a handler exception into a raised ``AgentHarnessError``
+            # (``_emit_queue_update`` :2325-2340, ``_emit_before_agent_start``
+            # :4229-4244), while a handler's ``error_mode`` defaults to ``"throw"``
+            # (``hooks.py:2493-2500``). Either raise unwound the frame and the
+            # user's queued text existed on no queue, in no turn and in no
+            # exception. The guard covers the region, not those two calls by name,
+            # so an await added to this gap later is covered too.
+            #
+            # It ENDS at the ``_run`` call because that is the last point where this
+            # frame can prove the turn never started — NOT because the messages are
+            # safe past it: ``_run`` awaits ``self._session.build_context()``
+            # (:4466) before ``agent_loop(prompts, ...)`` (:4682-4683) is handed
+            # the list, and a session raising there loses them the same three ways
+            # (.omc/specs/311-next-turn-drain.py ARM 6). That window is open and
+            # reported, not closed here — it takes the live user message with it
+            # too, so it is a decision about a failed turn's whole input, and
+            # widening this guard is not it (311-sabotage.py ARM D).
+            #
+            # Prepended, not appended: ``next_turn()`` is legal from inside these
+            # very handlers, so the queue can already hold a STRICTLY NEWER message
+            # (ARM 3) and appending would reorder the user's two sentences.
+            # ``BaseException`` because a ``CancelledError`` is the same loss in
+            # other clothing — from an embedder cancelling ``prompt()``, not from
+            # ``abort()`` (:1547-1549). ADR-0246 has what the restore cannot undo.
+            try:
+                # F-3b-3 (W5 should-fix): Pi emits ``queue_update`` when the
+                # next_turn queue is drained at start of the next turn (Pi
+                # ``executeTurn`` L487). Emit before ``before_agent_start`` so
+                # observers see the empty queue snapshot consistent with Pi.
+                if drained_next:
+                    await self._emit_queue_update()
+                # Fire the before_agent_start hook so extensions can inject
+                # messages or rewrite the system prompt before the first turn.
+                injected = await self._emit_before_agent_start(text)
+                prompts: list[AgentMessage] = []
+                if injected and injected.messages:
+                    prompts.extend(injected.messages)
+                prompts.extend(drained_next)
+                prompts.append(user_msg)
+                system_prompt = (
+                    injected.system_prompt
+                    if injected and injected.system_prompt is not None
+                    else self._state.system_prompt
+                )
+            except BaseException:
+                self._next_turn_queue = drained_next + self._next_turn_queue
+                raise
             result = await self._run(prompts, system_prompt=system_prompt)
             # Issue #4 Lane B — outer recovery loop. pi parity
             # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())

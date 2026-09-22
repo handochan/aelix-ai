@@ -1512,7 +1512,7 @@ def test_replay_custom_wire_dict_content_renders() -> None:
 # === Issue #133 item 2 — an interrupted turn must leave a trace =============
 #
 # The harness aborts by CANCELLING the turn task; its close-out
-# (harness/core.py:4695-4712) deliberately emits only turn_end + agent_end, with
+# (harness/core.py:4726-4743) deliberately emits only turn_end + agent_end, with
 # no message_start/message_end pair, so ``_render_message_error`` (message_end
 # only) never ran and the interrupt reached scrollback as nothing at all.
 # pi prints "Operation aborted" from its message_end handler

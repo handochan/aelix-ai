@@ -6,7 +6,10 @@ Supersedes/relates: ADR-0242 (the JSONL write discipline — this is its harness
 layer; "a failed append must not break the next append" is the rule this ADR
 applies one level up, and nothing in 0242 changes), ADR-0022 (the pending-write
 queue and its no-session fallback, unchanged), ADR-0235 (pi is a reference, not
-a target — the divergence in §3 is recorded, not argued).
+a target — the divergence in §3 is recorded, not argued), ADR-0246 (#311 — the
+gap this ADR's audit found in `prompt()`'s next-turn drain, closed at the two
+hook awaits it named; it also corrects the remedy that section proposed, and
+records the one await further along that stays open).
 Issue: #301. Same class as #294, one layer above it.
 Probe: `.omc/specs/301-measure.py` (the same file runs on the branch base and
 on the branch). Live driver: `.omc/specs/301-live.py`. The audit in
@@ -280,6 +283,21 @@ Neither is a detach-then-loop.
 
 ### The audit #301 asked for: one other place has the shape, and this does not fix it
 
+> **Addressed since, by #311 / ADR-0246** (2026-09-22). The section below is
+> kept as written because it is the audit #301 was asked for and the record of
+> what it found. Two sentences in it did not survive contact: the shape reaches
+> `_emit_before_agent_start` as well as the emit, so the window is wider than
+> described here; and **"emit after :1303" is not a remedy** — it was proposed
+> without being run, and running it loses the message identically
+> (`.omc/specs/311-next-turn-drain.py` ARM 5, which patches this very file's
+> `core.py` at `main` and re-measures). The remedy that works is the other one
+> named below in parentheses: restore the queue on the raise, prepended. It
+> covers the two hook awaits this section names and stops at the call to
+> `_run`; the one await inside `_run` before `agent_loop` receives the prompts
+> loses the same messages the same way, which ADR-0246 §"Where the guard ends"
+> measures and files rather than closes.
+
+
 `prompt()` detaches the next-turn queue and then awaits *before* it uses what
 it detached:
 
@@ -311,7 +329,8 @@ The message is on no queue, in no turn, and in no exception — the #301 shape,
 verbatim. **It is a different queue and #301 does not fix it**: this one holds
 user text for the next turn rather than session records, its remedy is to emit
 after :1303 (or to restore the queue on the raise) rather than a per-item
-drain, and the repo's rule is one issue per commit. Filed separately.
+drain, and the repo's rule is one issue per commit. Filed separately, as #311;
+ADR-0246 has what it turned out to be.
 
 The other two candidates were checked and are clean: `_MessageQueue.drain`
 (`core.py:470-478`) is synchronous end to end, and `dispose`'s `_pending_tasks`

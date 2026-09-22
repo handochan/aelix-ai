@@ -39,7 +39,7 @@ module cited that 226 ms as the reason the state is reachable; it is closer to t
 reason it is NOT.
 
 The state is reached by a consumer that AWAITS between events, which the harness
-explicitly supports — ``harness/core.py:2008`` does ``raw = listener(event)`` then
+explicitly supports — ``harness/core.py:2039`` does ``raw = listener(event)`` then
 ``if inspect.isawaitable(raw): await raw`` — and which async extension hooks, the
 ``aelix_agents`` RPC channel and any SDK embedder use. So this ``finally`` is not
 closing a live TUI defect; it is closing the one every awaiting consumer already

@@ -313,7 +313,7 @@ def test_xhigh_raises_request_max_tokens_when_room_allows() -> None:
     # reads the ``min``. No in-tree caller reaches it today: the compaction
     # summarizer sets ``max_tokens`` but never ``reasoning`` (compaction.py:896,
     # :986), so it takes the ``thinking: disabled`` branch, and the harness sets
-    # ``reasoning`` but drops ``max_tokens`` (core.py:4477). The arithmetic is
+    # ``reasoning`` but drops ``max_tokens`` (core.py:4508). The arithmetic is
     # pinned here for the out-of-tree caller that supplies both.
     # Measured on 0985fcf, before the change: (48384, 16384).
     assert adjust_max_tokens_for_thinking(32000, 128000, "xhigh") == (64768, 32768)

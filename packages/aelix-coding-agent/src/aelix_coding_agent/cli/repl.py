@@ -334,7 +334,7 @@ async def handle_user_bash(
       is what the next ``prompt()`` sends, this turn and on every later
       resume, because ``AgentHarness._run`` derives the turn's messages from
       ``session.build_context()`` whenever a session is attached
-      (``harness/core.py:4434-4437``, pinned by
+      (``harness/core.py:4465-4468``, pinned by
       ``tests/test_state_messages_derived.py``);
     * ``harness.messages`` gets the same ``UserMessage`` now, which is what
       carries the output on the ``--no-session`` path — there ``_state.messages``
@@ -441,7 +441,7 @@ async def handle_user_bash(
         # attached the turn's messages come from ``build_context()``, so a
         # failed write costs THIS turn as well as the next resume — the live
         # append below keeps the output in ``_state.messages``, which
-        # ``_run`` then does not read (``harness/core.py:4434-4437``). Measured
+        # ``_run`` then does not read (``harness/core.py:4465-4468``). Measured
         # with ``append_custom_message_entry`` raising:
         # ``in _state.messages=True reached provider=False``.
         with contextlib.suppress(Exception):
