@@ -92,6 +92,19 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A turn that failed no longer says so twice when you come back to it.**
+  Resume a session containing a failed turn — `/resume`, `--continue`, or
+  opening the file with `--session` — and the same error sentence was drawn
+  twice: once as ordinary message text carrying an internal `[error] ` prefix
+  (and with any backticks in it turned into code spans), then again as the red
+  `✖` line. It was drawn once while the turn was actually happening, so a
+  reloaded transcript disagreed with the one it was reproducing. Now both show
+  the same single `✖` line. Sessions you already have on disk are fixed by
+  this too — nothing about them changes, they are simply read correctly — and
+  the copy the model reads on the next turn is untouched, so a resumed
+  conversation can still see what went wrong. This covers the terminal, live
+  and resumed; the HTML `/export` writes still shows the `[error] ` prefix
+  (and never showed the `✖` line), which is a separate fix. (#194)
 - **A delegated agent now runs on the model you are running, whenever you start
   it.** `/agents run` inherited your `--model` only if a tool call had already
   happened in that session. Start Aelix and run it as your first command, or run

@@ -24,6 +24,15 @@ round of this repo's work shipped a test that replicated the shell's shape and
 therefore stayed green when the shell's real code was deleted. Every assertion
 here goes through the production ``_input_loop`` via ``run_tui``; delete either
 fix and the corresponding test fails.
+
+LANE 2 IS LIVE-ONLY, AND ITS PERSISTED TWIN LIVES NEXT DOOR. The shell dedup
+below fixes the turn as it happens; the failure is still written into the
+session with the same sentence in ``content`` AND ``error_message``, so a
+``/resume`` used to show the pair again. That half is #194, and it is measured
+and guarded in ``tests/tui/test_failed_turn_replay.py`` (ADR-0247). The two
+files are the two roads to the same glass and neither subsumes the other:
+delete the shell dedup and only this file goes red; delete the replay
+suppression and only that one does.
 """
 
 from __future__ import annotations

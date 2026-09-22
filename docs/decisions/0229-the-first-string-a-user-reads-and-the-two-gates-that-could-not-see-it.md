@@ -3,7 +3,9 @@
 Status: Accepted (2026-08-18) — **AMENDED 2026-09-08 by #244** (see
 `**Amended 2026-09-08 (#244).**` in `## #84 — the scope was inverted`): the two
 gates recorded here proved the help *honest* and could see neither half of #244.
-Everything else in this ADR stands.
+**AMENDED 2026-09-22 by #194** (see `**Amended 2026-09-22 (#194).**` in `## #189`):
+the paragraph this ADR left open called the remaining half a session-data change,
+and it was not. Everything else in this ADR stands.
 Date: 2026-08-18
 Relates: ADR-0197 (the 3-band gate this batch's gates are modelled on),
 ADR-0213 (a gate that analysed 8 of 247 files and reported zero errors),
@@ -56,6 +58,15 @@ in `content=[TextContent("[error] …")]` *and* in `error_message`, and both are
 so a `/resume` after such a turn shows the pair again. With the gate in place #189's own
 case is never persisted; changing the synthesised message's shape is a session-data
 change and does not belong in a beta honesty batch.
+
+**Amended 2026-09-22 (#194).** That issue is closed by **ADR-0247**, and the reason given
+here for deferring it — "changing the synthesised message's shape is a session-data
+change" — was the wrong frame, measured. The synthesised message's shape does not change
+at all: the `content` copy is what the **model** reads on the next turn (measured — it is
+in the `Context.messages` the following `prompt()` sends and in `build_session_context`
+after a reload), so it stays, and the duplicate is suppressed in `EventRenderer.replay`
+instead. That is also the only place that reaches the sessions already on disk, which a
+writer change never could. Measured on `fad2e28`: LIVE 1 / REPLAY 2.
 
 ### Why the static gate is scoped to `raise` arguments
 

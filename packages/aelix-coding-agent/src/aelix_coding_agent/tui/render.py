@@ -1344,6 +1344,13 @@ class EventRenderer:
         That was the live side losing content, and #170 fixed it there — the
         idempotency latch is now keyed per ``content_index``, so the two agree
         by both being right rather than by replay being matched down.)
+        (A second one never made this list and should have: a turn that failed
+        by EXCEPTION replayed its failure TWICE — once as Markdown body text,
+        once as the ``✖`` line — because ``harness/core.py`` writes the same
+        sentence into ``content`` and ``error_message`` and only the second is
+        live-rendered. Measured LIVE 1 / REPLAY 2. #194 fixed it HERE, in the
+        assistant branch below, because every session already on disk carries
+        both fields; ADR-0247 has the reasoning and the alternatives.)
 
         Static (no streaming) — never opens a text-stream window. Each message:
         user → ``» {text}``; assistant → thinking (dim italic) + text + ``●``
@@ -1382,6 +1389,61 @@ class EventRenderer:
                         # this repaint uses, resolved once above.
                         self._commit(render_user_message(text, width=replay_width))
             elif role == "assistant":
+                stop = getattr(msg, "stop_reason", None)
+                # Issue #194 — a turn that failed by EXCEPTION says so twice on
+                # disk. ``harness/core.py`` synthesises the failure message with
+                # ``content=[TextContent(text=f"[error] {exc}")]`` AND
+                # ``error_message=str(exc)``, and both fields persist. The live
+                # path renders only the second — a synthetic message is never
+                # streamed, so no ``text_delta`` ever reaches the glass — but
+                # replay walks ``content`` and THEN commits the stop-reason
+                # line. Measured through a real harness over a real JSONL
+                # session (``.omc/specs/194-measure.py``): LIVE 1, REPLAY 2 —
+                # the same sentence once through Markdown (so a provider
+                # message's backticks are eaten as code spans) and once as
+                # ``✖ …``.
+                #
+                # Fixed HERE, not at the writer, for two reasons that were
+                # measured rather than assumed:
+                #
+                # * every session already on disk carries both fields, so a
+                #   writer-only change leaves every past failure doubled. The
+                #   persisted-shape test in
+                #   ``tests/tui/test_failed_turn_replay.py`` builds that message
+                #   by hand and never touches the writer at all;
+                # * that ``content`` is not decoration, it is what the MODEL
+                #   reads next. Measured: the ``[error] …`` text is in the
+                #   ``Context.messages`` the following ``prompt()`` sends AND in
+                #   ``build_session_context`` after a reload. Deleting it to
+                #   save one line of screen would hide the failure from the
+                #   model.
+                #
+                # The match is EXACT because an ADAPTER-reported failure carries
+                # the partial text the model really streamed
+                # (``providers/anthropic.py:740`` snapshots ``output_content``
+                # onto the error message), and that text must still replay.
+                # ``harness/core.py`` is the only ``[error] `` synthesiser in
+                # ``packages/``, so nothing else produces this shape.
+                #
+                # ``is not None`` and NOT a truth test: ``error_message=""`` is
+                # a shape the writer itself produces — ``str(exc)`` is ``""``
+                # for any exception raised with no message (a bare
+                # ``TimeoutError()``, a third-party sentinel ``raise Stop()``),
+                # and the body it pairs with is then ``"[error] "``. A truth
+                # test read that as "no error message" and left the echo on
+                # screen, so the exact defect #194 closes survived for exactly
+                # the failures that carry the least information. Measured
+                # through a real harness + a real JSONL round trip
+                # (``.omc/specs/194-measure.py`` ARM 4): REPLAY 2 with ``if
+                # err:``, 1 with this. ``error_message=None`` is a different
+                # case and is deliberately NOT suppressed: there is no echo to
+                # match, the ``✖`` line degrades to ``✖ request error``, and the
+                # body is then the only record of what happened.
+                echoed_failure: str | None = None
+                if stop == "error":
+                    err = getattr(msg, "error_message", None)
+                    if err is not None:
+                        echoed_failure = f"[error] {err}".strip()
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)
                     if btype == "thinking":
@@ -1411,6 +1473,26 @@ class EventRenderer:
                                 self._commit(Text(thinking, style="dim italic"))
                     elif btype == "text":
                         body = getattr(block, "text", "") or ""
+                        if echoed_failure is not None and body.strip() == echoed_failure:
+                            # #194 — this block IS the ``✖`` line below, in the
+                            # other of its two spellings. Skipping it here is
+                            # "one line, not zero" for every input: the commit
+                            # that replaces it is unconditional for ``stop ==
+                            # "error"``. It is built from the very field this
+                            # echo was built from, except when that field is
+                            # ``""`` — then the echo said ``[error]`` and
+                            # nothing else, and the surviving line is
+                            # ``✖ request error``, which says strictly more.
+                            #
+                            # Both sides have only their OUTER whitespace
+                            # stripped (``.strip()``, here and where
+                            # ``echoed_failure`` is built). A persisted body
+                            # that was re-wrapped or re-indented INSIDE does
+                            # not match and keeps its render — deliberately:
+                            # the exact-match rule is the whole safety
+                            # argument, and loosening it is what eats an
+                            # adapter-reported partial answer.
+                            continue
                         # Issue #164 — render Markdown the way the live path
                         # does. Committing ``Text(body)`` put the raw SOURCE on
                         # screen: literal ``**bold**``, literal backticks, no
@@ -1430,7 +1512,6 @@ class EventRenderer:
                         name = getattr(block, "tool_name", "") or ""
                         summary = _tool_header(name, getattr(block, "input", {}) or {})
                         self._commit(render_tool_call_line(name, summary))
-                stop = getattr(msg, "stop_reason", None)
                 if stop in ("error", "aborted"):
                     detail = getattr(msg, "error_message", None) or f"request {stop}"
                     self._commit(Text(f"✖ {detail}", style="bold red"))
