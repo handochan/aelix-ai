@@ -182,6 +182,22 @@ def _await_dead(pid: int, *, timeout: float = DEADLINE) -> str:
     return state
 
 
+def _assert_dead(pid: int, what: str) -> None:
+    """:func:`_await_dead` as an assertion that says what it waited for (#313).
+
+    A bare ``assert _await_dead(pid) != STATE_ALIVE`` fails as
+    ``assert 'alive' != 'alive'``, which names neither the process nor the
+    bound nor how long the poll actually ran.
+    """
+
+    started = time.monotonic()
+    state = _await_dead(pid)
+    assert state != STATE_ALIVE, (
+        f"{what} {pid} still {state} after {time.monotonic() - started:.3f}s of polling "
+        f"(bound {DEADLINE}s)"
+    )
+
+
 def _spawn_parent_of_a_grandchild(
     strays: list[int], *, own_session: bool, kill_on_close: bool = False
 ) -> tuple[subprocess.Popen[str], ProcessTree, int]:
@@ -232,7 +248,7 @@ def test_a_descendant_whose_parent_already_exited_still_dies(strays: list[int]) 
 
     tree.hard_kill()
 
-    assert _await_dead(grandchild) != STATE_ALIVE
+    _assert_dead(grandchild, "grandchild")
     tree.close()
 
 
@@ -255,7 +271,7 @@ def test_a_setsid_descendant_is_reached_by_the_job_and_not_by_the_group(
     tree.hard_kill()
 
     if sys.platform == "win32":
-        assert _await_dead(grandchild) != STATE_ALIVE
+        _assert_dead(grandchild, "grandchild")
     else:
         # Give the kill the same window the win32 arm gets before claiming the
         # survival is real rather than merely not-yet-observed.
@@ -285,7 +301,7 @@ def test_kill_on_close_ends_leftovers_only_where_it_was_asked_for(
     tree.close()
 
     if sys.platform == "win32":
-        assert _await_dead(grandchild) != STATE_ALIVE
+        _assert_dead(grandchild, "grandchild")
     else:
         time.sleep(0.5)
         assert probe_state(grandchild) == STATE_ALIVE
@@ -346,7 +362,7 @@ def test_kill_process_tree_reaches_the_group_of_a_zombie_leader(
     strays.append(grandchild)
     assert probe_state(grandchild) == STATE_ALIVE
     # Deliberately no ``proc.wait()``: the leader must still be unreaped.
-    assert _await_dead(proc.pid) != STATE_ALIVE
+    _assert_dead(proc.pid, "the leader (a precondition: it must be gone before the kill)")
 
     kill_process_tree(proc.pid)
 
@@ -354,7 +370,7 @@ def test_kill_process_tree_reaches_the_group_of_a_zombie_leader(
         time.sleep(0.5)
         assert probe_state(grandchild) == STATE_ALIVE
     else:
-        assert _await_dead(grandchild) != STATE_ALIVE
+        _assert_dead(grandchild, "grandchild")
     proc.wait(timeout=DEADLINE)
 
 

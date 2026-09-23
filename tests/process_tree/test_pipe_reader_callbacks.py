@@ -42,6 +42,10 @@ from aelix_ai.utils._process_tree import _READ_CHUNK_BYTES, _PipeReader, _ReadSt
 #: that a reader which never ends fails the case instead of the leg.
 JOIN_BOUND = 5.0
 
+#: The idle stamp a case seeds when it asserts the reader stamped it: lower than
+#: any clock reading, so "stamped" and "left alone" cannot compare equal.
+_UNSTAMPED = float("-inf")
+
 
 class _ScriptedStream:
     """``read1`` answers taken from a script. Not a pipe, not an fd.
@@ -72,7 +76,9 @@ class _ScriptedStream:
     def read1(self, size: int) -> bytes:
         self.sizes.append(size)
         if self._gate_before is not None and self._index == self._gate_before:
-            assert self.gate.wait(JOIN_BOUND), "the case never released the reader's gate"
+            assert self.gate.wait(JOIN_BOUND), (
+                f"the case never released the reader's gate within {JOIN_BOUND}s"
+            )
         if self._index >= len(self._script):
             return b""
         item = self._script[self._index]
@@ -107,9 +113,13 @@ def _reader(
 def _join(reader: _PipeReader) -> None:
     """Join the reader, failing by name rather than leaking a daemon thread."""
 
+    started = time.monotonic()
     reader.join(JOIN_BOUND)
     if reader.is_alive():
-        pytest.fail(f"the reader was still running {JOIN_BOUND}s after its script ended")
+        pytest.fail(
+            f"the reader was still running {time.monotonic() - started:.3f}s after its script "
+            f"ended (anti-hang bound {JOIN_BOUND}s)"
+        )
 
 
 def test_on_chunk_gets_every_chunk_in_order_and_the_reader_retains_nothing() -> None:
@@ -127,8 +137,13 @@ def test_on_chunk_gets_every_chunk_in_order_and_the_reader_retains_nothing() -> 
 
     log: list[object] = []
     stream = _ScriptedStream([b"one", b"two", b"three"])
+    # Seeded BELOW every clock reading, not with ``started`` (#313): seeded with
+    # ``started``, the ``>= started`` below held whether or not the reader ever
+    # stamped, so it asserted nothing. From ``-inf`` only a stamp taken after
+    # ``started`` passes, and no timer resolution can make a real stamp read
+    # earlier than a reading taken before it.
     started = time.monotonic()
-    state = _ReadState(last_chunk_at=started)
+    state = _ReadState(last_chunk_at=_UNSTAMPED)
 
     reader = _reader(stream, state, on_chunk=log.append, on_eof=lambda: log.append("eof"))
     _join(reader)
@@ -136,7 +151,9 @@ def test_on_chunk_gets_every_chunk_in_order_and_the_reader_retains_nothing() -> 
     assert log == [b"one", b"two", b"three", "eof"]
     assert reader.chunks == []
     assert reader.eof is True
-    assert state.last_chunk_at >= started
+    assert state.last_chunk_at >= started, (
+        f"the idle timer was never stamped: last_chunk_at is still {state.last_chunk_at}"
+    )
     assert stream.closed is True
     assert stream.sizes == [_READ_CHUNK_BYTES] * 4
 
@@ -269,7 +286,9 @@ def test_detach_stops_the_callback_and_the_reader_reads_on() -> None:
         on_eof=lambda: log.append("eof"),
     )
 
-    assert first.wait(JOIN_BOUND), "the reader never delivered its first chunk"
+    assert first.wait(JOIN_BOUND), (
+        f"the reader never delivered its first chunk within {JOIN_BOUND}s"
+    )
     reader.detach()
     stream.gate.set()
     _join(reader)
@@ -321,7 +340,9 @@ def test_a_detached_reader_stops_pinning_the_callers_callback() -> None:
     stream = _ScriptedStream([b"one", b"two", b"three"], gate_before=1)
     reader = _reader(stream, _ReadState(last_chunk_at=time.monotonic()), on_chunk=sink)
 
-    assert sink.first.wait(JOIN_BOUND), "the reader never delivered its first chunk"
+    assert sink.first.wait(JOIN_BOUND), (
+        f"the reader never delivered its first chunk within {JOIN_BOUND}s"
+    )
     reader.detach()
     del sink
     gc.collect()
@@ -347,8 +368,9 @@ def test_a_reader_without_callbacks_is_exactly_what_it_was() -> None:
     """
 
     stream = _ScriptedStream([b"one", b"two"])
+    # From ``-inf`` for the reason the case above states (#313).
     started = time.monotonic()
-    state = _ReadState(last_chunk_at=started)
+    state = _ReadState(last_chunk_at=_UNSTAMPED)
 
     reader = _PipeReader(cast("IO[bytes]", stream), state)
     reader.start()
@@ -356,5 +378,7 @@ def test_a_reader_without_callbacks_is_exactly_what_it_was() -> None:
 
     assert reader.chunks == [b"one", b"two"]
     assert reader.eof is True
-    assert state.last_chunk_at >= started
+    assert state.last_chunk_at >= started, (
+        f"the idle timer was never stamped: last_chunk_at is still {state.last_chunk_at}"
+    )
     assert stream.closed is True

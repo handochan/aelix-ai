@@ -96,10 +96,14 @@ def _run_bounded(fn: Callable[[], _T], bound: float, what: str) -> _T:
             error.append(exc)
 
     thread = threading.Thread(target=_target, daemon=True)
+    started = time.monotonic()
     thread.start()
     thread.join(bound)
     if thread.is_alive():
-        pytest.fail(f"{what}: run_contained did not return within {bound}s")
+        pytest.fail(
+            f"{what}: run_contained did not return within its {bound}s anti-hang bound "
+            f"(waited {time.monotonic() - started:.3f}s)"
+        )
     if error:
         raise error[0]
     return result[0]
@@ -242,6 +246,12 @@ class FakePopen:
         self.returncode: int | None = None
         self.exited = threading.Event()
         self.kills = 0
+        #: The ``timeout`` of every ``wait`` call, in order, recorded on ENTRY
+        #: (before ``wait_error`` can raise). This is how a case asks WHICH bound
+        #: the product waited under — the command's, the reap grace, the
+        #: interrupt reap — as an event, instead of inferring it from a
+        #: stopwatch around the whole call (#313).
+        self.waits: list[float | None] = []
         stdout_r, self.stdout_w = os.pipe()
         stderr_r, self.stderr_w = os.pipe()
         self.stdout = os.fdopen(stdout_r, "rb")
@@ -260,6 +270,7 @@ class FakePopen:
     # -- the ``Popen`` surface ``run_contained`` uses ------------------------
 
     def wait(self, timeout: float | None = None) -> int:
+        self.waits.append(timeout)
         if self._owner.on_wait_enter is not None:
             enter, self._owner.on_wait_enter = self._owner.on_wait_enter, None
             enter()
@@ -386,11 +397,15 @@ def spawner(
     for proc in made.procs:
         proc.close_writes()
         proc.exited.set()
-    deadline = time.monotonic() + 5.0
+    started = time.monotonic()
+    deadline = started + 5.0
     for thread in threading.enumerate():
         if isinstance(thread, _PipeReader):
             thread.join(max(0.0, deadline - time.monotonic()))
-            assert not thread.is_alive(), "a reader outlived its pipe's EOF"
+            assert not thread.is_alive(), (
+                f"a reader outlived its pipe's EOF: still alive "
+                f"{time.monotonic() - started:.3f}s into the teardown's 5.0s anti-hang bound"
+            )
 
 
 @dataclass
@@ -598,7 +613,22 @@ def test_an_exited_root_with_a_quiet_pipe_holder_returns_after_the_idle_drain(
 
     assert result.stdout == b"tail\n"
     assert result.returncode == 0
-    assert EXIT_DRAIN_SECONDS <= elapsed < EXIT_DRAIN_SECONDS + 0.5
+    # THE FLOOR CANNOT FAIL ON A COARSE CLOCK; THE CEILING IS A GATE (#313). The
+    # floor compares two readings of the clock the drain itself decides on, and
+    # this case's stamp is taken BEFORE the product's ``exited_at``: the drain
+    # cannot return until its own ``monotonic()`` is EXIT_DRAIN_SECONDS past a
+    # later stamp, so a 15.6 ms tick can only make ``elapsed`` larger. The
+    # ceiling separates the idle rule from the flat cap and is exposed to
+    # scheduling, so it prints the number that tells the two apart.
+    assert elapsed >= EXIT_DRAIN_SECONDS, (
+        f"the drain ended {elapsed:.3f}s after the exit, under the {EXIT_DRAIN_SECONDS}s idle "
+        "grace armed AT the exit"
+    )
+    assert elapsed < EXIT_DRAIN_SECONDS + 0.5, (
+        f"the drain ended {elapsed:.3f}s after the exit, past its {EXIT_DRAIN_SECONDS + 0.5:.1f}s "
+        f"bound: ~{DRAIN_CAP_SECONDS}s is the flat cap ending it instead of the idle rule, "
+        "anything well short of that is a slow runner"
+    )
     assert spies.ladder == []
     assert spawner.proc.kills == 0
     assert trees.closes == [PID]
@@ -654,8 +684,12 @@ def test_a_left_behind_reader_keeps_draining_and_stops_retaining(
     )
 
     spawner.proc.close_stdout_write()
+    closed_at = time.monotonic()
     out_reader.join(5.0)
-    assert not out_reader.is_alive(), "a detached reader must still end when its pipe reaches EOF"
+    assert not out_reader.is_alive(), (
+        "a detached reader must still end when its pipe reaches EOF: still alive "
+        f"{time.monotonic() - closed_at:.3f}s after the close (anti-hang bound 5.0s)"
+    )
     assert out_reader.eof is True
 
 
@@ -681,6 +715,8 @@ def test_the_drain_waits_for_both_eofs(
 
     monkeypatch.setattr(_process_tree, "EXIT_DRAIN_SECONDS", 0.5)
     written = threading.Event()
+    exited_at: list[float] = []
+    wrote_at: list[float] = []
 
     def _enter() -> None:
         proc = spawner.proc
@@ -692,17 +728,31 @@ def test_the_drain_waits_for_both_eofs(
             # teardown may have closed this end, and this thread has no caller.
             with contextlib.suppress(OSError):
                 os.write(proc.stdout_w, b"tail\n")
+            wrote_at.append(time.monotonic())
             written.set()
 
         threading.Thread(target=_late, daemon=True).start()
+        exited_at.append(time.monotonic())
         proc.exit(0)
 
     spawner.on_wait_enter = _enter
 
     result = _run_bounded(lambda: _call(spawner, spies, timeout=5.0), 5.0, "both eofs")
+    returned_at = time.monotonic()
 
-    assert written.wait(2.0), "the tail was never written — the case measured nothing"
-    assert b"tail\n" in result.stdout
+    assert written.wait(2.0), (
+        "the tail was never written within the 2.0s anti-hang bound — the case measured nothing"
+    )
+    # A GATE ON SCHEDULING, NOT CONVERTIBLE WITHOUT A CLOCK SEAM (#313): the tail
+    # must land inside the 0.5 s idle grace, so a writer thread starved past it
+    # turns a correct build red. Both instants are printed, so a CI log tells
+    # the regression (a return ~0 s after the exit, on the first EOF) from load
+    # (a tail written past 0.5 s).
+    assert b"tail\n" in result.stdout, (
+        f"no tail: the call returned {returned_at - exited_at[0]:.3f}s after the exit and "
+        f"the tail was written {wrote_at[0] - exited_at[0]:.3f}s after it, against a 0.5s "
+        "idle grace"
+    )
     assert result.stderr == b""
     assert result.returncode == 0
     assert spawner.proc.kills == 0
@@ -745,7 +795,14 @@ def test_an_actively_writing_holder_is_cut_at_the_cap(
         stop.set()
     elapsed = time.monotonic() - exited_at[0]
 
-    assert abs(elapsed - DRAIN_CAP_SECONDS) < 0.3
+    # A GATE, and the number IS the claim (which clause ended the drain), so it
+    # stays a clock reading until ``_drain`` has a clock seam (#313). Below the
+    # window is the idle rule firing between two chunks (a starved writer or
+    # reader); above it is the cap not binding, or a slow runner.
+    assert abs(elapsed - DRAIN_CAP_SECONDS) < 0.3, (
+        f"the drain ended {elapsed:.3f}s after the exit, outside "
+        f"{DRAIN_CAP_SECONDS}s ± 0.3s (the flat cap)"
+    )
     assert result.returncode == 5
     assert b"chunk" in result.stdout
     assert spawner.proc.kills == 0
@@ -786,13 +843,25 @@ def test_the_deadline_caps_the_drain_but_keeps_one_grace(
         stop.set()
     returned_at = time.monotonic()
 
-    assert returned_at - exited_at[0] >= EXIT_DRAIN_SECONDS
+    # The floor is read off the clock the drain decides on, with this case's
+    # stamp taken before the product's, so timer resolution can only widen it
+    # (#313) — see the idle-drain case above.
+    after_exit = returned_at - exited_at[0]
+    assert after_exit >= EXIT_DRAIN_SECONDS, (
+        f"the drain ended {after_exit:.3f}s after the exit, under the "
+        f"{EXIT_DRAIN_SECONDS}s grace floor"
+    )
     # 0.6, not 0.3 (#221 review T8): the run measures 0.60 s five times out of
     # five against a 0.5 s timeout, and what it is exposed to is two thread
     # hand-offs of scheduling delay on a 2-core runner, not CPU. The claim this
     # case makes is the LOWER bound on the line above — the grace floor —
     # which the widening does not touch.
-    assert returned_at - started <= timeout + EXIT_DRAIN_SECONDS + 0.6
+    total = returned_at - started
+    assert total <= timeout + EXIT_DRAIN_SECONDS + 0.6, (
+        f"the call took {total:.3f}s against a {timeout}s timeout, past its "
+        f"{timeout + EXIT_DRAIN_SECONDS + 0.6:.1f}s bound: ~{0.49 + DRAIN_CAP_SECONDS:.1f}s "
+        "is the deadline not capping the drain, anything well short of that is a slow runner"
+    )
     assert result.returncode == 0
 
 
@@ -904,14 +973,18 @@ def test_the_post_kill_drain_is_armed_at_the_reap(
     # the drain ends here, the idle rule is.
     spawner.close_on_kill = False
     released = threading.Event()
+    killed_at: list[float] = []
+    wrote_at: list[float] = []
 
     def _on_kill(proc: FakePopen) -> None:
         def _late() -> None:
             time.sleep(0.03)
             with contextlib.suppress(OSError):
                 os.write(proc.stdout_w, b"released")
+            wrote_at.append(time.monotonic())
             released.set()
 
+        killed_at.append(time.monotonic())
         threading.Thread(target=_late, daemon=True).start()
 
     spawner.on_kill = _on_kill
@@ -924,9 +997,20 @@ def test_the_post_kill_drain_is_armed_at_the_reap(
             1.5 + REAP_GRACE_SECONDS + KILL_DRAIN_SECONDS + 1.5,
             "post-kill drain armed at the reap",
         )
+    raised_at = time.monotonic()
 
-    assert released.wait(2.0), "the kill released nothing — the case measured nothing"
-    assert b"released" in caught.value.stdout
+    assert released.wait(2.0), (
+        "the kill released nothing within the 2.0s anti-hang bound — the case measured nothing"
+    )
+    # A GATE ON SCHEDULING (#313), the same shape as the both-EOFs case: the
+    # release must land inside the 0.5 s grace. The two instants separate the
+    # regression (a raise ~0 s after the kill: the drain was not armed at the
+    # reap) from load (a release written past 0.5 s).
+    assert b"released" in caught.value.stdout, (
+        f"the release is missing: the call raised {raised_at - killed_at[0]:.3f}s after the "
+        f"kill and the release was written {wrote_at[0] - killed_at[0]:.3f}s after it, "
+        "against a 0.5s idle grace"
+    )
     assert spawner.proc.kills == 1
 
 
@@ -999,8 +1083,16 @@ def test_a_chatty_holder_past_the_kill_is_cut_at_kill_drain(
     # grace (0.108 s), and not the 0.05 the idle rule would give if the chatter
     # were not re-arming it. The floor is what discriminates all three; the
     # ceiling is scheduling's slack.
-    assert after_the_kill >= 0.4 - 0.1, f"the drain ended at {after_the_kill:.3f}s, before the cap"
-    assert after_the_kill < 0.4 + 0.3, f"the drain ran {after_the_kill:.3f}s, past the cap"
+    # A GATE, and the number IS the claim (which cap ended the drain), so it
+    # stays a clock reading until ``_drain`` has a clock seam (#313).
+    assert after_the_kill >= 0.4 - 0.1, (
+        f"the drain ended {after_the_kill:.3f}s after the kill, under its 0.3s floor: "
+        "~0.1s is the reap grace standing in for the 0.4s kill-drain cap, or the idle rule "
+        "firing because the chatter or the reader was starved"
+    )
+    assert after_the_kill < 0.4 + 0.3, (
+        f"the drain ran {after_the_kill:.3f}s after the kill, past its 0.7s bound over a 0.4s cap"
+    )
     assert b"chunk" in caught.value.stdout
 
 
@@ -1025,11 +1117,20 @@ def test_timeout_with_a_wedged_root_costs_reap_grace_not_forever(
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         # ``+ 1.5``, not ``+ 0.5`` (#221 review T8): measured 0.51 s five times
         # out of five, and this bound is a watchdog against a HANG, not the
-        # case's claim — the claim is the ``elapsed >= 0.1 + 0.3`` below.
+        # case's claim — the claim is the reap's bound, asserted below.
         _run_bounded(lambda: _call(spawner, spies, timeout=0.1), 0.1 + 0.3 + 0.2 + 1.5, "wedged")
     elapsed = time.monotonic() - started
 
-    assert elapsed >= 0.1 + 0.3
+    # WHICH BOUND THE REAP WAITED UNDER, asked of the fake as an event (#313).
+    # This was ``elapsed >= 0.1 + 0.3``: a floor on the sum of two
+    # ``Event.wait`` timeouts, each of which a 15.6 ms Windows clock can read a
+    # tick short, and one that a reap under the WRONG bound still cleared —
+    # INTERRUPT_REAP_SECONDS (0.25) plus the 0.1 s idle drain is 0.45 s. The
+    # wedged fake never sets ``exited``, so a wait under 0.3 costs exactly that.
+    assert spawner.proc.waits == [0.1, 0.3], (
+        f"the waits were {spawner.proc.waits}; expected the command's 0.1s timeout, then the "
+        f"reap under REAP_GRACE_SECONDS (0.3s here). The call took {elapsed:.3f}s"
+    )
     assert caught.value.stdout == b""
     assert caught.value.stderr == b""
     assert trees.closes == [PID]
@@ -1105,15 +1206,51 @@ def test_spawn_failure_propagates_and_attaches_nothing(
 
 
 def test_timeout_none_waits_for_exit(spawner: Spawner, spies: Spies, trees: Trees) -> None:
-    """``timeout=None`` — ``api.exec``'s default — waits without bound, as ``run`` does."""
+    """``timeout=None`` — ``api.exec``'s default — waits without bound, as ``run`` does.
 
-    spawner.on_wait_enter = lambda: threading.Timer(0.2, spawner.proc.finish).start()
-    started = time.monotonic()
+    THE CLAIM IS AN ORDER, NOT A DURATION (#313). "Waits until the child
+    finishes" means the call returns AFTER the finish, so the case records both
+    and asserts their order, and asks the fake which bound the wait was given.
+    It used to assert ``monotonic() - started >= 0.2`` around a
+    ``threading.Timer(0.2, finish)`` — a floor on a timer, read off a clock that
+    ticks in 15.625 ms steps on windows-latest py3.11/3.12 — and CI read 0.187 s
+    and 0.188 s (runs 35522028413, 35889203617) on commits that did not touch
+    this code. The 0.2 s delay is now only the window in which a call that did
+    NOT wait would return first; no verdict is read off a clock.
+    """
 
-    result = _run_bounded(lambda: _call(spawner, spies, timeout=None), 5.0, "timeout=None")
+    finished = threading.Event()
+    finished_at_return: list[bool] = []
 
+    def _finish() -> None:
+        # Marked BEFORE ``finish``: the product's wait may return the instant
+        # ``exited`` is set, and the mark has to be there already when it does.
+        finished.set()
+        spawner.proc.finish()
+
+    def _enter() -> None:
+        timer = threading.Timer(0.2, _finish)
+        timer.daemon = True
+        timer.start()
+
+    def _call_and_mark() -> subprocess.CompletedProcess[bytes]:
+        completed = _call(spawner, spies, timeout=None)
+        # Read on the CALL's thread, at the instant it returned.
+        finished_at_return.append(finished.is_set())
+        return completed
+
+    spawner.on_wait_enter = _enter
+
+    result = _run_bounded(_call_and_mark, 5.0, "timeout=None")
+
+    assert finished_at_return == [True], (
+        "run_contained(timeout=None) returned before the child finished — it did not wait"
+    )
+    assert spawner.proc.waits == [None], (
+        f"the command's wait was given {spawner.proc.waits}, not [None]: timeout=None must "
+        "reach Popen.wait unbounded"
+    )
     assert result.returncode == 0
-    assert time.monotonic() - started >= 0.2
     assert spawner.proc.kills == 0
 
 
@@ -1178,7 +1315,21 @@ def test_an_interrupt_ends_the_tree_before_it_propagates(
         assert spies.killpgs == [(PID, SIGKILL)]
     assert spawner.proc.kills == 1
     assert trees.closes == [PID]
-    assert elapsed < INTERRUPT_REAP_SECONDS + 0.5
+    # WHICH BOUND THE REAP WAITED UNDER, as an event (#313). This was
+    # ``elapsed < INTERRUPT_REAP_SECONDS + 0.5``, a 0.75 s ceiling that could not
+    # tell the bounds apart: the fake's kill sets ``exited``, so a reap under
+    # REAP_GRACE_SECONDS (5.0 s) returns just as fast. What the ceiling could
+    # still catch was a slow runner, or a delay in the product before the kill
+    # (the fakes' kill is instantaneous, so only the product's own Python
+    # latency was in the number). On this path that latency stays bounded by
+    # ``test_an_interrupt_ends_a_real_tree`` (real processes, ladder
+    # < INTERRUPT_REAP_SECONDS + 1.0), which goes red on a 1.5 s stall at the top
+    # of ``_end_the_tree``.
+    assert spawner.proc.waits == [30.0, INTERRUPT_REAP_SECONDS], (
+        f"the waits were {spawner.proc.waits}; expected the command's 30.0s timeout, then the "
+        f"reap under INTERRUPT_REAP_SECONDS ({INTERRUPT_REAP_SECONDS}s). "
+        f"The call took {elapsed:.3f}s"
+    )
 
 
 @pytest.mark.parametrize("spawner", ["linux", "win32"], indirect=True)
@@ -1228,8 +1379,12 @@ def test_a_reader_that_cannot_start_still_ends_the_tree(
     assert len(started) == 1, "the first reader never started — the case measured nothing"
     os.write(spawner.proc.stdout_w, b"after-the-fall")
     spawner.proc.close_stdout_write()
+    closed_at = time.monotonic()
     started[0].join(5.0)
-    assert not started[0].is_alive()
+    assert not started[0].is_alive(), (
+        "the surviving reader did not end on its pipe's EOF: still alive "
+        f"{time.monotonic() - closed_at:.3f}s after the close (anti-hang bound 5.0s)"
+    )
     assert started[0].chunks == [], "the surviving reader was left retaining"
 
 
@@ -1345,7 +1500,30 @@ def test_abort_from_another_thread_ends_the_tree_and_returns(
     # A ``CompletedProcess``, not an exception: the caller has already unwound
     # and there is nobody to raise into, so the run just ends as a killed run.
     assert result.returncode == -9
-    assert time.monotonic() - aborted_at[0] < INTERRUPT_REAP_SECONDS + 0.5
+    # THE WAIT RETURNED BECAUSE OF THE ABORT, as events (#313). ``-9`` above
+    # says the one wait returned on the abort's kill, and the fake's record says
+    # it was the command's own 30 s wait with no reap after it — ``abort()``
+    # "never waits". An abort that did not unblock the wait is the anti-hang
+    # bound's to catch, and it names itself there.
+    returned_after = time.monotonic() - aborted_at[0]
+    assert spawner.proc.waits == [30.0], (
+        f"the waits were {spawner.proc.waits}; expected only the command's 30.0s wait, "
+        f"released by the abort. The call returned {returned_after:.3f}s after the abort"
+    )
+    # ...AND PROMPTLY. A latency gate, kept on purpose (#313 review): the
+    # events above cannot see a delay in the product before the kill, and the
+    # real-process abort case's 2.0 s join is the only other bound on it, so
+    # without this a 1.5 s stall at the top of ``AbortHandle._kill`` passed
+    # both the events above and that real case. The fakes' kill is instantaneous, so the number is the
+    # product's own Python latency plus scheduling; a clean darwin run reads
+    # 0.000s. It is the same 0.75 s ceiling this case always had, and it never
+    # went red on CI.
+    bound = INTERRUPT_REAP_SECONDS + 0.5
+    assert returned_after < bound, (
+        f"the call returned {returned_after:.3f}s after abort(), bound {bound:.2f}s. The fake's "
+        f"kill takes no time and a clean run reads ~0.000s, so the excess is a stall: in the "
+        f"runner (load, if the file passes alone) or in the product between abort() and the kill"
+    )
     assert trees.attached[0].closed is True
     assert trees.closes == [PID]
 
@@ -1510,7 +1688,8 @@ def test_an_abort_in_the_exit_drain_kills_nothing_and_ends_the_call(
     assert reaped_at, "the wait never returned — the case measured nothing"
     assert aborted_at, "the abort never fired — the case measured nothing"
     assert aborted_at[0] - reaped_at[0] < 1.0, (
-        f"the abort landed {aborted_at[0] - reaped_at[0]:.3f}s past the reap, outside the drain"
+        f"the abort landed {aborted_at[0] - reaped_at[0]:.3f}s past the reap, outside the "
+        f"drain's 1.0s cap (DRAIN_CAP_SECONDS, shrunk): a Timer(0.1) that late is load"
     )
     # ``False`` is the documented "there was nothing to send it to", and after
     # #230 that includes "the root is reaped and the call is only draining".
@@ -1521,7 +1700,8 @@ def test_an_abort_in_the_exit_drain_kills_nothing_and_ends_the_call(
     assert b"chunk" in result.stdout
     after_the_abort = returned - aborted_at[0]
     assert after_the_abort < 0.2, (
-        f"the drain ran {after_the_abort:.3f}s past the abort, against a 1.0s cap"
+        f"the drain ran {after_the_abort:.3f}s past the abort, past its 0.2s bound; ~0.9s "
+        "(the 1.0s cap less the abort's 0.1s offset) is the cap ending it instead of the abort"
     )
 
 
@@ -1624,7 +1804,8 @@ def test_an_abort_in_the_post_kill_drain_does_not_run_a_second_ladder(
         assert b"chunk" in caught.value.stdout
         after_the_abort = raised_at - aborted_at[0]
         assert after_the_abort < 0.2, (
-            f"the drain ran {after_the_abort:.3f}s past the abort, against a 0.6s cap"
+            f"the drain ran {after_the_abort:.3f}s past the abort, past its 0.2s bound; ~0.45s "
+            "(the 0.6s cap less the abort's 0.15s offset) is the cap ending it instead"
         )
 
 

@@ -208,7 +208,7 @@ def _await_marker(marker: Path, strays: list[int], *, fields: int = 2) -> tuple[
     announce only themselves.
     """
 
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + _ANNOUNCE_BOUND
     while time.monotonic() < deadline:
         try:
             raw = marker.read_text(encoding="utf-8").split()
@@ -354,7 +354,7 @@ def test_timeout_ends_a_pipe_holding_grandchild_and_returns_in_bound(
         elapsed = time.monotonic() - started
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, _NOT_ANNOUNCED
     root_pid, grandchild = pids
     # The messages carry the elapsed and the LAST observed state because this
     # case went red once in ~15 executions during the review and the traceback
@@ -416,11 +416,11 @@ def test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail(
         elapsed = time.monotonic() - started
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, _NOT_ANNOUNCED
     _, holder = pids
     assert result.returncode == 0
     assert result.stdout == b"done\nlate\n"
-    assert elapsed <= 0.5 + EXIT_DRAIN_SECONDS + 2.0
+    assert elapsed <= _EXITED_ROOT_BOUND, _late("the exited-root call", elapsed, _EXITED_ROOT_BOUND)
     assert probe_state(holder) == STATE_ALIVE
     warnings.warn(
         f"run_contained exited-root drain: {elapsed:.3f}s on {sys.platform}",
@@ -485,15 +485,20 @@ def test_a_setsid_grandchild_is_reached_by_the_job_and_not_by_the_group(
         elapsed = time.monotonic() - started
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, _NOT_ANNOUNCED
     root_pid, grandchild = pids
     root_state = _await_dead(root_pid)
     assert root_state != STATE_ALIVE, (
         f"root {root_pid} still {root_state} after {DEADLINE}s; returned at {elapsed:.3f}s"
     )
-    assert elapsed <= bound
+    # A GATE (#313): the claim is that the drain did NOT wait out the reap grace,
+    # and revision 1's 6.0 s is what it separates from; the message says which.
+    assert elapsed <= bound, _late("the timeout with a setsid survivor", elapsed, bound)
     if sys.platform == "win32":
-        assert _await_dead(grandchild) != STATE_ALIVE
+        grandchild_state = _await_dead(grandchild)
+        assert grandchild_state != STATE_ALIVE, (
+            f"grandchild {grandchild} still {grandchild_state} after {DEADLINE}s of polling"
+        )
     else:
         # Give the kill the same window the win32 arm gets before calling the
         # survival real rather than merely not-yet-observed.
@@ -551,7 +556,7 @@ def test_a_deliberate_outliver_survives_success_and_dies_on_timeout(
     finally:
         success_pids = success_registrar.settle()
 
-    assert success_pids is not None, "the root never announced its tree — the case measured nothing"
+    assert success_pids is not None, _NOT_ANNOUNCED
     _, survivor = success_pids
     assert result.returncode == 0
     assert probe_state(survivor) == STATE_ALIVE
@@ -572,9 +577,12 @@ def test_a_deliberate_outliver_survives_success_and_dies_on_timeout(
     finally:
         timeout_pids = timeout_registrar.settle()
 
-    assert timeout_pids is not None, "the root never announced its tree — the case measured nothing"
+    assert timeout_pids is not None, _NOT_ANNOUNCED
     _, doomed = timeout_pids
-    assert _await_dead(doomed) != STATE_ALIVE
+    doomed_state = _await_dead(doomed)
+    assert doomed_state != STATE_ALIVE, (
+        f"outliver {doomed} still {doomed_state} after {DEADLINE}s of polling"
+    )
 
 
 # === the interrupt leg, against a real tree =================================
@@ -628,13 +636,24 @@ def test_an_interrupt_ends_a_real_tree(
         pids = registrar.settle()
 
     assert interrupted_at, "the injected interrupt never fired — the case measured nothing"
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, _NOT_ANNOUNCED
     root_pid, grandchild = pids
-    assert _await_dead(root_pid) != STATE_ALIVE
-    assert _await_dead(grandchild) != STATE_ALIVE
+    root_state = _await_dead(root_pid)
+    assert root_state != STATE_ALIVE, (
+        f"root {root_pid} still {root_state} after {DEADLINE}s of polling"
+    )
+    grandchild_state = _await_dead(grandchild)
+    assert grandchild_state != STATE_ALIVE, (
+        f"grandchild {grandchild} still {grandchild_state} after {DEADLINE}s of polling"
+    )
     # The ladder's own bound: ``hard_kill``, the belt, and a 0.25 s reap. There
     # is no drain and no output on this path, so nothing else is in the number.
-    assert returned_at - interrupted_at[0] < INTERRUPT_REAP_SECONDS + 1.0
+    # A GATE on real children (#313): this is the ladder's LATENCY, which only a
+    # real kill can supply, so it stays a clock reading and names its number.
+    ladder = returned_at - interrupted_at[0]
+    assert ladder < INTERRUPT_REAP_SECONDS + 1.0, _late(
+        "the interrupt ladder", ladder, INTERRUPT_REAP_SECONDS + 1.0
+    )
 
 
 def test_abort_ends_a_real_tree_promptly(tmp_path: Path, strays: list[int]) -> None:
@@ -679,7 +698,7 @@ def test_abort_ends_a_real_tree_promptly(tmp_path: Path, strays: list[int]) -> N
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
     try:
-        assert announced.wait(5.0), "the root never announced its tree — the case measured nothing"
+        assert announced.wait(_ANNOUNCE_BOUND), _NOT_ANNOUNCED
         time.sleep(0.3)
         aborted_at = time.monotonic()
         sent = handle.abort()
@@ -692,7 +711,8 @@ def test_abort_ends_a_real_tree_promptly(tmp_path: Path, strays: list[int]) -> N
         raise failed[0]
     assert sent is True, "the abort found nothing attached — the case measured nothing"
     assert not thread.is_alive(), (
-        f"the call was still blocked {joined_at - aborted_at:.3f}s after the abort"
+        f"the call was still blocked {joined_at - aborted_at:.3f}s after the abort "
+        "(joined for 2.0s)"
     )
     assert pids is not None
     root_pid, grandchild = pids
@@ -847,7 +867,8 @@ def test_no_controlling_terminal(strays: list[int]) -> None:
         # is not even present.
         assert result.returncode != 0
         assert b"ENXIO" in result.stderr or b"ENOENT" in result.stderr
-        assert elapsed < 5.0
+        # "Not hung": a stopped child would sit until DEADLINE's TimeoutExpired.
+        assert elapsed < 5.0, _late("the no-tty child", elapsed, 5.0)
 
 
 #: A root that backgrounds a holder which is ALREADY WRITING when the root exits.
@@ -1004,7 +1025,7 @@ def test_an_abort_in_the_exit_drain_keeps_the_backgrounded_helper(
         elapsed = time.monotonic() - started
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, _NOT_ANNOUNCED
     _, helper = pids
     assert aborted_at, "the abort never landed — the case measured nothing"
     assert aborted_at[0] < returned, (
@@ -1021,10 +1042,42 @@ def test_an_abort_in_the_exit_drain_keeps_the_backgrounded_helper(
         f"helper {helper} died to an abort {after_the_abort:.3f}s after the root's own exit"
     )
     assert after_the_abort < EXIT_DRAIN_SECONDS + 0.5, (
-        f"the drain ran {after_the_abort:.3f}s past the abort"
+        f"the drain ran {after_the_abort:.3f}s past the abort, past its "
+        f"{EXIT_DRAIN_SECONDS + 0.5:.1f}s bound; ~{DRAIN_CAP_SECONDS - 0.2:.1f}s is the "
+        f"{DRAIN_CAP_SECONDS}s cap ending it instead of the abort"
     )
     warnings.warn(
         f"run_contained abort in the exit drain: {elapsed:.3f}s total, "
         f"{after_the_abort:.3f}s past the abort on {sys.platform}",
         stacklevel=1,
     )
+
+
+# === bounds named for #313 ==================================================
+#
+# Defined BELOW every case, which is where a module-level name can be added in
+# this file: the citation lock carries a line range inside
+# ``test_a_setsid_grandchild_is_reached_by_the_job_and_not_by_the_group``'s
+# bound, cited from ``tests/tools/test_bash_tool_containment.py``, so a line
+# added above it drifts the lock (see the last case's import). The functions
+# above read these at call time.
+
+#: How long :func:`_await_marker` polls for a root's announcement — an
+#: anti-hang bound on interpreter start-up, not a claim about the product.
+_ANNOUNCE_BOUND = 5.0
+
+#: The vacuity guard's message: what was waited for, and for how long.
+_NOT_ANNOUNCED = (
+    f"the root never announced its tree within {_ANNOUNCE_BOUND}s of polling "
+    "— the case measured nothing"
+)
+
+#: :func:`test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail`'s
+#: ceiling: the root's 0.5 s quiet spell, one idle grace, and the flat cap.
+_EXITED_ROOT_BOUND = 0.5 + EXIT_DRAIN_SECONDS + 2.0
+
+
+def _late(what: str, elapsed: float, bound: float) -> str:
+    """A time bound's failure message: what was timed, the time, the bound."""
+
+    return f"{what} took {elapsed:.3f}s, past its {bound:.2f}s bound"
