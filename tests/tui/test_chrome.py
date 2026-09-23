@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_coding_agent.tui.chrome import AelixChrome
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.application.current import set_app
@@ -248,7 +249,12 @@ async def test_running_enter_steers_not_submits() -> None:
         fut = asyncio.ensure_future(chrome.get_input())
         await asyncio.sleep(0.05)
         pipe.send_text("steer this\n")
+        # #315: the POSITIVE half waits for its event. It used to ride on the
+        # 0.4 s window below, so a loop too starved to process the Enter in
+        # 0.4 s read ``steered == []`` and went red on a correct build.
+        await wait_until(lambda: steered, what="the mid-turn Enter to reach on_steer")
         # The queue stays empty (steered instead) — get_input never resolves.
+        # A negative window: load can only make it pass sooner, never go red.
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(fut, timeout=0.4)
         fut.cancel()
@@ -386,20 +392,22 @@ async def test_escape_dismisses_menu_end_to_end_through_the_key_processor() -> N
         await asyncio.sleep(0.05)
 
         pipe.send_text("/")  # completes while typing in a slash context
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            state = chrome.buffer.complete_state
-            if state is not None and state.completions:
-                break
-        assert chrome.buffer.complete_state is not None, "menu never opened"
+        # #315: the shared poll (10 s anti-hang bound, names what it waited for)
+        # instead of a 100 x 20 ms loop whose miss said only "menu never opened".
+        await wait_until(
+            lambda: (state := chrome.buffer.complete_state) is not None
+            and bool(state.completions),
+            what="typing '/' to open the completion menu",
+        )
 
         pipe.send_text("\x1b")  # a real Esc byte
         # Esc is a PREFIX (Alt+Enter / Alt+Up), so the processor flushes it as a
-        # standalone key only after ttimeoutlen (0.05s) — wait past that.
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if chrome.buffer.complete_state is None:
-                break
+        # standalone key only after ttimeoutlen (0.05s) — wait for EITHER outcome
+        # (menu closed, or the turn aborted), then assert which one it was.
+        await wait_until(
+            lambda: chrome.buffer.complete_state is None or bool(calls),
+            what="the Esc to be flushed and handled",
+        )
         assert calls == [], "Esc aborted the turn instead of dismissing the menu"
         assert chrome.running is True  # the turn is still live
         assert chrome.buffer.complete_state is None, "Esc did not dismiss the menu"
@@ -710,7 +718,7 @@ async def test_running_enter_steers_idle_enter_submits() -> None:
         chrome.set_running(True)
         await asyncio.sleep(0.02)
         pipe.send_text("steer me\n")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: steered, what="the mid-turn Enter to reach on_steer")  # #315
         assert steered == ["steer me"]
         # idle → submit to the queue (steer untouched)
         chrome.set_running(False)
@@ -731,7 +739,9 @@ async def test_running_alt_enter_follows_up() -> None:
         chrome.set_running(True)
         await asyncio.sleep(0.02)
         pipe.send_text("queue this\x1b\r")  # Alt+Enter = ESC then CR
-        await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: followed or steered, what="the mid-turn Alt+Enter to reach a callback"
+        )  # #315
         assert followed == ["queue this"]
         assert steered == []
 
@@ -762,7 +772,12 @@ async def test_backslash_continuation_inserts_newline_not_submit() -> None:
     # (manual multi-line entry) instead of submitting.
     async with _chrome(run_app=True) as (chrome, pipe, _buf):
         pipe.send_text("abc\\\n")  # types `abc\`, then Enter (\n = c-j)
-        await asyncio.sleep(0.05)
+        # #315: wait for the Enter to be handled EITHER way — a newline in the
+        # draft, or a submitted line — then assert which one it was.
+        await wait_until(
+            lambda: "\n" in chrome.buffer.text or not chrome._input_queue.empty(),
+            what="the Enter after a trailing backslash to be handled",
+        )
         assert chrome.buffer.text == "abc\n"  # backslash consumed, newline added
         assert chrome._input_queue.empty()  # NOT submitted
 
@@ -786,7 +801,7 @@ async def test_ctrl_t_fires_thinking_toggle() -> None:
         toggled: list[int] = []
         chrome.on_thinking_toggle = lambda: toggled.append(1)
         pipe.send_text("\x14")  # Ctrl+T
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: toggled, what="Ctrl+T to reach on_thinking_toggle")  # #315
         assert toggled == [1]
 
 
@@ -795,7 +810,7 @@ async def test_alt_up_fires_dequeue() -> None:
         dequeued: list[int] = []
         chrome.on_dequeue = lambda: dequeued.append(1)
         pipe.send_text("\x1b\x1b[A")  # Alt+Up = Esc then Up-arrow
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: dequeued, what="Alt+Up to reach on_dequeue")  # #315
         assert dequeued == [1]
 
 
@@ -808,7 +823,7 @@ async def test_ctrl_v_fires_image_paste() -> None:
         pasted: list[int] = []
         chrome.on_image_paste = lambda: pasted.append(1)
         pipe.send_text("\x16")  # Ctrl+V
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: pasted, what="Ctrl+V to reach on_image_paste")  # #315
         assert pasted == [1]
 
 
@@ -819,7 +834,7 @@ async def test_ctrl_g_fires_external_editor() -> None:
         opened: list[int] = []
         chrome.on_external_editor = lambda: opened.append(1)
         pipe.send_text("\x07")
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: opened, what="Ctrl+G to reach on_external_editor")  # #315
         assert opened == [1]
 
 

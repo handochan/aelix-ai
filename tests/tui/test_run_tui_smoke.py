@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import warnings
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from _polling import QUIT_CEILING, WAIT_CEILING, describe, quit_within, wait_until
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.tui import shell as tui_shell
 from aelix_coding_agent.tui.chrome import AelixChrome
@@ -127,10 +127,10 @@ class FakeRuntime:
 # probe (.omc/specs/303-wallclock-margin-probe.py) reproduces both failures by
 # injecting loop starvation, the way ADR-0225 measured the retry handover.
 
-_WAIT_CEILING = 10.0
+_WAIT_CEILING = WAIT_CEILING
 """Anti-hang bound for ``_wait`` (not a gate — see the note above)."""
 
-_QUIT_CEILING = 20.0
+_QUIT_CEILING = QUIT_CEILING
 """Anti-hang bound for awaiting a ``run_tui`` task after /quit or Ctrl+D."""
 
 _SHUTDOWN_CEILING = 20.0
@@ -138,86 +138,28 @@ _SHUTDOWN_CEILING = 20.0
 backoff that test arms, so a regressed shutdown REACHES the causal assertion
 instead of being cut short by a timeout that says nothing."""
 
+# #315: ``_wait`` and ``_describe`` moved to ``tests/tui/_polling.py`` so the
+# files that had grown private copies (3 s / 5 s bounds, "condition not met
+# within timeout") share this one. The names stay importable from here because
+# half of tests/tui imports them from this module.
+_describe = describe
+_wait = wait_until
+_quit_within = quit_within
 
-def _describe(predicate) -> str:
-    """Best-effort source text for a ``_wait`` predicate, for the failure line.
 
-    A lambda's source is what makes a windows flake readable in the ``-q`` log —
-    "condition not met within timeout" named neither the predicate nor the
-    bound, so run 35435949615 could not be diagnosed from its log at all.
+def _input_loop_is_idle(chrome: AelixChrome) -> bool:
+    """True while ``run_tui``'s input loop is parked in ``chrome.get_input()``.
+
+    ``asyncio.Queue`` keeps one pending future per blocked ``get()`` in
+    ``_getters`` (CPython 3.11-3.13). The input loop is the only reader of
+    ``_input_queue``, so a pending getter means no command handler — /settings
+    included — is still running. Asserted to exist so a rename in a future
+    CPython fails here, loudly, instead of reading as "never idle".
     """
 
-    import inspect
-
-    try:
-        text = " ".join(inspect.getsource(predicate).split())
-    except (OSError, TypeError):  # pragma: no cover — no source (exec'd, C, …)
-        return repr(predicate)
-    return text[:160]
-
-
-async def _wait(predicate, *, timeout: float = _WAIT_CEILING, what: str | None = None) -> None:
-    """Poll until ``predicate()`` is true (deterministic; no fixed sleeps).
-
-    ``timeout`` is an anti-hang bound, not a gate (see the #303 note above).
-
-    On a bound hit the message carries what was waited for, the bound, the
-    measured wall clock and the poll count. A wait that burns more than half
-    its bound and THEN succeeds warns with the number, so a windows leg that is
-    about to flake says so a run BEFORE it does — ``warnings.warn`` is what
-    surfaces numbers in a ``-q`` run here.
-    """
-
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    deadline = started + timeout
-    polls = 0
-    while loop.time() < deadline:
-        polls += 1
-        if predicate():
-            waited = loop.time() - started
-            if waited > timeout / 2:
-                warnings.warn(
-                    f"_wait took {waited:.2f}s of its {timeout:.1f}s bound "
-                    f"({polls} polls) for: {what or _describe(predicate)}",
-                    stacklevel=2,
-                )
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError(
-        f"waited {loop.time() - started:.2f}s (bound {timeout:.1f}s, {polls} polls) "
-        f"for: {what or _describe(predicate)}"
-    )
-
-
-async def _quit_within(task: asyncio.Task[int], *, ceiling: float = _QUIT_CEILING) -> int:
-    """Await a ``run_tui`` task after /quit (or Ctrl+D) under an anti-hang bound.
-
-    Replaces ``asyncio.wait_for(task, timeout=5)``. Two things it adds:
-
-    * the bound is named and documented as an anti-hang bound, so nobody reads
-      5 s as "the shutdown is asserted to be fast" — it never was;
-    * a bound hit reports the measured wall clock instead of a bare
-      ``TimeoutError``, which in a ``-q`` log is indistinguishable from any
-      other timeout in the file.
-    """
-
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    try:
-        code = await asyncio.wait_for(task, timeout=ceiling)
-    except TimeoutError as exc:  # asyncio.TimeoutError is this, since 3.11
-        raise AssertionError(
-            f"run_tui did not return within {ceiling:.0f}s of /quit "
-            f"(waited {loop.time() - started:.2f}s)"
-        ) from exc
-    waited = loop.time() - started
-    if waited > ceiling / 2:
-        warnings.warn(
-            f"run_tui took {waited:.2f}s of its {ceiling:.0f}s bound to return after /quit",
-            stacklevel=2,
-        )
-    return code
+    getters = getattr(chrome._input_queue, "_getters", None)
+    assert getters is not None, "asyncio.Queue no longer exposes _getters; rewrite this probe"
+    return any(not f.done() for f in getters)
 
 
 async def _esc_until_settings_closed(
@@ -227,30 +169,35 @@ async def _esc_until_settings_closed(
 
     The driver re-opens ``context.select`` after each applied change (and, for the
     async delegate rows, only after the action's awaits settle). A single Esc can
-    land in the unmount gap. Send one Esc, then give the driver up to ~0.5s to
-    settle into "closed"; if it re-opened, send another Esc. Crucially we wait for
-    EACH Esc to be processed before sending the next, so we never out-pace the key
-    queue (which previously corrupted the input buffer).
+    land in the unmount gap, so this presses Esc until the driver has RETURNED —
+    not merely until no modal happens to be mounted.
 
-    #303: the 0.5 s below is deliberately NOT raised with the rest. It is the
-    retry driver's step, not a bound on the test — a longer step just means
-    fewer Esc presses inside the same ``tries`` budget, and the AssertionError
-    it raises is caught, so it never reaches a log. The bound that actually
-    fails this helper is ``tries`` running out.
+    #315: that "has returned" used to be a clock — closed, then still closed
+    0.1 s later, with a 0.5 s step per Esc. Measured with every modal mount
+    delayed 0.3 s (``SLOW_MOUNT_S``), the re-open landed after the 0.1 s look,
+    the helper returned with the menu about to come back, and three settings
+    tests hung until ``_quit_within``'s 20 s bound. It now waits for one of two
+    EVENTS: a modal to press Esc on, or the input loop parked in ``get_input``
+    again (:func:`_input_loop_is_idle`), which is the driver having returned.
+    Each Esc then waits for the modal it was aimed at to go away — closed or
+    replaced — so an Esc that lands in the unmount gap costs one more round,
+    not a hang.
     """
 
     for _ in range(tries):
+        await _wait(
+            lambda: chrome.is_modal_open() or _input_loop_is_idle(chrome),
+            what="a /settings modal to press Esc on, or the driver to return",
+        )
         if not chrome.is_modal_open():
-            # Confirm it STAYS closed (no pending re-mount) before returning.
-            await asyncio.sleep(0.1)
-            if not chrome.is_modal_open():
-                return
+            return
+        aimed_at = chrome._modal
         pipe.send_text("\x1b")
-        try:
-            await _wait(lambda: not chrome.is_modal_open(), timeout=0.5)
-        except AssertionError:
-            continue  # re-opened mid-Esc; loop sends another
-    raise AssertionError("settings menu did not close")
+        await _wait(
+            lambda aimed_at=aimed_at: chrome._modal is not aimed_at,
+            what="Esc to close (or the driver to replace) the /settings modal",
+        )
+    raise AssertionError(f"settings menu did not close after {tries} Esc presses")
 
 
 @asynccontextmanager
@@ -919,7 +866,9 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/resume\n")
         await _wait(lambda: bool(repo.list_cwds))  # list happened → picker shown
-        await asyncio.sleep(0.1)  # let the modal render + focus
+        # #315: was ``sleep(0.1)``. An Enter that lands before the picker mounts
+        # goes to the editor instead and the switch below never happens.
+        await _wait(lambda: chrome.is_modal_open(), what="the /resume picker to mount")
         # Sprint 6h₂₄: arrow-key select — Enter picks the cursor row (idx 0 =
         # the first non-active session, "new.jsonl" — matches the prior intent).
         pipe.send_text("\r")
@@ -2909,7 +2858,8 @@ async def test_run_tui_resume_replays_custom_message_via_extension_renderer() ->
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/resume\n")
         await _wait(lambda: bool(repo.list_cwds))
-        await asyncio.sleep(0.1)  # let the picker modal render + focus
+        # #315: was ``sleep(0.1)`` — the Enter must reach the picker, not the editor.
+        await _wait(lambda: chrome.is_modal_open(), what="the /resume picker to mount")
         pipe.send_text("\r")
         await _wait(lambda: bool(runtime.switch_calls))
         await _wait(lambda: bool(calls))  # renderer dispatched during replay
@@ -3118,8 +3068,15 @@ async def test_run_tui_settings_theme_picker_selects_manifest_theme(
             await _wait(lambda: _themes.get_theme("solarized") is not None)
             pipe.send_text("/settings\n")
             await _wait(lambda: chrome.is_modal_open())
+            menu = chrome._modal
             pipe.send_text("Theme\n")  # filter+select the Theme row → sub-picker
-            await asyncio.sleep(0.1)  # let the theme sub-picker mount
+            # #315: was ``sleep(0.1)``. Typed before the sub-picker mounts,
+            # "solarized" filters the settings MENU to nothing and the theme is
+            # never persisted — so wait for a different modal in the slot.
+            await _wait(
+                lambda: chrome._modal is not None and chrome._modal is not menu,
+                what="the theme sub-picker to replace the /settings menu",
+            )
             pipe.send_text("solarized\n")  # filter to the plugin theme + Enter
             # It can only be persisted if the picker's list included it.
             await _wait(lambda: sm.get_theme() == "solarized")
@@ -3420,6 +3377,17 @@ class _OutOfOrderStatsHarness(FakeHarness):
         # startup already performs its own refresh, so "the first read" is not
         # the read under test and keying on it made this assert nothing.
         self.slow_stale_next = False
+        # #315: the stale read used to dawdle a fixed 0.25 s and the tests
+        # slept 0.45 s on the bet that it had finished. On a starved loop that
+        # bet fails both ways — the read has not finished (and the guard is
+        # never exercised), or the "later" event has not landed yet (and the
+        # read is not stale at all). Now the read parks until the test
+        # releases it, and says when it has returned: ``_refresh_context_usage``
+        # awaits this coroutine directly and does not suspend again before it
+        # paints or drops, so once ``stale_returned`` is observable from
+        # another task the paint-or-drop decision has already been made.
+        self.release_stale = asyncio.Event()
+        self.stale_returned = False
         from aelix_agent_core.harness.hooks import HookBus
 
         self.hooks = HookBus(lambda: None)  # type: ignore[assignment]
@@ -3430,8 +3398,9 @@ class _OutOfOrderStatsHarness(FakeHarness):
         self.calls += 1
         if self.slow_stale_next:
             self.slow_stale_next = False
-            await asyncio.sleep(0.25)  # the stale reader dawdles
+            await self.release_stale.wait()  # the stale reader dawdles
             tokens = 32300
+            self.stale_returned = True
         else:
             tokens = 19000
         return SimpleNamespace(
@@ -3444,6 +3413,14 @@ class _OutOfOrderStatsHarness(FakeHarness):
                 tokens=tokens, context_window=200000, percent=tokens / 2000.0
             ),
         )
+
+
+async def _release_stale_read(harness: _OutOfOrderStatsHarness) -> None:
+    """Let the parked stale read finish, and wait until it has."""
+
+    assert not harness.stale_returned, "the stale read finished before it was released"
+    harness.release_stale.set()
+    await _wait(lambda: harness.stale_returned, what="the released stale stats read to return")
 
 
 async def test_a_slow_stale_refresh_cannot_paint_over_a_newer_one(
@@ -3489,7 +3466,13 @@ async def test_a_slow_stale_refresh_cannot_paint_over_a_newer_one(
         await asyncio.sleep(0)  # let the task start and reach its await
         # …then settled schedules the FAST/FRESH one, which finishes first.
         await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
-        await asyncio.sleep(0.45)  # both have completed by now
+        # The fresh read finishes first, by construction rather than by 0.25 s…
+        await _wait(
+            lambda: any(p and "19K" in p for p in painted),
+            what="the fresh settled refresh to paint 19K",
+        )
+        # …and only then does the stale one come back.
+        await _release_stale_read(harness)
 
         pipe.send_text("/quit\n")
         code = await _quit_within(task)
@@ -3720,7 +3703,7 @@ async def test_a_slow_stale_refresh_cannot_paint_over_a_live_mid_turn_paint(
         harness.subscribers[0](SimpleNamespace(type="compaction_end"))
         await asyncio.sleep(0)  # let the refresh task reach its await
         harness.subscribers[0](_message_end(96_900))
-        await asyncio.sleep(0.45)  # the stale reader has finished by now
+        await _release_stale_read(harness)
 
         pipe.send_text("/quit\n")
         code = await _quit_within(task)
@@ -4347,7 +4330,7 @@ async def test_a_mid_turn_model_repaint_claims_a_generation(
         # …and the user switches model while it is still in flight.
         harness.current_model = _LIVE_MODEL_1M
         await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
-        await asyncio.sleep(0.45)  # the stale reader has finished by now
+        await _release_stale_read(harness)
 
         pipe.send_text("/quit\n")
         code = await _quit_within(task)

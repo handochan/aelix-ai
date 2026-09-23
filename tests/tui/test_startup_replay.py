@@ -20,7 +20,6 @@ on a working build. The pyte harness has no such interaction.)
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,6 +38,7 @@ _BANNER_MARK = "Ctrl+C"
 _USER_MARK = "OMEGA_USER_QUESTION"
 _BOLD_MARK = "OMEGA_BOLD_HEADING"
 _ASSISTANT_MD = f"**{_BOLD_MARK}** first.\n\n- OMEGA_ITEM_ONE\n- OMEGA_ITEM_TWO\n"
+_COLD_BARRIER = "OMEGA_COLD_BARRIER"
 
 
 class _SessionWithEntries:
@@ -85,15 +85,46 @@ async def _render_startup(entries: list[Any], cols: int = 100) -> str:
     runtime = FakeRuntime(FakeHarness())
     runtime.session = _SessionWithEntries(entries)  # type: ignore[attr-defined]
 
-    async def drive(_chrome: AelixChrome) -> None:
-        # Nothing to drive: the startup paint is what is under test. Give the
-        # output pump a beat to flush its batch.
-        await asyncio.sleep(0.2)
+    async def drive(chrome: AelixChrome) -> None:
+        # The startup paint is what is under test. A cold start has nothing
+        # after its banner to wait for, so it submits a barrier line: the input
+        # loop only starts once startup has committed everything it will, and
+        # its echo queues BEHIND all of it.
+        if not entries:
+            chrome.submit_line(_COLD_BARRIER)
 
-    display = await render_shell_to_screen(
-        runtime=runtime, rows=24, cols=cols, drive=drive, include_history=True
+    # #315: this drive used to sleep 0.2 s and trust the harness's fixed drain
+    # after it. It now waits for the LAST thing committed — the "Resumed"
+    # marker after a replay, the barrier's echo on a cold start — so every
+    # assertion below reads a grid the pump has finished with. For the cold
+    # start's ``"Resumed" not in`` that is belt and braces, measured: a stray
+    # marker committed right after the banner went red 3/3 with a banner-only
+    # wait too, because it rides the banner's pump batch. The barrier removes
+    # the dependence on batching; it does not fix a measured miss.
+    return _flat(
+        await render_shell_to_screen(
+            runtime=runtime,
+            rows=24,
+            cols=cols,
+            drive=drive,
+            settled=_startup_settled(entries),
+            settled_what=_startup_settled_what(entries),
+            include_history=True,
+        )
     )
-    return _flat(display)
+
+
+def _startup_settled(entries: list[Any], *, barrier: bool = True) -> Any:
+    last = "Resumed" if entries else (_COLD_BARRIER if barrier else _BANNER_MARK)
+    return lambda display: last in _flat(display)
+
+
+def _startup_settled_what(entries: list[Any], *, barrier: bool = True) -> str:
+    if entries:
+        return "the startup replay's closing 'Resumed' marker to reach the pyte grid"
+    if barrier:
+        return f"the cold start's barrier line ({_COLD_BARRIER!r}) to echo into the pyte grid"
+    return f"the startup banner ({_BANNER_MARK!r}) to reach the pyte grid"
 
 
 def _flat(display: list[str]) -> str:
@@ -161,10 +192,16 @@ async def test_startup_survives_a_runtime_with_no_session_member() -> None:
     assert not hasattr(runtime, "session")
 
     async def drive(_chrome: AelixChrome) -> None:
-        await asyncio.sleep(0.1)
+        return None
 
     display = await render_shell_to_screen(
-        runtime=runtime, rows=24, cols=80, drive=drive, include_history=True
+        runtime=runtime,
+        rows=24,
+        cols=80,
+        drive=drive,
+        settled=_startup_settled([], barrier=False),
+        settled_what=_startup_settled_what([], barrier=False),
+        include_history=True,
     )
     assert _BANNER_MARK in _flat(display)
 
@@ -231,13 +268,15 @@ async def _render_startup_with_history_cap(
     runtime.session = _SessionWithEntries(entries)  # type: ignore[attr-defined]
 
     async def drive(_chrome: AelixChrome) -> None:
-        await asyncio.sleep(0.2)
+        return None
 
     display = await render_shell_to_screen(
         runtime=runtime,
         rows=24,
         cols=100,
         drive=drive,
+        settled=_startup_settled(entries),
+        settled_what=_startup_settled_what(entries),
         include_history=True,
         history_lines=history_lines,
     )

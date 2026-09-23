@@ -25,6 +25,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from _polling import quit_within as _quit_within  # sibling helper (prepend mode)
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_ai.settings import SettingsManager
 from aelix_coding_agent.tui import completion as completion_mod
 from aelix_coding_agent.tui import shell as tui_shell
@@ -72,14 +74,8 @@ def _tree(root: Path) -> None:
     (root / "src" / "app.py").write_text("x")
 
 
-async def _wait(predicate, *, timeout: float = 5.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("condition not met within timeout")
+# #315: was a private 5 s copy failing with "condition not met within timeout".
+_wait = wait_until
 
 
 @asynccontextmanager
@@ -125,7 +121,7 @@ async def _argv_from_run_tui(
         await _wait(lambda: _drive_at_menu(chrome.buffer.completer) != [])
         assert _drive_at_menu(chrome.buffer.completer) == ["@src/app.py"]
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=10)
+        await _quit_within(task)
 
     assert calls, "the @ menu never reached the fd seam"
     return calls

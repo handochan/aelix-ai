@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_coding_agent.extensions.ext_ui import ExtensionUIContext
 from aelix_coding_agent.extensions.widget_protocols import Theme
 from aelix_coding_agent.tui.chrome import AelixChrome
@@ -365,19 +366,14 @@ async def test_select_no_match_enter_stays_open() -> None:
 # === review-fix coverage (ADR-0105 W4) =================================
 
 
-async def _wait_float(chrome: AelixChrome, *, timeout: float = 3.0) -> None:
+async def _wait_float(chrome: AelixChrome) -> None:
     # Sprint 6h₂₈ (ADR-0159): captured modals mount in the in-flow slot, not the
     # Float list — wait on ``is_modal_open()`` rather than ``chrome._floats``.
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if chrome.is_modal_open():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("modal not mounted")
+    # #315: the shared poll, so a miss names the bound and the time it took.
+    await wait_until(chrome.is_modal_open, what="the modal to mount in the in-flow slot")
 
 
-async def _wait_rendered(rendered: list[str], name: str, *, timeout: float = 2.0) -> None:
+async def _wait_rendered(rendered: list[str], name: str) -> None:
     """Wait until tab *name*'s render closure has fired.
 
     Issue #206: the ``test_tabbed_*`` tests below used to sleep a fixed 0.1s and
@@ -387,15 +383,16 @@ async def _wait_rendered(rendered: list[str], name: str, *, timeout: float = 2.0
     above: poll the observable on a 5 ms tick, fail loudly on a real timeout.
     POSIX cost is strictly LOWER — the first paint lands within a tick or two,
     where the old code always paid the full sleep.
+
+    #315: the private 2 s loop became the shared poll (10 s anti-hang bound);
+    the tabs seen so far still ride along in the failure.
     """
 
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if name in rendered:
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError(f"tab {name!r} never rendered within {timeout}s (saw {rendered})")
+    await wait_until(
+        lambda: name in rendered,
+        what=f"tab {name!r}'s render closure to fire",
+        detail=lambda: f"tabs rendered so far: {rendered}",
+    )
 
 
 async def test_select_supports_more_than_nine_options() -> None:
@@ -700,10 +697,12 @@ async def test_tabbed_left_arrow_wraps_to_last() -> None:
             )
         )
         await _wait_float(chrome)
-        await asyncio.sleep(0.1)  # let the first paint fire
+        # #315: the one #206 missed — it slept 0.1 s for the first paint and
+        # 0.15 s for the repaint, the exact bet #206 removed from its siblings.
+        await _wait_rendered(rendered, "A")  # the first paint fired
         rendered.clear()
         pipe.send_text("\x1b[D")  # Left → wraps from A to the last tab (C)
-        await asyncio.sleep(0.15)
+        await _wait_rendered(rendered, "C")
         assert "C" in rendered
         pipe.send_text("\x1b")
         await asyncio.wait_for(fut, timeout=5)
@@ -712,13 +711,18 @@ async def test_tabbed_left_arrow_wraps_to_last() -> None:
 async def test_tabbed_raising_tab_does_not_break_modal() -> None:
     # A render() that raises shows an error line, never crashes the modal: the
     # modal stays open and Esc still closes it.
+    raised: list[int] = []
+
     def _boom() -> list[str]:
+        raised.append(1)
         raise RuntimeError("kaboom")
 
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         fut = asyncio.ensure_future(ctx.tabbed("T", [("Bad", _boom)]))
         await _wait_float(chrome)
-        await asyncio.sleep(0.05)
+        # #315: was ``sleep(0.05)`` — on a slow loop the render had not run yet
+        # and "survived" was read before there was anything to survive.
+        await wait_until(lambda: raised, what="the raising tab's render to run")
         assert chrome.is_modal_open()  # survived the raising render
         pipe.send_text("\x1b")
         assert await asyncio.wait_for(fut, timeout=5) is None

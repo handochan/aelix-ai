@@ -18,6 +18,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+from _polling import quit_within as _quit_within  # sibling helper (prepend mode)
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_ai import (
     AssistantEndEvent,
@@ -147,14 +149,8 @@ def _build_host() -> _RealHarnessHost:
     return _RealHarnessHost(harness)
 
 
-async def _wait(predicate: Any, *, timeout: float = 3.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("condition not met within timeout")
+# #315: was a private 3 s copy failing with "condition not met within timeout".
+_wait = wait_until
 
 
 # === the real-harness QA test ================================================
@@ -185,7 +181,7 @@ async def test_fixture_ext_probe_renders_and_routes() -> None:
         assert any(c.text == "/deploy" for c in completions)
 
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert host.disposed == 1
@@ -214,7 +210,7 @@ async def test_fixture_ext_management_modal_command_opens_not_prompts() -> None:
             pipe.send_text("/panel\n")
             await _wait(lambda: len(opened) == 1)
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
         finally:
             DescriptorRenderer.open_modal = orig_open  # type: ignore[method-assign]
 

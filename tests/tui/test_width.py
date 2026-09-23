@@ -245,7 +245,7 @@ async def test_run_tui_sizes_the_approval_dialog_from_the_live_terminal() -> Non
     from prompt_toolkit.data_structures import Size
     from prompt_toolkit.input.defaults import create_pipe_input
     from prompt_toolkit.output.vt100 import Vt100_Output
-    from test_run_tui_smoke import FakeHarness, FakeRuntime, _wait  # sibling module
+    from test_run_tui_smoke import FakeHarness, FakeRuntime, _quit_within, _wait  # sibling
 
     cols = 57  # neither the old default (80) nor a clamp boundary
     seen: list[dict[str, Any]] = []
@@ -288,7 +288,7 @@ async def test_run_tui_sizes_the_approval_dialog_from_the_live_terminal() -> Non
             )
 
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await _quit_within(task)
     finally:
         approval_mod.run_approval_dialog = real_runner  # type: ignore[assignment]
 
@@ -323,6 +323,8 @@ async def _render_dialog_with_resize(start: int, end: int, *, bake: bool = False
     import io
 
     import pyte
+    from _polling import wait_until  # sibling helper
+    from _pyte import await_first_paint, repaint_settled  # sibling helper
     from aelix_coding_agent.tui.approval_dialog import ApprovalRequest, run_approval_dialog
     from aelix_coding_agent.tui.chrome import AelixChrome
     from aelix_coding_agent.tui.overlay import show_modal
@@ -361,21 +363,24 @@ async def _render_dialog_with_resize(start: int, end: int, *, bake: bool = False
         )
         task = asyncio.create_task(chrome.run())
         try:
-            for _ in range(500):
-                await asyncio.sleep(0.01)
-                if chrome.app.is_running:
-                    break
-            await asyncio.sleep(0.02)
+            # #315: events, not the 20/50/80/50 ms sleeps this used to bet on.
+            await await_first_paint(chrome)
             pipe.send_text("\x1b[10;1R")  # CPR → height known → rows paint
-            await asyncio.sleep(0.05)
+            renderer = chrome.app.renderer
+            await wait_until(
+                lambda: renderer.height_is_known,
+                what="the synthetic CPR answer to reach the renderer",
+            )
+            await wait_until(
+                chrome.is_modal_open, what="the approval dialog to mount before the resize"
+            )
+            await repaint_settled(chrome, why=f"the dialog mounted at {start} columns")
 
             size["cols"] = end  # the user narrows the window...
             capture.truncate(0)
             capture.seek(0)  # ...and we keep ONLY the post-resize frame
             chrome.app._on_resize()  # what ptk's SIGWINCH handler calls
-            await asyncio.sleep(0.08)
-            chrome.invalidate()
-            await asyncio.sleep(0.05)
+            await repaint_settled(chrome, why=f"the resize to {end} columns")
         finally:
             chrome.exit()
             with contextlib.suppress(Exception):

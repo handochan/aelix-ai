@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _polling import quit_within as _quit_within  # sibling helper (prepend mode)
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_ai.oauth import AuthStorage
 from aelix_ai.providers._env_api_keys import ENV_API_KEYS
 from aelix_ai.streaming import Model
@@ -112,14 +114,8 @@ class FakeRuntime:
         self.disposed += 1
 
 
-async def _wait(predicate, *, timeout: float = 5.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("condition not met within timeout")
+# #315: was a private 5 s copy failing with "condition not met within timeout".
+_wait = wait_until
 
 
 @asynccontextmanager
@@ -196,7 +192,7 @@ async def test_no_modal_when_the_flag_is_false(tmp_path: Path) -> None:
         await asyncio.sleep(0.25)  # give a stray onboarding task time to mount
         assert not chrome.is_modal_open()
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert not any("No provider credentials found" in c for c in commits), commits
@@ -238,7 +234,7 @@ async def test_wizard_opens_and_esc_leaves_a_usable_repl(tmp_path: Path) -> None
             lambda: runtime.harness.prompts == [("still here", "interactive")]
         )
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert runtime.disposed == 1
@@ -267,7 +263,7 @@ async def test_onboarding_runs_exactly_once(tmp_path: Path) -> None:
         await asyncio.sleep(0.4)
         assert not chrome.is_modal_open()
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert sum("No provider credentials found" in c for c in commits) == 1, commits
 
@@ -296,7 +292,7 @@ async def test_a_raising_login_never_keeps_the_user_out_of_the_repl(
             lambda: runtime.harness.prompts == [("still here", "interactive")]
         )
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
 
@@ -336,7 +332,7 @@ async def test_a_successful_login_selects_a_runnable_model(
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: bool(runtime.harness.set_models))
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     chosen = runtime.harness.set_models[-1]
@@ -399,7 +395,7 @@ async def test_the_login_command_itself_selects_a_runnable_model(
             await _wait(lambda: bool(runtime.harness.set_models))
         finally:
             pipe.send_text("/quit\n")
-            code = await asyncio.wait_for(task, timeout=5)
+            code = await _quit_within(task)
 
     assert code == 0
     chosen = runtime.harness.set_models[-1]
@@ -442,7 +438,7 @@ async def test_a_cancelled_login_command_selects_nothing(
         pipe.send_text("/login\n")
         await asyncio.sleep(0.3)
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert runtime.harness.set_models == []
@@ -477,7 +473,7 @@ async def test_a_cancelled_login_selects_nothing_and_says_so(
             lambda: any("Run /login when you're ready" in c for c in commits)
         )
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     assert runtime.harness.set_models == []

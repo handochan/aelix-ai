@@ -41,6 +41,7 @@ from tests.tui.test_run_tui_smoke import (
     FakeHarness,
     FakeRuntime,
     _harness_chrome,
+    _quit_within,
     _spy_commits,
     _wait,
 )
@@ -141,7 +142,7 @@ async def test_a_provider_error_that_never_raises_drops_the_cached_credential() 
         await _wait(lambda: registry.cleared == 1)
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert registry.cleared == 1
     # The renderer printed it once; the shell added no second copy (#189).
@@ -172,7 +173,7 @@ async def test_a_turn_that_raises_also_drops_the_cached_credential() -> None:
         # count taken the instant the first appears reads 1 whatever happens.
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert registry.cleared == 1
     assert sum(c.count("401 Unauthorized") for c in commits) == 1, commits
@@ -195,7 +196,7 @@ async def test_a_successful_turn_keeps_the_cached_credential() -> None:
         await _wait(lambda: len(harness.prompts) == 1)
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert registry.cleared == 0
 
@@ -220,7 +221,7 @@ async def test_an_aborted_turn_keeps_the_cached_credential() -> None:
         await _wait(lambda: len(harness.prompts) == 1)
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert registry.cleared == 0
 
@@ -253,7 +254,7 @@ async def test_reload_drops_the_cached_credential_on_both_arms(
         await _wait(lambda: registry.cleared == 1)
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert registry.cleared == 1
     # The arm under test really is the one that ran.

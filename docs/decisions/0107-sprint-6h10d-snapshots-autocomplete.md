@@ -52,6 +52,30 @@ layout bias (W4-verified). Deterministic: fixed `Size(24,80)`, injected clock, `
 (no sleeps). Snapshots assert exact geometry (footer is the last painted row; input above it) and a
 **negative** case (a removed descriptor is absent from the grid), not just substring presence.
 
+> **Correction (2026-09-24, #315).** "`is_running` polling (no sleeps)" was not
+> true of the harness this section describes. Past the `is_running` poll it slept
+> fixed intervals — 20 ms before answering the CPR, 50 ms after, 50 ms after the
+> final `invalidate()` — and `render_shell_to_screen` (added by ADR-0219) added a
+> 600 ms drain on top of its caller's own sleep. Those were bets on the runner's
+> speed, and one lost: `test_render_width_e2e.py` failed on the windows-latest
+> py3.11 leg (run 35526081192) with "the streamed paragraph never reached the
+> grid". The harness now waits for events through the shared
+> `tests/tui/_polling.py::wait_until` — the first paint (`render_counter`), the
+> CPR landing (`renderer.height_is_known`), a repaint that started after the last
+> change — and `render_shell_to_screen` takes a REQUIRED `settled(grid)`
+> predicate it polls on the replayed capture, so a caller has to name the row it
+> is about to assert on. Measured with every `print_above` delayed 1 s: the
+> pre-#315 harness failed 7 of that file's 9 tests with the windows message, the
+> new one passes 9/9.
+>
+> One side effect is recorded rather than hidden: the single synthetic CPR now
+> lands after the startup banner's `print_above` reset, so the shell harness
+> paints the chrome's footer rows under the commit where it used to leave them
+> gated. At 60 columns that left the streamed paragraph's first row three lines
+> from the top of a 24-row screen, so `test_render_width_e2e.py` now reads the
+> grid with scrollback (`include_history=True`); the measured first-row widths
+> are unchanged (56 / 79 / 116 at 60 / 80 / 200 columns).
+
 ### 3. image Unicode-tier validation
 `render_image(png, max_cells, capability=UNICODE)` → a `rich-pixels` renderable → printed through a
 Rich `Console` into a capture buffer → pyte shows colored cells; `capability=NONE` → the

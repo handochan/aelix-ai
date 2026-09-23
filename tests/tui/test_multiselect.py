@@ -12,6 +12,7 @@ import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from _polling import wait_until  # sibling helper (pytest prepend import mode)
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.footer_data import AelixFooterData
@@ -45,14 +46,9 @@ async def _ctx() -> AsyncGenerator[tuple[AelixTUIContext, AelixChrome, PipeInput
                 await asyncio.wait_for(task, timeout=3)
 
 
-async def _wait_float(chrome: AelixChrome, *, timeout: float = 3.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if chrome.is_modal_open():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("modal not mounted")
+async def _wait_float(chrome: AelixChrome) -> None:
+    # #315: was a private 3 s copy that failed with a bare "modal not mounted".
+    await wait_until(chrome.is_modal_open, what="the modal to mount in the in-flow slot")
 
 
 async def test_enter_confirms_initial_selection() -> None:

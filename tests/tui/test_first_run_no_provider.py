@@ -50,6 +50,7 @@ from tests.tui.test_run_tui_smoke import (
     FakeHarness,
     FakeRuntime,
     _harness_chrome,
+    _quit_within,
     _spy_commits,
     _wait,
 )
@@ -124,7 +125,7 @@ async def test_the_first_run_turn_never_reaches_the_loop(
             lambda: any("No provider configured" in c for c in commits)
         )
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     # The loop was never entered — which is the whole point. A turn that runs
     # and then renders a nicer error would still have paid for the round trip
@@ -166,7 +167,7 @@ async def test_a_user_with_credentials_gets_the_model_sentence_instead(
             lambda: any("Run /model to select" in c for c in commits)
         )
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert harness.prompts == []
     shown = "\n".join(commits)
@@ -202,7 +203,7 @@ async def test_a_runnable_model_is_not_gated(_adapters_exist: None) -> None:
             lambda: harness.prompts == [("hello there", "interactive")]
         )
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
     assert "No provider configured" not in "\n".join(commits)
 
@@ -223,7 +224,7 @@ async def test_a_harness_without_a_current_model_is_never_gated() -> None:
             == [("hello there", "interactive")]
         )
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
 
 
 # === Lane 1b — the count ====================================================
@@ -284,7 +285,7 @@ async def _drive(harness: FakeHarness) -> list[str]:
         # instant the first one appears would read 1 no matter what.
         await asyncio.sleep(0.2)
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     return commits
 
 

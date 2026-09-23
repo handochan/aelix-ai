@@ -26,6 +26,7 @@ from aelix_coding_agent.tui.shell import run_tui
 from tests.tui.test_run_tui_smoke import (
     FakeRuntime,
     _harness_chrome,
+    _quit_within,
     _spy_commits,
     _wait,
 )
@@ -100,13 +101,26 @@ async def _run(
         commits = _spy_commits(chrome)
         task = _launch(runtime, chrome, _Settings() if settings is None else settings)
         await _wait(lambda: chrome.app.is_running)
-        # The banner is committed before the notice, so waiting for it puts us
-        # after launch without racing the notice we are about to look for.
-        await _wait(lambda: any("Aelix Agent Runtime" in c for c in commits))
-        await asyncio.sleep(0.3)
+        # #315: this waited for the banner and then slept 0.3 s, betting the
+        # notice would be committed by then — and the teardown CANCELS the
+        # output pump, so a notice still queued at /quit was dropped and the
+        # "announced" cases went red on a slow loop (while the "says nothing"
+        # cases passed for the wrong reason). A barrier line replaces the bet:
+        # ``run_tui`` commits the notice before its input loop starts, the
+        # loop echoes this line into the SAME queue behind it, and the pump
+        # prints in order — so once the echo is on the glass, the notice
+        # either is too or was never sent.
+        pipe.send_text(f"{_BARRIER}\n")
+        await _wait(
+            lambda: any(_BARRIER in c for c in commits),
+            what="the barrier line's echo, queued behind any update notice",
+        )
         pipe.send_text("/quit\n")
-        await asyncio.wait_for(task, timeout=5)
+        await _quit_within(task)
     return commits
+
+
+_BARRIER = "update_notice_barrier"
 
 
 async def test_a_newer_release_is_announced_once_with_a_command(
@@ -182,7 +196,7 @@ async def test_a_failing_check_is_invisible_and_the_repl_still_works(
             lambda: runtime.harness.prompts == [("hello there", "interactive")]
         )
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     shown = "\n".join(commits)
@@ -242,7 +256,7 @@ async def test_the_launch_path_survives_a_check_that_RAISES(
         pipe.send_text("still here\n")
         await _wait(lambda: runtime.harness.prompts == [("still here", "interactive")])
         pipe.send_text("/quit\n")
-        code = await asyncio.wait_for(task, timeout=5)
+        code = await _quit_within(task)
 
     assert code == 0
     shown = "\n".join(commits)

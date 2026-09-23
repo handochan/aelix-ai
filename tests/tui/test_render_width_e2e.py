@@ -45,6 +45,7 @@ _PARAGRAPH = (
 
 # ``breathes`` sits in the paragraph's first line and nowhere else on screen, so
 # it identifies the committed assistant text among banner/chrome rows.
+_ANCHOR = "breathes"
 
 
 def _msg_update(stream_event: Any) -> Any:
@@ -68,14 +69,29 @@ async def _render_paragraph_at(cols: int, settings_manager: Any = None) -> list[
         listener(MessageStartEvent(message=AssistantMessage()))  # type: ignore[operator]
         listener(_msg_update(TextDeltaEvent(delta=_PARAGRAPH)))  # type: ignore[operator]
         listener(_msg_update(TextEndEvent(content=_PARAGRAPH)))  # type: ignore[operator]
-        await asyncio.sleep(0.05)
 
+    # #315: this used to ``asyncio.sleep(0.05)`` here and trust the harness's
+    # fixed drain after it; run 35526081192's windows py3.11 leg read the grid
+    # before the pump had flushed and failed with "never reached the grid". The
+    # harness now polls the replayed grid for the row the assertions measure.
     return await render_shell_to_screen(
         runtime=runtime,
         rows=24,
         cols=cols,
         drive=drive,
+        settled=lambda display: any(_ANCHOR in row for row in display),
+        settled_what=(
+            f"the streamed paragraph's first row ({_ANCHOR!r}) to reach the "
+            f"pyte grid of a {cols}-column terminal"
+        ),
         settings_manager=settings_manager,
+        # With scrollback, so the measured row cannot scroll off the top of a
+        # 24-row screen. Whether the chrome's footer rows are painted under the
+        # commit depends on when the one synthetic CPR answer lands relative to
+        # the banner's ``print_above`` reset (measured: this harness now paints
+        # them, the pre-#315 one did not), and at 60 columns the paragraph plus
+        # those rows leaves the first row three lines from the top.
+        include_history=True,
     )
 
 
@@ -84,20 +100,26 @@ def _first_paragraph_row_width(display: list[str]) -> int:
 
     Only the first row is measured, and that restriction is load-bearing rather
     than lazy. ``print_above`` commits inside ``in_terminal()``, which erases the
-    chrome and repaints it around every write; ``pyte.Screen`` has no scrollback
-    and models that as overwriting in place, so the paragraph's LATER rows come
-    back with large leading-space runs and partial content — measured artifacts
-    of cursor positioning, not of wrapping. (A first pass at this file asserted
+    chrome and repaints it around every write, and pyte models that as
+    overwriting in place, so the paragraph's LATER rows can come back with large
+    leading-space runs and partial content — measured artifacts of cursor
+    positioning, not of wrapping. Since #315 this file reads the grid WITH
+    scrollback (``include_history=True``): rows that scrolled into history keep
+    what they held when they left the screen, and the overwrite artifact applies
+    only to rows still on the visible screen. (A first pass at this file asserted
     ``max(len(row.rstrip()))`` over all matching rows and got 193 on a
     200-column terminal from a row whose first 120 cells were blank. It reported
     the bug as already fixed.)
 
     The first row is written immediately after the erase, at column 0, and is
-    stable: measured 56 / 79 / 79 for terminals of 60 / 80 / 200 columns.
+    stable: measured 56 / 79 / 116 for terminals of 60 / 80 / 200 columns.
     """
 
-    row = next((r for r in display if "breathes" in r), None)
-    assert row is not None, "the streamed paragraph never reached the grid"
+    row = next((r for r in display if _ANCHOR in r), None)
+    # The harness already waited for this row to land (and keeps scrollback), so
+    # reaching here without it means it landed and was then OVERWRITTEN — a
+    # rendering fault, not a slow runner.
+    assert row is not None, "the streamed paragraph reached the grid and was then overwritten"
     return len(row.rstrip())
 
 
@@ -164,6 +186,7 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
     import io
 
     import aelix_coding_agent.tui.shell as shell_mod
+    from _polling import quit_within, wait_until  # sibling helper
     from aelix_coding_agent.tui.chrome import AelixChrome
     from prompt_toolkit.application import create_app_session
     from prompt_toolkit.data_structures import Size
@@ -211,12 +234,9 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
                     install_signal_handlers=False,
                 )
             )
-            for _ in range(500):
-                await asyncio.sleep(0.01)
-                if chrome.app.is_running:
-                    break
+            await wait_until(lambda: chrome.app.is_running, what="the chrome app to start")
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await quit_within(task)
     finally:
         shell_mod.EventRenderer = real_cls  # type: ignore[misc]
 
@@ -309,6 +329,7 @@ async def test_run_tui_seeds_the_card_cap_from_persisted_settings() -> None:
     import io
 
     import aelix_coding_agent.tui.shell as shell_mod
+    from _polling import quit_within, wait_until  # sibling helper
     from aelix_ai.settings.settings_manager import SettingsManager
     from aelix_coding_agent.tui.chrome import AelixChrome
     from prompt_toolkit.application import create_app_session
@@ -354,12 +375,9 @@ async def test_run_tui_seeds_the_card_cap_from_persisted_settings() -> None:
                     install_signal_handlers=False,
                 )
             )
-            for _ in range(500):
-                await asyncio.sleep(0.01)
-                if chrome.app.is_running:
-                    break
+            await wait_until(lambda: chrome.app.is_running, what="the chrome app to start")
             pipe.send_text("/quit\n")
-            await asyncio.wait_for(task, timeout=5)
+            await quit_within(task)
     finally:
         shell_mod.EventRenderer = real_cls  # type: ignore[misc]
 
