@@ -51,7 +51,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: ``DEFAULT_MAX_BYTES`` in ``core/tools/truncate.ts:11-12``), this function is
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
-#: ``tools/bash.py:62``; ad-hoc RPC bash tighter at 256 lines / 32KB,
+#: ``tools/bash.py:63``; ad-hoc RPC bash tighter at 256 lines / 32KB,
 #: ``rpc/rpc_mode.py:605``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
@@ -100,7 +100,7 @@ def _truncation_notice(info: TruncationInfo) -> str:
     """The bracketed line that makes the cut VISIBLE in the record.
 
     Same shape as the model-facing bash tool's notice
-    (``tools/bash.py:780`` ``_format_truncation_notice``) and of pi's
+    (``tools/bash.py:915`` ``_format_truncation_notice``) and of pi's
     ``[Output truncated. Full output: …]``, with the one substitution this
     path forces: there is no ``fullOutputPath`` to cite, so the sentence names
     where the rest went instead. Silence here would be the defect #299 is
@@ -240,7 +240,7 @@ def bash_execution_to_text(
     :func:`_recorded_command`, so no caller can put an unbounded one in the
     record.
 
-    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:211``, which
+    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:231``, which
     returns an :class:`ExecExitResult`, not just the byte stream) or the one
     an intercepting extension's ``result`` carries. Without it ``!test -f
     missing`` and ``!test -f present`` both reach the model as

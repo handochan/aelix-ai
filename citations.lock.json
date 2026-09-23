@@ -2801,19 +2801,24 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:41-41": [
    "last_line_partial: bool = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:149-149": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1144-1146": [
+   "operations: BashOperations = opts.get(",
+   "\"operations\"",
+   ") or create_local_bash_operations(opts.get(\"shell_path\"))"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:150-150": [
    "def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:200-200": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:220-220": [
    "class BashOperations(Protocol):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:211-211": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:231-231": [
    "async def exec("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:325-325": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:345-345": [
    "**containment_spawn_kwargs(new_session=True),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:510-525": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:555-570": [
    "async def _watch_signal() -> None:",
    "\"\"\"End the tree when the abort signal fires.",
    "",
@@ -2823,16 +2828,11 @@
    "loop thread before ``_wait``'s ``to_thread`` callback can resume the",
    "coroutine below — including ``_end_the_tree``'s blocking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:62-62": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:63-63": [
    "# Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:780-780": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:915-915": [
    "def _format_truncation_notice("
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:981-983": [
-   "operations: BashOperations = opts.get(",
-   "\"operations\"",
-   ") or create_local_bash_operations(opts.get(\"shell_path\"))"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:311-311": [
    "cmd.extend([pattern, base])"

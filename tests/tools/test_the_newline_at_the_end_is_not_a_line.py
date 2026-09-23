@@ -336,7 +336,7 @@ async def test_the_bash_tool_hands_the_model_the_tail_of_what_it_ran(tmp_path):
     PowerShell's ``Write-Output``, which terminates CRLF, and that made the
     last 16 bytes ``"a" * 15 + "\\r"``. PowerShell because the run says so:
     ``_resolve_shell_win32`` resolves ``$SHELL`` → pwsh → powershell →
-    ``%COMSPEC%`` (``tools/bash.py:149``), and of those only PowerShell both
+    ``%COMSPEC%`` (``tools/bash.py:150``), and of those only PowerShell both
     expands the ``$(seq 1 100)`` a test below passed on AND writes CRLF from
     ``echo`` — bash would have given ``echo`` an LF, ``cmd.exe`` would not have
     expanded the ``$(…)``. ``printf`` is a different thing entirely: Git's

@@ -92,6 +92,34 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The last lines of a command's output no longer go missing when Aelix is
+  busy as the command ends.** The bash tool stopped reading a finished
+  command's output by the clock — a tenth of a second after the command ended —
+  without asking the pipe whether anything was still in it. If the thread that
+  reads the output was held up across that moment, the end of the output was
+  dropped and the model got a shorter result with exit code 0 and no sign
+  anything was missing. Because the tool keeps the *tail* of a long output,
+  what went was the part the model reads: the failing assertion, the error
+  summary, the last status line. Aelix's own CI lost 7 to 56 KiB off the end of
+  a 2 MiB test output this way, six times. Reading now stops early only once
+  every byte the command wrote before it ended is known to have been
+  delivered; otherwise it keeps reading, for at most 2 seconds after the
+  command ends (1 second after a timeout or an abort) — or, if Aelix itself
+  was held up for more than a tenth of a second (its process stopped, or too
+  busy to get back to the command) and gets back less than a tenth of a
+  second before that limit or after it, until a tenth of a second after it
+  gets back, once, so output that was waiting is not cut in the same
+  instant. If that limit is ever reached first, the result now says so
+  instead of nothing: `[Output may be incomplete: reading stopped 2s after
+  the command ended, before its last output could be confirmed. Re-run it,
+  or redirect its output to a file, if the end matters.]`. A command that
+  backgrounds a helper still comes back right away, as before. Extensions'
+  `exec`, the extension catalog's `git clone` and the `fd` file scan take the
+  same fix, without the notice. On Windows a narrower gap remains: output
+  that arrives just after the reading thread last checked the pipe can still
+  be lost silently if that thread then gets no CPU for a tenth of a second.
+  (#260, #261)
+
 - **A turn that failed no longer says so twice when you come back to it.**
   Resume a session containing a failed turn — `/resume`, `--continue`, or
   opening the file with `--session` — and the same error sentence was drawn

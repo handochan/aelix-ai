@@ -979,6 +979,11 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         f"the drain delivered {ticks} ticks — the holder writes ~1200 over its life, so a "
         f"count outside this range means the cap did not cut anything"
     )
+    # #260: a cap that cuts a HELPER is a proven end — the reader had handed on
+    # everything its first post-exit look saw — so the result says nothing
+    # about it. The notice is for the command's own bytes; on every command
+    # that backgrounds something chatty it would be noise.
+    assert result.output_unconfirmed is False
 
 # === 8b: an abort that lands in the exit-path drain =========================
 
@@ -1243,15 +1248,38 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     three kill legs, and this case is one of its callers: measured 2026-09-07
     (darwin, py3.12), a raise injected at its top reddens **16 of this file's 17
     ids, this case among them**, where on ``main`` the same injection at
-    ``_drain_past_the_kill`` reddened exactly 7 and excluded it. What keeps the
-    case green is the shape of its own command: :data:`CHATTY` backgrounds
-    nothing, so the pipe EOFs at the root's own exit and the drain ends on
-    ``eof`` rather than on the idle timer or the cap — the FIFO argument above
-    still carries the delivery. Deleting the yield reddens nothing here either:
-    40 rounds of this case and 5 rounds of the whole file, 0 failures. Where it
-    IS load-bearing is the leg this case does not take, a drain that ends on the
-    timeout or the cap and resumes with chunk callbacks still queued behind
+    ``_drain_past_the_kill`` reddened exactly 7 and excluded it. Deleting the
+    yield reddens nothing here either: 40 rounds of this case and 5 rounds of
+    the whole file, 0 failures. Where it IS load-bearing is a drain that ends on
+    the timeout or the cap and resumes with chunk callbacks still queued behind
     it.
+
+    WHAT THIS CASE ACTUALLY RESTS ON, corrected by #260. This docstring used to
+    say that :data:`CHATTY` backgrounds nothing, "so the pipe EOFs at the root's
+    own exit and the drain ends on ``eof`` rather than on the idle timer or the
+    cap". The pipe does reach EOF at the exit — but the drain learns of that EOF
+    only after the READER has read it, and until #260 a reader starved across
+    the exit let the idle timer, armed at the exit, end the drain first. That is
+    what failed here in six recorded ubuntu CI runs, in whole 1 KiB lines off
+    the tail: 26,624 B (run 34238827475), 38,912 (34312006861), 7,168
+    (35420451091), 24,576 (35447857370), 8,192 (35754728478) and 57,344
+    (35887669985) — #260, #261. The drain now ends on the idle timer or the cap
+    only with a proof that the reader holds nothing and the pipe is empty, or
+    that it has handed on everything its first post-exit look saw
+    (``_PipeReader.proven``); without one it waits, up to a hard cap it reports.
+    That is exact on POSIX. On ``windows-latest``, where this case runs too, the
+    proof is the reader's own last look, and a reader starved right after an
+    empty look leaves it stale: the idle timer can still end the drain with
+    bytes undelivered, silently — the stated win32 residual, pinned as a loss
+    by the forced-win32 ``preread``/``inread`` ids of the file below — so a red
+    here on that leg is not a refutation of #260. The FIFO argument carries the
+    delivery when the drain ends on ``eof``; the proof, and the ``sleep(0)``
+    after it (pinned there since #260 by
+    ``test_a_chunk_posted_while_the_drain_proves_is_still_delivered``), carry
+    it when it does not. The deterministic form of this failure — the reader
+    held across the exit at four points, red on the base tree every run — is
+    ``tests/tools/test_bash_drain_asks_the_pipe.py``; this case stays the
+    natural-load half, byte for byte against ``subprocess.run``.
     """
 
     chatty = _script(tmp_path, "chatty.py", CHATTY)

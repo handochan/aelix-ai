@@ -128,6 +128,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -140,17 +141,20 @@ from typing import IO, Any, Protocol, cast
 
 # The private names are exported deliberately (#222): ``tools/bash.py`` builds
 # the same drain this module runs for :func:`run_contained` — the reader, the
-# idle-rule state, the kill ladder and the four constants those two agree on —
-# out of these parts, on the event loop instead of on the calling thread. They
-# stay underscored because they remain this module's internals rather than an
-# API: the list says which internals a second caller now shares, not that a
-# third is invited to assemble a third drain. Which is why ``_start_reader`` is
-# NOT here (#222 review M-14): it is :func:`run_contained`'s own two-line
-# constructor and no second caller imports it — ``tools/bash.py`` builds its
-# ``_PipeReader`` directly because it needs the callbacks. The rule is "exactly
-# what the sites import", so a name nobody imports would make the list a wish.
+# idle-rule state, the kill ladder and the five constants those two agree on
+# (:data:`DRAIN_CAP_SECONDS` joined in #260, when the success path took the
+# same hard cap) — out of these parts, on the event loop instead of on the
+# calling thread. They stay underscored because they remain this module's
+# internals rather than an API: the list says which internals a second caller
+# now shares, not that a third is invited to assemble a third drain. Which is
+# why ``_start_reader`` is NOT here (#222 review M-14): it is
+# :func:`run_contained`'s own two-line constructor and no second caller imports
+# it — ``tools/bash.py`` builds its ``_PipeReader`` directly because it needs
+# the callbacks. The rule is "exactly what the sites import", so a name nobody
+# imports would make the list a wish.
 __all__ = [
     "AbortHandle",
+    "DRAIN_CAP_SECONDS",
     "EXIT_DRAIN_SECONDS",
     "INTERRUPT_REAP_SECONDS",
     "KILL_DRAIN_SECONDS",
@@ -867,6 +871,15 @@ def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
 #: binned the whole post-exit tail — measured ``stdout=b'EARLY\n'`` with five
 #: late chunks lost, against Pi's ``b'EARLY\nLATE0..4\n'`` (#221 review
 #: PI-1/WIN-1/TP1/POSIX-7).
+#:
+#: SINCE #260 THE TIMER ALONE ENDS NOTHING. It is armed at the exit on the
+#: thread that saw the exit, and a drain that first looked at it more than a
+#: grace later found it already spent and ended at once, without asking the
+#: pipe — dropping the command's OWN tail while the reader thread was starved
+#: (six ubuntu CI runs lost 7,168-57,344 B of a 2 MiB command, #260/#261). An
+#: idle end now also needs a proof from the reader that nothing written before
+#: the exit is still undelivered (:meth:`_PipeReader.proven`); without one the
+#: drain waits, up to its hard cap.
 EXIT_DRAIN_SECONDS = 0.1
 #: The absolute bound on the post-exit drain, from the exit instant. An
 #: Aelix-only divergence: Pi drains without one. It exists because
@@ -891,6 +904,21 @@ EXIT_DRAIN_SECONDS = 0.1
 #: :func:`_exit_drain_cap`: its success path adopted this same drain, and the
 #: chatty holder above is why it did not adopt Pi's uncapped idle rule (measured
 #: at that site: 5.076 s uncapped against 2.028 s here).
+#:
+#: SINCE #260 IT IS THE HARD CAP, and on POSIX the only end that can cut the
+#: command's OWN output. The caller's deadline (:func:`_exit_drain_cap`) is a
+#: soft cap now: like the idle rule it ends the drain only with a proof in hand
+#: (:meth:`_PipeReader.proven`), so on POSIX it can cut a helper's post-exit
+#: output and never the bytes the command wrote before it exited. On win32 the
+#: proof is the reader's own last look, which a reader starved right after it
+#: leaves stale, so an idle or soft-cap end can cut them too, SILENTLY — the
+#: residual in :class:`_PipeReader`'s WHAT IS LEFT. Past this bound the drain
+#: ends whatever the proof says; the bash tool reports such an end
+#: (``ExecExitResult.output_unconfirmed``) and :func:`run_contained` cannot.
+#: One exception, once per drain (#260 cross-review): a drain that LOOKS LATE
+#: within a grace of this bound or past it — its thread, loop or process held
+#: up — moves its end one grace past that look, so a reader held up with it
+#: gets that grace too (:func:`_drain`'s LATE).
 DRAIN_CAP_SECONDS = 2.0
 #: How long the root is given to die after the timeout ladder's kill. Matches
 #: ``oauth/_resolve_config.py``'s bound, and for its reason: on win32 with no
@@ -903,7 +931,8 @@ REAP_GRACE_SECONDS = 5.0
 #: outside the tree survived — measured ``6.011 s`` for a ``timeout=1.0`` run —
 #: and bought zero bytes, because everything the kill released is readable at
 #: once (#221 review TP4/PI-2). Measured again with the idle rule and an
-#: escaped holder: ~1.1 s.
+#: escaped holder: ~1.1 s. Since #260 it is also the post-kill drain's HARD cap
+#: (:data:`DRAIN_CAP_SECONDS`'s paragraph): the kill legs have no softer one.
 KILL_DRAIN_SECONDS = 1.0
 #: The bound on the interrupt ladder's reap. CPython's own number for the same
 #: situation: ``Popen._sigint_wait_secs = 0.25``. Short on purpose — a ^C must
@@ -913,20 +942,37 @@ INTERRUPT_REAP_SECONDS = 0.25
 #: ``BufferedReader.read1(n)`` returns what is AVAILABLE rather than blocking
 #: for ``n`` bytes or EOF — measured on py3.12.13/darwin: 10 B at 0.01 s, the
 #: next 10 B at 0.52 s, ``b""`` at 1.02 s. That is what makes an idle timer
-#: mean anything; a plain ``read(65536)`` would observe nothing until EOF.
+#: mean anything; a plain ``read(65536)`` would observe nothing until EOF. The
+#: POSIX reader reads the fd itself since #260 (:class:`_PipeReader`), and one
+#: ``os.read(fd, n)`` on a pipe answers the same way.
 _READ_CHUNK_BYTES = 65536
+#: The POSIX reader's one read, as a module attribute (#260) so a case can hold
+#: the reader INSIDE it — after the bytes have left the pipe, before they are
+#: handed on — without patching ``os.read`` for the whole process (the stdlib
+#: reads ``subprocess``'s own exec-error pipe through it).
+_read_fd = os.read
 #: The drain's poll quantum. Small enough that a 0.1 s grace is not measurably
 #: overshot, large enough not to spin.
 _DRAIN_POLL_SECONDS = 0.005
 
 
 def _exit_drain_cap(exited_at: float, *, started_at: float, timeout: float | None) -> float:
-    """The absolute end of a post-EXIT drain — one definition, two sites.
+    """The SOFT end of a post-EXIT drain — one definition, two sites.
 
     :data:`DRAIN_CAP_SECONDS` past the exit, and no later than the deadline the
     caller asked for, floored one :data:`EXIT_DRAIN_SECONDS` past the exit so a
     root that exits at ``deadline - 1 ms`` still keeps its own tail (#221 review
     POSIX-2/CS8).
+
+    SOFT SINCE #260, and that is a change of meaning rather than of arithmetic.
+    This used to be the absolute end of the drain; now the drain ends here only
+    with a proof that the command's own bytes are all delivered
+    (:meth:`_PipeReader.proven`), so the deadline can cut a helper's output and,
+    on POSIX, no longer the command's (on win32 a stale proof still can — the
+    residual in :class:`_PipeReader`'s WHAT IS LEFT). The hard end is
+    ``exited_at + DRAIN_CAP_SECONDS`` on both sites — or one grace past a late
+    look at it, once (:func:`_drain`'s LATE) — which this answer never
+    exceeds.
 
     A non-positive ``timeout`` is deliberately NOT special-cased. It reads as a
     deadline already past, so the floor hands it ``exited_at +
@@ -981,12 +1027,14 @@ class _PipeReader(threading.Thread):
     also the only shape this box can test. It is CPython's arrangement with two
     differences: the chunks are timestamped (so the drain can ask "have the
     pipes fallen idle?" rather than only "is it EOF?"), and nothing ever joins
-    these threads — see :func:`run_contained`'s leaked-reader paragraph.
+    these threads — see :func:`run_contained`'s leaked-reader paragraph. (Since
+    #260 the POSIX thread does ``poll`` — on its own fd, inside the thread; the
+    shape is unchanged. See WHAT THE DRAIN ASKS IT below.)
 
     DAEMON, and that is load-bearing rather than defensive: a holder outside the
     tree (a ``setsid`` descendant on POSIX, a job escapee on win32) never closes
-    the write end, so this thread can be blocked in ``read1`` forever and must
-    not keep the interpreter alive.
+    the write end, so this thread can be blocked in ``read1`` (``poll`` on
+    POSIX) forever and must not keep the interpreter alive.
 
     AND IT STOPS RETAINING WHEN THE CALL ENDS (#221 review site-exec-1). A
     daemon that outlives the call it was started for used to go on appending to
@@ -1025,6 +1073,61 @@ class _PipeReader(threading.Thread):
     it (``call_soon_threadsafe``) and must not raise back into here — a closed
     loop raises ``RuntimeError``, which is not in the caught set and would
     reach ``threading.excepthook``.
+
+    WHAT THE DRAIN ASKS IT (#260). The two drains used to end on the idle
+    clock alone, and the clock is not the pipe: a thread that owns the read
+    can be starved across the root's exit while the drain's grace, armed at
+    the exit, runs out. The drain then broke without waiting and ``detach``
+    dropped what this thread had not handed on yet — bytes still in the pipe,
+    a chunk read but not posted, chunks posted after the drain's last yield —
+    all of it the command's OWN output, written before it exited (CI:
+    7,168-57,344 B off a 2 MiB command, in six ubuntu runs). So a drain may now
+    end on its idle rule or a cap only when :meth:`proven` says so, which is
+    either of two proofs:
+
+    * :meth:`drained` — this thread holds nothing, and the pipe is empty NOW.
+      On POSIX the fd is non-blocking: the phase goes ODD before every read and
+      back to EVEN only after the chunk is handed on, and the thread waits in
+      ``poll``, which takes nothing — so an even phase that did not move across
+      an empty ``FIONREAD`` taken by the ASKING thread is exact. On win32 the
+      asking thread must never query the pipe (libuv's ``src/win/pipe.c``
+      records that a query on a synchronous pipe handle blocks while another
+      thread's read is pending on it, which is where this thread parks; that
+      ``PeekNamedPipe`` does the same is inferred, not measured), so this
+      thread looks at its own handle before every blocking ``read1``
+      (``PeekNamedPipe``) and "drained" is "even, and that look saw 0".
+    * :meth:`caught_up` — for a helper that never lets the pipe empty. The
+      drain asks for a pin (:meth:`pin_after`) — at the bash tool the stamp of
+      its instant already has — and the first look dated AFTER that instant
+      records ``handed_on + pending``, and once :attr:`handed_on`
+      reaches that, everything written before the look — the exit, therefore
+      — is handed on. After, never at: a coarse clock gives one reading to a
+      whole tick, so a look dated AT the instant may have come before it
+      (:meth:`pin_after` has the Windows case that proved it). And after the
+      LATEST instant asked for: a kill leg's kill stamp voids a pin taken
+      after the root's reap, which covers only what the tree wrote before the
+      root died (:meth:`pin_after`).
+
+    :meth:`drained` is exact for a pipe or a socketpair, whose FIONREAD counts
+    a write once the write has returned (no miss in 2000 tries of each, on
+    darwin and on Linux) — NOT for a pty master: there it read 0 right after a
+    100 B write had returned in 2000 of 2000 tries on darwin and in 1688 and
+    1901 of 2000 on Linux (#260 cross-review, N3). Both callers hand this class
+    ``Popen`` pipes; a reuse over a pty needs another proof.
+
+    WHAT IS LEFT. POSIX: only a thread that gets no GIL or CPU for the drain's
+    whole hard cap (2.0 s past the exit, 1.0 s past a kill) still loses the
+    command's bytes, and the bash tool reports that end (:func:`run_contained`
+    has no channel to). A drain held up with this thread for more than a grace,
+    and back less than a grace before the cap or past it, gives it one grace
+    after that late look, once per drain (:func:`_drain`'s LATE); a thread
+    starved while its drain ran on time gets none. win32: bytes that arrive
+    after this thread's last empty look and are not handed on when the drain
+    asks — still in the pipe, or inside a ``read1`` that has taken them — are
+    lost SILENTLY if this thread is starved for one whole grace; at most what
+    one read takes plus what the pipe holds. Closing it needs an overlapped read
+    end (``asyncio.windows_utils.pipe``'s shape, and libuv's), not measured
+    here, and the per-read ``PeekNamedPipe`` is an unmeasured cost there.
     """
 
     def __init__(
@@ -1034,6 +1137,7 @@ class _PipeReader(threading.Thread):
         *,
         on_chunk: Callable[[bytes], None] | None = None,
         on_eof: Callable[[], None] | None = None,
+        platform: str | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self._stream = stream
@@ -1056,15 +1160,60 @@ class _PipeReader(threading.Thread):
         #: Whether ``on_eof`` has been called. Only :meth:`_fire_eof` writes it,
         #: only this thread reads it.
         self._eof_fired = False
+        #: Bytes HANDED ON so far — posted through ``on_chunk`` or appended to
+        #: ``chunks`` (#260). Written by this thread only and only AFTER the
+        #: hand-over, so no reading of it counts a chunk still in this thread's
+        #: hands. What :meth:`caught_up` compares against :attr:`pinned`.
+        self.handed_on = 0
+        #: ``(phase, looked_at, handed_on_at_look, pending_at_look)`` (#260),
+        #: replaced WHOLE on every change, so any thread reading it sees one
+        #: consistent tuple and can tell by identity whether it has moved.
+        #: ``phase`` only grows; it is EVEN while this thread holds nothing it
+        #: has read and ODD from before it may take bytes until they are handed
+        #: on, and it goes odd for good before :meth:`run` closes the stream. The
+        #: other three are the latest LOOK (:meth:`_look`), with ``pending``
+        #: -1 when there has been none or it failed.
+        self._mark: tuple[int, float, int, int] = (0, float("-inf"), 0, -1)
+        #: The LATEST instant :meth:`pin_after` has been asked for — it only
+        #: moves forward — or ``None`` until it is called. Written only under
+        #: ``_pin_lock``; read by any thread.
+        self._pin_after: float | None = None
+        #: ``(handed_on + pending, looked_at)`` from the look that pinned (#260),
+        #: replaced WHOLE so any thread reads one consistent pair. It is
+        #: :attr:`pinned` only while that look is dated after ``_pin_after``.
+        self._pin: tuple[int, float] | None = None
+        #: Makes :meth:`pin_after`'s "keep the later instant" one step: at a kill
+        #: leg two threads stamp an instant, the ``proc.wait`` worker and the loop.
+        self._pin_lock = threading.Lock()
+        # How this thread asks its own pipe what it holds: FIONREAD on POSIX,
+        # ``PeekNamedPipe`` on win32, ``None`` for a stream that has no fd (a
+        # test double) or whose probe could not be built — which is never an
+        # exception out of here, only a reader that cannot prove anything.
+        self._probe, fd = _pipe_probe(stream)
+        #: The fd this thread reads ITSELF, non-blocking, waiting in
+        #: ``_poller`` (POSIX); both ``None`` where it blocks in ``read1`` and
+        #: looks before every read instead (win32, ``platform="win32"``, a stream
+        #: with no probe). Decided HERE, on the caller's thread and before
+        #: ``start``, so :meth:`drained` never sees the branch change under it.
+        self._poll_fd, self._poller = _pollable(fd, self._probe, platform=platform)
 
     def run(self) -> None:
         stream = self._stream
         # ``Popen``'s pipes are ``BufferedReader``s and have ``read1``; the
         # fallback is for a stream that does not (a test double, a raw file
         # object) and costs only the idle timer's resolution, never
-        # correctness.
+        # correctness. On POSIX neither is used since #260: the thread reads the
+        # fd itself (``_read_fd``), which is the only way it can be sure it
+        # takes nothing while its phase is even. Nothing else reads this stream,
+        # so bypassing its buffer costs nothing, and the read loop costs no
+        # measurable throughput: a 200 MB write through ``exec``, three
+        # alternating runs of 30 rounds per tree on darwin, gave medians of
+        # 0.0812-0.0824 s here against 0.0815-0.0817 s on the base tree. The
+        # alternative, a ``poll`` before every blocking ``read1``, adds a
+        # syscall and a GIL round trip per chunk.
         read1 = cast("Callable[[int], bytes] | None", getattr(stream, "read1", None))
         read = read1 if read1 is not None else stream.read
+        poll_fd = self._poll_fd
         # NOT a cached ``self._on_chunk``: a reader parked in ``read1`` on a
         # helper's pipe keeps its frame, and since #232 that is the ORDINARY end
         # of a successful call at the bash site — a local would pin the caller's
@@ -1081,9 +1230,20 @@ class _PipeReader(threading.Thread):
         # after ``detach`` cleared the attribute would otherwise fall into
         # ``self.chunks.append`` and re-fill the list ``detach`` just emptied.
         has_on_chunk = self._on_chunk is not None
+        poller = self._poller
         try:
             while True:
-                chunk = read(_READ_CHUNK_BYTES)
+                if poll_fd is not None and poller is not None:
+                    chunk = self._take(poll_fd, poller)
+                else:
+                    # A blocking ``read1``: this thread cannot flip odd before
+                    # the bytes leave the pipe, so it LOOKS instead, holding
+                    # nothing, and :meth:`drained` trusts that look. The flip
+                    # below is as early as it can be — the class docstring's
+                    # win32 residual is the gap between the two.
+                    self._look(always=True)
+                    chunk = read(_READ_CHUNK_BYTES)
+                    self._flip(busy=True)
                 if not chunk:
                     self.eof = True
                     return
@@ -1105,6 +1265,9 @@ class _PipeReader(threading.Thread):
                     on_chunk = None
                 else:
                     self.chunks.append(chunk)
+                # AFTER the hand-over, and the phase stays odd until the next
+                # look: what :meth:`caught_up` counts has left this thread.
+                self.handed_on += len(chunk)
                 self._state.last_chunk_at = time.monotonic()
         except (OSError, ValueError):
             # Ends SILENTLY (#221 review WIN-7). A closed or broken pipe here is
@@ -1112,6 +1275,10 @@ class _PipeReader(threading.Thread):
             # caller to raise into — it is never joined.
             pass
         finally:
+            # ODD FOR GOOD, and BEFORE the close (#260): a :meth:`drained` that
+            # read the last even mark and then probes a closed — or already
+            # reused — fd sees the mark move and discards what it read.
+            self._flip(busy=True)
             # The thread owns the close: the caller may have returned already,
             # and closing under a blocked ``read1`` from another thread is not
             # portable.
@@ -1133,6 +1300,209 @@ class _PipeReader(threading.Thread):
         self._eof_fired = True
         if self._on_eof is not None:
             self._on_eof()
+
+    # -- this thread's half of the proof (#260) ------------------------------
+
+    def _take(self, fd: int, poller: Any) -> bytes:
+        """POSIX: the next chunk off ``fd``, taken ONLY while the phase is odd.
+
+        The phase goes odd BEFORE every read and the fd is non-blocking, so a
+        read that finds nothing takes nothing: the phase goes back to even and
+        the thread waits in ``poll``, which takes nothing either. Between
+        ``poll`` returning and the next flip the bytes are still in the pipe,
+        where the asking thread's ``FIONREAD`` counts them. So an even phase
+        never holds a byte, which is what makes :meth:`drained` exact here.
+        """
+
+        while True:
+            self._look(always=False)
+            self._flip(busy=True)
+            try:
+                return _read_fd(fd, _READ_CHUNK_BYTES)
+            except BlockingIOError:
+                pass
+            self._flip(busy=False)
+            poller.poll()
+
+    def _look(self, *, always: bool) -> None:
+        """Publish an EVEN mark — this thread holds nothing — with a look if due.
+
+        A LOOK is this thread asking its own pipe how much it holds while it
+        holds nothing itself, so every byte written before the look is within
+        ``handed_on + pending``; the first look dated after :meth:`pin_after`'s
+        instant records that sum as :attr:`pinned`. Two orderings make that
+        sound, and each is needed. The date is read BEFORE the probe, so a look
+        is never dated later than what it saw (a look stamped after a probe
+        that ran before the exit would pin as if it had come after it — #260
+        critique). And the date must be GREATER than the instant, not equal to
+        it: :meth:`pin_after` says why. ``always`` is the blocking branch,
+        whose :meth:`drained` is the look itself; POSIX looks only while a pin
+        is wanted, because its :meth:`drained` asks the pipe from the other
+        side — so every POSIX look begins after the pin was asked for, and the
+        strict test can only delay its pin, by at most one tick of the clock.
+        """
+
+        mark = self._mark
+        probe = self._probe
+        if probe is None or not (always or (self._pin_after is not None and self.pinned is None)):
+            self._mark = (_next_phase(mark[0], busy=False), mark[1], mark[2], mark[3])
+            return
+        looked_at = time.monotonic()
+        handed_on = self.handed_on
+        try:
+            pending = probe()
+        except (OSError, ValueError):
+            # Unknown, which counts as "not drained": the read then decides.
+            # Windows at EOF is the case this is for — not measured.
+            pending = -1
+        pin_after = self._pin_after
+        if (
+            pending >= 0
+            and pin_after is not None
+            and looked_at > pin_after
+            and self.pinned is None
+        ):
+            self._pin = (handed_on + pending, looked_at)
+        self._mark = (_next_phase(mark[0], busy=False), looked_at, handed_on, pending)
+
+    def _flip(self, *, busy: bool) -> None:
+        """Move the phase to odd (``busy``) or even, keeping the latest look."""
+
+        mark = self._mark
+        self._mark = (_next_phase(mark[0], busy=busy), mark[1], mark[2], mark[3])
+
+    # -- the drain's half (#260) ----------------------------------------------
+
+    def drained(self) -> bool:
+        """Does this thread hold nothing, with the pipe empty? Any thread may ask.
+
+        POSIX: the mark is even and still the SAME mark after an empty
+        ``FIONREAD`` taken here — so no read started in between, nothing is in
+        this thread's hands, and nothing is in the pipe. The blocking branch
+        (win32): the mark is even and the look that opened it saw 0 — the
+        asking thread must not query a pipe another thread is blocked reading
+        (the class docstring), so this is the reader's own word, and its gap is
+        the stated residual.
+
+        A stream with nothing to ask is NEVER drained (#260 cross-review). Its
+        phase stays even while this thread is parked in ``read1`` — including
+        just after ``read1`` has taken bytes it has not handed on — so "even"
+        alone would be the idle clock again, the rule #260 removed. Such a
+        reader cannot prove anything: its drain ends on EOF, on its death or at
+        the hard cap, where the bash tool says so. Only a stream with no fd (a
+        scripted test double) or a probe that failed to build is one; a
+        ``Popen`` pipe's probe needs nothing but its fd.
+        """
+
+        mark = self._mark
+        if mark[0] % 2:
+            return False
+        probe = self._probe
+        if probe is None:
+            return False
+        if self._poll_fd is None:
+            return mark[3] == 0
+        try:
+            pending = probe()
+        except (OSError, ValueError):
+            return False
+        return pending == 0 and self._mark is mark
+
+    def pin_after(self, instant: float) -> None:
+        """Ask for :attr:`pinned` at the first look dated after ``instant``.
+
+        Called with the instant a drain is armed from (the exit, or the kill) —
+        a ``time.monotonic()`` reading taken after that event — by the drain,
+        and at the bash tool first where that instant is stamped, on whichever
+        thread stamps it (#260 cross-review): a drain its loop reaches late
+        then finds the pin taken, and caught up, rather than asked for in the
+        instant it judges. The latest look counts if it is already that late,
+        so one taken between that instant and this call is not wasted — on
+        win32 it is often the only one there will be.
+
+        THE LATEST INSTANT WINS (#260, second cross-review). The instant only
+        moves forward, and a pin counts only while the look that took it is
+        dated after the latest instant asked for: the same instant again, or
+        an earlier one, keeps what is there; a later one voids a pin taken
+        before it, and the next look pins anew. It matters where one leg
+        stamps twice. On an abort or a cancel at the bash tool the
+        ``proc.wait`` worker is still waiting when the ladder runs, so it
+        stamps the ROOT's reap from inside the ladder, and the kill stamp
+        follows the whole ladder. On win32 ``taskkill /T /F`` can end the root
+        while a job member it cannot walk to writes on until
+        ``TerminateJobObject``, so a pin after the reap covers only what the
+        tree wrote before the root died. The first rule — a second call moved
+        the instant and KEPT a pin already taken — let that pin end the kill
+        leg's drain: with win32's order modelled on darwin (the root
+        SIGKILLed, 50 ms, then the real ladder) and the reader starved from
+        the moment it caught up, the member's last 711-774 B were lost in 10
+        of 10 rounds, none flagged; under this rule those 10 are flagged. The
+        price is that flag where the reap's pin was enough — POSIX's ladder is
+        one ``killpg``, sent before the reap: that probe's POSIX order lost
+        nothing either way and flags 10 of 10 now, its reader held from the
+        moment it caught up until the call returned, so it can prove nothing
+        after the kill stamp. A lock makes "keep the later" one step, since
+        the two stamps come from two threads. The ordinary exit stamps one
+        instant, twice (the worker, then the drain), so its early pin stays.
+
+        AFTER, NEVER AT (#260, found on CI). The clock never goes back, so a
+        look dated LATER than the instant was taken after it, and so after the
+        exit or the kill it stamps. A look dated AT the instant proves nothing:
+        a coarse clock gives one reading to a whole tick, and before CPython
+        3.13 ``time.monotonic()`` on Windows is ``GetTickCount64()``, "a
+        resolution of 15.6 milliseconds" (CPython's 3.13 What's New,
+        gh-88494). With ``>=`` there, the blocking branch pinned the look it
+        took BEFORE a command's last write whenever that write and the exit
+        fell in the look's own tick: a pin of what was handed on at the look,
+        caught up at once, with the command's last bytes still in the pipe or
+        in this thread's hands — and the drain ended on that proof, silently.
+        CI run 35952321924 caught it on windows-latest under CPython 3.11 and
+        3.12 (``assert 0 is None`` right after a pin, in the unit cases);
+        through ``exec`` on the forced-win32 branch with ``time.monotonic``
+        quantised to 15.625 ms, 21 of 30 rounds returned 6 of 1006 B,
+        ``exit_code 0``, nothing said. With ``>`` a tie pins nothing — 0 of 30
+        rounds lost bytes there — and the price is at most one tick and one
+        more look.
+        """
+
+        with self._pin_lock:
+            latest = self._pin_after
+            if latest is None or instant > latest:
+                self._pin_after = latest = instant
+            if self.pinned is None:
+                _phase, looked_at, handed_on, pending = self._mark
+                if pending >= 0 and looked_at > latest:
+                    self._pin = (handed_on + pending, looked_at)
+
+    @property
+    def pinned(self) -> int | None:
+        """``handed_on + pending`` at the first look dated after the LATEST pin instant.
+
+        Once :attr:`handed_on` reaches it, every byte written before that look —
+        before the instant, therefore — has been handed on (#260). ``None`` until
+        such a look, and ``None`` again once :meth:`pin_after` is asked for an
+        instant the look that pinned is not dated after: the next look pins
+        anew. The pin is read before the instant, which only moves forward, so
+        a pin this answers is dated after an instant at least as late as any
+        asked for before the read began.
+        """
+
+        pin = self._pin
+        instant = self._pin_after
+        if pin is None or instant is None or not pin[1] > instant:
+            return None
+        return pin[0]
+
+    def caught_up(self) -> bool:
+        """Has everything the pinned look saw been handed on?"""
+
+        pinned = self.pinned
+        return pinned is not None and self.handed_on >= pinned
+
+    def proven(self) -> bool:
+        """Is it safe to end a drain on its idle rule or a soft cap? Either proof."""
+
+        return self.drained() or self.caught_up()
 
     def detach(self) -> None:
         """Keep draining this pipe, but stop RETAINING what comes out of it.
@@ -1189,6 +1559,79 @@ class _PipeReader(threading.Thread):
         self.chunks = []
 
 
+def _next_phase(phase: int, *, busy: bool) -> int:
+    """The phase after ``phase``: ODD when ``busy``, EVEN when not — always larger."""
+
+    step = phase + 1
+    return step if (step % 2 == 1) == busy else step + 1
+
+
+def _pipe_probe(stream: Any) -> tuple[Callable[[], int] | None, int | None]:
+    """``(probe, fd)``: how many bytes ``stream``'s pipe holds right now, and its fd.
+
+    FIONREAD on POSIX, ``PeekNamedPipe`` on win32 — the stdlib's own spelling
+    (``multiprocessing/connection.py``). ``(None, None)`` for a stream with no
+    fd (a scripted test double), and ``(None, fd)`` when the probe cannot be
+    built. NEVER raises: a reader that cannot prove anything must still read,
+    exactly as it did before #260. Branches on :data:`sys.platform` literally,
+    not through ``platform=``, so both type gates narrow the platform modules.
+    """
+
+    try:
+        fd = stream.fileno()
+    except Exception:  # no ``fileno``, or ``io.UnsupportedOperation``
+        return None, None
+    if not isinstance(fd, int) or fd < 0:
+        return None, None
+    try:
+        if sys.platform == "win32":
+            import _winapi
+            import msvcrt
+
+            handle = msvcrt.get_osfhandle(fd)
+
+            def peek() -> int:
+                return int(_winapi.PeekNamedPipe(handle)[0])
+
+            return peek, fd
+        import fcntl
+        import termios
+
+        request = termios.FIONREAD
+
+        def fionread() -> int:
+            answer = fcntl.ioctl(fd, request, bytes(4))
+            return int.from_bytes(answer, sys.byteorder, signed=True)
+
+        return fionread, fd
+    except Exception:  # an ``ImportError`` under a patched ``sys.platform``, too
+        return None, fd
+
+
+def _pollable(
+    fd: int | None, probe: Callable[[], int] | None, *, platform: str | None
+) -> tuple[int | None, Any]:
+    """``(fd, poller)`` when the reader can read ``fd`` itself, non-blocking.
+
+    ``(None, None)`` means the blocking branch: win32 (whose anonymous pipes
+    have no non-blocking mode — and ``platform="win32"`` is how a POSIX run
+    reaches that branch), a stream with no probe, or a setup that failed. The
+    fd is left as it was in every one of those.
+    """
+
+    if fd is None or probe is None or _resolve_platform(platform) == "win32":
+        return None, None
+    if sys.platform == "win32" or not hasattr(select, "poll"):
+        return None, None
+    try:
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        os.set_blocking(fd, False)
+    except (OSError, ValueError):
+        return None, None
+    return fd, poller
+
+
 def _start_reader(stream: IO[bytes] | None, state: _ReadState) -> _PipeReader | None:
     """Start a reader on ``stream``, or return ``None`` when there is none."""
 
@@ -1226,24 +1669,26 @@ def _drain(
     *,
     exit_drain: float,
     drain_until: float,
+    hard_until: float | None = None,
     abort: AbortHandle | None = None,
 ) -> None:
-    """Read on past the root's death until one of four things is true.
+    """Read on past the root's death until one of five things is true.
 
     Ends on whichever comes FIRST (§A.2.6 of the #221 spec):
 
-    (a) every reader has seen EOF, or is no longer alive — the ordinary end,
-        and the only one that proves nothing was lost. The liveness half is
-        cost, not correctness (#221 review HC5): a reader that ended through
-        its ``except (OSError, ValueError)`` leg never sets ``eof``, and
-        without it such a reader cost a full ``exit_drain`` to a thread that
-        was already dead (measured 0.102 s against 0.000 s for an EOF'd
-        control). ``eof`` keeps its documented meaning — "the pipe reported
-        EOF" — rather than being overloaded to mean "this thread is done";
+    (a) every reader has seen EOF, or is no longer alive — the ordinary end.
+        The liveness half is cost, not correctness (#221 review HC5): a reader
+        that ended through its ``except (OSError, ValueError)`` leg never sets
+        ``eof``, and without it such a reader cost a full ``exit_drain`` to a
+        thread that was already dead (measured 0.102 s against 0.000 s for an
+        EOF'd control). ``eof`` keeps its documented meaning — "the pipe
+        reported EOF" — rather than being overloaded to mean "this thread is
+        done";
     (b) the pipes have been idle for ``exit_drain`` measured from
         ``max(last_chunk_at, exited_at)`` — Pi's rule, with the timer armed at
-        the exit and re-armed by every chunk that arrives after it;
-    (c) ``drain_until`` — the caller's absolute cap;
+        the exit and re-armed by every chunk that arrives after it — AND every
+        reader not already ended is :meth:`~_PipeReader.proven`;
+    (c) ``drain_until`` — the caller's cap — with the same proof;
     (d) the caller ABORTED. ``abort()`` means "I have stopped listening", and
         after the reap it is also all it means (#230): the handle is finished
         by then, so nothing is killed and this clause is the whole of its
@@ -1254,7 +1699,36 @@ def _drain(
         2.004 s past the abort and collected 87 bytes for a caller that had
         already unwound; ``ExtensionAPI.exec`` re-raises the ``CancelledError``
         and never returns an ``ExecResult`` at all (measured through the real
-        method, 4/4).
+        method, 4/4);
+    (e) ``hard_until`` (``drain_until`` when omitted), proof or no proof —
+        moved, once, one ``exit_drain`` past a LATE look (below).
+
+    THE PROOF IS #260's. This docstring used to call (a) "the only [end] that
+    proves nothing was lost", and (b) and (c) did lose it: a reader starved
+    across the exit met a grace already spent, and this returned with the
+    root's OWN tail still in the pipe or in the reader's hands, with
+    ``returncode == 0`` — measured on the base tree with a 2 MiB root under
+    ``sys.setswitchinterval(0.5)`` and CPU-burning threads, 1 run in 10 lost
+    27,648 B with one burner and 4 in 10 lost 41,984-54,272 B with two. (b) and
+    (c) now keep polling until every reader can prove that what was written
+    before the exit has been handed on; only (e) still ends without a proof,
+    and nothing here can say so — :func:`run_contained` has no channel for it.
+    That makes (e) the only lossy end ON POSIX. On win32 a reader's proof is
+    its own last look, and a reader starved right after an empty look leaves
+    it stale, so (b) or (c) can still end with the root's bytes undelivered —
+    silently here as everywhere (:class:`_PipeReader`'s WHAT IS LEFT).
+
+    LATE (#260 cross-review). (e) is a clock reading, and a poll that comes
+    back long after it meant to — this thread, or the whole process, held up
+    across it — used to return at once past it, in the instant the stall gave
+    the readers back their CPU: with the readers starved until the stall
+    ended and the drain kept away 2.5 s from its third poll, 20 of 20 rounds
+    lost the root's 1000 B, silently. So a look more than ``exit_drain`` after
+    the poll meant to look, within ``exit_drain`` of the hard end or past it,
+    moves that end to ``exit_drain`` after the look: 0 of 20. ONCE per drain,
+    so a thread that is always late cannot hold the caller forever, and only
+    NEAR the end, so a late look early on neither spends that once nor pulls
+    the end in. The bash tool's drain takes the same rule.
 
     A reader still blocked when this returns is LEFT ALONE. It is a daemon
     thread and it ends when the last holder of the write end closes it; there
@@ -1262,20 +1736,36 @@ def _drain(
     win32-only half and is not adopted — #221 §I).
     """
 
+    hard = drain_until if hard_until is None else max(drain_until, hard_until)
+    # The proof is about the bytes written before the instant this drain is
+    # armed from; both legs stamp ``exited_at`` before they get here.
+    since = state.exited_at if state.exited_at is not None else time.monotonic()
+    for reader in readers:
+        reader.pin_after(since)
+    # When this meant to look next: its first look at once, every later one a
+    # poll after the look before it. For (e)'s LATE.
+    due = since
+    late_grace_given = False
     while True:
         if all(reader.eof or not reader.is_alive() for reader in readers):
             return
         if abort is not None and abort.aborted:
             return
         now = time.monotonic()
-        if now >= drain_until:
+        if not late_grace_given and now - due > exit_drain and now + exit_drain > hard:
+            late_grace_given = True
+            hard = now + exit_drain
+        if now >= hard:
             return
         armed_at = state.last_chunk_at
         exited_at = state.exited_at
         if exited_at is not None and exited_at > armed_at:
             armed_at = exited_at
-        if now - armed_at >= exit_drain:
+        if (now >= drain_until or now - armed_at >= exit_drain) and all(
+            reader.eof or not reader.is_alive() or reader.proven() for reader in readers
+        ):
             return
+        due = now + _DRAIN_POLL_SECONDS
         time.sleep(_DRAIN_POLL_SECONDS)
 
 
@@ -1489,8 +1979,20 @@ def run_contained(
     exits a millisecond before the deadline still keeps its own tail. The cap is
     an Aelix-only divergence from Pi and its failure mode is stated: a
     DESCENDANT still writing at the cap has its output cut with the root's
-    ``returncode == 0``. Never the root's own output, which is at most a pipe
-    buffer at exit and is drained in milliseconds.
+    ``returncode == 0``. This used to go on "never the root's own output, which
+    is at most a pipe buffer at exit and is drained in milliseconds" — true
+    only while the reader threads got the CPU: until #260 a reader starved
+    across the exit let the idle timer or the deadline end the drain with the
+    root's own tail undelivered. Now only the HARD cap, ``DRAIN_CAP_SECONDS``
+    past the exit (``KILL_DRAIN_SECONDS`` past a kill; one grace past a late
+    look at it, once), ends it without a proof
+    that the root's bytes are all in (:func:`_drain`), and that end is SILENT
+    here — a ``CompletedProcess`` has nowhere to say it; the bash tool's
+    ``exec`` does say it. On POSIX that is the only end that can still cut
+    them. On win32, where this module's readers take the blocking branch, the
+    proof is the reader's own last look, and a stale one lets the idle rule or
+    the deadline cut them too — silently, here as at the bash tool
+    (:class:`_PipeReader`'s WHAT IS LEFT).
 
     HARD ONLY, NO SOFT LEG. There is no grace stage to escalate from and the
     producer is by definition not answering (``oauth/_resolve_config.py``'s
@@ -1764,7 +2266,9 @@ def run_contained(
             state.exited_at = time.monotonic()
             # The same arithmetic this leg spelled inline until #232 hoisted it
             # so the bash tool's ``exec`` could adopt exactly this cap: the flat
-            # cap, the original deadline, and the one-grace floor.
+            # cap, the original deadline, and the one-grace floor. A SOFT cap
+            # since #260 — it needs the proof the idle rule needs — so the hard
+            # one, the flat cap alone, is passed beside it.
             drain_until = _exit_drain_cap(
                 state.exited_at, started_at=start, timeout=timeout
             )
@@ -1773,6 +2277,7 @@ def run_contained(
                 state,
                 exit_drain=EXIT_DRAIN_SECONDS,
                 drain_until=drain_until,
+                hard_until=state.exited_at + DRAIN_CAP_SECONDS,
                 abort=abort,
             )
         except subprocess.TimeoutExpired as expired:
@@ -1799,7 +2304,8 @@ def run_contained(
             # ``abort=abort`` is UNCONDITIONAL, unlike the disarm above: clause
             # (d) keys on ``.aborted``, so an abort on the wedged path fires the
             # ladder *and* ends this drain. That is #230's rule — an ``abort()``
-            # ends the CALL as fast as it can — and not a new one.
+            # ends the CALL as fast as it can — and not a new one. No
+            # ``hard_until``: the kill cap is already the hard one (#260).
             _drain(
                 readers,
                 state,

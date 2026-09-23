@@ -222,7 +222,7 @@ def test_rendering_matches_pi_for_both_branches() -> None:
 class _EmittingOps:
     """A ``BashOperations`` that writes EXACT bytes and exits with a code.
 
-    The Protocol's own swap seam (``tools/bash.py:200`` — "swap surface for
+    The Protocol's own swap seam (``tools/bash.py:220`` — "swap surface for
     SSH/remote"), reached through the ``user_bash`` hook's ``operations``
     return. Only the spawn is replaced: ``decode_child_output``, the cap, the
     record and both tiers all still run for real.
@@ -289,7 +289,7 @@ async def test_a_huge_output_is_capped_in_the_record_but_not_on_screen(
     """The ``!`` path was the only bash surface here with no cap.
 
     Every sibling has one — the model-facing tool at 2000 lines / 50KB
-    (``tools/bash.py:62``), ad-hoc RPC bash at 256 / 32KB
+    (``tools/bash.py:63``), ad-hoc RPC bash at 256 / 32KB
     (``rpc/rpc_mode.py:605``), pi's own ``!`` path via ``truncateTail``
     (``core/bash-executor.ts:113``). Uncapped, the record is re-sent on every
     later turn and every ``--continue``: measured before the cap,
@@ -507,7 +507,7 @@ async def test_a_failing_command_is_distinguishable_from_a_passing_one(
 
     # ``exit 0`` and not ``true``: ``exit`` is a builtin in every shell
     # ``_resolve_shell`` can pick, including the PowerShell a windows box gets
-    # when ``$SHELL`` names nothing that exists (``tools/bash.py:149``).
+    # when ``$SHELL`` names nothing that exists (``tools/bash.py:150``).
     # ``true`` is a bash builtin, and on the windows runner it resolves only
     # because that image happens to put Git's ``usr/bin`` on PATH.
     await handle_user_bash(

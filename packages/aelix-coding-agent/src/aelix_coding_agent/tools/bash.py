@@ -24,6 +24,7 @@ from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
+    DRAIN_CAP_SECONDS,
     EXIT_DRAIN_SECONDS,
     INTERRUPT_REAP_SECONDS,
     KILL_DRAIN_SECONDS,
@@ -186,6 +187,23 @@ class ExecExitResult:
     # custom :class:`BashOperations` impls keep working (their kills read as
     # aborts unless they opt in).
     timed_out: bool = False
+    # #260 — the read stopped at its HARD cap without a proof that everything
+    # the command wrote before it ended had been delivered (the local
+    # implementation's bounds are ``DRAIN_CAP_SECONDS`` past an exit and
+    # ``KILL_DRAIN_SECONDS`` past a kill — or, once, one grace past a drain's
+    # late look at them). On POSIX that is the one end of the
+    # drain that can lose the command's OWN output; on win32 a reader starved
+    # right after an empty look can also let an earlier end lose it, SILENTLY
+    # (``_PipeReader``'s WHAT IS LEFT). It means NOT PROVEN, not "lost": a
+    # reader starved past the cap after posting its last chunk and before
+    # counting it sets this on an output the drain's final yield then delivers
+    # whole (reproduced by holding the reader in exactly that spot: all 1000 B
+    # and the notice). Every other end is silent, as Pi's are, including the
+    # routine one that cuts a backgrounded helper's later output. An Aelix-only
+    # field — Pi's ``ExecExitResult`` has nothing like it because its read and
+    # its timer share one thread. Defaults ``False`` for the reason
+    # ``timed_out`` does.
+    output_unconfirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -195,6 +213,8 @@ class BashToolDetails:
     exit_code: int | None
     truncation: TruncationInfo
     full_output_path: str | None = None
+    #: ``ExecExitResult.output_unconfirmed``, mirrored (#260). Aelix-only.
+    output_unconfirmed: bool = False
 
 
 class BashOperations(Protocol):
@@ -460,6 +480,14 @@ class _LocalBashOperations:
 
             if state.exited_at is None:
                 state.exited_at = time.monotonic()
+                # The pin goes with the stamp, as in ``_wait_and_stamp``
+                # (#260 cross-review): a leg with a watcher awaits the
+                # watcher's end before its drain asks. On an abort or a
+                # cancel the worker's stamp of the ROOT's reap came first,
+                # from inside the ladder; this later one voids a pin taken
+                # after it (:meth:`_PipeReader.pin_after`, the latest instant
+                # wins), so the proof covers the whole tree, not the root.
+                reader.pin_after(state.exited_at)
 
         # Track whether the timeout (not the abort signal) triggered the kill,
         # so the bash tool can label the result correctly (issue #11).
@@ -483,10 +511,27 @@ class _LocalBashOperations:
                 # argument ``_mark_the_kill`` makes about the ladder's cost.
                 # Not killable as a mutation here (the slack is 13-15 ms on
                 # darwin, the verdict #234 recorded for its own attach window);
-                # it is stated rather than pinned.
+                # it is stated rather than pinned. The other face of it is #260:
+                # a resume later than the whole grace found it spent and ended
+                # the drain at once, before a starved reader had handed the
+                # command's tail on — which is why the drain now also needs a
+                # proof from the reader and never ends on this clock alone.
                 nonlocal _root_exited_at
                 code = proc.wait(timeout)
                 _root_exited_at = time.monotonic()
+                # And the pin, here (#260 cross-review). The drain asks for it
+                # too, but only once the loop gets to the drain, and a loop
+                # that got there after the hard cap took the no-proof verdict
+                # on a pin asked for microseconds earlier — so a reader that
+                # had run the whole time behind a helper that never lets the
+                # pipe empty could not have caught up, and a complete output
+                # came back flagged. Asked at the stamp, the pin is the
+                # reader's to take while the loop is elsewhere.
+                # :meth:`_PipeReader.pin_after` is safe from any thread: the
+                # drain calls it while the reader runs. On an abort or a
+                # cancel this is the ROOT's reap, inside the ladder, and
+                # ``_mark_the_kill``'s later instant replaces it.
+                reader.pin_after(_root_exited_at)
                 return code
 
             try:
@@ -524,8 +569,14 @@ class _LocalBashOperations:
             _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
             _mark_the_kill()
 
-        async def _drain_after_the_exit(armed_from: float, *, cap: float) -> None:
-            """``_drain``'s idle rule, awaited instead of polled.
+        # Whether the drain ended at its HARD cap without a proof (#260) — on
+        # POSIX the one end that can lose the command's own output, and so the
+        # one the result reports (``ExecExitResult.output_unconfirmed``, which
+        # also says what the win32 residual leaves unreported).
+        output_unconfirmed = False
+
+        async def _drain_after_the_exit(armed_from: float, *, cap: float, hard_cap: float) -> None:
+            """``_drain``'s rule, awaited instead of polled.
 
             BOTH LEGS COME THROUGH HERE SINCE #232, and they differ only in what
             they pass: the three KILL legs arm at the kill instant under
@@ -534,25 +585,71 @@ class _LocalBashOperations:
             which is :data:`DRAIN_CAP_SECONDS` bounded by the caller's deadline
             and floored one grace past the exit.
 
-            Same three ends as the synchronous one in
-            ``aelix_ai/utils/_process_tree.py`` and the same two constants: EOF,
-            or the pipe idle for :data:`EXIT_DRAIN_SECONDS` measured from
-            ``max(last_chunk_at, armed_from)``, or the absolute ``cap``. A flat
-            cap without the idle rule would cost Esc a flat 1.0 s where
+            The same ends as the synchronous one in
+            ``aelix_ai/utils/_process_tree.py`` and the same constants: EOF; the
+            reader no longer alive, because a reader that ended through its
+            ``except`` leg is done whatever ``eof`` says (#221 HC5); the pipe
+            idle for :data:`EXIT_DRAIN_SECONDS` measured from
+            ``max(last_chunk_at, armed_from)``, or the soft ``cap``, each only
+            WITH A PROOF (below); and the ``hard_cap``, proof or not. A flat cap
+            without the idle rule would cost Esc a flat 1.0 s where
             ``run_contained`` costs ~0.1 s (#221 review TP4/PI-2 measured that
-            mistake), and ``not reader.is_alive()`` is the third end because a
-            reader that ended through its ``except`` leg is done whatever
-            ``eof`` says (#221 HC5). There is no poll: a 5 ms one costs 0.71 %
-            of a core and ~163 loop wakeups/s for the holder's whole life.
+            mistake). There is no poll: a 5 ms one costs 0.71 % of a core and
+            ~163 loop wakeups/s for the holder's whole life.
 
-            THE ``cap`` IS THE CALLER'S, and which constant each caller hands
-            is NOT pinned: the kill legs pass
-            ``killed_at + KILL_DRAIN_SECONDS`` and the ordinary exit passes
-            :func:`_exit_drain_cap`'s answer. Hoisting the cap out of this loop
-            (#232) is what turned :data:`KILL_DRAIN_SECONDS` from an internal
-            constant into an argument, so a caller that handed the other one
-            would double its own ceiling with every case in this file still
-            green.
+            THE PROOF (#260). The idle clock is armed at the exit on the
+            ``proc.wait`` worker, while this coroutine first looks at it whenever
+            the loop gets here — so a reader thread starved across the exit
+            used to meet a grace already spent, and this broke at once, WITHOUT
+            ASKING THE PIPE; the ``detach`` and ``delivering = False`` below it
+            then dropped whatever the reader had not handed on: the command's
+            own tail, with ``exit_code=0`` and nothing said (#260, and #261's
+            CI failures of the delivery case). Now the idle rule and the soft
+            cap end the drain only when :meth:`_PipeReader.proven`: the reader
+            holds nothing and the pipe is empty, or it has handed on everything
+            its first look after ``armed_from`` saw. Without a proof this waits
+            ONE MORE GRACE with the loop parked — the issue's first remedy, used
+            only here, because a late but provable end must not pay it — and
+            never past ``hard_cap``, save once after a LATE look (below). On
+            POSIX an end at the hard cap without a
+            proof is the only one that can lose the command's own bytes, and it
+            is the one ``output_unconfirmed`` reports. On win32 "the pipe is
+            empty" is the reader's own last look, which a reader starved right
+            after it leaves stale, so an idle or soft-cap end can lose them
+            too, silently — :class:`_PipeReader`'s WHAT IS LEFT.
+
+            LATE (#260 cross-review). ``hard_cap`` is a clock reading, and this
+            reads the clock whenever the loop gets here. A loop kept away past
+            it — busy, or the whole process stopped — used to take the no-proof
+            verdict at its first look back, in the instant the stall gave the
+            reader back its CPU. Two things answer it. The pin is asked for
+            where the instant is stamped (``_wait_and_stamp``,
+            ``_mark_the_kill``), so a reader that ran while the loop was away
+            has its proof waiting: 2.5 s away, a helper keeping the pipe full,
+            a complete output used to come back flagged. And a look that comes
+            more than a grace after this meant to look — its first at
+            ``armed_from``, a later one at the end of its park — within a grace
+            of ``hard_cap`` or past it moves the verdict to one grace after
+            that look: with the reader starved until the loop came back, 2.5 s
+            away before the first look lost the command's 1000 B (flagged) in 3
+            and in 7 rounds of 20 (two runs) even with the early pin, and 2.5 s
+            away while parked flagged a complete output in 19 and in 16 of 20;
+            with the grace, 0 of 20 in each. ONCE per drain, so a loop that is
+            always late cannot hold the call forever, and only NEAR the cap, so
+            a late look early on neither spends that once nor pulls the cap in.
+            The bound is therefore ``hard_cap``, or one grace after the first
+            late look near it. A proof ends the drain at once, as ever.
+            ``run_contained``'s drain takes the same rule.
+
+            THE CAPS ARE THE CALLER'S, and which constants each caller hands
+            are NOT pinned: the kill legs pass ``killed_at +
+            KILL_DRAIN_SECONDS`` as both, and the ordinary exit passes
+            :func:`_exit_drain_cap`'s answer as ``cap`` and ``exited_at +
+            DRAIN_CAP_SECONDS`` as ``hard_cap``. Hoisting the cap out of this
+            loop (#232) is what turned :data:`KILL_DRAIN_SECONDS` from an
+            internal constant into an argument, so a caller that handed the
+            other one would double its own ceiling with every case in this file
+            still green.
 
             ARMED FROM ``max(last_chunk_at, armed_from)`` AND NOT FROM THE LAST
             CHUNK ALONE (#221 review PI-1): a root that writes, goes quiet
@@ -563,13 +660,35 @@ class _LocalBashOperations:
             from the EXIT.
             """
 
+            nonlocal output_unconfirmed
+            # Normally a repeat — the stamp that set ``armed_from`` asked first —
+            # except when no leg stamped (``_drain_to_the_end``'s fallback).
+            reader.pin_after(armed_from)
+            # When this meant to look next: its first look at ``armed_from``,
+            # every later one at the end of the park before it.
+            due = armed_from
+            late_grace_given = False
             while not eof.is_set() and reader.is_alive():
-                armed_at = max(state.last_chunk_at, armed_from)
-                remaining = min(cap, armed_at + EXIT_DRAIN_SECONDS) - time.monotonic()
-                if remaining <= 0:
+                now = time.monotonic()
+                if (
+                    not late_grace_given
+                    and now - due > EXIT_DRAIN_SECONDS
+                    and now + EXIT_DRAIN_SECONDS > hard_cap
+                ):
+                    # A LATE LOOK NEAR THE HARD CAP (the docstring's LATE).
+                    late_grace_given = True
+                    hard_cap = now + EXIT_DRAIN_SECONDS
+                if now >= hard_cap:
+                    output_unconfirmed = not reader.proven()
                     break
+                end_at = min(cap, max(state.last_chunk_at, armed_from) + EXIT_DRAIN_SECONDS)
+                if now >= end_at:
+                    if reader.proven():
+                        break
+                    end_at = now + EXIT_DRAIN_SECONDS
+                due = min(end_at, hard_cap)
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(eof.wait(), remaining)
+                    await asyncio.wait_for(eof.wait(), due - now)
             # ONE turn of the loop before the caller detaches (#222 critique
             # POSIX-1/WIN32-1/ASYNC-1). The chunk callbacks and the EOF callback
             # share the loop's FIFO, so waiting on ``eof`` cannot resume before
@@ -583,13 +702,23 @@ class _LocalBashOperations:
             # rather than exceptional: a success-path drain that ends on the
             # idle timeout or the cap resumes with chunk callbacks still queued
             # behind it, and this yield — not the EOF ordering, which only holds
-            # when the drain ended ON eof — is what delivers them.
+            # when the drain ended ON eof — is what delivers them. Since #260 it
+            # is half of every proven end: the reader counts a chunk as handed
+            # on once it is POSTED, so the proof says "queued before this
+            # yield", and the FIFO runs every such callback before this resumes.
+            # And since #260 it is PINNED: a case that has the reader post the
+            # command's only chunk from inside the drain's proof gets none of
+            # it without this line (``test_bash_drain_asks_the_pipe.py``,
+            # ``test_a_chunk_posted_while_the_drain_proves_is_still_delivered``).
             await asyncio.sleep(0)
 
         async def _drain_to_the_end() -> None:
             killed_at = state.exited_at
             if killed_at is not None:
-                await _drain_after_the_exit(killed_at, cap=killed_at + KILL_DRAIN_SECONDS)
+                # One cap, both hands: after a kill there is no deadline left to
+                # honour, so the soft cap IS the hard one (#260).
+                kill_cap = killed_at + KILL_DRAIN_SECONDS
+                await _drain_after_the_exit(killed_at, cap=kill_cap, hard_cap=kill_cap)
                 return
             # The root exited on its own (#232, the owner's choice A of
             # 2026-09-06). Pi's idle rule under ``run_contained``'s cap: the
@@ -607,9 +736,13 @@ class _LocalBashOperations:
             # ``or time.monotonic()``: no leg stamped anything only if ``_wait``
             # raised something neither ``except`` catches (#233's window), and a
             # drain armed at "now" is the honest fallback there.
+            #
+            # The deadline is a SOFT cap since #260: it cuts a helper's output,
+            # and on POSIX never the command's own, which only the hard cap can
+            # (win32: :class:`_PipeReader`'s WHAT IS LEFT).
             exited_at = _root_exited_at or time.monotonic()
             cap = _exit_drain_cap(exited_at, started_at=started_at, timeout=timeout)
-            await _drain_after_the_exit(exited_at, cap=cap)
+            await _drain_after_the_exit(exited_at, cap=cap, hard_cap=exited_at + DRAIN_CAP_SECONDS)
 
         watcher_task: asyncio.Task[None] | None = None
         if signal is not None and hasattr(signal, "wait"):
@@ -719,7 +852,9 @@ class _LocalBashOperations:
         # Issue #11: a signal-abort takes precedence over a timeout label (if
         # both somehow fired, the user's abort is the operative cause).
         return ExecExitResult(
-            exit_code=exit_code, timed_out=_timed_out and not _signal_aborted
+            exit_code=exit_code,
+            timed_out=_timed_out and not _signal_aborted,
+            output_unconfirmed=output_unconfirmed,
         )
 
 
@@ -832,6 +967,34 @@ def _fmt_secs(value: float) -> str:
     """Render a seconds value without a trailing ``.0`` (``600.0`` → ``600``)."""
 
     return str(int(value)) if value == int(value) else str(value)
+
+
+def _unconfirmed_notice(exit_code: int | None, *, local: bool) -> str:
+    """What a result says when its read stopped unproven at the hard cap (#260).
+
+    Aelix-only: Pi's drain never ends this way, because its read and its timer
+    share one thread. The number is the LOCAL drain's hard cap for the leg that
+    ran — :data:`DRAIN_CAP_SECONDS` past an exit, :data:`KILL_DRAIN_SECONDS`
+    past a kill, and a kill is the only way ``exit_code`` is ``None`` here — so
+    it is said only when that drain is the one that ran (``local``). It names
+    the cap; after a LATE look (``_drain_after_the_exit``: more than a grace
+    late, and less than a grace before the cap or past it) the read stopped
+    one grace after that look instead, once per drain. A custom
+    :class:`BashOperations`, a remote shell say, that reports an unconfirmed
+    end had timing of its own, which this cannot know (review). The advice is
+    the one that works whatever starved the read: the file a redirect writes is
+    not read through this pipe.
+    """
+
+    when = "after the command ended"
+    if local:
+        seconds = KILL_DRAIN_SECONDS if exit_code is None else DRAIN_CAP_SECONDS
+        when = f"{_fmt_secs(seconds)}s {when}"
+    return (
+        f"[Output may be incomplete: reading stopped {when}, before its last output "
+        "could be confirmed. Re-run it, or redirect its output to a file, if the end "
+        "matters.]"
+    )
 
 
 def _resolve_timeout_knob(value: Any, fallback: float) -> float:
@@ -981,6 +1144,9 @@ def create_bash_tool(
     operations: BashOperations = opts.get(
         "operations"
     ) or create_local_bash_operations(opts.get("shell_path"))
+    # #260 — whether the unconfirmed-output notice may name the local drain's
+    # cap: only when that drain is the one that runs (``_unconfirmed_notice``).
+    local_drain = isinstance(operations, _LocalBashOperations)
     command_prefix: str | None = opts.get("command_prefix")
     spawn_hook: BashSpawnHook | None = opts.get("spawn_hook")
     max_lines: int = int(opts.get("max_lines", _DEFAULT_MAX_LINES))
@@ -1115,10 +1281,19 @@ def create_bash_tool(
                 last_line_bytes=last_line_bytes,
             )
 
+        # #260 — AFTER ``truncate_tail`` and its notice, so the kept tail can
+        # never cut it, and before the status line, which stays last. An empty
+        # body becomes this line alone, in place of ``(no output)``, which would
+        # be a claim the drain could not make.
+        if exit_result.output_unconfirmed:
+            notice = _unconfirmed_notice(exit_result.exit_code, local=local_drain)
+            body = f"{body}\n\n{notice}" if body else notice
+
         details = BashToolDetails(
             exit_code=exit_result.exit_code,
             truncation=info,
             full_output_path=full_output_path,
+            output_unconfirmed=exit_result.output_unconfirmed,
         )
 
         exit_code = exit_result.exit_code

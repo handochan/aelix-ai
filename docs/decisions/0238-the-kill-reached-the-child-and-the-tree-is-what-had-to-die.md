@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -476,7 +476,13 @@ against its `< 2.0` bound. The bound is unchanged.
   now commonly leaves a reader parked on a helper's pipe. What it cost is in
   the amendment under "Consequences" below. What it did NOT do: say anything in
   the result when the drain ends on the cap rather than on EOF — Pi says nothing
-  either, and whether Aelix should is an open product question.
+  either, and whether Aelix should is an open product question. **#260
+  decided it (2026-09-24):** the result says so only when the drain ended at
+  its hard cap without a proof — on POSIX the one end that can lose the
+  command's own bytes. A proven end stays silent, like Pi's, and that includes
+  the helper cut above; so does the win32 residual, whose reader believes it
+  has a proof (the #260 paragraph under "Consequences"). The REPL's `!command`
+  and RPC `bash` do not surface the flag yet.
 - **#227 — the `!command` shell on win32: landed 2026-09-08.** This site spawned
   `sh -c` on every platform, so on a stock Windows box the spawn failed in about
   a millisecond and the value resolved to nothing — reported as `Failed to
@@ -834,7 +840,17 @@ empty, so only the group kill of the paragraph below reaches anything there.
   and still climbing. Its cost is stated rather than hidden: a DESCENDANT
   still writing at the cap has its output cut, with the root's own
   `returncode` intact — never the root's own output, which is at most a pipe
-  buffer at exit and drains in milliseconds. **The cap bounds the CALLER'S
+  buffer at exit and drains in milliseconds. (**#260, 2026-09-24:** true only
+  while the reader threads get the CPU. A reader starved across the exit let
+  the idle timer or the deadline cut the root's own tail — on the base tree,
+  under `sys.setswitchinterval(0.5)` and CPU-burning threads, 1 run in 10 lost
+  27,648 B with one burner and 4 in 10 lost 41,984-54,272 B with two. On POSIX,
+  since #260 only the hard cap, `DRAIN_CAP_SECONDS` past the exit (one grace
+  past a late look at it, once), can, and at this site that end is silent. On win32 the blocking branch's residual can
+  too, silently, at this site as at the bash tool: `run_contained` passes no
+  platform, so there its readers take that branch, whose proof is the reader's
+  own last look — see the #260 paragraph under "Consequences".) **The cap
+  bounds the CALLER'S
   WAIT, and the bytes stop accumulating at the return** (post-merge review
   site-exec-1): after `run_contained` returns, the two daemon readers keep
   reading — so a descendant that still holds the pipe is never stalled on a
@@ -1126,7 +1142,8 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `DRAIN_CAP_SECONDS` already records for `run_contained`, now at a second
   site.
 
-  What it costs, in three parts. **A helper's output written after the grace is
+  What it costs, in four parts — the fourth found only later, by #260. **A
+  helper's output written after the grace is
   cut**, exactly as `run_contained` states for its own drain — **and in practice
   that is not a tail but the whole of it**: a backgrounded program's stdout is a
   pipe, so it is block-buffered and typically flushes only when it exits
@@ -1148,7 +1165,171 @@ empty, so only the group kill of the paragraph below reaches anything there.
   callback is loaded per chunk and dropped by `detach` on the caller's thread
   now (measured: with the frame local restored, an 8 MiB command's `on_data`
   object is still reachable after `exec` returns and a `gc.collect()`; with the
-  fix it is collected). **Nothing else in the teardown moved**:
+  fix it is collected).
+  **And, until #260, the command's OWN tail (amendment, 2026-09-24).** The idle
+  clock was armed at the exit on the `proc.wait` worker, but the drain first
+  read it whenever the loop got there, so a reader thread starved across the
+  exit met a grace already spent: the drain broke without waiting and without
+  asking the pipe, and `detach` / `delivering = False` dropped what the reader
+  had not handed on — bytes still in the pipe (the issue's local darwin
+  reproduction at `0985fcf` measured `FIONREAD` 26624 there; which of these the
+  CI runs hit is not measured), a chunk read but not yet posted, or chunks
+  posted after the drain's last yield. All of it the command's own output,
+  written before it exited, returned with `exit_code 0` and nothing said — and
+  `truncate_tail` keeps the tail, so the model lost exactly the part it reads.
+  Six ubuntu CI runs of `test_every_byte_is_delivered_under_a_loaded_loop` came
+  back 7,168-57,344 B short of 2 MiB, in whole 1 KiB lines (runs 34238827475,
+  34312006861, 35420451091, 35447857370, 35754728478, 35887669985); the issue's
+  recipe — `sys.setswitchinterval(0.5)` and 200 ms burns on the loop — lost
+  bytes in 5 of 30 rounds on darwin at `02f98560` (29,696-128,000 B each; 0 of
+  30 with the fix); and a 1000 B command whose reader was held 0.3 s across its
+  exit came back EMPTY, every run. Pi does not lose them — 0 of 60 rounds with
+  its `waitForChildProcess` run verbatim under Node v26.0.0, the loop blocked
+  400 ms right after Pi armed its timer, busy in 200 ms slices, or with a helper
+  holding the pipe — because its read and its timer share one thread. **#260
+  fixed it.** The idle rule and the caller's deadline end the drain only with a
+  proof — the reader holds nothing and the pipe is empty, or it has handed on
+  everything its first look after the exit saw — and without one the drain waits
+  a grace more at a time, up to a hard cap: 2.0 s past the exit, 1.0 s past a
+  kill, or one grace past a late look at it (below). On POSIX the reader reads
+  its own non-blocking fd and never takes bytes
+  while idle, so the proof is exact: only a reader starved for the whole hard
+  cap can still lose the command's bytes, and that result says so
+  (`ExecExitResult.output_unconfirmed`, and a line in the tool result). The flag
+  means NOT PROVEN rather than lost: a reader starved past the cap after posting
+  its last chunk and before counting it sets it on an output that the drain's
+  final yield then delivers whole (reproduced by holding the reader in exactly
+  that spot — all 1000 B came back, with the notice). On win32
+  the drain must not query a pipe another thread is blocked reading (libuv's
+  `src/win/pipe.c` records that a query on a synchronous pipe handle blocks
+  while another thread's read is pending on it; that `PeekNamedPipe` does the
+  same is inferred, not measured), so the proof there is the reader's own look
+  before each read, and the residual is bytes that arrive after its last empty
+  look and are not handed on when the drain asks — still in the pipe, or inside
+  a read — lost SILENTLY if the reader is starved for a whole grace. That
+  residual is pinned, as a loss, by the forced-win32 `preread`/`inread` ids of
+  `tests/tools/test_bash_drain_asks_the_pipe.py` (deterministically since the
+  cross-review below: the held reader is let go only after the call returns,
+  so no stall can let it deliver first); closing it needs an overlapped
+  read end, and nothing about it is measured on Windows. `run_contained`'s drain
+  had the same defect (on the base tree 1 run in 10 lost bytes with one
+  CPU-burning thread and 4 in 10 with two) and takes the same proof, but its
+  hard-cap end stays silent: a `CompletedProcess` has nowhere to say it. Its
+  readers take the blocking branch on win32 too (it passes no platform), so
+  the residual is there as well — pinned by the `inread` ids of
+  `tests/process_tree/test_the_drain_asks_the_pipe.py` on `windows-latest`.
+  **"After the exit" compares two clock readings, and the comparison has to
+  be strict** (same amendment; found by its first windows-latest run). The
+  pin takes the first look DATED after the instant the drain is armed from,
+  and both are `time.monotonic()` readings: the look's, taken before its
+  probe, and the instant, taken after the exit or the kill. A look dated LATER
+  than the instant was taken after it on any clock that never goes back; one
+  dated EQUAL may have been taken before it — and the first version compared
+  with `>=`. Before CPython 3.13 that clock on Windows is `GetTickCount64()`,
+  "a resolution of 15.6 milliseconds" (CPython's 3.13 What's New, gh-88494;
+  quoted, not measured here), so readings microseconds apart are equal there:
+  CI run 35952321924 failed the pin's unit cases on both windows-latest legs,
+  py3.11 and py3.12 (`assert 0 is None` right after the pin — a look taken
+  before any byte was written had pinned). That was a hole in the proof, not
+  a test artefact. The blocking branch looks before every read, so the look it
+  took before a command's LAST write pinned whenever that write and the exit
+  fell in the look's own tick: a pin of what had been handed on by then,
+  caught up at once, the last bytes still in the pipe or in the reader's
+  hands, and the drain ended on it silently. Through `exec` on the forced-win32
+  branch with `time.monotonic` quantised to 15.625 ms — a root that writes a
+  line, lets its reader hand it on and look at the empty pipe, then writes
+  1000 B and exits, its reader then held inside their hand-over — the call came
+  back with 6 of 1006 B, `exit_code 0` and no notice in 21 of 30 rounds: every
+  round whose look fell in the exit stamp's tick (0 of 30 on the host's own
+  clock, where that look came 5-21 ms before the stamp). A tie pins nothing
+  now, in the look and in `pin_after` alike: 0 of 30 rounds lost bytes, 16 of
+  them with the look in the exit's tick. The price is at most one tick and one
+  more look. On POSIX every look begins after the pin is asked for, so the
+  strict test can only delay a pin, and on darwin (`mach_absolute_time()`,
+  resolution 4.2e-08 s) it moved nothing measured: #232's helper-parked
+  return, the helper-tail case and both full-pipe deadline ends read the same
+  on both trees. Pinned deterministically by the `coarse` ids of
+  `tests/process_tree/test_the_drain_asks_the_pipe.py`, whose clock gives one
+  reading to a whole tick until the case moves it, and end to end by
+  `test_a_look_dated_in_the_exits_own_tick_does_not_end_the_drain` in
+  `tests/tools/test_bash_drain_asks_the_pipe.py`.
+  **The hard cap is a clock reading too, and a drain that reads it late gives
+  the reader one grace, once** (same amendment; found by an independent
+  cross-review of it). A drain reads the clock only when its thread gets to it
+  — at the bash tool, the event loop. Kept away past the cap — a busy loop, or
+  a stopped or descheduled process, which stops the reader with it — it took
+  the no-proof verdict at its first look back, in the instant the stall gave
+  the reader back its CPU; and at the bash tool the pin was asked for only
+  then, so a reader that had run the whole time behind a helper that keeps
+  the pipe full had nothing to show for it. Measured on darwin: the loop kept
+  away 2.5 s from the exit with such a helper, a complete output came back
+  flagged in 3 of 3 runs; and in 20 rounds each — the reader starved as well
+  until the loop came back, the command's 1000 B were lost, flagged, in 6
+  rounds and flagged though complete in 5 more; the stall landing while the
+  drain was parked, 16 flagged a complete output; at `run_contained`, its
+  drain kept away 2.5 s from its third poll with the readers starved until
+  then, the root's 1000 B were lost, silently, in 20. Two changes answer it.
+  The pin is asked for where the instant is stamped — the `proc.wait`
+  worker's exit stamp and the kill legs' — so a reader that ran while the
+  loop was away has its proof waiting: the busy-loop case is no longer
+  flagged (0 of 3). That alone still lost the bytes in 3 and 7 rounds of 20
+  (two runs), and flagged the parked case in 19 and 16. And a look that comes
+  more than a grace after the drain meant to look, within a grace of the hard
+  cap or past it, moves the no-proof end to one grace after that look — once
+  per drain, so a drain that is always late cannot hold its caller forever,
+  and only near the cap, so a late look early on neither spends that once nor
+  pulls the cap in. Both drains take it: nothing lost or flagged in any of
+  those shapes (0 of 3 runs, 0 of 20 rounds). **So the hard cap is 2.0 s past
+  the exit (1.0 s past a kill), or one grace (0.1 s) after the first late look
+  near it, whichever is later;** a stall of the process itself adds its own
+  length on top, as it always did. The first review of this amendment
+  declined that floor for breaking the 2 s bound; what moves it now is a
+  stall of more than a grace that has already broken the bound, or ended
+  within a grace of it, and it moves it by at most that grace. The notice
+  keeps naming the cap, so after a late look the read stopped later than the
+  notice says. Pinned by
+  `test_a_late_look_at_the_hard_cap_gives_the_reader_one_more_grace` (the
+  stall before the drain's first look, while it is parked, and twice),
+  `test_a_late_look_far_from_the_hard_cap_moves_nothing`,
+  `test_a_loop_that_reaches_the_drain_late_finds_the_readers_proof_waiting`
+  and its kill-leg twin in `tests/tools/test_bash_drain_asks_the_pipe.py`,
+  and `test_run_contained_gives_a_late_look_at_its_hard_cap_one_grace` in
+  `tests/process_tree/test_the_drain_asks_the_pipe.py`. The same review turned
+  two smaller things. A reader with nothing to ask — no fd, or a probe that
+  failed to build; never a `Popen` pipe — used to prove by its phase alone,
+  which on the blocking branch stays even while `read1` has taken bytes: the
+  idle rule again. It now proves nothing, and its drain ends on EOF or at the
+  hard cap. And `drained()` is exact for a pipe or a socketpair, not for a pty
+  master: FIONREAD read 0 right after a 100 B write had returned in 2000 of
+  2000 tries on darwin (1688 and 1901 of 2000 on Linux), which `_PipeReader`
+  now states for a reuse.
+  **Where one leg stamps twice, the later instant wins** (same amendment; found
+  by a second independent cross-review). On an abort or a cancel the
+  `proc.wait` worker is still waiting when the ladder runs, so it stamps the
+  ROOT's reap from inside the ladder, and the kill stamp follows the whole
+  ladder. The pin kept whatever look it had taken after the earlier stamp,
+  which covers only what the tree wrote before the root died — and on win32
+  `taskkill /T /F` can end the root while a job member it cannot walk to
+  writes on until `TerminateJobObject`. With that order modelled on darwin (the
+  root SIGKILLed, 50 ms, then the real ladder) and the reader starved from the
+  moment it caught up, the member's last 711-774 B were lost in 10 of 10
+  rounds, silently. Now a pin counts only while its look is dated after the
+  latest instant asked for — a later one voids it and the next look pins anew
+  — so a kill leg's proof covers what the whole tree wrote before the ladder
+  ended: those 10 rounds, their reader still held until the call returns, are
+  flagged instead of silent, and with three threads stamping in random order
+  while a member writes between the two instants, 83 and 117 pins of 200 (the
+  native and the blocking branch) fell short of the member's bytes before, 0
+  and 0 after. The price is a flag where the reap's pin was enough — POSIX's
+  ladder is one `killpg`, sent before the reap: that probe's POSIX order lost
+  nothing under either rule and is flagged in 10 of 10 now, its reader held
+  from the moment it caught up until the call returned. The exit leg stamps
+  one instant, so its early pin is unchanged. Pinned by
+  `test_a_later_instant_voids_a_pin_taken_before_it` in
+  `tests/process_tree/test_the_drain_asks_the_pipe.py` and, end to end with the
+  order modelled, `test_a_kill_that_reaps_the_root_first_is_proven_only_after_the_whole_ladder`
+  in `tests/tools/test_bash_drain_asks_the_pipe.py`.
+  **Nothing else in the teardown moved**:
   the watcher is still disarmed before the drain, so an abort landing in the
   window still fires into nothing.
   [#230](https://github.com/handochan/aelix-ai/issues/230) decided that same
