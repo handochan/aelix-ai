@@ -410,7 +410,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:876-942`` materialises the ``None`` sentinel into a real list),
+    (``core.py:885-951`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.

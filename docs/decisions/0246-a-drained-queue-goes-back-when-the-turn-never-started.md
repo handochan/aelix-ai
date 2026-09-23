@@ -262,6 +262,15 @@ again a different defect, again filed rather than silently inherited.
   causes it nor fixes it, and `test_a_cancelled_drain_hands_the_messages_back`
   stops one assertion short of it on purpose: the queue is this ADR's subject,
   the phase machine is ADR-0023's. Filed as a follow-up.
+  **Closed 2026-09-24 by #321** (ADR-0023 §"Amendment (2026-09-24, #321)"):
+  `prompt()`'s reset is now `except BaseException`, with this ADR's clause
+  nested inside it and still running first, so after a cancelled drain the
+  message is back on the queue once and the phase is idle; the next `prompt()`
+  delivers it (`[['QUEUED-BY-NEXT-TURN', 'later']]` at the provider, queue `[]`
+  after — `.omc/specs/321-cancel-probe.py` ARM 2).
+  `test_the_restore_runs_first_and_once_and_the_restored_message_ships` in
+  `tests/test_harness_cancel_gives_the_phase_back.py` is the assertion this
+  bullet's test stopped short of.
 
 ## The audit, redone
 

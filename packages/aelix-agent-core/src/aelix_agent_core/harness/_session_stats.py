@@ -383,7 +383,7 @@ def aggregate_session_stats(
     rather than a bill and :attr:`SessionStats.cost_known` goes ``False``. The
     caller owns that judgement because only it can see the session: after a
     ``/compact`` the harness rebuilds ``state.messages`` from the post-compaction
-    branch (``core.py:1714-1718`` via ``select_display_entries``, which drops
+    branch (``core.py:1757-1761`` via ``select_display_entries``, which drops
     everything before ``first_kept_entry_id``), so the summarized-away turns are
     no longer countable here and nothing in ``messages`` reveals their absence.
 

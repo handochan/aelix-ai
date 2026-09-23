@@ -11,7 +11,7 @@ ADR-0078 (Sprint 6h₄c wires them when the 3 DEFERRED RPC handlers move).
 Architectural decision (P-302): Aelix adopts **harness-rebuild** instead
 of session-swap. Pi can swap ``_session`` directly because
 ``AgentSession`` is a stateless wrapper; Aelix ``AgentHarness`` captures
-``_state.session_id`` at ``__init__`` (``harness/core.py:626``) and binds
+``_state.session_id`` at ``__init__`` (``harness/core.py:635``) and binds
 runtime actions / merges tools / caches session_name during construction.
 The harness factory pattern preserves all of these invariants.
 

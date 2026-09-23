@@ -12,7 +12,7 @@ knows neither of the two things the callers need:
   was never injected into anything; and
 * it does not know its own output is ALREADY inside the system prompt the caller
   is separately counting — ``cli/entry.py:1312-1314`` appends the chunk to
-  ``options.append_system_prompt`` and ``harness/core.py:596-602`` joins those
+  ``options.append_system_prompt`` and ``harness/core.py:605-611`` joins those
   onto the base prompt with ``"\\n\\n"``.
 
 Measured on the pre-change build with one 7175-char ``AGENTS.md`` (1794
@@ -103,7 +103,7 @@ def split_project_context(system_prompt: str | None, cwd: str) -> tuple[str, str
     removed: ``entry.py`` appends the chunk exactly once, and removing more would
     be attributing text this function has not identified.
 
-    The ``"\\n\\n"`` separators that ``harness/core.py:596-602`` puts around the
+    The ``"\\n\\n"`` separators that ``harness/core.py:605-611`` puts around the
     chunk stay in the first half. They belong to the prompt's scaffolding rather
     than to either side, they are worth about one estimated token, and moving
     them would make the split depend on how the harness joins.

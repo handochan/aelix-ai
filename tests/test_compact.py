@@ -395,7 +395,9 @@ async def test_check_auto_compaction_invoked_from_prompt() -> None:
 
     run_called: list[None] = []
 
-    async def _fake_run(_prompts: object, *, system_prompt: object = None) -> list[Any]:
+    async def _fake_run(
+        _prompts: object, *, system_prompt: object = None, owner: object = None
+    ) -> list[Any]:
         run_called.append(None)
         # populate a high-usage assistant message so the threshold check fires
         h._state.messages.append(

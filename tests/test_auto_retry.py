@@ -262,7 +262,9 @@ async def test_prompt_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> 
 
     run_calls: list[list[Any]] = []
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         run_calls.append(list(prompts))
         # First call: append a retriable-error assistant. Second: a success.
         attempt = len(run_calls)
@@ -303,7 +305,9 @@ async def test_prompt_max_retries_emits_failure(monkeypatch: pytest.MonkeyPatch)
     h = _build_harness()
     events = await _capture_events(h)
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         h._state.messages.extend(prompts)
         h._state.messages.append(_err("503 Service Unavailable"))
         return list(h._state.messages)
@@ -327,7 +331,9 @@ async def test_prompt_no_retry_when_disabled(monkeypatch: pytest.MonkeyPatch) ->
     h = _build_harness(auto_retry=False)
     events = await _capture_events(h)
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         h._state.messages.extend(prompts)
         h._state.messages.append(_err())
         return list(h._state.messages)
@@ -348,7 +354,9 @@ async def test_input_handled_short_circuit_skips_retry_loop() -> None:
     events = await _capture_events(h)
     ran: list[None] = []
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         ran.append(None)
         return []
 
@@ -410,7 +418,9 @@ async def test_retry_ending_in_a_non_retryable_error_still_emits_end(
 
     calls: list[None] = []
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         calls.append(None)
         h._state.messages.extend(prompts)
         if len(calls) == 1:
@@ -448,7 +458,9 @@ async def test_a_non_retryable_error_without_a_prior_retry_emits_nothing() -> No
     h = _build_harness()
     events = await _capture_events(h)
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         h._state.messages.extend(prompts)
         h._state.messages.append(_err("invalid API key"))
         return list(h._state.messages)
@@ -483,7 +495,9 @@ async def test_an_aborted_retry_is_not_reported_as_success(
 
     calls: list[None] = []
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, owner: object = None
+    ) -> list[Any]:
         calls.append(None)
         h._state.messages.extend(prompts)
         if len(calls) == 1:

@@ -1307,7 +1307,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:596-597``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:605-606``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     append: list[str] = list(parsed.append_system_prompt)
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate).
@@ -1582,7 +1582,7 @@ async def _build_harness_options(
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:262 / :632-633), so wiring it
+        # ``AgentState.thinking_level``, core.py:262 / :641-642), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -2827,7 +2827,7 @@ async def _async_main(argv: list[str]) -> int:
         )
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:688``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:697``, AFTER
         # the registry merge at ``:564``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What

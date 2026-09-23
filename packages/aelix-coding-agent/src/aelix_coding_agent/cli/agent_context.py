@@ -220,7 +220,7 @@ def _escape_text(value: str) -> str:
 #
 # Pi's leading ``"\n\n"`` is deliberately NOT reproduced: this function returns
 # an append CHUNK and the harness already joins chunks with ``"\n\n"``
-# (``harness/core.py:596-597``). Emitting it here would double the gap.
+# (``harness/core.py:605-606``). Emitting it here would double the gap.
 _FENCE_OPEN = "<project_context>\n\nProject-specific instructions and guidelines:\n\n"
 _FENCE_CLOSE = "</project_context>\n"
 _INSTRUCTIONS_CLOSE = "\n</project_instructions>\n\n"
@@ -822,7 +822,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:136-152``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:3279-3286``) and never re-scans the extension dirs.
+    # (``harness/core.py:3322-3329``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

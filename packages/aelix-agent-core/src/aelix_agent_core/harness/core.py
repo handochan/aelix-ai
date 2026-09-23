@@ -570,6 +570,15 @@ class AgentHarness:
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
         self._phase: AgentHarnessPhase = "idle"
+        # Issue #321 — the claim of the ``prompt()`` call that last set the phase
+        # to "turn". Both statements that set "turn" take it with no await in
+        # between: ``prompt()``'s entry, and ``_run``'s flip, which the first
+        # run and every re-run reach with their ``prompt()``'s ``owner`` as a
+        # required argument. Never released, only overwritten by the next flip,
+        # so it names the call whose flip came last; ``prompt()`` gives the
+        # phase back only on its own claim (its ``except BaseException``, and
+        # the ``InputHandled`` return). ADR-0023, 2026-09-24.
+        self._turn_owner: object | None = None
         self._abort_requested = False
         # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
         self._turn_state: _TurnState | None = None
@@ -1232,6 +1241,7 @@ class AgentHarness:
         # see the guard immediately (C-2 re-entrancy fix).
         self._phase = "turn"
         self._idle_event.clear()
+        owner = self._turn_owner = object()  # #321 — see the ``except`` below
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
@@ -1254,8 +1264,13 @@ class AgentHarness:
                     ) from exc
                 if isinstance(input_result, InputHandled):
                     # Pi: handled exits prompt() entirely — harness returns idle.
-                    self._phase = "idle"
-                    self._idle_event.set()
+                    # #321 — by the ``except`` clause's rule below: only a "turn"
+                    # whose last flip was this call's. While this hook ran, a
+                    # first call's re-run could have set "turn" (the idle tail),
+                    # and that turn is not this call's to give back.
+                    if self._phase == "turn" and self._turn_owner is owner:
+                        self._phase = "idle"
+                        self._idle_event.set()
                     return []
                 if isinstance(input_result, InputTransform):
                     text = input_result.text
@@ -1292,8 +1307,8 @@ class AgentHarness:
             # receives the list, the drained messages live in a LOCAL and nowhere
             # else. Two awaits sit between here and the ``_run`` call and both
             # convert a handler exception into a raised ``AgentHarnessError``
-            # (``_emit_queue_update`` :2325-2340, ``_emit_before_agent_start``
-            # :4229-4244), while a handler's ``error_mode`` defaults to ``"throw"``
+            # (``_emit_queue_update`` :2368-2383, ``_emit_before_agent_start``
+            # :4272-4287), while a handler's ``error_mode`` defaults to ``"throw"``
             # (``hooks.py:2493-2500``). Either raise unwound the frame and the
             # user's queued text existed on no queue, in no turn and in no
             # exception. The guard covers the region, not those two calls by name,
@@ -1302,7 +1317,7 @@ class AgentHarness:
             # It ENDS at the ``_run`` call because that is the last point where this
             # frame can prove the turn never started — NOT because the messages are
             # safe past it: ``_run`` awaits ``self._session.build_context()``
-            # (:4466) before ``agent_loop(prompts, ...)`` (:4682-4683) is handed
+            # (:4513) before ``agent_loop(prompts, ...)`` (:4729-4730) is handed
             # the list, and a session raising there loses them the same three ways
             # (.omc/specs/311-next-turn-drain.py ARM 6). That window is open and
             # reported, not closed here — it takes the live user message with it
@@ -1314,7 +1329,7 @@ class AgentHarness:
             # (ARM 3) and appending would reorder the user's two sentences.
             # ``BaseException`` because a ``CancelledError`` is the same loss in
             # other clothing — from an embedder cancelling ``prompt()``, not from
-            # ``abort()`` (:1547-1549). ADR-0246 has what the restore cannot undo.
+            # ``abort()`` (:1587-1589). ADR-0246 has what the restore cannot undo.
             try:
                 # F-3b-3 (W5 should-fix): Pi emits ``queue_update`` when the
                 # next_turn queue is drained at start of the next turn (Pi
@@ -1338,7 +1353,7 @@ class AgentHarness:
             except BaseException:
                 self._next_turn_queue = drained_next + self._next_turn_queue
                 raise
-            result = await self._run(prompts, system_prompt=system_prompt)
+            result = await self._run(prompts, system_prompt=system_prompt, owner=owner)
             # Issue #4 Lane B — outer recovery loop. pi parity
             # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
             # agent.continue()``). Each pass first drains the auto-retry loop
@@ -1377,7 +1392,7 @@ class AgentHarness:
                     assert any(
                         isinstance(m, UserMessage) for m in self._state.messages
                     ), "retry continue requires a pending user message in state"
-                    result = await self._run([], system_prompt=system_prompt)
+                    result = await self._run([], system_prompt=system_prompt, owner=owner)
 
                 # Reset the retry counter and close out the retry sequence. pi
                 # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
@@ -1448,16 +1463,41 @@ class AgentHarness:
                 # Returns ``True`` only when a re-run is warranted (will_retry).
                 if not await self._try_overflow_recovery(system_prompt):
                     break
-                result = await self._run([], system_prompt=system_prompt)
+                result = await self._run([], system_prompt=system_prompt, owner=owner)
 
             # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
             # pi order is retry-then-compact (``agent-session.ts:577-582``).
             await self._check_auto_compaction()
             return result
-        except Exception:
-            # If anything before _run raises, reset phase so the harness is
-            # usable again (note: _run resets phase in its own finally block).
-            if self._phase == "turn":
+        except BaseException:
+            # Give the phase back on every exit that is not a return. It was
+            # ``except Exception``, which a ``CancelledError`` (a BaseException
+            # since 3.8) walks past (#321): an embedder cancelling this task
+            # while the input hook, the drain's ``queue_update``,
+            # ``before_agent_start`` or ``_run``'s ``build_context()`` — which
+            # precedes ``_run``'s own ``try`` — was awaiting left the phase at
+            # "turn" for good, refusing every later prompt as busy and parking
+            # ``wait_for_idle()`` and ``dispose()`` forever. ``abort()`` cannot
+            # reach that window (no ``_current_turn_task`` yet), so nothing else
+            # would ever reset it. From the drain's two awaits the inner clause
+            # (#311) has already put the queue back; this one never touches it.
+            #
+            # Only a "turn" this call set. Once ``_run`` has returned its
+            # ``finally`` has set the phase idle, so a second ``prompt()`` can
+            # pass the guard in the tail that follows (the retry backoff,
+            # overflow recovery, the threshold compaction check), and from then
+            # on the two calls' flips interleave in either order: this call's
+            # re-run can flip after the other's entry, and the other's first
+            # ``_run`` after this call's re-run. So the claim goes with the flip
+            # itself — the entry above, and ``_run``'s flip, which every run of
+            # this call reaches with ``owner`` — and is never released, only
+            # overwritten: it is still ``owner`` exactly when this call made the
+            # last flip. Resetting on anyone else's claim opens the guard under
+            # a turn this call does not own. Two turns in flight at once is the
+            # idle tail's own defect, and there the last flip wins: if its call
+            # raises or is cancelled before its ``try``, the phase goes back
+            # under the other call's live turn (ADR-0023, 2026-09-24).
+            if self._phase == "turn" and self._turn_owner is owner:
                 self._phase = "idle"
                 self._idle_event.set()
             raise
@@ -1646,14 +1686,17 @@ class AgentHarness:
             )
         self._phase = "compaction"
         self._idle_event.clear()
-        # Issue #4 (FU3) — compaction_start to subscribers (listener-only, pi
-        # parity) on the manual / threshold / overflow paths; the matched
-        # compaction_end fires on every exit below (success, "Nothing to compact",
-        # cancelled hook, or summarizer failure). ``_emit_to_subscribers`` swallows
-        # listener errors, so neither emit can break the compaction or mask a body
-        # exception.
-        await self._emit_to_subscribers(CompactionStartEvent(reason=reason))
         try:
+            # Issue #4 (FU3) — compaction_start to subscribers (listener-only, pi
+            # parity) on the manual / threshold / overflow paths; the matched
+            # compaction_end fires on every exit below (success, "Nothing to
+            # compact", cancelled hook, or summarizer failure).
+            # ``_emit_to_subscribers`` swallows listener errors, so neither emit
+            # can break the compaction or mask a body exception. It sits INSIDE
+            # the ``try`` because an async subscriber can park it, and a cancel
+            # landing there before the ``finally`` was entered left the phase at
+            # "compaction" for good (#321; pi's ``_emit`` is synchronous).
+            await self._emit_to_subscribers(CompactionStartEvent(reason=reason))
             branch_entries = await self._session.get_branch()
             preparation = prepare_compaction(branch_entries, custom_instructions)
             if preparation is None:
@@ -4452,8 +4495,12 @@ class AgentHarness:
         prompts: list[AgentMessage],
         *,
         system_prompt: str,
+        owner: object,
     ) -> list[AgentMessage]:
+        # #321 — the claim goes with the flip: no run can set "turn" without
+        # naming the ``prompt()`` it runs for (``owner`` has no default).
         self._phase = "turn"
+        self._turn_owner = owner
         self._abort_requested = False
         self._idle_event.clear()
         # Sprint 4b §F — state.messages source flip: when a Session is

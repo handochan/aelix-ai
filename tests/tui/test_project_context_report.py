@@ -14,7 +14,7 @@ the pre-change build with one 7175-char ``AGENTS.md`` (1794 estimated tokens):
 
 The assembly these tests mirror is ``cli/entry.py:1309-1314`` (the chunk is
 appended VERBATIM, gated on ``not parsed.no_context_files``) joined by
-``harness/core.py:596-602`` with ``"\\n\\n"``. Nothing here asserts the chunk's
+``harness/core.py:605-611`` with ``"\\n\\n"``. Nothing here asserts the chunk's
 INTERNAL shape: that belongs to ``cli/agent_context.py`` and changed inside this
 same issue (markdown header → pi's ``<project_context>`` fence), so every
 expectation below is derived by calling ``discover_context_files`` rather than
@@ -84,7 +84,7 @@ class _ReportHarness:
     """Only the seams ``/context`` reads, with production's EXACT signatures.
 
     ``_action_get_system_prompt`` takes no arguments and returns ``str``
-    (``harness/core.py:3934-3935``); ``messages`` is a plain list property. No
+    (``harness/core.py:3977-3978``); ``messages`` is a plain list property. No
     ``_action_get_all_tools``, so the tools category is genuinely absent rather
     than faked — the rows under test are then the only two produced, and no
     ``**kwargs`` anywhere lets a call through that production would reject.
@@ -157,7 +157,7 @@ async def test_context_does_not_count_the_project_context_twice(project: Path) -
 
     chunk = _discover_quietly(project)
     assert chunk, "fixture must produce a context chunk"
-    assembled = f"{BASE_PROMPT}\n\n{chunk}"  # harness/core.py:596-602
+    assembled = f"{BASE_PROMPT}\n\n{chunk}"  # harness/core.py:605-611
 
     rendered = await _run_context(assembled, project)
 

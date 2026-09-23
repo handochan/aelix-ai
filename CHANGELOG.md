@@ -215,6 +215,44 @@ unwritten. Add them with the next release.
   ahead of anything queued in the meantime, and is sent with the next prompt
   instead. A turn that fails after it has reached the model is unchanged: the
   message was already sent, so it is not queued again. (#311)
+- **Cancelling a prompt while it is still starting no longer leaves the harness
+  busy for good.** For code that embeds Aelix: cancel an `AgentHarness.prompt()`
+  — directly, by an `asyncio.wait_for` / `asyncio.timeout` running out, or by a
+  sibling task failing in a `TaskGroup` — while an extension's `input` or
+  `before_agent_start` handler, a `queue_update` observer or the session read
+  that opens the turn is still running, and every later `prompt()` was refused
+  as busy, `wait_for_idle()` never returned and `dispose()` hung waiting for
+  it. The harness now goes back to idle on the way out, and the cancellation
+  still reaches you as a cancellation. A message queued for the next turn that
+  the cancelled prompt had already picked up is sent with the next prompt when
+  the cancel lands in a `queue_update` observer or a `before_agent_start`
+  handler; cancelled in the session read, it is still lost (#320). Cancelling
+  `compact()` while an async event listener is still handling its
+  `compaction_start` did the same and no longer does. And a prompt that fails in
+  its closing check for automatic compaction, or whose `input` handler answers
+  that it has handled the prompt itself, no longer releases a turn another
+  prompt is running — one that got in while it was checking, or a first
+  prompt's retried turn — where a third prompt used to be let in on top of it.
+  Two cases there got worse, both after a second prompt got in while a first
+  one waited to retry: when the first prompt's retried turn starts while the
+  second is still running (still in its extension handlers or already in its
+  turn), or the second prompt's turn starts while the first one's retried turn
+  is running, and the prompt whose turn started last is cancelled before that
+  turn gets going, a third prompt is now let in on top of the other where it
+  used to be refused. The second prompt should not have got in at all, and
+  closing that closes these too. It was not only for embedders:
+  `aelix -p` awaits its prompt inside the task `asyncio.run` cancels on the
+  first Ctrl+C, so a Ctrl+C while an extension's `input` or
+  `before_agent_start` handler was still running — a plugin's subprocess hook
+  included — left `-p` waiting in its cleanup for a harness that never went
+  idle, and it took three Ctrl+C to end. It now ends on the first.
+  `aelix --mode rpc` with a prompt parked there took three Ctrl+C and now takes
+  two: its prompt runs as a task of its own, which the first Ctrl+C does not
+  reach and the second cancels as `asyncio.run` shuts down. (Measured by typing
+  Ctrl+C into a pseudo-terminal, in both handlers, with a Python extension and
+  with a subprocess hook.) In the TUI, Esc and Ctrl+C call `abort()`, which
+  does not cancel a prompt at those points (read from the code, not measured).
+  (#321)
 - **Two terminals on one session no longer lose a whole turn.** Opening the
   same session twice was easy to do by accident — `aelix --continue` picks the
   same file for every terminal in a directory — and both terminals appeared to
@@ -1008,7 +1046,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:4783`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:4830`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate
