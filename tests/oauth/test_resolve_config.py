@@ -308,6 +308,77 @@ def _await_dead(pid: int) -> str:
     return state
 
 
+def _record_the_reap_ladder(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """What ``_run_shell_command`` did to the command, in order (#330).
+
+    ``("wait", timeout, outcome)`` for every ``Popen.wait`` on the command — the
+    bound the product armed and whether it returned or raised
+    ``TimeoutExpired`` — and ``("hard_kill",)`` for every kill of the tree it
+    attached. Both wrappers delegate, so the command still ends the way
+    production ends it; the ``Popen.wait`` patch is scoped to this case by
+    ``monkeypatch``.
+
+    "The command" is the process whose PID the product handed
+    ``ProcessTree.attach`` — which it does right after the spawn, before any
+    wait on it — not a process whose argv TEXT carries some needle. The first
+    version filtered on ``needle in str(self.args)`` with the pidfile's path as
+    the needle, and on win32 that never matched: ``self.args`` is the argv
+    LIST, ``str()`` of a list reprs each item, and so every backslash in
+    ``C:\\Users\\…\\descendant.pid`` came back doubled and the one-backslash
+    path was not a substring of it. No wait was recorded, the ladder read
+    ``[('hard_kill',)]`` and both windows legs went red (branch CI 36052010894).
+    A pid does not depend on how argv is rendered, quoted or slashed, and it
+    keeps out every other ``Popen`` the call makes (win32's ``taskkill.exe``
+    inside ``hard_kill``): the command's pid cannot be reused while the
+    product still holds it unreaped (a POSIX zombie, a win32 handle still
+    open), and the cases read the record before they spawn anything else.
+
+    WHICH kill site ended the command is the order of these entries. The
+    EOF-then-linger case below used to read it off the clock as
+    ``elapsed >= 1.0``, and on a windows tick a 1.0 s ``WaitForSingleObject``
+    can read as 0.984 s even when it expired exactly on time. (The non-terminal
+    stop case keeps its floor NEXT TO this record: it never runs on win32, and
+    the record alone cannot tell the timeout's kill from an early one.)
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    events: list[tuple[Any, ...]] = []
+    attached: list[int] = []
+    real_wait = subprocess.Popen.wait
+
+    def _wait(self: subprocess.Popen[Any], timeout: float | None = None) -> Any:
+        if self.pid not in attached:
+            return real_wait(self, timeout)
+        try:
+            code = real_wait(self, timeout)
+        except subprocess.TimeoutExpired:
+            events.append(("wait", timeout, "timed out"))
+            raise
+        events.append(("wait", timeout, "returned"))
+        return code
+
+    monkeypatch.setattr(subprocess.Popen, "wait", _wait)
+    real_attach = rc.ProcessTree.attach
+
+    class _TreeSpy:
+        @staticmethod
+        def attach(pid: int, **kwargs: Any) -> Any:
+            attached.append(pid)
+            tree = real_attach(pid, **kwargs)
+            real_hard_kill = tree.hard_kill
+
+            def _hard_kill() -> None:
+                events.append(("hard_kill",))
+                real_hard_kill()
+
+            tree.hard_kill = _hard_kill  # type: ignore[method-assign]
+            return tree
+
+    monkeypatch.setattr(rc, "ProcessTree", _TreeSpy)
+    return events
+
+
 def test_a_timed_out_command_does_not_orphan_its_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -343,7 +414,7 @@ def test_a_timed_out_command_does_not_orphan_its_pipeline(
 
 
 def test_a_command_that_closes_stdout_and_lingers_still_loses_its_tree(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The SECOND hard-kill site: EOF on stdout, then a child that will not go.
 
@@ -355,27 +426,47 @@ def test_a_command_that_closes_stdout_and_lingers_still_loses_its_tree(
 
     ``_COMMAND_TIMEOUT`` is deliberately left at its production 10 s: the branch
     under test is the ``subprocess.TimeoutExpired`` from ``proc.wait(timeout=1.0)``
-    AFTER the reader saw EOF, and only an unpatched timeout separates the two
-    kill sites in the elapsed time. The lower bound below is asserted and the
-    upper one is NOT: reaching the EOF branch needs the shell to have ``exec``'d
-    the command (POSIX ``sh`` does; Git bash on the windows leg is not measured),
-    and where it has not, the reader timeout takes the first kill site — still a
-    containment assertion, just at the other rung, so a leg that lands there
-    must not go red for it.
+    AFTER the reader saw EOF. Which site ended the command used to be told by the
+    elapsed time (``>= 1.0``, a floor with no margin — the #313 shape); since #330
+    it is the order of the product's own waits and kills.
+
+    Reaching the EOF branch needs the shell to have ``exec``'d the command, so
+    that the process closing fd 1 is the last holder of the pipe. The command
+    SAYS ``exec`` on POSIX since #330, because ``sh`` does not reliably do it on
+    its own: measured on dash 0.5.12 (Debian's ``/bin/sh``, and the gating
+    Linux leg's), a lone ``python -c …`` was NOT exec'd, the shell kept fd 1
+    open, and the case took the READER-TIMEOUT site after the full 10 s — green
+    under ``>= 1.0``, and blind there to MUT-3 at the site it is named for. On
+    POSIX the second site is now REQUIRED. On win32 the resolved shell may be
+    PowerShell, which has no ``exec``, so the command is sent as it always was;
+    Git bash there is not measured, and a leg that lands on the reader-timeout
+    rung says so (a warning) instead of going red — still a containment
+    assertion, just at the other rung.
     """
 
     pidfile = tmp_path / "descendant.pid"
     argv = (_PYTHON, "-c", _EOF_THEN_LINGER_SOURCE, str(pidfile))
     command = " ".join(shlex.quote(part) for part in argv)
+    if sys.platform != "win32":
+        command = "exec " + command
+    events = _record_the_reap_ladder(monkeypatch)
 
-    started = time.monotonic()
     assert resolve_config_value_uncached("!" + command) is None
-    elapsed = time.monotonic() - started
 
-    assert elapsed >= 1.0, (
-        f"resolve returned in {elapsed:.2f}s — the 1.0 s bounded reap never "
-        "expired, so this case did not reach the second kill site"
-    )
+    second_site = [("wait", 1.0, "timed out"), ("hard_kill",), ("wait", 5.0, "returned")]
+    first_site = [("hard_kill",), ("wait", 5.0, "returned")]
+    if sys.platform == "win32" and events == first_site:
+        warnings.warn(
+            "#226 EOF-then-linger on win32 took the READER-TIMEOUT kill site, not "
+            "the bounded reap's (the shell did not exec the command)",
+            stacklevel=1,
+        )
+    else:
+        assert events == second_site, (
+            f"the command was not ended by the second kill site: {events}. Expected "
+            f"the 1.0 s bounded reap after EOF to expire and the tree to be killed "
+            f"then ({second_site}); {first_site} is the reader-timeout site instead"
+        )
     assert pidfile.exists(), (
         "the command never reached its descendant — this case is measuring "
         "interpreter startup, not the kill"
@@ -859,13 +950,41 @@ def test_a_non_terminal_stop_is_not_named_and_still_costs_the_timeout(
     assert signal.SIGSTOP not in rc._TERMINAL_STOP_SIGNALS
 
     monkeypatch.setattr(rc, "_COMMAND_TIMEOUT", 1.0)
+    command = "kill -STOP $$; sleep 30"
+    events = _record_the_reap_ladder(monkeypatch)
+    failure = rc._Failure()
     started = time.monotonic()
-    assert resolve_config_value_uncached("!kill -STOP $$; sleep 30") is None
+    assert resolve_config_value_uncached("!" + command, failure=failure) is None
     elapsed = time.monotonic() - started
 
-    assert elapsed >= 1.0, (
-        f"a self-stopped command returned in {elapsed:.2f}s — it was named as a "
-        "terminal stop, which it is not"
+    # The product's own record of WHY it killed (#330). A named terminal stop
+    # fills ``failure.reason`` and, on that branch only, ``failure.returncode``;
+    # the timeout leaves both empty. So: not named, killed once, reaped under
+    # the 5 s bound.
+    assert failure.reason is None, (
+        f"a self-stopped command was named as a terminal stop, which it is not: "
+        f"{failure.reason!r}"
+    )
+    assert failure.returncode is None, (
+        f"the stop branch ran (it alone records the kill's code): {failure.returncode}"
+    )
+    assert events == [("hard_kill",), ("wait", 5.0, "returned")], (
+        f"the self-stopped command was not ended by a kill and a bounded reap: {events}"
+    )
+    # ...but that record is the same for EVERY kill-then-reap branch, so an
+    # early unnamed kill of the stopped command reads identically. What tells
+    # the timeout apart is that it was PAID, and this floor is kept (#330)
+    # because it is sound here, unlike the #313 floors: the case never runs on
+    # win32 (it returned above), and on POSIX the product decides the timeout
+    # with ``time.monotonic() >= deadline`` on the same clock this reads, its
+    # ``deadline`` taken after ``started`` and its deciding reading taken
+    # before the one below — so a timeout honoured on time cannot read short
+    # whatever that clock's step (the shared coarse-clock plugin quantises
+    # both sides alike), and a pause only lengthens it.
+    assert elapsed >= rc._COMMAND_TIMEOUT, (
+        f"the self-stopped command was killed {elapsed:.3f}s after the call "
+        f"began, short of the {rc._COMMAND_TIMEOUT}s timeout it should have "
+        f"paid: something other than the timeout ended it, unnamed"
     )
     warnings.warn(
         f"#226 non-terminal stop still costs the timeout: {elapsed:.3f}s",

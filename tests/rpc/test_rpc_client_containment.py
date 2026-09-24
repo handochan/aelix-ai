@@ -6,14 +6,25 @@ observation, no containment kwargs and no argv/env seams; the sole liveness
 check it has is the 100 ms startup grace, which aelix already ported. The
 module docstring on ``rpc/rpc_client.py`` records why each divergence exists.
 
-WHY THESE ARE TIMING ASSERTIONS AND NOT ``pytest.raises`` ALONE. The defect
-being fixed did not change WHETHER a dead child failed the caller — it changed
-HOW LONG that took. Measured before the fix: a child exiting at 400 ms left
+WHY THESE ARE NOT ``pytest.raises`` ALONE. The defect being fixed did not
+change WHETHER a dead child failed the caller — it changed HOW LONG that took.
+Measured before the fix: a child exiting at 400 ms left
 ``prompt_and_wait(timeout_ms=5000)`` blocked for 5.02 s and then raised a bare
 ``TimeoutError()`` with empty args. A test asserting only that *something*
 raised would have passed against the broken code, which is the whole failure
-mode this sprint keeps finding. So each one asserts the elapsed time against
-the budget it was given.
+mode this sprint keeps finding.
+
+AND WHY THEY ARE NO LONGER A STOPWATCH (#330). They used to time the call
+against the 5 s budget with an unmessaged ``< 2.0``, a bet that a windows
+runner boots the stub, reaches its 0.4 s exit and reports it inside two
+seconds. Now the budget is made UNREACHABLE (600 s) and the call runs under a
+20 s anti-hang bound that names itself: a caller that is not woken by the death
+can only return when the budget fires, which is past the bound, so it goes red
+there — and a caller that is woken returns whenever the runner gets to it.
+The anti-hang number decides nothing; the order does. HOW SOON a death is
+seen is the mid-wait case's own claim, and it has its own evidence: the exit
+watcher's recorded poll (50 ms), and a gate of the death plus 5 s that names
+itself — red for a death noticed seconds late, not for a busy runner.
 """
 
 from __future__ import annotations
@@ -26,7 +37,7 @@ import signal
 import subprocess
 import sys
 import textwrap
-import time
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -45,17 +56,38 @@ from aelix_coding_agent.rpc.rpc_client import (
     RpcServerExited,
 )
 
+from tests.event_waits import record_armed_waits, wait_until, within
 from tests.process_probe import (
     STATE_GONE,
     STATE_ZOMBIE,
     await_dead_or_zombie,
     is_dead_or_zombie,
 )
+from tests.rpc._stop_events import grace_of, record_stop
+
+#: A budget no case here can reach: the death has to wake the caller, because
+#: nothing else will inside :data:`_ANTI_HANG` (#330).
+_UNREACHABLE_BUDGET_MS = 600_000
+
+#: The anti-hang bound on a call that must be ended by the child's death.
+_ANTI_HANG = 20.0
+
+#: How long after its trigger the mid-wait child dies, and the gate's slack on
+#: top of it for the death to wake the caller (a 50 ms poll, 100x over).
+_MID_WAIT_DEATH = 0.4
+_WAKE_SLACK = 5.0
 
 # A stub that boots, announces itself on stderr, then exits with a chosen code
 # after a chosen delay. ``os._exit`` so nothing flushes or cleans up — the real
 # failures this models (an OOM kill, a bad ``--tools`` name, a missing key) are
 # just as abrupt.
+#
+# With ``STUB_EXIT_TRIGGER`` set, the delay starts only once that path exists
+# (#330). A delay counted from boot races ``start()``'s 100 ms startup grace:
+# the already-dead case's 0.1 s death landed INSIDE the grace once under the
+# shared stall plugin (a 0.3 s whole-process stop during ``start()``), and
+# ``start()`` raised "exited prematurely" instead of the case running at all.
+# The case now kills the child when IT is ready, after ``start()`` returned.
 _DYING_STUB = textwrap.dedent(
     """
     import os, sys, threading, time
@@ -64,6 +96,9 @@ _DYING_STUB = textwrap.dedent(
     sys.stderr.flush()
 
     def _die():
+        trigger = os.environ.get("STUB_EXIT_TRIGGER")
+        while trigger and not os.path.exists(trigger):
+            time.sleep(0.01)
         time.sleep(float(os.environ["STUB_EXIT_DELAY"]))
         sys.stderr.write("stub dying now\\n")
         sys.stderr.flush()
@@ -210,10 +245,12 @@ _ENV_REPORT_STUB = textwrap.dedent(
 )
 
 
-def _dying_client(*, code: int, delay: float) -> RpcClient:
+def _dying_client(*, code: int, delay: float, trigger: Path | None = None) -> RpcClient:
     env = dict(os.environ)
     env["STUB_EXIT_CODE"] = str(code)
     env["STUB_EXIT_DELAY"] = str(delay)
+    if trigger is not None:
+        env["STUB_EXIT_TRIGGER"] = str(trigger)
     return RpcClient(
         RpcClientOptions(argv=[sys.executable, "-c", _DYING_STUB], env_base=env)
     )
@@ -277,11 +314,12 @@ def strays() -> Iterator[list[int]]:
 async def _await_reported_grandchild(client: RpcClient, seen: list[dict]) -> int:
     """Block until a stub reports the pid it spawned, and return it."""
 
-    for _ in range(200):
-        if seen:
-            break
-        await asyncio.sleep(0.05)
-    assert seen and seen[0].get("type") == "grandchild", (
+    await wait_until(
+        lambda: seen,
+        what="the stub to report the pid it spawned",
+        detail=lambda: f"stderr: {client.get_stderr()!r}",
+    )
+    assert seen[0].get("type") == "grandchild", (
         f"the stub never reported its grandchild; stderr: {client.get_stderr()!r}"
     )
     return int(seen[0]["pid"])
@@ -300,19 +338,42 @@ def _pipe_holder_client(seen: list[dict], **options: Any) -> RpcClient:
 # === Child-death detection ==================================================
 
 
-async def test_a_child_that_dies_mid_wait_fails_fast_not_at_the_budget() -> None:
-    """The slow leg: the caller is already waiting when the child dies."""
+async def test_a_child_that_dies_mid_wait_fails_fast_not_at_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The slow leg: the caller is already waiting when the child dies.
 
-    client = _dying_client(code=7, delay=0.4)
+    "Fast" is two things, and each has its own evidence (#330). The PACE at
+    which a death is noticed is the exit watcher's poll, read off the product:
+    every ``asyncio.sleep`` the module armed while the case ran is recorded, and
+    each must be ``EXIT_POLL_SECONDS`` (50 ms) — a slower poll is red whatever
+    the runner's load. And the whole wake, from the moment the child was told
+    to die, is a GATE whose number is the claim: the death plus
+    :data:`_WAKE_SLACK`, with its measurement twin. It is 5 s of slack over a
+    50 ms poll, so it goes red only for a death noticed SECONDS late, which is
+    what "fails fast" rules out; the old ``elapsed < 2.0`` was the same claim
+    with no margin for a windows runner and no message.
+    """
+
+    armed = record_armed_waits(monkeypatch, rpc_client_module, record_sleeps=True)
+    trigger = tmp_path / "die"
+    client = _dying_client(code=7, delay=_MID_WAIT_DEATH, trigger=trigger)
     await client.start()
     try:
-        started = time.monotonic()
+        # The child dies _MID_WAIT_DEATH after the trigger; the budget is
+        # unreachable, so only the death can end this call before the anti-hang
+        # bound does (module note). A death that went unobserved is a bound hit
+        # that says so.
+        loop = asyncio.get_running_loop()
+        trigger.touch()
+        told = loop.time()
         with pytest.raises(RpcServerExited) as excinfo:
-            await client.prompt_and_wait("anything", timeout_ms=5000)
-        elapsed = time.monotonic() - started
-        # The budget was 5 s and the child died at 0.4 s. Anything approaching
-        # the budget means the death went unobserved and the timeout fired.
-        assert elapsed < 2.0, f"waited {elapsed:.2f}s for a child that died at 0.4s"
+            await within(
+                client.prompt_and_wait("anything", timeout_ms=_UNREACHABLE_BUDGET_MS),
+                bound=_ANTI_HANG,
+                what=f"prompt_and_wait to be woken by a child that dies {_MID_WAIT_DEATH}s in",
+            )
+        woke = loop.time() - told
         assert excinfo.value.returncode == 7
         # The stderr MUST ride along: an rpc child that dies during startup
         # writes its traceback here and nothing at all to stdout, so this is the
@@ -321,8 +382,30 @@ async def test_a_child_that_dies_mid_wait_fails_fast_not_at_the_budget() -> None
     finally:
         await client.stop()
 
+    polls = sorted({w.timeout for w in armed if w.kind == "sleep"})
+    assert polls == [RpcClient.EXIT_POLL_SECONDS] and RpcClient.EXIT_POLL_SECONDS == 0.05, (
+        f"the exit watcher polled at {polls} (EXIT_POLL_SECONDS="
+        f"{RpcClient.EXIT_POLL_SECONDS}), not every 0.05 s — a dead child is noticed "
+        "that much later by every waiting caller"
+    )
+    gate = _MID_WAIT_DEATH + _WAKE_SLACK
+    assert woke <= gate, (
+        f"prompt_and_wait was woken {woke:.2f}s after the child was told to die "
+        f"{_MID_WAIT_DEATH}s later: past the {gate:.1f}s gate (the death plus "
+        f"{_WAKE_SLACK:.0f}s over a {RpcClient.EXIT_POLL_SECONDS}s poll) — the death "
+        "was noticed seconds late"
+    )
+    if woke > _MID_WAIT_DEATH + _WAKE_SLACK / 2:
+        warnings.warn(
+            f"a child dying {_MID_WAIT_DEATH}s in woke its caller after {woke:.2f}s "
+            f"of a {gate:.1f}s gate",
+            stacklevel=1,
+        )
 
-async def test_a_child_that_is_already_dead_fails_with_the_same_error() -> None:
+
+async def test_a_child_that_is_already_dead_fails_with_the_same_error(
+    tmp_path: Path,
+) -> None:
     """The fast leg, normalised.
 
     Before the fix these two legs disagreed by a factor of 5000 AND by type:
@@ -330,21 +413,27 @@ async def test_a_child_that_is_already_dead_fails_with_the_same_error() -> None:
     off the broken stdin pipe, while one issued moments earlier blocked the full
     budget and raised ``TimeoutError``. One fact about the world, two failures
     a caller had to handle separately — and would only discover separately.
+
+    The child dies on the case's TRIGGER, after ``start()`` returned (see the
+    stub): a boot-timed 0.1 s death raced ``start()``'s 100 ms grace.
     """
 
-    client = _dying_client(code=3, delay=0.1)
+    trigger = tmp_path / "die"
+    client = _dying_client(code=3, delay=0.0, trigger=trigger)
     await client.start()
     try:
-        for _ in range(100):
-            if client.returncode is not None:
-                break
-            await asyncio.sleep(0.05)
+        trigger.touch()
+        await wait_until(
+            lambda: client.returncode is not None, what="the stub's exit status to land"
+        )
         assert client.returncode == 3
 
-        started = time.monotonic()
         with pytest.raises(RpcServerExited):
-            await client.prompt_and_wait("anything", timeout_ms=5000)
-        assert time.monotonic() - started < 2.0
+            await within(
+                client.prompt_and_wait("anything", timeout_ms=_UNREACHABLE_BUDGET_MS),
+                bound=_ANTI_HANG,
+                what="prompt_and_wait on a child that is already dead",
+            )
     finally:
         await client.stop()
 
@@ -464,14 +553,7 @@ async def test_stop_ends_a_descendant_the_child_left_behind() -> None:
     await client.start()
     grandchild = 0
     try:
-        for _ in range(200):
-            if seen:
-                break
-            await asyncio.sleep(0.05)
-        assert seen and seen[0].get("type") == "grandchild", (
-            f"the stub never reported its grandchild; stderr: {client.get_stderr()!r}"
-        )
-        grandchild = int(seen[0]["pid"])
+        grandchild = await _await_reported_grandchild(client, seen)
         # The premise. A grandchild that was already dead would make the
         # assertion below pass for free.
         assert not is_dead_or_zombie(grandchild)
@@ -490,7 +572,7 @@ async def test_stop_ends_a_descendant_the_child_left_behind() -> None:
 
 
 async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipes(
-    strays: list[int],
+    strays: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The measured stall, pinned.
 
@@ -509,18 +591,50 @@ async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipe
     client = _pipe_holder_client(seen)
     await client.start()
     strays.append(await _await_reported_grandchild(client, seen))
-    for _ in range(100):
-        if "holder ready" in client.get_stderr():
-            break
-        await asyncio.sleep(0.05)
+    # The precondition this case exists for, observed: the holder is running
+    # (#330 — this was a silent 5 s poll that fell through on a miss).
+    await wait_until(
+        lambda: "holder ready" in client.get_stderr(),
+        what="the pipe-holding grandchild to announce itself",
+    )
+    events = record_stop(client, monkeypatch)
 
-    started = time.monotonic()
     await client.stop()
-    elapsed = time.monotonic() - started
-    grace = RpcClient.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
-    assert elapsed < grace, (
-        f"stop() took {elapsed:.2f}s; the whole point is that it no longer "
-        f"pays the {grace:.2f}s SIGTERM grace for a child that already died"
+
+    # "Did not pay the grace" as the ladder's own record, not ``elapsed <
+    # grace`` (#330): no wait, grace or reap, that ended without the child's
+    # exit landing in it (a bound that fired, or a wait that returned early).
+    # On POSIX the grace entry LANDS at the child's death — the polled
+    # ``returncode``, which a pipe-holder cannot delay — and nothing escalates.
+    # A console-less win32 runner skips the grace outright (``soft_kill``
+    # reports the event was not sent) and escalates at once, which is not the
+    # stall either, so this assertion survives that runner as the old bound did
+    # (ADR-0238). The stall — ``await proc.wait()`` blocked on the held pipes —
+    # is a grace entry that did NOT land, followed by a kill. This reads the RAW
+    # record, not ``settled``: the stall's own shape is a grace whose timer
+    # fired over a child already dead (``"timed out, exit"``), and the race
+    # that makes that outcome benign elsewhere is out of reach here — this
+    # child dies at the soft signal, a whole grace before the timer.
+    #
+    # RESIDUAL, kept knowingly (#330 review): out of reach for the child, not
+    # for the runner. A whole-process pause of about the whole 1.0 s grace,
+    # starting right after the soft signal and before the exit watcher's next
+    # 50 ms poll, puts that poll and the grace's timer in one loop turn and
+    # writes the stall's own ``"timed out, exit"`` with the product right. Not
+    # seen (the shared 0.3 s asyncio-spawn stall left this case green), and not
+    # made robust: telling that pause from the stall means reading WHEN the
+    # exit was set against the timer — a clock again, or turn bookkeeping on
+    # ``_exited`` — for a pause the size of the whole grace, while the raw
+    # outcome is exactly the defect's signature. The message says so, so such
+    # a red reads as what it is.
+    grace = grace_of(client)
+    paid = [e for e in events if e[0] == "await_exit" and e[2] != "exit landed"]
+    assert paid == [], (
+        f"stop() waited out its {grace:.1f}s SIGTERM grace for a child that "
+        f"already died (the pipe-holder stall): {events}. (A lone "
+        f"'timed out, exit' also results from the whole process pausing for "
+        f"about the {grace:.1f}s grace right after the soft signal; see the "
+        f"comment above.)"
     )
 
 
@@ -649,11 +763,7 @@ async def test_env_base_can_DELETE_an_inherited_key() -> None:
     os.environ["AELIX_PROBE_KEY"] = "inherited"
     try:
         await client.start()
-        for _ in range(100):
-            if seen:
-                break
-            await asyncio.sleep(0.05)
-        assert seen, "stub never reported its environment"
+        await wait_until(lambda: seen, what="the stub to report its environment")
         assert seen[0]["has_probe"] is False, "the inherited key was not removed"
         assert seen[0]["added"] == "added"
     finally:
@@ -710,10 +820,10 @@ async def test_stderr_cap_is_overridable_per_client() -> None:
     )
     await client.start()
     try:
-        for _ in range(100):
-            if "TAIL-MARKER" in client.get_stderr():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: "TAIL-MARKER" in client.get_stderr(),
+            what="the stub's stderr tail marker to be captured",
+        )
         captured = client.get_stderr()
         # Evicted from the FRONT, so the most-recent context is what survives.
         assert "TAIL-MARKER" in captured
@@ -803,11 +913,8 @@ async def test_the_client_republishes_the_drop_counter_while_it_runs() -> None:
     client.on_event(seen.append)
     await client.start()
     try:
-        for _ in range(100):
-            if seen:
-                break
-            await asyncio.sleep(0.05)
-        assert seen and seen[0].get("type") == "marker"
+        await wait_until(lambda: seen, what="the marker record after the dropped line")
+        assert seen[0].get("type") == "marker"
         assert client.dropped_lines == 1
     finally:
         await client.stop()

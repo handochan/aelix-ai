@@ -37,6 +37,7 @@ import pytest
 from aelix_coding_agent.tools._abort import AbortSignal
 from aelix_coding_agent.tools.bash import ExecExitResult, create_local_bash_operations
 
+from tests.event_waits import wait_until, within
 from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
 
 # ---------------------------------------------------------------------------
@@ -71,14 +72,13 @@ async def test_abort_signal_wait_returns_after_abort() -> None:
 
 
 async def test_abort_signal_wait_woken_by_abort() -> None:
+    # ORDERING, NOT TIME (#330): park the waiter, then wake it — not a 0.05 s timer.
     sig = AbortSignal()
-
-    async def _fire_later() -> None:
-        await asyncio.sleep(0.05)
-        sig.abort()
-
-    asyncio.create_task(_fire_later())
-    await asyncio.wait_for(sig.wait(), timeout=2.0)
+    waiter = asyncio.ensure_future(sig.wait())
+    await asyncio.sleep(0)
+    assert not waiter.done(), "wait() returned before anything aborted the signal"
+    sig.abort()
+    await asyncio.wait_for(waiter, timeout=2.0)
     assert sig.aborted is True
 
 
@@ -96,7 +96,7 @@ async def test_bash_exec_signal_abort_kills_child(tmp_path: Path) -> None:
 
     async def _exec_task() -> ExecExitResult:
         return await ops.exec(
-            "sleep 30",
+            _STARTED_THEN_SLEEPS,
             str(tmp_path),
             on_data=chunks.append,
             signal=sig,
@@ -104,11 +104,11 @@ async def test_bash_exec_signal_abort_kills_child(tmp_path: Path) -> None:
 
     task = asyncio.create_task(_exec_task())
 
-    # Give the process time to start, then abort.
-    await asyncio.sleep(0.1)
+    # The command is running, observed; then abort.
+    await _await_started(chunks)
     sig.abort()
 
-    result = await asyncio.wait_for(task, timeout=5.0)
+    result = await within(task, bound=5.0, what="exec to return after its abort signal")
     assert result.exit_code is None, "Aborted exec must return exit_code=None"
 
 
@@ -152,14 +152,14 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
         ops.exec(command, str(tmp_path), on_data=chunks.append, signal=sig)
     )
 
-    # Wait for the pid_file to appear (child is up and running).
-    deadline = asyncio.get_event_loop().time() + 5.0
-    while asyncio.get_event_loop().time() < deadline:
-        if os.path.exists(pid_file):
-            break
-        await asyncio.sleep(0.05)
-
-    assert os.path.exists(pid_file), "Child never wrote its PID — spawn failed?"
+    # Wait for the pid_file to appear (child is up and running). An anti-hang
+    # bound that names what it waited for (#330).
+    await wait_until(
+        lambda: os.path.exists(pid_file),
+        timeout=10.0,
+        what="the child to write its PID file (spawn failed?)",
+        interval=0.05,
+    )
 
     try:
         with open(pid_file) as _pf:
@@ -170,7 +170,7 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
 
     # Fire the abort signal — must kill the process group.
     sig.abort()
-    result = await asyncio.wait_for(task, timeout=5.0)
+    result = await within(task, bound=5.0, what="exec to return after its abort signal")
     assert result.exit_code is None
 
     # Poll until the child is gone or a zombie.
@@ -192,6 +192,29 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     )
 
 
+#: A command that says it is running and then outlives the case using it. ``echo``
+#: and ``sleep`` are spelled the same in bash and in pwsh (the resolved shell on
+#: the windows leg, where they are aliases of Write-Output and Start-Sleep), so
+#: one string serves both. The ``started`` line is the EVENT the abort and cancel
+#: cases wait for (#330): they used to ``sleep(0.1)`` and bet that the shell had
+#: spawned by then, which a loaded windows runner does not honour — and a signal
+#: or cancel that lands before the spawn tests a different path than the case
+#: names, silently. Defined after its first user on purpose: moving it above
+#: would shift the lines ``test_bash_tool_containment.py`` cites in the
+#: process-group case's docstring.
+_STARTED_THEN_SLEEPS = "echo started; sleep 30"
+
+
+async def _await_started(chunks: list[bytes]) -> None:
+    """Block until the command's ``started`` line has reached ``on_data``."""
+
+    await wait_until(
+        lambda: b"started" in b"".join(chunks),
+        what="the command's 'started' line to reach on_data",
+        detail=lambda: f"output so far: {b''.join(chunks)!r}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # bash exec — CancelledError path
 # ---------------------------------------------------------------------------
@@ -204,10 +227,10 @@ async def test_bash_exec_cancel_propagates_cancelled_error(tmp_path: Path) -> No
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
+        ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append)
     )
 
-    await asyncio.sleep(0.1)
+    await _await_started(chunks)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -221,10 +244,10 @@ async def test_bash_exec_cancel_returns_none_exit_code(tmp_path: Path) -> None:
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
+        ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append)
     )
 
-    await asyncio.sleep(0.1)
+    await _await_started(chunks)
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -290,7 +313,11 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     task = asyncio.create_task(
         ops.exec("true", str(tmp_path), on_data=chunks.append, signal=sig)
     )
-    # Let the process finish naturally first.
+    # Let the process finish naturally first. A WINDOW, NOT A VERDICT (#330
+    # classified it): either outcome is asserted below — ``0`` if the process
+    # was already gone, ``None`` if the abort won — so load can only move which
+    # path the kill takes, never turn the case red. ``exec`` exposes no exit
+    # event to wait for before the abort short of its own return.
     await asyncio.sleep(0.2)
     sig.abort()
 
@@ -336,9 +363,9 @@ async def test_bash_exec_cancel_watcher_teardown_catches_exception(
 
     # Register a signal watcher so the watcher_task code path is exercised.
     task = asyncio.create_task(
-        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append, signal=sig)
+        ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append, signal=sig)
     )
-    await asyncio.sleep(0.1)
+    await _await_started(chunks)
 
     # Cancel the outer task (Esc path) — the finally block cancels the watcher
     # task; any exception in the watcher teardown must be contained.

@@ -21,6 +21,7 @@ import pytest
 from aelix_agents import panel as panel_module
 from aelix_agents.panel import (
     _ELLIPSIS,
+    _MAX_INPUT_CHARS,
     AGGREGATE_MAX_CHARS,
     PANEL_MAX_ROWS,
     PANEL_MIN_CHILDREN,
@@ -1327,13 +1328,39 @@ def test_leading_whitespace_cannot_delete_a_field() -> None:
 
 
 def test_the_input_bound_still_bounds_the_work() -> None:
-    """The fix above must not have removed the bound it was loosening."""
+    """The fix above must not have removed the bound it was loosening.
 
-    import time
+    MEASURED BY WHAT THE WORK ALLOCATES, NOT BY HOW LONG IT TAKES (#330). This
+    was ``perf_counter() < 200 ms`` over 4 000 000 characters, a clock verdict a
+    loaded windows runner could trip — and one that could not see the regression
+    it named: measured on darwin, with the bound lifted (``_MAX_INPUT_CHARS`` set
+    past the input) the same call takes 4 ms. What the bound actually bounds is
+    how much text the steps after it are handed, and ``translate`` builds a new
+    string of exactly that size — so the call's peak allocation is the work, read
+    off an allocator that no scheduler can skew: 0.10 MB bounded, 4.0 MB with
+    the bound lifted (darwin, py3.12). The input is built before tracing starts,
+    so only the call's own allocations count.
+    """
 
-    start = time.perf_counter()
-    _flatten("x" * 4_000_000, limit=PANEL_ROW_MAX_CHARS)
-    assert (time.perf_counter() - start) * 1000 < 200
+    import tracemalloc
+
+    text = "x" * 4_000_000
+    started_here = not tracemalloc.is_tracing()
+    if started_here:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before = tracemalloc.get_traced_memory()[0]
+        _flatten(text, limit=PANEL_ROW_MAX_CHARS)
+        peak = tracemalloc.get_traced_memory()[1] - before
+    finally:
+        if started_here:
+            tracemalloc.stop()
+    assert peak < len(text) // 4, (
+        f"_flatten allocated {peak / 1e6:.2f} MB at its peak for a "
+        f"{len(text) / 1e6:.0f} MB input: the work is scaling with the input, not "
+        f"with _MAX_INPUT_CHARS ({_MAX_INPUT_CHARS})"
+    )
 
 
 def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:

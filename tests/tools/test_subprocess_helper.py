@@ -476,7 +476,14 @@ async def test_the_timeout_leg_kills_through_the_tree_it_attached(
 
     pids = registrar.settle()
     assert result is None
-    assert elapsed <= _bound(0.5)
+    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it): the timeout
+    # leg's latency, which the tree spy below cannot bound. It says so now.
+    assert elapsed <= _bound(0.5), (
+        f"the timeout leg returned after {elapsed:.3f}s, past its {_bound(0.5):.2f}s "
+        "bound (0.5 s timeout + REAP_GUARD_SECONDS + 1.5 s, + 5 s on win32): the "
+        "kill ladder waited longer than its guard — or the runner is loaded; "
+        "rerun the file alone"
+    )
     assert recorder.tree.hard_kills == 1
     assert recorder.tree.contained is True
     assert recorder.tree.closed is True
@@ -519,7 +526,13 @@ async def test_the_cancel_leg_kills_through_the_tree_it_attached(
     warnings.warn(f"subprocess-helper cancel leg returned in {elapsed:.3f}s", stacklevel=1)
 
     pids = registrar.settle()
-    assert elapsed <= _bound(0.0)
+    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it): the cancel
+    # leg's latency. It says so now.
+    assert elapsed <= _bound(0.0), (
+        f"the cancel leg returned after {elapsed:.3f}s, past its {_bound(0.0):.2f}s "
+        "bound (REAP_GUARD_SECONDS + 1.5 s, + 5 s on win32): the kill ladder "
+        "waited longer than its guard — or the runner is loaded; rerun the file alone"
+    )
     assert recorder.tree.hard_kills == 1
     assert recorder.tree.contained is True
     assert recorder.tree.closed is True

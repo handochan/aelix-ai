@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports; **#330 amendment 2026-09-25** — test-only: the cases that pinned `stop()`'s grace, the hook timeout ladder and `!command`'s two kill sites by the wall clock now assert the bounds the product ARMED and how each one ended; no product behaviour changed)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -341,6 +341,41 @@ running, and the assertions are the breadcrumb *and* `elapsed >= grace` — so a
 pass proves the soft signal was delivered and survived, not merely that some
 grace elapsed into a hard kill.
 
+**#330 amendment (2026-09-25) — the floor is now the ladder's own record.**
+`elapsed >= grace` has no margin, and on windows-latest `time.monotonic` steps
+15.625 ms and asyncio may fire the grace's timer a tick early — the shape #313
+measured in `tests/process_tree` (0.187 s read for a 0.2 s timer). The rpc
+cases now read `stop()`'s ladder instead (`tests/rpc/_stop_events.py`): the
+bound each `_await_exit` actually armed its `asyncio.wait_for` with, whether
+that bound FIRED or the child's exit LANDED inside it, and where `hard_kill`
+fell. The armed bound, not the argument `stop()` passed: a record of the
+argument stayed green with the wait halved inside `_await_exit`, which the old
+floor did catch (#330 review). "Delivered, survived, escalated" is the
+breadcrumb plus `[grace armed in full, fired] → hard_kill → [5 s reap, exit
+landed]`, on any runner at any load. The same move replaced the `< grace` ceilings — the refused soft kill (no
+grace entry at all), the cooperative child (one grace entry armed in full,
+after which the child had exited, and no kill — whether its exit landed before
+the grace's timer or in the same loop turn, where `_await_exit` still answers
+that it exited and `stop()` rightly does not escalate), the real child's `< 3.0`
+(the same), and the pipe-holder stall (no grace entry that failed to land, read
+raw: there a timer that fired over a dead child IS the defect; a whole-process
+pause of about the whole grace right after the soft signal would read the same,
+a residual the case names rather than reads off a clock) — and, outside the rpc client, the hook ladder's
+`< 2.0` and `< 1.0` (the budget, grace and reap as armed, recorded through
+`tests/event_waits.py`'s `record_armed_waits`) and `!command`'s EOF-then-linger
+`>= 1.0` floor (the order of its `Popen.wait` bounds and tree kills, on the
+process whose pid the tree was attached to — an argv-text filter never matched
+on win32, where `str()` of the argv list doubles each backslash). Its
+non-terminal-stop case reads the same record and the `_Failure` the product
+fills only on a named stop, and KEEPS its `>= 1.0` floor beside them: that
+record is the same for every kill-then-reap branch, so only the floor tells the
+timeout from an early unnamed kill, and it is sound there — the case never runs
+on win32, and the product's `time.monotonic() >= deadline` reads the test's
+clock with its deadline taken after the test's start. Each conversion was shown red
+against a product sabotage and green without it. No product behaviour changed;
+one comment in `subprocess_hooks.py` that quoted the hook's old `< 2.0` bound
+now says what the case asserts instead.
+
 Three things are not tested and are named rather than papered over: breakaway
 from the job (we set no `BREAKAWAY_OK`, so it cannot happen), the assignment
 window (not deterministically reproducible), and `IsProcessInJob` under a
@@ -351,7 +386,13 @@ assignment.
 One measured cost, accepted: on Windows a `cmd.exe` batch job answers
 CTRL_BREAK with a Y/N prompt and burns the hook's whole 1.0 s soft grace, so
 `test_run_subprocess_timeout`'s worst case becomes ≈ 0.2 + 1.0 + kill ≈ 1.3 s
-against its `< 2.0` bound. The bound is unchanged.
+against its `< 2.0` bound. The bound is unchanged. (#330: the case now asserts
+the ladder as armed — the 0.2 s budget fired, then the 1.0 s grace landed, or
+on that win32 shape fired too and was followed by the 5.0 s reap — under an
+anti-hang bound at the ladder's own worst case, 6.2 s. Which ladder is
+required follows `soft_kill`'s recorded answer: a soft kill that was not sent —
+a console-less runner — requires the budget then straight to the reap, with a
+warning, so the case is not in the console list below.)
 
 ## What stays open
 
@@ -542,8 +583,12 @@ empty, so only the group kill of the paragraph below reaches anything there.
   after. The timing test
   `test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipes` is
   deliberately not in that list: `stop()` skips the grace outright when
-  `soft_kill` reports the event was not delivered, so its bound survives a
-  console-less runner.
+  `soft_kill` reports the event was not delivered, so its assertion survives a
+  console-less runner (since #330 that assertion is "no wait the exit failed
+  to land in", read off the ladder, not a bound on the clock). Neither is the
+  hook's `test_run_subprocess_timeout`: since #330 it records what `soft_kill`
+  answered and, on a refusal, requires the skipped-grace ladder with a warning
+  instead of going red.
 - **What #220's adoption did *not* change (amendment, 2026-09-05).** The POSIX
   cooperative leg is still `_signal_child(proc, SIGTERM)` to the root and
   nothing else; the `/proc` descendant walk is still what the escalation runs

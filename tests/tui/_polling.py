@@ -22,85 +22,28 @@ So the rule the sweep applied, file by file:
 * **A wait that burns more than half its bound and then succeeds warns**, with
   the number, so a leg that is about to flake says so a run before it does.
 
-This was ``test_run_tui_smoke._wait`` (#303). It moved here because five files
-had grown private copies — 3 s and 5 s bounds, "condition not met within
-timeout", "modal not mounted" — and #303 had already recorded one of them
+This was ``test_run_tui_smoke._wait`` (#303). It moved here (#315) because
+five files had grown private copies — 3 s and 5 s bounds, "condition not met
+within timeout", "modal not mounted" — and #303 had already recorded one of them
 drifting. ``test_run_tui_smoke`` re-exports it under its old name, so every
-``from tests.tui.test_run_tui_smoke import _wait`` keeps working.
+``from tests.tui.test_run_tui_smoke import _wait`` keeps working. Since #330
+:func:`wait_until` and :func:`describe` live in ``tests/event_waits.py``, shared
+by all of ``tests/``, and this module re-exports them.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import warnings
-from collections.abc import Callable
 
-WAIT_CEILING = 10.0
-"""Anti-hang bound for :func:`wait_until` — not a gate (see the module note)."""
+# #330 moved the poll helper to ``tests/event_waits.py`` so the rest of
+# ``tests/`` can use it; this module re-exports it under the same names, so no
+# ``tests/tui`` importer changed. ``quit_within`` stays here: it is about
+# ``run_tui``.
+from tests.event_waits import POLL_INTERVAL, WAIT_CEILING, describe, wait_until
 
 QUIT_CEILING = 20.0
 """Anti-hang bound for awaiting a ``run_tui`` task after /quit or Ctrl+D (#303)."""
-
-POLL_INTERVAL = 0.005
-"""The poll tick. Small enough that the happy path pays a tick or two, where the
-fixed sleeps it replaces always paid their full interval."""
-
-
-def describe(predicate: Callable[[], object]) -> str:
-    """Best-effort source text of *predicate*, for the failure line.
-
-    A lambda's source is what makes a windows flake readable in the ``-q`` log.
-    """
-
-    try:
-        text = " ".join(inspect.getsource(predicate).split())
-    except (OSError, TypeError):  # pragma: no cover — no source (exec'd, C, …)
-        return repr(predicate)
-    return text[:160]
-
-
-async def wait_until(
-    predicate: Callable[[], object],
-    *,
-    timeout: float = WAIT_CEILING,
-    what: str | None = None,
-    detail: Callable[[], str] | None = None,
-) -> float:
-    """Poll until ``predicate()`` is truthy; return the seconds it took.
-
-    ``timeout`` is an anti-hang bound, not a gate. On a bound hit the
-    ``AssertionError`` carries *what* (or the predicate's source), the bound,
-    the measured wall clock and the poll count, plus ``detail()`` when given —
-    the pyte harness passes the grid it last saw, so a missing row and a slow
-    runner can be told apart from the log alone.
-    """
-
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    deadline = started + timeout
-    polls = 0
-    while True:
-        polls += 1
-        if predicate():
-            waited = loop.time() - started
-            if waited > timeout / 2:
-                warnings.warn(
-                    f"waited {waited:.2f}s of a {timeout:.1f}s bound "
-                    f"({polls} polls) for: {what or describe(predicate)}",
-                    stacklevel=2,
-                )
-            return waited
-        if loop.time() >= deadline:
-            break
-        await asyncio.sleep(POLL_INTERVAL)
-    message = (
-        f"waited {loop.time() - started:.2f}s (bound {timeout:.1f}s, {polls} polls) "
-        f"for: {what or describe(predicate)}"
-    )
-    if detail is not None:
-        message += "\n" + detail()
-    raise AssertionError(message)
 
 
 async def quit_within(task: asyncio.Task[int], *, ceiling: float = QUIT_CEILING) -> int:

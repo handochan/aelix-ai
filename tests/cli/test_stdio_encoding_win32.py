@@ -474,7 +474,7 @@ def test_real_cli_help_survives_a_legacy_codepage(
 
     # cwd is pinned to a scratch dir so the child finds no project ``.env``:
     # the assertion must not depend on which credentials a developer happens
-    # to have (house pattern: tests/cli/test_pipe_robustness.py:488).
+    # to have (house pattern: tests/cli/test_pipe_robustness.py:500).
     env = {**os.environ, "PYTHONIOENCODING": codepage}
     proc = subprocess.run(
         [sys.executable, "-m", "aelix_coding_agent", "--help"],

@@ -211,7 +211,8 @@ async def run_hook_subprocess(
                 # dies), NOT a leak. Worst case on win32 is a cmd.exe batch job
                 # answering CTRL_BREAK with its Y/N prompt and burning the whole
                 # 1.0 s grace: ~0.2 + 1.0 + the kill for
-                # test_run_subprocess_timeout, still inside its < 2.0 s bound.
+                # test_run_subprocess_timeout, which asserts that ladder as the
+                # bounds it armed (#330), not as a wall-clock bound.
                 escalate = False
                 if proc.returncode is None:
                     # The shell forwards nothing to its pipeline, so signal the

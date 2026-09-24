@@ -22,6 +22,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,7 @@ from aelix_coding_agent.extensions.subprocess_hooks import (
     validate_subprocess_hook_event,
 )
 
+from tests.event_waits import check_anti_hang, record_armed_waits
 from tests.process_probe import (
     STATE_ALIVE,
     STATE_GONE,
@@ -337,17 +339,74 @@ async def test_run_subprocess_exit2_with_stderr(tmp_path: Path) -> None:
     assert outcome.timed_out is False
 
 
-async def test_run_subprocess_timeout() -> None:
-    """#4 — ``sleep 5`` with 200ms timeout → timed_out, exit 124, fast."""
+async def test_run_subprocess_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#4 — ``sleep 5`` with 200ms timeout → timed_out, exit 124, fast.
 
-    import time
+    "Fast" is the bounds the teardown ARMED, read off the product (#330), not
+    an unmessaged ``elapsed < 2.0``: the 200 ms budget, fired; then the 1.0 s
+    soft grace, ended by the child's exit — or, on a win32 ``cmd.exe`` batch job
+    that answers CTRL_BREAK with its Y/N prompt, fired too and followed by the
+    5.0 s-bounded reap after the hard kill (ADR-0238's accepted cost). Nothing
+    else, and nothing unbounded. The wall clock that is left is an anti-hang
+    bound at the ladder's own worst case.
 
+    WHICH LADDER IS RIGHT DEPENDS ON WHAT ``soft_kill`` ANSWERED, so the case
+    records that answer rather than guessing it from the platform. ``False``
+    (nothing was sent: a console-less win32 runner, or ``ESRCH`` on POSIX when
+    the shell went in the gap) makes the grace worthless and the product skips
+    it — budget, then straight to the reap — which the old ``< 2.0`` also let
+    through. Without this the case would go red on a console-less runner, one
+    more member of ADR-0238's "red together without a console" list; with it,
+    that runner's ladder is required exactly, and warned about with its reason.
+    A grace skipped after a signal that WAS sent is still red.
+    """
+
+    sent: list[bool] = []
+    real_attach = subprocess_hooks.ProcessTree.attach
+
+    class _SoftKillAnswerRecorded:
+        @staticmethod
+        def attach(pid: int, **kwargs: Any) -> Any:
+            tree = real_attach(pid, **kwargs)
+            real_soft_kill = tree.soft_kill
+
+            def _soft_kill(**kw: Any) -> bool:
+                answer = real_soft_kill(**kw)
+                sent.append(answer)
+                return answer
+
+            tree.soft_kill = _soft_kill  # pyright: ignore[reportAttributeAccessIssue]
+            return tree
+
+    monkeypatch.setattr(subprocess_hooks, "ProcessTree", _SoftKillAnswerRecorded)
+    waits = record_armed_waits(monkeypatch, subprocess_hooks)
     start = time.monotonic()
     outcome = await run_hook_subprocess("sleep 5", "", timeout_ms=200)
     elapsed = time.monotonic() - start
     assert outcome.timed_out is True
     assert outcome.exit_code == 124
-    assert elapsed < 2.0
+    armed = [(w.timeout, w.outcome) for w in waits]
+    if sent == [False]:
+        warnings.warn(
+            f"the hook's soft kill was not sent on {sys.platform} (no console on "
+            f"win32, or the shell already gone): the grace was skipped, ladder {armed}",
+            stacklevel=1,
+        )
+        assert armed == [(0.2, "timed out"), (5.0, "returned")], (
+            f"the hook's timeout ladder armed {armed} after a soft kill that was "
+            "never sent, not budget → reap"
+        )
+    else:
+        # ``[]`` is a shell that exited on its own as the budget fired: no soft
+        # kill, and the grace wait returns at once — the same first ladder.
+        assert sent in ([True], []), f"soft_kill answered {sent}, not one send"
+        assert armed in (
+            [(0.2, "timed out"), (1.0, "returned")],
+            [(0.2, "timed out"), (1.0, "timed out"), (5.0, "returned")],
+        ), f"the hook's timeout ladder armed {armed}, not budget → grace (→ reap)"
+    check_anti_hang(
+        elapsed, bound=0.2 + 1.0 + 5.0, what="a timed-out hook's whole teardown ladder"
+    )
 
 
 async def test_run_subprocess_nonexistent_command_no_raise() -> None:
@@ -559,19 +618,23 @@ async def test_a_soft_signal_that_could_not_be_sent_skips_the_grace(
             return tree
 
     monkeypatch.setattr(subprocess_hooks, "ProcessTree", _UndeliverableSoftKill)
+    waits = record_armed_waits(monkeypatch, subprocess_hooks)
 
     cmd = _py_command(tmp_path, "import time; time.sleep(60)")
-    started = time.monotonic()
     outcome = await run_hook_subprocess(cmd, "", timeout_ms=300)
-    elapsed = time.monotonic() - started
 
     assert outcome.timed_out is True
     assert calls == ["soft", "hard"], (
         f"the teardown did not escalate straight past the grace: {calls}"
     )
-    assert elapsed < 1.0, (
-        f"the teardown paid {elapsed:.2f}s for a signal that was never sent — "
-        "the 1.0 s grace was not skipped"
+    # The grace, skipped, as the ladder armed it (#330 — this was
+    # ``elapsed < 1.0``, the grace's own size, on the runner's clock): the
+    # 300 ms budget fired, then straight to the 5.0 s-bounded reap after the
+    # kill. A 1.0 s entry is a grace paid for a signal that was never sent.
+    armed = [(w.timeout, w.outcome) for w in waits]
+    assert armed == [(0.3, "timed out"), (5.0, "returned")], (
+        f"the teardown armed {armed} — a 1.0 s entry is the grace, paid for a "
+        "signal that was never sent"
     )
 
 

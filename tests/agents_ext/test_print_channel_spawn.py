@@ -37,8 +37,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import errno
 import json
 import os
+import select
 import shlex
 import signal
 import stat
@@ -80,6 +82,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
 from tests.env_sandbox import child_env
+from tests.event_waits import check_anti_hang, record_armed_waits, wait_until, within
 from tests.posix_modes import POSIX_MODES
 from tests.print_mode_child import CHILD_SOURCE
 
@@ -484,13 +487,15 @@ def _hermetic_env(tmp_path: Path) -> dict[str, str]:
 
 
 async def _wait_for_pid(row: RunningChild, timeout: float = 10.0) -> int:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        proc = row.proc
-        if proc is not None:
-            return int(proc.pid)
-        await asyncio.sleep(0.01)
-    raise AssertionError("the child never started")
+    """The child's pid, once the spawn has published it. ``timeout`` is anti-hang."""
+
+    await wait_until(
+        lambda: row.proc is not None,
+        timeout=timeout,
+        what=f"the spawn to publish row {row.id!r}'s process",
+    )
+    assert row.proc is not None
+    return int(row.proc.pid)
 
 
 async def _wait_for_tree(row: RunningChild, timeout: float = 10.0) -> ProcessTree:
@@ -501,13 +506,13 @@ async def _wait_for_tree(row: RunningChild, timeout: float = 10.0) -> ProcessTre
     is to wait for it.
     """
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        tree = row.tree
-        if tree is not None:
-            return tree
-        await asyncio.sleep(0.01)
-    raise AssertionError("the spawn never attached a process tree")
+    await wait_until(
+        lambda: row.tree is not None,
+        timeout=timeout,
+        what=f"the spawn to attach row {row.id!r}'s process tree",
+    )
+    assert row.tree is not None
+    return row.tree
 
 
 def _spy_hard_kill(tree: ProcessTree) -> list[tuple[float, float]]:
@@ -556,15 +561,18 @@ def _alive(pid: int) -> bool:
 
 
 async def _await_death(pid: int, timeout: float) -> float:
-    """Seconds until ``pid`` is gone; raises if it outlives ``timeout``."""
+    """Seconds until ``pid`` is gone; raises if it outlives ``timeout``.
 
-    started = time.monotonic()
-    deadline = started + timeout
-    while time.monotonic() < deadline:
-        if not _alive(pid):
-            return time.monotonic() - started
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"pid {pid} survived {timeout}s")
+    The failure names the pid, the bound and the wall clock actually spent
+    (#330), so a leg that is merely slow reads differently from a survivor.
+    """
+
+    return await wait_until(
+        lambda: not _alive(pid),
+        timeout=timeout,
+        what=f"pid {pid} to die",
+        interval=0.02,
+    )
 
 
 # === Happy path + stdio contract ==============================================
@@ -595,11 +603,17 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     DO arrive are prepended to the task message.
     """
 
-    started = time.monotonic()
-    result = await _stub_channel(_STDIN_ECHO).run(_plan(tmp_path))
+    # ``within``: an ANTI-HANG bound, not a gate (#330 — this was an unmessaged
+    # ``elapsed < 10`` checked only AFTER the run returned, so a child blocked
+    # on an inherited terminal would have hung the case instead of failing
+    # it). The verdict is the summary: a DEVNULL stdin reads as ``''``.
+    result = await within(
+        _stub_channel(_STDIN_ECHO).run(_plan(tmp_path)),
+        bound=30.0,
+        what="a child that reads its stdin to EOF",
+    )
     assert result.ok is True
     assert result.summary == "stdin=''"
-    assert time.monotonic() - started < 10
 
 
 @linux_only
@@ -655,14 +669,19 @@ async def test_large_stderr_does_not_deadlock(tmp_path: Path) -> None:
     even reach a signal handler.
     """
 
-    started = time.monotonic()
-    result = await asyncio.wait_for(
-        _stub_channel(_BIG_STDERR).run(_plan(tmp_path)), 30
+    # The deadlock is a HANG, so its detector is an anti-hang bound that says
+    # what it waited for (#330 — this was a bare ``wait_for(..., 30)`` plus an
+    # unmessaged ``elapsed < 15`` that could only ever fire on a slow runner:
+    # a wedged run never returns to be measured). The run's own budget is the
+    # 600 s default, so a run that returns at all returned because both pipes
+    # drained.
+    result = await within(
+        _stub_channel(_BIG_STDERR).run(_plan(tmp_path)),
+        bound=30.0,
+        what="a run whose child writes 1 MiB to stderr between two stdout lines",
     )
-    elapsed = time.monotonic() - started
     assert result.ok is True
     assert result.summary == "after the flood"
-    assert elapsed < 15
 
 
 async def test_stderr_is_bounded_to_a_ring() -> None:
@@ -900,21 +919,25 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
     """
 
     marker = tmp_path / "grandchild.pid"
-    started = time.monotonic()
-    result = await asyncio.wait_for(
+    # The anti-hang bound sits PAST the 30 s budget (#330): the budget firing is
+    # the regression, and it must be the status below that says so — a
+    # ``timeout`` — not a watchdog that happened to fire first. The old
+    # ``took < 15.0`` under a 30 s ``wait_for`` restated the same claim on the
+    # runner's clock.
+    result = await within(
         _stub_channel(_pipe_holding_stub(marker), grace=0.5).run(
             _plan(tmp_path, timeout_ms=30_000)
         ),
-        30,
+        bound=60.0,
+        what="a run whose grandchild holds the child's stdio after it exits",
     )
-    took = time.monotonic() - started
 
+    # ``ok``, not ``timeout``: the child's own exit is what ended the run, not
+    # the 30 s budget, which is the event the old ``took < 15.0`` stood for.
     assert result.status == "ok"
     assert result.ok is True
     assert result.summary == "the answer"
     assert result.exit_code == 0
-    # Well inside the budget: the child's own exit is what ends the run now.
-    assert took < 15.0
 
     kid = int(marker.read_text())
     await _await_death(kid, 5.0)
@@ -923,23 +946,87 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
 # === Timeout + the kill legs ==================================================
 
 
-async def test_timeout_kills_and_returns_partial(tmp_path: Path) -> None:
+def _record_clock_readings(
+    monkeypatch: pytest.MonkeyPatch, module: Any, waits: list[Any]
+) -> list[tuple[int, float]]:
+    """Every ``time.monotonic()`` *module* reads, as ``(len(waits) then, value)``.
+
+    *waits* is the same module's :func:`record_armed_waits` log, so a reading's
+    mark says which armed wait it came before: the readings marked ``i`` were
+    taken after wait ``i - 1`` was armed and before wait ``i`` was. The swap is
+    of the module's ``time`` name only (a proxy that delegates everything else),
+    undone by *monkeypatch*; ``time.monotonic`` is looked up at call time, so
+    a clock plugin that replaced it is what the product reads here too.
+    """
+
+    readings: list[tuple[int, float]] = []
+
+    class _Clock:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+        def monotonic(self) -> float:
+            value = time.monotonic()
+            readings.append((len(waits), value))
+            return value
+
+    assert module.time is time, f"{module.__name__} does not read a module-global ``time``"
+    monkeypatch.setattr(module, "time", _Clock())
+    return readings
+
+
+async def test_timeout_kills_and_returns_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """§(j): a timeout is an OUTCOME carrying the partial work, not an exception.
 
     pi throws on abort (``index.ts:413``) and discards everything the child
     streamed first, so the user loses the work AND the diagnosis.
     """
 
-    started = time.monotonic()
-    result = await _stub_channel(_SLEEPER, grace=0.5).run(
-        _plan(tmp_path, timeout_ms=1500)
+    waits = record_armed_waits(monkeypatch, pc)
+    readings = _record_clock_readings(monkeypatch, pc, waits)
+    result = await within(
+        _stub_channel(_SLEEPER, grace=0.5).run(_plan(tmp_path, timeout_ms=1500)),
+        bound=30.0,
+        what="a 1.5 s-budget run of a child that sleeps 60 s",
     )
-    elapsed = time.monotonic() - started
     assert result.status == "timeout"
     assert result.ok is False
     assert result.summary == "partial work done"
     assert result.usage.turns == 1
-    assert 1.0 < elapsed < 15
+    # THE DEADLINE, AS THE CHANNEL ARMED IT (#330). This was ``1.0 < elapsed``,
+    # a floor on the runner's clock standing for "the budget was honoured, not
+    # cut short". The channel's first ``asyncio.wait`` IS the deadline, armed
+    # with what is left of ``timeout_ms`` between the channel's OWN two clock
+    # readings: ``deadline = time.monotonic() + budget``, then
+    # ``max(deadline - time.monotonic(), 0.0)`` about six lines later, with no
+    # ``await`` between. So the armed bound is exactly the budget less the gap
+    # the channel itself read — which is what is asserted, not a window under
+    # 1.5 s: a window (``1.4 <``) went red whenever the process was paused for
+    # 100 ms between those two lines, though the product was right. A deadline
+    # cut short (x0.6, /10) arms less than the budget minus that gap, on any
+    # runner, paused or not. And the deadline must be what ended the wait, not
+    # the pumps or the child's exit.
+    deadline_wait = next(w for w in waits if w.kind == "wait")
+    at = waits.index(deadline_wait)
+    before = [value for mark, value in readings if mark == at]
+    assert len(before) >= 2, (
+        f"the channel read its clock {len(before)} time(s) before arming the "
+        f"deadline wait, not twice (the deadline, then what is left of it); "
+        f"readings: {readings}, waits: {waits}"
+    )
+    set_at, armed_at = before[-2], before[-1]
+    left = max(1.5 - (armed_at - set_at), 0.0)
+    assert deadline_wait.timeout is not None and abs(deadline_wait.timeout - left) < 1e-6, (
+        f"the run's deadline was armed with {deadline_wait.timeout!r}s for a "
+        f"timeout_ms=1500 plan, {armed_at - set_at:.6f}s after the channel set it: "
+        f"{left:.6f}s was left of the budget; waits: {waits}"
+    )
+    assert deadline_wait.outcome == "timed out", (
+        f"the deadline did not fire ({deadline_wait.outcome}) on a child that "
+        f"sleeps 60 s; waits: {waits}"
+    )
 
 
 async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
@@ -1139,8 +1226,13 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     # observed ``summary='(no output)'``).
     assert result.summary == "closing my pipes now"
     # 5 s deadline + 0.5 s SIGTERM grace + reap, with headroom for a loaded box;
-    # the outer ``wait_for(..., 40)`` is the real hang detector.
-    assert elapsed < 30, "the floor is a grace, not an unbounded wait"
+    # the outer ``wait_for(..., 40)`` is the real hang detector. An anti-hang
+    # bound, so it states what it timed and against what (#330).
+    check_anti_hang(
+        elapsed,
+        bound=30.0,
+        what="a wedged child's timeout (the floor is a grace, not an unbounded wait)",
+    )
 
 
 def _await_zombie(pid: int, *, timeout: float = 10.0) -> None:
@@ -1214,10 +1306,44 @@ def _await_zombie(pid: int, *, timeout: float = 10.0) -> None:
                     else f"WaitForSingleObject on child {pid} returned {waited:#x}"
                 )
             return
-        # macOS: no ``waitid``, no process handles either. The old timing
-        # assumption stays there — it is a dev box, not a CI leg (the POSIX leg
-        # is linux, which has ``waitid``).
-        time.sleep(0.05)
+        # macOS: no ``waitid``, no process handles — but a kqueue
+        # ``EVFILT_PROC``/``NOTE_EXIT`` event fires when the process exits and
+        # consumes nothing, so the status stays queued for the loop's watcher
+        # exactly as ``WNOWAIT`` leaves it (#330: this arm was a 50 ms
+        # ``time.sleep``, the same bet #229 removed from the other two). A pid
+        # that is already gone is ``ESRCH`` at registration, which is the state
+        # the caller asked for — measured on darwin (py3.12) it arrives as an
+        # ``EV_ERROR`` event with ``data == ESRCH``, not as a raise.
+        kqueue = getattr(select, "kqueue", None)
+        if kqueue is None:  # pragma: no cover — a POSIX host with neither
+            raise AssertionError("no waitid and no kqueue: cannot observe the exit")
+        queue = kqueue()
+        try:
+            event = select.kevent(
+                pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            try:
+                fired = queue.control([event], 1, timeout)
+            except ProcessLookupError:
+                return
+            if not fired:
+                raise AssertionError(f"child {pid} did not exit within {timeout}s")
+            # A registration that FAILS with room in the eventlist comes back as
+            # an ``EV_ERROR`` event instead of raising (kqueue(2)); ``data`` is
+            # the errno. ESRCH is the already-gone pid above; anything else
+            # (EPERM, EINVAL) is not an exit and must not read as one.
+            if fired[0].flags & select.KQ_EV_ERROR:
+                if fired[0].data == errno.ESRCH:
+                    return
+                raise AssertionError(
+                    f"kqueue could not watch child {pid}: "
+                    f"{errno.errorcode.get(fired[0].data, fired[0].data)}"
+                )
+        finally:
+            queue.close()
         return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1431,6 +1557,16 @@ _PDEATH_PARENT = textwrap.dedent(
 )
 
 
+def _poll_until(predicate: Callable[[], bool], what: str, *, bound: float = 10.0) -> None:
+    """Synchronous poll under an ANTI-HANG bound that names what it waited for."""
+
+    started = time.monotonic()
+    while not predicate():
+        waited = time.monotonic() - started
+        assert waited < bound, f"waited {waited:.2f}s (bound {bound:.1f}s) for: {what}"
+        time.sleep(0.02)
+
+
 @linux_only
 def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) -> None:
     """THE MEASUREMENT BEHIND THE REJECTION — MEDIUM #12 / MEDIUM #6.
@@ -1470,12 +1606,26 @@ def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) ->
         )
         try:
             assert parent.stdout is not None
-            parent.stdout.readline()  # "CHILD <pid>"
-            time.sleep(0.3)
+            # "CHILD <pid>" — printed only after the child wrote READY, which it
+            # writes after the marker and after installing its SIGTERM handler,
+            # so both are already in place: no settle is needed (#330 removed a
+            # 0.3 s one that was redundant by that ordering).
+            kid = int(parent.stdout.readline().split()[1])
             grandchild = int(marker.read_text())
             parent.kill()
             parent.wait(timeout=10)
-            time.sleep(1.5)
+            # WAIT FOR THE CHILD'S DEATH, the event both outcomes hang on (#330 —
+            # this was a flat 1.5 s sleep). PDEATHSIG delivers ``sig`` to the
+            # child when its parent dies; with SIGTERM the child's handler kills
+            # the grandchild's group and only THEN exits, so once the child is
+            # gone the kill has been sent; with SIGKILL it dies without running
+            # anything. The first poll is an anti-hang bound, the second one
+            # only waits out the grandchild's reap by init.
+            _poll_until(lambda kid=kid: not _alive(kid), f"the {name} child {kid} to die")
+            if sig == signal.SIGTERM:
+                _poll_until(
+                    lambda gc=grandchild: not _alive(gc), f"grandchild {grandchild} to die"
+                )
             outcomes[name] = _alive(grandchild)
         finally:
             with contextlib.suppress(Exception):
@@ -1570,6 +1720,10 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
     assert _alive(pid), "SIGTERM was supposed to be ignored"
 
     task.cancel()
+    # SPACING, NOT A VERDICT (#330 classified it): the two cancels only need to
+    # land on different loop turns, so the second finds the first already
+    # absorbed by the reaper's shield — which any yield gives. The verdict is
+    # the pid's death below, well inside the 5 s grace.
     await asyncio.sleep(0.4)
     task.cancel()
 
@@ -1650,18 +1804,33 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
         #
         # The ASSERTION below stays tight, because PDEATHSIG firing IS the
         # subject and a slow kill is a real defect.
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline and not pidfile.exists():
+        started = time.monotonic()
+        while time.monotonic() - started < 90 and not pidfile.exists():
             time.sleep(0.05)
-        assert pidfile.exists(), "the helper never started its child"
+        assert pidfile.exists(), (
+            f"the helper never wrote its child's pid: waited "
+            f"{time.monotonic() - started:.2f}s of a 90s anti-hang bound for {pidfile}"
+        )
         sleeper = int(pidfile.read_text())
-        assert _alive(sleeper)
+        assert _alive(sleeper), f"the helper's child {sleeper} was dead before the parent was"
         parent.kill()
         parent.wait(timeout=10)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and _alive(sleeper):
+        # A GATE whose number is the claim (#330 review): the kernel sends the
+        # signal at the parent's exit, so 5 s is ~1000x a healthy delivery, and
+        # a miss says how long it watched.
+        killed = time.monotonic()
+        while time.monotonic() - killed < 5 and _alive(sleeper):
             time.sleep(0.05)
-        assert not _alive(sleeper), "PDEATHSIG did not fire"
+        waited = time.monotonic() - killed
+        assert not _alive(sleeper), (
+            f"PDEATHSIG did not fire: child {sleeper} still alive {waited:.2f}s after "
+            "its parent was killed (gate 5s)"
+        )
+        if waited > 2.5:
+            warnings.warn(
+                f"PDEATHSIG took {waited:.2f}s of its 5s gate to end the child",
+                stacklevel=1,
+            )
     finally:
         with contextlib.suppress(Exception):
             parent.kill()
@@ -1713,6 +1882,11 @@ async def test_reap_escalates_when_the_reaper_task_itself_is_cancelled() -> None
     assert await asyncio.wait_for(proc.stderr.readline(), 20) == b"ARMED\n"
 
     task = asyncio.ensure_future(reap(proc, grace=30.0))
+    # A YIELD, NOT A VERDICT (#330 classified it): ``reap`` sends SIGTERM and
+    # parks in its grace on its FIRST step, which the loop runs before this
+    # sleep returns; the 0.3 s only adds margin. A cancel landing earlier would
+    # cancel a task that never started, and ``wait_for(task)`` below would
+    # raise ``CancelledError`` rather than pass.
     await asyncio.sleep(0.3)
     task.cancel()
     # 30 s of grace remained; the escalation happened because of the cancel.
@@ -1747,12 +1921,18 @@ async def test_stop_by_id_kills_child(tmp_path: Path) -> None:
     task = asyncio.ensure_future(
         runtime.spawn(_resolved(), "go", timeout_ms=60_000)
     )
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not runtime.list():
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: runtime.list(), what="the delegation to register")
     live = runtime.list()
     assert len(live) == 1
-    await asyncio.sleep(0.4)  # let the stub emit its partial
+    # THE PARTIAL, OBSERVED (#330 — this was ``sleep(0.4)  # let the stub emit
+    # its partial``, a bet on interpreter start-up that the summary assertion
+    # below depended on). The partial carries ``total_tokens=6``, and the row's
+    # token level is set by the reducer from exactly that line.
+    await wait_until(
+        lambda: runtime.list() and runtime.list()[0]["tokens"] == 6,
+        what="the stub's partial (total_tokens=6) to reach the registry row",
+        detail=lambda: f"rows: {runtime.list()!r}",
+    )
 
     await runtime.stop(live[0]["id"])
     result = await asyncio.wait_for(task, 30)
@@ -1768,9 +1948,7 @@ async def test_stop_all_kills_every_child(tmp_path: Path) -> None:
         asyncio.ensure_future(runtime.spawn(_resolved(), f"go {n}", timeout_ms=60_000))
         for n in range(2)
     ]
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and len(runtime.list()) < 2:
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: len(runtime.list()) >= 2, what="both delegations to register")
     assert len(runtime.list()) == 2
 
     await runtime.stop_all()
@@ -1967,9 +2145,7 @@ async def test_status_reports_the_live_tool(tmp_path: Path) -> None:
     task = asyncio.ensure_future(
         runtime.spawn(_resolved(), "go", timeout_ms=60_000)
     )
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not runtime.list():
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: runtime.list(), what="the delegation to register")
     row = runtime.list()[0]
     assert row["profile"] == "scout"
     assert row["state"] in ("starting", "running")
@@ -3446,11 +3622,15 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
         assert tree.closed is False, "the tree was disarmed mid-grace"
 
         await asyncio.wait_for(asyncio.shield(row.reaper_task), 30)
-        # The close is a done-callback, so it is queued behind this await.
-        for _ in range(50):
-            if order and order[-1] == "close":
-                break
-            await asyncio.sleep(0.01)
+        # The close is a done-callback, so it is queued behind this await. A
+        # poll for it under an anti-hang bound (#330 — this was a silent 0.5 s
+        # ``for _ in range(50)`` whose fall-through handed the verdict below
+        # to the runner's load).
+        await wait_until(
+            lambda: bool(order) and order[-1] == "close",
+            what="the tree's close() to run after the reaper finished",
+            detail=lambda: f"order so far: {order}",
+        )
     finally:
         # ``getattr``: ``signal.SIGKILL`` is an ``AttributeError`` on Windows and
         # ``suppress`` would turn that into a leaked process. There is no

@@ -3254,7 +3254,7 @@
    "",
    "DEFAULT parent, default profile:"
   ],
-  "tests/cli/test_pipe_robustness.py:488-488": [
+  "tests/cli/test_pipe_robustness.py:500-500": [
    "proc = subprocess.run("
   ],
   "tests/conftest.py:28-37": [

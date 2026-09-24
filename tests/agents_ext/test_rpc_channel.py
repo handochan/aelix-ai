@@ -49,6 +49,8 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.rpc.rpc_client import RpcClient
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
+from tests.event_waits import check_anti_hang, wait_until, within
+
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
@@ -384,7 +386,8 @@ async def test_a_child_that_ignores_stdin_eof_is_reaped(tmp_path: Path) -> None:
     assert row.proc is not None
     assert row.proc.returncode is not None
     # STDIN_EOF_EXIT_SECONDS + the reaper grace, nowhere near the 120 s sleep.
-    assert elapsed < 30, f"teardown took {elapsed:.1f}s"
+    # An anti-hang bound: the returncode above is the verdict (#330).
+    check_anti_hang(elapsed, bound=30.0, what="the teardown of a child that ignores stdin EOF")
 
 
 @linux_only
@@ -436,7 +439,9 @@ async def test_a_child_that_dies_mid_turn_becomes_an_envelope(tmp_path: Path) ->
     assert result.status == "error"
     assert result.exit_code == 4
     assert row.state == "error"
-    assert elapsed < 10, f"waited {elapsed:.1f}s on a child that died immediately"
+    # ``error``, not ``timeout``, is what says the 30 s budget did not fire; the
+    # bound left here is anti-hang and says so (#330).
+    check_anti_hang(elapsed, bound=10.0, what="the envelope of a child that died mid-turn")
     # The stderr rung: an rpc child that dies writes its diagnosis there and
     # nothing to stdout.
     assert result.details is not None and "child exploded" in result.details
@@ -540,11 +545,14 @@ async def test_a_stop_mid_turn_yields_aborted(tmp_path: Path) -> None:
     row = RunningChild(id="sub-test", profile="scout")
 
     async def _stop_soon() -> None:
-        for _ in range(200):
-            if row.proc is not None:
-                break
-            await asyncio.sleep(0.05)
-        await asyncio.sleep(0.3)
+        # MID-TURN, OBSERVED (#330 — this was a silent 10 s poll for the process
+        # and then ``sleep(0.3)``, a bet that the prompt had been acked and the
+        # turn had started). The stub's partial carries ``total_tokens=1``, and
+        # the row's stream only has it once the turn is running.
+        await wait_until(
+            lambda: row.stream.tokens == 1,
+            what="the stub's partial (total_tokens=1) to reach the row",
+        )
         await abort_child(row, grace=0.3)
 
     stopper = asyncio.ensure_future(_stop_soon())
@@ -572,20 +580,19 @@ async def test_cancellation_kills_the_child_and_propagates(tmp_path: Path) -> No
     task = asyncio.ensure_future(
         channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
     )
-    for _ in range(200):
-        if row.proc is not None:
-            break
-        await asyncio.sleep(0.05)
+    await wait_until(lambda: row.proc is not None, what="the channel to publish the child")
+    # A YIELD, NOT A VERDICT (#330 classified it): a cancel landing at any point
+    # after the process is published must kill it and propagate, which is all
+    # this case asserts; the 0.3 s only lets the prompt go out first.
     await asyncio.sleep(0.3)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    for _ in range(100):
-        if row.proc is not None and row.proc.returncode is not None:
-            break
-        await asyncio.sleep(0.05)
-    assert row.proc is not None and row.proc.returncode is not None
+    await wait_until(
+        lambda: row.proc is not None and row.proc.returncode is not None,
+        what="the cancelled child's exit status",
+    )
 
 
 async def test_an_oversize_line_is_dropped_counted_and_the_turn_survives(
@@ -1085,10 +1092,41 @@ async def test_a_cancelled_delegation_publishes_no_phantom_delegations(
     task = asyncio.ensure_future(
         runtime.spawn_granted(_grant(), _resolved(), "flood forever")
     )
+    # A WINDOW, NOT A VERDICT GATE (#330 classified it). The defect this case
+    # guards needs the cancel to land while the child is flooding, so that the
+    # teardown has lines to drain through the tap. Neither event precondition
+    # on offer gives that, measured with the tap left live through the drain
+    # (the phantom-snapshot sabotage): the first snapshot of ANY kind is the
+    # runtime's own ``starting`` one, published BEFORE the spawn, so a cancel
+    # there drains nothing and the case passes testing nothing (1 start, 8/8);
+    # "the first reduced line" lands in the one loop turn in which the product
+    # swallows the cancel (below) — the runs whose cancel was delivered there
+    # read 867 starts, as this second does, but most were swallowed and hung.
+    # So the second is a settle past both, not a bet against the product. A
+    # runner too slow to start the child inside it makes the case pass with
+    # nothing drained: vacuous then.
+    #
+    # The swallow is #351, a product defect: a cancel landing in the loop turn
+    # in which the child's answer to ``prompt`` resolves (~0.11 s after the
+    # spawn on darwin, right after the first reduced line) is swallowed by
+    # ``RpcClient._await_terminator``'s ``finally`` (its
+    # ``suppress(BaseException)`` around ``await death``), and the delegation
+    # then waits out its turn budget with the child still flooding. On a
+    # runner that started the child well inside the second, that turn is long
+    # past when the cancel lands; one that boots the child near 1.0 s can land
+    # it there, and the bound below turns that hang into a failure that names
+    # itself.
     await asyncio.sleep(1.0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await within(
+            task,
+            bound=20.0,
+            what=(
+                "the cancelled delegation's teardown (a cancel one second in returns "
+                "in ~0.06 s; a cancel swallowed in the prompt-answer turn is #351)"
+            ),
+        )
 
     assert api.channels.count("subagent_start") == 1, (
         f"{api.channels.count('subagent_start')} starts for one delegation — "
@@ -1149,18 +1187,18 @@ async def test_stop_all_reaches_an_rpc_child(tmp_path: Path) -> None:
         runtime.spawn_granted(_grant(), _resolved(), "hang forever")
     )
 
-    rows: list[Any] = []
-    for _ in range(200):
-        # ``list()`` returns SubagentStatus MAPPINGS, not objects.
-        live = runtime.list()
-        if live:
-            rows = live
-            break
-        await asyncio.sleep(0.05)
-    assert rows, "the delegation never registered"
-    assert rows[0]["profile"] == "scout"
+    # ``list()`` returns SubagentStatus MAPPINGS, not objects. ``running`` is set
+    # right after the channel published ``row.proc`` and ``row.tree``
+    # (``RpcChannel`` sets all three together), which is what ``stop_all``
+    # reaches — so it is the precondition, observed (#330: this was a
+    # registration poll plus ``sleep(0.5)``).
+    await wait_until(
+        lambda: runtime.list() and runtime.list()[0]["state"] == "running",
+        what="the rpc delegation to register and publish its process",
+        detail=lambda: f"rows: {runtime.list()!r}",
+    )
+    assert runtime.list()[0]["profile"] == "scout"
 
-    await asyncio.sleep(0.5)
     await runtime.stop_all()
     result = await task
 
@@ -1443,7 +1481,14 @@ async def test_a_pre_created_reaper_task_still_kills_through_the_tree(
         assert not first.done(), "the deaf tree was meant to keep the reaper pending"
 
         reap_task = asyncio.ensure_future(channel._reap(row.proc, row))
-        await asyncio.sleep(0.2)
+        # ORDERING, NOT TIME (#330 — this was ``sleep(0.2)``, a negative window
+        # that load could only make pass vacuously). ``_reap`` decides reuse vs
+        # a new reaper synchronously, before its first ``await``, and a new
+        # reaper would kill on ITS first step. The loop runs ready callbacks in
+        # FIFO order, so after three yields both steps have run.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not reap_task.done(), "_reap returned instead of awaiting the pending reaper"
         assert row.reaper_task is first, "_reap built a SECOND reaper for one child"
         assert len(spy.hard) == 1, "the reused reaper re-issued its kill"
         from_reaper = [c for c in kills if c[0] == "aelix_agents.reaper"]
@@ -1561,7 +1606,9 @@ async def test_a_cancelled_delegation_kills_through_the_tree(
         channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
     )
     spy: _TreeSpy = await _wait_for(lambda: spies[0] if spies else None, "the tree")
-    await asyncio.sleep(0.3)
+    # The turn in flight, observed (#330 — this was ``sleep(0.3)``): the stub's
+    # partial carries ``total_tokens=4``.
+    await wait_until(lambda: row.stream.tokens == 4, what="the stub's partial to reach the row")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

@@ -8,7 +8,6 @@ codebase makes in prose, relies on elsewhere, and never checks.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import sys
 import time
@@ -23,6 +22,8 @@ from aelix_coding_agent.rpc.rpc_client import RpcClient, RpcClientOptions
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
 from tests.env_sandbox import child_env
+from tests.event_waits import check_anti_hang, wait_until
+from tests.rpc._stop_events import EXITED, REAP_BOUND, grace_of, record_stop, settled
 
 
 def _resolved() -> ResolvedProfile:
@@ -133,7 +134,9 @@ def test_the_guard_is_still_wired_into_both_doors() -> None:
 # === The rpc client's worst-case teardown ===================================
 
 
-async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
+async def test_stop_is_bounded_by_the_documented_worst_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The soft-kill grace + the final reap, and nothing open-ended.
 
     Both halves are needed and neither is obvious from the code: a child that
@@ -151,7 +154,8 @@ async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
     stub below installs a real HANDLER for whichever of the two names the
     platform has. The ``signal seen`` breadcrumb is what separates "delivered
     and survived" from "delivered nothing and the timeout expired" — without it
-    ``elapsed >= grace`` passes either way.
+    the ladder's record (a grace armed at full size that fired, then the kill)
+    reads the same either way.
     """
 
     stub = (
@@ -169,43 +173,46 @@ async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
     )
     client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", stub]))
     await client.start()
-    for _ in range(200):
-        if "armed" in client.get_stderr():
-            break
-        await asyncio.sleep(0.05)
-    assert "armed" in client.get_stderr(), "the stub never armed its handler"
+    await wait_until(
+        lambda: "armed" in client.get_stderr(),
+        timeout=10.0,
+        what="the stub to arm its soft-signal handler",
+        detail=lambda: f"stderr so far: {client.get_stderr()!r}",
+    )
 
-    tree = client._tree
-    assert tree is not None
-    # Count the escalation instead of inferring it from the clock. Measured
-    # (review MUT-1): delete ``tree.hard_kill()`` from ``stop()`` and the two
-    # timing assertions below still hold — the grace is paid in full, and
-    # ``stop()``'s trailing ``transport.close()`` reaches ``Popen.kill()`` and
-    # ends the root anyway. The mutated run came within 4 ms of the 6 s bound
-    # instead of breaking it, which is how close "still green" was. An INSTANCE
-    # attribute, so the class stays clean for every other client in this run;
-    # it delegates, so the child dies the way production kills it.
-    hard_kills = 0
-    real_hard_kill = tree.hard_kill
-
-    def _counting_hard_kill() -> None:
-        nonlocal hard_kills
-        hard_kills += 1
-        real_hard_kill()
-
-    tree.hard_kill = _counting_hard_kill  # type: ignore[method-assign]
+    # The ladder's own record (``tests/rpc/_stop_events.py``) instead of the
+    # clock. Measured (review MUT-1): delete ``tree.hard_kill()`` from
+    # ``stop()`` and the grace is still paid in full, and ``stop()``'s trailing
+    # ``transport.close()`` reaches ``Popen.kill()`` and ends the root anyway —
+    # the mutated run came within 4 ms of the 6 s bound instead of breaking it,
+    # which is how close "still green" was. The kill's own entry is what tells
+    # the two apart.
+    events = record_stop(client, monkeypatch)
 
     started = time.monotonic()
     await client.stop()
     elapsed = time.monotonic() - started
 
-    worst_case = RpcClient.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0 + 5.0
-    assert elapsed <= worst_case, f"stop() took {elapsed:.2f}s, over {worst_case:.2f}s"
-    # And it really did have to escalate — otherwise this pins nothing.
-    assert elapsed >= RpcClient.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
-    assert hard_kills == 1, (
-        f"hard_kill ran {hard_kills} times, not once — the bound this test "
-        "measures was not the soft grace plus a real escalation"
+    # THE DOCUMENTED WORST CASE IS THE TWO BOUNDS ``stop()`` ARMS, and the record
+    # names them: the soft-kill grace, which the child survived (its exit did
+    # NOT land), then the escalation, then the reap bounded at 5 s. That is what
+    # ``elapsed >= grace`` stood for, without a floor a windows tick can break
+    # (#330: ``time.monotonic`` steps 15.625 ms there and the grace's timer may
+    # fire a tick early).
+    grace = grace_of(client)
+    assert settled(events) == [
+        ("await_exit", grace, "timed out"),
+        ("hard_kill",),
+        ("await_exit", REAP_BOUND, EXITED),
+    ], (
+        f"stop() armed {events}, not the {grace:.1f}s grace (armed at its full size, "
+        f"fired, survived) → hard_kill → {REAP_BOUND:.0f}s reap this bound is made of"
+    )
+    # And nothing open-ended in between: an unbounded wait anywhere in
+    # ``stop()`` shows up here and in no record. An anti-hang bound — the
+    # record above is the verdict — so it says what it timed and against what.
+    check_anti_hang(
+        elapsed, bound=grace + REAP_BOUND, what="stop() of a child that survives the soft signal"
     )
     assert "signal seen" in client.get_stderr(), (
         "the grace elapsed but the child never saw the soft signal; that is a "
@@ -217,7 +224,7 @@ async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
 
 
 async def test_the_real_rpc_child_answers_the_client_it_ships_with(
-    tmp_path: object,
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Conformance: the shipped client, the shipped server, no stub in between.
 
@@ -271,6 +278,7 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
     await client.start()
     proc = client.process
     assert proc is not None
+    events = record_stop(client, monkeypatch)
     try:
         state = await client.get_state()
         # A real child with no model configured still starts and answers; the
@@ -281,21 +289,37 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
         await client.stop()
         elapsed = time.monotonic() - started
 
-    # ITS OWN BOUND, not the product constant. What ``stop()`` is timed over
-    # here is the whole cooperative shutdown: the soft signal, the child's
-    # Python-level handler, ``loop.call_soon_threadsafe``, ``run_rpc_mode``'s
-    # return, the full runtime dispose, ``_await_exit``'s 50 ms polling
-    # quantum, ``_teardown_tasks()`` and ``transport.close()``. On
-    # windows-latest that chain additionally pays CTRL_BREAK delivery on a
-    # separate thread and a handler that runs at the main thread's next
-    # bytecode boundary — the leg with the most to do and the one nobody has
-    # measured (review win-leg/F4). 3.0 s says "far below the escalation", not
-    # "a millisecond budget"; a 1.05 s orderly shutdown on a busy runner used
-    # to report the opposite of what ``returncode == 0`` proves. The escalation
-    # it must stay clear of is ``SHUTDOWN_SIGTERM_TIMEOUT_MS`` + the 5 s reap.
-    assert elapsed < 3.0, (
-        f"the real child took {elapsed:.3f}s to go — far enough over the "
-        "cooperative path to suspect it did not answer the soft signal"
+    # THE COOPERATIVE PATH, READ OFF THE LADDER'S RECORD (#330). This was
+    # ``elapsed < 3.0``, "far below the escalation": a clock bound over the
+    # whole cooperative shutdown — the soft signal, the child's Python-level
+    # handler, ``loop.call_soon_threadsafe``, ``run_rpc_mode``'s return, the full
+    # runtime dispose, ``_await_exit``'s 50 ms polling quantum,
+    # ``_teardown_tasks()`` and ``transport.close()``, plus on windows-latest
+    # CTRL_BREAK delivery on a separate thread and a handler that runs at the
+    # main thread's next bytecode boundary (review win-leg/F4). What it stood
+    # for is exact in the record: one wait armed with the full
+    # ``SHUTDOWN_SIGTERM_TIMEOUT_MS`` grace, after which ``_await_exit`` answered
+    # that the child had exited, and no escalation. ``settled`` accepts both
+    # sides of the race in that answer — the exit landing in the very loop turn
+    # the grace's timer fires, which is THIS case's shape on a slow windows leg
+    # (a child answering right at the end of the grace): ``_await_exit`` says
+    # True, ``stop()`` rightly does not escalate, and the raw record reads
+    # ``"timed out, exit"``. So the verdict is "did not escalate, and the child
+    # exited", not "the exit beat the timer". A child slower than the grace is
+    # hard-killed, which this record and the status below both catch, so the
+    # 3 s bound added nothing but a bet on the runner.
+    # The measured time still reaches the ``-q`` log, as the diagnostic twin
+    # below reports its own.
+    warnings.warn(
+        f"real rpc child cooperative stop() on {sys.platform}: {elapsed:.3f}s "
+        f"(grace {grace_of(client):.1f}s), events={events}",
+        stacklevel=1,
+    )
+    assert settled(events) == [("await_exit", grace_of(client), EXITED)], (
+        f"the real child's stop() recorded {events}, not one wait armed with the full "
+        f"{grace_of(client):.1f}s soft-kill grace after which the child had exited: "
+        "a hard_kill is a child that did not answer the soft signal in time and was "
+        f"escalated; a smaller bound is a grace cut short ({elapsed:.3f}s)"
     )
     # Status 0 is the child's own orderly return out of ``run_rpc_mode``, and
     # this is the real delivery proof: a hard kill cannot produce it on either
@@ -311,8 +335,9 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
 class _PatientClient(RpcClient):
     """A grace long enough that only a child that NEVER answers gets hard-killed.
 
-    The conformance test above times the whole cooperative shutdown against a
-    3 s bound and needs ``returncode == 0``; when the windows leg answered
+    The conformance test above needs the cooperative shutdown to land inside
+    the 1 s grace (a 3 s wall-clock bound until #330) and ``returncode == 0``;
+    when the windows leg answered
     ``exited 1`` (``TerminateJobObject``'s code) that single number could not say
     whether the console event was undeliverable, the child's handler never ran
     under the proactor loop, or its orderly teardown merely outran the 1 s
@@ -332,8 +357,9 @@ async def test_the_real_rpc_child_exits_cleanly_given_a_generous_grace(
     Passes wherever the soft signal reaches the child and its handler runs; the
     measured shutdown time is emitted as a warning so it shows in a ``-q`` CI
     log without a failing assertion. If THIS fails on a leg, the cooperative
-    stage does not exist there and ADR-0238's claim narrows; if only the 3 s
-    conformance bound fails, the teardown is slow, not absent.
+    stage does not exist there and ADR-0238's claim narrows; if only the
+    conformance test fails (its exit did not land inside the 1 s grace), the
+    teardown is slow, not absent.
     """
 
     from pathlib import Path

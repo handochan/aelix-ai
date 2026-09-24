@@ -14,11 +14,21 @@ the pass mean something on either platform: ``elapsed >= grace`` alone would
 also pass if the soft signal were never delivered at all and the grace simply
 ran out, so the stub writes a breadcrumb from inside the handler and the tests
 assert BOTH. Delivered, survived, escalated — and the third one is asserted by
-COUNTING ``hard_kill``, not inferred from the clock. With the escalation deleted
+the ``hard_kill`` entry in the ladder's record, not inferred from the clock. With the escalation deleted
 the grace is still paid and the breadcrumb is still written, and ``stop()``'s
 trailing ``transport.close()`` then kills the root on its own (CPython
 ``asyncio/base_subprocess.py`` calls ``Popen.kill()`` there), so both of the
 older assertions hold with the subject of the test removed (review MUT-1).
+
+NONE OF THE LADDER IS READ OFF THE CLOCK ANY MORE (#330). "The grace was
+waited out" was ``elapsed >= grace`` with no margin — the #313 shape: on
+windows-latest ``time.monotonic`` steps 15.625 ms and asyncio may fire the
+grace's timer a tick early, so a correct run can read 0.297 s for 0.3 s. "The
+grace was skipped" and "the child took the hint" were ``elapsed < grace``, a bet
+against the runner's load. Each is now the ladder's own record
+(``tests/rpc/_stop_events.py``): which bound each ``_await_exit`` actually armed
+its ``wait_for`` with, whether that bound fired or the child's exit landed
+inside it, and where the ``hard_kill`` fell.
 
 THE OBSERVABLE WINDOWS FACT, stated as what is checkable. A child with no
 Python-level ``SIGBREAK`` disposition is terminated by the console event itself
@@ -32,12 +42,14 @@ cites a CPython ``SetConsoleCtrlHandler`` call site (review win-leg/F9).
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import textwrap
-import time
 
+import pytest
 from aelix_coding_agent.rpc.rpc_client import RpcClient, RpcClientOptions
+
+from tests.event_waits import wait_until
+from tests.rpc._stop_events import EXITED, REAP_BOUND, grace_of, record_stop, settled
 
 
 def test_rpc_client_default_constants_match_pi() -> None:
@@ -127,13 +139,18 @@ _COOPERATIVE_STUB = textwrap.dedent(
 
 
 async def _await_breadcrumb(client: RpcClient, needle: str) -> None:
-    """Block until ``needle`` shows up on the child's stderr."""
+    """Block until ``needle`` shows up on the child's stderr.
 
-    for _ in range(200):
-        if needle in client.get_stderr():
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"stub never wrote {needle!r}; got {client.get_stderr()!r}")
+    An anti-hang bound (10 s, as before: 200 polls of 50 ms); a miss names the
+    breadcrumb, the bound, the wall clock spent and the stderr it did see.
+    """
+
+    await wait_until(
+        lambda: needle in client.get_stderr(),
+        timeout=10.0,
+        what=f"the stub to write {needle!r} on stderr",
+        detail=lambda: f"stderr so far: {client.get_stderr()!r}",
+    )
 
 
 class _SoftKillSurvivorClient(RpcClient):
@@ -148,7 +165,7 @@ class _SoftKillSurvivorClient(RpcClient):
         return [sys.executable, "-c", _SOFT_KILL_SURVIVOR_STUB]
 
 
-async def test_stop_escalates_to_the_hard_kill_when_the_soft_one_is_survived() -> None:
+async def test_stop_escalates_to_the_hard_kill_when_the_soft_one_is_survived(monkeypatch: pytest.MonkeyPatch) -> None:
     """A server that answers the soft signal and lives is killed after the grace.
 
     Runs on every platform now (#202 closed #207 (1)): the soft stage is SIGTERM
@@ -165,43 +182,34 @@ async def test_stop_escalates_to_the_hard_kill_when_the_soft_one_is_survived() -
 
     proc = client.process
     assert proc is not None
-    tree = client._tree
-    assert tree is not None
-    # An INSTANCE attribute over the bound method, so the class is untouched and
-    # no other client in this run can see the spy. It delegates, so the child is
-    # still ended the way production ends it.
-    hard_kills = 0
-    real_hard_kill = tree.hard_kill
+    events = record_stop(client, monkeypatch)
 
-    def _counting_hard_kill() -> None:
-        nonlocal hard_kills
-        hard_kills += 1
-        real_hard_kill()
-
-    tree.hard_kill = _counting_hard_kill  # type: ignore[method-assign]
-
-    started = time.monotonic()
     await client.stop()
-    elapsed = time.monotonic() - started
 
-    # THE SUBJECT OF THIS TEST IS THE ESCALATION, and this is the assertion that
-    # actually observes it. Measured (review MUT-1): with ``tree.hard_kill()``
-    # deleted from ``stop()`` the two assertions below BOTH still hold — the
-    # grace is paid in full and the breadcrumb is written — because the trailing
-    # ``transport.close()`` reaches ``Popen.kill()`` and ends the root anyway.
-    # Only counting the call tells the two apart.
-    assert hard_kills == 1, (
-        f"hard_kill ran {hard_kills} times, not once — the escalation this "
-        "test exists for did not run (the child may still have died, via "
+    # THE SUBJECT OF THIS TEST IS THE ESCALATION, and the record is what
+    # observes it. Measured (review MUT-1): with ``tree.hard_kill()`` deleted
+    # from ``stop()`` the grace is still paid in full and the breadcrumb is still
+    # written, because the trailing ``transport.close()`` reaches
+    # ``Popen.kill()`` and ends the root anyway — so only the kill's own entry
+    # tells the two apart. The grace entry is what ``elapsed >= grace`` used to
+    # stand for (#330): the grace was ARMED at its configured size and the
+    # child's exit did NOT land inside it, i.e. the child survived the soft
+    # signal and it was the hard kill, after the grace, that ended it.
+    grace = grace_of(client)
+    assert settled(events) == [
+        ("await_exit", grace, "timed out"),
+        ("hard_kill",),
+        ("await_exit", REAP_BOUND, EXITED),
+    ], (
+        f"stop() did not wait out its {grace:.3f}s soft-kill grace and then escalate: "
+        f"{events}. A grace entry whose exit LANDED is a child that died on the soft "
+        "signal; a grace entry armed with less than the grace, or one that returned "
+        "with no exit, is a grace that ended early; "
+        "no grace entry is a grace that was skipped; no hard_kill is the escalation "
+        "this test exists for (the child may still have died, via "
         "transport.close()'s own Popen.kill())"
     )
     assert proc.returncode is not None, "the child outlived stop()"
-    grace = client.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
-    assert elapsed >= grace, (
-        f"stop() returned in {elapsed:.3f}s, under the {grace:.3f}s soft-kill "
-        "grace — the child died on the soft signal, so the hard kill was never "
-        "reached"
-    )
     # And the grace was a grace, not a silence: the child SAW the soft signal
     # and chose to stay. Without this the test also passes when nothing was
     # delivered and the timeout simply expired.
@@ -212,7 +220,7 @@ async def test_stop_escalates_to_the_hard_kill_when_the_soft_one_is_survived() -
     assert "stub starting" in client.get_stderr()
 
 
-async def test_a_soft_kill_that_was_never_sent_does_not_buy_a_grace() -> None:
+async def test_a_soft_kill_that_was_never_sent_does_not_buy_a_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     """A refused soft signal escalates AT ONCE instead of waiting it out.
 
     ``ProcessTree.soft_kill`` returns whether the signal was actually SENT.
@@ -237,16 +245,18 @@ async def test_a_soft_kill_that_was_never_sent_does_not_buy_a_grace() -> None:
     tree = client._tree
     assert tree is not None
     tree.soft_kill = lambda *_a, **_k: False  # type: ignore[method-assign]
+    events = record_stop(client, monkeypatch)
 
-    started = time.monotonic()
     await client.stop()
-    elapsed = time.monotonic() - started
 
-    grace = client.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
-    assert elapsed < grace, (
-        f"stop() took {elapsed:.3f}s against a {grace:.3f}s grace it had no "
-        "reason to pay — nothing was sent to the child, so there was nothing "
-        "to wait for"
+    # No grace entry at all: ``stop()`` never armed the grace, so it did not
+    # pay it — which ``elapsed < grace`` could only say on an idle runner
+    # (#330). Straight to the kill, then the bounded reap.
+    grace = grace_of(client)
+    assert settled(events) == [("hard_kill",), ("await_exit", REAP_BOUND, EXITED)], (
+        f"stop() armed {events} after a soft kill that was never sent — a "
+        f"{grace:.3f}s grace entry is a grace it had no reason to pay, since "
+        "nothing was on its way to the child"
     )
     assert proc.returncode is not None, (
         "the child outlived stop(); skipping the grace must lead to the hard "
@@ -260,7 +270,7 @@ async def test_a_soft_kill_that_was_never_sent_does_not_buy_a_grace() -> None:
     )
 
 
-async def test_a_cooperative_child_exits_under_the_grace() -> None:
+async def test_a_cooperative_child_exits_under_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     """The other half of the same mechanism: the soft signal is enough.
 
     ``proc`` is captured BEFORE ``stop()`` because :attr:`RpcClient.returncode`
@@ -274,17 +284,25 @@ async def test_a_cooperative_child_exits_under_the_grace() -> None:
     proc = client.process
     assert proc is not None
 
-    started = time.monotonic()
-    await client.stop()
-    elapsed = time.monotonic() - started
+    events = record_stop(client, monkeypatch)
 
-    grace = RpcClient.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
-    assert elapsed < grace, (
-        f"stop() took {elapsed:.3f}s against a {grace:.3f}s grace — a child "
-        "that exits on the soft signal must not pay for the escalation"
+    await client.stop()
+
+    # One grace entry, armed in full, after which ``_await_exit`` answered that
+    # the child had exited — and no kill: the escalation never ran (#330 — this
+    # was ``elapsed < grace``, a bet against the runner's load). ``settled``
+    # accepts both sides of the one race in that answer (the exit landing in
+    # the loop turn the grace's timer fires: ``stop()`` still does not
+    # escalate, rightly), so this is "did not escalate, and the child exited",
+    # not "the exit beat the timer".
+    grace = grace_of(client)
+    assert settled(events) == [("await_exit", grace, EXITED)], (
+        f"stop() recorded {events} for a child that exits on the soft signal — "
+        f"expected one wait armed with the full {grace:.3f}s grace, the child "
+        "exited when it ended, and no escalation after it"
     )
     # 3 is only reachable through the handler, so this is the delivery proof
-    # that ``elapsed < grace`` on its own is not.
+    # that "the exit landed inside the grace" on its own is not.
     assert proc.returncode == 3, f"child exited {proc.returncode}, not via its handler"
     assert _SOFT_KILL_BREADCRUMB in client.get_stderr()
 

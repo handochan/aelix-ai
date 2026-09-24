@@ -42,6 +42,8 @@ from aelix_ai.streaming import (
 from aelix_coding_agent.cli.entry import _read_piped_stdin
 from aelix_coding_agent.modes.print_mode import run_print_mode
 
+from tests.event_waits import check_anti_hang
+
 posix_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="select-based stdin guard + EPIPE semantics are POSIX-gated",
@@ -74,8 +76,14 @@ async def test_read_piped_stdin_times_out_on_silent_pipe(
         os.close(write_fd)
         stdin.close()
     assert result is None
-    assert elapsed < 5  # returned at the 0.1s deadline, not hung
-    assert "AELIX_STDIN_TIMEOUT" in capsys.readouterr().err
+    # WHICH deadline ended the wait is the product's own notice (#330 — this
+    # was an unmessaged ``elapsed < 5``): it names the bound it gave up at, so
+    # "0.1s" here is the configured deadline firing, on any runner. A hang is
+    # the ``wait_for`` above; this bound only makes its number legible.
+    err = capsys.readouterr().err
+    assert "AELIX_STDIN_TIMEOUT" in err
+    assert "no data on piped stdin after 0.1s" in err, err
+    check_anti_hang(elapsed, bound=15.0, what="a silent-pipe read under a 0.1 s deadline")
 
 
 @posix_only
@@ -230,9 +238,13 @@ async def test_argv_prompt_shortens_the_wait_on_a_silent_pipe(
         stdin.close()
     assert result is None
     # The point of the change: bounded by the grace window, nowhere near the
-    # 30s deadline this same pipe still costs when stdin IS the prompt.
-    assert elapsed < 15
-    assert "AELIX_STDIN_TIMEOUT" in capsys.readouterr().err
+    # 30s deadline this same pipe still costs when stdin IS the prompt. Read off
+    # the product's notice, which names the bound it gave up at (#330 — this
+    # was an unmessaged ``elapsed < 15``, which a 12 s grace would also pass).
+    err = capsys.readouterr().err
+    assert "AELIX_STDIN_TIMEOUT" in err
+    assert "no data on piped stdin after 5s" in err, err
+    check_anti_hang(elapsed, bound=25.0, what="a silent-pipe read under the 5 s grace window")
 
 
 @posix_only

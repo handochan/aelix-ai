@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -283,7 +284,20 @@ def test_exec_timeout_ends_the_pipe_holding_grandchild(tmp_path: Path, strays: l
     assert result.killed is True
     assert _await_dead(grandchild) != STATE_ALIVE
     assert _await_dead(root_pid) != STATE_ALIVE
-    assert elapsed <= bound
+    # No ``elapsed <= bound`` here any more (#330): ``_exec_bounded``'s watchdog
+    # joins the call for the SAME bound and fails first, naming itself and the
+    # time it waited, so this assertion restated the watchdog's bound and could
+    # fail on its own only inside the sliver ``elapsed`` also counts outside
+    # that join (``_bound_api_and_harness()`` and the thread's start) — a
+    # margin that says nothing about ``exec`` (#222 review M-11 made the same
+    # point about ``test_subprocess_helper``'s legs). The verdicts are
+    # ``code``/``killed`` and the two deaths above; the number still reaches
+    # the ``-q`` log.
+    warnings.warn(
+        f"exec timeout with a pipe-holding grandchild returned in {elapsed:.3f}s "
+        f"(anti-hang bound {bound:.1f}s)",
+        stacklevel=1,
+    )
 
 
 def test_exec_with_a_backgrounded_holder_is_the_success_it_was(
@@ -318,7 +332,22 @@ def test_exec_with_a_backgrounded_holder_is_the_success_it_was(
     assert result.code == 0
     assert result.killed is False
     assert result.stdout == "done\nlate\n"
-    assert elapsed <= ceiling
+    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it, as #313 kept
+    # the drain caps): the exit drain ends the call, not the holder, whose
+    # lifetime is far past this. Its watchdog is ``ceiling + 5``, so this is
+    # the assertion that fires on a drain that waited the holder out — and it
+    # now says so, with the number.
+    assert elapsed <= ceiling, (
+        f"exec with a backgrounded holder returned after {elapsed:.3f}s, past its "
+        f"{ceiling:.1f}s ceiling (0.5 s of root + EXIT_DRAIN_SECONDS "
+        f"{EXIT_DRAIN_SECONDS} + 2.0 s): the drain waited on the holder instead of "
+        "ending at the exit drain — or the runner is loaded; rerun the file alone"
+    )
+    if elapsed > ceiling / 2:
+        warnings.warn(
+            f"exec with a backgrounded holder took {elapsed:.3f}s of its {ceiling:.1f}s ceiling",
+            stacklevel=1,
+        )
     assert probe_state(holder) == STATE_ALIVE
 
 
