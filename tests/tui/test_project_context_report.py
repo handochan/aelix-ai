@@ -84,7 +84,7 @@ class _ReportHarness:
     """Only the seams ``/context`` reads, with production's EXACT signatures.
 
     ``_action_get_system_prompt`` takes no arguments and returns ``str``
-    (``harness/core.py:3977-3978``); ``messages`` is a plain list property. No
+    (``harness/core.py:4008-4009``); ``messages`` is a plain list property. No
     ``_action_get_all_tools``, so the tools category is genuinely absent rather
     than faked — the rows under test are then the only two produced, and no
     ``**kwargs`` anywhere lets a call through that production would reject.

@@ -180,7 +180,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
 
     ``get_session_stats`` cannot serve a mid-turn read at all. The harness only
     extends ``_state.messages`` once the agent loop has RETURNED
-    (``harness/core.py:4830``), while ``turn_end`` fires once per provider
+    (``harness/core.py:4861``), while ``turn_end`` fires once per provider
     round-trip inside it (``loop.py:240``) — so every one of those refreshes
     estimated over an unchanged list and repainted the pre-turn number, which on
     the first turn of a session is literally ``◔ 0%``. The fresh number is in
@@ -2094,7 +2094,7 @@ async def run_tui(
     # in flight at once (``turn_end`` then ``settled`` for one turn), each
     # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
     # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
-    # before ``core.py:4830`` extends it, yet may finish after the settled
+    # before ``core.py:4861`` extends it, yet may finish after the settled
     # refresh and paint the stale value last. Completions therefore carry the
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
@@ -2103,13 +2103,13 @@ async def run_tui(
     # #249 — the tokens of the last assistant response of the RUNNING turn, or
     # ``None`` when no such number is held. It exists because the stats read
     # cannot produce one: ``_state.messages`` is not extended until the loop
-    # returns (``core.py:4830``), so a mid-turn ``get_session_stats`` estimates
+    # returns (``core.py:4861``), so a mid-turn ``get_session_stats`` estimates
     # over the pre-turn list. While this is set the meter is showing a strictly
     # fresher figure than a stats walk could, so ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:221``, ``:260``, ``:271``, plus
-    # the abort close-out ``core.py:4780`` and the hook-fail one ``:4823``)
+    # the abort close-out ``core.py:4811`` and the hook-fail one ``:4854``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
-    # hook-fail paths, which ``return``/``raise`` before ``core.py:4830``.
+    # hook-fail paths, which ``return``/``raise`` before ``core.py:4861``.
     live_tokens: dict[str, int | None] = {"n": None}
 
     def _next_context_usage_seq() -> int:
@@ -2189,7 +2189,7 @@ async def run_tui(
         """#249 — every model change re-derives the meter, immediately.
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2387``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2418``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2197,7 +2197,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2412``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2443``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2529,7 +2529,7 @@ async def run_tui(
             # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks estimated over a message list the harness
-            # does not extend until the loop returns (``core.py:4830``). Each
+            # does not extend until the loop returns (``core.py:4861``). Each
             # therefore repainted the PRE-turn number on top of a fresher live
             # one: 20% → 5% → 30% → 5%, downward flicker on a segment that has a
             # flicker-regression history.
@@ -2538,7 +2538,7 @@ async def run_tui(
             # turn_end "covers the ABORT and ERROR turn paths, which append their
             # message to ``state.messages`` BEFORE emitting turn_end and so are
             # already current here". Only a BODILESS aborted stub is appended
-            # (``core.py:4777``); the turn's real assistant messages sit in
+            # (``core.py:4808``); the turn's real assistant messages sit in
             # ``new_messages`` and are dropped by the ``return []`` before the
             # extend — so that estimate anchors on the PREVIOUS turn and is lower
             # than live too. Skipping it there is the better number, not merely a
@@ -2564,7 +2564,7 @@ async def run_tui(
             # stats read. One ``agent_end`` per prompt, on every exit including
             # abort and hook-failure, which is why the clear lives here and not
             # in ``_settled_hook``: ``settled`` is emitted after
-            # ``core.py:4830``, and both of those paths return or raise before
+            # ``core.py:4861``, and both of those paths return or raise before
             # reaching it. ``agent_end`` precedes that extend by microseconds and
             # paints nothing itself, so the success path's authoritative
             # ``settled`` refresh still lands.
@@ -2572,7 +2572,7 @@ async def run_tui(
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
-        # harness extends it at ``harness/core.py:4830`` and emits ``settled``
+        # harness extends it at ``harness/core.py:4861`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
@@ -2582,7 +2582,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:4838-4839`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:4869-4870`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2610,7 +2610,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2412``).
+        # the model is already swapped in (``core.py:2443``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3504,7 +3504,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:3977-3978``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4008-4009``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

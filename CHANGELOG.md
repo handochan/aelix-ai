@@ -92,6 +92,11 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Cancelling a prompt during automatic retry backoff now closes its retry
+  sequence.** Cancelling the prompt used to leave `_retry_attempt` set and omit
+  `AutoRetryEndEvent`; the retry state is now cleared, the unsuccessful end
+  event is emitted, and cancellation still propagates to the caller. (#335)
+
 - **The last lines of a command's output no longer go missing when Aelix is
   busy as the command ends.** The bash tool stopped reading a finished
   command's output by the clock — a tenth of a second after the command ended —
@@ -1074,7 +1079,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:4830`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:4861`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

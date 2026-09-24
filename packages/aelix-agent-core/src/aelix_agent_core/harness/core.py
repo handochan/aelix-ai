@@ -2126,8 +2126,9 @@ class AgentHarness:
 
         Emits ``auto_retry_start`` + sleeps with exponential backoff
         (``base_delay * 2^(attempt-1)``, 2s/4s/8s) + supports mid-sleep
-        abort via :meth:`abort_retry`. On max-retries-exceeded or abort,
-        emits ``auto_retry_end {success: False}`` and returns False.
+        abort via :meth:`abort_retry`. On max-retries-exceeded or abort, emits
+        ``auto_retry_end {success: False}`` and returns False. Cancellation of
+        the prompt task during backoff emits the same end event and propagates.
         Returns True when the caller should re-run the turn.
         """
 
@@ -2156,11 +2157,12 @@ class AgentHarness:
             )
             return False
 
+        retry_attempt = self._retry_attempt
         # pi ``:2458``: ``delayMs = baseDelayMs * 2^(attempt-1)`` (2s/4s/8s).
-        delay_ms = _AUTO_RETRY_BASE_DELAY_MS * (2 ** (self._retry_attempt - 1))
+        delay_ms = _AUTO_RETRY_BASE_DELAY_MS * (2 ** (retry_attempt - 1))
         await self._emit_to_subscribers(
             AutoRetryStartEvent(
-                attempt=self._retry_attempt,
+                attempt=retry_attempt,
                 max_attempts=_AUTO_RETRY_MAX_ATTEMPTS,
                 delay_ms=delay_ms,
                 error_message=getattr(message, "error_message", "") or "Unknown error",
@@ -2177,24 +2179,53 @@ class AgentHarness:
         # pi ``:2479-2495``: ``await sleep(delayMs, abortSignal)``. asyncio
         # equivalent: wait_for(abort_event.wait, timeout) — TimeoutError means
         # the sleep completed normally; success means the abort fired.
-        self._retry_abort_event = asyncio.Event()
+        retry_abort_event = asyncio.Event()
+        self._retry_abort_event = retry_abort_event
+        owns_retry = False
         try:
-            await asyncio.wait_for(
-                self._retry_abort_event.wait(), timeout=delay_ms / 1000.0
-            )
-            aborted = True
-        except TimeoutError:
-            aborted = False
+            try:
+                await asyncio.wait_for(
+                    retry_abort_event.wait(), timeout=delay_ms / 1000.0
+                )
+                aborted = True
+            except TimeoutError:
+                aborted = False
+            except asyncio.CancelledError:
+                owns_retry = self._retry_abort_event is retry_abort_event
+                if owns_retry:
+                    self._retry_attempt = 0
+                self._state.retry_aborted = True
+                try:
+                    await asyncio.shield(
+                        self._emit_to_subscribers(
+                            AutoRetryEndEvent(
+                                success=False,
+                                attempt=retry_attempt,
+                                final_error="Retry cancelled",
+                            )
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug(
+                        "auto_retry_end subscriber raised during cancellation: %r",
+                        exc,
+                        exc_info=True,
+                    )
+                raise
         finally:
-            self._retry_abort_event = None
+            owns_retry = self._retry_abort_event is retry_abort_event
+            if owns_retry:
+                self._retry_abort_event = None
 
         if aborted:
             # pi ``:2484-2492``: abort during sleep → emit cancel + reset.
-            attempt = self._retry_attempt
-            self._retry_attempt = 0
+            if owns_retry:
+                self._retry_attempt = 0
             await self._emit_to_subscribers(
                 AutoRetryEndEvent(
-                    success=False, attempt=attempt, final_error="Retry cancelled"
+                    success=False,
+                    attempt=retry_attempt,
+                    final_error="Retry cancelled",
                 )
             )
             return False

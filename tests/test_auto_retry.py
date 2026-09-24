@@ -625,6 +625,61 @@ async def test_abort_during_the_retry_backoff_stops_the_retry(
     )
 
 
+async def test_cancelling_prompt_during_retry_backoff_closes_retry_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task cancellation during backoff still closes and resets the retry."""
+    import asyncio
+
+    monkeypatch.setattr(
+        "aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 60_000
+    )
+    calls: list[int] = []
+    h = AgentHarness(
+        AgentHarnessOptions(
+            session=Session(MemorySessionStorage()),
+            stream_fn=_retryable_stream_fn(calls),
+        )
+    )
+    h._state.auto_retry_enabled = True
+    h._state.auto_compaction_enabled = False
+
+    starts: list[AutoRetryStartEvent] = []
+    ends: list[AutoRetryEndEvent] = []
+    first_start = asyncio.Event()
+    second_start = asyncio.Event()
+
+    async def watch(event: object) -> None:
+        if isinstance(event, AutoRetryStartEvent):
+            starts.append(event)
+            (first_start if len(starts) == 1 else second_start).set()
+        elif isinstance(event, AutoRetryEndEvent):
+            ends.append(event)
+
+    h.subscribe(watch)
+    first = asyncio.create_task(h.prompt("first"))
+    await asyncio.wait_for(first_start.wait(), timeout=30)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(first, timeout=30)
+
+    assert len(calls) == 1
+    assert h._retry_attempt == 0
+    assert h._retry_abort_event is None
+    assert len(ends) == 1
+    assert ends[0].success is False
+    assert ends[0].attempt == 1
+    assert ends[0].final_error == "Retry cancelled"
+
+    second = asyncio.create_task(h.prompt("second"))
+    await asyncio.wait_for(second_start.wait(), timeout=30)
+    assert starts[1].attempt == 1
+    h.abort_retry()
+    await asyncio.wait_for(second, timeout=30)
+    assert len(ends) == 2
+    await h.dispose()
+
+
 async def test_a_backoff_that_is_not_aborted_still_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
