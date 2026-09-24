@@ -1,6 +1,6 @@
 # 0126. Sprint 6h₁₈ — Auto-compaction trigger (pi-faithful port, threshold-only v1)
 
-Status: Accepted (6h₁₈ shipped)
+Status: Accepted (6h₁₈ shipped) — #334 amendment 2026-09-25 (the check runs nested under the prompt's claim; see Code changes)
 Date: 2026-05-28
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -31,6 +31,13 @@ touched** (`harness/core.py`, ~50 LOC).
   `agent-session.ts:572-585 _processAgentEvent` invokes `_checkCompaction` after
   every `agent_end`. `_run` already reset `_phase` to "idle" in its finally, so
   `compact()` re-flips it to "compaction" exactly like manual `/compact`.
+  **#334 amendment 2026-09-25:** no longer true. `_run` no longer sets the
+  phase idle — the prompt holds its claim until it returns — and the threshold
+  compaction runs *nested* under that claim (`compact(_claim=…)`): phase
+  `"compaction"` while it runs, `"turn"` again after, the idle event clear
+  throughout; manual `/compact` keeps the idle guard. The check is also skipped
+  after an `abort()` (pi's `_agentRunAbortRequested`). See ADR-0023's #334
+  amendment.
 
 - `core.py:1293+` — new module constant + method after `compact()`:
   - `_AUTO_COMPACT_RESERVE_TOKENS = 16384` — pi `settings-manager.ts:681-683`

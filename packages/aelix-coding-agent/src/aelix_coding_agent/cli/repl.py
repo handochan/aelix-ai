@@ -52,7 +52,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
 #: ``tools/bash.py:63``; ad-hoc RPC bash tighter at 256 lines / 32KB,
-#: ``rpc/rpc_mode.py:605``). Uncapped, one ``!cat server.log`` is re-sent on
+#: ``rpc/rpc_mode.py:608``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
 #: ``UserMessage`` and a 2,000,455-byte session file.
@@ -288,7 +288,7 @@ async def handle_user_bash(
       is what the next ``prompt()`` sends, this turn and on every later
       resume, because ``AgentHarness._run`` derives the turn's messages from
       ``session.build_context()`` whenever a session is attached
-      (``harness/core.py:4512-4515``, pinned by
+      (``harness/core.py:4753-4756``, pinned by
       ``tests/test_state_messages_derived.py``);
     * ``harness.messages`` gets the same ``UserMessage`` now, which is what
       carries the output on the ``--no-session`` path — there ``_state.messages``
@@ -395,7 +395,7 @@ async def handle_user_bash(
         # attached the turn's messages come from ``build_context()``, so a
         # failed write costs THIS turn as well as the next resume — the live
         # append below keeps the output in ``_state.messages``, which
-        # ``_run`` then does not read (``harness/core.py:4512-4515``). Measured
+        # ``_run`` then does not read (``harness/core.py:4753-4756``). Measured
         # with ``append_custom_message_entry`` raising:
         # ``in _state.messages=True reached provider=False``.
         with contextlib.suppress(Exception):

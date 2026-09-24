@@ -346,7 +346,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1234-1239``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1250-1255``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -354,7 +354,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1231-1233``).
+        # enqueue-only regardless of phase (``core.py:1243-1245``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -490,6 +490,9 @@ async def _handle_get_state(
     # P-116: ``is_streaming`` covers every non-idle phase (turn + tool
     # execution + compaction) so RPC clients see the harness as busy
     # whenever it is not idle. ``is_compacting`` is the strict subset.
+    # #334: a prompt's retry wait and its closing overflow / threshold
+    # checks are part of its turn, so ``is_streaming`` stays true through
+    # them — pi's ``isStreaming`` is ``_isAgentRunActive``, held the same way.
     is_streaming = harness.phase != "idle"
 
     rpc_state = RpcSessionState(

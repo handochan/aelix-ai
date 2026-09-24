@@ -92,6 +92,60 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A second prompt sent while the first one waits to retry, or while it runs
+  its closing compaction, no longer runs alongside it and mixes both messages
+  into both answers.** When a provider call failed with a retryable error (a
+  rate limit, an overloaded server), Aelix reported itself idle for the whole
+  wait before the retry — and again while it checked whether to compact the
+  conversation at the end of a turn. A second prompt sent then was accepted and
+  ran at the same time as the first, and the two shared one conversation: live,
+  a prompt asking only for `ALPHA` got `ALPHA` and `BRAVO` back, and so did the
+  prompt asking for `BRAVO`. A prompt now holds the harness until it has
+  finished completely. A second `prompt()` in that window is refused as busy,
+  as it is during any other turn. Over RPC, a `prompt` command there gets an
+  error response, or — with `streamingBehavior` — is queued as a steer or
+  follow-up, which it used to ignore and start a turn instead; `get_state`
+  reports `isStreaming` true through the wait. `wait_for_idle()` and
+  `dispose()` wait for the whole prompt, where `dispose()` used to tear the
+  harness down under a prompt still waiting to retry. An extension's
+  `send_message(trigger_turn=True)` in that window is queued for the next turn
+  instead of starting one. A model or thinking-level change or an
+  `append_message()` made during the wait is written to the session by the
+  time the prompt returns — an appended message used to never reach the
+  session at all. If the prompt is cancelled while it is still writing them,
+  the ones left over are written, in order, before any later model or
+  thinking-level change, appended message, compaction, tree navigation or
+  prompt writes to the session, and `dispose()` writes them — they are no
+  longer overtaken by a later change (a resumed session restoring the older
+  thinking level) or lost. (A session name, a label, an extension's
+  `append_entry` or a user-bash record is written at once, as before.) A
+  prompt cancelled while it waits for writes still being made returns once they
+  are written; if a custom session storage never finishes a write, the prompt
+  stays busy until it is cancelled a second time. Not changed: a
+  thinking-level change made while idle with nothing waiting is written at
+  once, and with a custom storage that pauses inside that write a later
+  change can still land before it (#314). `navigate_tree()`
+  and a manual `compact()` are refused as busy there too. An `abort()` (or
+  `dispose()`) during the wait or the closing checks now also stops the
+  automatic compaction and the retried turn that used to go ahead after it.
+  So does an extension's `ctx.abort()` (and `ctx.shutdown()` when no shutdown
+  action is installed): called from a hook of a turn that ends in a retryable
+  error or over the compaction threshold, it now stops the retry and the
+  compaction — it used to do nothing. It still does not stop the turn it is
+  called in. Aborting a running turn whose conversation is over the compaction
+  threshold — Esc or Ctrl+C in the TUI, an RPC `abort`, `dispose()` — no longer
+  runs the closing compaction after the aborted turn, as in pi. Typing during
+  the TUI's retry countdown is unchanged: a line typed there was, and is,
+  steered into the retried turn. For
+  code that embeds Aelix: an async event listener or hook handler that the
+  prompt is awaiting during its retry wait or closing compaction must not
+  await `wait_for_idle()`, `dispose()`, or a runtime `new_session()`,
+  `fork()`, `switch_session()` or `reload()` (they wait for idle too) — each
+  now waits for the prompt it is part of, for ever. A custom session storage
+  must not call back into the harness from inside one of its writes with
+  anything that writes the session — an idle `set_thinking_level()`,
+  `prompt()`, `compact()`, `navigate_tree()` or `dispose()`: that call can
+  wait for the write it is made from, for ever. (#334)
 - **The last lines of a command's output no longer go missing when Aelix is
   busy as the command ends.** The bash tool stopped reading a finished
   command's output by the clock — a tenth of a second after the command ended —
@@ -268,7 +322,7 @@ unwritten. Add them with the next release.
   is running, and the prompt whose turn started last is cancelled before that
   turn gets going, a third prompt is now let in on top of the other where it
   used to be refused. The second prompt should not have got in at all, and
-  closing that closes these too. It was not only for embedders:
+  closing that closes these too (closed by #334). It was not only for embedders:
   `aelix -p` awaits its prompt inside the task `asyncio.run` cancels on the
   first Ctrl+C, so a Ctrl+C while an extension's `input` or
   `before_agent_start` handler was still running — a plugin's subprocess hook
@@ -1074,7 +1128,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:4830`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:5071`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

@@ -290,7 +290,7 @@ async def test_a_huge_output_is_capped_in_the_record_but_not_on_screen(
 
     Every sibling has one — the model-facing tool at 2000 lines / 50KB
     (``tools/bash.py:63``), ad-hoc RPC bash at 256 / 32KB
-    (``rpc/rpc_mode.py:605``), pi's own ``!`` path via ``truncateTail``
+    (``rpc/rpc_mode.py:608``), pi's own ``!`` path via ``truncateTail``
     (``core/bash-executor.ts:113``). Uncapped, the record is re-sent on every
     later turn and every ``--continue``: measured before the cap,
     ``print('x'*1000000)`` wrote a 1,000,047-char ``UserMessage`` and a
@@ -592,7 +592,7 @@ async def test_a_failed_session_write_costs_this_turn_as_well(
 
     This is the assertion the fix pass was missing. ``AgentHarness._run``
     derives the turn's messages from ``session.build_context()`` whenever a
-    session is attached (``harness/core.py:4512-4515``, pinned by
+    session is attached (``harness/core.py:4753-4756``, pinned by
     ``tests/test_state_messages_derived.py``), so the live append is not a
     second chance at the same turn: when the entry cannot be written, the
     output reaches nothing. The suppression is deliberate — an unwritable
@@ -633,7 +633,7 @@ async def test_without_a_session_the_live_append_is_what_reaches_the_provider(
     """The other half of the same measurement — why the live append stays.
 
     On ``--no-session`` there is no entry to write and ``_state.messages`` IS
-    the turn's list (``harness/core.py:4516-4518``), so the append is the only
+    the turn's list (``harness/core.py:4757-4759``), so the append is the only
     thing carrying the output. Delete it and this test fails while the
     session-backed ones still pass.
     """

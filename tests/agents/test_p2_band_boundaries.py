@@ -52,7 +52,7 @@ _SPAWN_ALLOWLIST = (
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
 # six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1181``,
-# ``rpc/rpc_mode.py:1494``, ``extensions/command_context.py:116``), so a
+# ``rpc/rpc_mode.py:1497``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.

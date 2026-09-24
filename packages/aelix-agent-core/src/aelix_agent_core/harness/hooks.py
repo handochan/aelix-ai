@@ -894,7 +894,14 @@ class ResourcesUpdateHookEvent(HookEvent):
 
 @dataclass(frozen=True)
 class SettledHookEvent(HookEvent):
-    """Observational event emitted when the harness returns to idle.
+    """Observational event emitted at the end of each run of a turn.
+
+    It fires inside :meth:`AgentHarness._run`, once per run — so also after a
+    failed attempt that will be retried, and before the prompt's closing
+    overflow / threshold checks. Since #334 the harness is NOT idle yet when
+    it fires: the phase stays ``"turn"`` until the whole ``prompt()`` call
+    returns (ADR-0023, #334 amendment). pi's ``agent_settled`` is once per
+    prompt, at that release; keeping this one per run is a known divergence.
 
     Pi parity: ``types.ts:491-494`` (SHA 734e08e). The ``next_turn_count``
     field is added in Sprint 3a (event-type extension); the populating value

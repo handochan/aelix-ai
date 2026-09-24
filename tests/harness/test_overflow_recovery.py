@@ -93,6 +93,8 @@ def _capture_compact(h: AgentHarness) -> list[tuple[str, bool]]:
         *,
         reason: str = "manual",
         will_retry: bool = False,
+        # #334 — the prompt's tail passes its claim so the compaction nests.
+        _claim: object = None,
     ) -> Any:
         calls.append((reason, will_retry))
         return SimpleNamespace(summary="", first_kept_entry_id="", tokens_before=0)
@@ -110,7 +112,7 @@ async def test_overflow_compacts_with_reason_and_reruns() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
@@ -140,7 +142,7 @@ async def test_overflow_pops_error_before_rerun() -> None:
     messages_at_rerun: list[Any] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
@@ -172,7 +174,7 @@ async def test_overflow_never_loops_forever() -> None:
     run_calls: list[list[Any]] = []
 
     async def _always_overflow(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -198,7 +200,7 @@ async def test_silent_overflow_on_success_compacts_without_retry() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         # A completed answer whose usage exceeded the window (z.ai style).
@@ -232,7 +234,7 @@ async def test_overflow_nothing_to_compact_is_safe() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -256,7 +258,7 @@ async def test_overflow_disabled_when_auto_compaction_off() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
+        prompts: Any, *, system_prompt: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -310,18 +312,15 @@ async def test_real_compact_emits_overflow_reason_and_will_retry() -> None:
 
     run_calls: list[list[Any]] = []
 
-    async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None, owner: object = None
-    ) -> list[Any]:
+    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
             h._state.messages.append(_overflow_err())
         else:
             h._state.messages.append(_success())
-        # Real ``_run`` returns the harness to idle (its ``finally``); replicate
-        # so the subsequent real ``compact()`` passes its idle busy-guard.
-        h._phase = "idle"
-        h._idle_event.set()
+        # #334 — the real ``_run`` no longer returns the harness to idle: the
+        # prompt holds the turn through its tail, and the real ``compact()``
+        # below nests under that claim instead of needing an idle harness.
         return list(h._state.messages)
 
     h._run = _fake_run  # type: ignore[method-assign]

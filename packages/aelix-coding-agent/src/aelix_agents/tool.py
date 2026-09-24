@@ -11,7 +11,7 @@ measured reasons, all of which make the hook the only correct location:
 1. **``execute()`` is not serialised.** The kernel runs ``before_tool_call`` in
    the SEQUENTIAL prep phase (``loop.py:521-542``, driven from ``:832-867``) but
    ``execute`` under ``asyncio.gather`` (``loop.py:900``), with
-   ``tool_execution = "parallel"`` by default (``harness/core.py:271``). Two
+   ``tool_execution = "parallel"`` by default (``harness/core.py:277``). Two
    modals from one batch collide on ``tui/chrome.py:524``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C.
@@ -314,7 +314,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:4164-4166`` explicitly permits a later handler to mutate
+    ``harness/core.py:4401-4403`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -612,7 +612,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1342``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1365``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:4117-4133``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """

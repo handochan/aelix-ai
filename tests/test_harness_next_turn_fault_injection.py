@@ -1,10 +1,10 @@
 """Issue #311 — a hook that throws during the drain must not eat the queue.
 
-``prompt()`` detaches ``_next_turn_queue`` into a local (``core.py:1304-1305``)
+``prompt()`` detaches ``_next_turn_queue`` into a local (``core.py:1326-1327``)
 and only hands it to ``_run`` some twenty lines later. Two awaits sit in that
 gap — ``_emit_queue_update`` and ``_emit_before_agent_start`` — and both turn a
 handler exception into a raised ``AgentHarnessError``, while a handler's
-``error_mode`` defaults to ``"throw"`` (``hooks.py:2493-2500``). Before this suite
+``error_mode`` defaults to ``"throw"`` (``hooks.py:2500-2507``). Before this suite
 existed, either raise unwound the frame with the user's queued text in a dead
 local: on no queue, in no turn, in no exception.
 
@@ -26,7 +26,7 @@ every other test here fills the queue through ``next_turn()``, so a push site
 that stopped pushing would leave this file green.
 
 What this file does NOT cover, because the fix does not reach it: ``_run``
-awaits ``self._session.build_context()`` (``core.py:4513``) before
+awaits ``self._session.build_context()`` (``core.py:4754``) before
 ``agent_loop`` is handed the list, and a session raising there loses the
 drained messages the same three ways. That window is measured in
 ``.omc/specs/311-next-turn-drain.py`` ARM 6 and reported as its own issue;
@@ -133,7 +133,7 @@ async def test_a_throwing_before_agent_start_handler_leaves_the_next_turn_queue_
     """The window is wider than the issue said.
 
     #311 named ``_emit_queue_update``. ``_emit_before_agent_start``
-    (``core.py:1342``) is in the same window and wraps handler exceptions the
+    (``core.py:1365``) is in the same window and wraps handler exceptions the
     same way, so a remedy scoped to the emit alone would have left half the
     gap open. This is why the guard wraps the region rather than the call.
     """
@@ -204,7 +204,7 @@ async def test_a_cancelled_drain_hands_the_messages_back() -> None:
     """A cancel landing on the emit is the same loss in ``CancelledError``.
 
     ``abort()`` clears the steer and follow_up queues and deliberately leaves
-    ``_next_turn_queue`` alone (``core.py:1584-1585``), so a cancellation that
+    ``_next_turn_queue`` alone (``core.py:1667-1668``), so a cancellation that
     ate the drained messages would contradict that design. The guard catches
     ``BaseException`` for this arm.
 
@@ -296,8 +296,8 @@ async def test_a_turn_that_fails_after_the_drain_does_not_requeue() -> None:
 async def test_both_push_sites_reach_the_guarded_queue() -> None:
     """There are exactly two pushes onto ``_next_turn_queue``.
 
-    ``next_turn()`` (``core.py:3085``) and ``_action_send_message()``
-    (``core.py:4108``), the latter reached by ``ExtensionAPI.send_message`` /
+    ``next_turn()`` (``core.py:3254``) and ``_action_send_message()``
+    (``core.py:4345``), the latter reached by ``ExtensionAPI.send_message`` /
     ``send_user_message`` and by the ``ReplacedSessionContext`` handle. Every
     other test in this file uses the first, so without this one a change that
     stopped the extension route from queueing would not redden anything here.

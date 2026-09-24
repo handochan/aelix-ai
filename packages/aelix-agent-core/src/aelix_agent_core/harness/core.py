@@ -142,12 +142,18 @@ Pi's transitions exactly:
 
 - ``"idle"`` — no work in flight; prompt / steer / follow_up / compact /
   navigate_tree all legal.
-- ``"turn"`` — :meth:`AgentHarness.prompt` is running.
-- ``"compaction"`` — :meth:`AgentHarness.compact` is running.
+- ``"turn"`` — :meth:`AgentHarness.prompt` is running: from its entry to its
+  return, including every re-run, the retry backoff and the closing overflow /
+  threshold checks (#334 — before it the phase went idle when each run ended,
+  while the prompt still had its tail to do).
+- ``"compaction"`` — :meth:`AgentHarness.compact` is running, called either
+  on an idle harness or from inside a prompt's tail; in the second case the
+  phase goes back to ``"turn"``, not ``"idle"``, when it ends (#334).
 - ``"branch_summary"`` — :meth:`AgentHarness.navigate_tree` is running.
 
 All four method paths guard with ``raise AgentHarnessError("busy", ...)`` when
-the phase is anything other than ``"idle"``.
+the phase is anything other than ``"idle"`` — except the prompt's own tail
+compaction, which nests under the prompt's claim (ADR-0023, #334 amendment).
 """
 HarnessListener = AgentListener  # type alias — same shape as AgentListener
 
@@ -570,15 +576,17 @@ class AgentHarness:
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
         self._phase: AgentHarnessPhase = "idle"
-        # Issue #321 — the claim of the ``prompt()`` call that last set the phase
-        # to "turn". Both statements that set "turn" take it with no await in
-        # between: ``prompt()``'s entry, and ``_run``'s flip, which the first
-        # run and every re-run reach with their ``prompt()``'s ``owner`` as a
-        # required argument. Never released, only overwritten by the next flip,
-        # so it names the call whose flip came last; ``prompt()`` gives the
-        # phase back only on its own claim (its ``except BaseException``, and
-        # the ``InputHandled`` return). ADR-0023, 2026-09-24.
-        self._turn_owner: object | None = None
+        # Issue #334 — the claim of the ``prompt()`` call that holds the turn,
+        # from its entry flip to the one release in its ``finally``; ``None``
+        # when no prompt is in flight. Nothing reads it to decide who may give
+        # the phase back: while it is held every other flipper refuses a
+        # non-idle phase and ``_run`` flips nothing, so the release is always
+        # the holder's. It exists so that the holder's own tail compactions can
+        # nest under it — ``compact(_claim=...)`` accepts a non-idle phase
+        # exactly when handed this object. It replaced #321's ``_turn_owner``,
+        # which had to name the call whose flip came last because two prompts
+        # could be in flight at once (ADR-0023, #334 amendment 2026-09-25).
+        self._claim: object | None = None
         self._abort_requested = False
         # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
         self._turn_state: _TurnState | None = None
@@ -724,6 +732,10 @@ class AgentHarness:
         # agent-harness.ts:172 + 466-472).
         self._next_turn_queue: list[AgentMessage] = []
         self._pending_session_writes: list[PendingSessionWrite] = []
+        # #334 — held by :meth:`_drain_pending_session_writes`, so a write that
+        # goes behind the queue cannot be flushed ahead of items another drain
+        # has already detached and is still appending.
+        self._drain_lock = asyncio.Lock()
         self._idle_event = asyncio.Event()
         self._idle_event.set()
         # Sprint 5b §E ergonomics — Pi parity ``cachedSessionName`` (sync read
@@ -1231,6 +1243,10 @@ class AgentHarness:
         # branch_summary). steer()/follow_up() remain enqueue-only per Pi
         # parity (Pi ``agent-harness.ts`` steer paths enqueue regardless of
         # phase). See ADR-0023 phase-machine table.
+        #
+        # #334 — the guard stays OUTSIDE the ``try`` below: a refused call must
+        # raise before it owns anything, because that ``finally`` releases
+        # unconditionally and would otherwise give away the live caller's turn.
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
@@ -1238,15 +1254,27 @@ class AgentHarness:
                 "steer()/follow_up() while in a turn.",
             )
         # Flip phase synchronously BEFORE the first await so concurrent callers
-        # see the guard immediately (C-2 re-entrancy fix).
+        # see the guard immediately (C-2 re-entrancy fix). #334: the claim taken
+        # here is held through the WHOLE call — every run, the retry backoff,
+        # the ``auto_retry_end`` emit, overflow recovery and the threshold
+        # compaction check — and released once, in the ``finally`` at the end.
+        # pi's shape: ``_runAgentPrompt`` sets ``_isAgentRunActive`` and clears
+        # it only in its ``finally``'s ``_emitAgentSettled()``
+        # (``agent-session.ts:1468-1490`` @ a328aa89a).
         self._phase = "turn"
         self._idle_event.clear()
-        owner = self._turn_owner = object()  # #321 — see the ``except`` below
+        claim = self._claim = object()
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
         self._overflow_recovery_attempted = False
         try:
+            # #334 — writes an earlier call left queued (its release flush was
+            # cancelled) go to the session before anything this call writes.
+            # pi flushes its pending messages "before the new prompt"
+            # (``agent-session.ts:1669-1671`` @ a328aa89a). No await when
+            # nothing is queued; inside the ``try``, so a cancel here releases.
+            await self._drain_pending_session_writes()
             # Sprint 5b §B.1 — ``input`` emit (P-24/P-34). Pi parity
             # (``agent-session.ts:984-1001``): runs BEFORE existing
             # before_agent_start emit so a ``handled`` short-circuit also
@@ -1263,14 +1291,8 @@ class AgentHarness:
                         f"input hook handler raised: {exc}",
                     ) from exc
                 if isinstance(input_result, InputHandled):
-                    # Pi: handled exits prompt() entirely — harness returns idle.
-                    # #321 — by the ``except`` clause's rule below: only a "turn"
-                    # whose last flip was this call's. While this hook ran, a
-                    # first call's re-run could have set "turn" (the idle tail),
-                    # and that turn is not this call's to give back.
-                    if self._phase == "turn" and self._turn_owner is owner:
-                        self._phase = "idle"
-                        self._idle_event.set()
+                    # Pi: handled exits prompt() entirely — harness returns idle,
+                    # through the ``finally`` below like every other exit (#334).
                     return []
                 if isinstance(input_result, InputTransform):
                     text = input_result.text
@@ -1307,9 +1329,9 @@ class AgentHarness:
             # receives the list, the drained messages live in a LOCAL and nowhere
             # else. Two awaits sit between here and the ``_run`` call and both
             # convert a handler exception into a raised ``AgentHarnessError``
-            # (``_emit_queue_update`` :2368-2383, ``_emit_before_agent_start``
-            # :4272-4287), while a handler's ``error_mode`` defaults to ``"throw"``
-            # (``hooks.py:2493-2500``). Either raise unwound the frame and the
+            # (``_emit_queue_update`` and ``_emit_before_agent_start``, each
+            # method's ``except``), while a handler's ``error_mode`` defaults to ``"throw"``
+            # (``hooks.py:2500-2507``). Either raise unwound the frame and the
             # user's queued text existed on no queue, in no turn and in no
             # exception. The guard covers the region, not those two calls by name,
             # so an await added to this gap later is covered too.
@@ -1317,7 +1339,7 @@ class AgentHarness:
             # It ENDS at the ``_run`` call because that is the last point where this
             # frame can prove the turn never started — NOT because the messages are
             # safe past it: ``_run`` awaits ``self._session.build_context()``
-            # (:4513) before ``agent_loop(prompts, ...)`` (:4729-4730) is handed
+            # (its first await) before ``agent_loop(prompts, ...)`` is handed
             # the list, and a session raising there loses them the same three ways
             # (.omc/specs/311-next-turn-drain.py ARM 6). That window is open and
             # reported, not closed here — it takes the live user message with it
@@ -1329,7 +1351,8 @@ class AgentHarness:
             # (ARM 3) and appending would reorder the user's two sentences.
             # ``BaseException`` because a ``CancelledError`` is the same loss in
             # other clothing — from an embedder cancelling ``prompt()``, not from
-            # ``abort()`` (:1587-1589). ADR-0246 has what the restore cannot undo.
+            # ``abort()`` (its ``_current_turn_task.cancel()``, which cannot reach
+            # this window). ADR-0246 has what the restore cannot undo.
             try:
                 # F-3b-3 (W5 should-fix): Pi emits ``queue_update`` when the
                 # next_turn queue is drained at start of the next turn (Pi
@@ -1353,7 +1376,7 @@ class AgentHarness:
             except BaseException:
                 self._next_turn_queue = drained_next + self._next_turn_queue
                 raise
-            result = await self._run(prompts, system_prompt=system_prompt, owner=owner)
+            result = await self._run(prompts, system_prompt=system_prompt)
             # Issue #4 Lane B — outer recovery loop. pi parity
             # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
             # agent.continue()``). Each pass first drains the auto-retry loop
@@ -1382,6 +1405,24 @@ class AgentHarness:
                         last_assistant
                     ):
                         break
+                    # #334 — an ``abort()`` made after the last run started is a
+                    # request to stop THIS prompt, and the claim now spans the
+                    # tail, so ``dispose()`` (abort, then wait for idle) waits for
+                    # whatever the tail still does. ``_run`` clears the flag only
+                    # at its entry, so here it still says whether one came since.
+                    # pi checks ``_agentRunAbortRequested`` after every await of
+                    # its post-run loop and neither retries, compacts nor
+                    # continues once it is set (``agent-session.ts:1473-1480``,
+                    # ``:1497-1528`` @ a328aa89a). An extension's ``ctx.abort()``
+                    # (and the default ``ctx.shutdown()``) sets the same flag, so
+                    # one made in a ``turn_end`` or ``settled`` handler of a
+                    # failed run stops its retry too — pi's ``ctx.abort()`` is
+                    # ``this.abort()`` (``agent-session.ts:3101-3106``). The
+                    # overflow recovery and the threshold check read the flag
+                    # themselves after their branch reads, their only await
+                    # before the compaction.
+                    if self._abort_requested:
+                        break
                     did_retry = await self._handle_retryable_error(last_assistant)
                     if not did_retry:
                         break  # max retries / disabled / aborted
@@ -1392,7 +1433,7 @@ class AgentHarness:
                     assert any(
                         isinstance(m, UserMessage) for m in self._state.messages
                     ), "retry continue requires a pending user message in state"
-                    result = await self._run([], system_prompt=system_prompt, owner=owner)
+                    result = await self._run([], system_prompt=system_prompt)
 
                 # Reset the retry counter and close out the retry sequence. pi
                 # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
@@ -1439,8 +1480,10 @@ class AgentHarness:
                             "error",
                             "aborted",
                         )
-                        # Reset BEFORE emitting: a subscriber that prompts again
-                        # synchronously must not observe the stale counter.
+                        # Reset BEFORE emitting: a subscriber that reads the
+                        # counter must not observe the stale value. (One that
+                        # prompts again from here is refused ``busy`` since
+                        # #334 — the claim is held until ``prompt()`` returns.)
                         self._retry_attempt = 0
                         await self._emit_to_subscribers(
                             AutoRetryEndEvent(
@@ -1461,46 +1504,86 @@ class AgentHarness:
                 # context-overflow on the last assistant triggers a compaction
                 # with reason="overflow" and a single re-run of the failed turn.
                 # Returns ``True`` only when a re-run is warranted (will_retry).
-                if not await self._try_overflow_recovery(system_prompt):
+                # #334 — not after an abort: it checks the flag itself after
+                # its branch read (see the retry loop above), and the flag is
+                # checked again here after the compaction's awaits: an
+                # ``abort()`` landing in them used to be cleared by the re-run's
+                # own ``_run`` entry, and the re-run went to the provider anyway.
+                if not await self._try_overflow_recovery(system_prompt, claim=claim):
                     break
-                result = await self._run([], system_prompt=system_prompt, owner=owner)
+                if self._abort_requested:
+                    break
+                result = await self._run([], system_prompt=system_prompt)
 
             # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
             # pi order is retry-then-compact (``agent-session.ts:577-582``).
-            await self._check_auto_compaction()
+            # #334 — after an abort it compacts nothing, as pi's post-run loop
+            # does: it reads the flag after its branch read, before the
+            # summariser (an earlier check here would only skip that read).
+            await self._check_auto_compaction(claim=claim)
             return result
-        except BaseException:
-            # Give the phase back on every exit that is not a return. It was
-            # ``except Exception``, which a ``CancelledError`` (a BaseException
-            # since 3.8) walks past (#321): an embedder cancelling this task
-            # while the input hook, the drain's ``queue_update``,
-            # ``before_agent_start`` or ``_run``'s ``build_context()`` — which
-            # precedes ``_run``'s own ``try`` — was awaiting left the phase at
-            # "turn" for good, refusing every later prompt as busy and parking
-            # ``wait_for_idle()`` and ``dispose()`` forever. ``abort()`` cannot
-            # reach that window (no ``_current_turn_task`` yet), so nothing else
-            # would ever reset it. From the drain's two awaits the inner clause
-            # (#311) has already put the queue back; this one never touches it.
+        finally:
+            # #334 — THE one release. The claim is this call's from the flip
+            # above to here and nothing else can flip the phase meanwhile: every
+            # other flipper refuses a non-idle phase, ``_run`` flips nothing, and
+            # the tail's own compactions nest under the claim and hand "turn"
+            # back in their own ``finally``. So this is unconditional, and it is
+            # the only place a prompt goes idle — a return, a raise, a cancel
+            # and an ``InputHandled`` all leave through it.
             #
-            # Only a "turn" this call set. Once ``_run`` has returned its
-            # ``finally`` has set the phase idle, so a second ``prompt()`` can
-            # pass the guard in the tail that follows (the retry backoff,
-            # overflow recovery, the threshold compaction check), and from then
-            # on the two calls' flips interleave in either order: this call's
-            # re-run can flip after the other's entry, and the other's first
-            # ``_run`` after this call's re-run. So the claim goes with the flip
-            # itself — the entry above, and ``_run``'s flip, which every run of
-            # this call reaches with ``owner`` — and is never released, only
-            # overwritten: it is still ``owner`` exactly when this call made the
-            # last flip. Resetting on anyone else's claim opens the guard under
-            # a turn this call does not own. Two turns in flight at once is the
-            # idle tail's own defect, and there the last flip wins: if its call
-            # raises or is cancelled before its ``try``, the phase goes back
-            # under the other call's live turn (ADR-0023, 2026-09-24).
-            if self._phase == "turn" and self._turn_owner is owner:
+            # Writes queued while the tail said "turn" (a ``set_model``,
+            # ``set_thinking_level`` or ``append_message`` during the backoff or
+            # a closing check's branch read — the mid-turn rule sends them to
+            # the pending queue; while a nested compaction runs the phase says
+            # "compaction", where ``append_message`` still queues,
+            # ``set_model`` records nothing and ``set_thinking_level`` appends
+            # at once only while nothing is queued or being drained — otherwise
+            # it goes behind the queue) are flushed before the phase says idle,
+            # so they are on disk when ``prompt()`` returns and
+            # ``wait_for_idle()`` wakes. pi's
+            # ``finally`` flushes its own pending messages before
+            # ``_emitAgentSettled()`` in the same order
+            # (``agent-session.ts:1483-1489`` @ a328aa89a). The drain loops: a
+            # write made while a flush awaited a session append still meets
+            # phase "turn" and lands on the fresh queue, and one pass would
+            # leave it pending on an idle harness (measured on the one-pass
+            # version: ``set_model`` + ``append_message`` made during the flush
+            # were still pending after the return). A cancelled flush hands its
+            # un-attempted tail back and leaves through the inner ``finally``,
+            # so a cancel still releases; the drain returns without awaiting
+            # when nothing is pending and no drain is running, so that release
+            # is as synchronous as #321's ``except`` clause was. pi's flush is
+            # synchronous and has no such cancel point, so what a cancel leaves
+            # queued here is kept in order by
+            # :meth:`_drain_pending_session_writes`: the next ``prompt()``, an
+            # idle ``set_thinking_level``, a public ``compact()`` /
+            # ``navigate_tree()`` and ``dispose()`` drain it before they write.
+            #
+            # The release drains through the same lock, even with its own queue
+            # empty. A drain another caller started can still be appending: an
+            # idle setter's, begun before this prompt's entry, when this
+            # prompt's entry drain was CANCELLED while it waited for it. It
+            # holds items it has detached, this call's tail writes maybe among
+            # them, and an unlocked flush wrote a tail write ahead of them (#334
+            # verification P1: on disk ``['x', 'medium', 'low']``). So the
+            # release waits for that drain. The cost: one cancel does not
+            # release until it ends (an append that never returns keeps the
+            # phase "turn"); a second cancel leaves through the inner ``finally``
+            # — what is still queued stays queued, and the next drain writes it
+            # in order: nothing lost or reordered.
+            try:
+                await self._drain_pending_session_writes()
+            except Exception:  # noqa: BLE001
+                _log.warning(
+                    "flush_pending_session_writes raised at the prompt's release "
+                    "— pending session writes were lost",
+                    exc_info=True,
+                )
+            finally:
+                self._claim = None
+                self._turn_state = None
                 self._phase = "idle"
                 self._idle_event.set()
-            raise
 
     async def steer(
         self,
@@ -1632,6 +1715,7 @@ class AgentHarness:
         *,
         reason: Literal["manual", "threshold", "overflow"] = "manual",
         will_retry: bool = False,
+        _claim: object | None = None,
     ) -> CompactResult:
         """Pi ``compact()`` (``agent-harness.ts:689-745``, Sprint 4b §B).
 
@@ -1643,9 +1727,19 @@ class AgentHarness:
         (:meth:`_try_overflow_recovery`) where the harness re-runs the failed
         turn after compaction; manual / threshold callers leave it ``False``.
 
+        ``_claim`` is private (#334): the tail of :meth:`prompt` — overflow
+        recovery and the threshold check — passes its own claim so that the
+        compaction runs INSIDE the prompt instead of needing an idle harness
+        the prompt no longer hands out mid-call. Only the object
+        ``self._claim`` currently holds is accepted; every public caller (RPC
+        ``compact``, the extension ``ctx.compact()``, the TUI ``/compact``)
+        passes nothing and keeps the idle guard.
+
         Phase flow:
 
-        1. Guard: raise :class:`AgentHarnessError("busy")` if not idle.
+        1. Guard: raise :class:`AgentHarnessError("busy")` if not idle —
+           unless called with the live claim of the prompt that holds the
+           turn (#334), which requires phase ``"turn"``.
         2. Flip ``self._phase`` to ``"compaction"``; clear ``_idle_event``.
         3. Build :class:`CompactionPreparation` from current branch entries.
         4. Emit :class:`SessionBeforeCompactHookEvent` carrying
@@ -1660,7 +1754,10 @@ class AgentHarness:
            for tests).
         8. Persist via :meth:`Session.append_compaction` and emit
            :class:`SessionCompactHookEvent`.
-        9. ``finally``: restore ``self._phase = "idle"`` + set idle event.
+        9. ``finally``: restore ``self._phase = "idle"`` + set idle event —
+           or, nested under a prompt's claim, hand ``"turn"`` back and leave
+           the idle event clear: the prompt is still running, and only its
+           own release may say idle (#334).
         """
 
         from aelix_agent_core.session.compaction import (
@@ -1674,10 +1771,21 @@ class AgentHarness:
             CompactionStartEvent,
         )
 
-        if self._phase != "idle":
+        # #334 — ``is``, not "any token": a stale claim from a finished prompt
+        # must not let a compaction in under another prompt's turn.
+        nested = _claim is not None and _claim is self._claim
+        if not nested and self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
                 f"compact() requires idle harness (phase={self._phase!r})",
+            )
+        if nested and self._phase != "turn":
+            # Unreachable while the claim model holds: the holder's tail runs
+            # with "turn", and a nested compaction hands "turn" back before the
+            # tail can reach another one.
+            raise AgentHarnessError(
+                "invalid_state",
+                f"compact() under a prompt's claim needs phase 'turn' (phase={self._phase!r})",
             )
         if self._session is None:
             raise AgentHarnessError(
@@ -1697,6 +1805,11 @@ class AgentHarness:
             # landing there before the ``finally`` was entered left the phase at
             # "compaction" for good (#321; pi's ``_emit`` is synchronous).
             await self._emit_to_subscribers(CompactionStartEvent(reason=reason))
+            if not nested:
+                # #334 — writes a cancelled prompt left queued land before the
+                # compaction entry (see :meth:`_drain_pending_session_writes`).
+                # A nested compaction leaves its prompt's queue to the release.
+                await self._drain_pending_session_writes()
             branch_entries = await self._session.get_branch()
             preparation = prepare_compaction(branch_entries, custom_instructions)
             if preparation is None:
@@ -1803,19 +1916,31 @@ class AgentHarness:
             )
             raise
         finally:
-            self._phase = "idle"
-            self._idle_event.set()
+            if nested:
+                # #334 — the claim is still the prompt's: hand "turn" back and
+                # leave the idle event CLEAR. Setting it here, even with the
+                # phase right, would wake every ``wait_for_idle()`` mid-prompt
+                # (the prompt's overflow re-run is still to come) — measured on
+                # a copy with only that one line added: a waiter parked before
+                # the prompt returned during the re-run's provider call.
+                self._phase = "turn"
+            else:
+                self._phase = "idle"
+                self._idle_event.set()
 
-    async def _check_auto_compaction(self) -> None:
+    async def _check_auto_compaction(self, *, claim: object | None = None) -> None:
         """pi parity: ``agent-session.ts:1766-1843`` ``_checkCompaction`` —
         threshold path only (Sprint 6h₁₈ v1, ADR-0126).
 
-        Called from :meth:`prompt` after ``_run`` returns. When the
+        Called from :meth:`prompt` after ``_run`` returns, still under the
+        prompt's claim (``claim``, #334). When the
         ``auto_compaction_enabled`` flag is set (default ``True``) and the
         most-recent assistant message's context-token count exceeds
         ``context_window - reserveTokens`` (pi ``compaction.ts:219-222``
-        ``shouldCompact``), invokes the same :meth:`compact` path manual
-        ``/compact`` uses (ADR-0117). The complementary overflow path
+        ``shouldCompact``), invokes :meth:`compact` — the path manual
+        ``/compact`` uses (ADR-0117), nested under that claim so that it needs
+        no idle harness. Called without a claim (the unit tests, on an idle
+        harness) it takes the public path unchanged. The complementary overflow path
         (LLM-returned context-overflow → compact + re-run) is handled
         separately by :meth:`_try_overflow_recovery` (issue #4 Lane B), which
         runs BEFORE this threshold check in :meth:`prompt`'s recovery loop.
@@ -1902,8 +2027,16 @@ class AgentHarness:
                     usage_ts = getattr(usage_msg, "timestamp", None)
                     if usage_ts is not None and usage_ts <= boundary_ms:
                         return
+            # #334 — an ``abort()`` that landed during the branch read above
+            # stops the prompt's tail here, before the summariser is called.
+            # This is the only check: ``prompt()`` makes none before calling
+            # this, so an abort from before the read is caught here too, one
+            # branch read later (pi re-checks after every await of its post-run
+            # loop).
+            if claim is not None and self._abort_requested:
+                return
             try:
-                await self.compact(reason="threshold")
+                await self.compact(reason="threshold", _claim=claim)
             except AgentHarnessError as exc:
                 # W-review HIGH-2 fix: a "Nothing to compact" raise means
                 # ``prepare_compaction`` found no viable cut (small kept-tail
@@ -1917,7 +2050,9 @@ class AgentHarness:
                     return
                 raise
 
-    async def _try_overflow_recovery(self, system_prompt: str) -> bool:
+    async def _try_overflow_recovery(
+        self, system_prompt: str, *, claim: object | None = None
+    ) -> bool:
         """Issue #4 Lane B — overflow-driven compact-and-retry.
 
         pi parity: ``agent-session.ts:_checkCompaction`` **Case 1** (overflow)
@@ -2004,6 +2139,10 @@ class AgentHarness:
             and last_assistant.timestamp <= boundary_ms
         ):
             return False
+        # #334 — an ``abort()`` during the read above: no compaction, no re-run
+        # (see the same check in :meth:`_check_auto_compaction`).
+        if claim is not None and self._abort_requested:
+            return False
 
         # pi ``:1842`` — ``will_retry = stopReason !== "stop"``. Aelix's Anthropic
         # adapter emits ``"end_turn"`` (not ``"stop"``) for a completed answer,
@@ -2014,7 +2153,7 @@ class AgentHarness:
             # pi ``:1844-1846`` — silent overflow on a completed answer: compact
             # to shrink context for the NEXT turn, but do not re-run this one.
             try:
-                await self.compact(reason="overflow", will_retry=False)
+                await self.compact(reason="overflow", will_retry=False, _claim=claim)
             except AgentHarnessError as exc:
                 if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
                     return False
@@ -2040,7 +2179,7 @@ class AgentHarness:
 
         # pi ``:1868`` — ``runAutoCompaction("overflow", will_retry=True)``.
         try:
-            await self.compact(reason="overflow", will_retry=True)
+            await self.compact(reason="overflow", will_retry=True, _claim=claim)
         except AgentHarnessError as exc:
             # pi ``:1931-1934`` / #4811 — nothing eligible to compact: no retry.
             if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
@@ -2178,6 +2317,15 @@ class AgentHarness:
         # equivalent: wait_for(abort_event.wait, timeout) — TimeoutError means
         # the sleep completed normally; success means the abort fired.
         self._retry_abort_event = asyncio.Event()
+        # #334 — an ``abort_retry()`` (or ``abort()``, which calls it) made
+        # while the ``auto_retry_start`` emit above was awaiting an async
+        # subscriber found no event to set, only ``retry_aborted`` (reset at
+        # this method's entry). It is this retry's cancellation, so it counts:
+        # before this line the whole backoff ran and the re-run still reached
+        # the provider — measured with ``dispose()`` there at a 1 s base delay:
+        # it returned 1.00 s after the subscriber released, provider calls 2.
+        if self._state.retry_aborted:
+            self._retry_abort_event.set()
         try:
             await asyncio.wait_for(
                 self._retry_abort_event.wait(), timeout=delay_ms / 1000.0
@@ -2246,6 +2394,10 @@ class AgentHarness:
         self._phase = "branch_summary"
         self._idle_event.clear()
         try:
+            # #334 — writes a cancelled prompt left queued land on the branch
+            # they were made on, before the leaf moves
+            # (see :meth:`_drain_pending_session_writes`).
+            await self._drain_pending_session_writes()
             old_leaf_id = await self._session.get_leaf_id()
             if old_leaf_id == target_id:
                 return NavigateTreeResult(cancelled=False)
@@ -2457,7 +2609,24 @@ class AgentHarness:
                 f"thinking_level_select hook handler raised: {exc}",
             ) from exc
         if self._phase != "turn" and self._session is not None and level != previous:
-            await self._session.append_thinking_level_change(level)
+            if self._pending_session_writes or self._drain_lock.locked():
+                # #334 — an older write is still queued (a prompt cancelled in
+                # its release flush left it there) or being appended by a
+                # drain: a direct append would land ahead of it, and a resume
+                # would restore the older level. Go behind it instead. On an
+                # idle harness drain now; in a nested compaction the prompt's
+                # release writes it, and in a public compaction or tree
+                # navigation it waits, in order, for the next drain (the next
+                # prompt, idle setter, compaction, navigation or dispose()).
+                # (#314's double record is untouched: a call parked in the
+                # hook above still re-reads the phase here.)
+                self._pending_session_writes.append(
+                    PendingThinkingLevelChangeWrite(thinking_level=level)
+                )
+                if self._phase == "idle":
+                    await self._drain_pending_session_writes()
+            else:
+                await self._session.append_thinking_level_change(level)
 
     async def set_active_tools(self, tool_names: list[str]) -> None:
         """Public async wrapper over the F-9 sync action.
@@ -3273,7 +3442,61 @@ class AgentHarness:
                 )
         return failed
 
+    async def _drain_pending_session_writes(self) -> None:
+        """Flush whatever is queued before the caller writes anything (#334).
+
+        A prompt cancelled while its release flush awaits a session append goes
+        idle (it must: #321) with the un-attempted writes still queued — the
+        flush hands them back above. Measured on the #334 commit before this
+        method (Codex cross-review): a thinking level queued behind the parked
+        append, the prompt cancelled, then ``set_thinking_level("low")`` while
+        idle appended ``low`` at once and the next turn's flush appended the
+        older ``medium`` after it (a resume restores ``medium``); and
+        ``dispose()`` returned with the write still queued, never persisted.
+        pi has no such state: its pending flush in ``_runAgentPrompt``'s
+        ``finally`` is synchronous (``agent-session.ts:1483-1489`` @
+        a328aa89a), and ``setThinkingLevel`` appends at once (``:2267-2268``).
+
+        So the harness's own writers of what the queue carries (a model change,
+        a thinking level, an appended message) go behind it when they would
+        reach the session directly: ``prompt()`` at its entry (pi flushes
+        "before the new prompt", ``:1669-1671``) and at its release, an idle
+        ``set_thinking_level``, a public ``compact()`` and ``navigate_tree()``
+        at their entries, and ``dispose()``. Writers that never used the queue
+        are unchanged and do not wait for it: the extension actions
+        ``set_session_name`` / ``set_label`` / ``append_entry``, the REPL and
+        TUI user-bash record, the TUI ``/name`` and the RPC
+        ``set_session_name`` append directly, as before. It returns without
+        awaiting when nothing is queued and no drain is running, so those
+        paths gain no cancellation point in the common case. The lock:
+        :meth:`flush_pending_session_writes` detaches the queue before it
+        appends, so an empty queue does not mean nothing is in flight — a
+        second drain started meanwhile waits for the first, whose loop then
+        writes the second caller's item after the ones it holds.
+
+        A cancel here propagates with the un-attempted tail requeued (the flush
+        does that); an ``AssertionError`` propagates as it does from the flush
+        (#326 is unchanged).
+        """
+
+        if not self._pending_session_writes and not self._drain_lock.locked():
+            return
+        async with self._drain_lock:
+            while self._pending_session_writes:
+                await self.flush_pending_session_writes()
+
     async def wait_for_idle(self) -> None:
+        """Return once no prompt, compaction or tree navigation is running.
+
+        #334: for a prompt that means once the WHOLE ``prompt()`` call is done —
+        its retries, its closing overflow / threshold compaction and the flush
+        of writes queued meanwhile — not when its first run ends. pi's
+        ``waitForIdle()`` resolves in ``_emitAgentSettled()`` at the same point
+        (``agent-session.ts:2087-2092`` @ a328aa89a). Awaiting it from inside a
+        prompt's own tail (an async subscriber or hook handler the prompt is
+        awaiting) therefore never returns.
+        """
+
         await self._idle_event.wait()
 
     async def dispose(self) -> None:
@@ -3283,6 +3506,20 @@ class AgentHarness:
             await self.abort()
             with contextlib.suppress(Exception):
                 await self.wait_for_idle()
+        # #334 — nothing queued is lost at teardown: a prompt cancelled in its
+        # release flush left its un-attempted writes on the queue of an idle
+        # harness, and nothing else would ever write them (the runtime's
+        # session replace comes through here too). A write the session refuses
+        # is logged by the flush, as everywhere else; anything else raised here
+        # is logged and the teardown goes on.
+        try:
+            await self._drain_pending_session_writes()
+        except Exception:  # noqa: BLE001
+            _log.warning(
+                "flush_pending_session_writes raised in dispose() — pending "
+                "session writes were lost",
+                exc_info=True,
+            )
         # Sprint 5b §E.2 — drain GC-pinned fire-and-forget tasks before
         # invalidating the runtime so background appends settle cleanly.
         for task in list(self._pending_tasks):
@@ -4495,14 +4732,18 @@ class AgentHarness:
         prompts: list[AgentMessage],
         *,
         system_prompt: str,
-        owner: object,
     ) -> list[AgentMessage]:
-        # #321 — the claim goes with the flip: no run can set "turn" without
-        # naming the ``prompt()`` it runs for (``owner`` has no default).
-        self._phase = "turn"
-        self._turn_owner = owner
+        # #334 — runs under its ``prompt()``'s claim and flips nothing: the
+        # phase is "turn" from the prompt's entry to its release, and this
+        # method's ``finally`` no longer sets it idle (that is what let a second
+        # ``prompt()`` in during the retry backoff and the closing checks). No
+        # defensive ``self._phase = "turn"`` either — it would mask a nested
+        # compaction that failed to hand "turn" back.
+        #
+        # The abort flag is still cleared here (#336 owns what an abort made
+        # before this point should do); an abort made after it survives this
+        # run, which is what the tail's checks in ``prompt()`` read.
         self._abort_requested = False
-        self._idle_event.clear()
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
         # ``session.build_context().messages`` (Pi parity:
@@ -4741,8 +4982,8 @@ class AgentHarness:
                     # Sprint 3c §C.2 — abort() called ``task.cancel()`` during
                     # an in-flight turn. Treat this as a normal abort path:
                     # we already cleared queues + flipped _abort_requested in
-                    # abort(); just return without raising so callers (and the
-                    # finally block above) restore idle state.
+                    # abort(); just return without raising. The phase stays
+                    # the prompt's until ``prompt()``'s release (#334).
                     if self._abort_requested:
                         # RPC sprint — an aborted turn MUST still produce a
                         # terminator. Previously this returned here and emitted
@@ -4828,7 +5069,8 @@ class AgentHarness:
                         _log.debug("emit during hook-fail close-out raised: %r", emit_exc, exc_info=True)
                 raise
             self._state.messages.extend(new_messages)
-            # Settled event lets observers know we're back to idle.
+            # Settled event: this run is over. Not idle yet — ``prompt()``'s
+            # tail may still retry or compact (#334).
             # Sprint 3b populates ``next_turn_count`` from the queue size at
             # turn settlement (Pi parity, types.ts:491-494).
             try:
@@ -4868,9 +5110,7 @@ class AgentHarness:
                     "pending session writes were lost",
                     exc_info=True,
                 )
-            self._phase = "idle"
             self._turn_state = None
-            self._idle_event.set()
 
     async def _drain_steering(self) -> list[AgentMessage]:
         return self._steering_queue.drain()

@@ -31,10 +31,10 @@ this file grows a defect that only shows up under load:
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:4729-4735``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:4970-4976``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:107``) and is threaded unchanged into
 ``ToolExecutionContext(signal=signal)`` (``loop.py:633-635``). Abort is
-``turn_task.cancel()`` (``core.py:1587-1589``). So ``CancelledError`` is the ONLY
+``turn_task.cancel()`` (``core.py:1670-1672``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.
 """

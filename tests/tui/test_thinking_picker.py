@@ -182,7 +182,7 @@ def test_display_resolves_a_clamp_up_too() -> None:
 
 
 def test_display_leaves_off_bare_even_when_the_catalog_renames_it() -> None:
-    # C4 — harness/core.py:4510-4515 folds off/unset to ``reasoning=None`` before
+    # C4 — harness/core.py:4751-4756 folds off/unset to ``reasoning=None`` before
     # the adapters see it, so "off" never reaches one as a tier and there is no
     # true value to put in the parenthesis.
     assert thinking_level_display(_Model(thinking_level_map={"off": "none"}), "off") == "off"

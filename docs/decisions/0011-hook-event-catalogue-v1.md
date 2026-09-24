@@ -55,7 +55,7 @@ loop가 계속 진행됩니다 (ADR-0014).
 | `tool_execution_start` | tool execute 호출 직전 | |
 | `tool_execution_update` | tool 실행 중 진행 알림 | |
 | `tool_execution_end` | tool execute 반환 후 | |
-| `settled` | harness가 idle로 복귀 | Phase 1.2 placeholder. emit site는 `harness/core.py`. |
+| `settled` | harness가 idle로 복귀 | Phase 1.2 placeholder. emit site는 `harness/core.py`. **#334(2026-09-25)**: 실제로는 `_run`마다(재시도될 실패한 시도 뒤에도) 끝에서 발생하고, 그때 하네스는 아직 idle이 아니다 — phase는 `prompt()` 전체가 끝날 때 idle이 된다(ADR-0023 #334 amendment). |
 
 ### Reserved (not in Phase 1.2)
 

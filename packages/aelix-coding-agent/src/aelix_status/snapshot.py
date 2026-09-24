@@ -311,7 +311,7 @@ def resolve_project_trusted_fail_closed(
     * nothing ever bound it. ``ExtensionContext.__init__`` installs
       ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1143``) and
       ``AgentHarnessOptions.project_trusted`` defaults to ``True``
-      (``harness/core.py:289``), both citing pi's ``runner.ts:273`` pre-bind
+      (``harness/core.py:295``), both citing pi's ``runner.ts:273`` pre-bind
       default.
 
     That second case is not hypothetical. ``rpc_ws.py:90-94`` constructs
