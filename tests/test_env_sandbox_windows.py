@@ -108,6 +108,10 @@ def test_no_test_sets_home_outside_the_helper() -> None:
         cwd=root.parent,
         capture_output=True,
         text=True,
+        # The matched SOURCE LINES come back, so UTF-8 rather than a Windows
+        # runner's cp1252 (#333): one non-cp1252 byte on a matching line and
+        # the reader thread dies, ``stdout`` is None.
+        encoding="utf-8",
         check=False,
     )
     offenders = [
@@ -178,6 +182,7 @@ def test_no_test_hand_builds_a_child_home() -> None:
         cwd=root.parent,
         capture_output=True,
         text=True,
+        encoding="utf-8",  # source lines — see the guard above (#333)
         check=False,
     )
     offenders = [

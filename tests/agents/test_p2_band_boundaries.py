@@ -197,10 +197,18 @@ def _python_files(root: Path) -> list[Path]:
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    # ``encoding="utf-8"``, not the locale's (#333): ``_is_prose_only`` reads
+    # FILE CONTENTS through ``git show``, and a Windows runner decodes with
+    # cp1252, which has no ``0x81`` — the last byte of the ``₁`` in
+    # ``_extension_runner.py``'s docstrings ("Sprint 6h₁"). The reader thread
+    # died on it, ``stdout`` came back ``None`` and ``ast.parse`` raised
+    # ``TypeError`` (CI 35952181466, both windows legs) the first time a
+    # citation repair touched that file with the windows leg running.
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -723,6 +731,59 @@ def test_kernel_untouched_vs_merge_base() -> None:
         "`_KERNEL_CHANGE_ALLOWLIST` with the ADR that bought it, or revert: "
         f"{unauthorised}"
     )
+
+
+#: A kernel file whose source a cp1252 codec cannot decode (#333). Any file
+#: works as long as the precondition below holds for it.
+_NON_CP1252_KERNEL_FILE = (
+    "packages/aelix-agent-core/src/aelix_agent_core/harness/_extension_runner.py"
+)
+
+
+def test_prose_only_survives_a_cp1252_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prose-only check survives a Windows locale (#333).
+
+    ``subprocess.run(text=True)`` with no ``encoding`` decodes with the locale's
+    codec, cp1252 on the windows runners. On a byte cp1252 does not define, the
+    reader thread dies and ``stdout`` comes back ``None`` — measured on both
+    windows legs of CI 35952181466, where ``ast.parse(None)`` then raised
+    ``TypeError`` out of ``test_kernel_untouched_vs_merge_base``. A POSIX host
+    decodes UTF-8 either way, so this plays the Windows runner: the stand-in
+    decodes with the ``encoding`` it is handed, and with cp1252 when it is
+    handed none, exactly as that runner does.
+    """
+
+    raw = (REPO_ROOT / _NON_CP1252_KERNEL_FILE).read_bytes()
+    try:
+        raw.decode("cp1252")
+    except UnicodeDecodeError:
+        pass
+    else:  # pragma: no cover - the guard must not go vacuous silently
+        pytest.fail(
+            f"{_NON_CP1252_KERNEL_FILE} now decodes as cp1252, so this case "
+            "proves nothing — point _NON_CP1252_KERNEL_FILE at a kernel file "
+            "that still carries a byte cp1252 lacks (0x81, 0x8D, 0x8F, 0x90, 0x9D)"
+        )
+
+    real_run = subprocess.run
+
+    def _as_a_cp1252_runner(argv: list[str], **kwargs: object) -> object:
+        done = real_run(argv, capture_output=True, check=False)
+        codec = str(kwargs.get("encoding") or "cp1252")
+        try:
+            out: str | None = done.stdout.decode(codec)
+        except UnicodeDecodeError:
+            out = None
+        return subprocess.CompletedProcess(
+            argv, done.returncode, out, done.stderr.decode(codec, "replace")
+        )
+
+    monkeypatch.setattr(subprocess, "run", _as_a_cp1252_runner)
+    # HEAD against the working tree: the same code, so a helper that can read
+    # the file says "prose-only" and one that cannot raises.
+    assert _is_prose_only(_NON_CP1252_KERNEL_FILE, "HEAD") is True
 
 
 # === Band 2 — product-core is INTERFACE ONLY =================================
