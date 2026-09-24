@@ -444,7 +444,7 @@ def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> No
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
-    (``harness/core.py:3322-3329``) and never re-scans the extension
+    (``harness/core.py:3324-3331``) and never re-scans the extension
     directories — so the file the agent just wrote stays dormant while the
     agent reports success.
 

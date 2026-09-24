@@ -26,7 +26,7 @@ every other test here fills the queue through ``next_turn()``, so a push site
 that stopped pushing would leave this file green.
 
 What this file does NOT cover, because the fix does not reach it: ``_run``
-awaits ``self._session.build_context()`` (``core.py:4513``) before
+awaits ``self._session.build_context()`` (``core.py:4515``) before
 ``agent_loop`` is handed the list, and a session raising there loses the
 drained messages the same three ways. That window is measured in
 ``.omc/specs/311-next-turn-drain.py`` ARM 6 and reported as its own issue;
@@ -297,7 +297,7 @@ async def test_both_push_sites_reach_the_guarded_queue() -> None:
     """There are exactly two pushes onto ``_next_turn_queue``.
 
     ``next_turn()`` (``core.py:3085``) and ``_action_send_message()``
-    (``core.py:4108``), the latter reached by ``ExtensionAPI.send_message`` /
+    (``core.py:4110``), the latter reached by ``ExtensionAPI.send_message`` /
     ``send_user_message`` and by the ``ReplacedSessionContext`` handle. Every
     other test in this file uses the first, so without this one a change that
     stopped the extension route from queueing would not redden anything here.

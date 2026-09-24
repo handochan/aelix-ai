@@ -3253,6 +3253,8 @@ class AgentHarness:
                 # ``assert_never`` met a variant with no dispatcher arm. A
                 # broken dispatcher is a bug in this file, not a write the
                 # storage refused, and logging it as one would hide it.
+                # Keep the writes after the broken variant; they were not attempted.
+                self._pending_session_writes[0:0] = pending[index + 1 :]
                 raise
             except Exception as exc:  # noqa: BLE001
                 failed += 1
