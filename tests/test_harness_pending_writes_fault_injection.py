@@ -565,6 +565,9 @@ async def test_a_broken_dispatcher_is_not_reported_as_a_refused_write(
     assert _core_warnings(caplog) == []
     # The drain stopped: this is a bug, not a survivable storage refusal.
     assert [e.type for e in await session.get_entries()] == ["message"]
+    assert [type(e).__name__ for e in h._pending_session_writes] == [
+        "PendingLabelWrite"
+    ]
 
 
 async def test_one_traceback_per_flush_not_one_per_failure(
