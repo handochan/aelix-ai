@@ -987,7 +987,7 @@
    "no hidden text and no cursor movement;",
    "3. bounded to :data:`DIALOG_FIELD_CHARS` — one VISIBLE row, so the row that",
    "was counted is the row that is read. The modal does not wrap",
-   "(``tui/context.py:475-478``), so without this an over-long field is",
+   "(``tui/context.py:476-479``), so without this an over-long field is",
    "clipped invisibly.",
    "\"\"\""
   ],
@@ -2991,7 +2991,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2195-2195": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1063-1078": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1064-1079": [
    "def set_widget(",
    "self,",
    "key: str,",
@@ -3011,7 +3011,7 @@
    "",
    "GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:375-382": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:376-383": [
    "async def select(",
    "self,",
    "title: str,",
@@ -3021,17 +3021,17 @@
    "initial_index: int = 0,",
    ") -> str | None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:419-419": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:420-420": [
    "state: dict[str, Any] = {"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:453-453": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:454-454": [
    "detail_lines: list[str] = []"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:453-454": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:454-455": [
    "detail_lines: list[str] = []",
    "if detail is not None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:475-478": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:476-479": [
    "for i in range(start, end):",
    "text = items[i][1]",
    "if i == idx:",
@@ -3040,7 +3040,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:74-74": [
    "_PICK_DIM = \"\\x1b[2m\" # dim — dividers, counter, detail/help, hint"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:815-815": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:816-816": [
    "_orig_idx, (oid, label, _desc) = opts[vi]"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/extension_manager.py:58-60": [
@@ -3155,33 +3155,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2450-2450": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2451-2451": [
    "# call would leave the prompt looking frozen. Drive the \"Working…\" row from"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2632-2634": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2633-2635": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2740-2740": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2741-2741": [
    "abort_retry()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2960-2960": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2961-2961": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3387-3387": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3388-3388": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3483-3483": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3484-3484": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3483-3486": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3484-3487": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1311``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3526-3543": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3527-3544": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3191,7 +3191,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3733-3733": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3734-3734": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:729-729": [

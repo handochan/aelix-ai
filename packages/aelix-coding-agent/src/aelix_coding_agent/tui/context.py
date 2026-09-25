@@ -346,6 +346,7 @@ class AelixTUIContext:
         self._usage_input_tokens: int = 0
         self._usage_output_tokens: int = 0
         self._usage_cost: float = 0.0
+        self._usage_cost_known: bool = True
         self._theme: Theme = theme_registry.DEFAULT_THEME
         self._tools_expanded = False
         self._hidden_thinking_label: str | None = None
@@ -1381,7 +1382,11 @@ class AelixTUIContext:
         self._refresh_footer()
 
     def set_usage_stats(
-        self, input_tokens: int, output_tokens: int, cost: float
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cost: float,
+        cost_known: bool = True,
     ) -> None:
         """Cache the session usage scalars for the optional token/cost footer
         segments + repaint the footer (WP-2, ADR-0160).
@@ -1395,11 +1400,13 @@ class AelixTUIContext:
             input_tokens == self._usage_input_tokens
             and output_tokens == self._usage_output_tokens
             and cost == self._usage_cost
+            and cost_known == self._usage_cost_known
         ):
             return
         self._usage_input_tokens = input_tokens
         self._usage_output_tokens = output_tokens
         self._usage_cost = cost
+        self._usage_cost_known = cost_known
         self._refresh_footer()
 
     @staticmethod

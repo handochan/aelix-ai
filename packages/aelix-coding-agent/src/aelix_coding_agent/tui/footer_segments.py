@@ -168,7 +168,15 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
 
     def _cost() -> str | None:
         cost = ctx._usage_cost
-        return f"$ {cost:.4f}" if cost else None
+        if cost == 0.0 and ctx._usage_cost_known:
+            return None
+        from aelix_coding_agent.tui.stats_dashboard import _format_cost_value
+
+        return _format_cost_value(
+            cost,
+            cost_known=ctx._usage_cost_known,
+            prefix="$ ",
+        )
 
     def _thinking_level() -> str | None:
         # The active reasoning effort. Default-ON since #248, and it SHOWS
@@ -230,7 +238,7 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             # test_thinking_level_description_names_the_tier_suffix states it).
             # NOT ON SCREEN TODAY: ``statusline_picker.py:96`` is the only
             # reader of this field, and the multiselect body it feeds
-            # (``context.py:815``) destructures the triple and draws the label
+            # (``context.py:816``) destructures the triple and draws the label
             # alone — so every segment description here is unreachable text.
             # Fixed because it is wrong, not because a user can see it (#257).
             "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "

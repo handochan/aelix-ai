@@ -172,7 +172,7 @@ moved. Anyone extending this slice should follow the pattern.
    already on UTF-8 is untouched, which is what keeps the helper inert on every
    platform that was already correct; input streams are never re-encoded at all
    (`read_all_text` picks a decoder from the bytes instead).
-8. **Ctrl+G external editor.** `tui/shell.py:2960` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:2961` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
    (Until this pass the line was duplicated five times, citing `:2567`,
    `:2583`, `:2588`, `:2607` and `:2791` — one per branch that ran
