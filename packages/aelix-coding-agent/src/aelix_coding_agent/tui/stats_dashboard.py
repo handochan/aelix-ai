@@ -165,6 +165,20 @@ UNPRICED_COST = "n/a"
 PARTIAL_COST_PREFIX = "≥ "
 
 
+def _format_cost_value(
+    value: Any, *, cost_known: bool, prefix: str
+) -> str:
+    try:
+        cost = float(value or 0.0)
+    except (TypeError, ValueError):
+        return UNPRICED_COST
+    if cost_known:
+        return f"{prefix}{cost:.4f}"
+    if cost <= 0.0:
+        return UNPRICED_COST
+    return f"{PARTIAL_COST_PREFIX}{prefix}{cost:.4f}"
+
+
 def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
     """Render a session's cost honestly, given how much of it is known.
 
@@ -188,15 +202,11 @@ def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
     Callers wanting a bare number pass ``prefix=""``.
     """
 
-    try:
-        cost = float(getattr(stats, "cost", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return UNPRICED_COST
-    if getattr(stats, "cost_known", True):
-        return f"{prefix}{cost:.4f}"
-    if cost <= 0.0:
-        return UNPRICED_COST
-    return f"{PARTIAL_COST_PREFIX}{prefix}{cost:.4f}"
+    return _format_cost_value(
+        getattr(stats, "cost", 0.0),
+        cost_known=getattr(stats, "cost_known", True),
+        prefix=prefix,
+    )
 
 
 #: Label of the one line ``/cost`` and the ``/stats`` session tab add for the

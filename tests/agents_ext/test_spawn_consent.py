@@ -139,7 +139,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:453``).
+    (``tui/context.py:454``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -389,7 +389,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:453``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:454``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)

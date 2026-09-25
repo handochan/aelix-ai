@@ -1026,13 +1026,17 @@ async def test_set_usage_stats_repaints_only_on_a_real_change() -> None:
         painted: list[int] = []
         ctx._refresh_footer = lambda: painted.append(1)  # type: ignore[method-assign]
 
-        ctx.set_usage_stats(100, 50, 0.25)
+        ctx.set_usage_stats(100, 50, 0.25, cost_known=True)
         assert len(painted) == 1
-        ctx.set_usage_stats(100, 50, 0.25)
+        ctx.set_usage_stats(100, 50, 0.25, cost_known=True)
         assert len(painted) == 1
         # Any one field changing is a real change.
         ctx.set_usage_stats(100, 50, 0.30)
         assert len(painted) == 2
+        ctx.set_usage_stats(100, 50, 0.30, cost_known=False)
+        assert len(painted) == 3
+        ctx.set_usage_stats(100, 50, 0.30, cost_known=False)
+        assert len(painted) == 3
 
 
 # === the multi-line statusline is TWO rows, and that shape is pinned =========
