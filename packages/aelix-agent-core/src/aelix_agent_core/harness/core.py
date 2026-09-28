@@ -1576,7 +1576,7 @@ class AgentHarness:
             except Exception:  # noqa: BLE001
                 _log.warning(
                     "flush_pending_session_writes raised at the prompt's release "
-                    "— pending session writes were lost",
+                    "— the broken entry was dropped; the un-attempted tail was requeued",
                     exc_info=True,
                 )
             finally:
@@ -3372,11 +3372,11 @@ class AgentHarness:
         flush is the backstop after that. The cancelled item itself is not put
         back: its ``append_*`` was already in flight and may have landed.
 
-        :class:`AssertionError` is not caught either. The only one that can
-        reach here is ``assert_never`` in
-        :meth:`_apply_pending_session_write` meeting a
-        :class:`PendingSessionWrite` variant with no dispatcher arm — a
-        programming error, which must not be reported as a storage refusal.
+        :class:`AssertionError` is not caught either; only ``assert_never`` in
+        :meth:`_apply_pending_session_write` can reach here when a
+        :class:`PendingSessionWrite` variant has no dispatcher arm. The broken
+        entry is dropped, the un-attempted tail is requeued, and the programming
+        error propagates rather than being reported as a storage refusal.
 
         **Divergence from Pi, recorded per ADR-0235.** Pi at 734e08e loops
         ``while (this.pendingSessionWrites.length > 0)``, peeking ``[0]`` and
@@ -3477,8 +3477,8 @@ class AgentHarness:
         writes the second caller's item after the ones it holds.
 
         A cancel here propagates with the un-attempted tail requeued (the flush
-        does that); an ``AssertionError`` propagates as it does from the flush
-        (#326 is unchanged).
+        does that). An ``AssertionError`` drops the broken entry, requeues the
+        un-attempted tail, and propagates (#326).
         """
 
         if not self._pending_session_writes and not self._drain_lock.locked():
@@ -3518,8 +3518,8 @@ class AgentHarness:
             await self._drain_pending_session_writes()
         except Exception:  # noqa: BLE001
             _log.warning(
-                "flush_pending_session_writes raised in dispose() — pending "
-                "session writes were lost",
+                "flush_pending_session_writes raised in dispose() — the broken "
+                "entry was dropped; the un-attempted tail was requeued",
                 exc_info=True,
             )
         # Sprint 5b §E.2 — drain GC-pinned fire-and-forget tasks before
@@ -5109,7 +5109,7 @@ class AgentHarness:
             except Exception:  # noqa: BLE001
                 _log.warning(
                     "flush_pending_session_writes raised in finally — "
-                    "pending session writes were lost",
+                    "the broken entry was dropped; the un-attempted tail was requeued",
                     exc_info=True,
                 )
             self._turn_state = None
