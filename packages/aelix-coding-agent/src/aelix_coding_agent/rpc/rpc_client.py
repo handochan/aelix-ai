@@ -1027,7 +1027,7 @@ class RpcClient:
     async def _await_terminator(
         self, done: asyncio.Future[Any], timeout_s: float, what: str
     ) -> None:
-        """Wait for ``done``, the child's death, or the deadline — first wins.
+        """Wait for ``done``, the child's death, or the deadline.
 
         The child-death leg is the aelix-original half and the reason this
         helper exists at all: without it, every one of the three public waits
@@ -1040,6 +1040,27 @@ class RpcClient:
         three calls were simply bare. It is also the rung the delegation
         envelope's fallback chain depends on for a child that exits having
         written zero stdout bytes.
+
+        A CANCELLATION OF THE CALLER ALWAYS PROPAGATES, including one that
+        lands in the loop turn in which ``done`` resolved: the caller's cancel
+        beats a completed ``done``, exactly as it already did one turn earlier
+        (the wait's waiter resolved, the caller not yet resumed). So a command
+        the child has already answered — a ``prompt`` it accepted — can come
+        back to a cancelled caller as ``CancelledError``, never as its answer
+        (#351).
+
+        WHICH LEG WINS is decided after the cleanup join below, not when the
+        race returns: ``done`` wins if it has resolved by then, even when the
+        child's death or the deadline ended the race — a completed turn is a
+        completed turn. On the death leg the join holds the caller for two
+        loop callbacks, so an ``agent_end`` handled up to three callbacks after
+        ``_exited`` is set still returns (fbead6e0 decided before any suspension there and
+        reported the death from two on). Kept deliberately: a line the parent
+        reads after it saw the exit was written before the child exited, and a
+        real child that writes ``agent_end`` and exits at once never had it
+        unread when ``_exited`` was set (0 of 1 200 runs per helper, #351).
+        Pinned by
+        ``test_an_agent_end_handled_before_the_helper_returns_beats_the_observed_death``.
         """
 
         if self._exited.is_set():
@@ -1053,8 +1074,38 @@ class RpcClient:
             )
         finally:
             death.cancel()
-            with contextlib.suppress(BaseException):
-                await death
+            # ``asyncio.wait`` and NOT ``await death`` (#351, the #234 shape in
+            # ``tools/bash.py``): two cancellations meet here and ``await``
+            # cannot tell them apart. While the caller is suspended on death,
+            # ``Task.cancel()`` of the CALLER is handed to death — its
+            # ``_fut_waiter``, already cancelling — so the caller got death's
+            # ``CancelledError`` back, the old ``suppress(BaseException)``
+            # around the ``await`` ate it, and the helper returned normally with
+            # ``cancelling()`` still raised. ``wait`` keeps death's own
+            # cancellation inside death and lets the caller's come out.
+            #
+            # Measured on fbead6e0. A seam cancelling the caller from inside
+            # death's cancellation step: all five call sites returned normally
+            # (``tests/rpc/test_rpc_client_terminator_cancel.py``). In
+            # production the turn was ``_send``'s wait for the ``prompt``
+            # answer: an rpc delegation cancelled at the flood child's first
+            # reduced line hung 12 of 12 and 5 of 12 runs, every hang at
+            # exactly 292 snapshots; after, 12 of 12 ended in 0.052-0.063 s.
+            # A child whose turn ENDS showed nothing hanging — the delegation
+            # kept it working to the end of its turn and returned an ``ok``
+            # envelope, the Ctrl+C lost; only a turn that never ended waited
+            # out the budget.
+            #
+            # No retrieval, unlike #234: death is ``Event.wait()``, which in
+            # practice only returns or is cancelled (its one other raise is a
+            # foreign-loop ``RuntimeError``, and ``start()`` builds ``_exited``
+            # on the running loop). The cost is suspended turns before the
+            # helper returns: one more on the ``done`` and timeout legs, two on
+            # the death leg, whose ``await death`` never suspended because
+            # death was already done — in those two a late ``agent_end`` can
+            # still resolve ``done`` and win, which is the rule below and the
+            # docstring's "which leg wins".
+            await asyncio.wait([death])
         if done.done():
             # The terminator won even if the child died in the same tick; a
             # completed turn is a completed turn.

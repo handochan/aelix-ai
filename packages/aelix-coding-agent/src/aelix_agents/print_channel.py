@@ -518,7 +518,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1097`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1148`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.

@@ -2725,7 +2725,7 @@
    "collected.append(event)",
    "if event.get(\"type\") == \"agent_end\" and not done.done():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1097-1097": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1148-1148": [
    "argv = [sys.executable, \"-m\", \"aelix\", \"--mode\", \"rpc\"]"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:611-611": [

@@ -92,6 +92,29 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A program driving `aelix --mode rpc` through `RpcClient` no longer loses a
+  cancellation that arrives in the moment a command's answer or the turn's end
+  comes back.** `wait_for_idle()`, `collect_events()`, `prompt_and_wait()` and
+  every command returned normally in that moment as if nothing had been
+  cancelled, which also defeated an `asyncio.timeout()` around them; a
+  `prompt_and_wait()` cancelled as its `prompt` was answered then waited for
+  the whole turn and returned normally. They now raise `CancelledError` there,
+  as they already did a moment earlier — so a command the child has already
+  answered can come back to a cancelled caller as `CancelledError`. A
+  cancellation arriving as a call's own timeout expired used to come back as
+  that `TimeoutError`, reporting the cancel as a timeout; it now raises
+  `CancelledError` too. The rpc delegation channel, which no setting selects
+  yet, inherited this: a delegation cancelled at that moment kept its child
+  working until the child's turn ended and then returned the child's result as
+  if it had not been cancelled; only a turn that never ended waited out the
+  whole budget with the child alive; one cancelled as its budget ran out
+  reported a timeout. It now ends at once and its child is killed and reaped.
+  The default (print) delegation channel and `stop` were not affected. One
+  side effect, kept on purpose: a turn end the child wrote just before it
+  exited, but that is read a moment after the exit was noticed, can now come
+  back as a completed turn instead of `RpcServerExited` — the child did finish
+  its turn (not seen once in 2 400 runs of a real child that ends its turn and
+  exits at once). (#351)
 - **A second prompt sent while the first one waits to retry, or while it runs
   its closing compaction, no longer runs alongside it and mixes both messages
   into both answers.** When a provider call failed with a retryable error (a

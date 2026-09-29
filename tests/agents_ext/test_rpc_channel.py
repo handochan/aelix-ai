@@ -50,6 +50,7 @@ from aelix_coding_agent.rpc.rpc_client import RpcClient
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
 from tests.event_waits import check_anti_hang, wait_until, within
+from tests.rpc._terminator_seam import CancelInTheCleanupTurn, install
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
@@ -1085,46 +1086,55 @@ async def test_a_cancelled_delegation_publishes_no_phantom_delegations(
 
     api = _ProbeApi()
     bridge = SubagentProgressBridge(api)
+    first_reduced_line = asyncio.Event()
+
+    def _tap(progress: Any) -> None:
+        if progress.tokens:
+            first_reduced_line.set()
+        bridge(progress)
+
     runtime = _SubagentRuntimeImpl(
-        host=SubagentHost(cwd=lambda: str(tmp_path), on_progress=bridge),
+        host=SubagentHost(cwd=lambda: str(tmp_path), on_progress=_tap),
         channel=_channel(_FLOODING_CHILD, grace=0.3),
     )
     task = asyncio.ensure_future(
         runtime.spawn_granted(_grant(), _resolved(), "flood forever")
     )
-    # A WINDOW, NOT A VERDICT GATE (#330 classified it). The defect this case
-    # guards needs the cancel to land while the child is flooding, so that the
-    # teardown has lines to drain through the tap. Neither event precondition
-    # on offer gives that, measured with the tap left live through the drain
-    # (the phantom-snapshot sabotage): the first snapshot of ANY kind is the
-    # runtime's own ``starting`` one, published BEFORE the spawn, so a cancel
-    # there drains nothing and the case passes testing nothing (1 start, 8/8);
-    # "the first reduced line" lands in the one loop turn in which the product
-    # swallows the cancel (below) — the runs whose cancel was delivered there
-    # read 867 starts, as this second does, but most were swallowed and hung.
-    # So the second is a settle past both, not a bet against the product. A
-    # runner too slow to start the child inside it makes the case pass with
-    # nothing drained: vacuous then.
+    # AN EVENT PRECONDITION, NOT A SETTLE. The defect this case guards needs
+    # the cancel to land while the child is flooding, so that the teardown has
+    # lines to drain through the tap — which is what "the first snapshot that
+    # carries tokens" (the first reduced ``message_end``) guarantees, and what
+    # the first snapshot of ANY kind does not: that is the runtime's own
+    # ``starting`` one, published BEFORE the spawn, and a cancel there drains
+    # nothing (1 start, 8/8, with the tap left live through the drain). Measured
+    # with that sabotage (``rpc_channel._TERMINAL_STATES`` emptied, the tap's
+    # only gate) at THIS precondition: 867 starts, 8 of 8 runs (#351).
     #
-    # The swallow is #351, a product defect: a cancel landing in the loop turn
-    # in which the child's answer to ``prompt`` resolves (~0.11 s after the
-    # spawn on darwin, right after the first reduced line) is swallowed by
-    # ``RpcClient._await_terminator``'s ``finally`` (its
-    # ``suppress(BaseException)`` around ``await death``), and the delegation
-    # then waits out its turn budget with the child still flooding. On a
-    # runner that started the child well inside the second, that turn is long
-    # past when the cancel lands; one that boots the child near 1.0 s can land
-    # it there, and the bound below turns that hang into a failure that names
-    # itself.
-    await asyncio.sleep(1.0)
+    # Until #351 this precondition could not be used, and the case settled for
+    # ``sleep(1.0)`` instead — vacuous on a runner slow enough to boot the child
+    # near that second. The first reduced line arrives in, or right next to,
+    # the loop turn in which the child's answer to ``prompt`` resolves, and
+    # ``RpcClient._await_terminator`` swallowed a cancel landing in that turn's
+    # cleanup: the delegation then waited out its turn budget with the child
+    # still flooding (probe4 on fbead6e0: 12 of 12 and 5 of 12 runs hung, every
+    # hang at exactly 292 snapshots). That turn is now pinned deterministically
+    # by ``test_a_delegation_cancelled_in_the_prompt_answer_turn_ends_and_reaps_its_child``
+    # below; here it is just one of the turns the cancel may land in.
+    await within(
+        first_reduced_line.wait(),
+        bound=20.0,
+        what="the flooding child's first reduced line",
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await within(
             task,
             bound=20.0,
             what=(
-                "the cancelled delegation's teardown (a cancel one second in returns "
-                "in ~0.06 s; a cancel swallowed in the prompt-answer turn is #351)"
+                "the cancelled delegation's teardown (a cancel at the first reduced "
+                "line ends it in ~0.06 s; a hang here is a cancel lost between the "
+                "prompt answer and the teardown — #351's shape — or a teardown that "
+                "does not end)"
             ),
         )
 
@@ -1132,6 +1142,108 @@ async def test_a_cancelled_delegation_publishes_no_phantom_delegations(
         f"{api.channels.count('subagent_start')} starts for one delegation — "
         "the tap published terminal snapshots through the teardown drain"
     )
+    assert api.channels.count("subagent_end") == 1
+
+
+# Acks ``prompt``, starts the turn and never ends it: the parent's
+# ``prompt_and_wait`` is still waiting for ``agent_end`` when anything lands.
+_HANG_AFTER_ACK = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            time.sleep(120)
+        """
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "child",
+    [
+        # The fast red, and what the lost cancel cost a child whose turn ends:
+        # the delegation kept going and returned the child's answer as an
+        # ``ok`` envelope, as if it had never been cancelled.
+        pytest.param(_rpc_stub(), id="the-turn-ends-right-after-the-ack"),
+        # The flood test's shape: a turn that never ends waited out the budget
+        # with the child alive (here the 20 s bound names it instead).
+        pytest.param(_HANG_AFTER_ACK, id="the-turn-never-ends"),
+    ],
+)
+async def test_a_delegation_cancelled_in_the_prompt_answer_turn_ends_and_reaps_its_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, child: str
+) -> None:
+    """#351 at the delegation: a task cancel in the turn the child's ``prompt`` answer resolves.
+
+    The spawn task's first terminator is ``_send``'s wait for the child's
+    answer to ``prompt``. :mod:`tests.rpc._terminator_seam` cancels the spawn
+    task inside that terminator's cleanup — the one loop turn in which
+    ``RpcClient._await_terminator`` swallowed a cancellation — with no clock
+    deciding where it lands. That was the production swallow: probe4 (a cancel
+    at the flood child's first reduced line) hung there, at ``_send``'s
+    ``response to 'prompt'``.
+
+    Propagating, the cancel takes ``_drive``'s ``except CancelledError`` →
+    ``_eager_abort`` (the kill) → ``_shutdown`` (the reap), and
+    ``runtime._run``'s ``finally`` pops the row and publishes the one terminal
+    snapshot: one ``subagent_start`` and one ``subagent_end``.
+
+    ``landed is True`` means the spawn task was not done when the seam fired,
+    i.e. the cancel really landed inside the terminator; the seam's docstring
+    says why a refactor that stops building one death task per call fails
+    here loudly rather than passing vacuously.
+    """
+
+    seams: list[CancelInTheCleanupTurn] = []
+    procs: list[Any] = []
+    spawn: dict[str, asyncio.Task[Any]] = {}
+
+    class _SeamedClient(RpcClient):
+        async def start(self) -> None:
+            await super().start()
+            # AFTER ``start()``, which replaces ``_exited``. ``fire_on=1``: the
+            # spawn task's first terminator is ``_send``'s, for ``prompt``.
+            seam = install(self, fire_on=1)
+            seam.target = spawn["task"]
+            seams.append(seam)
+            procs.append(self.process)
+
+    monkeypatch.setattr("aelix_agents.rpc_channel.RpcClient", _SeamedClient)
+    api = _ProbeApi()
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), on_progress=SubagentProgressBridge(api)),
+        channel=_channel(child, grace=0.3),
+    )
+    task = asyncio.ensure_future(
+        runtime.spawn_granted(_grant(), _resolved(), "answer, then be cancelled")
+    )
+    spawn["task"] = task  # before its first step: the client does not exist yet
+
+    with pytest.raises(asyncio.CancelledError):
+        result = await within(
+            task,
+            bound=20.0,
+            what=(
+                "the delegation cancelled in the prompt-answer turn (a propagated "
+                "cancel ends it in ~0.2 s; a hang here is the cancel lost in the "
+                "terminator's cleanup, #351)"
+            ),
+        )
+        pytest.fail(
+            f"the cancelled delegation returned an envelope (ok={result.ok}, "
+            f"summary={result.summary!r}, cancelling={task.cancelling()}) — the "
+            "cancellation was swallowed in the prompt-answer turn (#351)"
+        )
+
+    assert len(seams) == 1, f"{len(seams)} clients started for one delegation"
+    assert seams[0].landed is True, (
+        "the seam's cancel never landed inside the spawn task's terminator"
+    )
+    assert runtime.list() == []
+    proc = procs[0]
+    await wait_until(lambda: proc.returncode is not None, what="the cancelled child's exit status")
+    assert not _pid_is_live(proc.pid), "the cancelled delegation's child survived it"
+    assert api.channels.count("subagent_start") == 1
     assert api.channels.count("subagent_end") == 1
 
 

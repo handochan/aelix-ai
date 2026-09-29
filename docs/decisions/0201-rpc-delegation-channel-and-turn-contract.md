@@ -6,6 +6,9 @@ band reading (D1), owner-ratified kernel scope (D3/D4). Design record that lands
 **Amended 2026-09-19 (ADR-0243, #199): the channel's own session flag is
 `--session <path>` when the parent allocated a child file — see the note under
 *Two argv/env decisions that are not obvious*.**
+**Amended 2026-09-30 (#351): a cancellation of the caller is never swallowed by
+the wait that races the terminator against the child's death — see
+`## Amendment (2026-09-30, #351)`.**
 Date: 2026-07-31
 Builds on: ADR-0197 (the subagent-runtime seam and the 3-band rule this ADR
 re-reads rather than amends), ADR-0198 (**this ADR delivers the `rpc` half its
@@ -196,6 +199,237 @@ issued to an already-dead child raised `RuntimeError` in 0.00 s off the broken
 stdin pipe, while one issued moments earlier blocked the full budget and raised
 `TimeoutError`. One fact about the world, two unrecognisably different failures,
 and a caller would only ever discover whichever it hit first.
+
+## Amendment (2026-09-30, #351) — a cancel of the caller is never swallowed by the race against the child's death
+
+Row 6 is implemented by `RpcClient._await_terminator`, which every wait on a
+child goes through: `wait_for_idle`, `collect_events`, `prompt_and_wait`'s own
+`agent_end` wait, and `_send` — every command, including the `prompt` that
+`prompt_and_wait` sends first. It races `done` against a `death` task built
+from `self._exited.wait()`, then cancels death and joins it in a `finally`.
+
+**The rule: a cancellation of the caller always propagates, in every loop
+turn.** The caller's cancel beats a `done` that has already resolved. That is
+no new semantics: one turn earlier (the wait's waiter resolved, the caller not
+yet resumed) `Task.cancel()` sets `_must_cancel` and the `CancelledError`
+already came out of the wait. So a command the child has already answered —
+a `prompt` it accepted — can come back to a cancelled caller as
+`CancelledError`.
+
+**What broke it.** The join was `with contextlib.suppress(BaseException): await
+death`. While the caller is suspended on death, `Task.cancel()` of the caller
+is handed to death (its `_fut_waiter`, already cancelling) and `_must_cancel`
+stays False. The caller then gets death's `CancelledError` back at the
+`await`, the `suppress` eats it, and the helper sees `done.done()` and returns
+normally with `cancelling()` still 1. Positions, as loop turns after the
+callback that resolves `done` (pure-asyncio probe, identical on 3.11.15,
+3.12.13, 3.13 and 3.14, C and pure-Python `Task`):
+
+| turn | where the caller is | fbead6e0 | now |
+|---|---|---|---|
+| −1, 0 | parked on the wait's waiter | propagates | propagates |
+| 1 | waiter resolved, caller not resumed | propagates (`_must_cancel`) | propagates |
+| 2, and inside death's own cancellation step | suspended in the join | **swallowed** | propagates |
+| 3 | death finished, caller not resumed | **swallowed** | propagates |
+| 4 | fbead6e0: past the `finally`; now: the join's waiter resolved, caller not resumed | propagates at the next `await` | propagates from the helper |
+| 5+ | past the `finally` | propagates at the next `await` | same |
+
+The fix's extra suspended turn on the `done` leg is row 4: the real helper on
+a bare client, cancel issued k turns after `done` resolves (3.12.13 and
+3.11.15), now reads `0–4 RAISED`, `5–6` delivered at the caller's next `await`.
+
+The TIMEOUT leg runs the same cleanup after the wait's own timer fires, and
+there the lost cancel did not look like a normal return: the helper fell
+through to its own `TimeoutError` with `cancelling()` still 1, so a cancelled
+call was **reported as a timeout**. Real helper on a bare client, cancel
+issued k turns after the timer fires (3.12.13): fbead6e0 `k=0` raised, `k=1–2`
+`TimeoutError` with the cancel lost, `k=3–4` `TimeoutError` with the cancel
+delivered at the caller's next `await`; now `k=0–3` raise `CancelledError` and
+`k=4–5` are the `TimeoutError`-then-next-`await` case.
+
+**What it cost** (a *task* cancel: Ctrl+C, `asyncio.timeout()`, a
+`TaskGroup`; `runtime.stop()` / `stop_all()` kill the child and end the wait
+through the death leg, so they were not affected — measured with a
+`call_soon` chain started inside the stdout pump's step right after the
+`prompt` answer resolves, `runtime.stop()` issued 0–9 turns later: every
+offset `status=aborted rc=-15`, child reaped, 1 start / 1 end, on fbead6e0 and
+after the fix alike). For any `RpcClient` caller, the call returned normally in
+that turn as if nothing had been cancelled, and an `asyncio.timeout()` expiring
+there was lost; a cancel landing as the call's own budget expired came back as
+that call's `TimeoutError`. For an rpc delegation (reachable only
+programmatically — no setting selects this channel, #123), that last one meant
+`_run_turn`'s `except TimeoutError` returned a `timeout` envelope for a
+delegation that had been cancelled; it now propagates the cancel (by code
+reading; the client-level turn is pinned by the timeout-leg test below). The
+production turn was `_send`'s wait for the child's answer to `prompt`:
+
+- **a child whose turn ends** was kept working to the end of its turn, and the
+  delegation then returned its result as an `ok` envelope as if it had never
+  been cancelled — the Ctrl+C lost entirely. Live on fbead6e0's helper against
+  OpenRouter `anthropic/claude-haiku-4.5`: `outcome=RETURNED ok=True status=ok
+  exit_code=0 summary='pong' ... landed=True cancelling=1 child_rc=0`;
+- **only a turn that never ends** waited out the budget with the child alive:
+  probe4 (a cancel at the flood child's first reduced line) hung 12 of 12 runs
+  on the lane and 5 of 12 on the main loop's run, every hang at exactly 292
+  snapshots, the swallow at `_send`'s `response to 'prompt'`.
+
+**The fix** is the #234 shape (`tools/bash.py`, ADR-0238): `death.cancel()`
+then `await asyncio.wait([death])`. `wait` keeps death's own cancellation
+inside death (as membership of its done set) and lets the caller's out,
+because a caller cancel now cancels `wait`'s private waiter, which nobody else
+shares. No retrieval is needed, unlike #234: death is `Event.wait()`, which in
+practice only returns or is cancelled. The cost is suspended loop turns before
+the helper returns — one more on the `done` and timeout legs, two on the death
+leg, where base's `await death` never suspended (what that does to a late
+`agent_end` is the next paragraph). Not awaiting death at all was rejected: it
+is swallow-free too, but leaves death pending past the return and gives a
+cancel nowhere to land in the cleanup, so the tests below could not tell
+"arrived after the call" from "lost".
+
+**Which leg wins is decided after the join, and the death leg's two new turns
+are a margin for a completed turn — kept on purpose** (Codex's cross-review,
+C2). The helper answers `done` if it has resolved by the time the join ends,
+even when the child's death ended the race. fbead6e0 decided before any
+suspension on the death leg; now an `agent_end` handled up to three loop
+callbacks after `_exited` is set still returns where fbead6e0 reported
+`RpcServerExited` from two on (Codex's `probe_late_event.py`, 3.11.15 and
+3.12.13 alike: `parent offset=2 outcome=RpcServerExited` / `head offset=2
+outcome=RETURN`, same at 3; both report the death from 4). So the helper's old
+"first wins" was never exact and is no longer its summary. Kept, rather than
+restoring the old decision point with a snapshot, because:
+
+- an `agent_end` the parent reads after it has seen the exit was written
+  *before* the child exited — a dead process writes nothing — so returning is
+  the truer answer, and it is the rule the helper already applied in the same
+  tick ("a completed turn is a completed turn");
+- it changes nothing measured in production. A real child that writes
+  `agent_end` and exits at once, the parent in `wait_for_idle`: `agent_end` was
+  never still unread when `_exited` was set — 0 of 300 runs for each helper in
+  each of four shapes (no flood / 400 × 4 KB lines ahead of it, the exit poll
+  at the product's 50 ms / every loop turn; 3.12.13), so fbead6e0's helper and
+  this one returned in all 2 400. A positive control that holds `agent_end`
+  back 0.2 s reads `late=True` and `RpcServerExited` 20 of 20 on both.
+
+`test_an_agent_end_handled_before_the_helper_returns_beats_the_observed_death`
+pins both edges (offsets 0–3 return, 4–5 report the death; red at 2 and 3 with
+fbead6e0's helper), so moving the margin is a decision, not a side effect.
+
+**Measured after.** probe4: 12 of 12 ended in 0.052–0.063 s, 8 of them at the
+292-snapshot turn that used to swallow. Live (same model): `L3 ...
+outcome=CancelledError took=0.35s landed=True cancelling=1 child_rc=-9
+alive=False rows=[] starts=1 ends=1 survivors=0`.
+
+**Tests.** `tests/rpc/_terminator_seam.py` lands the cancel with no clock: an
+`_exited` stand-in whose `wait()` builds the target's death task and cancels
+the target from inside death's own cancellation step, i.e. while the target is
+in the join. `tests/rpc/test_rpc_client_terminator_cancel.py` covers the five
+call sites and `wait_for_idle`'s timeout leg (red on fbead6e0: every call site
+returned normally with `cancelling=1`, the timeout leg raised its own
+`TimeoutError`); `test_a_delegation_cancelled_in_the_prompt_answer_turn_ends_and_reaps_its_child`
+in `tests/agents_ext/test_rpc_channel.py` covers the delegation for both child
+shapes (red: an `ok=True summary='the answer'` envelope, and a named 20 s
+bound hit). `test_a_cancelled_delegation_publishes_no_phantom_delegations`
+now cancels at the first reduced line instead of after `sleep(1.0)`, the
+event precondition #351 had ruled out.
+
+Codex's cross-review found two wrong joins that passed every cancel case —
+`await asyncio.sleep(0)` in place of the join, and `await death` re-raising
+its `CancelledError` whenever `current_task().cancelling() > 0` — so two more
+cases pin what the join must do when nobody cancels the caller, on the done
+and timeout legs of `wait_for_idle`, `prompt_and_wait` and `_send`:
+`test_the_cleanup_waits_for_death_to_finish_before_the_call_returns` (a death
+that needs three more turns once cancelled must be finished when the call
+returns — red under the `sleep(0)` join) and
+`test_an_earlier_handled_cancellation_does_not_resurface_in_a_later_call` (a
+caller entering with `cancelling() == 1` from a cancel it already handled
+gets its answer, or its own `TimeoutError` — red under the conditional join).
+
+**Not closed here** (same shape or same effect, filed as #357–#361, none on
+the #351 turn):
+
+- `RpcClient._teardown_tasks` joins its three tasks with
+  `suppress(BaseException): await task`. On the delegation-cancel path the
+  cancel is already in flight when it runs, so it changes nothing there; a
+  first cancel landing in a *finished* turn's teardown is swallowed and the
+  delegation returns its complete `ok` envelope. The pumps can fail with a
+  foreign exception, so the fix there needs the #234 retrieval. → #357.
+- `rpc/rpc_mode.py` `pump_task.cancel()` + suppressed `await pump_task` in
+  `run_rpc_mode`'s `finally`. Reachable by an outer cancel of the task running
+  `run_rpc_mode` — `asyncio.run`'s SIGINT handling in `aelix --mode rpc` (the
+  mode's own handlers — SIGTERM/SIGHUP, SIGBREAK on win32 — only set the
+  shutdown event), or the aelix-server websocket's task group. On the cancel
+  path the first cancel is already propagating through the `finally` and
+  survives it; only a first cancel landing in the join after a normal
+  shutdown/EOF is lost.
+  Cost: a process already shutting down finishes its teardown and returns
+  normally (exit 0 rather than the interrupt); in the websocket handler
+  `run_rpc_mode` returns as at EOF and the handler runs its own EOF teardown
+  (`rpc_ws.py`: `out_queue.put_nowait(None)`, `tg.cancel_scope.cancel()`). Low.
+  → #357.
+- the oauth `manual_task.cancel()` joins in `openai_codex.py` and
+  `anthropic.py` (a Ctrl+C in the turn the browser callback won is ignored and
+  the login completes), AND the plain re-await of a manual task nobody
+  cancelled (`openai_codex.py` ~366, `anthropic.py` ~297), in one turn. A
+  caller cancel that lands while that task is still pending is forwarded to
+  it, `_run_manual` catches it into `manual_error`, and the caller re-raises
+  it. One that lands after the paste completed the task and before the caller
+  resumes (turn 1 of the table above) finds its waiter already done, is
+  thrown into the suppressed `await manual_task` and eaten: the login returns
+  its credentials with `cancelling()` still raised. Measured by the #351
+  round-2 verification on the real `login_anthropic`
+  (`k=0 ... outcome=RETURNED creds.access='AT' cancelling=1`; a cancel while
+  the task is pending: `k=-1 ... outcome=CancelledError`); `openai_codex.py`
+  is the same code (a replica of its lines: `0:LOST` on 3.11.15 and
+  3.12.13). Both oauth sites → #358.
+- the four `suppress(asyncio.CancelledError, Exception)` joins in the TUI's exit
+  `finally` (`tui/shell.py`: the retry countdown, external-editor and history
+  tasks, then pump and chrome). Reachable only by an outer cancel of the task
+  running the TUI — a SIGINT that reaches `asyncio.run` (SIGTERM/SIGHUP are
+  loop handlers that request EOF, and prompt_toolkit reads Ctrl+C as a key
+  while it holds the terminal; not measured whether a SIGINT can arrive
+  outside that). Every one of them runs after the input loop has already
+  ended, so the cost is the same as `run_rpc_mode`'s: an exit already under
+  way completes and returns normally. Low; listed in #357.
+- `mcp/client.py`'s `_reset_transport` swallows too but `connect()` already
+  re-raises from a `cancelling()` comparison.
+- Not the same shape but widened by this fix: on `_send`'s death leg,
+  `_watch_for_exit` sets `_exited` and `_fail_pending` sets the pending future's
+  exception in one step; a caller cancel landing before `done.result()` leaves
+  that exception unretrieved, which asyncio logs at GC. fbead6e0 had that window
+  for 2 turns, the fix's two suspended death-leg turns make it 4 (pure-asyncio
+  replica, 3.11 and 3.12). It needs a child death and a cancel within ~4 turns,
+  and costs one log line; a `done.exception()` retrieval on the raise path
+  would close it. → #357.
+- On CPython 3.11 only, `asyncio.wait_for` itself loses a cancel landing in
+  the turns right after its inner awaitable completes (`except CancelledError:
+  if fut.done(): return fut.result()`): `RpcClient._await_exit` (every `stop()`),
+  the `start()` grace, and `PrintChannel`'s post-EOF exit wait and its error /
+  timeout / drain legs — the one of these reachable in the default product.
+  → #359.
+- A cancel inside `start()`'s 100 ms grace orphans the child: `RpcChannel.run`
+  re-raises without `client.stop()`, and `row.proc` is not yet set. → #360.
+
+**pi.** JS promises cannot be cancelled, so neither the caller-cancel
+semantics nor death's cleanup exist in pi: this helper, its defect and its fix
+are aelix-original, and no pi behaviour is diverged from. One correction to
+row 6 above, which was true at this ADR's pin 734e08e: pi has since added
+child-exit observation — `childProcess.once("exit", …)` →
+`rejectPendingRequests` (`packages/coding-agent/src/modes/rpc/rpc-client.ts:107-111`
+@ 1ff5b6fdd) and an `exitError` check at the top of `send` (`:562`), from
+e007fcd0d "fix(rpc): reject pending requests on child process exit". So
+`_send`'s death leg now has a pi counterpart (aelix's `_fail_pending` in
+`_watch_for_exit`); pi's `waitForIdle` / `collectEvents` still have none.
+pi 92e8d4f02 ("stop RpcClient skipping listeners on unsubscribe") fixes a
+defect aelix does not have: `_handle_stdout_line` already fans out over
+`list(self._event_listeners)`. On another axis, not taken up here: pi's
+`waitForIdle` / `collectEvents` resolve on `agent_settled` (`:479`, `:501`;
+e9fa5a68a), and e473b5cd8 has `prompt` return a disposition (`:198`) so a
+caller skips the wait when it is `"handled"` and no run started. aelix's
+`wait_for_idle` / `prompt_and_wait` wait for `agent_end` and have no such
+escape; whether an aelix rpc child can accept a `prompt` without an
+`agent_end` — which would cost a delegation its whole budget — is unmeasured
+(#361, which also records the stricter alternative to C2's margin: wait for
+the stdout pump's EOF on the death leg before deciding).
 
 ---
 
