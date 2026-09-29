@@ -2144,6 +2144,7 @@ async def run_tui(
                 int(getattr(tokens, "input", 0) or 0),
                 int(getattr(tokens, "output", 0) or 0),
                 float(getattr(stats, "cost", 0.0) or 0.0),
+                bool(getattr(stats, "cost_known", True)),
             )
 
     def _schedule_context_usage_refresh() -> None:

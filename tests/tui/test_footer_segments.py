@@ -102,7 +102,7 @@ async def test_thinking_level_description_names_the_tier_suffix() -> None:
     # This states the sentence itself. Be honest about what that is: a
     # literal-vs-literal pin, NOT a behavioural test, because nothing renders a
     # segment description today — ``statusline_picker.py:96`` is the field's only
-    # reader and the multiselect body (``context.py:815``) drops it (#257). Reverting
+    # reader and the multiselect body (``context.py:816``) drops it (#257). Reverting
     # both copies to the pre-#251 sentence fails exactly this test and nothing
     # else (measured: 1 failed, 1589 passed on tests/tui). It earns its place by
     # keeping the two copies from drifting back to a claim the tier suffix
@@ -242,6 +242,28 @@ async def test_optional_token_cost_segments_render_when_enabled() -> None:
         assert "↑ 1,234" in line
         assert "↓ 56" in line
         assert "$ 0.0099" in line
+
+
+async def test_cost_segment_marks_partial_cost_as_a_floor() -> None:
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer,
+        statusline_store=_FakeStore(["cost"]),
+    ) as (ctx, chrome):
+        ctx.set_usage_stats(0, 0, 0.0099, cost_known=False)
+
+        assert chrome._footer_line == "≥ $ 0.0099"
+
+
+async def test_cost_segment_marks_unpriced_zero_without_claiming_it_is_free() -> None:
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer,
+        statusline_store=_FakeStore(["cost"]),
+    ) as (ctx, chrome):
+        ctx.set_usage_stats(0, 0, 0.0, cost_known=False)
+
+        assert chrome._footer_line == "n/a"
 
 
 # === thinking-level segment (beta) =====================================
