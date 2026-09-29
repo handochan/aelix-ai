@@ -38,6 +38,7 @@ holds the bash tool's reader with the same gate and the same holds.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import io
 import os
@@ -46,7 +47,8 @@ import sys
 import threading
 import time
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -992,6 +994,7 @@ def held_reader(
     seen: list[_PipeReader],
     fds: set[int],
     looked: Path | None = None,
+    log: DrainLog | None = None,
 ) -> type[_PipeReader]:
     """A :class:`_PipeReader` held at ``where``, on ``platform``'s branch.
 
@@ -1002,6 +1005,8 @@ def held_reader(
     created right after the FIRST reader built — stdout's, at both sites — has
     taken its first look (:data:`ROOT_TEMPLATE`'s ``looked``); on the blocking
     branch that look is a real one, over the pipe the root has not yet written.
+    ``log``, when given, gets the reader's state (:meth:`DrainLog.watch`, for
+    a kill leg's start) and every ``proven()`` answer.
     """
 
     class Held(_PipeReader):
@@ -1020,6 +1025,8 @@ def held_reader(
             if platform is not None:
                 kwargs["platform"] = platform
             super().__init__(stream, state, **kwargs)
+            if log is not None:
+                log.watch(state)
             self.announce = looked if not seen else None
             #: Every answer :meth:`proven` gave a drain, and when, in order.
             self.asks: list[tuple[float, bool]] = []
@@ -1033,6 +1040,8 @@ def held_reader(
         def proven(self) -> bool:
             answer = super().proven()
             self.asks.append((time.monotonic(), answer))
+            if log is not None:
+                log.ask(self, answer)
             return answer
 
         def _look(self, *, always: bool) -> None:
@@ -1113,20 +1122,89 @@ class DrainLog:
     whatever a stall stops. A stall moves every look but does not change
     which of them ask, so a verdict on what the drain did, rather than when,
     does not turn red because the runner stalled.
+
+    THE KILL LEG AND THE PARKS (#341). A kill leg never computes a soft cap —
+    its cap is the kill instant plus :data:`KILL_DRAIN_SECONDS` — so a log that
+    a held reader was built with (:func:`held_reader`'s ``log``, which hands it
+    the reader's state, :meth:`watch`) also starts at the building thread's
+    first clock reading once ``state.exited_at``, the kill stamp, is set: the
+    stamp's own reading comes first, and the next one on that thread is the
+    drain's first look. :attr:`armed_from` is the instant the drain is armed
+    from either way, as the drain has it, and :attr:`leg` says which. A PARK
+    is when the drain meant to look next, logged right after the look it
+    follows: the seconds of each ``sleep`` on the drain's thread
+    (``run_contained``'s poll) and, through :meth:`parks_asyncio` installed as
+    the bash tool's ``asyncio``, the bound of each ``wait_for`` there. The
+    hard-cap verdicts (:func:`the_hard_end`) need it: whether a look is LATE
+    is the drain's own ``now - due``.
     """
 
     def __init__(self) -> None:
-        #: ``("look", at)`` and ``("ask", at, reader, answer, pinned, handed_on, eof)``.
+        #: ``("look", at)``, ``("park", seconds)`` and
+        #: ``("ask", at, reader, answer, pinned, handed_on, eof)``.
         self.events: list[tuple[Any, ...]] = []
         #: The soft cap the drain was handed: the caller's deadline, as the drain sees it.
         self.deadline: float | None = None
+        #: The instant the drain is armed from, as the drain has it: the exit
+        #: handed to ``_exit_drain_cap``, or the kill stamp.
+        self.armed_from: float | None = None
+        #: ``"exit"`` (the soft cap was computed) or ``"kill"`` (the kill stamp was set).
+        self.leg: str | None = None
         self._thread: threading.Thread | None = None
+        self._state: Any | None = None
+        self._watching: threading.Thread | None = None
+
+    def watch(self, state: Any) -> None:
+        """Arm the kill leg's start: ``state`` is the drain's, and this thread builds its reader."""
+
+        if self._state is None:
+            self._state, self._watching = state, threading.current_thread()
 
     def monotonic(self) -> float:
+        thread = threading.current_thread()
+        state = self._state
+        if (
+            self._thread is None
+            and thread is self._watching
+            and state is not None
+            and state.exited_at is not None
+        ):
+            self._thread, self.leg, self.armed_from = thread, "kill", state.exited_at
         now = time.monotonic()
-        if threading.current_thread() is self._thread:
+        if thread is self._thread:
             self.events.append(("look", now))
         return now
+
+    def sleep(self, seconds: float) -> None:
+        if threading.current_thread() is self._thread:
+            self.events.append(("park", seconds))
+        time.sleep(seconds)
+
+    def parks_asyncio(self) -> Any:
+        """``asyncio`` for the bash tool, whose drain parks in ``wait_for``: each bound is logged.
+
+        It returns the real ``wait_for``'s coroutine rather than awaiting it,
+        so the drain awaits exactly what it awaited before — no frame and no
+        loop turn added. Everything else is the real module.
+        """
+
+        log = self
+
+        class Parks:
+            def wait_for(self, awaitable: Any, timeout: float | None) -> Any:
+                if threading.current_thread() is log._thread:
+                    log.events.append(("park", timeout))
+                return asyncio.wait_for(awaitable, timeout)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(asyncio, name)
+
+        return Parks()
+
+    def looks(self) -> list[tuple[float, float | None]]:
+        """Each look, with the park the drain took right after it (``None``: it ended there)."""
+
+        return _looks_and_parks(self.events)
 
     def exit_drain_cap(self, real: Callable[..., float]) -> Callable[..., float]:
         """``real`` (the site's ``_exit_drain_cap``), recording its answer and starting the log."""
@@ -1135,6 +1213,7 @@ class DrainLog:
             answer = real(exited_at, started_at=started_at, timeout=timeout)
             self.deadline = answer
             self._thread = threading.current_thread()
+            self.leg, self.armed_from = "exit", exited_at
             return answer
 
         return cap
@@ -1148,6 +1227,244 @@ class DrainLog:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(time, name)
+
+
+def _looks_and_parks(events: Sequence[tuple[Any, ...]]) -> list[tuple[float, float | None]]:
+    """A drain log's looks, each with the park logged after it and before the next look."""
+
+    looks: list[tuple[float, float | None]] = []
+    for event in events:
+        if event[0] == "look":
+            looks.append((event[1], None))
+        elif event[0] == "park" and looks:
+            looks[-1] = (looks[-1][0], event[1])
+    return looks
+
+
+#: What a caller may wait that the drain's own rule does not explain (#341):
+#: from the exit the case saw to the instant the drain is armed from (two
+#: statements on one thread), plus from the drain's last look to the call's
+#: return (the drain's final yield, the detach, the close, the caller's own
+#: result). The half second the hard-cap cases add past the cap.
+UNEXPLAINED = 0.5
+
+#: How many times a hard-cap case runs before a record that shows a stall on
+#: every attempt is itself the failure (#341). #325's ``ATTEMPTS``
+#: (``tests/tools/test_bash_tool_containment.py``, the owner's decision of
+#: 2026-09-28), for the same reason: one such record is a runner that stopped
+#: the process, every attempt so is the drain — a drain that waits before it
+#: looks, or holds its caller after its last look — or a host stalling every
+#: run, and the message carries every attempt's numbers.
+HARD_CAP_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class HardEnd:
+    """The hard end the documented rule allows a drain, replayed on its own readings (#341)."""
+
+    #: The instant the drain was armed from.
+    armed_from: float
+    #: The case's cap: :data:`DRAIN_CAP_SECONDS` past an exit, ``KILL_DRAIN_SECONDS`` past a kill.
+    cap: float
+    #: The hard end in force when the replay stopped: ``armed_from + cap``, or
+    #: one grace after :attr:`late`.
+    end: float
+    #: The drain's first LATE look near its hard end, which moved it, if any.
+    late: float | None
+    #: The index of the drain's first look at or past :attr:`end` — where it
+    #: had to end — or ``None`` if it never looked that late.
+    reached: int | None
+    #: ``(index, seconds)`` of every park that aimed past the hard end in force.
+    overshoots: tuple[tuple[int, float], ...]
+    #: ``(index, at, behind)`` of every look taken more than a grace after the
+    #: drain meant to take it (``behind`` is ``at - due``), wherever it fell.
+    late_looks: tuple[tuple[int, float, float], ...]
+    #: ``(at, park)`` of every look the drain took.
+    looks: tuple[tuple[float, float | None], ...]
+
+    @property
+    def consistent(self) -> bool:
+        """The drain stopped at its first look at or past this end, never parking past it."""
+
+        return (self.reached is None or self.reached == len(self.looks) - 1) and not self.overshoots
+
+    def summary(self) -> str:
+        armed = self.armed_from
+        last = f"{self.looks[-1][0] - armed:+.3f}s" if self.looks else "none"
+        late = f"{self.late - armed:+.3f}s" if self.late is not None else "none"
+        reached = "never" if self.reached is None else f"look {self.reached + 1}"
+        behind = ", ".join(
+            f"look {index + 1} at {at - armed:+.3f}s, {lag:.3f}s behind"
+            for index, at, lag in self.late_looks
+        )
+        return (
+            f"{len(self.looks)} looks from the instant it was armed from, the last at {last}; "
+            f"late look near the cap {late}; hard end {self.end - armed:+.3f}s, reached at "
+            f"{reached}; {len(self.overshoots)} parks aimed past it; late looks: {behind or 'none'}"
+        )
+
+
+def the_hard_end(
+    armed_from: float,
+    looks: Sequence[tuple[float, float | None]],
+    *,
+    cap: float,
+    quantum: float = 0.0,
+) -> HardEnd:
+    """Replay the documented hard end (ADR-0238, #260) on a drain's own readings (#341).
+
+    ``armed_from + cap`` — :data:`DRAIN_CAP_SECONDS` past an exit,
+    ``KILL_DRAIN_SECONDS`` past a kill, handed in by the CASE, never read off
+    the drain — or, when a look comes more than a grace after the drain meant
+    to look (``due``: ``armed_from`` for the first look, the look plus its
+    park after that) and within a grace of that end or past it, one grace
+    after that look; once per drain. The first look at or past the end in
+    force is where the drain had to stop.
+
+    EXACT, NOT APPROXIMATE (#341 review). Every comparison here is one the
+    drain made, on the same floats: the cap sum and the late look plus a grace
+    are the drain's own additions, and ``due`` comes back exactly — the bash
+    tool parks ``due - now``, a subtraction of two nearby clock readings that
+    is exact (Sterbenz), so ``look + park`` is its ``due`` again; ``run_contained``
+    computes ``now + _DRAIN_POLL_SECONDS`` and sleeps that poll, which this
+    recomputes the same way. So it holds on any clock, windows' 15.625 ms one
+    included, and a look late by exactly a grace is not late here as it is
+    not late there. A stall moves the looks and the replay follows them: it
+    asks what the drain did with its readings, not when — which is also why
+    it cannot tell a stall from a drain that waits before it looks, and
+    :func:`the_drain_stopped_at_its_hard_end` sends every late look it relies
+    on back as a premise, not a pass.
+
+    ``quantum`` is how far past the end a park may aim at this site:
+    ``run_contained`` polls every ``_DRAIN_POLL_SECONDS`` and does not clip its
+    last poll to its end; the bash tool parks until ``min(end_at, hard_cap)``.
+    """
+
+    hard = armed_from + cap
+    due = armed_from
+    late: float | None = None
+    reached: int | None = None
+    overshoots: list[tuple[int, float]] = []
+    late_looks: list[tuple[int, float, float]] = []
+    for index, (at, park) in enumerate(looks):
+        behind = at - due
+        if behind > EXIT_DRAIN_SECONDS:
+            late_looks.append((index, at, behind))
+            if late is None and at + EXIT_DRAIN_SECONDS > hard:
+                late = at
+                hard = at + EXIT_DRAIN_SECONDS
+        if at >= hard:
+            reached = index
+            break
+        if park is not None:
+            due = at + park
+            if due > hard + quantum:
+                overshoots.append((index, due - hard))
+    return HardEnd(
+        armed_from, cap, hard, late, reached, tuple(overshoots), tuple(late_looks), tuple(looks)
+    )
+
+
+def the_drain_stopped_at_its_hard_end(
+    hard: HardEnd,
+    *,
+    returned: float,
+    exit_seen: float | None,
+    proofless: bool,
+    what: str,
+    soft_cap: float | None = None,
+) -> str | None:
+    """Every hard-cap case's verdict on the drain's own record since #341; ``None`` if it measured.
+
+    ASSERTED on every attempt, because a stall cannot produce it (the replay,
+    :func:`the_hard_end`, follows the looks): the drain did not look at or past
+    its hard end and go on — the first look there is its last — and it never
+    parked aiming past it; ``proofless`` (nothing could prove), it got there.
+
+    RETURNED, as the reason this attempt's wall clock measured the runner and
+    not the drain, when the record shows it was held away from its own rule:
+    a look more than a grace after the drain meant to take it, where the end
+    depends on it — within a grace of the hard cap or past it (the late-look
+    rule's extension), or at or past ``soft_cap`` (a refusal there costs a
+    grace) — or more than :data:`UNEXPLAINED` the rule does not explain at all:
+    from ``exit_seen``, the exit or reap the case itself saw, to the instant
+    the drain was armed from, plus from the drain's last look to ``returned``,
+    the call's return on the case's clock. The case then runs again
+    (:data:`HARD_CAP_ATTEMPTS`) and judges its wall bound — the one it had
+    before #341 — on the attempt whose record shows no such thing. The replay
+    alone cannot tell a stopped runner from a drain that waits before it
+    looks (#341 review: an unlogged ``sleep(2.6)`` there passed it, 6.0 s
+    too); a retry can, since the drain waits on every attempt.
+    """
+
+    assert hard.looks, f"{what}: the drain took no look — the case measured nothing"
+    last = hard.looks[-1][0]
+    armed_late = 0.0 if exit_seen is None else hard.armed_from - exit_seen
+    after_the_drain = returned - last
+    unexplained = armed_late + after_the_drain
+    armed = "" if exit_seen is None else f"armed {armed_late:.3f}s after the exit the case saw, "
+    summary = f"{hard.summary()}; {armed}the call back {after_the_drain:.3f}s after the last look"
+    warnings.warn(f"#341 {what}: {summary} on {sys.platform}", stacklevel=2)
+    # Named, so a failure prints its message and not the record's repr.
+    went_on = hard.reached is not None and hard.reached != len(hard.looks) - 1
+    stopped_there = hard.looks[hard.reached][0] - hard.armed_from if went_on else 0.0
+    assert not went_on, (
+        f"{what}: the drain looked at or past its hard end and went on — its look "
+        f"{stopped_there:+.3f}s from the instant it was armed from was where it had to stop, "
+        f"a grace past a late look at most, once ({summary})"
+    )
+    parked_past = bool(hard.overshoots)
+    assert not parked_past, (
+        f"{what}: the drain parked aiming past its hard end, by {hard.overshoots} (look index, "
+        f"seconds) — the caller waits for that park ({summary})"
+    )
+    ended_short = proofless and hard.reached is None
+    assert not ended_short, (
+        f"{what}: nothing could prove, yet the drain ended before its hard end ({summary})"
+    )
+    near = hard.armed_from + hard.cap
+    counted = [
+        (index, at, behind)
+        for index, at, behind in hard.late_looks
+        if at + EXIT_DRAIN_SECONDS > near or (soft_cap is not None and at >= soft_cap)
+    ]
+    reasons: list[str] = []
+    if counted:
+        index, at, behind = counted[0]
+        reasons.append(
+            f"its look {index + 1} came {behind:.3f}s after it meant to look, "
+            f"{at - hard.armed_from:+.3f}s from the instant it was armed from — where the end "
+            f"depends on it"
+        )
+    if unexplained >= UNEXPLAINED:
+        reasons.append(
+            f"{unexplained:.3f}s the drain's own rule does not explain — {armed}the call back "
+            f"{after_the_drain:.3f}s after its last look"
+        )
+    if not reasons:
+        return None
+    return f"{' and '.join(reasons)} ({summary})"
+
+
+def the_attempt_measured_nothing(what: str, attempt: int, attempts: int, reason: str) -> str:
+    """The line an attempt whose record shows a stall leaves in the log (#341)."""
+
+    return (
+        f"{what}, attempt {attempt}/{attempts}: THE PREMISE FAILED, NOT THE CASE — the drain's "
+        f"record shows it was held away from its own rule: {reason}. A runner that stops the "
+        f"process does that, and the late-look rule answers it correctly; this attempt's wall "
+        f"clock measured the runner, so the case runs again"
+    )
+
+
+def every_attempt_measured_nothing(what: str, lines: Sequence[str]) -> str:
+    return (
+        f"{what}: every one of {len(lines)} attempts had a record that shows the drain held "
+        f"away from its own rule, so the case never measured how long it holds its caller. "
+        f"Once is a stalled runner; every time is a drain that waits before it looks or after "
+        f"its last look, one armed late from the exit, or a host stalling every run — read "
+        f"the drains: " + " | ".join(lines)
+    )
 
 
 def the_deadline_ended_it_on_the_second_proof(
@@ -1372,9 +1689,7 @@ def test_run_contained_waits_for_bytes_the_reader_has_not_handed_on(
         )
 
 
-def test_run_contained_holds_a_deadline_only_as_far_as_its_hard_cap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_contained_holds_a_deadline_only_as_far_as_its_hard_cap(tmp_path: Path) -> None:
     """The caller's deadline is a SOFT cap now; ``DRAIN_CAP_SECONDS`` past the exit is the hard one.
 
     ``timeout=1.0`` puts the deadline a second after the start, and the root
@@ -1390,30 +1705,83 @@ def test_run_contained_holds_a_deadline_only_as_far_as_its_hard_cap(
     its drain would end at the deadline, as before #260. It is also the price,
     stated: a starved reader can hold a ``timeout=1.0`` call to 2.0 s past the
     exit.
+
+    THE UPPER BOUND IS JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE
+    #341 (:func:`the_drain_stopped_at_its_hard_end`). ``after_exit <
+    DRAIN_CAP_SECONDS + 0.5`` on the case's clock is what the documented
+    late-look rule contradicts: a process stopped across the cap for more than
+    a grace comes back to a look that moves the end one grace past itself, and
+    the bound went red with every other assertion green — under the serialised
+    stall plugin at 1.9 s for 0.8 s, 2.819-2.827 s after the exit, 3 of 3. So
+    the drain's own looks and polls (:class:`DrainLog`) are read first. On
+    every attempt the rule is replayed on them: the drain stopped at its first
+    look at or past its hard end, never polling aiming past it (by more than
+    its poll) — a hard cap removed or doubled goes on past it. An attempt
+    whose record shows a look late near the cap, or half a second the rule
+    does not explain, measured the runner: said, and run again
+    (:data:`HARD_CAP_ATTEMPTS`). The wall bound stays, on the attempt that
+    measured — a drain that waits before it looks is late on every attempt
+    and fails, as it failed the bound before (#341 review: an unlogged 2.6 s
+    wait before the first look passed a replay that stood in for the bound).
     """
 
-    gate = Gate(None)
-    gate.arm_from_the_exit(monkeypatch)
-    seen: list[_PipeReader] = []
-    monkeypatch.setattr(
-        _process_tree, "_PipeReader", held_reader("late", gate, platform=None, seen=seen, fds=set())
-    )
-    root = tmp_path / "root_260.py"
-    root.write_text(ROOT_TEMPLATE.replace("@MARK@", MARK), encoding="utf-8")
-    argv = [sys.executable, str(root), str(tmp_path / "pids.txt"), "none", "-", "0"]
-    try:
-        done = run_contained(argv, timeout=1.0)
-    finally:
-        returned = time.monotonic()
-        gate.event.set()
-    assert gate.exited_at is not None, "the root's exit was never seen — the case measured nothing"
-    after_exit = returned - gate.exited_at
-    warnings.warn(
-        f"#260 run_contained hard cap: returned {after_exit:.3f}s after the exit on {sys.platform}",
-        stacklevel=1,
-    )
+    what = "run_contained hard cap"
+    stalls: list[str] = []
+    for attempt in range(1, HARD_CAP_ATTEMPTS + 1):
+        where = tmp_path / f"attempt-{attempt}"
+        where.mkdir()
+        with pytest.MonkeyPatch.context() as patch:
+            gate = Gate(None)
+            gate.arm_from_the_exit(patch)
+            seen: list[_PipeReader] = []
+            log = DrainLog()
+            patch.setattr(_process_tree, "time", log)
+            patch.setattr(
+                _process_tree, "_exit_drain_cap", log.exit_drain_cap(_process_tree._exit_drain_cap)
+            )
+            patch.setattr(
+                _process_tree,
+                "_PipeReader",
+                held_reader("late", gate, platform=None, seen=seen, fds=set(), log=log),
+            )
+            root = where / "root_260.py"
+            root.write_text(ROOT_TEMPLATE.replace("@MARK@", MARK), encoding="utf-8")
+            argv = [sys.executable, str(root), str(where / "pids.txt"), "none", "-", "0"]
+            try:
+                done = run_contained(argv, timeout=1.0)
+            finally:
+                returned = time.monotonic()
+                gate.event.set()
+        assert gate.exited_at is not None, (
+            "the root's exit was never seen — the case measured nothing"
+        )
+        after_exit = returned - gate.exited_at
+        warnings.warn(
+            f"#260 run_contained hard cap: returned {after_exit:.3f}s after the exit, attempt "
+            f"{attempt}/{HARD_CAP_ATTEMPTS} on {sys.platform}",
+            stacklevel=1,
+        )
+        assert seen, "the held reader was never built — the case measured nothing"
+        assert log.leg == "exit" and log.armed_from is not None, (
+            f"the drain after the exit never computed its soft cap (leg={log.leg}) — the case "
+            f"measured nothing"
+        )
+        stall = the_drain_stopped_at_its_hard_end(
+            the_hard_end(
+                log.armed_from, log.looks(), cap=DRAIN_CAP_SECONDS, quantum=_DRAIN_POLL_SECONDS
+            ),
+            returned=returned,
+            exit_seen=gate.exited_at,
+            proofless=True,
+            what=what,
+        )
+        if stall is None:
+            break
+        stalls.append(the_attempt_measured_nothing(what, attempt, HARD_CAP_ATTEMPTS, stall))
+        warnings.warn(stalls[-1], stacklevel=1)
+    else:
+        pytest.fail(every_attempt_measured_nothing(what, stalls))
 
-    assert seen, "the held reader was never built — the case measured nothing"
     assert done.returncode == 0
     assert done.stdout == b""
     assert DRAIN_CAP_SECONDS <= after_exit < DRAIN_CAP_SECONDS + 0.5

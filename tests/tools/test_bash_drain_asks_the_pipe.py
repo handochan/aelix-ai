@@ -65,12 +65,13 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from aelix_ai.tools import ToolExecutionContext
+from aelix_ai.tools import ToolExecutionContext, ToolResult
 from aelix_ai.utils import _process_tree
 from aelix_ai.utils._process_tree import (
     DRAIN_CAP_SECONDS,
@@ -91,6 +92,7 @@ from tests.process_tree.test_the_drain_asks_the_pipe import (
     AWAY_AGAIN,
     BOUND,
     FULL_PIPE_ROOT_TEMPLATE,
+    HARD_CAP_ATTEMPTS,
     HOLD,
     LATE,
     PAYLOAD,
@@ -98,11 +100,15 @@ from tests.process_tree.test_the_drain_asks_the_pipe import (
     DrainLog,
     Gate,
     _is_taskkill,
+    every_attempt_measured_nothing,
     held_reader,
     hold_the_fd_read,
     slow_the_reader,
     takes_the_blocking_branch,
+    the_attempt_measured_nothing,
     the_deadline_ended_it_on_the_second_proof,
+    the_drain_stopped_at_its_hard_end,
+    the_hard_end,
 )
 from tests.tools.test_bash_tool_containment import (
     _DEADLINE_ARM_SECONDS,
@@ -641,9 +647,92 @@ async def test_a_refused_proof_parks_the_loop_for_a_whole_grace(
     assert result.output_unconfirmed is False
 
 
-async def test_a_reader_held_past_the_hard_cap_is_reported_not_silent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _log_the_drain(monkeypatch: pytest.MonkeyPatch) -> DrainLog:
+    """A :class:`DrainLog` on ``exec``'s drain: its clock, its soft cap and its parks (#341).
+
+    The held reader is built with it too (``held_reader``'s ``log``), which
+    starts it at a kill leg's stamp, where no soft cap is computed.
+    """
+
+    log = DrainLog()
+    monkeypatch.setattr(bash_module, "time", log)
+    monkeypatch.setattr(
+        bash_module, "_exit_drain_cap", log.exit_drain_cap(bash_module._exit_drain_cap)
+    )
+    monkeypatch.setattr(bash_module, "asyncio", log.parks_asyncio())
+    return log
+
+
+@dataclass
+class _HardCapAttempt:
+    """One run of a hard-cap case: the result, the drain's record and the case's own clock."""
+
+    result: ToolResult
+    log: DrainLog
+    returned: float
+    exit_seen: float
+
+
+async def _held_reader_attempt(
+    where: Path, command: str, timeout: float, call_id: str
+) -> _HardCapAttempt:
+    """Run ``command`` once, the reader held before its first read until the tool returns.
+
+    Every patch is this attempt's own (:class:`Gate`'s ``Popen.wait`` spy
+    wraps whatever ``wait`` it finds, so a second attempt on the case's
+    ``monkeypatch`` would stack a second spy on the first).
+    """
+
+    with pytest.MonkeyPatch.context() as patch:
+        gate = Gate(None)
+        gate.arm_from_the_exit(patch)
+        seen: list[_PipeReader] = []
+        log = _log_the_drain(patch)
+        patch.setattr(
+            bash_module,
+            "_PipeReader",
+            held_reader("late", gate, platform=None, seen=seen, fds=set(), log=log),
+        )
+        tool = create_bash_tool(str(where))
+        try:
+            result = await tool.execute(
+                {"command": command, "timeout": timeout}, ToolExecutionContext(tool_call_id=call_id)
+            )
+        finally:
+            returned = time.monotonic()
+            gate.event.set()
+    assert gate.exited_at is not None, "the exit was never seen — the case measured nothing"
+    return _HardCapAttempt(result, log, returned, gate.exited_at)
+
+
+def _stopped_at_its_hard_end(
+    attempt: _HardCapAttempt, leg: str, cap: float, *, what: str
+) -> str | None:
+    """The hard-cap cases' verdict on the drain's own record since #341; ``None`` if it measured.
+
+    The drain is the ``leg`` the case meant, and the documented rule, replayed
+    on its own looks and parks (:func:`the_hard_end`) to ``cap`` past the
+    instant it was armed from — or one grace past its first late look near
+    that, once — says it stopped at its first look there, never parked past
+    it, and (nothing could prove) got there. What comes back is why the
+    attempt's wall clock measured the runner instead
+    (:func:`the_drain_stopped_at_its_hard_end`).
+    """
+
+    log = attempt.log
+    assert log.leg == leg and log.armed_from is not None, (
+        f"{what}: the drain the case meant never started — it ran as the {log.leg} leg's"
+    )
+    return the_drain_stopped_at_its_hard_end(
+        the_hard_end(log.armed_from, log.looks(), cap=cap),
+        returned=attempt.returned,
+        exit_seen=attempt.exit_seen,
+        proofless=True,
+        what=what,
+    )
+
+
+async def test_a_reader_held_past_the_hard_cap_is_reported_not_silent(tmp_path: Path) -> None:
     """The one end that can still lose the command's bytes on POSIX says so (ADR-0238's question).
 
     (On win32 the blocking branch's residual is a second, and silent — the
@@ -660,30 +749,44 @@ async def test_a_reader_held_past_the_hard_cap_is_reported_not_silent(
     RED BEFORE #260, measured on the base tree: the call came back 0.1 s after
     the exit with ``(no output)``, ``is_error=False`` and no field to say
     otherwise — the command printed 1000 bytes.
+
+    THE UPPER BOUND IS JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE
+    #341 (:func:`_stopped_at_its_hard_end`). ``after_exit < DRAIN_CAP_SECONDS +
+    0.5`` on the case's clock is what the documented late-look rule
+    contradicts: a process stopped across the cap for more than a grace comes
+    back to a look that moves the end one grace past itself — under the
+    serialised stall plugin at 1.9 s for 0.8 s the tool came back
+    2.811-2.834 s after the exit, 3 of 3, every other assertion green. So the
+    drain's record is read first, on every attempt: the replayed rule, which a
+    stall cannot break; and a look late near the cap, or half a second the
+    rule does not explain, sends the attempt round again
+    (:data:`HARD_CAP_ATTEMPTS`) instead of to the wall bound, which the
+    attempt that measured still meets. A drain that waits before it looks is
+    late on every attempt, and fails.
     """
 
-    gate = Gate(None)
-    gate.arm_from_the_exit(monkeypatch)
-    seen: list[_PipeReader] = []
-    monkeypatch.setattr(
-        bash_module, "_PipeReader", held_reader("late", gate, platform=None, seen=seen, fds=set())
-    )
-    tool = create_bash_tool(str(tmp_path))
-    command = _root_command(tmp_path, tmp_path / "pids.txt", holder=False, looked=None, code=0)
-    try:
-        result = await tool.execute(
-            {"command": command, "timeout": 30}, ToolExecutionContext(tool_call_id="t260")
+    what = "hard cap"
+    stalls: list[str] = []
+    for number in range(1, HARD_CAP_ATTEMPTS + 1):
+        where = tmp_path / f"attempt-{number}"
+        where.mkdir()
+        command = _root_command(where, where / "pids.txt", holder=False, looked=None, code=0)
+        attempt = await _held_reader_attempt(where, command, 30, "t260")
+        after_exit = attempt.returned - attempt.exit_seen
+        warnings.warn(
+            f"#260 hard cap: the tool returned {after_exit:.3f}s after the exit, attempt "
+            f"{number}/{HARD_CAP_ATTEMPTS} on {sys.platform}",
+            stacklevel=1,
         )
-    finally:
-        returned = time.monotonic()
-        gate.event.set()
-    assert gate.exited_at is not None, "the root's exit was never seen — the case measured nothing"
-    after_exit = returned - gate.exited_at
-    warnings.warn(
-        f"#260 hard cap: the tool returned {after_exit:.3f}s after the exit on {sys.platform}",
-        stacklevel=1,
-    )
+        stall = _stopped_at_its_hard_end(attempt, "exit", DRAIN_CAP_SECONDS, what=what)
+        if stall is None:
+            break
+        stalls.append(the_attempt_measured_nothing(what, number, HARD_CAP_ATTEMPTS, stall))
+        warnings.warn(stalls[-1], stacklevel=1)
+    else:
+        pytest.fail(every_attempt_measured_nothing(what, stalls))
 
+    result = attempt.result
     assert result.content[0].text == (
         "[Output may be incomplete: reading stopped 2s after the command ended, before its "
         "last output could be confirmed. Re-run it, or redirect its output to a file, if the "
@@ -696,9 +799,7 @@ async def test_a_reader_held_past_the_hard_cap_is_reported_not_silent(
     assert DRAIN_CAP_SECONDS <= after_exit < DRAIN_CAP_SECONDS + 0.5
 
 
-async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(tmp_path: Path) -> None:
     """The timeout leg: hard cap ``killed_at + KILL_DRAIN_SECONDS``, then the status line.
 
     The root writes its 1000 bytes and sleeps past the timeout; the reader is
@@ -713,42 +814,54 @@ async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(
 
     RED BEFORE #260, measured on the base tree: back 0.1 s after the reap,
     with the bare status line and nothing about the 1000 bytes.
+
+    THE UPPER BOUND IS JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE
+    #341 (:func:`_stopped_at_its_hard_end`, the log started at the kill
+    stamp). ``after_kill < KILL_DRAIN_SECONDS + 0.5`` on the case's clock is
+    what a process stopped across the kill cap for more than a grace breaks
+    with the product right (0.9 s after the reap for 0.8 s: 1.820-1.832 s, 3 of
+    3); such an attempt is said and run again, and the attempt that measured
+    meets it. The replay holds the drain to ``killed_at + KILL_DRAIN_SECONDS``
+    — a constant of this case's, not the argument the leg handed — so a kill
+    leg handed the 2.0 s looks past its end at 1.0 s and goes on, and fails on
+    the record as well as on the wall bound. Not on every attempt: a stall
+    that runs from before the 1.0 s cap to past 2.0 s leaves both drains the
+    same single late look past 2.0 s, and both the one grace after it — that
+    attempt is said as the premise failing, and the next one tells them apart.
     """
 
     # 2.0 s on win32 for the containment file's reason: pwsh starts in 0.5-0.7 s
     # there, and the root must have written before the kill.
     timeout = 2.0 if sys.platform == "win32" else 1.0
-    gate = Gate(None)
-    gate.arm_from_the_exit(monkeypatch)
-    seen: list[_PipeReader] = []
-    monkeypatch.setattr(
-        bash_module, "_PipeReader", held_reader("late", gate, platform=None, seen=seen, fds=set())
-    )
-    sleeper = _script(
-        tmp_path,
-        "writes_then_sleeps.py",
-        "import sys, time\n"
-        "sys.stdout.buffer.write(b'x' * 999 + b'\\n')\n"
-        "sys.stdout.buffer.flush()\n"
-        "time.sleep(30)\n",
-    )
-    tool = create_bash_tool(str(tmp_path))
-    try:
-        result = await tool.execute(
-            {"command": _command(sleeper), "timeout": timeout},
-            ToolExecutionContext(tool_call_id="t260k"),
+    what = "kill-leg hard cap"
+    stalls: list[str] = []
+    for number in range(1, HARD_CAP_ATTEMPTS + 1):
+        where = tmp_path / f"attempt-{number}"
+        where.mkdir()
+        sleeper = _script(
+            where,
+            "writes_then_sleeps.py",
+            "import sys, time\n"
+            "sys.stdout.buffer.write(b'x' * 999 + b'\\n')\n"
+            "sys.stdout.buffer.flush()\n"
+            "time.sleep(30)\n",
         )
-    finally:
-        returned = time.monotonic()
-        gate.event.set()
-    assert gate.exited_at is not None, "the reap was never seen — the case measured nothing"
-    after_kill = returned - gate.exited_at
-    warnings.warn(
-        f"#260 kill-leg hard cap: the tool returned {after_kill:.3f}s after the reap on "
-        f"{sys.platform}",
-        stacklevel=1,
-    )
+        attempt = await _held_reader_attempt(where, _command(sleeper), timeout, "t260k")
+        after_kill = attempt.returned - attempt.exit_seen
+        warnings.warn(
+            f"#260 kill-leg hard cap: the tool returned {after_kill:.3f}s after the reap, "
+            f"attempt {number}/{HARD_CAP_ATTEMPTS} on {sys.platform}",
+            stacklevel=1,
+        )
+        stall = _stopped_at_its_hard_end(attempt, "kill", KILL_DRAIN_SECONDS, what=what)
+        if stall is None:
+            break
+        stalls.append(the_attempt_measured_nothing(what, number, HARD_CAP_ATTEMPTS, stall))
+        warnings.warn(stalls[-1], stacklevel=1)
+    else:
+        pytest.fail(every_attempt_measured_nothing(what, stalls))
 
+    result = attempt.result
     text = result.content[0].text
     assert text.startswith(
         "[Output may be incomplete: reading stopped 1s after the command ended, before its "

@@ -79,6 +79,12 @@ from tests.process_tree.test_run_contained_real_processes import (
 from tests.process_tree.test_run_contained_real_processes import (
     strays as _strays_fixture,
 )
+from tests.process_tree.test_the_drain_asks_the_pipe import (
+    HardEnd,
+    _looks_and_parks,
+    the_drain_stopped_at_its_hard_end,
+    the_hard_end,
+)
 
 _T = TypeVar("_T")
 
@@ -516,7 +522,8 @@ class _DrainRecord:
     """
 
     def __init__(self) -> None:
-        #: ``("look", at, last_chunk_at)`` and ``("ask", at, answer, pinned, handed_on, eof)``.
+        #: ``("look", at, last_chunk_at)``, ``("park", seconds)`` (#341) and
+        #: ``("ask", at, answer, pinned, handed_on, eof)``.
         self.events: list[tuple[Any, ...]] = []
         self.cap: float | None = None
         self.exited_at: float | None = None
@@ -552,9 +559,22 @@ class _DrainRecord:
                 )
                 return answer
 
+        class Parks:
+            """``asyncio`` whose ``wait_for`` logs the drain's park — its ``due - now`` (#341)."""
+
+            def wait_for(self, awaitable: Any, timeout: float | None) -> Any:
+                if threading.current_thread() is record._thread:
+                    record.events.append(("park", timeout))
+                # The real coroutine, not awaited here: no frame, no loop turn.
+                return asyncio.wait_for(awaitable, timeout)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(asyncio, name)
+
         monkeypatch.setattr(bash_module, "time", self)
         monkeypatch.setattr(bash_module, "_exit_drain_cap", cap)
         monkeypatch.setattr(bash_module, "_PipeReader", Recorded)
+        monkeypatch.setattr(bash_module, "asyncio", Parks())
 
     def monotonic(self) -> float:
         state = self._state
@@ -569,6 +589,17 @@ class _DrainRecord:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(time, name)
+
+    def hard_end(self) -> HardEnd:
+        """The documented hard end replayed on this drain's looks and parks (#341).
+
+        :data:`DRAIN_CAP_SECONDS` past the exit the drain was armed from — the
+        exit path's hard cap, which on the ``timeout=None`` arms is its soft
+        cap too — or one grace past a late look near it, once.
+        """
+
+        assert self.exited_at is not None, "the exit path's drain never ran — no hard end"
+        return the_hard_end(self.exited_at, _looks_and_parks(self.events), cap=DRAIN_CAP_SECONDS)
 
     def last_ask_proven(self) -> bool:
         """Whether the drain's last look asked and was proven — which it always breaks on.
@@ -737,14 +768,59 @@ def _premise_failed(what: str, end: _DrainEnd, measured: str = "the cap") -> str
     )
 
 
-def _every_attempt_failed_its_premise(
-    what: str, lines: list[str], measured: str = "the cap"
-) -> str:
+def _premise_stalled(what: str, stall: str) -> str:
+    """The line a run whose drain's record shows it held away from its rule leaves (#341)."""
+
     return (
-        f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule, so the case never "
-        f"measured {measured}. Once is a stalled runner; every time is the idle rule's input "
-        f"broken (a reader that no longer stamps ``last_chunk_at`` on a hand-over ends every "
-        f"drain there) or a host stalling every run — read the silences: " + " | ".join(lines)
+        f"{what}: THE PREMISE FAILED, NOT THE CASE — the drain's record shows it was held away "
+        f"from its own rule: {stall}. A runner that stops the process does that, and the drain "
+        f"answers it correctly; this run's wall clock measured the runner, so the case runs "
+        f"again"
+    )
+
+
+def _every_attempt_failed_its_premise(
+    what: str, lines: list[str], measured: str = "the cap", *, stalls: bool = False
+) -> str:
+    if not stalls:
+        return (
+            f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule, so the case never "
+            f"measured {measured}. Once is a stalled runner; every time is the idle rule's input "
+            f"broken (a reader that no longer stamps ``last_chunk_at`` on a hand-over ends every "
+            f"drain there) or a host stalling every run — read the silences: " + " | ".join(lines)
+        )
+    return (
+        f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule or had a record that "
+        f"shows the drain held away from its rule, so the case never measured {measured}. Once "
+        f"is a stalled runner; every time is the idle rule's input broken (a reader that no "
+        f"longer stamps ``last_chunk_at`` on a hand-over ends every drain there), a drain that "
+        f"waits before it looks or holds its caller after its last look, or a host stalling "
+        f"every run — read the drains: " + " | ".join(lines)
+    )
+
+
+def _judged_on_its_record(record: _DrainRecord, *, returned: float, what: str) -> str | None:
+    """8a's, 8b's and the late-tail case's verdict on the drain's own record (#341).
+
+    The documented hard end, replayed on the drain's looks and parks
+    (:meth:`_DrainRecord.hard_end`), on every attempt: it never looked at or
+    past it and went on, never parked aiming past it — a proof may end it
+    earlier, at its soft cap or on the idle rule, which :class:`_DrainEnd`
+    pins. What comes back is why the attempt's wall clock measured the runner
+    instead — a look late by more than a grace at or past the soft cap
+    (:attr:`_DrainRecord.cap`) or near the hard one, or half a second from the
+    drain's last look to the call's return
+    (:func:`the_drain_stopped_at_its_hard_end`) — and the case runs again
+    (:data:`ATTEMPTS`) rather than judge its ceiling on that attempt.
+    """
+
+    return the_drain_stopped_at_its_hard_end(
+        record.hard_end(),
+        returned=returned,
+        exit_seen=None,
+        proofless=False,
+        what=what,
+        soft_cap=record.cap,
     )
 
 
@@ -1107,7 +1183,7 @@ async def test_a_successful_run_attaches_first_and_releases_without_killing(
 
 
 async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
-    tmp_path: Path, strays: list[int]
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The owner's decision of 2026-09-06: the call comes back when the command does.
 
@@ -1148,33 +1224,107 @@ async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
     ``elapsed=7.501s chunks=b'EARLY\\nLATE\\n'`` against 0.124 s and
     ``b'EARLY\\n'`` here. That is why the ``warnings.warn`` is inside the
     ``finally``: a RED run records both halves in one line.
+
+    THE PREMISES ARE THE DRAIN'S TO JUDGE SINCE #341 (:class:`_DrainRecord`).
+    The bytes and ``elapsed < 1.0`` are also a premise about the runner, the
+    reverse of #325's: that the drain ends on its idle rule before the
+    helper's ``LATE``, which the helper writes on ITS clock half a second
+    after it starts. A process stopped across the root's exit stops the drain
+    and the reader with it but not the helper, and comes back to a pipe with
+    ``LATE`` already in: #325's lane saw the whole file under the serialised
+    stall plugin fail this case 1-2 times in 3-6 runs, once on the bytes
+    (``b'EARLY\\nLATE\\n' == b'EARLY\\n'``) and once on the literal
+    (``1.0089 < 1.0``), while it passed 9/9 alone. So the drain's record comes
+    first: it must have ended on its IDLE rule (proven, a grace of silence —
+    the 2.0 s cap regression ends ``cap`` and fails as such, on every
+    attempt), and the replayed hard end must hold on it
+    (:func:`_judged_on_its_record`). An idle end with ``LATE`` delivered, a
+    call slower than the literal, or a record that shows the drain held away
+    from its rule is the PREMISE failing, not the case — said, with the
+    drain's numbers, and the case runs again (:data:`ATTEMPTS`); the bytes and
+    the literal are then asserted on the attempt that measured. Every attempt
+    so is a grace that grew, an idle rule armed late, a slow launch path, a
+    call held past its drain, or a host stalling every run, and fails. The
+    literal stays because nothing on the drain's record sees the launch: a
+    1.2 s wait before the spawn passes every check made from the drain's
+    arming on (#341 review, measured).
     """
 
-    marker = tmp_path / "pids.txt"
-    root = _script(tmp_path, "root_late_tail.py", ROOT_WITH_A_LATE_TAIL)
-    registrar = _registrar(marker, strays)
-    chunks: list[bytes] = []
-    task = _exec_task(
-        _command(root, str(marker), "0.5", str(OUTLIVE)), tmp_path, chunks, timeout=None
-    )
-    started = time.monotonic()
-
-    try:
-        result = await _bounded(
-            task, _bound(0.0) + 5.0, "the exit-path drain returns without the tail"
+    what = "the exit-path drain returns without the tail"
+    measured = "the tail being cut"
+    premise_failures: list[str] = []
+    for attempt in range(1, ATTEMPTS + 1):
+        marker = tmp_path / f"attempt-{attempt}" / "pids.txt"
+        marker.parent.mkdir()
+        root = _script(marker.parent, "root_late_tail.py", ROOT_WITH_A_LATE_TAIL)
+        registrar = _registrar(marker, strays)
+        record = _DrainRecord()
+        record.install(monkeypatch)
+        chunks: list[bytes] = []
+        task = _exec_task(
+            _command(root, str(marker), "0.5", str(OUTLIVE)), marker.parent, chunks, timeout=None
         )
-    finally:
-        elapsed = time.monotonic() - started
-        pids = registrar.settle()
-        warnings.warn(
-            f"bash exec exit-path drain: elapsed={elapsed:.3f}s "
-            f"chunks={b''.join(chunks)!r} on {sys.platform}",
-            stacklevel=1,
+        started = time.monotonic()
+
+        try:
+            result = await _bounded(task, _bound(0.0) + 5.0, what)
+        finally:
+            returned = time.monotonic()
+            elapsed = returned - started
+            pids = registrar.settle()
+            end = record.end()
+            warnings.warn(
+                f"bash exec exit-path drain: elapsed={elapsed:.3f}s "
+                f"chunks={b''.join(chunks)!r} end={_label(task, end)} "
+                f"attempt={attempt}/{ATTEMPTS} on {sys.platform}",
+                stacklevel=1,
+            )
+        if end.kind != "idle":
+            break
+        reasons: list[str] = []
+        if b"LATE" in b"".join(chunks):
+            reasons.append(
+                "``LATE`` was delivered: the drain waits a grace of silence from the later of "
+                "the exit and the last chunk it was handed, and the helper writes ``LATE`` on "
+                "its own clock, so a process held across the root's exit meets it already in "
+                "the pipe"
+            )
+        if elapsed >= 1.0:
+            reasons.append(f"the call came back {elapsed:.3f}s after it was made, not inside 1.0s")
+        stall = _judged_on_its_record(record, returned=returned, what=what)
+        if stall is not None:
+            reasons.append(stall)
+        if not reasons:
+            break
+        premise_failures.append(
+            f"attempt {attempt}: THE PREMISE FAILED, NOT THE CASE — the drain {end.summary}; "
+            f"{' and '.join(reasons)}. That end is the idle rule working; this run measured "
+            f"nothing about {measured}, so the case runs again"
+        )
+        warnings.warn(premise_failures[-1], stacklevel=1)
+        # The helper holds the pipe for ``OUTLIVE``; it may not run on through
+        # the next attempt.
+        for pid in pids or ():
+            _reap(pid)
+    else:
+        drains = " | ".join(premise_failures)
+        pytest.fail(
+            f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule with ``LATE`` "
+            f"delivered, a call slower than 1.0 s, or a drain held away from its rule, so the "
+            f"case never measured {measured}. Once is a stalled runner; every time is a grace "
+            f"that grew, an idle rule armed from a later instant than the exit, a launch path "
+            f"that got slower, a call held past its drain, or a host stalling every run — read "
+            f"the drains: {drains}"
         )
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     _root_pid, helper = pids
     assert result.exit_code == 0
+    assert end.kind == "idle", (
+        f"the exit-path drain {end.summary} — a root whose helper writes nothing for half a "
+        f"second ends on the idle rule, a grace after the exit, and nowhere else "
+        f"({elapsed:.3f}s from the call)"
+    )
     assert b"".join(chunks) == b"EARLY\n"
     assert elapsed < 1.0
     assert probe_state(helper) == STATE_ALIVE, (
@@ -1195,9 +1345,10 @@ async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
 #: before. The term still bites at 2.0 s (it needs ``exit < timeout < exit +
 #: DRAIN_CAP_SECONDS``, and the root exits well inside 2 s there); the mutant
 #: that drops the term returns at ``exit + 2.0`` instead, which on POSIX is
-#: 2.08 s against 1.00 s and on win32 lands within the sanity ceiling below —
-#: so the DISCRIMINATION is the POSIX arm's, and the win32 arm pins the floor
-#: and the root's own rc 0.
+#: 2.08 s against 1.00 s and on win32 landed within the sanity ceiling the arm
+#: had — so until #341 the DISCRIMINATION was the POSIX arm's alone. Since
+#: #341 it is read off the drain on both platforms: the soft cap it was handed
+#: is below the flat one.
 _DEADLINE_ARM_SECONDS = 2.0 if sys.platform == "win32" else 1.0
 
 
@@ -1227,18 +1378,19 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     failure) while coming back at 2.08 s where the CHANGELOG and ADR-0238 both
     promise 1.0 s. Measured 1.000-1.002 s adopted (4/4, 17-18 ticks) against
     2.076-2.087 s mutated (3/3). :data:`DRAIN_CAP_SECONDS` is the ceiling that
-    discriminates — ``_bound(1.0)`` is 3.5 s POSIX / 8.5 s win32 and the
-    mutation lands under it, so that shape would be inert.
+    discriminates on POSIX — ``_bound(1.0)`` is 3.5 s POSIX / 8.5 s win32 and
+    the mutation lands under it, so that shape would be inert — and since #341
+    the soft cap the drain was handed discriminates on both platforms (below).
 
     The pins are the CAP END and the truncation. The cap end is what a
     regression trips: with ``_wait`` stamping ``state.exited_at`` for the
     ordinary exit instead of ``_root_exited_at``, ``_drain_to_the_end`` takes
     the KILL branch's 1.0 s cap and the call comes back at 1.064 s — against
     the 2.0 s floor until #325, and as a drain that never computed the exit
-    path's cap now (below). The ceiling folds :data:`KILL_DRAIN_SECONDS` in,
-    so it is a sanity bound rather than a discriminator (4.5 s POSIX / 9.5 s
-    win32); a second formula for the drains that kill nothing is not worth a
-    divergence from this file's one helper.
+    path's cap now (below). The ``None`` arm's ceiling folds
+    :data:`KILL_DRAIN_SECONDS` in, so it is a sanity bound rather than a
+    discriminator (4.5 s POSIX / 9.5 s win32); a second formula for the drains
+    that kill nothing is not worth a divergence from this file's one helper.
 
     The truncation is asserted on the holder's OWN bytes because this root
     writes none of its own: the holder emits ~1200 ticks over ``OUTLIVE`` and
@@ -1261,8 +1413,26 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     as ``no-exit-drain`` on both arms instead of on a floor. The deadline arm
     also reads the ``timeout`` the site handed ``_exit_drain_cap``, which is the
     site's deadline pinned by the drain rather than by a ceiling. The floors
-    stay, after the record, as its consequence on the case's own clock; the
-    ceilings are left to #341, which owns the upper bounds past a cap.
+    stay, after the record, as its consequence on the case's own clock.
+
+    THE CEILINGS ARE JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE
+    #341 (:func:`_judged_on_its_record`). Both are wall clocks from the call —
+    ``elapsed <= _bound(DRAIN_CAP_SECONDS)`` on the ``None`` arm, and
+    ``elapsed < DRAIN_CAP_SECONDS`` (POSIX) or a ``timeout + KILL_DRAIN_SECONDS
+    + SLACK`` sanity bound (win32) on the deadline arm — and a process stopped
+    across the cap, or across the deadline for as long as the deadline is
+    short of the cap, comes back to a look the product is right to take late,
+    and failed them (0.9 s for 1.2 s: ``elapsed=2.204s``; 1.9 s for 2.7 s:
+    ``4.669 <= 4.5``). So every attempt's record is read first: the documented
+    hard end, replayed on the drain's own looks and parks, holds (it never
+    looked past it and went on, never parked aiming past it); and a look late
+    by more than a grace at or past the soft cap or near the hard one, or half
+    a second from the drain's last look to the return, is the premise failing
+    — said, and run again, like an idle end. The ceilings stay, on the attempt
+    that measured. The deadline arm also reads off the drain what its POSIX
+    ceiling discriminates, on win32 too: the soft cap it was handed is below
+    the flat one — the caller's deadline, not ``DRAIN_CAP_SECONDS`` past the
+    exit.
     """
 
     what = f"a holder that never falls idle (timeout={timeout})"
@@ -1285,7 +1455,8 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         try:
             result = await _bounded(task, _bound(DRAIN_CAP_SECONDS) + 5.0, what)
         finally:
-            elapsed = time.monotonic() - started
+            returned = time.monotonic()
+            elapsed = returned - started
             pids = registrar.settle()
             end = record.end()
             warnings.warn(
@@ -1294,16 +1465,22 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
                 f"attempt={attempt}/{ATTEMPTS} on {sys.platform}",
                 stacklevel=1,
             )
-        if end.kind != "idle":
+        if end.kind == "idle":
+            premise_failures.append(_premise_failed(f"attempt {attempt}", end))
+        elif end.kind != "cap":
             break
-        premise_failures.append(_premise_failed(f"attempt {attempt}", end))
+        else:
+            stall = _judged_on_its_record(record, returned=returned, what=what)
+            if stall is None:
+                break
+            premise_failures.append(_premise_stalled(f"attempt {attempt}", stall))
         warnings.warn(premise_failures[-1], stacklevel=1)
         # The escaped holder writes every 0.05 s for ``OUTLIVE`` into a reader
         # this process detached; it may not run on through the next attempt.
         for pid in pids or ():
             _reap(pid)
     else:
-        pytest.fail(_every_attempt_failed_its_premise(what, premise_failures))
+        pytest.fail(_every_attempt_failed_its_premise(what, premise_failures, stalls=True))
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     assert result.exit_code == 0
@@ -1320,6 +1497,17 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     if timeout is None:
         assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
     else:
+        # The drain's own soft cap, on both platforms: with ``timeout <=
+        # DRAIN_CAP_SECONDS`` and the start before the exit, an
+        # ``_exit_drain_cap`` that honours the deadline answers strictly less
+        # than the flat cap, and one that drops it answers the flat cap —
+        # compared as the product's own sum, so no subtraction rounds it.
+        assert record.cap is not None and record.exited_at is not None
+        flat = record.cap >= record.exited_at + DRAIN_CAP_SECONDS
+        assert not flat, (
+            f"the soft cap the drain was handed is {record.cap - record.exited_at:.3f}s past "
+            f"the exit — the flat cap, not the caller's {timeout}s deadline ({end.summary})"
+        )
         # POSIX: the deadline (1.0 s) is below the flat cap, so reaching the cap
         # means the term is gone. win32: the deadline (2.0 s) equals the cap
         # measured from a root that exits at ~0.5 s, so the ceiling there is a
@@ -1416,6 +1604,15 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
     #230 answered whether an abort in this window SHOULD do anything — it kills
     nothing — at ``run_contained``; this case pins that #222 had already put
     this site there, rather than answering it by accident.
+
+    THE CEILING IS JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE #341
+    (:func:`_judged_on_its_record`), as 8a's are: every attempt's record holds
+    the documented hard end replayed on the drain's own looks and parks, and a
+    look late near the cap or half a second from the drain's last look to the
+    return is the premise failing — said, and run again — so a process
+    stopped across the cap no longer decides the sanity bound
+    ``elapsed <= _bound(DRAIN_CAP_SECONDS)``, which stays on the attempt that
+    measured.
     """
 
     what = "an abort during the exit-path drain"
@@ -1447,7 +1644,8 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
             signal.abort()
             result = await _bounded(task, hold + 10.0, what)
         finally:
-            elapsed = time.monotonic() - started
+            returned = time.monotonic()
+            elapsed = returned - started
             pids = registrar.settle()
             end = record.end()
             warnings.warn(
@@ -1455,16 +1653,22 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
                 f"attempt={attempt}/{ATTEMPTS} on {sys.platform}",
                 stacklevel=1,
             )
-        if end.kind != "idle":
+        if end.kind == "idle":
+            premise_failures.append(_premise_failed(f"attempt {attempt}", end))
+        elif end.kind != "cap":
             break
-        premise_failures.append(_premise_failed(f"attempt {attempt}", end))
+        else:
+            stall = _judged_on_its_record(record, returned=returned, what=what)
+            if stall is None:
+                break
+            premise_failures.append(_premise_stalled(f"attempt {attempt}", stall))
         warnings.warn(premise_failures[-1], stacklevel=1)
         # The escaped helper and the tail still write into a reader this
         # process detached; neither may run on through the next attempt.
         for pid in pids or ():
             _reap(pid)
     else:
-        pytest.fail(_every_attempt_failed_its_premise(what, premise_failures))
+        pytest.fail(_every_attempt_failed_its_premise(what, premise_failures, stalls=True))
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     _root_pid, helper, _tail = pids
