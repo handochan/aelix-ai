@@ -316,12 +316,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1419-1421`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1431-1433`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:953-961``,
+      it kills the child eagerly before re-raising (``print_channel.py:961-969``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -332,7 +332,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1018`` vs ``:1019``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1026`` vs ``:1027``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -457,7 +457,7 @@ async def _member(
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1190-1191``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1193-1194``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -478,7 +478,7 @@ async def _member(
                     _refusal_envelope(batch.resolved, _BATCH_BUDGET_EXHAUSTED)
                 )
             # THE PROFILE'S OWN BUDGET IS THE DEFAULT, NOT ``DEFAULT_TIMEOUT_MS``
-            # — this line mirrors ``print_channel.py:981-985`` exactly, and it
+            # — this line mirrors ``print_channel.py:989-993`` exactly, and it
             # must, because the executor is what makes ``plan.timeout_ms`` non-
             # ``None``. Substituting the module default here would mean the
             # channel's own ``profile.timeout_ms`` fallback is UNREACHABLE for
@@ -486,7 +486,7 @@ async def _member(
             # minute in frontmatter (``agents/profile.py:398``) would silently
             # get ten — times up to eight children — while ``mode="single"``,
             # which passes ``pending.call.timeout_ms`` straight through
-            # (``extension.py:1301``), still honoured it. Same profile, two modes,
+            # (``extension.py:1303``), still honoured it. Same profile, two modes,
             # two clocks.
             requested_ms = (
                 batch.call.timeout_ms
@@ -594,7 +594,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:1241-1252``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:1244-1255``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 

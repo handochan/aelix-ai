@@ -1,6 +1,6 @@
 # 0195. Registry-aware startup model resolution (#98) + OS trust store & cause-preserving TLS diagnostics (#99)
 
-Status: Accepted
+Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -111,6 +111,17 @@ But three product defects made it undiagnosable:
    flag's ABSENCE — and silently rerouting the turn to the persisted vendor.
    `resolve_model` owns the whole precedence ladder; callers pass sources
    separately and never pre-merge.
+
+   **#344 amendment 2026-09-30** ([ADR-0249](0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)):
+   the ladder gains a rung in front of the OpenRouter-env path. With
+   `OPENROUTER_API_KEY` set and no `--provider`, a `--model` whose prefix names a
+   user-defined provider (models.json custom, a built-in re-pointed by a
+   models.json `baseUrl`, an extension `register_provider`), an id exactly one
+   such provider serves, or a prefix naming a catalogued provider that is not an
+   OpenRouter namespace, is resolved inside that provider first — from
+   configuration only, no credential consulted. The slash prefix is matched
+   case-insensitively, and a catalog hit adopts a models.json provider-level
+   `baseUrl`. Everything this decision says about `default_provider` stands.
 5. **`is_runnable` startup gate**, placed AFTER `bind_model_registry` so extension
    providers are visible. Interactive **warns** and points at `/model` (the cure,
    so a warning beats refusing to launch); print/json **hard-refuses**. The
@@ -178,6 +189,13 @@ But three product defects made it undiagnosable:
   pi's behaviour without the wholesale swap, which stays the pi-faithful endgame.
   The ordering constraint that forces the split gate remains: extension providers
   reach the registry only at `bind_model_registry`, AFTER the harness is built.
+  **#344 amendment 2026-09-30** ([ADR-0249](0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md) §2.3):
+  no longer true for the launch model — `_build_harness_options` binds the
+  registry right after `discover_and_load_extensions`, on every (re)build, and
+  resolves the model after that (pi's order), so `--model <ext-provider>/<id>`
+  and `--provider <ext-provider>` select an extension provider at launch. The
+  post-build `is_runnable` gate stays where it is; a provider an extension
+  registers in `session_start` still arrives after the resolve.
 - **The interactive gate is advisory.** It warns and is not re-gated at turn time,
   so on that path the credential-egress guard is a loud warning rather than a
   hard stop. Deliberate — `/model` is the cure — but worth revisiting.

@@ -398,7 +398,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:653``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:661``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -1022,7 +1022,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1018-1019``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1026-1027``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -1133,7 +1133,10 @@ class _SubagentRuntimeImpl:
         """
 
         try:
-            return child_model_id(resolved.profile, self.host.model())
+            # #344 — the registry too, so the id shown is the id on the argv
+            # (``extprov/m1`` reaches the child as ``--model m1 --provider
+            # extprov``; see ``resolver._pin_user_defined_route``).
+            return child_model_id(resolved.profile, self.host.model(), self.host.model_registry())
         except Exception:  # noqa: BLE001 — a display term is never worth a spawn
             return None
 

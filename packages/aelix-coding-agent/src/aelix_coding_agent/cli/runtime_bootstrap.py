@@ -18,15 +18,19 @@ Wires real LLM turns for the interactive / print / rpc CLI. Three pieces:
   OpenRouter (OpenAI-compatible) is configured purely from env: when
   ``OPENROUTER_API_KEY`` + a model id are present (and no conflicting
   ``--provider``), a model with ``provider="openrouter"``,
-  ``api="openai-completions"`` and the OpenRouter ``base_url`` is built. The
+  ``api="openai-completions"`` and the OpenRouter ``base_url`` is built — unless
+  the ``--model`` string names an endpoint OpenRouter cannot serve (a provider
+  the user defined, or a catalogued provider that is not an OpenRouter
+  namespace; ADR-0249, #344), which is resolved inside that provider FIRST. The
   ``openai_completions`` adapter reads ``OPENROUTER_API_KEY`` from the
   environment itself, so no auth callback wiring is required. Falls back to a
   bare ``Model`` (from ``--model`` / ``--provider``) otherwise — which CANNOT
   drive a turn, so callers gate on ``core.runnable_models.is_runnable`` (#98).
   This function owns the ENTIRE provider-precedence ladder (explicit flag →
-  in-id prefix → OpenRouter env → settings default); callers pass each source in
-  its own parameter and must never pre-merge them, because the earlier rungs are
-  gated on the later ones being absent.
+  a ``--model`` OpenRouter cannot serve → OpenRouter env → in-id prefix →
+  settings default); callers pass each source in its own parameter and must
+  never pre-merge them, because the earlier rungs are gated on the later ones
+  being absent.
 
 Provider registration + ``.env`` load run from the real console entry
 (:func:`aelix_coding_agent.cli.entry.main_sync`), NOT from ``_async_main`` — so
@@ -875,6 +879,519 @@ def _sibling_backfill(provider: str, model_id: str) -> Model | None:
     )
 
 
+# === #344 / ADR-0249: a ``--model`` OpenRouter cannot serve never reaches it ====
+#
+# The OpenRouter-from-env rung used to run FIRST, so with ``OPENROUTER_API_KEY``
+# set EVERY ``--model`` string became an OpenRouter id. Measured on main
+# ``fbead6e0`` through the real CLI (fake keys, a recording CONNECT proxy): a
+# models.json provider's ``retryprobe/held-model`` went to ``openrouter.ai:443``
+# (and an ``--api-key`` meant for that endpoint went with it as the bearer), an
+# extension provider's ``extprov/m1`` likewise, and the owner's own
+# ``ollama/qwen3.6:35b-a3b`` retried twelve times against OpenRouter instead of
+# reaching ``127.0.0.1:11434``. The helpers below are the rung that now runs
+# before it (``_openrouter_cannot_serve``); every one of them reads
+# CONFIGURATION only — the catalog, models.json, extension registrations — and
+# never a credential, so a vendor key in a cloned repo's ``.env`` (or a stale
+# OAuth record) cannot change where a prompt goes.
+
+
+def _catalogued_providers() -> frozenset[str]:
+    """The providers this build's static catalog knows (35 on ``fbead6e0``)."""
+
+    from aelix_ai.models import get_providers
+
+    return frozenset(get_providers())
+
+
+def openrouter_namespaces() -> frozenset[str]:
+    """First path segments of the bundled catalog's OpenRouter ids, lower-cased.
+
+    Derived, never listed: measured on ``fbead6e0`` there are 50 (``openai``,
+    ``anthropic``, ``meta-llama``, ``x-ai``, ``~openai`` …), and 9 of them are
+    also catalogued provider names — ``anthropic deepseek google minimax
+    moonshotai nvidia openai openrouter xiaomi``. A prefix in this set can be an
+    OpenRouter id (``openai/gpt-4o-mini``), so it keeps going to OpenRouter when
+    the key is set; the other 26 catalogued providers (``openai-codex``,
+    ``xai``, ``groq``, ``mistral`` …) cannot, so rung 0c resolves them in place.
+    A catalog regeneration that adds an OpenRouter namespace equal to a provider
+    name moves that prefix to OpenRouter at that build, with no code change —
+    the release notes of that regeneration are where it shows.
+    """
+
+    from aelix_ai.models import get_models
+
+    return frozenset(m.id.split("/", 1)[0].lower() for m in get_models("openrouter") if "/" in m.id)
+
+
+def _registry_providers(registry: Any) -> frozenset[str]:
+    """Every provider the registry serves a model for. Fail closed to empty."""
+
+    if registry is None:
+        return frozenset()
+    try:
+        return frozenset(m.provider for m in registry.get_all())
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return frozenset()
+
+
+def user_defined_providers(registry: Any) -> frozenset[str]:
+    """Providers whose endpoint the user chose (``ModelRegistry.get_user_defined_providers``).
+
+    ``openrouter`` is removed even when models.json re-points it: an
+    ``openrouter/<id>`` string is itself an OpenRouter id (``openrouter/auto``),
+    so the OpenRouter rung — which adopts that ``baseUrl`` — keeps it.
+
+    A registry that predates the accessor (tests, an embedder's duck-typed one)
+    is read the only way it can be: whatever it serves that the catalog does not
+    know was defined by someone other than this build. Introspection-only and
+    fail-closed, like :func:`_registry_lookup`.
+    """
+
+    if registry is None:
+        return frozenset()
+    try:
+        getter = getattr(registry, "get_user_defined_providers", None)
+        if callable(getter):
+            returned: Any = getter()
+            found = frozenset(str(name) for name in returned)
+        else:
+            found = _registry_providers(registry) - _catalogued_providers()
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return frozenset()
+    return found - {"openrouter"}
+
+
+def canonical_provider(prefix: str, known: frozenset[str]) -> str | None:
+    """``prefix`` as one of ``known``, matched exactly, else case-insensitively.
+
+    pi canonicalises the prefix the same way (``providerMap``,
+    ``packages/coding-agent/src/core/model-resolver.ts:430-433`` @ 1ff5b6fdd),
+    and so does the in-session ``/model``. Before #344 the launch path split
+    case-sensitively, so ``--model RetryProbe/held-model`` was refused as an
+    unknown protocol (measured, C20). Two known names differing only in case
+    make the match ambiguous: ``None``, never a guess.
+    """
+
+    if not prefix:
+        return None
+    if prefix in known:
+        return prefix
+    folded = [name for name in known if name.lower() == prefix.lower()]
+    return folded[0] if len(folded) == 1 else None
+
+
+def _user_defined_prefix(
+    prefix: str, user_defined: frozenset[str]
+) -> tuple[str | None, tuple[str, ...]]:
+    """``prefix`` as a USER-DEFINED provider: ``(name, ())``, ``(None, clash)`` or ``(None, ())``.
+
+    Codex cross-review of ``8c9d6397`` (C1): the case-insensitive match used to
+    run over the catalogue and the user's providers TOGETHER and prefer an exact
+    spelling, so with a models.json provider named ``OpenAI`` the string
+    ``openai/m1`` matched the catalogue's ``openai`` exactly — not user-defined,
+    and an OpenRouter namespace — and went to OpenRouter with the ``--api-key``
+    meant for the user's endpoint as the bearer. A user-defined provider is now
+    matched FIRST and on its own: the exact spelling, else the one user-defined
+    name that differs only in case. pi lands the same way — its ``providerMap``
+    is keyed by the lower-cased name and filled built-ins first, so the custom
+    ``OpenAI`` is what ``openai/…`` finds
+    (``packages/coding-agent/src/core/model-resolver.ts:430-433`` @ 1ff5b6fdd).
+    Two user-defined names that differ only in case, neither spelled exactly,
+    come back as ``clash`` (sorted): the caller refuses rather than guess, since
+    either guess sends one provider's key to the other's host.
+    """
+
+    if not prefix or not user_defined:
+        return None, ()
+    if prefix in user_defined:
+        return prefix, ()
+    folded = sorted(name for name in user_defined if name.lower() == prefix.lower())
+    if len(folded) == 1:
+        return folded[0], ()
+    return None, tuple(folded)
+
+
+def ambiguous_provider_prefix(model_ref: str | None, registry: Any) -> tuple[str, ...]:
+    """The user-defined providers a ``<prefix>/<id>`` could mean, when it is more than one.
+
+    Empty unless ``prefix`` differs only in case from two or more user-defined
+    providers and spells none of them exactly (models.json keys ``OpenAI`` and
+    ``OPENAI``, or a custom ``OpenAI`` next to a re-pointed built-in ``openai``,
+    and ``--model Openai/m1``). :func:`resolve_model` then holds the string on a
+    model no turn runs (``api='unknown'``); this is what names both providers in
+    the refusal (:func:`ambiguous_provider_message`).
+    """
+
+    if not model_ref:
+        return ()
+    prefix, sep, rest = model_ref.partition("/")
+    if not (sep and rest):
+        return ()
+    _, clash = _user_defined_prefix(prefix, user_defined_providers(registry))
+    return clash
+
+
+def ambiguous_provider_message(model_ref: str | None, registry: Any) -> str | None:
+    """The refusal for :func:`ambiguous_provider_prefix`, or ``None``."""
+
+    clash = ambiguous_provider_prefix(model_ref, registry)
+    if not clash or not model_ref:
+        return None
+    prefix = model_ref.partition("/")[0]
+    names = " and ".join(f"'{name}'" for name in clash)
+    return (
+        f"--model {model_ref}: the provider prefix '{prefix}' matches the providers "
+        f"you defined {names}, which differ only in case. Spell the prefix exactly "
+        "as one of them."
+    )
+
+
+def _named_provider(
+    name: str, registry: Any, user_defined: frozenset[str]
+) -> tuple[str, tuple[str, ...]]:
+    """An explicitly NAMED provider (``--provider``, ``defaultProvider``, a profile's) as known.
+
+    Codex second pass on ``ebfe411a`` (F1): the slash prefix had the case rule
+    and ``--provider`` did not, so with a models.json provider ``OpenAI``,
+    ``--model openai/m1`` reached the user's endpoint while ``--model m1
+    --provider openai --api-key K`` reached ``api.openai.com`` with ``K`` — the
+    shadowing the prefix rule exists to prevent — and ``--provider OPENAI`` was
+    ``api='unknown'``. The same rule as :func:`_user_defined_prefix`, then the
+    catalogue: a user-defined provider first and on its own (the exact
+    spelling, else the one user-defined name equal up to case), else any
+    provider this build or the registry knows, matched as
+    :func:`canonical_provider` does, else the name as typed. Returns
+    ``(name, clash)``; ``clash`` (sorted) is non-empty when two user-defined
+    names differ from ``name`` only in case and neither is spelled exactly —
+    the caller holds the name as typed, never guessing either. Routing is
+    untouched: a named provider still switches rung 0 and the OpenRouter rung
+    off unless it IS ``openrouter``.
+    """
+
+    if not name:
+        return name, ()
+    canon, clash = _user_defined_prefix(name, user_defined)
+    if canon is not None:
+        return canon, ()
+    if clash:
+        return name, clash
+    known = _catalogued_providers() | user_defined | _registry_providers(registry)
+    return canonical_provider(name, known) or name, ()
+
+
+def canonical_provider_name(name: str, registry: Any) -> str:
+    """``name`` as :func:`resolve_model` matches a named provider — as typed on a clash."""
+
+    return _named_provider(name, registry, user_defined_providers(registry))[0]
+
+
+def ambiguous_provider_name(name: str | None, registry: Any) -> tuple[str, ...]:
+    """The user-defined providers an explicitly named provider could mean, when more than one.
+
+    :func:`ambiguous_provider_prefix` for ``--provider``, settings
+    ``defaultProvider`` and a profile's ``provider`` (F1).
+    """
+
+    if not name:
+        return ()
+    _, clash = _named_provider(name, registry, user_defined_providers(registry))
+    return clash
+
+
+def ambiguous_provider_name_message(
+    name: str | None, registry: Any, source: str = "--provider"
+) -> str | None:
+    """The refusal for :func:`ambiguous_provider_name`, or ``None``."""
+
+    clash = ambiguous_provider_name(name, registry)
+    if not clash or not name:
+        return None
+    names = " and ".join(f"'{provider}'" for provider in clash)
+    return (
+        f"{source} {name} matches the providers you defined {names}, which differ "
+        "only in case. Spell it exactly as one of them."
+    )
+
+
+def ambiguous_route_message(
+    model_flag: str | None,
+    provider_flag: str | None,
+    registry: Any,
+    default_provider: str | None = None,
+) -> str | None:
+    """Why :func:`resolve_model` held a launch on ``api='unknown'`` for a case clash, if it did.
+
+    The named provider's clash when ``--provider`` was given; else the slash
+    prefix's; else settings ``defaultProvider``'s, when a bare id fell to it.
+    """
+
+    if provider_flag:
+        return ambiguous_provider_name_message(provider_flag, registry)
+    prefix_message = ambiguous_provider_message(model_flag, registry)
+    if prefix_message is not None:
+        return prefix_message
+    if default_provider and not (model_flag and "/" in model_flag):
+        return ambiguous_provider_name_message(
+            default_provider, registry, source="settings defaultProvider"
+        )
+    return None
+
+
+def _adopt_base_url_override(model: Model, registry: Any) -> Model:
+    """A catalog model of a provider models.json re-pointed takes that ``baseUrl``.
+
+    ADR-0249 (S). The registry's copy of a built-in model carries the
+    models.json provider-level ``baseUrl`` (``load_built_in_models``), but the
+    launch path returns the STATIC catalog entry before it asks the registry, so
+    the override was ignored: measured on ``fbead6e0``, ``--provider openai
+    --model gpt-4o-mini`` with ``providers.openai.baseUrl`` → a local proxy went
+    to ``api.openai.com:443`` and the proxy saw nothing (C7). Only the host moves
+    — the catalog ``api``, window, cost and thinking map stay (the
+    :func:`enrich_copilot_base_url` shape), which is why
+    ``test_resolve_model_catalog_hit_wins_over_registry`` (it pins the ``api``)
+    stays as it is.
+    """
+
+    if registry is None:
+        return model
+    try:
+        getter = getattr(registry, "get_base_url_override", None)
+        override = getter(model.provider) if callable(getter) else None
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return model
+    if isinstance(override, str) and override and override != model.base_url:
+        return replace(model, base_url=override)
+    return model
+
+
+def _unanimous_backfill(siblings: list[Model], provider: str, model_id: str) -> Model | None:
+    """``model_id`` built from ``siblings`` when they agree on one ``api``.
+
+    ``base_url`` and ``compat`` are carried only when unanimous; a split
+    ``base_url`` leaves it empty, which ``is_runnable`` then refuses rather than
+    letting an SDK default host decide.
+    """
+
+    if not siblings:
+        return None
+    apis = {m.api for m in siblings}
+    if len(apis) != 1:
+        return None
+    first = siblings[0]
+    return Model(
+        id=model_id,
+        name=model_id,
+        provider=provider,
+        api=first.api,
+        base_url=first.base_url if all(m.base_url == first.base_url for m in siblings) else "",
+        compat=first.compat if all(m.compat == first.compat for m in siblings) else None,
+    )
+
+
+def _registry_sibling_backfill(registry: Any, provider: str, model_id: str) -> Model | None:
+    """An id a USER-DEFINED provider does not list, backfilled from its own models.
+
+    The user-defined analogue of :func:`_sibling_backfill` — same unanimity rule
+    (#98: a first-sibling guess once sent a Copilot bearer to Anthropic), but
+    over the REGISTRY's models for that provider, because the static catalog has
+    none for a models.json or extension provider (:func:`_unanimous_backfill`).
+    This is what lets ``ollama/<a model pulled after models.json was written>``
+    reach the user's ollama instead of being refused — pi builds the same
+    fallback from the provider's first model (``buildFallbackModel``,
+    ``model-resolver.ts:175-189`` @ 1ff5b6fdd), without the unanimity guard.
+    """
+
+    if registry is None:
+        return None
+    try:
+        siblings = [m for m in registry.get_all() if m.provider == provider]
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return None
+    return _unanimous_backfill(siblings, provider, model_id)
+
+
+def _registration_models(registry: Any, provider: str) -> list[Model] | None:
+    """What an extension registration brings for a CATALOGUED provider it took over.
+
+    ``None`` unless ``provider`` is a catalogued name that is user-defined ONLY
+    because an extension's ``register_provider`` brought ``models`` for it (a
+    ``models.json`` provider-level ``baseUrl`` moves the whole provider instead,
+    decision 3). Such a registration is MERGED into the registry next to the
+    catalog's own models, so the registry's ``openai`` still lists
+    ``gpt-4o-mini`` at ``api.openai.com`` — but the provider-wide ``api_key`` is
+    the extension's. Rung 0 therefore resolves such a prefix inside the
+    REGISTRATION: the review measured ``openai/gpt-4o-mini`` with
+    ``OPENROUTER_API_KEY`` set reaching ``api.openai.com`` with the extension's
+    key (on ``fbead6e0`` it went to OpenRouter with the user's). pi replaces a
+    provider's models on ``registerProvider`` with models, so there the catalog
+    id is simply not found. Introspection-only and fail-closed.
+    """
+
+    if registry is None or provider not in _catalogued_providers():
+        return None
+    try:
+        override = getattr(registry, "get_base_url_override", None)
+        if callable(override) and override(provider):
+            return None
+        registrations = getattr(registry, "get_registered_providers", None)
+        registered: Any = registrations() if callable(registrations) else None
+        config = registered.get(provider) if isinstance(registered, Mapping) else None
+        brought: Any = getattr(config, "models", None) if config is not None else None
+        if not isinstance(brought, Mapping) or not brought:
+            return None
+        models: list[Model] = []
+        for model in brought.values():
+            # The registry's copy when it has one (an OAuth ``modify_models``
+            # pass may have touched it), else the registration's own entry.
+            live = registry.find(provider, model.id)
+            models.append(live if live is not None else replace(model, provider=provider))
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return None
+    return models or None
+
+
+def _resolve_in_provider(
+    provider: str,
+    model_id: str,
+    registry: Any,
+    user_defined: frozenset[str],
+) -> Model:
+    """Resolve ``model_id`` INSIDE ``provider`` — never another provider.
+
+    The explicit-provider tail: (a) an exact static-catalog hit, with a
+    models.json ``baseUrl`` override adopted; (b) the registry's own entry (a
+    models.json custom model, an extension model, an OAuth-modified copy); (c)
+    for a user-defined provider, a backfill from its own registry models; (d)
+    unanimous static siblings, override adopted; (e) a bare ``Model`` whose
+    ``api`` stays ``"unknown"`` — which ``is_runnable`` refuses with a message
+    naming the provider, so an id the provider does not serve is a clear
+    refusal and never a silent fall-through to OpenRouter.
+    """
+
+    from aelix_ai.models import get_model
+
+    catalog = get_model(provider, model_id)
+    if catalog is not None:
+        return _adopt_base_url_override(catalog, registry)
+    found = _registry_lookup(registry, provider, model_id)
+    if found is not None:
+        return found
+    if provider in user_defined:
+        backfilled = _registry_sibling_backfill(registry, provider, model_id)
+        if backfilled is not None:
+            return backfilled
+    backfilled = _sibling_backfill(provider, model_id)
+    if backfilled is not None:
+        return _adopt_base_url_override(backfilled, registry)
+    # (e) — see the note at ``resolve_model``'s bare return.
+    return Model(id=model_id, provider=provider)
+
+
+def user_defined_route(model_ref: str, registry: Any) -> tuple[str, str] | None:
+    """``(provider, id)`` when ``model_ref`` is a user-defined route (rungs 0a/0b).
+
+    0a: the first-slash prefix names a user-defined provider (case-insensitive)
+    → ``(canonical, rest)``. 0b: otherwise the WHOLE string is an id exactly one
+    user-defined provider serves → ``(that provider, model_ref)``. ``None``
+    otherwise. A catalogued provider an extension took over "serves" only the
+    ids its registration brings (:func:`_registration_models`): the catalog's
+    own ids next to them are not the user's.
+    """
+
+    user_defined = user_defined_providers(registry)
+    if not user_defined or not model_ref:
+        return None
+    prefix, sep, rest = model_ref.partition("/")
+    if sep and rest:
+        # Matched against the user's providers ALONE (Codex C1): a catalogue
+        # spelling must not win over a user-defined one that differs in case.
+        canon, clash = _user_defined_prefix(prefix, user_defined)
+        if canon is not None:
+            return canon, rest
+        if clash:
+            # Ambiguous between two of the user's own providers: the prefix as
+            # typed, which :func:`_openrouter_cannot_serve` holds unrunnable.
+            return prefix, rest
+    registered_ids: dict[str, frozenset[str]] = {}
+    for name in user_defined:
+        registered = _registration_models(registry, name)
+        if registered is not None:
+            registered_ids[name] = frozenset(m.id for m in registered)
+    try:
+        owners = {
+            m.provider
+            for m in registry.get_all()
+            if m.id == model_ref
+            and m.provider in user_defined
+            and (m.provider not in registered_ids or m.id in registered_ids[m.provider])
+        }
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return None
+    if len(owners) == 1:
+        return next(iter(owners)), model_ref
+    return None
+
+
+def _openrouter_cannot_serve(model_ref: str, registry: Any) -> Model | None:
+    """Rung 0 — a ``--model`` string OpenRouter-from-env must not take (ADR-0249).
+
+    Runs only with ``OPENROUTER_API_KEY`` set, a non-empty ``--model`` and no
+    ``--provider``; ``None`` hands the string to the OpenRouter rung unchanged.
+
+    * 0a — the prefix names a USER-DEFINED provider → resolved inside it, and
+      never falls through to OpenRouter, even for an id it does not list (a
+      registry-sibling backfill, else a refusal). For a catalogued name an
+      extension took over, "inside it" is inside the registration
+      (:func:`_registration_models`).
+    * 0b — the whole string is an id exactly ONE user-defined provider serves →
+      that model (the owner's bare ``qwen3.6:35b-a3b`` from their ollama
+      provider; a gateway listing ``openai/gpt-4o`` verbatim).
+    * 0c — the prefix names a CATALOGUED provider that is not an OpenRouter
+      namespace (:func:`openrouter_namespaces`) → resolved inside it:
+      ``openai-codex/gpt-5.1`` used to reach OpenRouter and fail 400.
+
+    Everything else — the 9 overlapping namespaces (``openai/…``,
+    ``anthropic/…``), unknown prefixes, bare ids no user-defined provider
+    serves — goes to OpenRouter exactly as before. No credential is read here:
+    whether the user ALSO holds an OpenAI key does not decide ``openai/…``.
+    """
+
+    route = user_defined_route(model_ref, registry)
+    user_defined = user_defined_providers(registry)
+    if route is not None:
+        provider, model_id = route
+        if provider not in user_defined:
+            # A prefix two user-defined providers share up to case (Codex C1):
+            # refused (``api='unknown'``), never resolved in the catalogue's
+            # same-spelled provider and never handed to OpenRouter.
+            # :func:`ambiguous_provider_message` names both.
+            return Model(id=model_id, provider=provider)
+        registered = _registration_models(registry, provider)
+        if registered is not None:
+            # A catalogued name an extension took over: its registration's
+            # entry, else a backfill from the registration's models, else a
+            # refusal — never the catalog's vendor host with the extension's key.
+            for model in registered:
+                if model.id == model_id:
+                    return model
+            backfilled = _unanimous_backfill(registered, provider, model_id)
+            return backfilled if backfilled is not None else Model(id=model_id, provider=provider)
+        if model_id == model_ref:
+            # 0b — the registry entry itself (it is exactly one provider's).
+            found = _registry_lookup(registry, provider, model_id)
+            if found is not None:
+                return found
+        return _resolve_in_provider(provider, model_id, registry, user_defined)
+    prefix, sep, rest = model_ref.partition("/")
+    if not (sep and rest):
+        return None
+    catalogued = _catalogued_providers()
+    canon = canonical_provider(prefix, catalogued)
+    if canon is None or canon.lower() in openrouter_namespaces():
+        return None
+    return _resolve_in_provider(canon, rest, registry, user_defined)
+
+
 def resolve_model(
     model_flag: str | None,
     provider_flag: str | None,
@@ -883,28 +1400,54 @@ def resolve_model(
 ) -> Model:
     """Resolve the turn :class:`Model` from flags + env + the live registry.
 
-    Resolution order: (1) OpenRouter-from-env (``OPENROUTER_API_KEY`` + a model
-    id, no conflicting ``--provider``); (2) an exact static-catalog hit for
-    ``--provider``/``--model``, the ``<provider>/<model>`` slash shorthand, or
-    ``default_provider``; (3) ``registry`` — the models.json custom +
+    Resolution order (ADR-0249 amends ADR-0195 §Decision 4): (0) with
+    ``OPENROUTER_API_KEY`` set, a ``--model`` (no ``--provider``) that
+    OpenRouter cannot serve — a user-defined provider's prefix, an id only one
+    user-defined provider serves, or a catalogued provider that is not an
+    OpenRouter namespace — resolved inside that provider
+    (:func:`_openrouter_cannot_serve`); (1) OpenRouter-from-env
+    (``OPENROUTER_API_KEY`` + a model id, no conflicting ``--provider``); (2) an
+    exact static-catalog hit for ``--provider``/``--model``, the
+    ``<provider>/<model>`` slash shorthand (prefix matched case-insensitively),
+    or ``default_provider`` — a models.json ``baseUrl`` override of that
+    provider adopted; (3) ``registry`` — the models.json custom +
     extension-registered providers the build-time catalog cannot know
-    (:func:`_registry_lookup`); (4) an uncatalogued id under a catalogued
-    provider, backfilled from unanimous siblings (:func:`_sibling_backfill`);
-    (5) a bare model whose ``api`` stays the ``Model`` default ``"unknown"``.
+    (:func:`_registry_lookup`); (4) an uncatalogued id backfilled from unanimous
+    siblings — the registry's for a user-defined provider, the catalog's
+    otherwise; (5) a bare model whose ``api`` stays the ``Model`` default
+    ``"unknown"``.
 
     ``provider_flag`` means "the user EXPLICITLY named this provider" (``--provider``)
-    and NOTHING else — the OpenRouter-env branch and the slash shorthand are both
-    gated on its emptiness, so anything weaker must not be passed through it.
-    ``default_provider`` (settings.json ``defaultProvider``) is that weaker
+    and NOTHING else — rung 0, the OpenRouter-env branch and the slash shorthand
+    are all gated on its emptiness, so anything weaker must not be passed through
+    it. ``default_provider`` (settings.json ``defaultProvider``) is that weaker
     signal and has its own, lowest-precedence slot below (#98).
 
     ``registry`` is optional (:data:`None` = catalog-only) because callers resolve
-    at points where no registry exists yet. Outcome (5) CANNOT drive a turn, so
-    callers MUST gate on ``core.runnable_models.is_runnable`` (#98) — see the
+    at points where no registry exists yet; with none, rung 0 can still see the
+    catalog (0c) but no user-defined provider. Outcome (5) CANNOT drive a turn,
+    so callers MUST gate on ``core.runnable_models.is_runnable`` (#98) — see the
     note at the bare return.
     """
 
+    user_defined = user_defined_providers(registry)
+    clash: tuple[str, ...] = ()
+    if provider_flag:
+        # The prefix rule's case matching for a NAMED provider too (Codex second
+        # pass on ``ebfe411a``, F1; :func:`_named_provider`): with a models.json
+        # ``OpenAI``, ``--provider openai`` is the user's, never the vendor's
+        # host with the user's ``--api-key``; ``--provider OPENAI`` resolves;
+        # a case clash between two of the user's providers is held below. What
+        # a named provider does to routing is unchanged — it still switches
+        # rung 0 and the OpenRouter rung off unless it names ``openrouter``.
+        provider_flag, clash = _named_provider(provider_flag, registry, user_defined)
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if openrouter_key and model_flag and not provider_flag:
+        # (0) Only ``model_flag``: an id that came from ``OPENROUTER_DEFAULT_MODEL``
+        # was named FOR OpenRouter and stays an OpenRouter id.
+        claimed = _openrouter_cannot_serve(model_flag, registry)
+        if claimed is not None:
+            return claimed
     model_id = model_flag or os.environ.get("OPENROUTER_DEFAULT_MODEL")
     if openrouter_key and model_id and (provider_flag in (None, "", "openrouter")):
         # Enrich from the Pi catalog when the id is known: a bare Model has
@@ -913,21 +1456,26 @@ def resolve_model(
         # when the window is 0), zeroes ``/cost``, and drops the model's
         # ``thinking_level_map``. The full catalog entry carries all of these.
         # Falls back to a bare model for ids absent from the catalog (custom /
-        # newly-released OpenRouter models). Honors a custom OPENROUTER_BASE_URL.
-        from dataclasses import replace
-
+        # newly-released OpenRouter models). Honors a custom OPENROUTER_BASE_URL
+        # first, then a models.json ``providers.openrouter.baseUrl`` (ADR-0249 S:
+        # the same override every other catalog hit adopts).
         from aelix_ai.models import get_model
 
         catalog = get_model("openrouter", model_id)
         env_base_url = os.environ.get("OPENROUTER_BASE_URL")
         if catalog is not None:
-            return replace(catalog, base_url=env_base_url) if env_base_url else catalog
-        return Model(
+            if env_base_url:
+                return replace(catalog, base_url=env_base_url)
+            return _adopt_base_url_override(catalog, registry)
+        uncatalogued = Model(
             id=model_id,
             provider="openrouter",
             api=OPENAI_COMPLETIONS_API,
             base_url=env_base_url or _DEFAULT_OPENROUTER_BASE_URL,
         )
+        if env_base_url:
+            return uncatalogued
+        return _adopt_base_url_override(uncatalogued, registry)
     # Explicit --provider/--model path. Three enrichments over the old bare
     # ``Model(id, provider)`` return, which left ``api="unknown"`` (streaming.py
     # Model default) and so made the stream loop raise the internal
@@ -939,9 +1487,11 @@ def resolve_model(
     #     ``--provider`` was given (Pi ``resolveModelFromCli`` main.ts:303-304),
     #     so ``aelix --model openai/gpt-4o-mini`` resolves ``provider=openai``
     #     instead of falling through with an empty provider ("No model selected").
-    #     Guarded by the OpenRouter branch above: with an ``OPENROUTER_API_KEY``
-    #     set, ``openai/gpt-4o-mini`` is (correctly) an OpenRouter model id and
-    #     never reaches here.
+    #     With an ``OPENROUTER_API_KEY`` set, only a string rung 0 declined
+    #     reaches the OpenRouter branch above, and ``openai/gpt-4o-mini`` is one
+    #     of them (``openai`` is an OpenRouter namespace) — it never reaches
+    #     here. The prefix is matched case-insensitively against every provider
+    #     this build or the user knows (#344, C20).
     #  2. ``default_provider`` — see below; strictly weaker than both 1 and the
     #     OpenRouter branch, so it is applied only after they decline.
     #  3. Catalog enrichment — resolve the full Pi catalog entry (carrying the
@@ -951,7 +1501,18 @@ def resolve_model(
     provider = provider_flag or ""
     resolved_id = model_flag or ""
     if not provider and "/" in resolved_id:
-        provider, _, resolved_id = resolved_id.partition("/")
+        prefix, _, resolved_id = resolved_id.partition("/")
+        # A user-defined provider first and on its own (Codex C1, as in rung
+        # 0a): without an OpenRouter key, a custom ``OpenAI`` used to lose
+        # ``openai/m1`` to the catalogue's ``openai`` — the vendor's host. A
+        # case clash between two of the user's providers keeps the prefix as
+        # typed and is refused below — never resolved in a same-spelled
+        # catalogue provider, whose host would get the user's key.
+        canon, clash = _user_defined_prefix(prefix, user_defined)
+        if canon is None and not clash:
+            known = _catalogued_providers() | user_defined | _registry_providers(registry)
+            canon = canonical_provider(prefix, known)
+        provider = canon or prefix
     # (2) settings.json ``defaultProvider`` — the LOWEST-precedence provider
     # source, applied only once every stronger signal has declined. It is a
     # SEPARATE parameter, never folded into ``provider_flag``, because the
@@ -962,22 +1523,17 @@ def resolve_model(
     # a DIFFERENT vendor holding an id it never heard of, and both still satisfy
     # ``is_runnable`` (the default provider's own api backfills cleanly), so no
     # downstream gate can catch it (#98).
-    if not provider:
-        provider = default_provider or ""
+    if not provider and default_provider:
+        # Named, so matched as ``--provider`` is (F1): a case clash is held.
+        provider, clash = _named_provider(default_provider, registry, user_defined)
     if resolved_id:
-        from aelix_ai.models import get_model
-
+        if clash:
+            return Model(id=resolved_id, provider=provider)
         if provider:
-            catalog = get_model(provider, resolved_id)
-            if catalog is not None:
-                return catalog
+            return _resolve_in_provider(provider, resolved_id, registry, user_defined)
         found = _registry_lookup(registry, provider, resolved_id)
         if found is not None:
             return found
-        if provider:
-            backfilled = _sibling_backfill(provider, resolved_id)
-            if backfilled is not None:
-                return backfilled
     # Bare model — ``api`` stays the ``Model`` default "unknown": no catalog
     # entry, no registry entry, and no unanimous sibling api to adopt. Driving a
     # turn with it raises the internal "No provider registered for api='unknown'"
@@ -1023,9 +1579,86 @@ def enrich_copilot_base_url(model: Model, registry: Any) -> Model:
     return model
 
 
+def late_registered_route(
+    model_flag: str | None,
+    provider_flag: str | None,
+    current_model: Any,
+    model_registry: Any,
+) -> str | None:
+    """Why the launch model went to OpenRouter although the ``--model`` is now the user's.
+
+    #344 / ADR-0249 §2.3. X1 resolves the launch model after the extensions'
+    ``setup()`` registrations are replayed, but a provider registered in a
+    ``session_start`` handler arrives later still — inside
+    ``create_agent_session_runtime``, after the first build. With
+    ``OPENROUTER_API_KEY`` set, ``--model sessext/m1`` was therefore taken by the
+    OpenRouter rung and the prompt went to ``openrouter.ai`` (review of
+    ``0fcc3333``: 12 × ``CONNECT openrouter.ai:443``), while the print-mode #98
+    gate in ``cli/entry.py`` re-resolved AFTER ``session_start``, found ``sessext`` and passed
+    the run. pi resolves at the same point but has no OpenRouter rung, so there
+    the same launch is an error, not a leak.
+
+    Returns the message when the harness is on ``openrouter``, the string came
+    from ``--model`` (not ``OPENROUTER_DEFAULT_MODEL``, not with ``--provider``)
+    and a re-resolve over the registry as it is NOW lands on a user-defined
+    provider; ``None`` otherwise. Reads no credential beyond the one the rung
+    itself is gated on. Also when the re-resolve is HELD because the prefix now
+    matches two late-registered providers that differ only in case (Codex
+    second pass on ``ebfe411a``, F3: ``session_start`` registering ``SessExt``
+    and ``SESSEXT``, ``--model sessext/m1`` — print refused it at its #98 gate,
+    but RPC started on ``openrouter sessext/m1`` and sent the prompt there,
+    because the held spelling is in neither set): the caller then holds the
+    harness in every mode (:func:`ambiguous_provider_message` names both).
+
+    A provider registered and then unregistered before ``session_start``
+    returns is not in the registry as it is NOW, so an unknown prefix goes to
+    OpenRouter by the owner's rule (F2, ADR-0249 §2.3) — nothing to catch here.
+
+    What the caller does with it: every mode switches the harness through the
+    ``/model`` path
+    (:func:`~aelix_coding_agent.cli.model_switch.switch_to_late_registered_route`)
+    — interactive and RPC since fix round 2 (they used to warn and then send the
+    first prompt to OpenRouter), print and json since round 3 (they used to
+    refuse with this message). The message itself is now only the reason text of
+    the trigger; nothing prints it.
+    """
+
+    if not (os.environ.get("OPENROUTER_API_KEY") and model_flag and not provider_flag):
+        return None
+    if getattr(current_model, "provider", "") != "openrouter":
+        return None
+    try:
+        now = resolve_model(model_flag, None, model_registry)
+        user_defined = user_defined_providers(model_registry)
+    except Exception:  # noqa: BLE001 — a diagnostic must never break launch
+        return None
+    ambiguous = ambiguous_provider_message(model_flag, model_registry)
+    if ambiguous is not None:
+        return ambiguous
+    if not now.provider or now.provider == "openrouter" or now.provider not in user_defined:
+        return None
+    return (
+        f"--model {model_flag} names provider '{now.provider}', which was registered "
+        "after the launch model was chosen (in a session_start handler), so this run "
+        "resolved it as an OpenRouter model id and would send the prompt to OpenRouter. "
+        f"Register '{now.provider}' in the extension's setup() instead."
+    )
+
+
 __all__ = [
+    "ambiguous_provider_message",
+    "ambiguous_provider_name",
+    "ambiguous_provider_name_message",
+    "ambiguous_provider_prefix",
+    "ambiguous_route_message",
+    "canonical_provider",
+    "canonical_provider_name",
     "enrich_copilot_base_url",
+    "late_registered_route",
     "load_dotenv",
+    "openrouter_namespaces",
     "register_providers",
     "resolve_model",
+    "user_defined_providers",
+    "user_defined_route",
 ]

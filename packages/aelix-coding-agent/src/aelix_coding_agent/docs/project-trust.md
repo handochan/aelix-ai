@@ -96,19 +96,19 @@ ADR-0203 replaced the unfiltered read with **default-deny admission control**
 inside `load_dotenv`. A repo `.env` may set:
 
 - **credential-shaped names** — anything ending `_API_KEY`, `_KEY`, `_TOKEN`,
-  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:128`), because supplying your
+  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:132`), because supplying your
   own provider key from your own project is the workflow this must not break;
 - a short list of **provider-configuration names whose values are shape-checked**
   (a base URL must look like a URL, and so on).
 
 Everything else is refused. A subtraction rule (`_DOTENV_NEVER`,
-`runtime_bootstrap.py:150-153`) takes back the credential-shaped names that are
+`runtime_bootstrap.py:154-157`) takes back the credential-shaped names that are
 really paths, URLs, programs, or aelix's own knobs — so a future aelix variable
 named `*_KEY` cannot become repo-settable by accident.
 
 There is a per-key escape hatch, `AELIX_DOTENV_ALLOW`, read from the **real**
 environment only — a `.env` cannot widen the gate it is judged by. Underneath it
-sits a floor of 14 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:366-393`) that
+sits a floor of 14 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:370-397`) that
 the hatch cannot open, on one criterion: *the hatch may let a repo redirect; it
 may never let a repo execute, and never let a repo choose the global settings or
 auth store.* `AELIX_SETTINGS_PATH`, `AELIX_CODING_AGENT_DIR`, `HOME`,
@@ -144,7 +144,7 @@ Cancelling (Esc / Ctrl+C) denies (`project_trust.py:724-726`).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 restarting as the only way to change your mind. `/trust` re-opens the same
-selector from inside a session (`tui/commands.py:1649`, registered at `:2195`).
+selector from inside a session (`tui/commands.py:1614`, registered at `:2160`).
 
 ### `--approve` / `-a` and `--no-approve` / `-na`
 
@@ -166,7 +166,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:718-720`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:2703-2713`), because a silent drop looks identical to a
+(`cli/entry.py:2742-2752`), because a silent drop looks identical to a
 misconfiguration.
 
 ## Where the answer is stored

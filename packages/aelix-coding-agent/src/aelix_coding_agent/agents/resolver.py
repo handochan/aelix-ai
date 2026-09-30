@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2341-2348``).
+  (``cli/entry.py:2361-2368``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -139,7 +139,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the OpenRouter-env path (#98,
-``cli/entry.py:1398-1403``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1549-1554``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -181,8 +181,75 @@ def parent_model_flags(parent_model: Model | None) -> list[str]:
     return flags
 
 
+def _pin_user_defined_route(flags: list[str], model_registry: object | None) -> list[str]:
+    """Rewrite a provider-less ``--model`` into the user-defined route the parent resolves.
+
+    #344 / ADR-0249 (M3). A delegated child is a fresh process that loads NO
+    extensions by default (``inherit_extensions`` defaults to False, which emits
+    ``--no-extensions`` below), and it inherits ``OPENROUTER_API_KEY``. So a
+    profile ``model: extprov/m1`` — an extension provider the PARENT can see —
+    reached the child as a bare ``--model extprov/m1`` the child could only
+    resolve through OpenRouter (measured on ``fbead6e0``: the child's resolve
+    returned ``openrouter https://openrouter.ai/api/v1``).
+
+    The parent therefore resolves the string exactly as its own launch would
+    (``resolve_model`` over its live registry, in this process's environment,
+    which the child inherits) and, when THAT lands on a user-defined provider,
+    launches the child with the decision spelled out: ``--model <id> --provider
+    <provider>``. The child then reaches that provider, or refuses it for want
+    of the extension — it never re-derives the route with less knowledge than
+    the parent had. Asking ``resolve_model`` rather than the rung-0 helper keeps
+    the child on the parent's route with no OpenRouter key too: there a
+    gateway that lists ``openai/gpt-4o`` verbatim does not capture the string
+    (the slash shorthand names ``openai``), so it is not split (review of
+    ``0fcc3333``). An explicit ``--provider`` already present keeps its
+    meaning, spelled as the parent matches it: with a models.json ``OpenAI``, a
+    profile's ``provider: openai`` is the user's ``OpenAI`` to the parent, so
+    the child gets ``--provider OpenAI`` (Codex second pass on ``ebfe411a``,
+    F1: it got ``openai``). The child would fold a models.json name the same
+    way, but not an extension's: an extension ``Groq`` that the parent picks
+    for ``provider: groq`` is, in a child that loads no extensions, the
+    catalogue's ``groq`` — the vendor's host — unless the flag spells ``Groq``,
+    which the child then refuses for want of the extension. A spelling two of
+    the user's providers share up to case is passed as typed (ADR-0249 §6).
+    """
+
+    if model_registry is None:
+        return flags
+    from aelix_coding_agent.cli.runtime_bootstrap import (
+        canonical_provider_name,
+        resolve_model,
+        user_defined_providers,
+    )
+
+    if "--provider" in flags:
+        at = flags.index("--provider")
+        if at + 1 < len(flags):
+            named = canonical_provider_name(flags[at + 1], model_registry)
+            if named != flags[at + 1]:
+                return [*flags[: at + 1], named, *flags[at + 2 :]]
+        return flags
+    if "--model" not in flags:
+        return flags
+
+    at = flags.index("--model")
+    resolved = resolve_model(flags[at + 1], None, model_registry)
+    if not resolved.provider or resolved.provider not in user_defined_providers(model_registry):
+        return flags
+    return [
+        *flags[:at],
+        "--model",
+        resolved.id,
+        "--provider",
+        resolved.provider,
+        *flags[at + 2 :],
+    ]
+
+
 def child_model_flags(
-    profile: AgentProfile, parent_model: Model | None = None
+    profile: AgentProfile,
+    parent_model: Model | None = None,
+    model_registry: object | None = None,
 ) -> list[str]:
     """The ``--model`` / ``--provider`` pair a child is launched with.
 
@@ -192,6 +259,13 @@ def child_model_flags(
     ``model`` or ``provider`` is expressing an intent about the child's identity
     and is taken at its word; a profile that names NEITHER inherits the parent's
     run-scope model (:func:`parent_model_flags`).
+
+    ``model_registry`` is the PARENT's live registry. With it, a ``--model``
+    that carries no ``--provider`` and that the parent resolves onto a
+    user-defined provider is split into both flags
+    (:func:`_pin_user_defined_route`, #344); without it (the
+    ``/agents show`` dry run of an older host, tests) the flags are exactly the
+    profile's.
     """
 
     if profile.model is None and profile.provider is None:
@@ -199,17 +273,19 @@ def child_model_flags(
         # run its own cascade and find whatever the PARENT's cascade would have
         # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
         # parent whose model came from ``--model`` or ``/model``. Inherit.
-        return parent_model_flags(parent_model)
+        return _pin_user_defined_route(parent_model_flags(parent_model), model_registry)
     flags: list[str] = []
     if profile.model is not None:
         flags += ["--model", profile.model]
     if profile.provider is not None:
         flags += ["--provider", profile.provider]
-    return flags
+    return _pin_user_defined_route(flags, model_registry)
 
 
 def child_model_id(
-    profile: AgentProfile, parent_model: Model | None = None
+    profile: AgentProfile,
+    parent_model: Model | None = None,
+    model_registry: object | None = None,
 ) -> str | None:
     """The model id that will be ON THE CHILD'S ARGV, or ``None`` if none will.
 
@@ -231,7 +307,7 @@ def child_model_id(
     for, which is the only thing knowable before the process exists.
     """
 
-    flags = child_model_flags(profile, parent_model)
+    flags = child_model_flags(profile, parent_model, model_registry)
     return flags[flags.index("--model") + 1] if "--model" in flags else None
 
 
@@ -240,6 +316,7 @@ def profile_to_flags(
     *,
     prompt_path: str,
     parent_model: Model | None = None,
+    model_registry: object | None = None,
 ) -> list[str]:
     """Render the profile as CLI flags (the emission table, top to bottom).
 
@@ -253,7 +330,7 @@ def profile_to_flags(
     for copy-paste — would inject the profile's raw YAML into the system prompt.
     """
 
-    flags: list[str] = child_model_flags(profile, parent_model)
+    flags: list[str] = child_model_flags(profile, parent_model, model_registry)
 
     if profile.tools is not None:
         if not profile.tools:
@@ -295,6 +372,7 @@ def profile_to_argv(
     task: str | None = None,
     parent_model: Model | None = None,
     session_path: str | None = None,
+    model_registry: object | None = None,
 ) -> list[str]:
     """Full argv for a profile-driven aelix invocation.
 
@@ -326,7 +404,10 @@ def profile_to_argv(
     argv = [
         *prefix,
         *profile_to_flags(
-            profile, prompt_path=prompt_path, parent_model=parent_model
+            profile,
+            prompt_path=prompt_path,
+            parent_model=parent_model,
+            model_registry=model_registry,
         ),
     ]
     if oneshot and task:
@@ -353,7 +434,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2755-2759``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2794-2798``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

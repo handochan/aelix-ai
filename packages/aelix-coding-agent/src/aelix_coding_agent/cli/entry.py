@@ -1390,27 +1390,8 @@ async def _build_harness_options(
     unchanged and stays independent of the developer's own installed skills.
     """
 
-    # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
-    # model from --model/--provider). Providers are registered in main_sync.
-    # ``model_registry`` is threaded so a models.json custom provider — invisible
-    # to the build-time catalog — resolves its real ``api`` instead of the
-    # ``"unknown"`` that raises at the first turn (#98). Extension
-    # ``register_provider`` models are NOT yet visible here: they only land on
-    # the registry at ``bind_model_registry``, after the harness is built, so the
-    # post-build ``is_runnable`` gate is what reports those.
-    # ``default_provider`` carries settings.json ``defaultProvider`` as a VALUE
-    # rather than being read from ``settings_manager`` here: a per-call read is
-    # free to drift between the three resolve sites, and it must reach
-    # ``resolve_model`` as its own argument (never merged into ``parsed.provider``)
-    # or it impersonates an explicit ``--provider`` and hijacks the
-    # ``<provider>/<model>`` shorthand + the OpenRouter-env path (#98).
-    # ``enrich_copilot_base_url`` adopts the registry's modify_models-injected
-    # proxy-ep base_url for github-copilot (the enterprise/business host), which
-    # ``resolve_model``/``get_model`` leaves at the static individual default.
-    model = enrich_copilot_base_url(
-        resolve_model(parsed.model, parsed.provider, model_registry, default_provider),
-        model_registry,
-    )
+    # The turn model is resolved BELOW, after the extensions load — see the
+    # #344 / ADR-0249 note there. Nothing between here and that point reads it.
     # Resolve to an absolute path so the tool sandbox root + AGENTS.md anchor are
     # stable even if something later chdir's the process (e.g. a bash-tool ``cd``).
     cwd = str(Path.cwd())
@@ -1539,6 +1520,45 @@ async def _build_harness_options(
     )
     for err in loaded.errors:
         print(f"Warning: extension load: {err}", file=sys.stderr)
+    # #344 / ADR-0249 (X1) — bind the registry to THIS build's runtime before the
+    # model is resolved, so an extension ``register_provider`` made during
+    # ``setup()`` is already a registry provider when ``resolve_model`` looks.
+    # This is pi's order: ``createAgentSessionServices`` flushes
+    # ``pendingProviderRegistrations`` into the model runtime
+    # (``packages/coding-agent/src/core/agent-session-services.ts:158-169`` @
+    # 1ff5b6fdd) before ``main.ts`` resolves the CLI model. Resolving first — the
+    # old order — made an extension provider unselectable at launch AT ALL
+    # (``--model extprov/m1`` and ``--provider extprov --model m1`` were both
+    # refused as ``api='unknown'``, C5/C6), and with ``OPENROUTER_API_KEY`` set
+    # sent ``extprov/m1`` to OpenRouter (C4). Runs on every build — first, /new,
+    # /fork, /resume AND /reload — because each one loads a fresh runtime whose
+    # registrations are queued again. The bind after ``AgentHarness(opts)`` in
+    # ``_harness_factory`` stays: it is idempotent (the queue was drained here)
+    # and still flushes anything queued during construction; a registration
+    # made later, at ``session_start``, reaches the bound registry immediately
+    # (``ExtensionAPI.register_provider`` fans out) but after this resolve —
+    # the same point pi resolves at.
+    if model_registry is not None:
+        loaded.runtime.bind_model_registry(model_registry)  # pyright: ignore[reportArgumentType]
+    # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
+    # model from --model/--provider). Providers are registered in main_sync.
+    # ``model_registry`` is threaded so a models.json custom provider — invisible
+    # to the build-time catalog — resolves its real ``api`` instead of the
+    # ``"unknown"`` that raises at the first turn (#98), and so rung 0 can see
+    # which providers the user defined (ADR-0249).
+    # ``default_provider`` carries settings.json ``defaultProvider`` as a VALUE
+    # rather than being read from ``settings_manager`` here: a per-call read is
+    # free to drift between the three resolve sites, and it must reach
+    # ``resolve_model`` as its own argument (never merged into ``parsed.provider``)
+    # or it impersonates an explicit ``--provider`` and hijacks the
+    # ``<provider>/<model>`` shorthand + the OpenRouter-env path (#98).
+    # ``enrich_copilot_base_url`` adopts the registry's modify_models-injected
+    # proxy-ep base_url for github-copilot (the enterprise/business host), which
+    # ``resolve_model``/``get_model`` leaves at the static individual default.
+    model = enrich_copilot_base_url(
+        resolve_model(parsed.model, parsed.provider, model_registry, default_provider),
+        model_registry,
+    )
     # WP-8 (Feature 3) — capture the discovered extensions ONCE for the TUI's
     # /extension viewer. ``discover_and_load_extensions`` runs per harness build
     # (it is called here, inside the factory), so the caller passes a mutable
@@ -2553,6 +2573,7 @@ async def _async_main(argv: list[str]) -> int:
         elif parsed.provider is None and persisted_provider:
             default_provider = persisted_provider
 
+    api_key_fallback_provider = ""
     if parsed.api_key is not None:
         # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
         # model whose provider we can attach the runtime key to. It adds a
@@ -2578,28 +2599,46 @@ async def _async_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-        auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
-        # (the auth callback is already wired above — the runtime override now
-        # takes precedence in the cascade.)
-        #
-        # ``--api-key`` DOES NOT REACH A DELEGATED CHILD, and the failure is
-        # otherwise unreadable. The override is in-memory in THIS process
-        # (``auth_storage.py``: "NOT persisted to auth.json"), while a child is a
-        # fresh ``-m aelix_coding_agent`` that inherits only the environment. Its
-        # own cascade then falls through to the config resolver, which returns an
-        # unset ``models.json`` placeholder VERBATIM (pi parity), so the child
-        # sends the placeholder NAME as its bearer token and the provider answers
-        # 401 — a provider-side error with nothing pointing at the real cause.
-        #
-        # Deliberately NOT fixed by forwarding the key: argv is world-readable
-        # via ``/proc/<pid>/cmdline``, and ``build_child_argv``'s output is
-        # shell-quoted into the ``/agents show`` dry run for copy-paste. The env
-        # handoff is specified and is the right fix; this warning is what stops
-        # the silent version shipping in the meantime.
+        # #344 / ADR-0249 — the key is ATTACHED after the first harness build
+        # (``_attach_api_key`` below), not here. This resolve runs before any
+        # extension has loaded, so it cannot see an extension provider: with
+        # ``OPENROUTER_API_KEY`` set, ``--model extprov/m1 --api-key K`` resolved
+        # to OpenRouter here and K was attached to ``openrouter`` while the turn
+        # went to ``extprov`` — the key the user meant for their endpoint sat on
+        # the OpenRouter slot, one ``/model`` away from being sent there. The
+        # harness model is the provider this run REALLY uses, so it is the one
+        # the key follows. This early resolve stays only for the refusal above,
+        # before anything is built.
+        api_key_fallback_provider = model.provider
+
+    def _attach_api_key(provider: str) -> None:
+        """Attach ``--api-key`` to the provider the first harness resolved.
+
+        (the auth callback is already wired above — the runtime override now
+        takes precedence in the cascade.)
+
+        ``--api-key`` DOES NOT REACH A DELEGATED CHILD, and the failure is
+        otherwise unreadable. The override is in-memory in THIS process
+        (``auth_storage.py``: "NOT persisted to auth.json"), while a child is a
+        fresh ``-m aelix_coding_agent`` that inherits only the environment. Its
+        own cascade then falls through to the config resolver, which returns an
+        unset ``models.json`` placeholder VERBATIM (pi parity), so the child
+        sends the placeholder NAME as its bearer token and the provider answers
+        401 — a provider-side error with nothing pointing at the real cause.
+
+        Deliberately NOT fixed by forwarding the key: argv is world-readable
+        via ``/proc/<pid>/cmdline``, and ``build_child_argv``'s output is
+        shell-quoted into the ``/agents show`` dry run for copy-paste. The env
+        handoff is specified and is the right fix; this warning is what stops
+        the silent version shipping in the meantime.
+        """
+
+        assert parsed.api_key is not None
+        auth_storage.set_runtime_api_key(provider, parsed.api_key)
         if agents_ext is not None:
             print(
                 f"Warning: --api-key is not forwarded to delegated agents "
-                f"({model.provider}); set the provider's environment variable "
+                f"({provider}); set the provider's environment variable "
                 "instead if you plan to delegate.",
                 file=sys.stderr,
             )
@@ -3017,6 +3056,11 @@ async def _async_main(argv: list[str]) -> int:
         # typo. Matching is exact, not case-insensitive.
         print("  Tool names are case-sensitive.", file=sys.stderr)
         return 1
+    if parsed.api_key is not None:
+        # #344 — see the ``--api-key`` block above: the key follows the model the
+        # harness resolved (after extensions loaded), falling back to the early
+        # resolve only if that model somehow names no provider.
+        _attach_api_key(getattr(harness.current_model, "provider", "") or api_key_fallback_provider)
     # #122 / #198 — the STARTUP analogue of the in-session /resume fix. This
     # startup build bypasses ``AgentSessionRuntime._finish_session_replacement``,
     # so a ``--continue``/``--resume`` (also ``--session``/``--fork``) into a
@@ -3060,6 +3104,51 @@ async def _async_main(argv: list[str]) -> int:
     # tests reach ``_async_main`` without ``register_providers`` (that runs in
     # ``main_sync``), so this stays silent for them rather than warning falsely.
     startup_model = harness.current_model
+    # #344 — a provider registered in ``session_start`` arrived after that model
+    # was chosen (``runtime_bootstrap.late_registered_route``), so the harness
+    # holds it as an OpenRouter id. Every mode switches the harness to the
+    # provider through the ``/model`` path itself (``cli.model_switch``) before
+    # the first prompt — interactive and RPC since fix round 2 (D1; they used to
+    # warn and then send it to OpenRouter), print and json since round 3 (R4b;
+    # they used to refuse, the one mode that did not honour ``-e ext --model
+    # <its provider>/<id>``). Nothing is persisted (R4a). If ``/model`` itself
+    # would refuse the switch, the harness is held on a model no turn entry runs:
+    # interactive and RPC start and say to run ``/model``; print and json, which
+    # have no ``/model``, refuse the run.
+    from .runtime_bootstrap import ambiguous_route_message, late_registered_route
+
+    late_route = late_registered_route(parsed.model, parsed.provider, startup_model, model_registry)
+    late_route_refusal: str | None = None
+    late_route_held = False
+    if late_route is not None and parsed.model:
+        from .model_switch import switch_to_late_registered_route
+
+        headless = app_mode in ("print", "json")
+        notice, outcome = await switch_to_late_registered_route(
+            parsed.model,
+            harness=harness,
+            model_registry=model_registry,
+            settings_manager=settings_manager,
+            interactive=not headless,
+        )
+        if outcome == "failed" or (outcome == "held" and headless):
+            # Refused inside the ``try`` below so its ``finally`` disposes the
+            # runtime and the MCP connections as every other exit does.
+            late_route_refusal = notice
+        else:
+            late_route_held = outcome == "held"
+            label = "Note" if outcome == "switched" else "Warning"
+            indent = " " * (len(label) + 2)
+            print(f"{label}: " + notice.replace("\n", "\n" + indent), file=sys.stderr)
+        switched_provider = getattr(harness.current_model, "provider", "")
+        if outcome != "failed" and parsed.api_key is not None and switched_provider:
+            # X' — ``--api-key`` follows the provider the run REALLY uses. It was
+            # attached to ``openrouter`` above, before ``session_start``; leaving
+            # it there would put the key meant for this provider one ``/model``
+            # away from being sent to OpenRouter.
+            auth_storage.remove_runtime_api_key(getattr(startup_model, "provider", ""))
+            auth_storage.set_runtime_api_key(switched_provider, parsed.api_key)
+        startup_model = harness.current_model
 
     # === First-run onboarding gate (#23) ===
     # Judged HERE for the same reason as the #98 gate directly above: this is
@@ -3088,10 +3177,16 @@ async def _async_main(argv: list[str]) -> int:
         # who is exactly who it was written for — narrowing on
         # ``app_mode == "interactive"`` instead would silently regress #98.
         and not offer_first_run_login
+        # The late-route Warning above already said why and named /model; a
+        # second one would repeat it (fix round 4: the case-clash hold printed
+        # the same sentence twice above the banner).
+        and not late_route_held
     ):
+        reason = ambiguous_route_message(
+            parsed.model, parsed.provider, model_registry, default_provider
+        ) or unsupported_message(startup_model)
         print(
-            f"Warning: {unsupported_message(startup_model)}\n"
-            "         Run /model to select a working model.",
+            f"Warning: {reason}\n         Run /model to select a working model.",
             file=sys.stderr,
         )
 
@@ -3121,6 +3216,9 @@ async def _async_main(argv: list[str]) -> int:
         return saved
 
     try:
+        if late_route_refusal is not None:
+            print(f"Error: {late_route_refusal}", file=sys.stderr)
+            return 1
         if app_mode == "interactive":
             try:
                 from aelix_coding_agent.modes import run_tui
@@ -3221,7 +3319,13 @@ async def _async_main(argv: list[str]) -> int:
             # Checked before auth: no key fixes a missing adapter. Fails OPEN
             # when no adapter is registered, so embedders keep their behaviour.
             if not is_runnable(turn_model):
-                print(f"Error: {unsupported_message(turn_model)}", file=sys.stderr)
+                # Codex C1 — a prefix (and, F1, a named provider) two of the
+                # user's providers share up to case is held unrunnable; say
+                # which two, not "unknown protocol".
+                reason = ambiguous_route_message(
+                    parsed.model, parsed.provider, model_registry, default_provider
+                ) or unsupported_message(turn_model)
+                print(f"Error: {reason}", file=sys.stderr)
                 return 1
             if not model_registry.has_configured_auth(turn_model):
                 provider_display = model_registry.get_provider_display_name(

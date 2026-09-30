@@ -63,6 +63,56 @@ A provider id that matches a **built-in** provider extends it; you may omit
 that defines its own `models` requires both `baseUrl` and `apiKey`; a new
 provider that only adds `modelOverrides` (or `headers`/`compat`) does not.
 
+### Re-pointing a built-in provider with `baseUrl`
+
+A provider-level `baseUrl` on a **built-in** provider moves every one of its
+catalog models to that endpoint — a corporate gateway or a local proxy in front
+of OpenAI, say:
+
+```json
+{
+  "providers": {
+    "openai": { "baseUrl": "https://llm-gateway.corp.example/v1", "apiKey": "CORP_GATEWAY_KEY" }
+  }
+}
+```
+
+Every path that picks a model sends it to that host — `--provider openai --model
+gpt-4o-mini`, `--model openai/gpt-4o-mini`, the `/model` picker and a settings
+default — with the provider's `headers`. (Until
+[ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)
+the launch path returned the static catalog entry and quietly sent those two
+commands to `api.openai.com` instead.) At launch the catalog's protocol, context
+window, cost and thinking map are kept and only the host moves; the `/model`
+picker additionally applies the entry's `compat` and `modelOverrides`, which the
+launch path does not (tracked as
+[#363](https://github.com/handochan/aelix-ai/issues/363)).
+
+**Which key the gateway receives** is decided the same way as for any provider:
+an `--api-key`, a key stored with `/login`, or the provider's environment
+variable (`OPENAI_API_KEY` here) all come **before** the `apiKey` in this file,
+which is used only when none of them is set. So with `OPENAI_API_KEY` in your
+shell — or admitted from a project's `.env` — that key, not `CORP_GATEWAY_KEY`,
+is what your gateway receives. If your gateway needs its own key, do not also
+export the vendor's, or pass `--api-key` for the run. (Whether this file's
+`apiKey` should win for a re-pointed provider is
+[#363](https://github.com/handochan/aelix-ai/issues/363).)
+
+A re-pointed built-in also counts as **your** provider for the
+`OPENROUTER_API_KEY` rule in
+[providers-and-models.md](providers-and-models.md#how---model-providerid-is-resolved-when-openrouter_api_key-is-set):
+`--model openai/<id>` then goes to your `baseUrl`, not to OpenRouter — including
+an OpenRouter-only spelling such as `openai/gpt-4o:extended`, which your gateway
+will have to reject. Use `--provider openrouter` for those. The same rule makes
+every **bare** id of the provider yours: with `OPENROUTER_API_KEY` set, a plain
+`--model gpt-4o-mini` goes to your gateway (without this `baseUrl` it goes to
+OpenRouter), because it is an id exactly one of your providers serves — as is a
+slashed id such as `anthropic/claude-sonnet-4.5` that exactly one provider you
+defined lists verbatim. `modelOverrides`,
+`headers` or `compat` **alone** do not re-point anything and do not change that
+rule; neither does a `baseUrl` on an individual model definition (only the
+provider-level one does).
+
 ### Model fields
 
 `id` is required on a model definition. Other fields: `name`, `baseUrl`, `api`,
@@ -317,6 +367,27 @@ After editing `models.json`, confirm your models appear:
 ```bash
 aelix --list-models my-provider
 ```
+
+and that a turn reaches your endpoint:
+
+```bash
+aelix --model my-provider/my-model -p "hi"
+```
+
+That goes to `my-provider`'s `baseUrl` even with `OPENROUTER_API_KEY` exported —
+a `models.json` provider's prefix is resolved before OpenRouter-from-env, and so
+is a bare id only one of your providers lists (`--model my-model`). The prefix is
+matched case-insensitively, and your provider wins over a built-in whose name
+differs from it only in case (a provider named `OpenAI` takes `openai/…`). The
+same holds for `--provider`, `defaultProvider` in `settings.json` and an agent
+profile's `provider:`: they are matched case-insensitively, so `--provider
+openai` (or `OPENAI`) with a provider named `OpenAI` is yours — your host and
+your `--api-key`, never `api.openai.com` — and a built-in `openai` re-pointed by a
+`baseUrl` here is reached whatever the case. A name or prefix two of your
+providers share up to case is refused naming both. An id
+your provider does not list is backfilled from its own models when they all use
+one `api` (so a model you pulled into a local server after writing this file
+still works), and refused otherwise — it never falls through to OpenRouter.
 
 An invalid file fails fast at startup with a schema error that names the
 offending path (e.g. `providers.my-provider.baseUrl`).

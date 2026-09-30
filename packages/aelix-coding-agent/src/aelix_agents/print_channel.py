@@ -425,7 +425,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:277-278``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:354-355``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -514,6 +514,7 @@ def build_child_argv(
     parent_cwd: str,
     parent_model: Any | None = None,
     session_path: str | None = None,
+    model_registry: Any | None = None,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -555,6 +556,12 @@ def build_child_argv(
     is inherited (#121): it rides in on ``child_profile.context_files``, which
     :func:`narrow_context_files` clamps before the argv is built, so
     ``resolver.profile_to_flags`` stays the one place that emits it.
+
+    ``model_registry`` is the parent's LIVE registry (#344): with it, a
+    ``--model`` naming a models.json or extension provider is emitted as
+    ``--model <id> --provider <provider>``, because the child loads no
+    extensions by default and inherits ``OPENROUTER_API_KEY`` — left to its own
+    cascade it re-derived an extension route through OpenRouter.
     """
 
     return [
@@ -568,6 +575,7 @@ def build_child_argv(
             task=task,
             parent_model=parent_model,
             session_path=session_path,
+            model_registry=model_registry,
         ),
         "--permission-mode",
         permission_mode.value,
@@ -1035,6 +1043,10 @@ class PrintChannel:
                     self._parent_model() if self._parent_model else None
                 ),
                 session_path=plan.session_path,
+                # #344 — the route a user-defined provider needs, see
+                # ``build_child_argv``. Read LIVE for the same reason as the
+                # cost fallback: ``/reload`` rebinds the registry.
+                model_registry=(self._model_registry() if self._model_registry else None),
             )
             env = self._env_builder(profile)
             try:

@@ -301,67 +301,26 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     if not hasattr(ctx.harness, "set_model"):
         ctx.commit(Text("Model switching is unavailable.", style="yellow"))
         return
-    # #136 — set only on the backfill path; read at the print site below, which
-    # lives outside this try. Default None keeps every other path green.
-    caution: str | None = None
-    try:
-        from aelix_coding_agent.cli.runtime_bootstrap import (
-            enrich_copilot_base_url,
-            resolve_model,
-        )
-        from aelix_coding_agent.core.model_argument import resolve_model_argument
-        from aelix_coding_agent.core.runnable_models import (
-            is_runnable,
-            unsupported_message,
-        )
+    # #344 — the resolve / guard / switch / persist sequence lives in
+    # ``cli.model_switch`` so the launch can apply a late-registered provider
+    # through exactly this path (ADR-0249 §2.3); what is printed stays here.
+    from aelix_coding_agent.cli.model_switch import switch_model_argument
 
-        resolution = await resolve_model_argument(
-            args,
-            registry=ctx.model_registry,
-            current_model=getattr(ctx.harness, "current_model", None),
-            settings_manager=ctx.settings_manager,
-            warn=lambda message: ctx.commit(Text(message, style="yellow")),
-        )
-        if resolution.error is not None:
-            # Refuse HERE, before any switch/persist/success line: a mismatched
-            # provider that is only reported at send time costs the user the turn
-            # AND misattributes the failure to the provider (#134).
-            ctx.commit(Text(f"✖ {resolution.error}", style="bold red"))
-            return
-        if resolution.model is not None:
-            # A registry hit is ALREADY the modify_models-injected copy, so it
-            # carries the proxy-ep base_url enrich_copilot_base_url exists to add.
-            model = resolution.model
-            caution = resolution.caution
-        else:
-            # UNDECIDED — no usable registry (headless / RPC / test doubles); the
-            # interactive TUI always builds one. Unchanged launch-path resolution.
-            # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
-            # business host); resolve_model alone returns the static individual host.
-            model = enrich_copilot_base_url(
-                resolve_model(args, None), ctx.model_registry
-            )
-        # WP-8 follow-up — guard an explicit id whose api has no adapter (e.g.
-        # ``/model gpt-5.x`` → openai-responses): surface the actionable reason,
-        # not the cryptic ``No provider registered for api=...`` the loop raises.
-        if not is_runnable(model):
-            ctx.commit(Text(unsupported_message(model), style="bold red"))
-            return
-        await ctx.harness.set_model(model)
-    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-        ctx.commit(Text(f"✖ model switch failed: {exc}", style="bold red"))
+    switched = await switch_model_argument(
+        args,
+        harness=ctx.harness,
+        model_registry=ctx.model_registry,
+        settings_manager=ctx.settings_manager,
+        warn=lambda message: ctx.commit(Text(message, style="yellow")),
+    )
+    if switched.model is None:
+        ctx.commit(Text(switched.refusal or "✖ model switch failed", style="bold red"))
         return
+    model = switched.model
+    caution = switched.caution
     model_id = getattr(model, "id", args)
     provider = getattr(model, "provider", "")
     if provider:
-        # Persist as the default (pi parity: setModel → setDefaultModelAndProvider,
-        # agent-session.ts:1416-1425) so the switch SURVIVES restart / /new — the
-        # same behaviour as /settings → Default model. Only when a provider is
-        # resolved (a bare, providerless model is a soft-fail we never pin).
-        if ctx.settings_manager is not None:
-            with contextlib.suppress(Exception):
-                ctx.settings_manager.set_default_model_and_provider(provider, model_id)
-                await ctx.settings_manager.flush()
         if caution is not None:
             # #136 — the switch is real (and persisted, so it survives restart),
             # but the id was never in the catalog: it inherited the provider's
@@ -739,7 +698,7 @@ def _render_agents_diagnostics(result: ProfileDiscoveryResult) -> RenderableType
     )
 
 
-def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
+def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[RenderableType]:
     """``/agents show <name>`` — the parsed fields, then the DRY RUN.
 
     The second panel is the auditable half: the exact flags
@@ -747,6 +706,10 @@ def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
     space is unambiguous) plus the head of the body that becomes the system
     prompt. "What will this identity actually do" is answerable before running
     it, not after.
+
+    ``registry`` is the session's live registry (#344): a spawn splits a
+    user-defined provider's ``model:`` into ``--model``/``--provider``, so the
+    dry run has to be rendered with the same registry to show the same flags.
     """
 
     import shlex
@@ -783,7 +746,9 @@ def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
     dry_run = Text()
     dry_run.append("flags  ", style="bold cyan")
     dry_run.append(
-        shlex.join(profile_to_flags(profile, prompt_path=profile.file_path))
+        shlex.join(
+            profile_to_flags(profile, prompt_path=profile.file_path, model_registry=registry)
+        )
     )
     lines = profile.body.strip().splitlines()
     if lines:
@@ -1192,7 +1157,7 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                 )
             )
             return
-        for renderable in _render_agent_profile(match):
+        for renderable in _render_agent_profile(match, ctx.model_registry):
             ctx.commit(renderable)
         return
 

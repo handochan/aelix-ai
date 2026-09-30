@@ -160,6 +160,13 @@ class ModelRegistry:
         self._command_value_cache: dict[str, str] = {}
         self._registered_providers: dict[str, ProviderConfigInput] = {}
         self._load_error: str | None = None
+        # #344 — which providers the USER defined, and the models.json ``baseUrl``
+        # of each built-in one they re-pointed. Both are rebuilt by every
+        # ``_load_models`` (models.json is re-read there, and a
+        # ``register_provider`` re-runs it), so they can never describe a file
+        # or an extension set the registry no longer holds.
+        self._user_defined_providers: frozenset[str] = frozenset()
+        self._base_url_overrides: dict[str, str] = {}
         self._load_models()
 
     # ── Factories ──────────────────────────────────────────────────
@@ -523,6 +530,48 @@ class ModelRegistry:
 
         return dict(self._registered_providers)
 
+    def get_user_defined_providers(self) -> frozenset[str]:
+        """The providers whose endpoint the USER chose, rather than this build (#344).
+
+        Three sources, recomputed on every :meth:`_load_models`:
+
+        * a ``models.json`` provider this build's catalog does not know (a
+          custom provider — ``validate_config_semantics`` requires its
+          ``baseUrl``);
+        * a CATALOGUED provider whose ``models.json`` entry sets a
+          provider-level ``baseUrl`` (the user re-pointed it at a proxy or a
+          gateway). ``modelOverrides`` / ``headers`` / ``compat`` alone do NOT
+          count: they tune a provider without moving it, and the owner's own
+          ``models.json`` carries such entries for ``openrouter``, ``zai``,
+          ``huggingface`` and ``opencode*``;
+        * an extension ``register_provider`` provider — every one whose name is
+          not catalogued, and a catalogued name only when the registration brings
+          models (an auth-only or header-only registration tunes a built-in the
+          same way ``headers`` does). Rung 0 then scopes such a catalogued name
+          to the models the registration brought
+          (``runtime_bootstrap._registration_models``).
+
+        ``cli.runtime_bootstrap.resolve_model`` reads this to decide that a
+        ``<provider>/<id>`` names an endpoint OpenRouter can never serve, BEFORE
+        the OpenRouter-from-env rung sees it. It is a statement about
+        configuration only: no credential is consulted, so a key in a cwd
+        ``.env`` cannot change it.
+        """
+
+        return self._user_defined_providers
+
+    def get_base_url_override(self, provider: str) -> str | None:
+        """The ``models.json`` provider-level ``baseUrl`` of a BUILT-IN provider (#344).
+
+        ``None`` for a provider the user did not re-point (and for custom
+        providers, whose models already carry their own ``baseUrl``). Lets the
+        launch path adopt the override onto a static catalog hit — the registry
+        copy already has it, the catalog entry ``resolve_model`` returns first
+        does not.
+        """
+
+        return self._base_url_overrides.get(provider)
+
     # ── Display ────────────────────────────────────────────────────
     def get_provider_display_name(self, provider: str) -> str:
         """Pi parity: ``model-registry.ts::getProviderDisplayName``.
@@ -659,6 +708,28 @@ class ModelRegistry:
         # P-175: a successful load drops any stale error (result.error is
         # None on success); a failed parse keeps built-ins + records why.
         self._load_error = result.error
+
+        # #344 — record what the user defined, from the SAME load that builds
+        # ``self._models`` (see :meth:`get_user_defined_providers`). A failed
+        # models.json parse yields an empty result, so it defines nothing — the
+        # same models the registry then serves.
+        from aelix_ai.models import get_providers
+
+        catalogued = frozenset(get_providers())
+        self._base_url_overrides = {
+            name: override.base_url
+            for name, override in result.overrides.items()
+            if name in catalogued and override.base_url
+        }
+        self._user_defined_providers = frozenset(
+            {name for name, override in result.overrides.items() if override.base_url}
+            | {m.provider for m in result.models if m.provider not in catalogued}
+            | {
+                name
+                for name, config in self._registered_providers.items()
+                if name not in catalogued or config.models
+            }
+        )
 
         # Step 2: built-ins (with overrides) + merge custom on top.
         built_in = load_built_in_models(result.overrides, result.model_overrides)

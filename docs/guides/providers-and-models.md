@@ -25,14 +25,105 @@ aelix --list-models claude     # filter by substring
 Inside the interactive TUI, `/model` opens a picker to switch the active model
 mid-session.
 
+### How `--model <provider>/<id>` is resolved when `OPENROUTER_API_KEY` is set
+
+With `OPENROUTER_API_KEY` in the environment and no `--provider`, a `--model`
+string can mean two things: `openai/gpt-4o-mini` is both OpenAI's model and an
+OpenRouter id. Aelix decides it from **configuration only** — which provider
+names exist, which ones *you* defined — never from which credentials happen to be
+present ([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)):
+
+1. **A provider you defined** — a `models.json` custom provider, a built-in
+   provider you re-pointed with a `models.json` `baseUrl`, or a provider an
+   extension registered with `register_provider` (in its `setup()` — see
+   below). `ollama/qwen3.6:35b-a3b`, `mygateway/some-model` and `extprov/m1` go
+   to that endpoint, and never to OpenRouter — an id that provider does not list
+   is either backfilled from its own models (when they all speak one protocol)
+   or refused with an error that names the provider. An extension that
+   registers a **built-in** name with models (`openai`, say) owns that prefix
+   the same way: `openai/<id>` resolves among the models it registered, never
+   to `api.openai.com` with the extension's key.
+2. **An id only one of your providers lists**, spelled exactly as it lists it:
+   `--model qwen3.6:35b-a3b` reaches the one `models.json` provider that lists
+   it. This covers slashed ids too: `anthropic/claude-sonnet-4.5` goes to a
+   gateway of yours that lists it verbatim, not to OpenRouter (this rule is
+   checked before rule 4 below). A built-in provider you re-pointed with a
+   `baseUrl` lists every catalog id it has, so with `providers.openai.baseUrl`
+   set a bare `--model gpt-4o-mini` goes to your gateway — without that
+   `baseUrl` it goes to OpenRouter.
+3. **A built-in provider OpenRouter has no namespace for** — `openai-codex`,
+   `xai`, `groq`, `mistral`, `github-copilot`, `zai` and the other catalogued
+   providers whose name is not the first segment of any OpenRouter id in this
+   build's catalog. `openai-codex/gpt-5.1` goes to Codex.
+4. **Everything else goes to OpenRouter**, exactly as before: the nine prefixes
+   that are both a provider and an OpenRouter namespace (`openai`, `anthropic`,
+   `google`, `deepseek`, `minimax`, `moonshotai`, `nvidia`, `xiaomi`,
+   `openrouter`), prefixes that are not providers (`meta-llama/…`, `qwen/…`) and
+   bare ids none of your providers serve. `--model anthropic/claude-haiku-4-5`
+   goes to OpenRouter even if you also hold an Anthropic key.
+
+Without `OPENROUTER_API_KEY` the prefix simply names the provider. Either way the
+prefix is matched case-insensitively (`RetryProbe/held-model` works), and a
+provider you defined wins over a built-in spelled the same up to case: with a
+`models.json` provider named `OpenAI`, `openai/m1` is yours, never OpenRouter's
+or `api.openai.com`'s. If two of your providers differ only in case (`OpenAI`
+and `OPENAI`), a prefix that spells neither exactly is refused with an error
+naming both.
+
+A provider you **name** is matched the same way — `--provider`, `defaultProvider`
+in `settings.json` and an agent profile's `provider:`. `--provider OPENAI` works,
+and with that `models.json` `OpenAI`, `--model m1 --provider openai` is yours too
+(your host, your `--api-key`); a built-in whose name differs from one of your
+providers only in case cannot be reached that way — rename your provider if you
+need both. A name two of your providers share up to case is refused naming both.
+Spelling aside, `--provider` keeps its meaning: it turns the OpenRouter rule off
+unless it names `openrouter`.
+
+A provider an extension registers in a `session_start` handler exists only after
+the launch model was chosen, so with `OPENROUTER_API_KEY` set its prefix would
+have been read as an OpenRouter id. Every mode — interactive, RPC, `-p` and
+`--mode json` — switches to the provider before the first prompt, exactly as
+`/model <name>/<id>` would, and prints one line on stderr saying so (with
+`/model`'s caution when the id is one the provider does not list). Unlike
+`/model`, it does not save the choice as your default model. If `/model` would
+refuse it, no prompt is sent: the interactive and RPC modes start and tell you
+to run `/model`; `-p` and `--mode json` stop with an error. The same happens when
+the handler registers two providers whose names differ only in case and your
+prefix spells neither. A provider the handler registers and then unregisters is
+simply unknown, so with `OPENROUTER_API_KEY` set its prefix goes to OpenRouter
+like any other unknown prefix. Register providers in the extension's `setup()` to
+avoid all of this.
+
+To override the rule, say what you mean:
+
+```bash
+aelix --provider openrouter --model openai/gpt-4o-mini "..."   # force OpenRouter
+aelix --provider anthropic  --model claude-haiku-4-5 "..."     # force the vendor
+```
+
+(`--provider anthropic` is the vendor unless you defined a provider of that name
+in some case — then it is yours, as above. The same goes for `--provider
+openrouter`: if you named one of your providers `OpenRouter` in any case, that
+flag selects yours, so rename it if you also want to force OpenRouter.)
+
+`OPENROUTER_DEFAULT_MODEL` (used when no `--model` is given) is always an
+OpenRouter id. The same rule applies to an agent profile's `model:`, to a
+hand-written `defaultModel` in `settings.json`, and — with the parent's view of
+your providers spelled out as `--provider`/`--model` — to delegated children.
+
 ## Providing an API key
 
 A credential can come from four places. Pick whichever fits your setup:
 
 1. **Environment variable** (simplest) — set the provider's variable before
    running `aelix` (see the table below).
-2. **`--api-key <key>`** — an inline key for a single run. This overrides the
-   environment for that invocation.
+2. **`--api-key <key>`** — an inline key for a single run, attached to the
+   provider the run actually resolved (after extensions have loaded), and it
+   outranks every other source for that provider in that invocation. So
+   `--model ollama/<id> --api-key K` sends `K` to your ollama endpoint;
+   `--model openai/gpt-4o-mini --api-key K` with `OPENROUTER_API_KEY` set sends
+   `K` to **OpenRouter** (rule 4 above) — add `--provider openai` if `K` is an
+   OpenAI key. The key is not forwarded to delegated children.
 3. **`models.json`** — an `apiKey` field on a provider, which itself may point
    at an environment variable or a `!command` (see
    [models-json.md](models-json.md)).

@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:1490-1492`` documents Guardrail-first as a security
+``Permission`` (``entry.py:1471-1473`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -196,7 +196,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2308-2324`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2328-2344`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -1051,7 +1051,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1067-1076``).
+        seam is released on teardown, ``extension.py:1069-1078``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1059,7 +1059,9 @@ class AgentsExtension:
         """
 
         try:
-            return child_model_id(resolved.profile, self._host_model())
+            # #344 — with the parent's registry, as ``runtime._spawn_model`` does,
+            # so the row names the id that will be on the child's argv.
+            return child_model_id(resolved.profile, self._host_model(), self._host_model_registry())
         except Exception:  # noqa: BLE001 — a missing row never blocks consent
             return None
 
@@ -1231,7 +1233,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1187-1191``) with no ``await`` between them, so THIS
+            # (``runtime.py:1190-1194``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a

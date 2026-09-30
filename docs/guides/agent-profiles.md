@@ -85,7 +85,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `name` | string | — | The identity. **This field, not the filename**, is the name you delegate to; a mismatch warns. |
 | `description` | string | — | What the model reads in the `agent` tool's schema to decide whether this profile fits the task. Write it for that reader. |
 | `model` | string | inherit | Model id for the child. `inherit` and an absent key both mean "use the parent's model" — see below. |
-| `provider` | string | inherit | Provider for the child. Set it whenever you set `model`. |
+| `provider` | string | inherit | Provider for the child. Set it whenever you set `model` — or write `model: <provider>/<id>`, which resolves exactly like `--model` (see [How the child reaches its model](#how-the-child-reaches-its-model)). |
 | `tools` | list \| `[]` \| absent | absent | **Three-valued.** Absent → the child inherits the ambient tool set. A list → exactly those tools. `[]` → **no tools at all**. |
 | `builtin_tools` | bool | `true` | Whether the built-in tools are available at all. |
 | `skills` | list of **paths** | `()` | Skill files, resolved **relative to the profile's own directory**, not your cwd. |
@@ -166,6 +166,32 @@ of the body. Nothing else changes; the child is still
 clamped to your posture, still hard-blocked by the guardrail, still bounded by
 the delegation caps, and still shown in the status line while it runs. Every
 other posture — including `auto-accept-edits` and `auto` — still asks.
+
+## How the child reaches its model
+
+The child is launched with `--model` / `--provider` flags and resolves its route
+in its own process, with the environment it inherited — `OPENROUTER_API_KEY`
+included — and, by default, **no extensions** (`inherit_extensions: false`).
+That is why the parent does one thing for it: it resolves the profile's `model:`
+(or its own model, when the profile names none) exactly as its own `--model`
+would, and when that lands on a provider **you** defined — a `models.json`
+provider, a built-in you re-pointed with a `models.json` `baseUrl`, or one an
+extension registered — the child gets `--model <id> --provider <provider>`
+instead of the string as written
+([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)).
+The child then reaches that provider, or — for an extension provider it did not
+load — stops with an error naming it. It never re-derives the route through
+OpenRouter. `/agents show` and the consent dialog render the same flags. One
+exception to "stops": when the extension registered a **built-in** name
+(`openai`, say), a child without extensions still knows that name from the
+catalog and reaches the vendor's own host with its own credentials; set
+`inherit_extensions: true` if the child must use the extension's endpoint.
+
+Everything else reaches the child as written and is resolved by the same rule as
+`--model` (see
+[providers-and-models.md](providers-and-models.md#how---model-providerid-is-resolved-when-openrouter_api_key-is-set)):
+`model: openai/gpt-4o-mini` with an inherited `OPENROUTER_API_KEY` runs on
+OpenRouter; add `provider: openai` to pin the vendor.
 
 ## How the child authenticates
 

@@ -211,8 +211,25 @@ def main() -> int:
         termios.TIOCSWINSZ,  # pyright: ignore[reportAttributeAccessIssue]
         struct.pack("HHHH", args.rows, args.cols, 0, 0),
     )
+    # ``--provider`` + a bare ``--model``, never the ``retryprobe/held-model``
+    # shorthand: an explicit provider skips every environment-dependent rung, so
+    # this rig's premise (the request reaches the local holding provider) holds
+    # whatever the shell exports — and whatever ``.env`` the child reads from
+    # ``cwd=repo``. Before #344 the shorthand plus an ``OPENROUTER_API_KEY`` (the
+    # main checkout's own ``.env`` supplies one) sent the request to OpenRouter:
+    # "provider requests served : 0" and a rig that never built its
+    # precondition. ADR-0249 fixed the shorthand too; this keeps the rig
+    # independent of routing policy altogether.
     proc = subprocess.Popen(
-        [sys.executable, "-m", "aelix_coding_agent", "--model", "retryprobe/held-model"],
+        [
+            sys.executable,
+            "-m",
+            "aelix_coding_agent",
+            "--provider",
+            "retryprobe",
+            "--model",
+            "held-model",
+        ],
         stdin=slave, stdout=slave, stderr=slave, env=env, cwd=repo, close_fds=True,
     )
     os.close(slave)

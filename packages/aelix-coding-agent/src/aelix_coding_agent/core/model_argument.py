@@ -2,10 +2,12 @@
 
 ``cli.runtime_bootstrap.resolve_model`` resolves a model for LAUNCH, where the
 environment is the strongest signal available: with ``OPENROUTER_API_KEY`` set
-and no explicit ``--provider`` it treats ANY argument as an OpenRouter id and
+and no explicit ``--provider`` it treats any argument that does not name an
+endpoint OpenRouter cannot serve (ADR-0249: a user-defined provider, or a
+catalogued provider outside OpenRouter's namespaces) as an OpenRouter id and
 returns ``openrouter/<argument>`` on the OpenRouter host, falling back to a bare
 model for ids its catalog never saw. That is right for a flag parsed before any
-registry exists — and wrong for ``/model <id>`` typed INSIDE a session, where it
+session exists — and wrong for ``/model <id>`` typed INSIDE a session, where it
 silently re-stamps the environment's provider onto an id that provider does not
 serve: the switch reports success, the footer updates, the pair is persisted as
 the default, and the only symptom is the provider's ``400 … is not a valid model

@@ -115,6 +115,76 @@ unwritten. Add them with the next release.
   back as a completed turn instead of `RpcServerExited` — the child did finish
   its turn (not seen once in 2 400 runs of a real child that ends its turn and
   exits at once). (#351)
+- **With `OPENROUTER_API_KEY` set, a model on a provider you defined no longer
+  goes to OpenRouter.** `--model <provider>/<id>` for a `models.json` provider
+  or an extension's `register_provider` provider was sent to OpenRouter as an
+  OpenRouter model id — the prompt went to a third party instead of your own
+  endpoint, and an `--api-key` you gave for that endpoint went with it as the
+  OpenRouter bearer. Measured with a local listener: `--model
+  retryprobe/held-model --api-key K` delivered `K` to the OpenRouter URL; with a
+  local ollama in `models.json`, `--model ollama/<id>` retried twelve times
+  against `openrouter.ai` and never reached `127.0.0.1:11434`. The same leak ran
+  through a bare id only your provider serves, an agent profile's `model:`, a
+  hand-written `defaultModel` in `settings.json`, and delegated children. Now a
+  provider you defined — and a built-in provider OpenRouter has no namespace
+  for, such as `openai-codex/…` or `xai/…`, which used to fail with OpenRouter's
+  400 — is resolved before the OpenRouter-from-env rule, from configuration
+  only: which vendor keys you (or a cloned repo's `.env`) hold never changes the
+  route. `openai/…`, `anthropic/…` and the other prefixes OpenRouter also uses
+  go to OpenRouter as before; `--provider` overrides either way. `--api-key` is
+  attached to the provider the run actually uses. See ADR-0249 (#344).
+- **An extension's provider can be chosen at launch.** `--model <name>/<id>` and
+  `--provider <name> --model <id>` for a provider an extension registers were
+  refused at startup (`No provider registered for api='unknown'`) because the
+  model was resolved before any extension had loaded; only `/model` could reach
+  it. The registry now takes the extensions' registrations first, on every
+  start, `/new`, `/fork`, `/resume` and `/reload` (#344).
+- **A `baseUrl` in `models.json` for a built-in provider is honoured at launch.**
+  `--provider openai --model gpt-4o-mini` (and `--model openai/gpt-4o-mini`)
+  with `providers.openai.baseUrl` set to a gateway went to `api.openai.com` with
+  the gateway's key; only the `/model` picker used the gateway. The catalog
+  model now keeps its protocol and metadata and takes your host (#344). With
+  `OPENROUTER_API_KEY` set, re-pointing a provider this way makes every id it
+  serves yours: a bare `--model gpt-4o-mini` now goes to your gateway too (it
+  used to go to OpenRouter). The key it sends is chosen as for any provider: an
+  `--api-key`, a `/login` credential or `OPENAI_API_KEY` comes before the
+  `apiKey` in `models.json`.
+- **A provider an extension registers in `session_start` is no longer sent to
+  OpenRouter.** It arrives after the launch model is chosen, so with
+  `OPENROUTER_API_KEY` set `--model <name>/<id>` had already become an
+  OpenRouter id, and the first prompt went there — in print mode, and in the
+  interactive and RPC modes after a warning. Every mode — interactive, RPC,
+  `-p` and `--mode json` — now switches to the provider before the first
+  prompt, exactly as `/model <name>/<id>` does, and says so in one line on
+  stderr (with `/model`'s caution for an id the provider does not list). Unlike
+  `/model` it does not save the choice as your default model. If `/model` would
+  refuse it (no credential, excluded by `/scoped-models`), no prompt is sent:
+  the interactive and RPC modes start on a model no prompt is sent with and say
+  to run `/model`; `-p` and `--mode json` stop with an error naming the
+  provider. The same holds when `session_start` registers two providers whose
+  names differ only in case and `--model` spells neither: no prompt is sent in
+  any mode, and the message names both (every mode used to send it to
+  OpenRouter). Registering the provider in `setup()` avoids the switch (#344).
+- **An id your `models.json` or extension provider does not list is no longer
+  refused as an unknown protocol.** `--provider retryprobe --model <new-id>` and
+  `--model retryprobe/<new-id>` — with or without `OPENROUTER_API_KEY` — take
+  that provider's own protocol and host when its listed models agree on one (a
+  model you pulled into ollama after writing `models.json` reaches your ollama);
+  they used to fail with `could not be resolved to a known API protocol`
+  (#344).
+- **`--model RetryProbe/held-model` works.** The provider prefix is matched
+  case-insensitively, as `/model` and pi already did, and a provider you defined
+  wins over a built-in whose name differs from it only in case: with a
+  `models.json` provider named `OpenAI`, `--model openai/m1` reaches it (with
+  `OPENROUTER_API_KEY` set it would otherwise have gone to OpenRouter, an
+  `--api-key` for your endpoint as the bearer). A prefix two of your providers
+  share up to case, spelling neither exactly, is refused with an error naming
+  both. The same goes for a provider you name: `--provider`, `defaultProvider`
+  in `settings.json` and an agent profile's `provider:` are matched
+  case-insensitively, and a provider you defined wins — `--model m1 --provider
+  openai --api-key <key>` used to send the prompt and that key to
+  `api.openai.com` instead of your `OpenAI`, and `--provider OPENAI` was refused
+  as an unknown protocol (#344).
 - **A second prompt sent while the first one waits to retry, or while it runs
   its closing compaction, no longer runs alongside it and mixes both messages
   into both answers.** When a provider call failed with a retryable error (a

@@ -194,7 +194,14 @@ aelix --help                                     # full flag reference
 ```
 
 Model ids use the `<provider>/<model>` form (e.g. `openai/gpt-4o-mini`,
-`anthropic/claude-sonnet-4-6`). List what is available with:
+`anthropic/claude-sonnet-4-6`). One thing to know if you export
+`OPENROUTER_API_KEY`: then `openai/…`, `anthropic/…` and the other prefixes
+OpenRouter also uses are sent to **OpenRouter**, whatever other keys you hold;
+a provider you defined yourself (`models.json`, an extension) and built-ins
+OpenRouter has no namespace for (`openai-codex/…`, `xai/…`) are not. Add
+`--provider <name>` to pick explicitly —
+[providers-and-models.md](providers-and-models.md#how---model-providerid-is-resolved-when-openrouter_api_key-is-set)
+has the whole rule. List what is available with:
 
 ```bash
 aelix --list-models            # all models

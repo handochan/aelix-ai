@@ -160,6 +160,7 @@ def build_rpc_child_argv(
     parent_cwd: str,
     parent_model: Any | None = None,
     session_path: str | None = None,
+    model_registry: Any | None = None,
 ) -> list[str]:
     """The rpc child's exact command line.
 
@@ -185,6 +186,10 @@ def build_rpc_child_argv(
     ``session_path`` is the same #199 child file the print channel passes: the
     rpc child gets ``--session <path>`` in place of the ``--no-session`` this
     builder has always appended itself.
+
+    ``model_registry`` is passed through exactly as the print channel passes it
+    (#344): a user-defined provider's ``--model`` reaches the child split into
+    ``--model``/``--provider``.
     """
 
     del task  # delivered over the wire; see the docstring
@@ -197,6 +202,7 @@ def build_rpc_child_argv(
             prompt_path=prompt_path,
             oneshot=False,
             parent_model=parent_model,
+            model_registry=model_registry,
         ),
         # The rpc prefix omits a session flag and the oneshot prefix supplies
         # one. Without it every delegated child writes a session file the user
@@ -398,7 +404,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1280-1287``); this channel
+            # ``_eager_abort`` (``print_channel.py:1292-1299``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -445,6 +451,8 @@ class RpcChannel:
                             self._parent_model() if self._parent_model else None
                         ),
                         session_path=plan.session_path,
+                        # #344 — see ``build_rpc_child_argv``.
+                        model_registry=(self._model_registry() if self._model_registry else None),
                     ),
                     cwd=plan.cwd,
                     env_base=self._env_builder(profile),
