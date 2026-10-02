@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports; **#330 amendment 2026-09-25** — test-only: the cases that pinned `stop()`'s grace, the hook timeout ladder and `!command`'s two kill sites by the wall clock now assert the bounds the product ARMED and how each one ended; no product behaviour changed)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports; **#330 amendment 2026-09-25** — test-only: the cases that pinned `stop()`'s grace, the hook timeout ladder and `!command`'s two kill sites by the wall clock now assert the bounds the product ARMED and how each one ended; no product behaviour changed; **#350 amendment 2026-10-02** — docs-only: a helper's output after the command's exit is best-effort, and a reader starved for a grace can end the drain on it too, as a blocked event loop does in Pi; ending a POSIX idle wait only on `drained()` was considered and declined, and the caps, the proof and `output_unconfirmed` stay, because Aelix reads in a thread)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -522,7 +522,11 @@ warning, so the case is not in the console list below.)
   its hard cap without a proof — on POSIX the one end that can lose the
   command's own bytes. A proven end stays silent, like Pi's, and that includes
   the helper cut above; so does the win32 residual, whose reader believes it
-  has a proof (the #260 paragraph under "Consequences"). The REPL's `!command`
+  has a proof (the #260 paragraph under "Consequences"). **#350 kept the
+  helper cut as it is (2026-10-02):** a helper's output after the exit is
+  best-effort, a starved reader can end the drain on it too, and Pi's is the
+  same; ending a POSIX idle wait only on `drained()` was declined (the #350
+  paragraph under "Consequences"). The REPL's `!command`
   and RPC `bash` do not surface the flag yet.
 - **#227 — the `!command` shell on win32: landed 2026-09-08.** This site spawned
   `sh -c` on every platform, so on a stock Windows box the spawn failed in about
@@ -1374,6 +1378,75 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `tests/process_tree/test_the_drain_asks_the_pipe.py` and, end to end with the
   order modelled, `test_a_kill_that_reaps_the_root_first_is_proven_only_after_the_whole_ladder`
   in `tests/tools/test_bash_drain_asks_the_pipe.py`.
+  **#350 amendment (2026-10-02) — a helper's output after the exit is
+  best-effort, and a starved reader ends the drain on it too.** The proof above
+  covers what the command wrote before it exited; it promises nothing about
+  what a helper writes after, and the idle rule cannot tell a helper that fell
+  quiet from a reader that stopped handing on. The rule arms at
+  `max(last_chunk_at, armed_from)` plus a grace, and `last_chunk_at` is stamped
+  when the READER hands a chunk on, so a reader that hands nothing on for a
+  grace — the writer stopped, the reader thread starved, or the runner stopped
+  the whole process — runs the idle wait out the same way. Since #260 that end
+  needs a proof, and `caught_up()` supplies one: everything the first look
+  after the exit saw has been handed on. A reader starved after that look,
+  holding helper bytes it read later or with more still in the pipe, is caught
+  up and, on POSIX, not `drained()`; the drain ends on the proof, those bytes
+  never reach the caller, and the end is a proven one — silent,
+  `output_unconfirmed` false. #325's lane measured it on darwin, holding the
+  reader after its first post-exit look (recorded in #350): the native branch
+  ended early 3 of 3 with `exit_code` 0, `drained()` False and `caught_up()`
+  True, and the forced-win32 branch 3 of 3 with `drained()` True, win32's
+  being the reader's own last look. It is the likeliest mechanism of #325's
+  windows floor failure (1.375 s against 2.0 s), and CI run 36033034335 did not
+  reproduce it in 160 runs, 80 of them on windows. Re-run for this amendment on
+  darwin, on the tree whose code is `9ca53a4f`, with the #350 research's probe
+  — `printf 'OWN\n'; (sleep 0.03; printf 'HELPER1\n'; sleep 0.03; printf
+  'HELPER2\n') &` through the bash tool's `exec`, the reader held 0.4 s after
+  every read that carries helper bytes: `OWN\nHELPER1\n`, `exit_code` 0,
+  `output_unconfirmed` False, 0.554-0.556 s, 3 of 3. `HELPER1` survives because
+  the first look after the exit saw it and the pin covers whatever that look
+  saw; `HELPER2` arrives while the reader holds `HELPER1` and is gone. Not
+  starved, the same command returns all three lines in 0.078-0.093 s (3 of 3).
+  **Pi cuts the same tail, by its own trigger** (same amendment). Its
+  `waitForChildProcess` (`packages/coding-agent/src/utils/child-process.ts:16`,
+  `:49-137` @ `88ff80b98`) arms a 100 ms timer at `exit`, re-arms it on every
+  post-exit `data` event, has no cap, and destroys both streams when the timer
+  fires. Its read and its timer share the event loop, so what starves it is the
+  loop. The #350 research (`wf_8a93f349-ff7`) ran that function verbatim under
+  Node v26.0.0 on the same command: a loop blocked 400 ms right after `exit`
+  armed the timer returned `OWN\n` alone, 3 of 3, and one blocked 400 ms right
+  after `HELPER1` re-armed it returned `OWN\nHELPER1\n`, 3 of 3. Re-run for
+  this amendment, the function still byte-identical to `88ff80b98`'s lines
+  49-137: the same strings, 3 of 3 each (0.403-0.408 s and 0.443-0.444 s). The
+  same loop block costs Aelix nothing, because its reader is a thread:
+  `OWN\nHELPER1\nHELPER2\n`, 3 of 3, 0.423-0.430 s. Both runtimes treat a
+  helper's output after the exit as best-effort; what starves the read differs,
+  the promise does not.
+  **The stricter rule was considered and declined** (same amendment; the
+  owner's decision on #350, 2026-10-02). #350 proposed ending a POSIX idle
+  wait only on `drained()` — an even phase over an empty `FIONREAD`, which
+  knows the pipe is empty where `caught_up()` knows only that the command's
+  bytes are out — and leaving the soft and hard caps on `caught_up()`. It would
+  keep a helper's bytes across a starvation shorter than the soft cap (2.0 s
+  past the exit, or the caller's deadline if that comes first, never earlier
+  than one grace past the exit), on POSIX only (win32's `drained()` is the
+  reader's own word and was True in the measurement above), and its price is
+  that a starved reader holds the call open up to that cap — at most the hard
+  cap — where a grace ends it now.
+  Declined: it is stricter than Pi on a tail neither runtime promises, the part
+  that matters — the command's own output — is already proven, and a helper's
+  output written after the grace is already cut as the ORDINARY end (the first
+  of #232's four costs above). **What does NOT go back to Pi's shape is the
+  rest of this drain**: the hard cap (`DRAIN_CAP_SECONDS`, #221 — a helper that
+  never falls idle defeats an idle rule, and the call never returns), the proof
+  (#260 — a reader thread starved across the exit lost the command's OWN tail;
+  Pi did not, in #260's 0 of 60 rounds above, its read and its timer sharing
+  one thread, though no recorded probe blocked the loop between two reads of a
+  command tail larger than one read) and
+  `output_unconfirmed` (the one POSIX end that can still lose those bytes, said
+  aloud). Each exists because Aelix reads in a thread; taking them out to match
+  Pi would bring #221 and #260 back. The win32 residual above is untouched.
+  Docs-only: no product or test change.
   **Nothing else in the teardown moved**:
   the watcher is still disarmed before the drain, so an abort landing in the
   window still fires into nothing.
