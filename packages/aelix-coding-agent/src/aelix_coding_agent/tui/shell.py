@@ -114,6 +114,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.agents.service import AgentProfileService
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
+    from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
     from aelix_coding_agent.extensions.api import Extension
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
@@ -180,7 +181,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
 
     ``get_session_stats`` cannot serve a mid-turn read at all. The harness only
     extends ``_state.messages`` once the agent loop has RETURNED
-    (``harness/core.py:5073``), while ``turn_end`` fires once per provider
+    (``harness/core.py:5146``), while ``turn_end`` fires once per provider
     round-trip inside it (``loop.py:240``) — so every one of those refreshes
     estimated over an unchanged list and repainted the pre-turn number, which on
     the first turn of a session is literally ``◔ 0%``. The fresh number is in
@@ -508,6 +509,7 @@ async def run_tui(
     extensions: list[Extension] | None = None,
     extension_errors: list[Any] | None = None,
     agent_service: AgentProfileService | None = None,
+    late_route: LateRoute | None = None,
     first_run_login: bool = False,
     thinking_level_restored: bool = False,
     chrome: AelixChrome | None = None,
@@ -561,6 +563,13 @@ async def run_tui(
         degraded committed message. Threaded explicitly for the same reason as
         ``model_registry``: the harness does not — and must not — hold it.
         ADR-0196.
+    :param late_route: #367 — the process's late-provider rule (entry.py's
+        ``late_rule``, ``runtime_bootstrap.LateRoute``). The post-login pick
+        below is an automatic model choice: it never lands on a provider an
+        extension registered in ``session_start`` after the launch route was
+        chosen (the saved settings default can be the refused launch input).
+        ``/model`` still can. A prompt on a hold's placeholder is refused with
+        the hold's reason rather than the generic unknown-protocol text.
     :param first_run_login: issue #23 — ``True`` when entry.py measured that NO
         provider credential resolves from any auth layer on an interactive,
         real-terminal, non-resuming launch (see
@@ -1741,7 +1750,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3268``) always passes one, so this is
+            # production caller (``entry.py:3442``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -1780,6 +1789,24 @@ async def run_tui(
             # so and names the api. Strictly more actionable than the generic
             # line below, so prefer it verbatim when present.
             no_model_reason = result.fallback_message
+            # #367 — a launch refused for naming a provider ``session_start``
+            # registered holds the session on a placeholder, which is
+            # unrunnable, so a login lands here. The saved default can be that
+            # refused launch input (settings ``defaultProvider`` /
+            # ``defaultModel``), and the registry now offers the provider: the
+            # pick would run what the launch refused, without the user picking
+            # it. An automatic pick never lands on a late provider (round 3,
+            # D1): ask again without the saved default; if that still lands on
+            # one, select nothing and say why. ``/model`` can still go there.
+            if late_route is not None and chosen is not None and late_route.lands(chosen):
+                refused = chosen
+                result = await find_initial_model(
+                    model_registry=cast("Any", _RouteAuthView(model_registry)),
+                )
+                chosen = result.model
+                no_model_reason = result.fallback_message
+                if chosen is not None and late_route.lands(chosen):
+                    chosen, no_model_reason = None, late_route.landing_reason(refused)
         except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
             _commit(
                 Text(
@@ -2094,7 +2121,7 @@ async def run_tui(
     # in flight at once (``turn_end`` then ``settled`` for one turn), each
     # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
     # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
-    # before ``core.py:5073`` extends it, yet may finish after the settled
+    # before ``core.py:5146`` extends it, yet may finish after the settled
     # refresh and paint the stale value last. Completions therefore carry the
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
@@ -2103,13 +2130,13 @@ async def run_tui(
     # #249 — the tokens of the last assistant response of the RUNNING turn, or
     # ``None`` when no such number is held. It exists because the stats read
     # cannot produce one: ``_state.messages`` is not extended until the loop
-    # returns (``core.py:5073``), so a mid-turn ``get_session_stats`` estimates
+    # returns (``core.py:5146``), so a mid-turn ``get_session_stats`` estimates
     # over the pre-turn list. While this is set the meter is showing a strictly
     # fresher figure than a stats walk could, so ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:221``, ``:260``, ``:271``, plus
-    # the abort close-out ``core.py:5023`` and the hook-fail one ``:5066``)
+    # the abort close-out ``core.py:5096`` and the hook-fail one ``:5139``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
-    # hook-fail paths, which ``return``/``raise`` before ``core.py:5073``.
+    # hook-fail paths, which ``return``/``raise`` before ``core.py:5146``.
     live_tokens: dict[str, int | None] = {"n": None}
 
     def _next_context_usage_seq() -> int:
@@ -2190,7 +2217,7 @@ async def run_tui(
         """#249 — every model change re-derives the meter, immediately.
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2539``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2595``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2198,7 +2225,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2564``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2620``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2498,11 +2525,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:1873``), so the refresh below is
+                # ``_state.messages`` (``core.py:1925``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1523``), so this never discards a figure a running
+                # ``core.py:1571``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -2530,7 +2557,7 @@ async def run_tui(
             # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks estimated over a message list the harness
-            # does not extend until the loop returns (``core.py:5073``). Each
+            # does not extend until the loop returns (``core.py:5146``). Each
             # therefore repainted the PRE-turn number on top of a fresher live
             # one: 20% → 5% → 30% → 5%, downward flicker on a segment that has a
             # flicker-regression history.
@@ -2539,7 +2566,7 @@ async def run_tui(
             # turn_end "covers the ABORT and ERROR turn paths, which append their
             # message to ``state.messages`` BEFORE emitting turn_end and so are
             # already current here". Only a BODILESS aborted stub is appended
-            # (``core.py:5020``); the turn's real assistant messages sit in
+            # (``core.py:5093``); the turn's real assistant messages sit in
             # ``new_messages`` and are dropped by the ``return []`` before the
             # extend — so that estimate anchors on the PREVIOUS turn and is lower
             # than live too. Skipping it there is the better number, not merely a
@@ -2565,7 +2592,7 @@ async def run_tui(
             # stats read. One ``agent_end`` per prompt, on every exit including
             # abort and hook-failure, which is why the clear lives here and not
             # in ``_settled_hook``: ``settled`` is emitted after
-            # ``core.py:5073``, and both of those paths return or raise before
+            # ``core.py:5146``, and both of those paths return or raise before
             # reaching it. ``agent_end`` precedes that extend by microseconds and
             # paints nothing itself, so the success path's authoritative
             # ``settled`` refresh still lands.
@@ -2573,7 +2600,7 @@ async def run_tui(
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
-        # harness extends it at ``harness/core.py:5073`` and emits ``settled``
+        # harness extends it at ``harness/core.py:5146`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
@@ -2583,7 +2610,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5082-5083`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5155-5156`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2611,7 +2638,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2564``).
+        # the model is already swapped in (``core.py:2620``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3216,6 +3243,7 @@ async def run_tui(
             settings_manager=settings_manager,
             save_implicit_trust_after_reload=save_implicit_trust_after_reload,
             read_only=read_only,
+            late_route=late_route,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -3505,7 +3533,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4216-4217``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4272-4273``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -3727,6 +3755,7 @@ async def _input_loop(
     settings_manager: SettingsManager | None = None,
     save_implicit_trust_after_reload: Callable[[], bool] | None = None,
     read_only: bool = False,
+    late_route: LateRoute | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -3970,7 +3999,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3199-3215 and
+            # Two audiences, discriminated exactly as entry.py:3373-3389 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider
@@ -3983,7 +4012,13 @@ async def _input_loop(
             if registry is not None:
                 with contextlib.suppress(Exception):
                     available = list(registry.get_available())
-            if available:
+            held = late_route.held(turn_model) if late_route is not None else None
+            if held is not None:
+                # #367 — the session is held because the launch inputs land on
+                # a provider ``session_start`` registered: say that, not the
+                # generic unknown-protocol text (it names models.json).
+                advice = Text(f"✖ {held.notice}", style="bold red")
+            elif available:
                 advice = Text(
                     f"✖ {unsupported_message(turn_model)}\n"
                     "  Run /model to select a working model.",

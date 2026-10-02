@@ -230,6 +230,10 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # above gives: the double must keep proving what the router passes, so
         # a new kwarg breaks this test once, on purpose.
         read_only: bool = False,
+        # #367 — the late-provider rule (``runtime_bootstrap.LateRoute``), for
+        # the post-/login pick and the held-turn refusal. Accepted for the same
+        # reason; this test's launch holds nothing.
+        late_route: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -257,6 +261,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # tests/cli/test_first_run_onboarding.py.
         tui_permission["first_run_login"] = first_run_login
         tui_permission["thinking_level_restored"] = thinking_level_restored
+        tui_permission["late_route"] = late_route
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can
@@ -321,6 +326,11 @@ async def test_interactive_mode_dispatches_to_run_tui(
     # #198: same contract. ``--no-session`` restores nothing, so it is False and
     # the settings-default seed still gets to run.
     assert tui_permission["thinking_level_restored"] is False
+    # #367: the rule is always threaded; this launch refused nothing.
+    from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
+
+    late_route = tui_permission["late_route"]
+    assert isinstance(late_route, LateRoute) and late_route.last is None
 
 
 async def test_auth_callback_wired_without_api_key(

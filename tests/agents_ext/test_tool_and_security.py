@@ -410,7 +410,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:897-963`` materialises the ``None`` sentinel into a real list),
+    (``core.py:902-968`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.
@@ -595,7 +595,7 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
     (``loop.py:900``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
-    (``agents/service.py:100-101``) — the exact B5 shape, arriving one step later.
+    (``agents/service.py:102-103``) — the exact B5 shape, arriving one step later.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")

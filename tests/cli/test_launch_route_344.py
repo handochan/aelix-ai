@@ -1,8 +1,11 @@
 """#344 / ADR-0249 — the LAUNCH path reaches the route the resolver decides.
 
-(Rung 0 itself was replaced by pi's order in #362 / ADR-0250; X1, S, ``--api-key``
-following the route and the ``session_start`` late switch are what ADR-0250 kept,
-and ``tests/cli/test_launch_route_362.py`` adds its own launch rows.)
+(Rung 0 itself was replaced by pi's order in #362 / ADR-0250; X1, S and ``--api-key``
+following the route are what ADR-0250 kept, and ``tests/cli/test_launch_route_362.py``
+adds its own launch rows. The ``session_start`` late switch is gone: #367 refuses a
+launch model naming such a provider, as pi does — the rows below that pinned the
+switch say so, and ``tests/cli/test_late_provider_refused_367.py`` has the sweep's
+other entry points.)
 
 ``test_provider_prefix_rung.py`` pins ``resolve_model``; these drive the real
 ``_async_main`` up to the first harness build (the spy on
@@ -353,30 +356,48 @@ _SESSION_START_EXTENSION = textwrap.dedent(
 )
 
 
+_LATE_REFUSAL = (
+    "The launch model \"sessext/m1\" names provider 'sessext', which an extension "
+    "registered while a session was starting (for example in a session_start handler), "
+    "after the launch model was chosen. "
+    "Register 'sessext' in the extension's setup() (its factory) to use it at launch."
+)
+
+
+@pytest.mark.parametrize("openrouter", ["exported", "none"])
 @pytest.mark.parametrize("mode_flags", [["-p"], ["--mode", "json", "-p"]], ids=["print", "json"])
-async def test_a_session_start_provider_is_switched_to_in_print_and_json(
+async def test_a_session_start_provider_is_refused_in_print_and_json(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     mode_flags: list[str],
+    openrouter: str,
 ) -> None:
-    """Review of ``0fcc3333``: ``--model sessext/m1`` still reached openrouter.ai.
+    """#367 — subject changed: this row pinned the #344 switch (R4b); the run is refused.
 
     X1 resolves after the ``setup()`` registrations, but a ``session_start``
     registration lands inside ``create_agent_session_runtime`` — after the first
-    build. The harness held the OpenRouter model, and the print-mode #98 gate,
-    which re-resolves AFTER ``session_start``, judged ``sessext`` instead and let
-    the run go (measured: 12 × ``CONNECT openrouter.ai:443``). Round 2 made
-    print/json refuse; round 3 (R4b) switches them as interactive and RPC are
-    switched, so every mode honours ``-e ext --model <its provider>/<id>`` alike:
-    the turn goes to ``sessext``, the Note is on stderr (stdout stays the
-    run's), and nothing is persisted (R4a).
+    build. With an OpenRouter key of the user's own the harness holds the string
+    as an OpenRouter id (guard 2 — the first build's model, spied below), and
+    without one the not-found placeholder. pi refuses such a launch model
+    (``main.ts`` exits on ``resolveCliModel``'s error); so do print and json now,
+    before any request, naming the provider and ``setup()``. On 0fcc3333 this
+    shape reached openrouter.ai (12 × ``CONNECT openrouter.ai:443``); #344
+    switched it to ``sessext``.
     """
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
+    if openrouter == "exported":
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     ext = env / "sessext.py"
     ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
     from aelix_coding_agent import modes
+
+    launched: list[tuple[str, str]] = []
+    real_create = entry_mod.create_agent_session_runtime
+
+    async def _spy(harness: Any, factory: Any, **kwargs: Any) -> Any:
+        launched.append((harness.current_model.provider, harness.current_model.id))
+        return await real_create(harness, factory, **kwargs)
 
     turns: list[Any] = []
 
@@ -384,31 +405,29 @@ async def test_a_session_start_provider_is_switched_to_in_print_and_json(
         turns.append(runtime.harness.current_model)
         return 0
 
+    monkeypatch.setattr(entry_mod, "create_agent_session_runtime", _spy)
     monkeypatch.setattr(modes, "run_print_mode", _no_turn)
     code = await entry_mod._async_main(
         ["--no-session", "-e", str(ext), "--model", "sessext/m1", *mode_flags, "hi"]
     )
     captured = capsys.readouterr()
-    # The route first: on 62ec77d2 the run was refused (no turn), and before
-    # round 2 the red line named OpenRouter.
-    assert [(m.provider, m.id, m.base_url) for m in turns] == [("sessext", "m1", _EXT)]
-    assert code == 0
-    assert "Note: switched to sessext/m1 as /model sessext/m1 would" in captured.err
-    assert "Note:" not in captured.out
+    assert (code, turns) == (1, [])
+    assert f"Error: {_LATE_REFUSAL} No prompt was sent." in captured.err.splitlines()
+    assert "switched" not in captured.err and "Note:" not in captured.err
+    assert captured.out == ""
+    assert launched == [
+        ("openrouter", "sessext/m1") if openrouter == "exported" else ("sessext", "m1")
+    ]
     assert _persisted_default(env) == (None, None)
 
 
-@pytest.mark.parametrize("mode_flags", [["-p"], ["--mode", "json", "-p"]], ids=["print", "json"])
-async def test_a_refused_late_switch_refuses_print_and_json(
-    env: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    mode_flags: list[str],
+async def test_a_session_start_provider_is_refused_whatever_a_model_switch_would_say(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """R4b keeps the refusal only for a switch ``/model`` itself would refuse.
+    """#367 — subject changed: this row pinned R4b's refusal of a switch ``/model`` refused.
 
-    print/json have no ``/model`` to recover with, so a held run is refused
-    before any turn, naming the provider and ``/model``'s reason.
+    There is no switch to ask any more: with ``/model``'s path stubbed to accept
+    anything, print still refuses with the launch's own reason.
     """
 
     from aelix_coding_agent import modes
@@ -417,9 +436,11 @@ async def test_a_refused_late_switch_refuses_print_and_json(
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     ext = env / "sessext.py"
     ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
+    asked: list[str] = []
 
-    async def _refuse(argument: str, **kwargs: Any) -> Any:
-        return model_switch.ModelSwitch(refusal="✖ probe refusal")
+    async def _accept(argument: str, **kwargs: Any) -> Any:
+        asked.append(argument)
+        return model_switch.ModelSwitch(model=kwargs["harness"].current_model)
 
     turns: list[Any] = []
 
@@ -427,16 +448,14 @@ async def test_a_refused_late_switch_refuses_print_and_json(
         turns.append(runtime.harness.current_model)
         return 0
 
-    monkeypatch.setattr(model_switch, "switch_model_argument", _refuse)
+    monkeypatch.setattr(model_switch, "switch_model_argument", _accept)
     monkeypatch.setattr(modes, "run_print_mode", _no_turn)
     code = await entry_mod._async_main(
-        ["--no-session", "-e", str(ext), "--model", "sessext/m1", *mode_flags, "hi"]
+        ["--no-session", "-e", str(ext), "--model", "sessext/m1", "-p", "hi"]
     )
     err = capsys.readouterr().err
-    assert turns == []
-    assert code == 1
-    assert "Error: --model sessext/m1 names provider 'sessext'" in err
-    assert "probe refusal" in err and "No prompt was sent." in err
+    assert (code, turns, asked) == (1, [], [])
+    assert f"Error: {_LATE_REFUSAL} No prompt was sent." in err
     assert "run /model" not in err
 
 
@@ -465,7 +484,7 @@ async def test_a_setup_provider_is_not_flagged_as_late(
     assert "session_start" not in capsys.readouterr().err
 
 
-# === fix round 2 (D1): interactive and RPC switch onto the late provider ======
+# === interactive and RPC: held (#367; #344's D1 switched) — /model leaves it in the TUI; RPC has no model registry ===
 
 
 class _FakeTTYStdin:
@@ -481,15 +500,20 @@ async def _run_session_start_mode(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
     extra: list[str] | None = None,
+    *,
+    openrouter: bool = True,
+    model: str = "sessext/m1",
 ) -> tuple[int, Any]:
-    """Launch ``--model sessext/m1`` in ``mode`` and return the model the mode got.
+    """Launch ``--model <model>`` (default ``sessext/m1``) in ``mode``; return the model the mode got.
 
     The mode's entry (``run_tui`` / ``run_rpc_mode``) is stubbed to record the
     harness model it would have driven its first prompt with — the model a typed
-    ``hi`` (TUI) or a ``prompt`` command (RPC) goes to.
+    ``hi`` (TUI) or a ``prompt`` command (RPC) goes to. ``openrouter`` exports an
+    OpenRouter key of the user's own (guard 2 then takes the string at launch).
     """
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
+    if openrouter:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     ext = env / "sessext.py"
     ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
     handed: list[Any] = []
@@ -512,84 +536,71 @@ async def _run_session_start_mode(
         monkeypatch.setattr(modes, "run_rpc_mode", _stub_run_rpc)
         mode_flags = ["--mode", "rpc"]
     code = await entry_mod._async_main(
-        ["--no-session", "-e", str(ext), "--model", "sessext/m1", *mode_flags, *(extra or [])]
+        ["--no-session", "-e", str(ext), "--model", model, *mode_flags, *(extra or [])]
     )
     return code, handed
 
 
+@pytest.mark.parametrize("openrouter", ["exported", "none"])
 @pytest.mark.parametrize("mode", ["interactive", "rpc"])
-async def test_a_session_start_provider_is_switched_to_before_the_first_prompt(
+async def test_a_session_start_provider_holds_interactive_and_rpc(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     mode: str,
+    openrouter: str,
 ) -> None:
-    """Fix round 2, D1: the first prompt used to go to OpenRouter.
+    """#367 — subject changed: this row pinned the #344 switch (fix round 2, D1).
 
-    Interactive and RPC only warned (measured in a pty on ``8c9d6397``: the
-    warning at the top of the first frame, then ``hi`` went to OpenRouter).
-    Now the harness is switched through the ``/model`` path before the mode
-    starts: the same ``set_model`` (so the same ``model_select`` event) and a
-    one-line notice naming the provider — but, unlike ``/model``, no
-    default-model persistence (round 3, R4a).
+    Interactive and RPC start held on ``Model('m1', 'sessext')`` with
+    ``api='unknown'`` (one ``set_model``, so one ``model_select``), which every
+    turn entry refuses before a request (the TUI's #189 gate names ``/model``;
+    an RPC ``prompt`` fails at the adapter lookup). One Warning gives the
+    reason and, interactive, ``/model``'s guidance — RPC says it cannot pick
+    another model (#367 verify round 1, N1: ``aelix --mode rpc`` wires no model
+    registry for ``set_model``); nothing is persisted. On 8c9d6397 the first
+    prompt went to OpenRouter; #344 switched to ``sessext``.
     """
 
     from aelix_agent_core.harness.core import AgentHarness
 
-    selected: list[tuple[str, str]] = []
+    selected: list[tuple[str, str, str]] = []
     real_set_model = AgentHarness.set_model
 
     async def _spy_set_model(self: AgentHarness, model: Any) -> None:
-        selected.append((model.provider, model.id))
+        selected.append((model.provider, model.id, model.api))
         await real_set_model(self, model)
 
     monkeypatch.setattr(AgentHarness, "set_model", _spy_set_model)
-    code, handed = await _run_session_start_mode(env, monkeypatch, mode)
-    err = capsys.readouterr().err
-    # The route first: on 8c9d6397 the red line names where the prompt went.
-    assert [(m.provider, m.id, m.base_url) for m in handed] == [("sessext", "m1", _EXT)]
-    assert code == 0
-    assert selected == [("sessext", "m1")]
-    assert "Note: switched to sessext/m1 as /model sessext/m1 would" in err
-    assert "(not saved as the default model)" in err
-    assert "'sessext'" in err and "session_start" in err
-    # R4a — not persisted: a --model launch never writes settings, and the
-    # persisted pair made the NEXT plain launch start on api='unknown'.
-    assert _persisted_default(env) == (None, None)
-
-
-@pytest.mark.parametrize("mode", ["interactive", "rpc"])
-async def test_a_refused_late_switch_holds_the_run_off_openrouter(
-    env: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    mode: str,
-) -> None:
-    """When ``/model`` itself refuses the provider, no prompt may reach OpenRouter.
-
-    The harness is put on ``Model(id, provider)`` with ``api='unknown'``, which
-    every turn entry refuses before a request (the TUI's #189 gate names
-    ``/model``); the notice says so, and nothing is persisted.
-    """
-
-    from aelix_coding_agent.cli import model_switch
-
-    async def _refuse(argument: str, **kwargs: Any) -> Any:
-        return model_switch.ModelSwitch(refusal="✖ probe refusal")
-
-    monkeypatch.setattr(model_switch, "switch_model_argument", _refuse)
-    code, handed = await _run_session_start_mode(env, monkeypatch, mode)
+    code, handed = await _run_session_start_mode(
+        env, monkeypatch, mode, openrouter=openrouter == "exported"
+    )
     err = capsys.readouterr().err
     assert [(m.provider, m.id, m.api) for m in handed] == [("sessext", "m1", "unknown")]
     assert code == 0
-    assert "probe refusal" in err and "run /model" in err
-    assert not (env / "agent" / "settings.json").exists() or "sessext" not in (
-        env / "agent" / "settings.json"
-    ).read_text(encoding="utf-8")
+    assert selected == [("sessext", "m1", "unknown")]
+    remedy = (
+        "No prompt will be sent for it; run /model to select a model."
+        if mode == "interactive"
+        else "No prompt will be sent for it, and this RPC session cannot select another "
+        "model (set_model has no model registry in --mode rpc); restart with another --model."
+    )
+    assert f"Warning: {_LATE_REFUSAL}\n         {remedy}\n" in err
+    assert err.count("session_start") == 1
+    assert _persisted_default(env) == (None, None)
 
 
-async def test_api_key_follows_the_late_switch(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """X' after D1: ``--api-key`` was attached to ``openrouter`` before ``session_start``."""
+async def test_api_key_is_not_left_on_openrouter_by_a_refused_launch(
+    env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#367 — subject changed: this row pinned X' (the key followed the late switch).
+
+    Guard 2 puts ``sessext/m1`` on OpenRouter at the first build. Before #367's
+    round 3 ``--api-key`` was attached there and then taken off when the launch
+    was refused; since then (D4) a pending launch attaches the key only AFTER
+    the late decision, so a refused launch never attaches it to any provider —
+    not one ``/model`` away from being sent to OpenRouter; no provider holds it.
+    """
 
     attached: dict[str, str] = {}
     real_set = AuthStorage.set_runtime_api_key
@@ -608,35 +619,31 @@ async def test_api_key_follows_the_late_switch(env: Path, monkeypatch: pytest.Mo
     code, handed = await _run_session_start_mode(
         env, monkeypatch, "rpc", ["--api-key", "probe-key-fake-literal"]
     )
-    assert [(m.provider, m.id) for m in handed] == [("sessext", "m1")]
+    assert [(m.provider, m.id, m.api) for m in handed] == [("sessext", "m1", "unknown")]
     assert code == 0
-    assert attached == {"sessext": "probe-key-fake-literal"}
+    assert attached == {}
 
 
 async def test_a_late_route_that_cannot_even_be_held_refuses_the_launch(
     env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The last resort: a refused switch AND a placeholder a handler rejects.
+    """The last resort: the placeholder itself is rejected (a ``model_select`` handler).
 
     Then the harness is still on OpenRouter, so the run must not start at all.
+    (#367: the switch that came first is gone; the rest of the row stands.)
     """
 
     from aelix_agent_core.harness.core import AgentHarness
-    from aelix_coding_agent.cli import model_switch
-
-    async def _refuse(argument: str, **kwargs: Any) -> Any:
-        return model_switch.ModelSwitch(refusal="✖ probe refusal")
 
     async def _reject(self: AgentHarness, model: Any) -> None:
         raise RuntimeError("model_select handler said no")
 
-    monkeypatch.setattr(model_switch, "switch_model_argument", _refuse)
     monkeypatch.setattr(AgentHarness, "set_model", _reject)
     code, handed = await _run_session_start_mode(env, monkeypatch, "rpc")
     err = capsys.readouterr().err
     assert handed == []
     assert code == 1
-    assert "Error: --model sessext/m1" in err and "probe refusal" in err
+    assert f"Error: {_LATE_REFUSAL}" in err
 
 
 # === Codex cross-review C1 at the launch: a case collision with the catalogue ==
@@ -727,51 +734,34 @@ async def test_a_prefix_two_custom_providers_share_up_to_case_is_refused_naming_
     assert "'OPENAI' and 'OpenAI'" in err and "differ only in case" in err
 
 
-async def test_the_late_switch_prints_the_caution_model_prints(
+async def test_an_id_the_session_start_provider_does_not_list_is_held_too(
     env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """R4c: an id the session_start provider does not list is switched with #136's caution.
+    """#367 — subject changed: this row pinned R4c (the switch printed #136's caution).
 
-    ``/model sessext/m2`` says ``⚠ switched to sessext/m2 — 'm2' is not in this
-    build's catalog …``; the launch printed only its Note and dropped the
-    caution (``ModelSwitch.caution``). Now the caution follows the Note.
+    ``--model sessext/m2`` names the same late provider; it is held like
+    ``sessext/m1``, and no caution is printed (there is no switch to caution).
     """
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
-    ext = env / "sessext.py"
-    ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
-    from aelix_coding_agent import modes
-
-    handed: list[Any] = []
-
-    async def _stub_run_rpc(harness: Any, **kwargs: Any) -> None:
-        handed.append(harness.current_model)
-
-    monkeypatch.setattr(modes, "run_rpc_mode", _stub_run_rpc)
-    code = await entry_mod._async_main(
-        ["--no-session", "-e", str(ext), "--model", "sessext/m2", "--mode", "rpc"]
-    )
+    code, handed = await _run_session_start_mode(env, monkeypatch, "rpc", model="sessext/m2")
     err = capsys.readouterr().err
-    assert [(m.provider, m.id, m.base_url) for m in handed] == [("sessext", "m2", _EXT)]
+    assert [(m.provider, m.id, m.api) for m in handed] == [("sessext", "m2", "unknown")]
     assert code == 0
-    note = err[err.index("Note: switched to sessext/m2") :]
-    assert "\n      ⚠ 'm2' is not in this build's catalog for sessext" in note
+    assert "The launch model \"sessext/m2\" names provider 'sessext'" in err
+    assert "⚠" not in err
 
 
-async def test_rebuilds_after_a_late_switch_stay_on_the_session_start_provider(
+async def test_rebuilds_after_a_late_refusal_stay_held(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R4d: ``/new``, ``/reload``, ``/fork`` and ``/resume`` after the late switch.
+    """#367 — subject changed: R4d pinned that every rebuild stayed on ``sessext``.
 
-    Each rebuild re-resolves ``--model sessext/m1`` in ``_build_harness_options``
-    — BEFORE its own ``session_start`` — so it can only land on ``sessext``
-    because the shared registry still holds the registration the previous
-    runtime's ``session_start`` made (the reuse ADR-0249 records as pi's,
-    Codex C4). Measured with real turns against local listeners
-    (``/tmp/344-work/fix3/r4d``): every rebuild's prompt reached the extension's
-    listener, none OpenRouter's. This pins the route; a registry that forgot
-    extension registrations between builds would put every rebuild back on
-    OpenRouter, with no late switch to catch it.
+    ``/new``, ``/reload``, ``/fork`` and ``/resume`` re-resolve ``--model
+    sessext/m1`` in ``_build_harness_options`` — before their own
+    ``session_start`` — over a registry that still holds the registration the
+    previous runtime's ``session_start`` made (the reuse ADR-0249 records as
+    pi's, Codex C4). Without the hold each rebuild would land on ``sessext`` and
+    run what the launch refused; with it, every one stays on the placeholder.
     """
 
     from aelix_ai.messages import TextContent, UserMessage
@@ -781,29 +771,32 @@ async def test_rebuilds_after_a_late_switch_stay_on_the_session_start_provider(
     ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
     from aelix_coding_agent import modes
 
-    routes: dict[str, tuple[str, str, str, str]] = {}
+    routes: dict[str, tuple[str, str, str]] = {}
+
+    def _held(runtime: Any) -> tuple[str, str, str]:
+        model = runtime.harness.current_model
+        return (model.provider, model.id, model.api)
 
     async def _drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
         runtime = runtime_host
-        routes["launch"] = _route(runtime.harness)
+        routes["launch"] = _held(runtime)
         first = runtime.session.session_file
         entry_id = await runtime.session.append_message(
             UserMessage(content=[TextContent(text="hi")])
         )
         await runtime.new_session()
-        routes["new"] = _route(runtime.harness)
+        routes["new"] = _held(runtime)
         await runtime.reload()
-        routes["reload"] = _route(runtime.harness)
+        routes["reload"] = _held(runtime)
         await runtime.switch_session(first)
-        routes["resume"] = _route(runtime.harness)
+        routes["resume"] = _held(runtime)
         await runtime.fork(entry_id)
-        routes["fork"] = _route(runtime.harness)
+        routes["fork"] = _held(runtime)
 
     monkeypatch.setattr(modes, "run_rpc_mode", _drive)
     code = await entry_mod._async_main(["-e", str(ext), "--model", "sessext/m1", "--mode", "rpc"])
     assert routes == {
-        op: ("sessext", "m1", "openai-completions", _EXT)
-        for op in ("launch", "new", "reload", "resume", "fork")
+        op: ("sessext", "m1", "unknown") for op in ("launch", "new", "reload", "resume", "fork")
     }
     assert code == 0
 
@@ -987,7 +980,8 @@ async def test_a_late_case_clash_holds_interactive_and_rpc(
     assert code == 0
     assert selected == [("sessext", "m1")]
     assert "'SESSEXT' and 'SessExt'" in err and "differ only in case" in err
-    assert "run /model" in err
+    assert ("run /model" in err) == (mode == "interactive")
+    assert ("restart with another --model" in err) == (mode == "rpc")
     # Once: the #98 startup warning stays quiet after the late-route Warning.
     assert err.count("differ only in case") == 1
     assert _persisted_default(env) == (None, None)

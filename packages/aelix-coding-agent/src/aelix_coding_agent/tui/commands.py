@@ -302,8 +302,8 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text("Model switching is unavailable.", style="yellow"))
         return
     # #344 — the resolve / guard / switch / persist sequence lives in
-    # ``cli.model_switch`` so the launch can apply a late-registered provider
-    # through exactly this path (ADR-0249 §2.3); what is printed stays here.
+    # ``cli.model_switch`` (extracted for a launch switch that #367 retired);
+    # what is printed stays here.
     from aelix_coding_agent.cli.model_switch import switch_model_argument
 
     switched = await switch_model_argument(
@@ -376,7 +376,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2049``) and render it
+    the harness's own auto-compaction guard at ``core.py:2101``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -447,7 +447,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:4805-4811`` intersects ``_state.tools`` with
+    (``harness/core.py:4872-4878`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -770,7 +770,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3527-3544`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3555-3572`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -865,7 +865,7 @@ def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
 
     Shown in the confirmation dialog because the PATH is the part a human can go
     and read; a bare name is exactly what a name collision weaponises (a project
-    profile WINS against the user's own of the same name — ``agents/service.py:100-101``).
+    profile WINS against the user's own of the same name — ``agents/service.py:102-103``).
     Resolved through the same listing ``/agents show`` uses, and ``None`` when no
     listing is wired, in which case the dialog says so rather than inventing one.
     """
@@ -901,7 +901,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2741`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2768`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 

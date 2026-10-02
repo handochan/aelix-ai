@@ -743,6 +743,11 @@ class AgentHarness:
         # synchronous extension actions.
         self._cached_session_name: str | None = None
         self._pending_tasks: set[asyncio.Task[Any]] = set()
+        # #367 (Aelix-additive) — the turn gate, see :meth:`hold_turns`.
+        self._turn_gate: str | None = None
+        # #367 verify round 5 — set while the claimed turn is one the gate
+        # refused (a gated ``trigger_turn``): ``_run`` streams nothing for it.
+        self._turn_refusal: str | None = None
         # Sprint 6h₁ (ADR-0069, P-219/P-220): Pi parity
         # ``session.promptTemplates`` / ``session.resourceLoader.getSkills()`` —
         # harness-side surface for the ``get_commands`` RPC handler. Each
@@ -1000,6 +1005,38 @@ class AgentHarness:
     def is_idle(self) -> bool:
         return self._phase == "idle"
 
+    def hold_turns(self, reason: str | None) -> None:
+        """Aelix-additive (#367): while ``reason`` is set, no turn starts; ``None`` lifts it.
+
+        A held harness refuses :meth:`prompt` (``AgentHarnessError
+        ("invalid_state", reason)``, raised before it claims the turn), a
+        manual :meth:`compact` and a summarising :meth:`navigate_tree` — every
+        entry that sends a request — whatever model is current. An
+        extension's ``send_message(..., trigger_turn=True)`` (#367 verify round
+        5) runs as a REFUSED turn: the turn a model that cannot be reached
+        runs — ``agent_start``, the message, an error answer carrying
+        ``reason``, ``turn_end``, ``agent_end`` — with no request made, so a
+        handler that awaits its own turn's ``agent_end`` is woken instead of
+        waiting forever. The message is that turn's prompt, recorded with it
+        like any failed turn's (not queued again); the ``next_turn`` queue is
+        left for the next real prompt. Asked while another turn runs, it is
+        queued as before. The CLI holds
+        the turns of a harness whose ``session_start`` runs while the route is
+        undecided (a pending launch, or a rebuild under the late-provider
+        hold, ADR-0250 §2.11) and lifts the gate after its decision, so a
+        handler's ``set_model`` there cannot run a turn on the model it set; likewise
+        while it applies a late-provider hold (#367 verify round 6). pi has no such
+        gate: its launch model is resolved before any ``session_start``.
+        """
+
+        self._turn_gate = reason
+
+    @property
+    def turns_held(self) -> str | None:
+        """Why turns are held (:meth:`hold_turns`), or ``None`` when they are not."""
+
+        return self._turn_gate
+
     @property
     def messages(self) -> list[AgentMessage]:
         return self._state.messages
@@ -1238,6 +1275,7 @@ class AgentHarness:
         *,
         images: list[ImageContent] | None = None,
         source: Literal["interactive", "rpc", "extension"] = "interactive",
+        _refused_by: str | None = None,
     ) -> list[AgentMessage]:
         # Sprint 4b §A: guard covers all non-idle phases (turn / compaction /
         # branch_summary). steer()/follow_up() remain enqueue-only per Pi
@@ -1247,6 +1285,11 @@ class AgentHarness:
         # #334 — the guard stays OUTSIDE the ``try`` below: a refused call must
         # raise before it owns anything, because that ``finally`` releases
         # unconditionally and would otherwise give away the live caller's turn.
+        if self._turn_gate is not None and _refused_by is None:
+            # #367 — the turn gate (:meth:`hold_turns`): refused before any
+            # claim, so nothing is sent and nothing is written. ``_refused_by``
+            # is the gate's own refused turn (:meth:`_action_send_message`).
+            raise AgentHarnessError("invalid_state", self._turn_gate)
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
@@ -1264,6 +1307,7 @@ class AgentHarness:
         self._phase = "turn"
         self._idle_event.clear()
         claim = self._claim = object()
+        self._turn_refusal = _refused_by
         # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
         # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
         # on every user ``message_start``.
@@ -1325,6 +1369,10 @@ class AgentHarness:
             # during the previous turn) are prepended to this turn's prompt.
             drained_next = self._next_turn_queue
             self._next_turn_queue = []
+            if _refused_by is not None:
+                # #367 verify round 5 — a refused turn carries its own message
+                # only: what others queued waits for the next real prompt.
+                self._next_turn_queue, drained_next = drained_next, []
             # Issue #311 (ADR-0246) — from the detach above until ``agent_loop``
             # receives the list, the drained messages live in a LOCAL and nowhere
             # else. Two awaits sit between here and the ``_run`` call and both
@@ -1582,6 +1630,7 @@ class AgentHarness:
             finally:
                 self._claim = None
                 self._turn_state = None
+                self._turn_refusal = None
                 self._phase = "idle"
                 self._idle_event.set()
 
@@ -1774,6 +1823,9 @@ class AgentHarness:
         # #334 — ``is``, not "any token": a stale claim from a finished prompt
         # must not let a compaction in under another prompt's turn.
         nested = _claim is not None and _claim is self._claim
+        if not nested and self._turn_gate is not None:
+            # #367 — the turn gate (:meth:`hold_turns`): a summary is a request.
+            raise AgentHarnessError("invalid_state", self._turn_gate)
         if not nested and self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
@@ -2384,6 +2436,10 @@ class AgentHarness:
                 "busy",
                 f"navigate_tree() requires idle harness (phase={self._phase!r})",
             )
+        if self._turn_gate is not None and options is not None and options.summarize:
+            # #367 — the turn gate (:meth:`hold_turns`): a branch summary is a
+            # request; a plain navigation sends nothing and is not refused.
+            raise AgentHarnessError("invalid_state", self._turn_gate)
         if self._session is None:
             raise AgentHarnessError(
                 "invalid_state",
@@ -4339,8 +4395,19 @@ class AgentHarness:
         # ``next_turn_queue`` and emit a queue-update so listeners can
         # repaint. Without this split we double-deliver every triggered
         # message (once via the queue, once via prompt).
-        if trigger_turn and self._phase == "idle":
+        if trigger_turn and self._phase == "idle" and self._turn_gate is None:
             task = loop.create_task(self.prompt(text))
+            self._pin_task(task)
+            return
+        if trigger_turn and self._phase == "idle" and self._turn_gate is not None:
+            # #367 verify round 5 — decided HERE, when the handler asks, not
+            # when the task would start: the gate may be lifted by then. A
+            # REFUSED turn, not a queued message: a handler awaiting its
+            # turn's ``agent_end`` (or ``wait_for_idle``) is woken by it, where
+            # a queued message left that wait — and the ``session_start`` emit
+            # around it — hanging. Nothing is sent (:meth:`hold_turns`).
+            _log.info("trigger_turn while turns are held (%s): refused", self._turn_gate)
+            task = loop.create_task(self.prompt(text, _refused_by=self._turn_gate))
             self._pin_task(task)
             return
         msg = _coerce_agent_message(message)
@@ -4954,8 +5021,14 @@ class AgentHarness:
                 # use it verbatim; otherwise build the production-path
                 # ``_make_stream_fn`` closure that emits the 3 provider
                 # hook events and delegates to ``stream_simple``.
-                if self._options.stream_fn is not None:
-                    effective_stream_fn: StreamFn | None = self._options.stream_fn
+                if self._turn_refusal is not None:
+                    # #367 verify round 5 — the gate's refused turn: it fails
+                    # where a request would be built, before any provider hook,
+                    # so ``_run``'s failure close-out below emits what a turn
+                    # that cannot reach its model emits, and nothing is sent.
+                    effective_stream_fn: StreamFn | None = _refusing_stream_fn(self._turn_refusal)
+                elif self._options.stream_fn is not None:
+                    effective_stream_fn = self._options.stream_fn
                 else:
                     effective_stream_fn = self._make_stream_fn(
                         lambda: self._turn_state  # type: ignore[return-value]
@@ -5194,6 +5267,22 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _refusing_stream_fn(reason: str) -> StreamFn:
+    """#367 verify round 5 — the stream of a turn the turn gate refused.
+
+    Raises before it yields, so the loop builds no request and ``_run``'s
+    failure close-out ends the turn with ``reason`` as its error.
+    """
+
+    async def refuse(
+        model: Model, context: LlmContext, options: SimpleStreamOptions
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        raise AgentHarnessError("invalid_state", reason)
+        yield  # pragma: no cover — makes this an async generator
+
+    return refuse
 
 
 def _extract_message_text(message: Any) -> str:

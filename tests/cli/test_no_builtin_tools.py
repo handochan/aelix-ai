@@ -13,13 +13,13 @@ failure modes an "obvious" implementation walks into:
 
 1. built-ins drop, extension + MCP tools survive (the point of the flag);
 2. ``--no-tools`` WINS — ``_action_set_active_tools`` is non-destructive
-   (``core.py:4150-4164``), so ``state.tools`` still holds the full registry
+   (``core.py:4206-4220``), so ``state.tools`` still holds the full registry
    after ``--no-tools``, and an unguarded filter would RE-ENABLE every
    extension/MCP tool the user just killed;
 3. ``--tools`` still intersects — the allowlist applies, it just cannot readmit
    a built-in;
 4. the filter survives ``AgentSessionRuntime.reload()``, whose step 6
-   (``agent_session_runtime.py:1128-1164``) restores
+   (``agent_session_runtime.py:1149-1185``) restores
    ``(active_before ∩ current) ∪ (ext ∩ current)``.
 
 Everything is driven through the REAL ``_async_main`` because the filter lives
@@ -48,7 +48,7 @@ _BUILT = 42
 """Sentinel exit code meaning "the run reached the first harness build".
 
 Not a real ``_async_main`` return value: the spy raises out of
-``create_agent_session_runtime`` (``cli/entry.py:3038``), which is AFTER the
+``create_agent_session_runtime`` (``cli/entry.py:3097``), which is AFTER the
 factory has built and filtered the harness and BEFORE ``run_print_mode`` would
 attempt a turn. Any other code means the run bailed earlier, which is itself the
 assertion for the negative tests.
@@ -204,7 +204,7 @@ async def test_builtins_dropped_extension_and_mcp_kept(
     assert ALL_TOOL_NAMES.isdisjoint(active)
     assert set(active) == {_EXT_TOOL, _MCP_TOOL, "aelix_status"}
 
-    # The filter is NON-destructive by design (core.py:4150-4164): the built-ins
+    # The filter is NON-destructive by design (core.py:4206-4220): the built-ins
     # are still REGISTERED, they are merely inactive. Asserting this is what
     # distinguishes "filtered" from "the registry was rebuilt without them",
     # which is the shape reload() step 6 depends on.
@@ -287,7 +287,7 @@ async def test_filter_never_raises_on_removed_tool(
     """A ``--tools`` name whose extension is GONE drops silently on reload.
 
     ``set_active_tools`` validates against ``state.tools`` and RAISES on an
-    unknown name (``core.py:4152-4158``). On the reload path that raise would be
+    unknown name (``core.py:4208-4214``). On the reload path that raise would be
     unrecoverable — ``reload()`` has already disposed the old harness by then —
     which is exactly why the reloaded build is unfiltered (``on_reload=True``,
     ``cli/entry.py:1408-1421``). The ``--no-builtin-tools`` filter runs on that

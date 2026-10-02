@@ -1,6 +1,6 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
-Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362)
+Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7)
 Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
@@ -210,6 +210,84 @@ the provider's models, so the catalog id is not found there.
 
 ### 2.3 X1 — the launch model is resolved after the extensions load
 
+> **Amended 2026-10-03 (#367; owner decision 2026-10-02 on the issue: follow pi).** A
+> launch model naming a provider an extension registers in a `session_start` handler is
+> **refused, not switched to.** pi registers an extension's providers in time for startup
+> model selection only when the extension factory registers them
+> (`docs/custom-provider.md` @ `88ff80b98`); `session_start` fires later
+> (`AgentSession.bindExtensions`), and `main.ts` (~913-925) exits 1 on the resolver's
+> error in every mode. Here: `-p` and `--mode json` exit 1 before any request with
+> `Error: The launch model "sessext/m1" names provider 'sessext', which an extension
+> registered while a session was starting (for example in a session_start handler), after
+> the launch model was chosen. Register 'sessext' in the extension's setup() (its factory)
+> to use it at launch. No prompt was sent.` (wording since ADR-0250 §2.11's round 9: a
+> registration anywhere in the window from the end of the build to aelix's check after
+> `session_start` counts - the `input` handler of a turn a `session_start` handler
+> triggers, awaited or not, or a task a handler or `setup()` spawned, say, some of which
+> register after the handler returned - as pi's launch model is chosen before any handler
+> runs); interactive and RPC start held on `Model('m1', 'sessext')` with `api='unknown'`
+> (aelix's "interactive warns, fix it with `/model`", the #98 shape) with that reason and
+> `No prompt will be sent for it; run /model to select a model.` (RPC: that it cannot
+> select another model; restart with another `--model`). An explicit `/model
+> sessext/m1` afterwards is the user's own choice and switches (the provider is in the
+> registry by then). The detection below stays — with an OpenRouter key of the user's own
+> the launch has the string on OpenRouter (guard 2, ADR-0250 §2.3), so it is what keeps
+> any request from going there — and it now covers every launch input
+> (`late_registered_route` compares the providers the first build saw with the registry
+> after `session_start`, so `--provider sessext --model m1`, a bare `m1`, settings
+> `defaultProvider`/`defaultModel`, an `--agent` profile's `model:` and a delegated child's
+> pinned `--provider sessext` are refused alike). Gone with the switch: the
+> non-persisting `/model` path (`switch_model_argument(persist=False)`,
+> `switch_to_late_registered_route`), `--api-key` moving to the switched provider (§2.5),
+> and the "Rebuilds" paragraph's switch — every rebuild is held where the launch inputs
+> land on such a provider. Its verification (round 1, of `dcc78170`) found one more
+> re-resolver of the launch inputs: `/agents use` of a profile whose own `model:` does
+> not apply (none, `--none`, or one a CLI `--model` beats) reset `parsed` to the CLI
+> baseline and switched onto the provider; it now keeps the hold, as does the TUI's
+> post-`/login` pick. RPC's warning no longer says "run /model" (`aelix --mode rpc` has no
+> model registry for `set_model`). **Round 3** (verify round 2 and Codex, of
+> `9e233be9`/`dcc78170`): the hold is where the inputs LAND, not the refused pair — a
+> provider is late when an extension registered it in `session_start` and it was not
+> registered when the launch route was chosen, and every implicit re-resolution of the
+> launch inputs (the launch, each rebuild, `/agents use` of a profile whose own `model:` /
+> `provider:` does not apply, the post-`/login` pick) that lands on one is held, while an
+> explicit pick (`/model`, a profile whose `model:` or `provider:` applies) switches; the
+> launch is judged by its inputs over the registry after `session_start` (settings
+> `defaultProvider` included), not by a model a hook set; the hold is re-applied after
+> every rebuild's `session_start`; and while `session_start` runs, a launch route no
+> registered provider claimed (guard 2, an unresolved placeholder) is a pending
+> placeholder, with `--api-key` attached only after the decision — a turn a handler
+> triggers there is refused, not sent (**round 5** made that hold whatever model a
+> handler sets first: a turn gate, below). **Round 4** (verify round 3, of `5a1330b5`; the
+> pi reading): only such a pending launch is refused. A launch that resolved to a
+> registered provider (built-in, `models.json`, `setup()`) stays on it, as pi's launch
+> model does whatever a hook registers later — its `session_start` may trigger turns there
+> and its `--api-key` stays attached — even when its inputs would now land on a
+> `session_start` provider; round 3 refused it after those turns had run and said "No
+> prompt was sent". The later implicit re-resolutions are held where they land on one
+> also after such a launch (aelix's rebuilds re-resolve; pi keeps the session model).
+> **Round 5** (verify round 4, of `76055424`): the pending placeholder covered turns on the
+> launch model only — a handler could `set_model` (onto the `session_start` provider, or
+> any other) and then `trigger_turn`, and that turn was sent before print/json said "No
+> prompt was sent."; a held rebuild's `session_start` had the same hole before the hold
+> was re-applied. Now no turn of any kind starts while a `session_start` runs for a pending
+> launch, or for a rebuild while a hold is in effect (`AgentHarness.hold_turns`, the turn
+> gate), whatever model is current, and the gate is lifted only after the late decision
+> or the re-applied hold. A launch on a registered provider is not gated (its
+> `session_start` turns run, as in round 4). **Round 6** (verify round 5, of `a543754c`):
+> a handler's `trigger_turn` under the gate ends as a refused turn — its `agent_end`
+> arrives (round 5 queued it, and a handler awaiting its own turn hung the launch), nothing
+> is sent, its message goes out with the next prompt from the conversation — and every
+> path that applies a hold (launch, rebuild, `/agents use`) checks the state after its
+> `set_model`, so a `model_select` handler's own `set_model` cannot release it. **Round
+> 7** (verify round 6, of `343e75cd`): that check came after `set_model` returned, and
+> `/agents use` (and the re-hold of a rebuild the factory did not hold) applied the hold
+> with turns open — a `model_select` handler that answered the placeholder with
+> `set_model` onto the late provider and a `trigger_turn` sent that turn before the
+> placeholder came back. Every application of a hold now runs under the turn gate
+> (`LateRouteHold.apply` holds the turns itself while it runs). The
+> paragraphs below are #344's record; ADR-0250 §2.11 has the measurements.
+
 `_build_harness_options` now calls `loaded.runtime.bind_model_registry(model_registry)`
 right after `discover_and_load_extensions`, and resolves the model after that — on every
 build: first launch, `/new`, `/fork`, `/resume`, `/reload`. This is pi's order:
@@ -369,8 +447,11 @@ Without an OpenRouter key every row is the provider the prefix names — a user-
 first (§2.1: with a custom `OpenAI`, `--model openai/m1 --api-key K` attaches K to
 `OpenAI`, `test_api_key_for_a_capitalised_custom_provider_never_goes_to_openrouter`). A
 launch switched onto a `session_start` provider (§2.3) moves the key from `openrouter` to
-that provider (`test_api_key_follows_the_late_switch`). The key is still not forwarded to delegated
-children (unchanged).
+that provider (`test_api_key_follows_the_late_switch`) — **until #367 (2026-10-03)**, which refuses that
+launch: a pending launch attaches the key only after the late decision (ADR-0250 §2.11,
+D4), so a refused one attaches it to no provider at all
+(`test_api_key_is_not_left_on_openrouter_by_a_refused_launch`). The key is still not
+forwarded to delegated children (unchanged).
 
 ### 2.6 Delegated children get the route, not the string (M3)
 
@@ -555,7 +636,8 @@ still has no production caller.
   provider names differ only in case, and a profile spelling neither, is the whole
   precondition.
 - **A provider registered in `session_start`** is in the registry but not seen by the
-  launch resolve (§2.3): every mode switches onto it afterwards, without persisting it.
+  launch resolve (§2.3): every mode switched onto it afterwards, without persisting it —
+  until #367 (2026-10-03), which refuses it as pi does (§2.3's amendment).
   **A case clash between a provider registered in `setup()` and one registered in
   `session_start`** (`SessExt` in `setup()`, `SESSEXT` in `session_start`, `--model
   sessext/m1`) is not held the way F3's all-late clash is: the launch resolve sees only

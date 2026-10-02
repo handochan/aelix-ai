@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:2798-2959``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:2818-2979``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -15,7 +15,7 @@ The three rejected alternatives and why they fail:
   provider/stream bindings and silently reverts an in-session ``/model`` or
   ``/thinking`` choice the user made deliberately.
 * **B — mutate the private ``_state`` only**: ``_current_system_prompt``
-  (``core.py:4135-4140``) already reads ``_state`` as its fallback, but a
+  (``core.py:4191-4196``) already reads ``_state`` as its fallback, but a
   rebuild (``/new``, ``/fork``, ``/resume``) re-derives everything from
   ``parsed`` — so the swap would evaporate on the next session action.
 * **C — a kernel ``set_system_prompt``**: the kernel is read-only for P1
@@ -45,6 +45,8 @@ from aelix_ai.models import get_supported_thinking_levels
 
 from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.runtime_bootstrap import (
+    LateRoute,
+    LateRouteHold,
     enrich_copilot_base_url,
     resolve_route,
 )
@@ -74,15 +76,15 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:2798-2802``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:2818-2822``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2001``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:2021``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": LoadSkillsResult}`` box the factory
-        reads on every (re)build (``cli/entry.py:2777`` / ``:2961``).
+        reads on every (re)build (``cli/entry.py:2797`` / ``:3005``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -103,6 +105,16 @@ class AgentProfileService:
         twin of a guarded flag. :data:`None` (the default, and what every headless
         embedder gets) means "cannot consent" and REFUSES — fail-closed, matching
         ``project_trust.py``'s own step-6 deny-by-default.
+    :param late_route: #367 — the process's late-provider rule
+        (``cli/entry.py``'s ``late_rule``, the object the harness factory
+        reads). A profile whose own ``model:`` or ``provider:`` applies is an
+        explicit pick and switches (``provider:`` alone names the route too),
+        and marks the rule explicit so the rebuilds after it keep that choice.
+        Any other :meth:`use` — a profile naming no route, one a CLI flag
+        beats, ``--none`` — re-resolves the launch-derived baseline, an
+        implicit re-resolution: where it lands on a provider ``session_start``
+        registered after the launch, it holds the session instead of switching
+        there (round 3, D1).
     """
 
     cwd: str
@@ -114,6 +126,7 @@ class AgentProfileService:
     model_registry: Any | None = None
     active: AgentProfile | None = None
     confirm_project: Callable[[AgentProfile], Awaitable[bool]] | None = None
+    late_route: LateRoute | None = None
 
     def list(self) -> ProfileDiscoveryResult:
         """Every discoverable profile plus the scan diagnostics (``/agents list``).
@@ -168,13 +181,13 @@ class AgentProfileService:
         1b. **Snapshot, and roll back on ANY failure.** Refusing first is not
            sufficient, because step 4 talks to the kernel and the kernel can say
            no: ``harness.set_active_tools`` validates every name against
-           ``state.tools`` and raises (``core.py:4150-4158``) for a typo, for an
+           ``state.tools`` and raises (``core.py:4206-4214``) for a typo, for an
            MCP tool whose server never connected, or for an extension tool under
            ``inherit_extensions: false`` — none of which profile PARSING can
            check. Without the rollback that raise left ``parsed.tools`` poisoned
            and the prompt already swapped, so the failure was reported in red
            while the next ``/new`` — which disposes the live harness BEFORE
-           rebuilding (``agent_session_runtime.py:716``) — died in
+           rebuilding (``agent_session_runtime.py:735``) — died in
            ``AgentHarness.__init__`` against the same validator and left the REPL
            with a disposed harness. Proven end to end.
         2. **Reset to the pristine baseline.** Mandatory, not hygiene:
@@ -275,12 +288,17 @@ class AgentProfileService:
         )
         live_model = harness.state.model
         live_thinking = harness.state.thinking_level
+        live_explicit = self.late_route.explicit if self.late_route is not None else False
 
         try:
             # === 2. Reset to the pristine CLI baseline ======================
             self.parsed.__dict__.update(copy.deepcopy(self.baseline).__dict__)
 
             # === 3. Overlay (durable half) ==================================
+            # #367 — whether the profile itself named the route (its ``model:``
+            # / ``provider:`` applied, not beaten by a CLI flag). When it did
+            # not, the model block below re-resolves the launch inputs.
+            profile_named_route = False
             if profile is None:
                 self.active = None
             else:
@@ -304,6 +322,7 @@ class AgentProfileService:
                         "CLI flags override "
                         f"{', '.join(application.skipped)}"
                     )
+                profile_named_route = bool({"model", "provider"} & set(application.applied))
                 self.active = profile
 
             # === 4. Apply to the live harness (immediate half) ==============
@@ -325,7 +344,7 @@ class AgentProfileService:
             # pre-build and one post-build; the emission rules are identical.
             #
             # THIS is the call that raises on a profile naming a tool the running
-            # process does not have (``core.py:4150-4158``), which is why
+            # process does not have (``core.py:4206-4214``), which is why
             # everything from step 2 down sits inside the try.
             names = _resolve_active_tools(self.parsed)
             if self.parsed.no_builtin_tools and not self.parsed.no_tools:
@@ -385,7 +404,41 @@ class AgentProfileService:
                 ),
             )
 
-            if self.parsed.model is not None or self.parsed.provider is not None:
+            held: LateRouteHold | None = None
+            if self.late_route is not None:
+                # #367 round 3, D1 — the landing rule. A profile whose own route
+                # applied is the user's pick (and the rebuilds after it keep it);
+                # anything else re-resolves the launch-derived baseline, and
+                # where that lands on a late provider the session holds — asked
+                # with the settings ``defaultProvider`` as a rebuild resolves it,
+                # and once more below as this resolve does (without it).
+                self.late_route.explicit = profile_named_route
+                held = self.late_route.hold_for(self.parsed.model, self.parsed.provider)
+                if held is None and not profile_named_route:
+                    held = self.late_route.hold_for(
+                        self.parsed.model, self.parsed.provider, use_default=False
+                    )
+            if held is not None:
+                # #367 verify round 1, B1 / round 2 — the reset above put back
+                # launch inputs that land on a provider ``session_start``
+                # registered; switching there would send the next prompt to it
+                # though nobody picked a model. Hold, as every rebuild does (the
+                # harness factory), and say why. ``/model``, or a profile whose
+                # own ``model:`` / ``provider:`` applies, leaves it. Not completed
+                # into ``parsed.provider``: the inputs stay the launch's.
+                notices.append(held.notice)
+                if not held.holds(harness.state.model):
+                    # Verify round 5 — the launch hold's helper: a
+                    # ``model_select`` handler's own ``set_model`` cannot leave
+                    # the placeholder; a refusal rolls the switch back below.
+                    # Verify round 6, B1 — and it holds the turns while it
+                    # runs: no gate is up here (the session's was lifted long
+                    # ago), and a handler that set the late model and
+                    # triggered a turn sent it before the placeholder came back.
+                    refused = await held.apply(harness)
+                    if refused is not None:
+                        raise refused
+            elif self.parsed.model is not None or self.parsed.provider is not None:
                 route = resolve_route(
                     self.parsed.model,
                     self.parsed.provider,
@@ -463,6 +516,8 @@ class AgentProfileService:
             harness.state.active_tool_names = live_active_tools
             harness.state.model = live_model
             harness.state.thinking_level = live_thinking
+            if self.late_route is not None:
+                self.late_route.explicit = live_explicit
             with contextlib.suppress(Exception):
                 harness.set_skills(previous_skills.skills)
             raise

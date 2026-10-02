@@ -244,6 +244,7 @@ class AgentSessionRuntime:
             Callable[[AgentHarness, str], Awaitable[None]] | None
         ) = None
         self._before_session_invalidate: Callable[[], None] | None = None
+        self._after_session_start: Callable[[AgentHarness, str], Awaitable[None]] | None = None
         # #137 / ADR-0244. Injected, never constructed here — the CLI takes
         # the startup lock before any runtime exists (it has to: a session
         # that is already owned may never get a harness at all) and hands it
@@ -324,6 +325,24 @@ class AgentSessionRuntime:
         Pi signature is sync (``() => void``). Aelix mirrors.
         """
         self._before_session_invalidate = cb
+
+    def set_after_session_start(
+        self, cb: Callable[[AgentHarness, str], Awaitable[None]] | None
+    ) -> None:
+        """Aelix-additive (#367): a callback run after every replacement's ``session_start``.
+
+        Awaited right after the ``session_start`` emit of each ``/new``,
+        ``/fork``, ``/resume``, ``/import`` and ``/reload`` — whether or not any
+        handler is bound — with the NEW harness and the replace ``reason``, so
+        a surface can re-apply a decision a handler's ``set_model`` would
+        otherwise undo before any turn runs. The CLI's late-provider hold
+        (ADR-0250 §2.11) is the one user. A raising callback propagates: it is
+        the surface's own policy, not an extension's. The startup
+        ``session_start`` is not covered — ``create_agent_session_runtime``
+        emits it before this can be set, and its caller runs its own check
+        right after.
+        """
+        self._after_session_start = cb
 
     # === Session ownership (#137, ADR-0244) — Aelix-additive ====================
     #
@@ -824,6 +843,8 @@ class AgentSessionRuntime:
                 _log.exception(
                     "AgentSessionRuntime.session_start emit raised"
                 )
+        if self._after_session_start is not None:
+            await self._after_session_start(self._harness, reason)
 
         # P-358 — with_session AFTER rebind + session_start emit. Pi parity
         # ``:172-173``. Receives a fresh ReplacedSessionContext handle on
@@ -1189,6 +1210,8 @@ class AgentSessionRuntime:
                 _log.exception(
                     "AgentSessionRuntime.reload session_start emit raised"
                 )
+        if self._after_session_start is not None:
+            await self._after_session_start(self._harness, "reload")
 
         # 10. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
         #    :2411). Re-emits the resources_discover hook on the rebuilt harness.

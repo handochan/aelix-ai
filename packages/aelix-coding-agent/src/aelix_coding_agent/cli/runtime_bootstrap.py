@@ -40,7 +40,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -2143,72 +2143,398 @@ def enrich_copilot_base_url(model: Model, registry: Any) -> Model:
     return model
 
 
+def _late_claimants(model_flag: str, late: frozenset[str], registry: Any) -> list[str]:
+    """The late providers serving ``model_flag`` (an id or ``provider/id``), sorted."""
+
+    universe = _route_universe(registry)
+    return sorted({m.provider for m in _matches(universe, frozenset({model_flag}))} & late)
+
+
+#: #367 verify round 8, B1 — when a late provider was registered, as every late
+#: text says it. True whatever registered it inside :class:`LateRoute`'s window:
+#: a ``session_start`` handler, a handler of a turn one triggered (awaited or
+#: fire-and-forget: that turn runs after the emit returned), a task one or
+#: ``setup()`` spawned, and on a rebuild a registration in an EARLIER session's
+#: start. "while session_start handlers ran" (round 8) was false for all but the
+#: first two shapes when awaited.
+_LATE_WINDOW = "while a session was starting (for example in a session_start handler)"
+
+
 def late_registered_route(
     model_flag: str | None,
     provider_flag: str | None,
-    current_model: Any,
     model_registry: Any,
+    *,
+    launch_providers: frozenset[str],
+    default_provider: str | None = None,
+    session_start_providers: frozenset[str] | None = None,
 ) -> str | None:
-    """Why the launch model is not the provider ``--model`` names now, if it is not.
+    """Why the launch inputs are refused: they land on a provider ``session_start`` registered.
 
-    #344 / ADR-0249 §2.3, kept by ADR-0250 (#367 is the issue that changes it to
-    a refusal). X1 resolves the launch model after the extensions' ``setup()``
-    registrations are replayed, but a provider registered in a ``session_start``
-    handler arrives later still — inside ``create_agent_session_runtime``, after
-    the first build. At launch its prefix is therefore UNKNOWN, and
-    :func:`resolve_route` either sends the string to OpenRouter (guard 2, an
-    OpenRouter credential of the user's own; review of ``0fcc3333`` measured 12 ×
-    ``CONNECT openrouter.ai:443`` for this shape under the old rung) or refuses it
-    as not found (no such credential) and holds the harness on a placeholder.
+    #367 / ADR-0249 §2.3 (amended 2026-10-03), ADR-0250 §2.11. X1 resolves the
+    launch model after the extensions' ``setup()`` registrations are replayed,
+    as pi does, but a provider registered while a session is starting arrives
+    later still — after the build, in :class:`LateRoute`'s window: from the end
+    of the build through its ``session_start`` and, on a pending launch or a
+    held rebuild, the turns its handlers triggered (refused by the turn gate,
+    and waited out), up to aelix's check after ``session_start``. Whatever
+    registered it there counts (#367 Codex pass 7, C-P2; verify round 8, B1):
+    a ``session_start`` handler, the ``input`` or ``before_agent_start``
+    handler of a turn one triggered — awaited, or fire-and-forget, when that
+    turn runs after the emit returned — or a task a handler or ``setup()``
+    spawned. pi resolves the launch model before ANY handler runs, so a
+    provider any of them registers is unknown to its launch.
+    At launch its name is therefore unknown, and :func:`resolve_route` either
+    sends the string to OpenRouter (guard 2, an OpenRouter credential of the
+    user's own) or holds the harness on a placeholder (``api='unknown'``). pi
+    refuses that launch outright (``session_start`` fires only in
+    ``AgentSession.bindExtensions``; ``main.ts`` exits on the resolver's error);
+    aelix follows it, and no longer switches (the #344 switch is gone).
 
-    Returns the reason text when ``--model`` came without ``--provider`` and
-    either the harness is on ``openrouter`` and a re-resolve over the registry
-    as it is NOW lands on a user-defined provider — or two that differ only in
-    case (Codex second pass on ``ebfe411a``, F3) — or the harness holds the
-    not-found placeholder and the re-resolve now lands on a user-defined
-    provider a turn can run. The second arm is #362's: under the old rung a
-    ``.env`` OpenRouter key put the string on OpenRouter and this switched it,
-    and with no OpenRouter key at all the first turn failed with
-    ``No provider registered for api='unknown'``; both now switch (critique S5).
-    ``None`` otherwise. Reads no credential.
+    ``launch_providers`` is :func:`user_defined_providers` as the first build saw
+    it (``cli/entry.py`` takes it before ``session_start`` runs); a provider in
+    the registry now and not then is a LATE one — of those, when
+    ``session_start_providers`` is given (:class:`LateRoute` passes the names
+    its ``session_start`` snapshots saw arrive), only the ones registered while
+    ``session_start`` handlers ran: a provider a ``/reload``-ed extension now
+    registers in ``setup()`` is not late (the #344 reload row). The rule is where the inputs
+    LAND, not which pair they are (#367 round 3, D1): the inputs
+    (``--model``, ``--provider``, settings ``defaultProvider`` exactly as the
+    build passes them — the tie-break included, Codex's mutant) re-resolved over
+    the registry as it is NOW land on a late provider, on a prefix two late
+    providers share up to case (Codex second pass on ``ebfe411a``, F3), or —
+    the re-resolve refusing them as ambiguous — on ids only late providers
+    serve. Returns the reason text then, ``None`` otherwise.
+
+    What the harness holds is NOT an input (D2): a ``session_start`` hook that
+    called ``set_model`` (Codex round 3, finding 2) decides nothing here — the
+    late decision is about where the launch's own inputs go, which is where
+    every rebuild re-resolves them. Reads no credential. WHEN to ask is the
+    caller's (#367 verify round 3, B1, corrected from round 3, which asked at
+    every launch): the launch asks only when its route was PENDING — no
+    registered provider claimed it (guard 2, or unresolved) — because a launch
+    that resolved to a registered provider stays on it, as in pi (``main.ts``
+    resolves the model before ``session_start``; a provider registered later
+    does not move it), and its ``session_start`` may already have run turns
+    there. Every later implicit re-resolution (rebuilds, ``/agents use``
+    without a route, the post-``/login`` pick) asks whatever the launch was.
 
     A provider registered and then unregistered before ``session_start``
     returns is not in the registry as it is NOW, so the string stays where the
-    launch put it (F2, ADR-0249 §2.3) — nothing to catch here.
+    launch put it (F2, ADR-0249 §2.3) — nothing to catch here; with
+    ``--api-key`` that route is guard 2, the typed key to OpenRouter, which is
+    issue #370 (an uncatalogued, non-user-defined prefix under ``--api-key``
+    should not take guard 2, as pi), not this check.
 
-    What the caller does with it: every mode switches the harness through the
-    ``/model`` path
-    (:func:`~aelix_coding_agent.cli.model_switch.switch_to_late_registered_route`),
-    without persisting it. The message itself is only the reason text of the
-    trigger; nothing prints it.
+    What the caller does with it: on a pending launch, print and json exit 1
+    with it before any request, and interactive and RPC hold the harness on the
+    unresolved model (:class:`LateRouteHold`); a later re-resolution holds the
+    session it rebuilds or re-picks, also one that started on a registered
+    provider. The text names the provider, says it was registered "while a
+    session was starting" (``_LATE_WINDOW``, true in every timing above and on
+    a rebuild whose registration came in an earlier session's start) and says
+    to register it in the extension's ``setup()`` — pi's guidance
+    (``docs/custom-provider.md``: providers registered from the extension
+    factory "are available to startup model selection").
     """
 
-    if not (model_flag and not provider_flag):
-        return None
-    current_provider = getattr(current_model, "provider", "") or ""
-    held = getattr(current_model, "api", "") == "unknown"
-    if current_provider != "openrouter" and not held:
+    if not (model_flag or provider_flag):
         return None
     try:
-        now = resolve_route(model_flag, None, model_registry).model
-        user_defined = user_defined_providers(model_registry)
+        route = resolve_route(model_flag, provider_flag, model_registry, default_provider)
+        late = user_defined_providers(model_registry) - launch_providers
+        if session_start_providers is not None:
+            late &= session_start_providers
+        if not late:
+            return None
+        landed = (route.model.provider or "").casefold()
+        named = sorted(name for name in late if landed and name.casefold() == landed)
+        if not named and route.error is not None and model_flag and not provider_flag:
+            named = _late_claimants(model_flag, late, model_registry)
     except Exception:  # noqa: BLE001 — a diagnostic must never break launch
         return None
-    if current_provider == "openrouter":
-        ambiguous = ambiguous_provider_message(model_flag, model_registry)
-        if ambiguous is not None:
-            return ambiguous
-    elif now.api == "unknown":
-        # Held, and still nothing a turn can run: a refusal the launch already
-        # reports (a case clash, an id the user's provider does not serve).
+    if not named:
         return None
-    if not now.provider or now.provider == "openrouter" or now.provider not in user_defined:
-        return None
+    if model_flag:
+        subject = f"{provider_flag}/{model_flag}" if provider_flag else model_flag
+        lead, chosen = f'The launch model "{subject}"', "the launch model"
+    else:
+        # A provider with no model (``--provider <late>`` alone, or a settings
+        # ``defaultProvider`` alone): there is no launch model to quote (#367
+        # verify round 1, N2). pi's "--provider requires --model" is #368.
+        lead, chosen = f'The launch provider "{provider_flag}" (no model named)', "the launch route"
+    if len(named) == 1:
+        register = (
+            f"Register '{named[0]}' in the extension's setup() (its factory) to use it at launch."
+        )
+        if not model_flag:
+            return (
+                f"The launch provider '{named[0]}' (no model named) was registered by an "
+                f"extension {_LATE_WINDOW}, after {chosen} was chosen. " + register
+            )
+        return (
+            f"{lead} names provider '{named[0]}', which an extension registered "
+            f"{_LATE_WINDOW}, after {chosen} was chosen. " + register
+        )
+    names = " and ".join(f"'{name}'" for name in named)
+    clash = len({name.casefold() for name in named}) == 1
+    which = "which differ only in case and which" if clash else "which"
     return (
-        f"--model {model_flag} names provider '{now.provider}', which was registered "
-        "after the launch model was chosen (in a session_start handler). "
-        f"Register '{now.provider}' in the extension's setup() instead."
+        f"{lead} matches the providers {names}, {which} an extension registered "
+        f"{_LATE_WINDOW}, after {chosen} was chosen. Register the one you mean in "
+        "the extension's setup() (its factory), spelled exactly, to use it at launch."
     )
+
+
+#: #367 verify round 6 — the first sentence of the turn gate
+#: :meth:`LateRouteHold.apply` puts up when no gate is up already (``/agents
+#: use``, a rebuild whose ``session_start`` first registered the provider).
+HOLD_GATE = "No turn runs while this session is put on hold."
+
+
+@dataclass(frozen=True)
+class LateRouteHold:
+    """What a launch input landing on a late provider holds the session on.
+
+    #367. Interactive and RPC sit on ``placeholder`` (``Model(id, provider)``,
+    ``api='unknown'``, which every turn entry refuses before a request) and
+    print ``reason``. :class:`LateRoute` builds one whenever an implicit
+    re-resolution of the launch inputs lands on a late provider, and
+    :meth:`apply` is the only way it is put on.
+    """
+
+    placeholder: Model
+    reason: str
+
+    @property
+    def notice(self) -> str:
+        """The reason with the in-session remedy, as the TUI says it."""
+
+        return f"{self.reason} No prompt will be sent for it; run /model to select a model."
+
+    def holds(self, model: Any) -> bool:
+        """``model`` is this hold's placeholder: no model was picked since."""
+
+        return (
+            getattr(model, "api", "") == "unknown"
+            and getattr(model, "provider", None) == self.placeholder.provider
+            and getattr(model, "id", None) == self.placeholder.id
+        )
+
+    async def apply(self, harness: Any) -> Exception | None:
+        """Put ``harness`` on the placeholder, under the turn gate; the one way a hold is applied.
+
+        #367 verify round 6, B1. Every path that applies a hold calls this - the
+        launch hold (``cli/entry.py``), every rebuild's re-hold
+        (``_settle_late_route``) and ``/agents use`` (``agents/service.py``) - and
+        it holds the harness's turns (``AgentHarness.hold_turns``) for its whole
+        duration: a ``model_select`` handler that answers the placeholder with
+        its own ``set_model`` and triggers a turn there gets a REFUSED turn, not
+        a request on the model it set (:meth:`_put_on` then puts the
+        placeholder back). On 343e75cd ``/agents use`` and the settle of a
+        rebuild whose ``session_start`` first registered the provider applied
+        it with turns open, and that prompt went out.
+
+        The gate's reason while it runs is this hold's (``HOLD_GATE`` + the
+        reason), whoever calls it (#367 verify round 7, V-B1): a turn refused
+        here is refused because the session is being put on hold, which is
+        what that turn's answer says. A gate the caller already holds (the
+        launch's, a held rebuild's from the factory: "... session_start
+        handlers run ...", stale once those handlers have returned) has its
+        reason swapped for this one in place - ``hold_turns`` only replaces
+        the reason, so the gate is never down in between - and restored on
+        exit, for the caller to lift; a gate this call put up is lifted here.
+        No await between the check and the restore. Returns what
+        :meth:`_put_on` returns.
+        """
+
+        caller_gate = harness.turns_held
+        harness.hold_turns(f"{HOLD_GATE} {self.reason}")
+        try:
+            return await self._put_on(harness)
+        finally:
+            harness.hold_turns(caller_gate)
+
+    async def _put_on(self, harness: Any) -> Exception | None:
+        """Set the placeholder, wait out a refused turn, check it held (gated by :meth:`apply`).
+
+        #367 verify round 5, B1/B2. Through ``set_model``, so ``model_select``
+        handlers see the hold. A turn such a handler triggered under the gate
+        runs as a refused turn in a task of its own; it is waited out here
+        (verify round 6), so the harness is idle when the gate comes down and
+        the next prompt does not find it busy. Then the held state is checked,
+        not assumed - last, so nothing that ran meanwhile is left standing: a
+        handler (or any task) that answered the placeholder with a
+        ``set_model`` of its own (onto the late provider, or anywhere) has
+        moved the harness off it, and nobody picked that model, so the
+        placeholder is put back by assignment (no second ``model_select``).
+        Returns what ``set_model`` raised (a ``model_select`` handler refusing
+        the placeholder), the state still on the placeholder, for the caller
+        to decide on; ``None`` otherwise.
+        """
+
+        import asyncio
+
+        was_idle = harness.is_idle
+        error: Exception | None = None
+        try:
+            await harness.set_model(self.placeholder)
+        except Exception as exc:  # noqa: BLE001 — a model_select handler refused it
+            error = exc
+        if was_idle:
+            # One loop pass lets a refused turn created at the end of the
+            # handler claim the harness; then wait for it to release.
+            await asyncio.sleep(0)
+            await harness.wait_for_idle()
+        if not self.holds(harness.state.model):
+            harness.state.model = self.placeholder
+        return error
+
+
+@dataclass
+class LateRoute:
+    """The late-provider rule for one process (#367 round 3, D1–D3).
+
+    A provider is LATE when it was not registered when the launch route was
+    chosen (``launch_providers``, filled by ``cli/entry.py`` right after the
+    first build, before ``session_start``; ``None`` until then, which turns
+    every check off — the first build is the launch itself) and it arrived
+    while a session was starting: from the end of a build (:meth:`before_session_start`
+    snapshots the user-defined providers there) through that session's
+    ``session_start`` and — on a pending launch or a held rebuild — the turns
+    its handlers triggered, which the turn gate refuses and ``cli/entry.py``
+    waits out, up to aelix's check after ``session_start``
+    (:meth:`after_session_start` adds what arrived to
+    :attr:`session_start_providers`). Whatever registered it in that window
+    counts (#367 Codex pass 7, C-P2; verify round 8, B1, measured with
+    ``trace9.py``): a ``session_start`` handler; the ``input`` or
+    ``before_agent_start`` handler of a turn one triggered, awaited or not (a
+    fire-and-forget trigger's turn runs after the emit returned); a task a
+    handler spawned with no delay, or one ``setup()`` spawned that registers
+    then. pi resolves the launch model before any handler runs. A
+    registration after that check (a task with a delay, a later turn's
+    handler) is not late. The texts say "while a session was starting"
+    (``_LATE_WINDOW``), which every one of these, and a rebuild held for a
+    registration in an earlier session's start, makes true.
+
+    Every IMPLICIT re-resolution of the launch-derived inputs asks
+    :meth:`hold_for` and holds the session when it answers: the launch when its
+    route was pending (a launch on a registered provider stays there, as in pi
+    — #367 verify round 3, B1), every rebuild (the harness factory before the rebuild's ``session_start``, and
+    the runtime's after-``session_start`` callback so a hook's ``set_model``
+    cannot release it), ``/agents use`` of a profile whose own ``model:`` /
+    ``provider:`` does not apply (``--none`` included), and the TUI's
+    post-``/login`` pick (:meth:`lands`). An EXPLICIT pick switches: ``/model``,
+    or ``/agents use`` of a profile whose ``model:`` or ``provider:`` applies —
+    which sets :attr:`explicit`, so the rebuilds after it re-resolve the
+    profile's choice rather than hold it (the next implicit ``/agents use``
+    clears it).
+
+    A placeholder only refuses turns on itself. While a ``session_start`` runs
+    for a pending launch, or for a rebuild the factory holds, ``cli/entry.py``
+    also holds the harness's turns (``AgentHarness.hold_turns``) until the late
+    decision or the re-applied hold, so a handler that ``set_model``s and then
+    triggers a turn sends nothing (#367 verify round 4, B1); that trigger ends
+    as a refused turn, so a handler awaiting it is woken (verify round 5).
+    Every hold is put on through :meth:`LateRouteHold.apply`, which checks the
+    state after ``set_model`` and its ``model_select`` handlers (verify round 5,
+    B1/B2) and holds the turns while it runs, whoever calls it (verify round
+    6, B1), under the hold's own reason (verify round 7, V-B1: a caller's
+    ``session_start`` reason is stale by then; it is restored on exit).
+    """
+
+    model_registry: Any
+    default_provider: str | None = None
+    launch_providers: frozenset[str] | None = None
+    explicit: bool = False
+    last: LateRouteHold | None = None
+    session_start_providers: set[str] = field(default_factory=set)
+    _before: frozenset[str] = frozenset()
+
+    def before_session_start(self) -> None:
+        """Snapshot the user-defined providers: a build is done, its ``session_start`` is next."""
+
+        self._before = user_defined_providers(self.model_registry)
+
+    def after_session_start(self) -> None:
+        """Record the providers registered while that session was starting.
+
+        The delta since :meth:`before_session_start` — the ``session_start``
+        emit and the refused turns waited out after it — whatever registered
+        them (``LateRoute``; #367 Codex pass 7, C-P2; verify round 8, B1).
+        """
+
+        self.session_start_providers |= user_defined_providers(self.model_registry) - self._before
+
+    def late(self) -> frozenset[str]:
+        """The late providers, as the registry stands now."""
+
+        if self.launch_providers is None:
+            return frozenset()
+        return (
+            user_defined_providers(self.model_registry) & self.session_start_providers
+        ) - self.launch_providers
+
+    def hold_for(
+        self,
+        model_flag: str | None,
+        provider_flag: str | None,
+        *,
+        use_default: bool = True,
+    ) -> LateRouteHold | None:
+        """The hold an implicit re-resolution of these inputs owes, or ``None``.
+
+        Resolved with this process's settings ``defaultProvider``, as every
+        build resolves them; ``use_default=False`` asks without it, the value
+        ``/agents use``'s own resolve passes.
+        """
+
+        if self.launch_providers is None or self.explicit:
+            return None
+        dp = self.default_provider if use_default else None
+        reason = late_registered_route(
+            model_flag,
+            provider_flag,
+            self.model_registry,
+            launch_providers=self.launch_providers,
+            default_provider=dp,
+            session_start_providers=frozenset(self.session_start_providers),
+        )
+        if reason is None:
+            return None
+        try:
+            landed = resolve_route(model_flag, provider_flag, self.model_registry, dp).model
+        except Exception:  # noqa: BLE001 — the reason stands without a shape
+            landed = Model(id=model_flag or "", provider=provider_flag or "")
+        hold = LateRouteHold(Model(id=landed.id, provider=landed.provider), reason)
+        self.last = hold
+        return hold
+
+    def lands(self, model: Any) -> bool:
+        """``model`` is on a late provider (an automatic pick must not land there)."""
+
+        provider = (getattr(model, "provider", "") or "").casefold()
+        return bool(provider) and any(name.casefold() == provider for name in self.late())
+
+    def held(self, model: Any) -> LateRouteHold | None:
+        """The hold whose placeholder ``model`` is, if it is one."""
+
+        return self.last if self.last is not None and self.last.holds(model) else None
+
+    def landing_reason(self, model: Any) -> str:
+        """Why an automatic pick of ``model`` (on a late provider) is not made."""
+
+        held = self.held(model)
+        if held is not None:
+            return held.reason
+        if self.last is not None:
+            return self.last.reason
+        provider = getattr(model, "provider", "")
+        return (
+            f"Provider '{provider}' was registered by an extension {_LATE_WINDOW}, after the "
+            "launch route was chosen; it is used only when you pick it. "
+            f"Register '{provider}' in the extension's setup() (its factory) to use it at launch."
+        )
 
 
 __all__ = [
@@ -2220,6 +2546,9 @@ __all__ = [
     "canonical_provider",
     "canonical_provider_name",
     "enrich_copilot_base_url",
+    "HOLD_GATE",
+    "LateRoute",
+    "LateRouteHold",
     "late_registered_route",
     "load_dotenv",
     "openrouter_namespaces",

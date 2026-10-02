@@ -222,7 +222,8 @@ But three product defects made it undiagnosable:
   resolves the model after that (pi's order), so `--model <ext-provider>/<id>`
   and `--provider <ext-provider>` select an extension provider at launch. The
   post-build `is_runnable` gate stays where it is; a provider an extension
-  registers in `session_start` still arrives after the resolve.
+  registers in `session_start` still arrives after the resolve (and since #367,
+  2026-10-03, is refused as a launch model, as in pi — ADR-0250 §2.11).
 - **The interactive gate is advisory.** It warns and is not re-gated at turn time,
   so on that path the credential-egress guard is a loud warning rather than a
   hard stop. Deliberate — `/model` is the cure — but worth revisiting.

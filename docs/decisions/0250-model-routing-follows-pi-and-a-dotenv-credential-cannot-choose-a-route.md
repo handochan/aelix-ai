@@ -1,6 +1,6 @@
 # 0250. Model routing follows pi's `resolveCliModel`, and a `.env` credential cannot choose a route
 
-Status: Accepted (2026-10-02)
+Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`
 Date: 2026-10-02
 Supersedes: **ADR-0249 §2.1** (rung 0 and the OpenRouter-from-env rung), **§2.6**'s split
 rule and **§5** (the stated divergence from pi). ADR-0249's X1 (§2.3), S (§2.4) and the
@@ -13,21 +13,27 @@ notes in each.
 Relates: ADR-0067 (the `core/model_resolver.py` port of pi's resolver stays unwired),
 ADR-0235 (the divergences in §2.4 are stated, not parity gaps), #363 (the launch
 composition and a re-pointed built-in's key order), #365, #367 (the late-registered path
-will refuse), #368.
+refuses, §2.11), #368.
 Issue: #362 (P1, security). Owner decision: 2026-10-02 (issue comment).
 Tests: `tests/cli/test_route_follows_pi_362.py`, `tests/cli/test_dotenv_provenance_362.py`,
 `tests/cli/test_launch_route_362.py`, `tests/cli/test_route_refusals_in_session_362.py`,
 `tests/model_registry/test_route_auth_362.py`, `tests/agents_ext/test_child_provenance_362.py`,
 `tests/core/test_model_argument_guard_362.py`, `tests/tui/test_post_login_pick_362.py`,
 `tests/rpc/test_rpc_route_guard_362.py`, `tests/providers/test_base_url.py` (§2.2's
-placeholder rule).
+placeholder rule), `tests/cli/test_late_provider_refused_367.py`,
+`tests/cli/test_late_provider_landing_367.py`,
+`tests/cli/test_late_route_hold_apply_367.py`,
+`tests/tui/test_post_login_late_hold_367.py` and
+`tests/harness/test_harness_turn_gate_367.py` (§2.11, #367).
 Cross-review: Codex on `854bf319` (§5) — `/model` reworked (§2.8), guard 2's scope and the
 hatch stated (§2.3, §2.6); Codex again on `a0edf615` (§5) — the post-`/login` pick's
 saved default, RPC `cycle_model` and a held credential with no model rows (§2.8, §2.10).
 The fourth verification (of `001ef77d`, §4): settings `defaultProvider` in step 2 counts
 only for the user's own credential or endpoint (§2.1). Codex's third pass (of `5e983992`,
 §5): a fallback resolver's answer and an installed resolver (§2.2, §2.8), a `.env` value
-in a base-URL placeholder (§2.2), a headers-only built-in (§4).
+in a base-URL placeholder (§2.2), a headers-only built-in (§4). Codex on `dcc78170` (#367):
+a `session_start` hook's `trigger_turn` and `set_model`, and the late check's tie-break
+(§2.11, round 3).
 
 A cloned repo's `.env` was a route switch. With `ANTHROPIC_API_KEY` exported and the
 repo's `.env` carrying `OPENROUTER_API_KEY`, `aelix --model anthropic/claude-haiku-4-5`
@@ -95,7 +101,7 @@ the drivers are `/tmp/362-work/impl/live/matrix.py` and `listeners.sh`, the outp
 | C-P1 | planted + X,ANTHROPIC_API_KEY · ANT sh + OR .env | `openrouter.ai` | `api.anthropic.com` **(changed)** |
 | K1 | -e extprov --model m1 --api-key K · none | refused: Error: --api-key requires a model to be specified via --model, --provi… | EXT `/ext/v1/chat/completions` **(changed)** |
 
-17 of 46 rows changed (`compare.py base.jsonl after2.jsonl`; A40 since the review round). Every request in the table was answered by a local recorder; nothing reached a vendor. The A28 row now switches to the `session_start` provider and reaches it (critique S5); K1 is ADR-0249 §6's last bullet.
+17 of 46 rows changed (`compare.py base.jsonl after2.jsonl`; A40 since the review round). Every request in the table was answered by a local recorder; nothing reached a vendor. The A28 row now switches to the `session_start` provider and reaches it (critique S5); K1 is ADR-0249 §6's last bullet. **#367 (2026-10-03)**: A26-A28 are refused before any request (§2.11).
 
 ## 2. Decision
 
@@ -373,7 +379,7 @@ clause 3).
   not be resolved to a known API protocol…`), not pi's `Unknown provider "X". Use
   --list-models …` (`:436-441`); pre-existing, unchanged here.
 - **Errors are held as placeholders** (`api='unknown'`, the prefix kept as the provider)
-  so the late-registration path can still switch (§2.11); pi returns no model.
+  so the late-registration check can still recognise them (§2.11); pi returns no model.
 - **An expired stored OAuth counts** as route-authentication — pi's rule; the user's own
   file, and its failure is loud (the #344 critique's S2 asked otherwise; reversed here).
 
@@ -409,7 +415,7 @@ ignored it.
 
 - The harness build resolves through `resolve_route` (X1's order unchanged).
 - After the first build the route's warning (a custom id, guard 2's Note) is printed once
-  on stderr, unless the late switch replaced the model; rebuilds do not reprint it.
+  on stderr, unless the late-route check refused the model (§2.11); rebuilds do not reprint it.
 - print/json refuse with the route's error (`Error: Model "…" is ambiguous across
   providers: …` / `… not found. Use --list-models …`) before any request; interactive
   warns with it first.
@@ -417,9 +423,11 @@ ignored it.
   bare extension id (`-e extprov.py --model m1 --api-key K`) is no longer refused before
   the extension loads (ADR-0249 §6's last bullet). Every launch resolve is told the key is
   there (`typed_key`, §2.1 step 3b). A route that does not resolve (ambiguous, or not
-  found — whose placeholder keeps the typed prefix as its provider) gets no key; if the late
-  path then switches to a `session_start` provider, the key follows it there (on `d58cbb3e`
-  the not-found placeholder got the key on its prefix, the review's nit).
+  found — whose placeholder keeps the typed prefix as its provider) gets no key (on
+  `d58cbb3e` the not-found placeholder got the key on its prefix, the review's nit). The
+  late path used to switch to a `session_start` provider and move the key there; since #367
+  it refuses, and a pending launch attaches the key only after the late decision (§2.11,
+  D4), so a refused launch attaches it to no provider at all.
 - `/agents use` and `/model`'s UNDECIDED fallback refuse with the route's error when a
   registry exists (without one the resolver sees no credential and no user-defined
   provider, so its "none authenticated" would be a claim about nothing).
@@ -489,7 +497,9 @@ mygw/m1` ran on `https://mygw.invalid/v1` with the `.env` key; and the late swit
 a `session_start` provider keyed the same way was refused (real CLI, `-e sessenv.py --model
 sessenv/m1`: `NO REQUEST | rc=1`). Now `/model mygw/m1` → `MyGw/m1 host=mygw.invalid
 bearer='mygw-env-fake'`, `MYGW/new-id` → the #136 backfill on the same host and key, and the
-late switch posts to the extension's host on `sessenv-dotenv-fake`. A re-pointed built-in
+late switch posts to the extension's host on `sessenv-dotenv-fake` (since #367 the launch
+refuses `sessenv/m1` — §2.11 — and the same `/model sessenv/m1` in the held session posts
+there). A re-pointed built-in
 counts as defined by the user (`providers.openai.baseUrl`, ADR-0249): with `OPENAI_API_KEY`
 only in the `.env`, `/model openai/gpt-4o-mini` goes to the user's gateway on the `.env` key,
 as `--model` does (`ecb4e0bc`: refused; the key order is #363) — the one case where the
@@ -642,28 +652,426 @@ to `find_initial_model`, not the raw registry) is pinned through the real `run_t
 `/login` (§4, round 5): the fourth verification replaced it with the registry and every
 test stayed green while `probe_login.py` went to `aiplatform.googleapis.com` again.
 
-### 2.11 The late-registered path (kept; #367 changes it to refuse)
+### 2.11 The late-registered path refuses (#367, 2026-10-03)
 
 A provider registered only in `session_start` is an unknown prefix at launch. With an
-OpenRouter key of the user's own, guard 2 puts it on OpenRouter; without one the launch
-holds the not-found placeholder. `late_registered_route` triggers on either — the harness
-on `openrouter`, or on the held placeholder with the re-resolve now landing on a
-user-defined provider a turn can run — and every mode switches as before, without
-persisting it. On `aa026d08` the `.env`-key case switched only because the `.env` key had
-put the string on OpenRouter first, and the no-key case failed at the first turn with
-`No provider registered for api='unknown'`; both now switch, and no request goes to
-OpenRouter in either (critique S5). A provider whose key comes from the cwd `.env` is
-switched to as well, with or without a key of the user's own elsewhere: the switch is
-`/model <name>/<id>`, and the prefix names a provider the user defined (§2.8). `ecb4e0bc`
-refused it whenever the user also held an own key (round-2 verification, B1).
+OpenRouter key of the user's own, guard 2 puts the string on OpenRouter; without one the
+launch holds the placeholder. Until 2026-10-03 every mode then switched to the provider
+(#344, and with no OpenRouter key since this ADR's critique S5). **#367 (owner decision
+2026-10-02 on the issue: follow pi) refuses it instead.** pi registers an extension's
+providers in time for startup model selection only from the extension factory
+(`docs/custom-provider.md`: "Pi waits for asynchronous factories before startup
+continues, so providers registered there are available to startup model selection");
+`session_start` fires in `AgentSession.bindExtensions`, and `main.ts` (~913-925 @
+`88ff80b98`) exits 1 on the resolver's error diagnostic in every mode.
 
-**Known, and handed to #367**: a late provider authenticated ONLY by `--api-key`
-(`-e late.py --model late/m1 --api-key K`, `late` registered in `session_start` with no key
-of its own) is refused — the shared switch runs before the runtime key is moved to `late`,
-so the pool does not offer it, and the key is attached after the refusal (Codex's second
-cross-review, F4, `probe_launch.py late-typed`: `exit 1`, `attached ["late"]`, no turn). An
-availability failure, no credential egress. No code change here: #367 makes the
-late-registered path refuse outright, which retires this ordering.
+- **Which provider is late, and when it counts (round 3, D1; the window, rounds 8-9).** A
+  provider is LATE when it was not registered when the launch route was chosen and it
+  arrived while a session was starting: from the end of a build (`LateRoute` snapshots the
+  registry there) through that session's `session_start` emit and — on a pending launch or
+  a held rebuild, where the turn gate refuses them — the turns its handlers triggered,
+  which aelix waits out, up to aelix's check after `session_start`
+  (`LateRoute.after_session_start`: `cli/entry.py` right after the launch's
+  `create_agent_session_runtime`, and in the after-`session_start` seam of every rebuild).
+  Whatever registered it in that window counts: a `session_start` handler; the `input` or
+  `before_agent_start` handler of a turn one triggered (round 8, Codex pass 7, C-P2) —
+  awaited, or fire-and-forget, when that refused turn runs AFTER the emit returned; a task
+  a handler spawned with no delay; a task `setup()` spawned that registers then. Measured
+  (round 9, `trace9.py`, the real CLI, every request recorded): `ff-input`, `ff-bas`,
+  `task0`, `setup-task` print `EMIT_DONE session_start` before `REGISTERED_IN …` and are
+  refused in print and held in RPC, no request; `await-input` and `ss-direct` register before
+  the emit returns. A registration after that check — a task with a delay (§6), a handler
+  of a later turn — is not late. Kept, as pi: pi resolves the launch model before ANY
+  handler runs, so a provider any of them registers is unknown to its launch. The texts
+  said "registered in a session_start handler" (false for a triggered turn's handler),
+  then "registered while session_start handlers ran" (round 8; verify round 8, B1: false
+  for the four shapes that register after the handler returned); since round 9 they say
+  "registered while a session was starting (for example in a session_start handler)",
+  true for each of them and on a later rebuild held for a registration in an earlier
+  session's start. `launch_providers` is the user-defined providers the first
+  build saw (`cli/entry.py` reads them before `create_agent_session_runtime` runs
+  `session_start`), and `runtime_bootstrap.LateRoute` snapshots the registry at the end of
+  every build and after its `session_start`, so only what arrived during one counts — a
+  provider a `/reload`-ed extension now registers in `setup()` is not late (the #344
+  reload row). The rule is where the inputs LAND, not which pair they are: every
+  **implicit** re-resolution of the launch-derived inputs that lands on a late provider is
+  held. Round 2 keyed the hold by the exact refused `(parsed.model, parsed.provider)`
+  pair, and `/agents use --none` (or of a profile naming no route) resets `parsed` to the
+  CLI + settings baseline — a different pair when the launch came through `--agent` — which
+  re-resolved onto the late provider: the next prompt went there (verify round 2, shapes
+  a and b), and from a launch that was never held (shape c, `--agent orprof`
+  (`provider: openrouter`) `--model sessext/m1`).
+- **The launch is judged by its inputs, not by what a hook did (D2).**
+  `late_registered_route` re-resolves `--model`, `--provider`, settings
+  `defaultProvider` exactly as the build passes them — the tie-break included (Codex
+  round 3, finding 5: a check that dropped it passed every #367 test; two providers serving
+  `m1`, the setup one keyed and the late one keyless, with `defaultProvider` naming the
+  late one, tell them apart) — and the `--agent` overlay, over the registry as it is after
+  `session_start`. It fires when they land on a late provider, on a prefix two late
+  providers share up to case, or — the re-resolve refusing them as ambiguous — on ids only
+  late providers serve. The model the harness holds after `session_start` is not evidence:
+  round 2 returned early when it was runnable and not OpenRouter, so a hook that called
+  `set_model` onto the late provider made the refusal pass and print ran there (Codex
+  finding 2). (Round 3 also refused a launch that had resolved to a registered provider
+  when its inputs now landed on a late one; round 4 withdrew that, next bullet.) It used to
+  look only at a `--model` with no `--provider`, so `--provider sessext --model m1` and the
+  settings pair `sessext`/`m1` were never caught: they passed the print gate, which
+  judged the re-resolve (by then `sessext`), and failed at the first turn with `No
+  provider registered for api='unknown'`.
+- **Only a launch no registered provider claimed is refused (verify round 3 of `5a1330b5`,
+  B1; round 4).** pi resolves the launch model at startup, before any `session_start`, and a
+  provider registered later does not touch that launch: `--model gpt-4o-mini` with an
+  OpenAI key runs on OpenAI whatever a hook registers afterwards. So the refusal (print and
+  json exit 1; the interactive and RPC launch hold) is for a PENDING launch only — the
+  routes D4 covers, guard 2's OpenRouter for an unknown prefix or an unresolved
+  placeholder. A launch that resolved to a REGISTERED provider (built-in, `models.json`,
+  `setup()`) stays on it, its `session_start` may trigger turns there as in pi, and its
+  `--api-key` stays where it was attached at launch; the print gate judges that route, not
+  the post-`session_start` re-resolve that lands on (or is made ambiguous by) the late
+  provider. Round 3 refused it after its `session_start` had already run: a handler's
+  `trigger_turn` had sent a turn on the launch route with the user's key or the typed
+  `--api-key`, and print/json then said "No prompt was sent." — false — while RPC and
+  interactive printed the hold warning (the verifier's `v3-builtin-openai-trigger`,
+  `v3-otherlate-trigger-default(-typed, -json, -rpc)`, `v3-otherlate-keyed-trigger`).
+  LATER implicit re-resolutions that land on a late provider are still held (below) —
+  **also when the session started on a registered provider**: aelix's rebuilds re-resolve
+  the launch inputs where pi keeps the session model, so `/new` after such a launch is held
+  where its re-resolve lands late (measured below).
+- **On a pending launch, nothing is sent while `session_start` runs (D4, and since round 5
+  the turn gate).** A launch route no registered provider
+  claimed — guard 2 (the string to OpenRouter as written) or an unresolved placeholder — is
+  PENDING while the handlers run: the harness sits on `Model(id, provider)` with
+  `api='unknown'` (assigned, no `model_select`), which is the model the handlers see, and
+  its turns are HELD (`AgentHarness.hold_turns`, Aelix-additive): no turn of any kind
+  starts — `prompt`, a handler's `send_message(..., trigger_turn=True)`, a manual
+  `compact`, a summarising `navigate_tree` — whatever model is current. A handler's
+  `trigger_turn` runs as a REFUSED turn (round 6; verify round 5): the turn a model that
+  cannot be reached runs — `agent_start`, its message, an error answer carrying the gate's
+  reason, `turn_end`, `agent_end` — with no request, so a handler awaiting that turn's
+  `agent_end` (or `ctx.is_idle()`) is woken. Round 5 queued the message as a `next_turn`
+  message instead; no turn started or ended, and a handler that awaited its own turn left
+  `session_start` — and `aelix -p` with it — hanging with no output, also on a guard-2
+  launch that was not late (the verifier's `o-await-forever-notlate`). The message is that
+  refused turn's prompt, recorded in the session as any failed turn's is, and not queued
+  again: the next prompt that is sent carries it from the conversation (the refusal, an
+  error answer, is not sent to a provider); what other handlers queued waits for that
+  prompt. The launch decision (and a rebuild's settle) first waits for such a turn to end,
+  so its release cannot race the first prompt. Round 2 refused
+  after `session_start`, but a hook's `trigger_turn` had already gone to OpenRouter on the
+  user's own key — with `--api-key`, on the TYPED key, attached before `session_start` —
+  and the refusal then said "No prompt was sent" (Codex finding 1). Round 3's placeholder
+  alone covered only turns on the launch model: a handler that called `set_model` (onto
+  the `session_start` provider, or onto any other) and then triggered a turn sent it on the
+  model it set, and print/json said "No prompt was sent." after it (verify round 4, B1:
+  `x-set-trigger-*`, `x-setother-trigger-print`). The gate is lifted only after the late
+  decision: late → refused (print/json, the gate never lifted) or held (interactive/RPC,
+  lifted once the hold's placeholder is set — it refuses turns itself and `/model` leaves
+  it); not late → lifted after the restore below. After `session_start`:
+  late → refused / held; not late → the launch route is put back (unless a handler chose a
+  model of its own with `set_model`, which stands, as before #367) and only then is
+  `--api-key` attached, to that route's provider. A launch route on a registered provider
+  is not pending: it keeps its key from the start (a `setup()` provider, unchanged), and a
+  turn its `session_start` triggers is sent on it (B1; not gated). "No prompt was sent."
+  is printed only for a pending launch, where the gate guarantees it by construction.
+- **A hold is applied, then checked (round 6; verify round 5, B1 and B2).** Every path
+  that puts the session on a hold's placeholder — the launch hold, every rebuild's re-hold
+  in the after-`session_start` seam (D3, below) and `/agents use` — goes through one
+  helper, `LateRouteHold.apply`: `set_model(placeholder)`, so `model_select` handlers see
+  it, and then the state is checked; a handler that answered the placeholder with a
+  `set_model` of its own (onto the late provider, or anywhere) has moved the session to a
+  model nobody picked, and the placeholder is put back by assignment (no second
+  `model_select`). The launch lifts its turn gate and prints its Warning only after that,
+  so "No prompt will be sent for it" is true when printed. Before, only the rebuild
+  checked (and no test pinned that check — removing it left every test green while the
+  verifier's `v5-msr-rebuild` sent `hi` to `/late/v1` after `/new`); the launch did not,
+  and a `model_select` handler's `set_model` onto the late provider released the launch
+  hold with the Warning already printed (`o-ms-handler-rpc`: the prompt to `/late/v1`;
+  `v5-ms-launch`, `v5-ms-launch-noor` in a pty: `hi` → `/late/v1`). A refusal from a
+  `model_select` handler still leaves the state on the placeholder, and each caller decides
+  as before (the launch refuses to start; `/agents use` rolls back).
+- **A hold is applied under the turn gate, on every path (round 7; verify round 6, B1).**
+  The check above comes after `set_model` returns; inside it, a `model_select` handler
+  that answers the placeholder can `set_model` onto the late provider, trigger a turn and
+  yield, and that turn runs on the model it set before the placeholder is put back. The
+  launch and a rebuild the factory held were gated by their own turn gate; `/agents use`
+  was not — the session's gate had been lifted long before — and neither was the settle of
+  a rebuild whose `session_start` first registered the provider (the factory found nothing
+  to hold, so it put up no gate). Measured on `343e75cd`, in a pty: `--agent orprof
+  --model late/m1`, then `/agents use --none` → `/late/v1/chat/completions m1 Bearer
+  late-fake`, and the Note "No prompt will be sent for it" printed after it; `--model
+  late/m1`, `/model other/m1`, `/agents use --none` → the same; `late` registered on
+  rebuilds only, `/new` → the same. `LateRouteHold.apply` now holds the turns itself
+  while it runs (`AgentHarness.hold_turns`, reason `No turn runs while this session is put
+  on hold.` and the hold's), whoever calls it, so no path can apply a hold with turns
+  open: the handler's trigger runs as a refused turn (`✖` and that reason in the TUI),
+  nothing is sent, and the session ends on the placeholder. **The reason is the hold's on
+  every path since round 8** (verify round 7, V-B1): round 7 left a caller's gate as it
+  was, so on the launch (interactive and RPC) and on a factory-held rebuild (`/new`
+  `/reload` `/fork` `/resume`, also after a registered launch) the handler's refused turn
+  printed the caller's reason — `✖ No turn runs while this session's session_start
+  handlers run. The launch route is not decided yet: …` right under the Warning that had
+  just decided it (verify7's pty `p01`, `p03`–`p06`, `p22`; RPC `r1-launch`: `[error] No
+  turn runs while this session's session_start handlers run. …`), while the rebuild-first
+  and `/agents use` paths printed the true one. `apply` now swaps its own reason into a
+  caller's gate for its duration (`hold_turns` replaces the reason in place; the gate is
+  never down in between) and restores the caller's on exit. A turn a `session_start`
+  handler triggers WHILE `session_start` runs keeps the `session_start` reason, which is
+  true there (verify7's `p23`/`p23b`). A gate the caller already
+  holds (the launch's, a held rebuild's) is left for the caller to lift, as before; one
+  `apply` put up is lifted when it returns, after the refused turn it produced has ended,
+  so the next prompt does not find the session busy. The post-`/login` pick applies no
+  hold (it selects a model that is not late, or nothing, leaving the placeholder as it
+  is), and the factory's placeholder is set at construction (no `model_select`) under the
+  factory's gate.
+- **After every `session_start` (D3).** The runtime's after-`session_start` seam
+  (`AgentSessionRuntime.set_after_session_start`, Aelix-additive) runs right after each
+  rebuild's emit — `/new`, `/fork`, `/resume`, `/import`, `/reload` — and before any turn:
+  the factory starts the rebuild held where the inputs land on a late provider, and this
+  re-applies the hold, so a hook's `set_model` there does not release it (Codex finding 3:
+  `/new` then `hi` reached the late provider). A rebuild the factory holds also has its
+  turns held from the factory until this seam has re-applied the hold (round 5; verify
+  round 4, B1: a handler's `set_model` then `trigger_turn` in that `session_start` sent the
+  turn on the model it set — `/new` → `/late/v1`, or `/other/v1`, `/reload` the same —
+  before the re-hold). A rebuild the factory did not hold — its `session_start` registered
+  the provider for the first time — has no gate while that `session_start` runs (§6), but
+  the seam's re-hold is applied under one (round 7, above). An extension's `set_model` at
+  any other time is the extension's business, unchanged.
+- **print and json**, on a pending launch, exit 1 before any request: `Error: The launch model "sessext/m1" names
+  provider 'sessext', which an extension registered while a session was starting (for
+  example in a session_start handler), after the launch model was chosen. Register
+  'sessext' in the extension's setup() (its factory) to use it at launch. No prompt was
+  sent.` A provider with no model (`--provider sessext`
+  alone, or a settings `defaultProvider` alone) is worded as one: `The launch provider
+  'sessext' (no model named) was registered by an extension while a session was starting
+  (for example in a session_start handler), after the launch route was chosen. Register
+  'sessext' …` (verify round 1, N2; pi's own
+  "--provider requires --model" is #368). An automatic pick that lands on a late provider
+  before any hold was made says `Provider 'sessext' was registered by an extension while a
+  session was starting (for example in a session_start handler), after the launch route
+  was chosen; it is used only when you pick it. Register 'sessext' …`
+  (`LateRoute.landing_reason`'s fallback, pinned since round 9). (Until round 8 these said
+  "in a session_start handler", which a registration in a triggered turn's `input` handler
+  made false; round 8's "while session_start handlers ran" was false for a registration
+  after the handler returned, above.)
+- **interactive and RPC**, on a pending launch, start held on `Model(id, provider)` with `api='unknown'` (the
+  #98 shape: aelix's interactive warns and `/model` is the cure, a divergence from pi's
+  exit) with the same reason. Every turn entry refuses the placeholder before a request.
+  Interactive adds `No prompt will be sent for it; run /model to select a model.` RPC
+  cannot: the shipped `aelix --mode rpc` wires no model registry, so `set_model` and
+  `cycle_model` answer `set_model requires a ModelRegistry — none configured`; it adds
+  `No prompt will be sent for it, and this RPC session cannot select another model
+  (set_model has no model registry in --mode rpc); restart with another --model.` (verify
+  round 1, N1 — the wiring is a pre-existing gap, a follow-up).
+- **Every implicit re-resolution of the launch inputs keeps the hold** where it lands on a
+  late provider (`LateRoute`, one object `cli/entry.py` hands to each): every rebuild
+  (`/new`, `/fork`, `/resume`, `/reload` — the harness factory, then D3's seam), since the
+  shared registry keeps the `session_start` registration and a rebuild's re-resolve would
+  otherwise run what the launch refused — or, after a launch that stayed on a registered
+  provider (B1), move the session onto a provider nobody picked — as an unknown
+  `--model`'s rebuilds stay held too;
+  **`/agents use`** of a profile whose own `model:` / `provider:` does not apply — one
+  naming none, `--none`, or one a CLI `--model` overrides ("CLI flags override model") —
+  which resets `parsed` to the CLI baseline and re-resolves it (verify round 1, B1, and
+  round 2's shapes); it keeps the placeholder and repeats the reason in its `Note:` lines;
+  and **the TUI's post-`/login` pick** (§2.10), whose saved settings default can be the
+  refused launch input — it never lands on a late provider: it asks again without the
+  saved default, which picks the way a pick with no default does (in the measured row, a
+  model of the provider just logged into; in general, whatever that pick selects), never the
+  late provider, and selects nothing when even that lands on a late one
+  (`Logged in. <reason> Use /model to select a model.`). A prompt on the held placeholder
+  is refused with the hold's reason and remedy, not the generic "could not be resolved to
+  a known API protocol … models.json" text.
+- **An explicit pick switches**: `/model sessext/m1` afterwards is the user's own later
+  choice (the provider is in the registry by then; §2.8's case rule keeps a `.env`-keyed
+  one in the pool), as is `/agents use` of a profile whose own `model:` **or `provider:`**
+  applies — a profile naming only `provider: sessext` names the route too. Unchanged. A
+  profile's pick marks the rule explicit, so the rebuilds after it re-resolve the profile's
+  choice rather than hold it, until an implicit `/agents use` holds again. A `/model`
+  choice lasts until the next rebuild, which re-resolves the launch inputs and is held
+  again (aelix's rebuild re-derives the model from `parsed`; pi keeps the session's
+  model), and `/model` saves it as the default, so the next launch with no `--model` reads
+  it from settings and is refused. Both are stated, not changed here.
+- **`--api-key`** typed with such a model gets the same refusal, and is attached to
+  nothing: a pending launch attaches it only after the late decision (D4), and a pending
+  launch that is not late gets it then, on the restored route (round 4, B3: no test held
+  that attach). A launch route on a registered provider is not refused (B1) and keeps the
+  key it had from the start. **F4 (§5) is closed**: there is no
+  switch left for the key to arrive after. A provider registered and then unregistered
+  inside `session_start` is not in the registry afterwards, so the launch's guard-2 route
+  stands — with `--api-key`, the typed key to OpenRouter (Codex finding 4): #370
+  (`--api-key` with an uncatalogued, non-user-defined prefix should not take guard 2, as
+  pi), not this rule.
+- **The print gate also judges the harness's own model**, not only the re-resolve, so a
+  placeholder never reaches a turn even if the check above says nothing. After a launch on
+  a registered provider (B1) whose re-resolve now lands on a late provider, or is made
+  ambiguous by one, the gate judges the launch route instead of the re-resolve — otherwise
+  a keyless late provider would stop the run with "No API key found" for a provider it
+  does not use.
+- **Gone**: `switch_to_late_registered_route`, `switch_model_argument(persist=False)` (the
+  `/model` handler is its one caller), and the key following the switch (X'); round 3
+  removed the pair-keyed `late_route_hold` dict and `late_registered_route`'s
+  `current_model` argument.
+
+Measured (real CLI, fake keys, `HTTPS_PROXY` at a local CONNECT recorder, `OPENROUTER_BASE_URL`
+and the extension at local recording listeners; `/tmp/367-work/impl/live/matrix.py`,
+`base.out` on `5dee21d1`, `after.out` here):
+
+| Row | `5dee21d1` | #367 |
+| --- | --- | --- |
+| `-e sessext --model sessext/m1`, OR exported / `.env` / none (print; json the same) | switched, `EXT POST /sess/v1/chat/completions` | NO REQUEST, exit 1, the refusal |
+| the same, OR exported, the late check removed (sabotage) | — | `OR POST /or/v1/chat/completions model=sessext/m1` (guard 2) |
+| `--provider sessext --model m1`; settings `sessext`/`m1`, no `--model` | NO REQUEST, exit 1, `No provider registered for api='unknown'` (first turn) | NO REQUEST, exit 1, the refusal |
+| bare `--model m1`; settings `defaultProvider: sessext` + `--model m1`; `--agent` with `model: sessext/m1`; `sessext/m2`; `--continue` | switched, EXT request | NO REQUEST, exit 1, the refusal |
+| `-e late.py --model late/m1 --api-key K` (`late` keyless), OR exported / none | exit 1, "a provider you defined, which this session does not offer" (F4) | NO REQUEST, exit 1, the refusal |
+| a delegated child's argv (`--model m1 --provider sessext`, pinned; with `-e sessext.py`) | exit 1, `No provider registered for api='unknown'` | exit 1, the refusal |
+| `-e extprov --model extprov/m1` (`setup()`), `--provider extprov --model m1`, `--model m1 --api-key K` | EXT request | EXT request (unchanged) |
+| RPC, OR exported / none: `get_state`, `prompt` | `sessext/m1 api=openai-completions`, EXT request | `sessext/m1 api=unknown`, NO REQUEST |
+| TUI (pty), OR exported / none: `hi`, `/model sessext/m1`, `hi` | EXT request on the first `hi` | the Warning above the banner; `hi` → `✖ model 'm1' (provider 'sessext') could not be resolved …  Run /model …`, NO REQUEST; `/model sessext/m1` → `model → m1 (sessext)`; `hi` → EXT request |
+| TUI: `/new`, `hi` | (EXT request) | still held, NO REQUEST |
+
+Verify round 1 (of `dcc78170`), measured with the verifier's pty driver on own ports
+(`/tmp/367-work/fix2/kit/drive2.py`; `repro/` on `dcc78170`, `after/` here):
+
+| Row (TUI, pty) | `dcc78170` | verify round 1 |
+| --- | --- | --- |
+| `--model sessext/m1`, OR exported / none; `/agents use plainprof` (no `model:`), `hi` | EXT request | NO REQUEST, the `Note:` with the reason |
+| bare `--model m1`; `/agents use plainprof`, `hi` | EXT request | NO REQUEST |
+| `--model sessext/m1`; `/agents use --none`, `hi` | EXT request | NO REQUEST |
+| `--model sessext/m1`; `/agents use lateprof` (`model: sessext/m1`, beaten by the flag), `hi` | EXT request | NO REQUEST, `Note: CLI flags override model` and the reason |
+| settings `sessext`/`m1`; `/agents use plainprof`, `hi` | EXT request | NO REQUEST |
+| settings `sessext`/`m1`; `/agents use lateprof` (its `model:` applies), `hi` | EXT request | EXT request (unchanged) |
+| `--model sessext/m1`; `/agents use plainprof`, `hi`, `/model sessext/m1`, `hi` | — | NO REQUEST, then EXT request |
+| settings `sessext`/`m1`; `/login` (API key), `hi` | `model → m1`, EXT request | `model → Ring-2.6-1T` (the provider logged into), `CONNECT api.ant-ling.com:443` |
+| RPC, OR exported / none: stderr | `… run /model to select a model.` | `… this RPC session cannot select another model …; restart with another --model.` |
+| print, `--provider sessext` alone | `The launch model "--provider sessext" names provider …` | `The launch provider 'sessext' (no model named) was registered …` |
+
+Round 3 (verify round 2 and Codex), each row reproduced on `9e233be9` with the reviewer's own
+probe before the change (copied to `/tmp/367-work/fix3/`, own ports; `before/` there, `after/`
+here). Codex's probes run the real `main_sync` with every HTTP request recorded by an
+`httpx.MockTransport`; round 2's are a pty driver against local recording listeners:
+
+| Row | `9e233be9` | round 3 |
+| --- | --- | --- |
+| (Codex 1) hook registers `late` and `trigger_turn`s; `--model late/m1 -p hi`, own OR key | `MOCK_REQUEST /or/v1/chat/completions model=late/m1 auth=Bearer or-own-fake`, then "No prompt was sent." | requests=0, exit 1, the refusal (json, RPC the same) |
+| the same with `--api-key typed-for-late-fake` | `… /or/v1/chat/completions … auth=Bearer typed-for-late-fake` | requests=0; the key attached to nothing |
+| (Codex 2) hook `set_model(late/m1)` in the launch's `session_start`, print / json / RPC | exit 0, `MOCK_REQUEST /late/v1/chat/completions` | print/json exit 1 with the refusal, RPC held; requests=0 |
+| (Codex 3) TUI, hook `set_model` on every rebuild: `hi`, `/new`, `hi`, `/reload`, `hi` | requests 0, 0, 1, 1, 2 (both to `/late/v1`) | 0 throughout |
+| (Codex 5) `--model lab/m1`, two late providers serving `lab/m1`, settings `defaultProvider: late` — the late check without the tie-break | mutant: exit 0, `/or/v1 … model=lab/m1`; 77 #367 tests green under it | refused with and without the tie-break; the tie-break row that tells them apart is `setup()` `other` (keyed) + late keyless `sessext`, both serving `m1` (`test_the_late_decision_uses_the_settings_default_provider`; round 4 keeps that launch on `other` and the tie-break shows at `/new`: `test_a_rebuild_after_a_registered_launch_is_held_where_it_lands_late`) |
+| (round 2, a) settings `sessext`/`m1` + `--agent lateprof`; `hi`, `/agents use --none`, `hi` (OR exported / none) | last `hi`: `EXT POST /sess/v1/chat/completions` | NO REQUEST |
+| (round 2, b) `--agent provonly --model m1`; `/agents use --none` or `plainprof`, `hi`; or `/new`, `hi` | `EXT POST …` after `/agents use` | NO REQUEST |
+| (round 2, c) `--agent orprof --model sessext/m1` (OpenRouter, never held); `hi`, `/agents use --none`, `hi` | `OR POST … sessext/m1`, then `EXT POST …` | `OR POST … sessext/m1` (unchanged), then NO REQUEST |
+| `--model newlab/x`, a hook registering `late` and triggering a turn (not late) | two requests to `/or/v1` (the hook's, then `hi`) | one, `hi`, on the restored guard-2 route (carrying the hook's message — §6) |
+| `--model newlab/x`, a hook registering `late` (not late), print / json / RPC | `/or/v1 … newlab/x` | the same; the hook saw `api=unknown` |
+| explicit picks: `/model sessext/m1`; `/agents use provonly` (`provider:` only); settings pair + `/agents use lateprof`; `/login` with settings `sessext`/`m1` | EXT request; EXT; EXT; `api.ant-ling.com` | the same (pty, `after/v2-tui-controls.out`) |
+| setup() providers: `setup-print`, `-json`, `-split`, `-rpc`, `-typed`, `both`, `models-name` | `/setup/v1` (typed key on `setup-typed`), `/models/v1` | the same |
+| the #362 launch matrix (46 rows, `5dee21d1` → here) | — | 3 rows differ, all `session_start` (A26-A28: EXT request → NO REQUEST, the refusal) |
+
+Round 4 (verify round 3 of `5a1330b5`), each row reproduced on `5a1330b5` with the
+verifier's own probes first (copied to `/tmp/367-work/fix4/`, `p-before/` there, `p-after/`
+here; the real `main_sync`, every HTTP request recorded by an `httpx.MockTransport`). `other`
+is a keyed `setup()` provider, `late` a `session_start` one, both serving `m1`:
+
+| Row | `5a1330b5` | round 4 |
+| --- | --- | --- |
+| (B1) `--model m1`, settings `defaultProvider: late` (keyless), the hook triggers a turn; print / json | the hook's turn to `/other/v1`, then exit 1, "… No prompt was sent." | the hook's turn and `hi` to `/other/v1` (`Bearer setup-fake`), exit 0, no refusal |
+| the same with `--api-key typed-v3-fake` | the hook's turn with the typed key, then the refusal | both requests with `Bearer typed-v3-fake`, exit 0 |
+| the same in RPC | the hook's turn, then the hold warning | both requests to `/other/v1`, no warning |
+| both keyed, no `defaultProvider` (`v3-otherlate-keyed(-trigger)`) | the refusal (after the hook's turn, when it triggers) | `/other/v1`, exit 0 (the post-`session_start` re-resolve is ambiguous; the gate judges the launch route) |
+| `--model gpt-4o-mini`, `OPENAI_API_KEY`, `defaultProvider: late`, the hook triggers (`v3-builtin-openai-trigger`) | the hook's turn to `api.openai.com`, then the refusal | both turns to `api.openai.com` with the user's key, no refusal (exit 1 is the mock's chat-completions body on a Responses route) |
+| TUI (pty): that launch with `late` keyed; `hi`, `/new`, `hi` (and `/reload`) | launch held: 0, 0, 0 | `hi` → `/other/v1`; after `/new` (or `/reload`) held: `✖ The launch model "m1" names provider 'late' …`, no request |
+| the same, no `defaultProvider` (control) | `/other/v1` both times | the same |
+| (B2) TUI `--model late/m1`, the hook triggers a turn on rebuilds only; `/new`, `/reload`, `hi` | 0 throughout; with the factory's rebuild hold removed: `/new` 0, `/reload` 2 to `/late/v1` | 0 throughout; with it removed (sabotage on a throwaway worktree of round 4): `/new` 1, `/reload` 2 to `/late/v1` |
+| (B3) `--model newlab/x --api-key typed-g2-fake`, a hook registering an unrelated provider | `Bearer typed-g2-fake`; with the post-decision attach removed: `Bearer or-own-fake` | the same (and the same under that sabotage) — now pinned by a test |
+
+Round 5 (verify round 4 of `76055424`), each row reproduced on `76055424` with the
+verifier's own probes first (copied to `/tmp/367-work/fix5/`, `extra-base/` and `gaps/`
+runs labelled `base`; the real `main_sync`, every HTTP request recorded by an
+`httpx.MockTransport`). `late` is registered in `session_start` (keyed), `other` in
+`setup()` (keyed):
+
+| Row | `76055424` | round 5 |
+| --- | --- | --- |
+| (B1) `--model late/m1`, the hook `set_model(late/m1)` then `trigger_turn`; print / json / own OR key or none / `--api-key` (`x-set-trigger-*`) | the hook's turn to `/late/v1` (`Bearer late-fake`), then exit 1, "… No prompt was sent." | requests=0, exit 1, the refusal (now true) |
+| the same in RPC (`x-set-trigger-rpc`) | the hook's turn to `/late/v1`, then the hold warning | requests=0 (the `prompt` too), the hold warning |
+| the hook `set_model(other/m1)` then `trigger_turn`; print / RPC (`x-setother-trigger-*`) | the hook's turn to `/other/v1` (`Bearer other-fake`), then the refusal / the warning | requests=0, the refusal / the warning |
+| TUI (pty): `--model late/m1`, the hook `set_model` + `trigger_turn` on rebuilds only; `hi`, `/new` (or `/reload`), `hi` | `/new` (`/reload`): one request to `/late/v1` (`set_model(other)`: `/other/v1`) | 0 throughout |
+| the same after a registered launch on `other` (settings `defaultProvider: late`, `--model m1`) | `hi` → `/other/v1`; `/new` → `/late/v1` | `hi` → `/other/v1`; `/new` → 0, held |
+| the same, then `/model late/m1`, `hi` | — | `/late/v1` (the gate is lifted after the re-hold) |
+| `--model newlab/x` (not late), the hook `set_model(late/m1)` then `trigger_turn`; print / RPC | two requests to `/late/v1` (the hook's turn during `session_start`, then `hi`) | one, carrying `hook-prompt` and `hi` (the handler's model stands; its turn waited) |
+| (B2a) `register` only in a rebuild's `session_start`, `--model late/m1` (OR); `hi`, `/new`, `hi`, `/new`, `hi` (`g1-late-on-rebuild`) | held after the first `/new`; with `_settle_late_route` not recording: the second `/new`'s `hi` → `/late/v1` | the same; that sabotage now fails a test |
+| (B2b) `other` keyless (`setup()`), `late` keyed, settings `defaultProvider: other`, `--model m1`; `/agents use plainprof` (or `--none`), `hi` (`g3-use-second-ask`) | held; without the second ask: `hi` → `/late/v1` | the same; pinned |
+| (B2c) #344's `/reload` row, the provider first registered in `setup()` after `/reload` (`g2-reload-setup`) | `/extprov/v1`; without the end-of-build snapshot: held, NO REQUEST | the same; pinned through the whole launch |
+| (B2d) `--model newlab/x`, the hook `set_model(late/m1)` (`v3-set-notlate`) | `/late/v1`; with the restore overwriting the handler's model: `/or/v1 … newlab/x` | the same; pinned |
+| registered launches whose `session_start` triggers turns (`v3-otherlate-trigger-default(-json, -typed, -rpc)`, `v3-otherlate-keyed-trigger`; TUI `v4-registered-trigger-then-new`) | the hook's turn and `hi` to `/other/v1` | the same (not gated) |
+| every other row of the verifier's and Codex's probes (`live_probe.py`, 59 rows; `extra_probe.py`'s other rows; `tui_probe.py`, 12; `tui_probe4.py`, 4) | — | identical (rc, every request, the refusal line) |
+
+Round 6 (verify round 5 of `a543754c`; the verifier's probes copied to
+`/tmp/367-work/fix6/`, the real `main_sync` with every HTTP request recorded by an
+`httpx.MockTransport`; `late` registered in `session_start`, keyed; the pty rows drive the
+TUI at 120x40):
+
+| Row | `a543754c` | round 6 |
+| --- | --- | --- |
+| (B1) `--model late/m1` (OR key), a `model_select` handler answering the placeholder with `set_model(late/m1)`; RPC `get_state`, `prompt` (`o-ms-handler-rpc`) | the Warning "No prompt will be sent for it", then the prompt to `/late/v1` (`Bearer late-fake`) | requests=0; `get_state` `late/m1 api=unknown`; the prompt refused; the Warning true |
+| the same, TUI in a pty, OR key / none (`v5-ms-launch`, `-noor`) | `hi` → `/late/v1` | `hi` → no request, the hold's refusal |
+| the same, print (`o-ms-handler-print`) | exit 1, the refusal, no request | the same |
+| (B2) a held rebuild: the hook `set_model(late/m1)` on rebuilds and a `model_select` handler answering the placeholder with `set_model(late/m1)`; `hi`, `/new`, `hi` (`v5-msr-rebuild`) | no request; with the settle's check removed: `/new`, `hi` → `/late/v1` | no request; that mutation now fails a test |
+| a `model_select` handler that answers the launch placeholder with `set_model(sessext/m1)` and triggers a turn there (test row) | — | held, no request; with the gate lifted before the hold is applied, that turn went to `sessext` |
+| a handler that triggers a turn and awaits its `agent_end` (no timeout), `--model newlab/x` (not late), print (`o-await-forever-notlate`) | hangs: no output, killed at 18 s (5dee21d1 and 76055424 complete) | rc 0, `WAIT done`, one request to `/or/v1` (`newlab/x`), carrying the handler's message and `hi` |
+| the same with a 4 s timeout (`o-await-agent-end-notlate`) | `WAIT timed out`, then the request | `WAIT done`, then the request |
+| a task a `session_start` handler spawns sets `late/m1` and triggers a turn after the emit returned; RPC (`o-task-set-trigger-rpc`) | the turn to `/late/v1` after the Warning | the same — the extension's own action after the decision (§6) |
+| the other 15 `own_probe.py` rows; the pty rows `g1`–`g6`, `h1`, `h2`, `v5-msr-rebuild`, `v5-type-during-rebuild` (17); `live_probe.py` (59) and `extra_probe.py` (12) with each request's user texts; Codex's `tui_probe.py` (12) and `tui_probe4.py` (4); round 2's pty shapes (23) | — | identical |
+| TUI (pty) `h1-held-new-set-late`: after `/new` | no request, nothing shown for the hook's turn | no request; the hook's refused turn shows `✖ No turn runs while this session's session_start handlers run. The launch model "late/m1" names provider 'late', …` |
+
+Round 7 (verify round 6 of `343e75cd`; this round's kit in `/tmp/367-work/fix7/`, copied
+to `.omc/probes/367-live/fix7/`; the real CLI with every HTTP request recorded by an
+`httpx.MockTransport`, `late` keyed, a `model_select` handler answering the placeholder
+with `set_model(late/m1)`, `send_message(..., trigger_turn=True)` and a 50 ms yield; the
+pty rows drive the TUI at 120x40):
+
+| Row | `343e75cd` | round 7 |
+| --- | --- | --- |
+| (B1) `--agent orprof --model late/m1`, `/agents use --none`, `hi` (`v7-mst-agents-use-orprof`) | `/agents use --none` → `/late/v1/chat/completions m1 Bearer late-fake`, then the Note "No prompt will be sent for it" | no request; `✖ No turn runs while this session is put on hold. The launch model "late/m1" …`, then the Note (true) |
+| (B1) `--model late/m1`, `/model other/m1`, `/agents use --none`, `hi` (`v7-mst-model-then-use`) | the same request at `/agents use --none` | no request |
+| `late` registered on rebuilds only, `--model late/m1` (OR key): `/new`, `hi` (`v7-mst-rebuild-first`; the factory held nothing, so no gate) | `/new` → `/late/v1/chat/completions` | no request; the refused turn shown |
+| the launch with the same handler (`v7-mst-launch`; corrected in round 8: that scenario's settle returned without applying a hold, so it measured no factory-held rebuild) | no request (gated by the caller) | the same. The factory-held path was measured by verify round 7 (`p03`–`p06`, `p22`: no request) and is pinned by the unit row `rebuild-held` of `test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing` |
+| a task a `session_start` handler spawned with no delay sets `late/m1` and triggers a turn; RPC (`o-task-set-trigger-rpc`) | the turn to `/late/v1` after the Warning | no request: the task acts inside the launch's `apply` (its `set_model` is undone by the check, which comes last; its trigger is refused) — with a 0.3 s delay it acts after the decision and both trees send it (§6) |
+| verify5's `live_probe.py` (59) and the other 16 `own_probe.py` rows; Codex's `live_probe.py` (37) and `tui_probe.py` (9); the 21 other pty scenarios of verify5's `tdrive.py`; round 2's pty shapes (`drive.py`, 43, fixtures rebuilt); #362's launch matrix (46, `5dee21d1` vs round 7: A26–A28 only) | — | identical (rc, every request with its user texts) |
+
+Round 8 (verify round 7 of `f3fd162c` and Codex pass 7; this round's kit in
+`/tmp/367-work/fix8/`, copied to `.omc/probes/367-live/fix8/`; verify7's pty driver
+`vdrive.py` and RPC driver `vrpc.py` and Codex's `live_probe.py`, the real CLI with every
+HTTP request recorded by an `httpx.MockTransport`; `late` keyed in `session_start`,
+`other` keyed in `setup()`, a `model_select` handler answering the placeholder with
+`set_model(late/m1)`, a `trigger_turn` and a 50 ms yield unless noted):
+
+| Row | `f3fd162c` | round 8 |
+| --- | --- | --- |
+| (V-B1) TUI launch `--model late/m1`, `hi` (`p01`, `-noor` `p02`) | no request; `✖ No turn runs while this session's session_start handlers run. The launch route is not decided yet: …` under the Warning | no request; `✖ No turn runs while this session is put on hold. The launch model "late/m1" names provider 'late', …` |
+| (V-B1) a factory-held rebuild: `/new`, `/reload`, `/fork`, `/resume` (`p03`–`p06`), and after a registered launch (`p22`) | no request; `✖ No turn runs while this session's session_start handlers run. The launch model …` | no request; `✖ No turn runs while this session is put on hold. …` |
+| (V-B1) RPC launch `get_state`, `prompt`, `new_session`, `clone` (`vrpc.py` `r1`, `r2`, `r4`, `r5`) | no request; the handler's refused turn `[error] No turn runs while this session's session_start handlers run. …` | no request, the same states; `[error] No turn runs while this session is put on hold. …` |
+| RPC `r3-rebuild-first` (the rebuild whose `session_start` first registered the provider) | no request; the refused turn already `[error] No turn runs while this session is put on hold. …` (the gate `LateRouteHold.apply` puts up itself there, since round 7) | the same |
+| a `session_start` handler that triggers a turn, no `model_select` action (`p23`, `p23b`) | `✖ No turn runs while this session's session_start handlers run. The launch route is not decided yet: …` | the same (true there: `session_start` is running) |
+| (C-P2) the `session_start` handler triggers a turn and awaits it; that turn's `input` (or `before_agent_start`) handler registers `sessext`; `--model sessext/m1`, print / json / RPC / TUI | `REGISTERED_IN input`; print/json exit 1 "… which an extension registered in a session_start handler …", RPC/TUI held; no request | the same, "… which an extension registered while session_start handlers ran …"; no request |
+| (C-P3) `other` in `setup()`, `set_model(other/m1)` in `session_start`, `--model newlab/x -p hi` | the request to `/EXT/v1`; `Note: Model "newlab/x" is not in this build's catalog; sending it to OpenRouter as written.` | the request to `/EXT/v1`; no Note |
+| every other pty scenario of `vdrive.py` (32 in all, incl. the controls `c01`–`c07`) and `vrpc.py` (5) | — | every request identical; text differs only in the refused-turn reason above and the late-provider wording |
+| #362's launch matrix (46, `5dee21d1` vs round 8) | — | A26–A28 only (EXT request → no request, the refusal); the guard-2 `Note:` (3 rows) and custom-id `Warning:` (7) lines identical |
+
+Round 9 (verify round 8 of `29499345`: no request anywhere, two blocking items; this
+round's kit in `/tmp/367-work/fix9/`, copied to `.omc/probes/367-live/fix9/`; `trace9.py`
+(from verify8's `cp2_timing_trace*.py`) and verify8's `cp3_probe.py` run the real CLI with
+every HTTP request recorded by an `httpx.MockTransport`, `EMIT_START` / `EMIT_DONE`
+traced around the `session_start` emit; `--model sessext/m1` with an OpenRouter key):
+
+| Row | `29499345` | round 9 |
+| --- | --- | --- |
+| (B1) the `session_start` handler triggers a turn and returns at once; that refused turn's `input` / `before_agent_start` handler registers `sessext` (`ff-input`, `ff-bas`), print and RPC | `EMIT_DONE session_start` then `REGISTERED_IN input`; exit 1 (RPC held), no request; "… which an extension registered while session_start handlers ran …" — false: they had returned | the same order, exit 1 (RPC held), no request; "… which an extension registered while a session was starting (for example in a session_start handler), after the launch model was chosen. …" |
+| (B1) a task the handler spawned with no delay (`task0`); a task `setup()` spawned that registers once `session_start` fired (`setup-task`); print and RPC | `EMIT_DONE` then `REGISTERED_IN task` / `setup-task`; refused, no request; the round-8 text (false) | the same; the round-9 text |
+| the handler awaits its trigger (`await-input`) or registers itself (`ss-direct`) | `REGISTERED_IN` before `EMIT_DONE`; refused; the round-8 text (true there) | the same; the round-9 text (true too) |
+| (B2) `set_model(openrouter/vendor/other-model)` with `--model newlab/x`, `set_model(anthropic/claude-other-1)` with `--model anthropic/claude-new-9` (same provider, another id), `set_model(other/newlab/x)`, `set_model(other/claude-new-9)` (same id, another provider) | the request where the handler moved it; no `Note:` / `Warning:` | identical; now pinned: a check of the provider alone, or of the id alone, fails two rows each (before, both passed all 336) |
+| `LateRoute.landing_reason`'s fallback (an automatic pick lands on a late provider before any hold was made) | the round-8 text, no row | the round-9 text, pinned by a row |
+| fix8's pty driver `vdrive.py` (all 32 scenarios) and RPC driver `vrpc.py` (`r1`–`r5`), `29499345` vs round 9 | — | requests identical in 32 of 32 and 5 of 5 (`cmp9.py`); in the full captures every message kind occurs as often on both trees, the late text in round 9's wording wherever `29499345` printed round 8's (35 of 37 runs; none left in round 9's captures; `cmp9count.py`) |
+| #362's launch matrix (46, `5dee21d1` vs round 9) | — | A26–A28 only (EXT request → no request, the refusal in round 9's wording); every row's hits and exit code as in round 8's run; the guard-2 `Note:` (3 rows) and custom-id `Warning:` (7) lines identical |
 
 ### 2.12 Messages
 
@@ -926,7 +1334,10 @@ credentials) found nothing. Found, and what round 4 did (each probe re-run from 
   `selected "openai", success true` (`api.openai.com … Bearer project-fake`) → `selected
   "unknown", success false`, as without it.
 - **F4 (P2, availability)** — a late provider authenticated only by `--api-key` is refused.
-  **Known, handed to #367** (§2.11); `late-typed` unchanged.
+  **Known, handed to #367** (§2.11); `late-typed` unchanged. **Closed by #367 (2026-10-03)**:
+  the launch refuses every launch model only a `session_start` provider could serve, as pi
+  does, so this input gets the same
+  refusal and guidance as any other (`test_api_key_with_a_session_start_provider_is_refused_the_same_way`).
 - **F5 (P2)** — the owned-branch refusal named the wrong cause. **Fixed** (§2.8):
   `custom-scoped-refusal` now "model 'MyGw/m2' is one 'MyGw' (a provider you defined) lists,
   but it is not offered here: /scoped-models excludes it, or it is not runnable in this
@@ -1115,7 +1526,123 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   id (round 5's R1 row) — nothing the user holds offers another route, the residual above.
 - **RPC `set_model`** names its provider, so a `.env` key authenticates the route the
   client named (§2.8, pinned).
-- **A late provider authenticated only by `--api-key`** is refused (§2.11, F4) — #367.
+- **A held RPC session cannot leave the hold** (§2.11): `aelix --mode rpc` wires no model
+  registry, so `set_model` and `cycle_model` refuse; the warning says to restart with
+  another `--model`. Wiring the registry is a follow-up (pre-existing; #367's verify
+  round 1, N1).
+- **A `/model` to a `session_start` provider lasts until the next rebuild** and is saved
+  as the default, so the next launch without `--model` is refused (§2.11) — aelix's
+  rebuild re-derives the model from the launch inputs where pi keeps the session's.
+- ~~**A late provider authenticated only by `--api-key`** is refused (§2.11, F4) — #367.~~
+  Closed 2026-10-03: #367 refuses every launch model only a `session_start` provider
+  could serve (§2.11).
+- **D4's cost — a turn a `session_start` handler triggers on a pending launch, or in a
+  held rebuild, does not run there** (§2.11): while those handlers run, turns are held
+  (the turn gate), so `send_message(..., trigger_turn=True)` does not start one — whatever
+  model a handler set first — even when the launch turns out not late and its route is
+  put back afterwards. Since round 6 the trigger ends as a refused turn (its `agent_end`
+  arrives, nothing is sent) and its message, that turn's prompt, goes out with the next
+  prompt that is sent (measured, `--model newlab/x` with a triggering handler: 9e233be9
+  sent the handler's turn and then `hi`; here one request, carrying `hook-prompt` and
+  `hi`; with the handler's own `set_model` first, the one request goes to the model it
+  set). An interactive session shows that refused turn like any failed one (`✖` and the
+  gate's reason) when it happens in a rebuild; at launch it runs before the TUI starts,
+  and the TUI shows it when it starts (`✖ No turn runs while this session's session_start
+  handlers run. The launch route is not decided yet: …`, under the Warning; measured in
+  round 8 with a `session_start` handler that triggers a turn and no `model_select`
+  action — `.omc/probes/367-live/fix8/vprobe/` `p23-launch-ss-trigger` and
+  `p23b-launch-ss-trigger-nosession`, as verify round 7's; round 7 cited fix7's
+  `v7-mst-launch` here, whose `session_start` triggers nothing: the `✖` line it showed was
+  a `model_select` handler's turn refused under the launch's gate with that stale reason,
+  V-B1). A turn a `model_select` handler triggers while a hold is applied is refused the
+  same way and its message also goes out with the next prompt that is sent; its `✖` line
+  carries the hold's reason (`No turn runs while this session is put on hold. …`).
+  A handler that waits for the session — or registers its provider in `setup()` — is
+  unaffected; a launch on a registered provider is never pending and never gated. A
+  handler reading `ctx.model` there sees the placeholder.
+- **After the decision, a task a `session_start` handler spawned acts outside the hold.**
+  The gate and the hold cover the handlers' run, the decision after it and every
+  application of a hold (round 7); a task the
+  handler started that, later, calls `set_model` onto the late provider and triggers a
+  turn is the extension's own action in a running session, like an extension's
+  `set_model` at any other time, and the turn is sent there — in a held interactive or
+  RPC session too (measured, `o-task-set-trigger-rpc`: the Warning, then the hook's turn
+  to `/late/v1`; print/json had already exited). So is an `input` or
+  `before_agent_start` handler's `set_model` before a prompt the user sends in the held
+  session (verify round 6 measured it). Stated, not changed.
+- ~~**A handler that itself picks a model and triggers a turn inside `session_start`**
+  runs that turn before the hold is re-applied.~~ Closed in round 5 (verify round 4, B1):
+  measured, it was not only the extension's own request — print/json then said "No prompt
+  was sent."; the turn gate holds it (§2.11).
+- **The gate covers a pending launch and a HELD rebuild, not every rebuild whose route is
+  pending.** A rebuild the factory does not hold (no late provider recorded yet) whose
+  `session_start` registers a provider for the first time, `set_model`s onto it and
+  triggers a turn sends that turn there; the after-`session_start` seam records the
+  provider and holds the rebuild after it (`--model late/m1` with an OpenRouter key, the
+  handler doing all three on rebuilds only: `/new` → one request to `/late/v1` on
+  `76055424` and here, then held). Gating every guard-2 rebuild would also queue the
+  `session_start` turns of sessions with no late provider at all; stated, not changed (an
+  owner call). What aelix does after that `session_start` is gated: the seam's re-hold
+  runs under the turn gate since round 7, so a `model_select` handler answering its
+  placeholder cannot send a turn (`v7-mst-rebuild-first`, §2.11).
+- **An RPC client gets no notice when a rebuild holds**: `new_session` and `clone` answer
+  `success`, `get_state` then shows `api=unknown`, and each `prompt` fails on stderr with
+  `[rpc] prompt task failed: StreamSimpleError("No provider registered for api='unknown' …")`
+  (measured, a registered launch on `other` with settings `defaultProvider` naming the
+  late provider). The client cannot leave that hold either (no model registry in `--mode
+  rpc`, above).
+- **An RPC `new_session` (or `clone`) is handled concurrently with the commands sent after
+  it**, so a `get_state` sent before `new_session`'s response can show a transient model —
+  the rebuild's model before its hold is re-applied (`other/m1` or `late/m1` with a real
+  `api`; verify round 7's `vrpc.py` `r2-held-rebuild`, `r3-rebuild-first`) — and a `prompt`
+  in that window is refused by the turn gate, nothing sent (verify round 7, the same rows).
+  The window is timing-dependent: round 8's re-run of those rows on `f3fd162c` and on
+  round 8 answered the held state (`late/m1 api=unknown`) at every `get_state`. A client
+  that waits for `new_session`'s response before its next command sees the held state.
+  Stated, not changed (pre-existing RPC dispatch: every command runs in a task of its own).
+- **A launch that resolved to a registered provider runs there, and its rebuilds are held
+  where they land late** (§2.11, B1) — e.g. `--model m1` served by a `setup()` provider,
+  with a `session_start` provider serving `m1` too and settings `defaultProvider` naming
+  it: the launch and its `session_start`'s turns run on the `setup()` provider, as in pi;
+  `/new`, `/fork`, `/resume`, `/reload` and an implicit `/agents use` re-resolve the inputs
+  onto the late provider and are held until `/model` picks one. pi keeps the session model
+  across a new session; aelix's rebuild re-derives it from the launch inputs, so the
+  session the user started on stops at its first rebuild. Stated, not changed here.
+  (Round 3 refused the launch itself instead — after its `session_start` had run turns on
+  it; withdrawn in round 4.)
+- **A provider registered after aelix's check after `session_start`** — in a handler of
+  a turn the user sends (`input`, `turn_start`, a tool handler, say), or by a task an
+  extension started that registers only after that check (after a delay, say) — is outside the late definition (`LateRoute` records only what arrives
+  between the end of a build and that check, §2.11), so a rebuild whose re-resolve lands
+  on it switches there, as the rebuild of a launch whose inputs name a `setup()` provider
+  does. Measured for a delayed spawned task (the verifier's `g6-deferred-register`,
+  `--model late/m1` with an OpenRouter key: `hi` → `/or/v1`, `/new`, `hi` → `/late/v1`, on
+  `76055424` and here); pi keeps the session model across a new session, so it would
+  stay on OpenRouter. The other hooks by construction, not measured. Inside the window it
+  is late whatever registered it (round 9, verify round 8, B1, corrected from round 8's
+  wording here): at a pending launch a task a `session_start` handler spawned with no
+  delay, and the `input` / `before_agent_start` handler of a turn a handler triggered
+  fire-and-forget, register AFTER the emit returned — that refused turn runs after it,
+  while aelix waits it out — and before the check, and are refused (`trace9.py`:
+  `EMIT_DONE session_start` then `REGISTERED_IN task` / `input`, exit 1, no request).
+- ~~**The guard-2 Note can be wrong after `session_start`**~~ — closed in round 8 (Codex
+  pass 7, C-P3). `Note: Model "newlab/x" is not in this build's catalog; sending it to
+  OpenRouter as written.` was printed whenever the launch was guard 2 and not late, also
+  when a `session_start` handler had called `set_model` onto another provider — the
+  extension's own action, whose choice stands (D4), so the prompt went there (Codex's
+  `note` witness: a `setup()` provider `other`, `set_model(other/m1)` in `session_start`,
+  `--model newlab/x -p hi` → the request to `/EXT/v1`, the Note still printed; the
+  verifier's `v3-set-notlate` the same). The launch's resolver line (the guard-2 `Note:`,
+  the custom-id `Warning:`) is now printed only while the harness, after `session_start`,
+  is still on the launch route's model (same provider and id); when an extension moved
+  it, nothing is printed — where the prompt goes is then the extension's to say.
+- **A provider first registered in `session_start` and later moved to `setup()` by a
+  `/reload`-ed extension stays late** for that process (the record is of what arrived in a
+  `session_start`; by construction, not measured); a restart clears it. A provider a
+  `/reload`-ed extension registers in `setup()` for the first time is not late (#344's
+  reload row, `test_a_provider_registered_only_after_reload_is_the_rebuilt_model`, and
+  through the whole launch and the after-`session_start` seam,
+  `test_a_provider_a_reloaded_extension_registers_in_setup_is_not_late`).
 - **The record trusts its inheritance**: a name in an inherited `AELIX_DOTENV_ADMITTED`
   stays "planted" in a nested process even if the user re-exports it there (fail-closed:
   the key authenticates but does not choose).
@@ -1123,15 +1650,17 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   namespace ids, `auto`) is OpenRouter's answer, not aelix's; see §3 for the one measured.
 - **Mixed-case control names on Windows** (`Aelix_Future_API_KEY` slips past
   `_DOTENV_NEVER`'s case-sensitive `^AELIX_`) predate this and are a follow-up.
-- #363 (the launch composition and a re-pointed built-in's key order), #365, #367 (the late
-  path refuses), #368, #369 (an untrusted project's settings, the pair above).
+- #363 (the launch composition and a re-pointed built-in's key order), #365, #368, #369 (an
+  untrusted project's settings, the pair above). #367 (the late path refuses) is closed
+  (§2.11, 2026-10-03).
 
 ## 7. Owner decisions recorded here
 
 Decided by the owner (2026-10-02): pi's order; guard 1 and guard 2 as worded (guard 2's
 widening and narrowings are items 1 and §2.3); exact ids;
 `OPENROUTER_DEFAULT_MODEL` shell-only; `openrouter/` stripped; aelix's provider case rule;
-the late path kept until #367.
+the late path kept until #367 — which refused it (owner decision 2026-10-02 on #367: follow
+pi; §2.11, 2026-10-03).
 
 Decided in this lane, each with the recommendation followed and put to the owner:
 

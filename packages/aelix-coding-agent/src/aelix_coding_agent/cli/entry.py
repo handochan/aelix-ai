@@ -1871,6 +1871,26 @@ async def _resolve_project_trust(
     return trusted
 
 
+#: #367 verify round 4, B1 — the first sentence of every turn-gate reason
+#: (``AgentHarness.hold_turns``): a turn refused while a ``session_start`` runs
+#: for an undecided launch route, or for a rebuild under the late-provider hold.
+_SESSION_START_GATE = "No turn runs while this session's session_start handlers run."
+
+
+async def _finish_refused_turns(harness: AgentHarness) -> None:
+    """#367 verify round 5 — wait out a turn the turn gate refused.
+
+    A ``session_start`` handler's ``trigger_turn`` while turns are held runs as
+    a refused turn (``AgentHarness.hold_turns``) in a task of its own. One loop
+    pass lets a task created at the end of the emit claim its turn; waiting for
+    idle then lets it release, so the turn after the decision (the print
+    prompt, a queued RPC prompt) does not find the harness busy.
+    """
+
+    await asyncio.sleep(0)
+    await harness.wait_for_idle()
+
+
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
@@ -2807,6 +2827,17 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
+    # #367 — the late-provider rule (``runtime_bootstrap.LateRoute``): a provider
+    # in the registry now that was not there when the launch route was chosen is
+    # LATE, and every implicit re-resolution of the launch inputs that lands on
+    # one is held. ``launch_providers`` is filled after the first build (until
+    # then every check is off). The SAME object reaches every reader: this
+    # factory, the runtime's after-``session_start`` callback, the launch block
+    # below, ``AgentProfileService`` and ``run_tui`` (round 3, D1–D3).
+    from .runtime_bootstrap import LateRoute
+
+    late_rule = LateRoute(model_registry, default_provider)
+
     async def _harness_factory(
         new_session: Session, *, reload_seed: ReloadSeed | None = None
     ) -> AgentHarness:
@@ -2868,6 +2899,19 @@ async def _async_main(argv: list[str]) -> int:
             # session when --tools named a since-removed extension tool).
             on_reload=reload_seed is not None,
         )
+        held = late_rule.hold_for(parsed.model, parsed.provider)
+        if held is not None:
+            # #367 — a rebuild (/new /fork /resume /reload) re-resolves the
+            # launch inputs over a registry that still holds the providers an
+            # earlier ``session_start`` registered. Where that LANDS on one of
+            # them (whatever pair ``/agents use`` left in ``parsed``), it would
+            # quietly run what the launch refused; the rebuild starts held
+            # instead, so nothing its ``session_start`` triggers is sent there,
+            # and ``_settle_late_route`` re-applies the hold after that
+            # ``session_start`` (a hook's ``set_model`` does not release it).
+            # Off for the first build (``launch_providers`` unset) and after an
+            # explicit ``/agents use`` pick (``late_rule.explicit``).
+            opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
         # ``AgentHarness.__init__`` validates the seed at ``core.py:705``, AFTER
@@ -2977,6 +3021,17 @@ async def _async_main(argv: list[str]) -> int:
         # ``harness.prompt_templates`` and was therefore always advertising an
         # empty list.
         harness.set_prompt_templates(prompt_template_result.templates)
+        if held is not None:
+            # #367 verify round 4, B1 — the TURN GATE. The placeholder above
+            # only covers turns on the held model: a handler in this
+            # rebuild's ``session_start`` could ``set_model`` and then trigger
+            # a turn before ``_settle_late_route`` re-holds. No turn of any
+            # kind starts until that callback re-applies the hold and lifts it.
+            harness.hold_turns(f"{_SESSION_START_GATE} {held.reason}")
+        # #367 — this build is done and its ``session_start`` is next: what the
+        # registry gains between here and the after-``session_start`` check is
+        # what that handler registered (``LateRoute``).
+        late_rule.before_session_start()
         return harness
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
@@ -3029,6 +3084,10 @@ async def _async_main(argv: list[str]) -> int:
             model_registry=model_registry,
             active=active_profile,
             confirm_project=_confirm_project_agent_in_session,
+            # #367 — ``use`` resets ``parsed`` to the CLI baseline and
+            # re-resolves it when the profile names no route of its own; where
+            # that lands on a late provider it holds instead (round 3, D1).
+            late_route=late_rule,
         )
     # Forwarded to ``run_tui`` as a kwarg only when it exists: the TUI half of
     # ADR-0196 (the ``agent_service`` parameter + the ``/agents`` command) lands
@@ -3062,9 +3121,8 @@ async def _async_main(argv: list[str]) -> int:
         return 1
     # #362 / ADR-0250 — the launch route as the first build resolved it (the
     # registry is bound, ``session_start`` has not run): its ``warning`` (a
-    # custom id, guard 2) is printed once below, after the late-registration
-    # switch has had its say; rebuilds (/new /fork /resume /reload) do not
-    # reprint it.
+    # custom id, guard 2) is printed once below, unless the late-route check
+    # refused the model; rebuilds (/new /fork /resume /reload) do not reprint it.
     launch_route = resolve_route(
         parsed.model,
         parsed.provider,
@@ -3072,18 +3130,53 @@ async def _async_main(argv: list[str]) -> int:
         default_provider,
         typed_key=parsed.api_key is not None,
     )
+    # #367 — the providers the launch model could name: those ``setup()``
+    # registered (replayed before the resolve above), models.json's. Taken before
+    # ``create_agent_session_runtime`` runs ``session_start``, so the late-route
+    # check below can tell a provider that arrived there from one that was here.
+    from .runtime_bootstrap import user_defined_providers
+
+    launch_providers = user_defined_providers(model_registry)
+    late_rule.launch_providers = launch_providers
+    # #367 round 3, D4 — a launch route no registered provider claimed (guard 2
+    # sends the string to OpenRouter as written; an unresolved placeholder) is
+    # PENDING while ``session_start`` runs: a provider registered there may turn
+    # out to be where the inputs land. The harness then sits on ``Model(id,
+    # provider)`` with ``api='unknown'`` for the handlers' duration, so a turn a
+    # handler triggers is refused like any unresolvable model instead of being
+    # sent on the launch route (Codex round 3, finding 1: a ``trigger_turn``
+    # reached OpenRouter with the user's key), and ``--api-key`` waits for the
+    # late decision below.
+    launch_model = harness.current_model
+    launch_pending = launch_route.kind == "guard2" or (
+        getattr(launch_model, "api", "") == "unknown"
+    )
+    if launch_pending:
+        # #367 verify round 4, B1 — the TURN GATE (``AgentHarness.hold_turns``).
+        # The placeholder below covers turns on the launch model only: a
+        # handler could ``set_model`` (onto the late provider, or any other)
+        # and then trigger a turn, which went out before the decision said "No
+        # prompt was sent." While the route is undecided no turn of any kind
+        # starts, whatever model is current; the gate is lifted only after the
+        # late decision below (a print/json refusal never lifts it).
+        harness.hold_turns(
+            f"{_SESSION_START_GATE} The launch route is not decided yet: a provider "
+            "registered there may be where the launch model lands."
+        )
+    api_key_provider = ""
     if parsed.api_key is not None:
         # #344 — see the ``--api-key`` block above: the key follows the model the
         # harness resolved (after extensions loaded), falling back to the early
         # resolve only if that model somehow names no provider. A route that did
         # not resolve (ambiguous, not found — its placeholder may still carry
-        # the typed prefix as a provider) gets no key; the late switch below
-        # attaches it if ``session_start`` makes the string runnable.
-        _attach_api_key(
+        # the typed prefix as a provider) gets no key.
+        api_key_provider = (
             ""
             if launch_route.error is not None
-            else getattr(harness.current_model, "provider", "") or api_key_fallback_provider
+            else getattr(launch_model, "provider", "") or api_key_fallback_provider
         )
+        if not launch_pending:
+            _attach_api_key(api_key_provider)
     # #122 / #198 — the STARTUP analogue of the in-session /resume fix. This
     # startup build bypasses ``AgentSessionRuntime._finish_session_replacement``,
     # so a ``--continue``/``--resume`` (also ``--session``/``--fork``) into a
@@ -3094,6 +3187,15 @@ async def _async_main(argv: list[str]) -> int:
     thinking_level_restored = await _seed_startup_state(
         harness, session, cli_level=parsed.thinking, read_only=session_read_only
     )
+    from aelix_ai import streaming
+
+    pending_model: Any = None
+    if launch_pending and launch_model is not None:
+        # Assigned, not ``set_model``: no ``model_select`` is fired for a model
+        # nobody selected, and the restore below is as quiet (D4). After the
+        # startup seed, which clamps the thinking level against the real route.
+        pending_model = streaming.Model(id=launch_model.id, provider=launch_model.provider)
+        harness.state.model = pending_model
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs
     )
@@ -3126,54 +3228,126 @@ async def _async_main(argv: list[str]) -> int:
     # ``is_runnable`` fails OPEN when no api adapter is registered — embedders and
     # tests reach ``_async_main`` without ``register_providers`` (that runs in
     # ``main_sync``), so this stays silent for them rather than warning falsely.
-    startup_model = harness.current_model
-    # #344 — a provider registered in ``session_start`` arrived after that model
-    # was chosen (``runtime_bootstrap.late_registered_route``), so the harness
-    # holds it as an OpenRouter id (ADR-0250 guard 2) or on the not-found
-    # placeholder (no OpenRouter key of the user's own). Every mode switches the harness to the
-    # provider through the ``/model`` path itself (``cli.model_switch``) before
-    # the first prompt — interactive and RPC since fix round 2 (D1; they used to
-    # warn and then send it to OpenRouter), print and json since round 3 (R4b;
-    # they used to refuse, the one mode that did not honour ``-e ext --model
-    # <its provider>/<id>``). Nothing is persisted (R4a). If ``/model`` itself
-    # would refuse the switch, the harness is held on a model no turn entry runs:
-    # interactive and RPC start and say to run ``/model``; print and json, which
-    # have no ``/model``, refuse the run.
-    from .runtime_bootstrap import ambiguous_route_message, late_registered_route
+    # #367 — a provider registered in ``session_start`` arrived after the launch
+    # route was chosen. pi resolves the launch model at startup, before any
+    # ``session_start`` (``AgentSession.bindExtensions`` fires it after
+    # ``main.ts`` resolved the model), and exits 1 when the resolver finds
+    # nothing; a provider registered later does not touch that launch. So the
+    # refusal is for a PENDING launch only (D4: guard 2's OpenRouter-as-written
+    # or an unresolved placeholder — no registered provider claimed the route),
+    # judged by where the launch INPUTS land over the registry as it is now, not
+    # by the model a handler may have set (round 3, D2; Codex finding 2): print
+    # and json exit 1 before any request; interactive and RPC start held on
+    # ``Model(id, provider)`` with ``api='unknown'``, which every turn entry
+    # refuses before a request, until ``/model`` picks a model. A launch that
+    # resolved to a REGISTERED provider stays on it (#367 verify round 3, B1:
+    # the round-3 refusal of that launch came after its ``session_start`` had
+    # already run turns on it, as pi does) even when its inputs would now land
+    # on a late provider — but every LATER implicit re-resolution of those
+    # inputs that lands there is held (``late_rule``: the factory, the after-
+    # ``session_start`` callback, ``/agents use``, the post-login pick), since
+    # aelix's rebuilds re-resolve where pi keeps the session model.
+    # #344 switched instead (ADR-0249 §2.3 until its 2026-10-03 amendment).
+    from .runtime_bootstrap import ambiguous_route_message
 
-    late_route = late_registered_route(parsed.model, parsed.provider, startup_model, model_registry)
+    if launch_pending:
+        # #367 verify round 5 — a turn the gate refused (a handler's
+        # ``trigger_turn``) finishes before the decision, so its release cannot
+        # race the first prompt.
+        await _finish_refused_turns(harness)
+    late_rule.after_session_start()
+    launch_hold = late_rule.hold_for(parsed.model, parsed.provider) if launch_pending else None
+    late_route = launch_hold.reason if launch_hold is not None else None
     late_route_refusal: str | None = None
     late_route_held = False
-    if late_route is not None and parsed.model:
-        from .model_switch import switch_to_late_registered_route
-
-        headless = app_mode in ("print", "json")
-        notice, outcome = await switch_to_late_registered_route(
-            parsed.model,
-            harness=harness,
-            model_registry=model_registry,
-            settings_manager=settings_manager,
-            interactive=not headless,
-        )
-        if outcome == "failed" or (outcome == "held" and headless):
+    if launch_hold is not None:
+        # Pending, so ``--api-key`` was never attached (D4): nothing to take back.
+        if app_mode in ("print", "json"):
             # Refused inside the ``try`` below so its ``finally`` disposes the
             # runtime and the MCP connections as every other exit does.
-            late_route_refusal = notice
+            late_route_refusal = f"{launch_hold.reason} No prompt was sent."
+        elif await launch_hold.apply(harness) is not None:
+            # A ``model_select`` handler refused the placeholder.
+            late_route_refusal = launch_hold.reason
         else:
-            late_route_held = outcome == "held"
-            label = "Note" if outcome == "switched" else "Warning"
-            indent = " " * (len(label) + 2)
-            print(f"{label}: " + notice.replace("\n", "\n" + indent), file=sys.stderr)
-        switched_provider = getattr(harness.current_model, "provider", "")
-        if outcome != "failed" and parsed.api_key is not None and switched_provider:
-            # X' — ``--api-key`` follows the provider the run REALLY uses. It was
-            # attached to ``openrouter`` above, before ``session_start``; leaving
-            # it there would put the key meant for this provider one ``/model``
-            # away from being sent to OpenRouter.
-            auth_storage.remove_runtime_api_key(getattr(startup_model, "provider", ""))
-            auth_storage.set_runtime_api_key(switched_provider, parsed.api_key)
-        startup_model = harness.current_model
-    elif launch_route.warning and launch_route.error is None:
+            late_route_held = True
+            # #367 verify rounds 5-6 — applied AND checked (``apply``) under
+            # this launch's own turn gate (whose reason ``apply`` swaps for the
+            # hold's while it runs, verify round 7), which ``apply`` leaves up
+            # and which is lifted only here, once a turn a ``model_select`` handler
+            # triggered has ended: a handler's ``set_model`` off the placeholder
+            # is undone before the Warning says no prompt will be sent. The
+            # placeholder refuses every turn from here; ``/model`` leaves it.
+            harness.hold_turns(None)
+            if app_mode == "rpc":
+                # #367 verify round 1, N1 — not "run /model": ``aelix --mode
+                # rpc`` wires no model registry, so ``set_model`` and
+                # ``cycle_model`` answer "requires a ModelRegistry"; nothing
+                # in this session can leave the hold (a follow-up).
+                remedy = (
+                    "No prompt will be sent for it, and this RPC session cannot "
+                    "select another model (set_model has no model registry in "
+                    "--mode rpc); restart with another --model."
+                )
+            else:
+                remedy = "No prompt will be sent for it; run /model to select a model."
+            print(f"Warning: {launch_hold.reason}\n         {remedy}", file=sys.stderr)
+    elif launch_pending:
+        # Not late: the launch route stands (D4). Put it back unless a handler
+        # chose a model of its own (an extension's ``set_model`` is its
+        # business, as before #367), then attach ``--api-key`` to it.
+        if launch_model is not None and harness.state.model is pending_model:
+            harness.state.model = launch_model
+        if parsed.api_key is not None:
+            _attach_api_key(api_key_provider)
+        # Decided, not late: turns run from here. A handler's ``trigger_turn``
+        # while the gate was up ran as a refused turn (verify round 5): its
+        # message is in the conversation the first prompt carries, as a failed
+        # turn's is.
+        harness.hold_turns(None)
+
+    async def _settle_late_route(rebuilt: AgentHarness, _reason: str) -> None:
+        # #367 round 3, D3 — after every rebuild's ``session_start``, before any
+        # turn: the factory started the rebuild held where the launch inputs land
+        # on a late provider, and a handler's ``set_model`` there must not
+        # release it (Codex finding 3: ``/new`` then ``hi`` reached the late
+        # provider). Overwritten, through ``set_model`` like the launch's hold;
+        # a ``model_select`` handler that refuses it still leaves the state on
+        # the placeholder (``set_model`` assigns before it emits). Verify round
+        # 4, B1: the factory's turn gate is lifted only here, once the hold is
+        # re-applied (or found not owed).
+        try:
+            if rebuilt.turns_held is not None:
+                await _finish_refused_turns(rebuilt)
+            late_rule.after_session_start()
+            hold = late_rule.hold_for(parsed.model, parsed.provider)
+            if hold is None or hold.holds(rebuilt.current_model):
+                return
+            # Verify rounds 5-6 — the launch hold's helper, gated (the factory's
+            # gate, or its own): whatever ``set_model`` or its ``model_select``
+            # handlers did, nothing is sent and the rebuild ends on the placeholder.
+            await hold.apply(rebuilt)
+        finally:
+            rebuilt.hold_turns(None)
+
+    runtime.set_after_session_start(_settle_late_route)
+    startup_model = harness.current_model
+    # #367 Codex pass 7, C-P3 — the resolver's line describes the LAUNCH ROUTE;
+    # it is printed only while the harness is still on it after
+    # ``session_start``. An extension that moved it there (``set_model`` onto a
+    # provider it registered in ``setup()``) is where the prompt goes: "sending
+    # it to OpenRouter as written" was false then, and nothing is printed (the
+    # move is the extension's own action, ADR-0250 §6).
+    launch_route_stands = startup_model is not None and (
+        getattr(startup_model, "provider", None),
+        getattr(startup_model, "id", None),
+    ) == (launch_route.model.provider, launch_route.model.id)
+    if (
+        late_route is None
+        and launch_route.warning
+        and launch_route.error is None
+        and launch_route_stands
+    ):
         # pi prints a resolver warning before the run (``main.ts``); a custom id
         # and guard 2's "as written" are the two. stderr only — print/json
         # stdout stays byte-clean.
@@ -3303,6 +3477,10 @@ async def _async_main(argv: list[str]) -> int:
                 # ADR-0196 — the /agents service (see its construction above for
                 # why this is conditional rather than a plain kwarg).
                 **agent_service_kwarg,
+                # #367 — the post-login pick is the TUI's one automatic model
+                # choice; it does not land on a late provider, and a turn on the
+                # held placeholder repeats the hold's reason (``LateRoute``).
+                late_route=late_rule,
                 # #23 — the verdict, decided above where every provider source
                 # is visible. The TUI owns the flow (run_login needs the LIVE
                 # dialog callables, which only exist once the chrome runs), so
@@ -3354,6 +3532,18 @@ async def _async_main(argv: list[str]) -> int:
                 default_provider,
                 typed_key=parsed.api_key is not None,
             )
+            if (
+                not launch_pending
+                and launch_route.error is None
+                and late_rule.late()
+                and (turn_route.error is not None or late_rule.lands(turn_route.model))
+            ):
+                # #367 verify round 3, B1 — the launch resolved to a registered
+                # provider and stays there; this re-resolve runs after
+                # ``session_start`` and lands on (or is made ambiguous by) a
+                # provider registered there, which this run does not use. Judge
+                # the launch route the turn really takes.
+                turn_route = launch_route
             turn_model = turn_route.model
             if turn_route.error is not None:
                 # ADR-0250 — pi's own refusal for an ambiguous or unknown
@@ -3371,13 +3561,22 @@ async def _async_main(argv: list[str]) -> int:
             # "No provider registered for api='unknown'" at the first turn.
             # Checked before auth: no key fixes a missing adapter. Fails OPEN
             # when no adapter is registered, so embedders keep their behaviour.
-            if not is_runnable(turn_model):
+            # #367 — the harness's own model is judged too: it is the one that
+            # drives the turn, and this re-resolve runs after ``session_start``,
+            # so it can land on a provider registered there while the harness
+            # still holds the placeholder (the late-route check above refuses
+            # that case first; this keeps the gate from passing it regardless).
+            unrunnable = next(
+                (model for model in (turn_model, startup_model) if not is_runnable(model)),
+                None,
+            )
+            if unrunnable is not None:
                 # Codex C1 — a prefix (and, F1, a named provider) two of the
                 # user's providers share up to case is held unrunnable; say
                 # which two, not "unknown protocol".
                 reason = ambiguous_route_message(
                     parsed.model, parsed.provider, model_registry, default_provider
-                ) or unsupported_message(turn_model)
+                ) or unsupported_message(unrunnable)
                 print(f"Error: {reason}", file=sys.stderr)
                 return 1
             if not model_registry.has_configured_auth(turn_model):

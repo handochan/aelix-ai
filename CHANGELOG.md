@@ -195,12 +195,6 @@ unwritten. Add them with the next release.
   `OPENROUTER_API_KEY` exported and `OPENAI_API_KEY` only in the `.env`) goes to
   that provider on the `.env` key, as pi's resolver picks the only match;
   `/model gpt-realtime-2.1` refuses it (ADR-0250 §6).
-- **A provider an extension registers in `session_start` is switched to without
-  an OpenRouter key too.** With no OpenRouter key of your own, `--model
-  <name>/<id>` for it used to fail at the first turn with `No provider
-  registered for api='unknown'`; it now switches before the first prompt as it
-  already did with one (#362) — also when the provider's key comes from a
-  project `.env`.
 
 - **A program driving `aelix --mode rpc` through `RpcClient` no longer loses a
   cancellation that arrives in the moment a command's answer or the turn's end
@@ -260,18 +254,67 @@ unwritten. Add them with the next release.
   OpenRouter.** It arrives after the launch model is chosen, so with
   `OPENROUTER_API_KEY` set `--model <name>/<id>` had already become an
   OpenRouter id, and the first prompt went there — in print mode, and in the
-  interactive and RPC modes after a warning. Every mode — interactive, RPC,
-  `-p` and `--mode json` — now switches to the provider before the first
-  prompt, exactly as `/model <name>/<id>` does, and says so in one line on
-  stderr (with `/model`'s caution for an id the provider does not list). Unlike
-  `/model` it does not save the choice as your default model. If `/model` would
-  refuse it (no credential, excluded by `/scoped-models`), no prompt is sent:
-  the interactive and RPC modes start on a model no prompt is sent with and say
-  to run `/model`; `-p` and `--mode json` stop with an error naming the
-  provider. The same holds when `session_start` registers two providers whose
-  names differ only in case and `--model` spells neither: no prompt is sent in
-  any mode, and the message names both (every mode used to send it to
-  OpenRouter). Registering the provider in `setup()` avoids the switch (#344).
+  interactive and RPC modes after a warning. A launch model that only such a
+  provider could serve — no provider registered at launch took it — is now
+  refused, as in pi (#344, #367), whatever OpenRouter key you hold (exported,
+  in a project `.env`, or none): `-p` and `--mode json` stop
+  with an error before any request, naming the provider and saying to register
+  it in the extension's `setup()`; the interactive mode starts with that warning
+  and sends nothing until `/model` picks a model. A launch model a provider
+  registered at launch serves (a built-in, `models.json`, an extension's
+  `setup()`) stays on that provider, as in pi, even when the new provider
+  serves the same id or your settings `defaultProvider` names it, and a turn
+  a `session_start` handler triggers runs there. Whatever re-derives the model
+  from the launch inputs without you naming one holds again wherever it lands
+  on that provider — also after a launch that stayed on a registered provider,
+  since aelix rebuilds from the launch inputs where pi keeps the session's
+  model: `/new` and the other rebuilds, `/agents use` of a profile
+  that names no model or provider of its own (or `--none` — also after a launch
+  through `--agent`, or one that went to OpenRouter), and the model picked for
+  you after `/login`, which picks as it would with no saved default and never
+  that provider. A `set_model` in
+  the extension's own `session_start` handler does not make a refused launch
+  pass or release the hold after a rebuild, and while those handlers run for a
+  launch model no registered provider has claimed — or for a rebuild that holds
+  — no turn starts at all, whatever model a handler has just set: a turn a
+  handler triggers then ends at once as a refused turn — its `agent_end`
+  arrives, so a handler waiting for it carries on instead of hanging the
+  launch — and nothing is sent; its message goes out with your next prompt (it
+  used to go to OpenRouter, with an `--api-key` typed for the provider as the
+  bearer, or to the model the handler had set). A `model_select` handler that
+  answers the held model with a `set_model` of its own does not release the
+  hold either, nor send a turn while aelix puts the session on hold — at
+  launch, on a rebuild or at `/agents use`, that turn is refused and nothing is
+  sent; its message stays in the conversation and goes out with your next prompt
+  (it used to go to the provider before the hold came back, at `/agents
+  use`), and the refused turn says the session is being put on hold. `/model <name>/<id>` — or
+  `/agents use` of a profile whose `model:` or `provider:` names it — then
+  reaches the provider. A `/model` choice lasts until the next `/new` or other
+  rebuild, which holds again, and `/model` saves it as your default, so the
+  next launch without `--model` is refused the same way. The
+  RPC mode starts held too, and cannot pick another model (`aelix --mode rpc`
+  has no model registry for `set_model`): its warning says to restart with
+  another `--model`. The same holds for `--provider <name> --model <id>`,
+  `--provider <name>` alone, a bare id only that provider lists, a
+  `defaultProvider`/`defaultModel` pair in `settings.json`, an agent profile's
+  `model:` and a delegated child's launch — several of which used to fail at
+  the first turn with `No provider registered for api='unknown'` — and when
+  `session_start` registers two providers whose names differ only in case (the
+  message names both). `--api-key` typed with such a model is refused the same
+  way: no request is made, and the key is attached to no provider. A provider
+  counts as registered there whatever registers it while the session is
+  starting — from the end of the build through the `session_start` handlers
+  and the turns they trigger, up to aelix's check after them: also the `input`
+  or `before_agent_start` handler of a turn a `session_start` handler
+  triggers, awaited or not, and a task a handler or `setup()` started (pi
+  chooses its launch model before any handler runs) — and the message says
+  "registered while a session was starting (for example in a session_start
+  handler)". Register providers in `setup()` to use them at launch.
+- **The launch's `Note:` that a model is sent to OpenRouter as written (or the
+  custom-id `Warning:`) is no longer printed when it is not true.** An
+  extension whose `session_start` handler moved the session to a model of its
+  own sends the prompt there; the line still said OpenRouter. It is printed
+  only while the session is still on the launch route (#367).
 - **An id your `models.json` or extension provider does not list is no longer
   refused as an unknown protocol.** `--provider retryprobe --model <new-id>` and
   `--model retryprobe/<new-id>` — with or without `OPENROUTER_API_KEY` — take
@@ -1328,7 +1371,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:5073`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:5146`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

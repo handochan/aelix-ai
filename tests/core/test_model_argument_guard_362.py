@@ -1091,7 +1091,6 @@ async def test_model_does_not_let_a_dotenv_value_address_your_template(
         model_registry=registry,
         settings_manager=None,
         warn=lambda _line: None,
-        persist=False,
     )
     if not switches:
         assert result.model is None and result.refusal is not None, row

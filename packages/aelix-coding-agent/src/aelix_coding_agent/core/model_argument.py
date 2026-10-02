@@ -365,8 +365,8 @@ async def resolve_model_argument(
         # authenticate the route the user chose — the launch's step 3 (ADR-0250
         # §2.1, §2.8). The round-2 verification of ``ecb4e0bc`` (B1): dropping
         # it refused ``/model mygw/m1``, and the late switch to a
-        # ``session_start`` provider whose key is in the ``.env``, both of which
-        # ``--model`` runs.
+        # ``session_start`` provider whose key is in the ``.env`` (#367 retired
+        # that launch switch; ``/model`` to such a provider still lands here).
         dropped: frozenset[str] = frozenset()
         pool = [m for m in pool if (getattr(m, "provider", "") or "") == owned]
         if not pool:

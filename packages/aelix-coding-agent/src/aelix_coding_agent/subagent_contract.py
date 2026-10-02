@@ -276,7 +276,7 @@ class SubagentRuntime(Protocol):
         unless ``allow_project`` is True. Directory trust is a yes-once decision
         ancestors inherit (``cli/project_trust.py:71-72``); it is not consent to
         a project-local IDENTITY, which additionally wins a name collision
-        against the user's own. Mirrors ``agents/service.py:233-249``.
+        against the user's own. Mirrors ``agents/service.py:246-262``.
         Model-driven callers must always pass False.
 
         THE REFUSAL IS TYPED: raise :class:`ProjectScopeRefused` (or a subclass)

@@ -10,9 +10,10 @@
 * the custom-id Warning and guard 2's Note are printed once, on stderr;
 * ``--api-key`` with a bare extension id is no longer refused before the
   extensions load (ADR-0249 §6), and follows a dual-key user's route to OpenAI;
-* a provider registered in ``session_start`` is still switched to — now also
-  when the launch could not place it at all (no OpenRouter key of the user's
-  own: the critique's S5), and never through OpenRouter.
+* a provider registered in ``session_start`` is refused at launch with or without
+  an OpenRouter key (#367; #362 had switched to it — the critique's S5 — and the
+  rows below that pinned the switch say their subject changed), and an explicit
+  ``/model`` to it afterwards still reaches it, on a ``.env`` key too.
 
 Hermetic: fake keys, an isolated agent dir, no network.
 """
@@ -223,19 +224,20 @@ async def test_api_key_follows_a_dual_key_users_route_to_the_vendor(
 
 
 @pytest.mark.parametrize("openrouter", ["dotenv", "none"])
-async def test_a_session_start_provider_the_launch_could_not_place_is_switched_to(
+async def test_a_session_start_provider_the_launch_could_not_place_is_refused(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     openrouter: str,
 ) -> None:
-    """The critique's S5 (rows A27/A28): keep the late path working, with no OpenRouter in it.
+    """#367 decision 2 — subject changed: this row pinned the critique's S5 switch.
 
     With no OpenRouter key of the user's own, ``sessext/m1`` is an unknown prefix
-    the launch refuses (it is registered only in ``session_start``). On
+    the launch holds (it is registered only in ``session_start``). On
     ``aa026d08`` a ``.env`` OpenRouter key put it on OpenRouter first (then the
-    late switch moved it), and with no key the first turn failed with
-    ``No provider registered for api='unknown'``. Now both switch to ``sessext``.
+    late switch moved it), and with no key the first turn failed with ``No
+    provider registered for api='unknown'``; #362 switched both. Now both get
+    the refusal an exported OpenRouter key gets, before any request.
     """
 
     if openrouter == "dotenv":
@@ -247,9 +249,14 @@ async def test_a_session_start_provider_the_launch_could_not_place_is_switched_t
         ["--no-session", "-e", str(ext), "--model", "sessext/m1", "-p", "hi"]
     )
     err = capsys.readouterr().err
-    assert [(m.provider, m.id, m.base_url) for m in turns] == [("sessext", "m1", _EXT)]
-    assert code == 0
-    assert "Note: switched to sessext/m1 as /model sessext/m1 would" in err
+    assert (code, turns) == (1, [])
+    assert (
+        "Error: The launch model \"sessext/m1\" names provider 'sessext', which an "
+        "extension registered while a session was starting (for example in a "
+        "session_start handler), after the launch model was "
+        "chosen. Register 'sessext' in the extension's setup() (its factory) to use it "
+        "at launch. No prompt was sent."
+    ) in err
     assert "openrouter" not in err.lower().replace("openrouter_api_key", "")
 
 
@@ -356,10 +363,14 @@ async def test_a_route_that_does_not_resolve_gets_no_api_key(
     assert (code, turns, attached) == (1, [], [])
 
 
-async def test_api_key_follows_a_session_start_provider_the_launch_could_not_place(
-    env: Path, monkeypatch: pytest.MonkeyPatch
+async def test_api_key_with_a_session_start_provider_the_launch_could_not_place_is_refused(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Held at launch (no key attached), switched by the late path — which attaches it."""
+    """#367 decision 4 — subject changed: the late switch attached the key to ``sessext``.
+
+    Held at launch (no key attached); the launch model is refused, so no
+    provider gets the key and no turn runs.
+    """
 
     ext = env / "sessext.py"
     ext.write_text(_SESSION_START_EXTENSION, encoding="utf-8")
@@ -368,21 +379,23 @@ async def test_api_key_follows_a_session_start_provider_the_launch_could_not_pla
     code = await entry_mod._async_main(
         ["--no-session", "-e", str(ext), "--model", "sessext/m1", "--api-key", "k-fake", "-p", "hi"]
     )
-    assert code == 0
-    assert attached == ["sessext"]
-    assert [(m.provider, m.id) for m in turns] == [("sessext", "m1")]
+    assert (code, turns, attached) == (1, [], [])
+    assert "Register 'sessext' in the extension's setup()" in capsys.readouterr().err
 
 
 async def test_the_late_path_leaves_a_held_route_that_is_still_not_runnable(
     env: Path,
 ) -> None:
-    """``late_registered_route``'s "held, and still nothing a turn can run" return.
+    """``late_registered_route`` on a held route a provider the LAUNCH knew cannot run.
 
     A user-defined provider with no api and no models (an auth-only
     registration) holds ``emptyext/anything`` on ``api='unknown'`` at launch, and
-    the re-resolve lands on the same placeholder. That is a refusal the launch
-    already reports, not a late registration to switch to (the review's SB38
-    removed this return and nothing turned red).
+    the re-resolve lands on the same placeholder. Registered before the launch
+    resolve (``setup()``), that is a refusal the launch already reports, not a
+    late registration (the review's SB38 removed this return and nothing turned
+    red). #367 — subject changed in part: registered in ``session_start``
+    (absent from ``launch_providers``), the same string is a late one and gets
+    the late refusal, which says where to register it.
     """
 
     from aelix_coding_agent.cli.runtime_bootstrap import late_registered_route, resolve_model
@@ -395,7 +408,14 @@ async def test_the_late_path_leaves_a_held_route_that_is_still_not_runnable(
     registry.register_provider("emptyext", ProviderConfigInput(api_key="x"))
     held = resolve_model("emptyext/anything", None, registry)
     assert (held.provider, held.api) == ("emptyext", "unknown")
-    assert late_registered_route("emptyext/anything", None, held, registry) is None
+    assert (
+        late_registered_route(
+            "emptyext/anything", None, registry, launch_providers=frozenset({"emptyext"})
+        )
+        is None
+    )
+    late = late_registered_route("emptyext/anything", None, registry, launch_providers=frozenset())
+    assert late is not None and "names provider 'emptyext'" in late
 
 
 # === round 3: the round-2 verification of ecb4e0bc ===============================
@@ -407,7 +427,7 @@ _SESSION_START_ENV_KEY_EXTENSION = _SESSION_START_EXTENSION.replace(
 
 
 @pytest.mark.parametrize("own_key", ["openrouter-exported", "none"])
-async def test_the_late_switch_reaches_a_session_start_provider_whose_key_is_in_the_dotenv(
+async def test_model_reaches_a_session_start_provider_whose_key_is_in_the_dotenv(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -417,37 +437,57 @@ async def test_the_late_switch_reaches_a_session_start_provider_whose_key_is_in_
 
     The extension registers ``sessenv`` in ``session_start`` with an
     ``api_key`` naming ``SESSENV_API_KEY``, which the cwd ``.env`` supplies. With
-    ``OPENROUTER_API_KEY`` exported, ``ecb4e0bc`` refused the late switch
-    ("names 'sessenv', a provider you defined, which this session does not
-    offer"; real CLI: "NO REQUEST | rc=1") — ``/model``'s guard took the
-    ``.env``-keyed provider out of its pool. The prefix names a provider the
-    user defined, so the ``.env`` key authenticates the route it chose, as
-    ``--model mygw/m1`` does at launch. Without an own key the switch already
-    worked; both run on the user's host with the ``.env`` key as the bearer.
+    ``OPENROUTER_API_KEY`` exported, ``ecb4e0bc`` refused the late switch —
+    ``/model``'s guard took the ``.env``-keyed provider out of its pool — and B1
+    fixed it there. #367 — subject changed: the launch no longer switches, so the
+    launch model is held (interactive) and the row now pins what B1 fixed in the
+    ``/model`` path itself: an explicit ``/model sessenv/m1`` in that session
+    reaches the user's host with the ``.env`` key as the bearer, with or without
+    an own key elsewhere (the prefix names a provider the user defined, §2.8).
     """
+
+    import aelix_coding_agent.tui as tui_pkg
+    from aelix_coding_agent.cli.model_switch import switch_model_argument
+
+    from tests.cli.test_launch_route_344 import _FakeTTYStdin
 
     if own_key == "openrouter-exported":
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake")
     _dotenv(monkeypatch, env, "SESSENV_API_KEY=sessenv-dotenv-fake\n")
     ext = env / "sessenv.py"
     ext.write_text(_SESSION_START_ENV_KEY_EXTENSION, encoding="utf-8")
-    from aelix_coding_agent import modes
 
     seen: list[tuple[str, str, str, str | None]] = []
 
-    async def _no_turn(runtime: Any, **kwargs: Any) -> int:
-        model = runtime.harness.current_model
-        auth = await kwargs["model_registry"].get_api_key_and_headers(model)
+    async def _stub_run_tui(runtime: Any, **kwargs: Any) -> int:
+        harness = runtime.harness
+        seen.append((harness.current_model.provider, harness.current_model.api, "", None))
+        registry = kwargs["model_registry"]
+        switched = await switch_model_argument(
+            "sessenv/m1",
+            harness=harness,
+            model_registry=registry,
+            settings_manager=None,
+            warn=lambda _line: None,
+        )
+        assert switched.refusal is None, switched.refusal
+        model = harness.current_model
+        auth = await registry.get_api_key_and_headers(model)
         seen.append((model.provider, model.id, model.base_url, auth.api_key))
         return 0
 
-    monkeypatch.setattr(modes, "run_print_mode", _no_turn)
-    code = await entry_mod._async_main(
-        ["--no-session", "-e", str(ext), "--model", "sessenv/m1", "-p", "hi"]
-    )
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+    code = await entry_mod._async_main(["--no-session", "-e", str(ext), "--model", "sessenv/m1"])
     err = capsys.readouterr().err
-    assert (code, seen) == (0, [("sessenv", "m1", _EXT, "sessenv-dotenv-fake")]), err
-    assert "Note: switched to sessenv/m1 as /model sessenv/m1 would" in err
+    assert (code, seen) == (
+        0,
+        [
+            ("sessenv", "unknown", "", None),
+            ("sessenv", "m1", _EXT, "sessenv-dotenv-fake"),
+        ],
+    ), err
+    assert "names provider 'sessenv'" in err and "run /model" in err
 
 
 # === Codex's third cross-review (C3): a .env value never addresses a request =======

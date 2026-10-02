@@ -151,19 +151,62 @@ in some case — then it is yours. The same goes for `--provider openrouter`: if
 you named one of your providers `OpenRouter` in any case, that flag selects
 yours, so rename it if you also want to force OpenRouter.)
 
-A provider an extension registers in a `session_start` handler exists only after
-the launch model was chosen, so at launch its prefix is unknown: with an
-OpenRouter key of your own it would go to OpenRouter, without one it is "not
-found". Every mode — interactive, RPC, `-p` and `--mode json` — switches to the
-provider before the first prompt, exactly as `/model <name>/<id>` would, and
-prints one line on stderr saying so (with `/model`'s caution when the id is one
-the provider does not list). Unlike `/model`, it does not save the choice as
-your default model. If `/model` would refuse it, no prompt is sent: the
-interactive and RPC modes start and tell you to run `/model`; `-p` and
-`--mode json` stop with an error. The same happens when the handler registers
-two providers whose names differ only in case and your prefix spells neither. A
-provider the handler registers and then unregisters is simply unknown. Register
-providers in the extension's `setup()` to avoid all of this.
+A provider an extension registers while a session is starting — from the end of the
+build through its `session_start` handlers and the turns they trigger, which aelix waits
+out, up to aelix's check after `session_start`: in a `session_start` handler, in a
+handler of a turn one triggers, such as its `input` or `before_agent_start` handler
+(that turn itself is refused, below; it may run after the handler returned), or in a
+task a handler or `setup()` started that registers then —
+exists only after the launch model was chosen, so at launch its name is unknown, and a launch model
+that no provider registered at launch could take — `--model <name>/<id>`,
+`--provider <name> --model <id>`, a bare id only it lists, a
+`defaultProvider`/`defaultModel` pair in `settings.json`, an agent profile's
+`model:`, or `--provider <name>` alone — is refused, as in pi. A launch model a
+provider registered at launch does serve (a built-in, one in `models.json`, one
+registered in `setup()`) stays on that provider, as pi's launch model does, even
+if the new provider serves the same id or your settings `defaultProvider` names
+it — and a turn a `session_start` handler triggers runs there too. The refusal: `-p` and
+`--mode json` stop with an error before any request ("… names provider '<name>',
+which an extension registered while a session was starting (for example in a
+session_start handler) … Register '<name>' in
+the extension's setup() (its factory) to use it at launch."), and the interactive
+mode starts with that warning and sends nothing until you pick a model with
+`/model`. What decides is where your launch inputs land once the handler has run,
+not what the handler did: a `set_model` in it does not make the launch pass. And
+whatever re-derives the model from those inputs without you naming one holds the
+session again wherever it lands on that provider — also when the session started on
+a registered provider, since aelix's rebuilds re-derive the model from the launch
+inputs where pi keeps the session's: `/new` and the other rebuilds
+(also when a `session_start` handler of the rebuild sets a model), `/agents use`
+of a profile that names no model or provider of its own (or `--none`, or one whose
+`model:` your `--model` overrides) — also after a launch that went elsewhere, such
+as `--agent` with `provider: openrouter` and `--model <name>/<id>` — and the model
+picked for you after `/login`, which picks as it would with no saved default and
+never that provider.
+For a refused launch nothing is sent in the meantime, whatever keys you hold:
+while the extensions' `session_start` handlers run, a launch model no registered
+provider has claimed is not runnable yet, and no turn starts at all — not even
+one a handler triggers after setting a model of its own with `set_model` — so a
+handler's `trigger_turn` then ends as a refused turn (nothing sent; its message
+stays in the conversation and goes out with the next prompt that is sent), a
+`model_select` handler cannot move the session off the hold — nor send a turn
+while aelix puts the session on hold, at launch, on a rebuild or at `/agents use`
+(that turn is refused too, and nothing is sent; its message stays in the
+conversation and goes out with the next prompt that is sent) —
+and an `--api-key` is attached only after that decision — typed with a refused
+model it is not used at all, and no provider holds it. The same holds while a
+rebuild's `session_start` handlers run in a session that is held. Once the session is running the provider is there,
+so `/model <name>/<id>` switches to it like any other, and so does `/agents use`
+of a profile whose own `model:` or `provider:` names it (`provider:` alone names
+the route too) — a `/model` choice lasts until the next `/new` or other rebuild,
+which re-derives the launch model and holds again (pi keeps the session's model;
+aelix rebuilds from the launch inputs), a profile's until an `/agents use` that
+names no route. `/model` also saves it as your default, so the next launch without
+`--model` reads it from `settings.json` and is refused the same way. The RPC mode
+starts held too but cannot pick another model (`aelix --mode rpc` has no model
+registry for `set_model`): restart it with another `--model`. Register providers
+in the extension's `setup()` and they work at launch. A provider the handler
+registers and then unregisters is simply unknown.
 
 The same rules apply to an agent profile's `model:`, to a hand-written
 `defaultModel` in `settings.json`, and to delegated children — which are told

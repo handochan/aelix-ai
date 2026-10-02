@@ -1,7 +1,7 @@
 """ADR-0197 §(c)/§(f)/§(l) — ``/agents run <name> <task>`` in the TUI.
 
 ``/agents run`` is a product-core BUILT-IN and it could not be anything else:
-``shell.py:3527-3544`` runs ``match_command`` first and only falls through to
+``shell.py:3555-3572`` runs ``match_command`` first and only falls through to
 ``dispatch.try_execute`` when no built-in claims the leading word, and
 ``extensions/command_dispatch.py::_split_command`` splits an extension command on
 the FIRST SPACE, so an extension command name can never contain one. Spec §6.3's
@@ -539,7 +539,7 @@ async def test_the_prompt_names_the_file_the_user_would_have_to_read(
 
     A bare name is exactly what a project-vs-user collision weaponises: a repo's
     ``reviewer`` WINS against ``~/.aelix/agent/agents/reviewer.md``
-    (``agents/service.py:100-101``), so "reviewer" alone tells the human nothing
+    (``agents/service.py:102-103``), so "reviewer" alone tells the human nothing
     about which file they are about to run.
     """
 
@@ -799,7 +799,7 @@ async def test_the_confirm_dialog_reuses_the_startup_copy(bench: _Bench) -> None
 def test_builtin_still_shadows_extension() -> None:
     """``/agents run …`` resolves to the built-in ``agents`` command.
 
-    ``shell.py:3527-3544`` consults ``match_command`` first and only reaches
+    ``shell.py:3555-3572`` consults ``match_command`` first and only reaches
     ``dispatch.try_execute`` on a miss, so a built-in always wins the leading
     word — which is the whole reason this branch lives in product-core.
     """

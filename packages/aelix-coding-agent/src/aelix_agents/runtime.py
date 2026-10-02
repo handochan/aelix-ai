@@ -294,7 +294,7 @@ class SubagentHost:
     holds the design argument.
 
     LIVE, like every other field here, and measurably so: ``/agents use`` edits
-    the parent's ``Args`` IN PLACE — ``agents/service.py:281`` resets it with
+    the parent's ``Args`` IN PLACE — ``agents/service.py:295`` resets it with
     ``__dict__.update`` and then ``apply_profile_to_args`` sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Probed
     on one ``Args``: same object id throughout, ``False → True`` on the
@@ -524,10 +524,10 @@ class _SubagentRuntimeImpl:
         SECURITY (finding B5). Directory trust is a yes-once decision that
         ancestors inherit (``cli/project_trust.py:71-72``); it is NOT consent to
         a project-local IDENTITY, which additionally WINS a name collision
-        against the user's own (``agents/service.py:100-101``). So a
+        against the user's own (``agents/service.py:102-103``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a
         per-identity confirmation happened, exactly as
-        ``agents/service.py:233-249`` does for ``/agents use``.
+        ``agents/service.py:246-262`` does for ``/agents use``.
 
         NAME ONLY, and that is a security choice, not a limitation. The
         Protocol parameter is spelled ``name_or_path`` for P3 shape stability,
