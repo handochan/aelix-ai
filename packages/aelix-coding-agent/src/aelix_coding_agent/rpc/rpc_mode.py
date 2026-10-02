@@ -757,7 +757,9 @@ async def _handle_cycle_model(
     """Pi parity: ``rpc-mode.ts::handle_cycle_model`` (Sprint 6f W2).
 
     Rotates to the next model in :meth:`ModelRegistry.get_available`
-    (insertion order). Updates :meth:`AgentHarness.set_current_model`
+    (insertion order), without the providers only a cwd ``.env``
+    authenticates while the user holds a credential of their own (ADR-0250
+    guard 1, #362). Updates :meth:`AgentHarness.set_current_model`
     and emits the new model + clamped thinking level + ``isScoped``.
 
     Sprint 6f₁ always returns ``isScoped: False`` — workspace-scoped
@@ -774,7 +776,19 @@ async def _handle_cycle_model(
             command="cycle_model",
             error="cycle_model requires a ModelRegistry — none configured",
         )
-    available = registry.get_available()
+    # ADR-0250 guard 1 (#362): the rotation is an implicit chooser — the client
+    # names no provider — so while the user holds a route-authenticating
+    # credential of their own anywhere, a provider only a cwd ``.env``
+    # authenticates leaves it, by the helper ``/model <arg>`` uses. Codex's
+    # second cross-review of ``a0edf615`` (F2): with ``OPENROUTER_API_KEY``
+    # exported and ``OPENAI_API_KEY`` only in the ``.env``, cycling moved an
+    # OpenRouter session to ``openai/gpt-4`` on the file's key. ``set_model``
+    # above is left as it is: it NAMES the provider, as ``--provider`` and the
+    # no-argument picker do (ADR-0250 §2.8). Reached only where the embedder
+    # passes a registry — ``aelix --mode rpc`` itself passes none.
+    from aelix_coding_agent.core.model_argument import _route_aware_pool
+
+    available, _dropped = _route_aware_pool(list(registry.get_available()), registry)
     # P-170: Pi ``agent-session.ts:1476`` returns ``undefined`` (Aelix
     # ``data: None``) when ``availableModels.length <= 1`` — rotation
     # against a single-model list is a no-op. The Sprint 6f W2 ``not

@@ -619,6 +619,12 @@ def resolve_cli_model(
 
     Does not apply the thinking level by itself, but may *parse* and
     return one from ``"<pattern>:<thinking>"`` so the caller can apply it.
+
+    NOT the launch resolver, and still without a production caller (ADR-0067):
+    ADR-0250 (#362) transcribes pi's newer order (``88ff80b98``, with the auth
+    tie-break and swap this port predates) into
+    ``cli.runtime_bootstrap.resolve_route`` — exact ids only, with two guards
+    and aelix's own fallback tail.
     """
 
     if not cli_model:

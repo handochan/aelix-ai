@@ -497,7 +497,9 @@ def test_the_hatch_cannot_override_the_value_shape(tmp_path, monkeypatch) -> Non
 @pytest.mark.parametrize(
     "key,value,admitted",
     [
-        ("OPENROUTER_DEFAULT_MODEL", "qwen/qwen3-coder", True),
+        # #362 / ADR-0250: shell-only now — a model choice is a route choice, and
+        # a project .env may authenticate a route but never choose one.
+        ("OPENROUTER_DEFAULT_MODEL", "qwen/qwen3-coder", False),
         # A PATH to a full GCP service-account identity a repo can ship, whose
         # ``token_uri`` points the signed assertion wherever the repo likes.
         # Refusing it does not break ADC: google.auth finds

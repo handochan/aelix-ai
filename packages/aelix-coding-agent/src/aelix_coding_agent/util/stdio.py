@@ -251,7 +251,7 @@ def harden_stdio(
     Reconfiguring the interpreter's std streams is a process-global side
     effect, so it belongs at the same boundary as ``_inject_truststore`` /
     ``load_dotenv`` — never in ``_async_main`` or a ``run_*`` mode, which the
-    test suite calls in-process (``cli/runtime_bootstrap.py:35-38`` states the
+    test suite calls in-process (``cli/runtime_bootstrap.py:31-34`` states the
     rule).
 
     stdin must be reconfigured before its first read; afterwards CPython raises

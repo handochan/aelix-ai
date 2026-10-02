@@ -52,6 +52,51 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **`--model` is resolved the way pi resolves it, and an OpenRouter key no
+  longer turns every model string into an OpenRouter id (#362, ADR-0250).** The
+  prefix names the provider and the id must match exactly inside it; a bare id
+  is matched across every provider. What you will notice:
+  - holding both an OpenRouter and a vendor key, `openai/gpt-4o-mini`,
+    `anthropic/claude-haiku-4-5` and the other vendor-prefixed ids go to the
+    **vendor** directly (they used to go to OpenRouter); with only the
+    OpenRouter key they still go to OpenRouter;
+  - a bare id several providers serve (`gpt-4o-mini`) goes to the one you hold a
+    key for, else it is an error that lists them and says to use `--provider`
+    or `<provider>/<id>` — it no longer goes to OpenRouter; a settings
+    `defaultProvider` (which a project `.aelix/settings.json` can set) breaks
+    that tie, or takes a bare id nothing lists, only for a provider your own
+    key authenticates or one you defined, while you hold a key of your own;
+  - a `<vendor>/<model>` OpenRouter's part of this build's catalog does not
+    list goes to OpenRouter as written, with a one-line note, only with an
+    OpenRouter key of your own — exported, stored with `/login`, or in your
+    `models.json` — when its prefix is unknown (`newlab/model-x`) or a vendor
+    OpenRouter shares (`openai/…`, `anthropic/…`) you hold no key for, even if
+    that vendor's catalog lists the id (`openai/o1-pro`); otherwise it is "not
+    found" (use `openrouter/<id>`);
+  - `openrouter/<id>` strips the prefix as pi does (`openrouter/auto` sends
+    `auto`), and `--provider X --model X/<id>` strips the repeated prefix when
+    X does not list `X/<id>` itself (pi strips first: `--provider openrouter
+    --model openrouter/auto`, and `OPENROUTER_DEFAULT_MODEL=openrouter/auto`,
+    send `openrouter/auto`, which OpenRouter also accepts);
+  - an id a provider does not list is sent as a custom id with a one-line
+    warning, and an ambiguous or unknown `--model` stops `-p` / `--mode json`
+    with pi's error before anything is sent;
+  - `OPENROUTER_DEFAULT_MODEL` is read from your shell only — a project `.env`
+    can no longer set it unless you list it in `AELIX_DOTENV_ALLOW` yourself,
+    in which case that file's value picks the model — and
+    `OPENROUTER_BASE_URL` now applies to `--provider openrouter` too;
+  - `--api-key` with a bare extension id (`-e ext.py --model m1 --api-key K`) is
+    no longer refused before the extension loads, and with a vendor prefix it
+    keeps the string on that vendor: `--model openai/gpt-4o-mini --api-key K`
+    with an OpenRouter key exported goes to OpenAI with K (it used to go to
+    OpenRouter with K as the bearer, as pi still does) — so if K is an
+    OpenRouter key, write `openrouter/openai/gpt-4o-mini` or it is sent to
+    `api.openai.com`; a route that does not resolve gets no key;
+  - a delegated agent is told `--provider` only where it could not reach your
+    route alone (a provider you defined); a route only your `--api-key` would
+    decide is left to the child, which never receives the key; a profile that
+    brings its own `extensions:` resolves its `model:` with them.
+
 - **Session totals now include what delegated agents spent, so totals from
   this release on — History's included — are higher than the same work was
   before.** The footer, `/cost`, `/session`, `/stats`, the History tab and RPC
@@ -92,6 +137,71 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A key in a cloned repo's `.env` no longer chooses where your prompt goes
+  (#362, ADR-0250).** With `ANTHROPIC_API_KEY` exported and a repo's `.env`
+  carrying `OPENROUTER_API_KEY`, `--model anthropic/claude-haiku-4-5` went to
+  `openrouter.ai` on the file owner's account — the prompt and whatever your
+  tools read — although you held an Anthropic key of your own; a `.env`
+  `OPENROUTER_API_KEY` also sent bare ids, unknown ids and a `.env`
+  `OPENROUTER_DEFAULT_MODEL` there. aelix now records which names a project
+  `.env` supplied, and every decision that picks a provider counts only
+  credentials you exported, stored with `/login`, typed with `--api-key` or
+  wrote into `models.json`: `--model`, `/model` (which also persists its
+  choice; while you hold a key of your own, a provider only the `.env`
+  authenticates never decides where `/model <id>` goes — even the one the
+  session is on — and where only such a provider could serve it, `/model`
+  refuses and says so; a prefix naming a provider you defined stays in it, on
+  a `.env` key if that is where its key is, as `--model` does — a re-pointed
+  `openrouter` included; the built-in `openrouter/` prefix is not exempt, so
+  `/model openrouter/<id>` on a `.env`-only OpenRouter key is refused where
+  `--model` runs it), the model picked after `/login` (a saved default,
+  yours or a project `.aelix/settings.json`'s, that only the `.env`
+  authenticates is skipped), RPC `cycle_model` for a program that runs RPC
+  mode with a model registry (`set_model` names its provider and is
+  unchanged; `aelix --mode rpc` wires no registry), delegated agents and an `aelix` started
+  from the bash tool. "A key of your own" counts one held for any provider,
+  including a provider that lists no models. A project `.aelix/settings.json`
+  `defaultProvider` alone no longer settles a `--model` id several providers
+  serve, or homes a bare one, on a provider only the `.env` authenticates
+  (`{"defaultProvider": "anthropic"}` plus a `.env` `ANTHROPIC_API_KEY` sent
+  `--model claude-haiku-4-5` to `api.anthropic.com` on the repo's key past
+  your exported `OPENAI_API_KEY` — and, once `--model` stopped preferring
+  OpenRouter, past an exported `OPENROUTER_API_KEY` too). A project
+  `defaultProvider`/`defaultModel` pair still picks the launch model when you
+  pass no `--model`, and a `.env` key then authenticates it (ADR-0250 §6,
+  pre-existing; #369 is to stop reading an untrusted project's settings, as pi
+  does). A `.env`
+  key still authenticates the route your own choices made — with no key of your
+  own for that route it is the one sent, and the `Notice: loaded credentials`
+  line names it. It is also still the one sent when your `models.json`
+  re-points a built-in provider at a gateway (`providers.openai.baseUrl`): a
+  `.env` `OPENAI_API_KEY` comes before that entry's `apiKey`, so your gateway
+  receives it (#363). A `.env` key whose name is not a plain environment name
+  (such as `X,ANTHROPIC_API_KEY`) is now refused. Nor does a `.env` value pick a
+  **host**: a `{NAME}` placeholder in a base URL (your own `models.json`
+  template, say `https://{TENANT_KEY}.owner-gateway.invalid/v1`) is filled from a
+  project `.env` only for Cloudflare's two shape-checked ids — a `.env`
+  `TENANT_KEY=repo-chosen.invalid/v1#` used to send the prompt and the repo's key
+  to `repo-chosen.invalid`; now the model is not runnable and `--model` / `/model`
+  tell you to export the variable. For a program that installs an
+  `AuthStorage` fallback resolver: an installed resolver counts as a credential
+  of your own (so a provider only the `.env` authenticates is set aside — with
+  only `.env` keys, such a program now gets `/model`'s refusals), and a resolver
+  answer that carries a `.env` value (equal to it ignoring case and
+  surrounding spaces, or - both 8 characters or longer - with it inside) does
+  not choose a route. One more shape still
+  sends on a `.env` key while you hold one of your own elsewhere: an id only one
+  provider serves (`--model gpt-realtime-2.1`, only OpenAI's, with
+  `OPENROUTER_API_KEY` exported and `OPENAI_API_KEY` only in the `.env`) goes to
+  that provider on the `.env` key, as pi's resolver picks the only match;
+  `/model gpt-realtime-2.1` refuses it (ADR-0250 §6).
+- **A provider an extension registers in `session_start` is switched to without
+  an OpenRouter key too.** With no OpenRouter key of your own, `--model
+  <name>/<id>` for it used to fail at the first turn with `No provider
+  registered for api='unknown'`; it now switches before the first prompt as it
+  already did with one (#362) — also when the provider's key comes from a
+  project `.env`.
+
 - **A program driving `aelix --mode rpc` through `RpcClient` no longer loses a
   cancellation that arrives in the moment a command's answer or the turn's end
   comes back.** `wait_for_idle()`, `collect_events()`, `prompt_and_wait()` and
@@ -128,11 +238,10 @@ unwritten. Add them with the next release.
   hand-written `defaultModel` in `settings.json`, and delegated children. Now a
   provider you defined — and a built-in provider OpenRouter has no namespace
   for, such as `openai-codex/…` or `xai/…`, which used to fail with OpenRouter's
-  400 — is resolved before the OpenRouter-from-env rule, from configuration
-  only: which vendor keys you (or a cloned repo's `.env`) hold never changes the
-  route. `openai/…`, `anthropic/…` and the other prefixes OpenRouter also uses
-  go to OpenRouter as before; `--provider` overrides either way. `--api-key` is
-  attached to the provider the run actually uses. See ADR-0249 (#344).
+  400 — stays with that provider, and `--provider` overrides either way.
+  `--api-key` is attached to the provider the run actually uses. See ADR-0249
+  (#344); how the remaining strings are routed changed again with #362 (see
+  Changed).
 - **An extension's provider can be chosen at launch.** `--model <name>/<id>` and
   `--provider <name> --model <id>` for a provider an extension registers were
   refused at startup (`No provider registered for api='unknown'`) because the
@@ -143,10 +252,8 @@ unwritten. Add them with the next release.
   `--provider openai --model gpt-4o-mini` (and `--model openai/gpt-4o-mini`)
   with `providers.openai.baseUrl` set to a gateway went to `api.openai.com` with
   the gateway's key; only the `/model` picker used the gateway. The catalog
-  model now keeps its protocol and metadata and takes your host (#344). With
-  `OPENROUTER_API_KEY` set, re-pointing a provider this way makes every id it
-  serves yours: a bare `--model gpt-4o-mini` now goes to your gateway too (it
-  used to go to OpenRouter). The key it sends is chosen as for any provider: an
+  model now keeps its protocol and metadata and takes your host (#344). The key
+  it sends is chosen as for any provider: an
   `--api-key`, a `/login` credential or `OPENAI_API_KEY` comes before the
   `apiKey` in `models.json`.
 - **A provider an extension registers in `session_start` is no longer sent to

@@ -513,8 +513,11 @@ def test_model_with_id_persists_default(monkeypatch: Any) -> None:
     resolved = _FakeModel("gpt-4o")
     resolved.provider = "openai"  # type: ignore[attr-defined]
     # ``*_rest``: the UNDECIDED fallback also hands over the session's registry
-    # (#344, S5) — a stub signature, not part of what this test asserts.
-    monkeypatch.setattr(rb, "resolve_model", lambda _a, _p, *_rest: resolved)
+    # (#344, S5) — a stub signature, not part of what this test asserts. It asks
+    # ``resolve_route`` since ADR-0250 (#362), for the route's refusal text.
+    monkeypatch.setattr(
+        rb, "resolve_route", lambda _a, _p, *_rest, **_kw: rb.ResolvedRoute(resolved, "exact")
+    )
     monkeypatch.setattr(rm, "is_runnable", lambda _m: True)
 
     class _PersistSM:

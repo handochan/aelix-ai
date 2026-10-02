@@ -196,7 +196,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2328-2344`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2334-2350`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in

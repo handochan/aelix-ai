@@ -425,7 +425,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:354-355``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:372-373``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -557,11 +557,11 @@ def build_child_argv(
     :func:`narrow_context_files` clamps before the argv is built, so
     ``resolver.profile_to_flags`` stays the one place that emits it.
 
-    ``model_registry`` is the parent's LIVE registry (#344): with it, a
-    ``--model`` naming a models.json or extension provider is emitted as
-    ``--model <id> --provider <provider>``, because the child loads no
-    extensions by default and inherits ``OPENROUTER_API_KEY`` — left to its own
-    cascade it re-derived an extension route through OpenRouter.
+    ``model_registry`` is the parent's LIVE registry (#344): a ``--model`` on a
+    models.json or extension provider is emitted as ``--model <id> --provider
+    <provider>`` (the child loads no extensions by default); one a credential
+    decided is not — the child inherits it and the .env record (ADR-0250).
+    Left to its own cascade it re-derived an extension route through OpenRouter.
     """
 
     return [

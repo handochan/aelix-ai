@@ -299,11 +299,10 @@ async def test_child_flags_follow_the_route_the_parent_resolves(
     """The child is split only when the PARENT's own resolve lands on a user-defined provider.
 
     Review of ``0fcc3333``: the split asked the rung-0 helper whether or not an
-    OpenRouter key was set, while ``resolve_model`` runs rung 0 only with one.
-    A gateway listing ``openai/gpt-4o`` verbatim, no OpenRouter key: the parent
-    (and ``--agent``) resolve ``openai/gpt-4o`` by the slash shorthand to
-    ``openai``, but the child was launched with ``--provider gw``. With the key,
-    0b gives the string to ``gw`` in the parent, and the child must agree.
+    OpenRouter key was set, while ``resolve_model`` ran rung 0 only with one —
+    the child and the parent disagreed. The loop pins the agreement; the last
+    assertion is the gateway row, which #362 / ADR-0250 (pi's order) puts on
+    ``gw`` with or without the key.
     """
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -357,10 +356,11 @@ async def test_child_flags_follow_the_route_the_parent_resolves(
         None,
         registry,
     )
-    if with_openrouter_key:
-        assert gateway_listed == ["--model", "openai/gpt-4o", "--provider", "gw"]
-    else:
-        assert gateway_listed == ["--model", "openai/gpt-4o"]
+    # #362 / ADR-0250: with the key, ``gw`` is the one user-defined provider among
+    # the route-authenticated raw matches; without it, the sole authenticated one
+    # (its literal ``apiKey``) — pi's swap. Either way the parent lands on ``gw``,
+    # which is user-defined, so the child is told so.
+    assert gateway_listed == ["--model", "openai/gpt-4o", "--provider", "gw"]
 
 
 async def test_a_profile_provider_is_passed_as_the_parent_matches_it(

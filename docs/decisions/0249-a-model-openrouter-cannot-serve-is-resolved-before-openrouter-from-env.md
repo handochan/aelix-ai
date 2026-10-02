@@ -1,6 +1,7 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
-Status: Accepted (2026-09-30)
+Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362)
+Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
 now runs before the OpenRouter-env path) and **ADR-0195 §"Known limitations" bullet 1**
@@ -58,6 +59,13 @@ only one carrying the override).
 ## 2. Decision
 
 ### 2.1 Rung 0, before the OpenRouter-from-env rung — configuration only
+
+> **Superseded 2026-10-02 by [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (#362).** Both rungs are gone:
+> the launch follows pi's `resolveCliModel` order, and an OpenRouter key reaches an id
+> this build cannot place only through ADR-0250's guard 2 — an OpenRouter credential of
+> the user's own, never a cwd `.env`'s. What this section established about user-defined
+> providers (matched first and alone, case-insensitively; never left for OpenRouter) and
+> about named providers' case rule is kept there verbatim.
 
 When `OPENROUTER_API_KEY` is set, `--model` is non-empty and `--provider` is absent (an
 explicit `--provider X` keeps its meaning, `--provider openrouter` is still OpenRouter),
@@ -366,6 +374,13 @@ children (unchanged).
 
 ### 2.6 Delegated children get the route, not the string (M3)
 
+> **Amended 2026-10-02 by [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) §2.9.** Still split: user-defined routes.
+> Not split: a route only the parent's `--api-key` decided (the child would authenticate it
+> with a `.env` key or nothing), anything a credential decided — the child inherits the same
+> keys and the `.env` record and decides it the same way — and guard 2, which a profile's own `extensions:` may answer differently in the
+> child. The last paragraph's gateway row (`openai/gpt-4o`, no OpenRouter key) is the
+> gateway's under pi's swap now, so that child gets `--provider gw`.
+
 A child is a fresh process that inherits `OPENROUTER_API_KEY` and loads no extensions by
 default. `agents.resolver.child_model_flags` now takes the parent's live registry and
 resolves the profile's `model:` — or the parent's own model, forwarded when the profile
@@ -503,6 +518,9 @@ the late switch asking `/model` instead of holding → 3.
 
 ## 5. The divergence from pi, stated
 
+> **Superseded 2026-10-02 by [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) §2.4**: aelix now follows pi's order;
+> the dual-key `openai/gpt-4o-mini` goes to OpenAI, as in pi.
+
 pi has no OpenRouter-from-env rung at all; its `resolveCliModel` infers a known provider
 from the prefix and, when that match is unauthenticated, prefers a single authenticated
 exact raw-id match (`model-resolver.ts:520-541` @ 1ff5b6fdd). aelix keeps its
@@ -519,9 +537,9 @@ still has no production caller.
 - **#362** — a cwd `.env` `OPENROUTER_API_KEY` is still a routing switch for the 9
   overlapping prefixes, bare ids no user-defined provider serves, and
   `OPENROUTER_DEFAULT_MODEL` (the design's D1). Rung 0 narrows what it can capture; it
-  does not remove the rung.
+  does not remove the rung. **Closed 2026-10-02 by [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md).**
 - **Launch and in-session `/model` still disagree for dual-key users on the overlapping
-  prefixes.** `/model openai/gpt-4o-mini` resolves over the auth-filtered pool (#134/#136)
+  prefixes.** **Closed 2026-10-02 by ADR-0250** (both go to the vendor, as pi does). `/model openai/gpt-4o-mini` resolves over the auth-filtered pool (#134/#136)
   and picks OpenAI when an OpenAI key is configured; `--model openai/gpt-4o-mini` goes to
   OpenRouter. Aligning them either way is a policy change for `/model`, not part of this.
 - **A re-pointed built-in takes its whole prefix.** With `providers.openai.baseUrl` set,
@@ -573,7 +591,8 @@ still has no production caller.
   `agent_context.py`'s `no_project_local` / `no_discovery` lines, `profile.py`'s #98-gate
   range, `shell.py`'s `run_tui` caller, `agents/profile.py`'s `--no-extensions` claim and
   `aelix_agents/batch.py`'s Guardrail-first range.
-- **`--api-key` with no model at all** is still judged before extensions load, so a bare id
+- **`--api-key` with no model at all** (closed 2026-10-02 by ADR-0250 §2.7: the
+  early check refuses only when there is no model string) is still judged before extensions load, so a bare id
   served only by an extension provider, with no OpenRouter key, is refused as "requires a
   model" although the launch would resolve it (measured: `-e extprov.py --model m1
   --api-key K` → `Error: --api-key requires a model …`; the same without `--api-key`

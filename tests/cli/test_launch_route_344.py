@@ -1,4 +1,8 @@
-"""#344 / ADR-0249 — the LAUNCH path reaches the route rung 0 decides.
+"""#344 / ADR-0249 — the LAUNCH path reaches the route the resolver decides.
+
+(Rung 0 itself was replaced by pi's order in #362 / ADR-0250; X1, S, ``--api-key``
+following the route and the ``session_start`` late switch are what ADR-0250 kept,
+and ``tests/cli/test_launch_route_362.py`` adds its own launch rows.)
 
 ``test_provider_prefix_rung.py`` pins ``resolve_model``; these drive the real
 ``_async_main`` up to the first harness build (the spy on
@@ -211,10 +215,13 @@ async def test_a_provider_registered_only_after_reload_is_the_rebuilt_model(
         (["--model", "extprov/m1"], True, "extprov"),  # 0a extension (X')
         (["--model", "held-model"], False, "retryprobe"),  # 0b
         (["--model", "xai/grok-4.3"], False, "xai"),  # 0c
-        (["--model", "openai/gpt-4o-mini"], False, "openrouter"),  # OpenRouter rung
+        # #362 review: was "openrouter" (the old rung, then pi's swap). SUBJECT
+        # CHANGED — ``--api-key`` keeps a vendor prefix on its vendor (ADR-0250
+        # §2.1 step 3b); K typed for OpenAI no longer reaches openrouter.ai.
+        (["--model", "openai/gpt-4o-mini"], False, "openai"),
         (["--provider", "openai", "--model", "gpt-4o-mini"], False, "openai"),  # explicit
     ],
-    ids=["0a-models-json", "0a-extension", "0b-bare", "0c-xai", "openrouter", "explicit"],
+    ids=["0a-models-json", "0a-extension", "0b-bare", "0c-xai", "vendor-prefix", "explicit"],
 )
 async def test_api_key_is_attached_to_the_provider_the_run_uses(
     env: Path,
@@ -1053,7 +1060,9 @@ async def test_a_provider_unregistered_before_session_start_returns_is_unknown(
     A ``session_start`` handler that registers ``sessext`` and unregisters it
     before returning leaves no ``sessext`` in the registry: ``sessext/m1`` is an
     unknown prefix, which goes to OpenRouter by the owner's rule — the same as
-    a launch that never registered it. No late switch, no Note.
+    a launch that never registered it. No late switch. Since #362 / ADR-0250
+    that rule is guard 2 (an exported OpenRouter key), and its one-line Note
+    says so; nothing mentions ``session_start``.
     """
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
@@ -1074,4 +1083,8 @@ async def test_a_provider_unregistered_before_session_start_returns_is_unknown(
     err = capsys.readouterr().err
     assert code == 0
     assert [(m.provider, m.id) for m in turns] == [("openrouter", "sessext/m1")]
-    assert "Note:" not in err and "session_start" not in err
+    assert "session_start" not in err and "switched" not in err
+    assert [line for line in err.splitlines() if line.startswith("Note:")] == [
+        'Note: Model "sessext/m1" is not in this build\'s catalog; sending it to '
+        "OpenRouter as written."
+    ]

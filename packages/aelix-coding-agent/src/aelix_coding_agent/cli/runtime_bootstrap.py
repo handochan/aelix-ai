@@ -13,24 +13,20 @@ Wires real LLM turns for the interactive / print / rpc CLI. Three pieces:
   CLI, and ADR-0203.
 - :func:`register_providers` — registers the built-in provider adapters on the
   global API registry (idempotent).
-- :func:`resolve_model` — resolves the :class:`Model` to drive a turn, from the
-  flags, the env, the static catalog and (optionally) the live ``ModelRegistry``.
-  OpenRouter (OpenAI-compatible) is configured purely from env: when
-  ``OPENROUTER_API_KEY`` + a model id are present (and no conflicting
-  ``--provider``), a model with ``provider="openrouter"``,
-  ``api="openai-completions"`` and the OpenRouter ``base_url`` is built — unless
-  the ``--model`` string names an endpoint OpenRouter cannot serve (a provider
-  the user defined, or a catalogued provider that is not an OpenRouter
-  namespace; ADR-0249, #344), which is resolved inside that provider FIRST. The
-  ``openai_completions`` adapter reads ``OPENROUTER_API_KEY`` from the
-  environment itself, so no auth callback wiring is required. Falls back to a
-  bare ``Model`` (from ``--model`` / ``--provider``) otherwise — which CANNOT
-  drive a turn, so callers gate on ``core.runnable_models.is_runnable`` (#98).
-  This function owns the ENTIRE provider-precedence ladder (explicit flag →
-  a ``--model`` OpenRouter cannot serve → OpenRouter env → in-id prefix →
-  settings default); callers pass each source in its own parameter and must
-  never pre-merge them, because the earlier rungs are gated on the later ones
-  being absent.
+- :func:`resolve_route` / :func:`resolve_model` — resolve the :class:`Model` to
+  drive a turn from the flags, the static catalog and (optionally) the live
+  ``ModelRegistry``, in pi's ``resolveCliModel`` order (ADR-0250, #362): an
+  explicit ``--provider``, else a known ``<provider>/`` prefix, else the whole
+  string as an id across every provider, with the credential the user holds
+  breaking ties — and two guards. Guard 1: a credential a cwd ``.env`` supplied
+  never chooses a route (it still authenticates one). Guard 2: an id this
+  build's catalogue cannot place goes to OpenRouter only on an OpenRouter key of
+  the user's own. An unresolvable string comes back as a placeholder whose
+  ``api`` stays ``"unknown"`` and the route carries pi's error text, so callers
+  gate on ``core.runnable_models.is_runnable`` (#98). ``OPENROUTER_API_KEY`` is
+  no longer a route switch on its own; ``openrouter/<id>``,
+  ``--provider openrouter`` and a shell ``OPENROUTER_DEFAULT_MODEL`` are the
+  explicit routes there.
 
 Provider registration + ``.env`` load run from the real console entry
 (:func:`aelix_coding_agent.cli.entry.main_sync`), NOT from ``_async_main`` — so
@@ -44,7 +40,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -54,11 +50,7 @@ from aelix_ai.providers import google_vertex as _google_vertex
 from aelix_ai.providers import openai_codex_responses as _openai_codex_responses
 from aelix_ai.providers import openai_completions as _openai
 from aelix_ai.providers import openai_responses as _openai_responses
-from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_API
 from aelix_ai.streaming import Model
-
-_DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
 
 # === cwd ``.env`` admission control (ADR-0203) ===============================
 #
@@ -186,7 +178,6 @@ class _ConfigRule(NamedTuple):
 # shape check lives inside :func:`load_dotenv` and governs the ``.env`` path
 # only, so any value at all still works when you export it in your own shell.
 _GCP_NAME = re.compile(r"\A[a-z][a-z0-9-]{0,61}[a-z0-9]\Z")
-_MODEL_ID = re.compile(r"\A[A-Za-z0-9._:/-]{1,128}\Z")
 
 # A Cloudflare account id / AI-Gateway name. These differ from the Vertex
 # location in WHERE they land, and the difference is measured, not assumed:
@@ -329,15 +320,12 @@ _DOTENV_CONFIG_VALUES: dict[str, _ConfigRule] = {
         "characters). A value containing '/', '?', '#' or '..' would rewrite "
         "the request path under Cloudflare's own host.",
     ),
-    # Bounded to model choice, therefore to cost: consumed only by
-    # :func:`resolve_model` below as ``model_flag or os.environ.get(...)``, and
-    # it reaches the JSON body's ``"model"`` field — never a URL, never a path,
-    # never a program.
-    "OPENROUTER_DEFAULT_MODEL": _ConfigRule(
-        _MODEL_ID,
-        "its value is not a model id (letters, digits and '.', '_', ':', '/', "
-        "'-', up to 128 characters).",
-    ),
+    # ``OPENROUTER_DEFAULT_MODEL`` used to be the sixth name here, "bounded to
+    # model choice". #362 (ADR-0250) took it out: a model choice IS a route
+    # choice — it was the one value in this file that sent a prompt to
+    # OpenRouter by itself — and a project ``.env`` may authenticate a route but
+    # never choose one. It is read from your shell only now (or through
+    # ``AELIX_DOTENV_ALLOW``, which names it yourself).
 }
 
 # The gate's own name. It gets its own branch and its own notice because the
@@ -546,6 +534,8 @@ def _report_dotenv(
     shadowed: list[tuple[str, str, str]],
     badvalue: list[tuple[str, str]],
     foreign_precedence: bool,
+    badname: list[str] | None = None,
+    record: list[str] | None = None,
 ) -> None:
     """Disclose what a ``.env`` did and did not get to set. Names, never values.
 
@@ -635,6 +625,25 @@ def _report_dotenv(
         )
     for key, why in sorted(badvalue):
         print(f"Notice: ignored {_sanitize(key)} from {p} — {why}", file=sys.stderr)
+    if badname:
+        # #362 — a key that is not a plain environment name. Nothing consumes
+        # one, and the provenance record is comma-joined: a key spelled
+        # ``X,ANTHROPIC_API_KEY`` was admitted and then read back as the
+        # user's EXPORTED ``ANTHROPIC_API_KEY``. No hatch remedy is offered:
+        # ``AELIX_DOTENV_ALLOW`` is itself comma-separated and cannot name it.
+        print(
+            f"Notice: ignored {_names(badname)} from {p} — these are not "
+            "environment variable names (letters, digits and '_', not starting "
+            "with a digit).",
+            file=sys.stderr,
+        )
+    if record:
+        print(
+            f"Notice: ignored {_names(record)} from {p} — aelix writes it to "
+            "record which credentials came from a project .env; a .env cannot "
+            "set it.",
+            file=sys.stderr,
+        )
     if foreign_precedence:
         # DISCLOSURE, not a guard. gh 2.88.0 prefers GH_TOKEN over GITHUB_TOKEN
         # (measured twice, ``env -i … gh auth token`` -> the GH_TOKEN value), and
@@ -676,8 +685,17 @@ def load_dotenv(path: str = ".env") -> None:
        Export ``GH_TOKEN`` yourself if that matters.
     """
 
+    from aelix_coding_agent.core.dotenv_provenance import (
+        DOTENV_ADMITTED_ENV,
+        ENV_NAME,
+        dotenv_admitted_names,
+        env_name,
+        format_record,
+    )
+
     p = Path(path)
     if not p.exists():
+        # An inherited record (a delegated child, a nested aelix) stays as it is.
         return
     # Read the escape hatch BEFORE applying any key, so a ``.env`` that sets
     # ``AELIX_DOTENV_ALLOW`` cannot widen the gate it is being judged by.
@@ -700,6 +718,8 @@ def load_dotenv(path: str = ".env") -> None:
     gate: list[str] = []
     shadowed: list[tuple[str, str, str]] = []
     badvalue: list[tuple[str, str]] = []
+    badname: list[str] = []
+    record: list[str] = []
     for raw in p.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -710,6 +730,19 @@ def load_dotenv(path: str = ".env") -> None:
         if not key:
             continue
         admit: list[str]
+        if not ENV_NAME.match(key):
+            # FIRST, ahead of every other arm and the hatch (#362, ADR-0250).
+            badname.append(key)
+            continue
+        if env_name(key) == DOTENV_ADMITTED_ENV:
+            # The provenance record (#362). Its own branch, ahead of the hatch:
+            # ``^AELIX_`` refuses it only until ``AELIX_DOTENV_ALLOW`` names it
+            # (measured on ``9ca53a4f``: admitted), and a .env that could write
+            # it could mark the user's exported key as planted, or erase the
+            # mark on its own. Compared in the OS spelling: on Windows any case
+            # of this name is the same variable.
+            record.append(key)
+            continue
         if key == _DOTENV_GATE:
             gate.append(key)
             continue
@@ -744,6 +777,18 @@ def load_dotenv(path: str = ".env") -> None:
         if key not in os.environ:
             os.environ[key] = value
             admit.append(key)
+    # #362 / ADR-0250 guard 1 — record every name this file supplied, so a
+    # route-deciding judgement can leave it out (``ModelRegistry.has_route_auth``)
+    # in this process and in every child that inherits the environment. UNION
+    # with the inherited record, never overwrite: a delegated child started in
+    # the same cwd re-reads this .env, admits nothing (the keys are already set),
+    # and an overwrite would erase the mark and make the planted key "exported"
+    # again. Recorded in the OS spelling (``env_name``), which on Windows is the
+    # upper-cased name the line actually set.
+    supplied = [*credentials, *config, *hatched]
+    if supplied:
+        inherited = dotenv_admitted_names(before)
+        os.environ[DOTENV_ADMITTED_ENV] = format_record([*inherited, *supplied])
     _report_dotenv(
         p,
         credentials=credentials,
@@ -756,6 +801,8 @@ def load_dotenv(path: str = ".env") -> None:
         badvalue=badvalue,
         foreign_precedence="GH_TOKEN" in credentials
         and bool(before.get("GITHUB_TOKEN")),
+        badname=badname,
+        record=record,
     )
 
 
@@ -879,20 +926,16 @@ def _sibling_backfill(provider: str, model_id: str) -> Model | None:
     )
 
 
-# === #344 / ADR-0249: a ``--model`` OpenRouter cannot serve never reaches it ====
+# === Which providers a ``--model`` string can name (#344 ADR-0249, #362 ADR-0250) ==
 #
-# The OpenRouter-from-env rung used to run FIRST, so with ``OPENROUTER_API_KEY``
-# set EVERY ``--model`` string became an OpenRouter id. Measured on main
-# ``fbead6e0`` through the real CLI (fake keys, a recording CONNECT proxy): a
-# models.json provider's ``retryprobe/held-model`` went to ``openrouter.ai:443``
-# (and an ``--api-key`` meant for that endpoint went with it as the bearer), an
-# extension provider's ``extprov/m1`` likewise, and the owner's own
-# ``ollama/qwen3.6:35b-a3b`` retried twelve times against OpenRouter instead of
-# reaching ``127.0.0.1:11434``. The helpers below are the rung that now runs
-# before it (``_openrouter_cannot_serve``); every one of them reads
-# CONFIGURATION only — the catalog, models.json, extension registrations — and
-# never a credential, so a vendor key in a cloned repo's ``.env`` (or a stale
-# OAuth record) cannot change where a prompt goes.
+# #344 measured an OpenRouter-from-env rung taking EVERY ``--model`` string —
+# on main ``fbead6e0``, through the real CLI (fake keys, a recording CONNECT
+# proxy), a models.json provider's ``retryprobe/held-model``, an extension's
+# ``extprov/m1`` and the owner's own ``ollama/qwen3.6:35b-a3b`` all went to
+# ``openrouter.ai:443``. These helpers answer, from CONFIGURATION only (the
+# catalog, models.json, extension registrations), which providers exist, which
+# of them the user defined, and how a prefix is spelled; :func:`resolve_route`
+# below (ADR-0250, pi's order) is where credentials enter, through guard 1.
 
 
 def _catalogued_providers() -> frozenset[str]:
@@ -910,12 +953,13 @@ def openrouter_namespaces() -> frozenset[str]:
     ``anthropic``, ``meta-llama``, ``x-ai``, ``~openai`` …), and 9 of them are
     also catalogued provider names — ``anthropic deepseek google minimax
     moonshotai nvidia openai openrouter xiaomi``. A prefix in this set can be an
-    OpenRouter id (``openai/gpt-4o-mini``), so it keeps going to OpenRouter when
-    the key is set; the other 26 catalogued providers (``openai-codex``,
-    ``xai``, ``groq``, ``mistral`` …) cannot, so rung 0c resolves them in place.
-    A catalog regeneration that adds an OpenRouter namespace equal to a provider
-    name moves that prefix to OpenRouter at that build, with no code change —
-    the release notes of that regeneration are where it shows.
+    OpenRouter id (``openai/gpt-4o-mini``), so ADR-0250's guard 2 may send such
+    a string to OpenRouter when the user holds no key of their own for that
+    vendor and does hold an OpenRouter one; the other 26 catalogued providers
+    (``openai-codex``, ``xai``, ``groq``, ``mistral`` …) cannot be, so a string
+    under them never leaves them. A catalog regeneration that adds an OpenRouter
+    namespace equal to a provider name widens guard 2 at that build, with no
+    code change — the release notes of that regeneration are where it shows.
     """
 
     from aelix_ai.models import get_models
@@ -938,8 +982,9 @@ def user_defined_providers(registry: Any) -> frozenset[str]:
     """Providers whose endpoint the user chose (``ModelRegistry.get_user_defined_providers``).
 
     ``openrouter`` is removed even when models.json re-points it: an
-    ``openrouter/<id>`` string is itself an OpenRouter id (``openrouter/auto``),
-    so the OpenRouter rung — which adopts that ``baseUrl`` — keeps it.
+    ``openrouter/<id>`` string is an explicit OpenRouter route
+    (``openrouter/auto``), which adopts that ``baseUrl`` like any re-pointed
+    built-in, and "user-defined" would only keep it from guard 2's checks.
 
     A registry that predates the accessor (tests, an embedder's duck-typed one)
     is read the only way it can be: whatever it serves that the catalog does not
@@ -959,6 +1004,31 @@ def user_defined_providers(registry: Any) -> frozenset[str]:
     except Exception:  # noqa: BLE001 — resolution must never break launch
         return frozenset()
     return found - {"openrouter"}
+
+
+def _own_endpoint_providers(registry: Any, user_defined: frozenset[str]) -> frozenset[str]:
+    """Providers whose endpoint the user chose — :func:`user_defined_providers` plus a
+    re-pointed ``openrouter``.
+
+    Step 2's ``defaultProvider`` rule (ADR-0250 §2.1) asks "is this the user's
+    own endpoint": a models.json provider, an extension's, a re-pointed
+    built-in. :func:`user_defined_providers` drops ``openrouter`` for the
+    prefix rule's sake only; a ``openrouter`` that models.json re-points is the
+    user's endpoint like any other re-pointed built-in (``/model``'s
+    ``_case_rule_providers`` reads it the same way). A project file can NAME one
+    of these, but it cannot define one: models.json and extensions live outside
+    the repo or behind project trust.
+    """
+
+    getter = getattr(registry, "get_user_defined_providers", None) if registry else None
+    if callable(getter):
+        try:
+            returned: Any = getter()
+            if "openrouter" in frozenset(str(name) for name in returned):
+                return user_defined | {"openrouter"}
+        except Exception:  # noqa: BLE001 — resolution must never break launch
+            return user_defined
+    return user_defined
 
 
 def canonical_provider(prefix: str, known: frozenset[str]) -> str | None:
@@ -1063,9 +1133,9 @@ def _named_provider(
     :func:`canonical_provider` does, else the name as typed. Returns
     ``(name, clash)``; ``clash`` (sorted) is non-empty when two user-defined
     names differ from ``name`` only in case and neither is spelled exactly —
-    the caller holds the name as typed, never guessing either. Routing is
-    untouched: a named provider still switches rung 0 and the OpenRouter rung
-    off unless it IS ``openrouter``.
+    the caller holds the name as typed, never guessing either. A named
+    provider is the route (ADR-0250 step E): no swap, no raw fallback, no
+    guard 2 — only the ``<provider>/`` strip pi tolerates.
     """
 
     if not name:
@@ -1219,8 +1289,10 @@ def _registration_models(registry: Any, provider: str) -> list[Model] | None:
     decision 3). Such a registration is MERGED into the registry next to the
     catalog's own models, so the registry's ``openai`` still lists
     ``gpt-4o-mini`` at ``api.openai.com`` — but the provider-wide ``api_key`` is
-    the extension's. Rung 0 therefore resolves such a prefix inside the
-    REGISTRATION: the review measured ``openai/gpt-4o-mini`` with
+    the extension's. The launch therefore resolves such a prefix inside the
+    REGISTRATION (and the registration's models replace the catalogue's in the
+    set a ``--model`` string can name): the #344 review measured
+    ``openai/gpt-4o-mini`` with
     ``OPENROUTER_API_KEY`` set reaching ``api.openai.com`` with the extension's
     key (on ``fbead6e0`` it went to OpenRouter with the user's). pi replaces a
     provider's models on ``registerProvider`` with models, so there the catalog
@@ -1283,113 +1355,744 @@ def _resolve_in_provider(
     backfilled = _sibling_backfill(provider, model_id)
     if backfilled is not None:
         return _adopt_base_url_override(backfilled, registry)
-    # (e) — see the note at ``resolve_model``'s bare return.
+    # (e) — ``api`` stays "unknown": no catalog entry, no registry entry, no
+    # unanimous sibling api. Driving a turn with it raises the internal
+    # "No provider registered for api='unknown'", so every caller gates on
+    # ``core.runnable_models.is_runnable`` first (#98) — which names the
+    # provider, so a typo is a refusal and never a fall-through elsewhere.
     return Model(id=model_id, provider=provider)
 
 
-def user_defined_route(model_ref: str, registry: Any) -> tuple[str, str] | None:
-    """``(provider, id)`` when ``model_ref`` is a user-defined route (rungs 0a/0b).
+# === #362 / ADR-0250: pi's ``resolveCliModel`` order, with two guards ==========
+#
+# ADR-0249 put a credential-blind rung 0 in front of an OpenRouter-from-env rung
+# that turned every other ``--model`` into an OpenRouter id whenever
+# ``OPENROUTER_API_KEY`` was set — from ANY source. #362 measured what that
+# costs: with ``ANTHROPIC_API_KEY`` exported and a cloned repo's ``.env``
+# carrying ``OPENROUTER_API_KEY``, ``--model anthropic/claude-haiku-4-5`` went to
+# ``openrouter.ai:443`` on the file's key (``/tmp/362-work/design/live/today.out``
+# A11). The owner's decision (2026-10-02) replaces both rungs with pi's order,
+# ``resolveCliModel`` (``packages/coding-agent/src/core/model-resolver.ts:406-606``
+# @ 88ff80b98), exact ids only (no fuzzy match, no ``:thinking`` suffix), and two
+# guards:
+#
+# GUARD 1 — a credential a cwd ``.env`` supplied never takes part in a judgement
+#   that CHOOSES a route (pi's auth tie-break :470-504, its swap :525-540, the
+#   raw fallback :548-555, and guard 2). It still authenticates the route once
+#   chosen. npm pi reads no ``.env`` at all, so pi never faces this; aelix does
+#   (ADR-0203). :func:`route_authenticated` is the predicate.
+# GUARD 2 — pi refreshes newer ids from pi.dev every 4 h
+#   (``core/remote-catalog-provider.ts``); aelix has only this build's snapshot,
+#   which misses ~45% of live OpenRouter ids (#136). So a ``<vendor>/<model>``
+#   this build cannot place goes to OpenRouter as written — only on an
+#   OpenRouter credential of the user's own, never under a user-defined prefix,
+#   never under a catalogued provider OpenRouter cannot be (``xai/…``).
 
-    0a: the first-slash prefix names a user-defined provider (case-insensitive)
-    → ``(canonical, rest)``. 0b: otherwise the WHOLE string is an id exactly one
-    user-defined provider serves → ``(that provider, model_ref)``. ``None``
-    otherwise. A catalogued provider an extension took over "serves" only the
-    ids its registration brings (:func:`_registration_models`): the catalog's
-    own ids next to them are not the user's.
+
+@dataclass(frozen=True)
+class ResolvedRoute:
+    """What :func:`resolve_route` decided for one ``--model``/``--provider`` pair.
+
+    ``model`` is always set: on ``error`` it is a placeholder no turn runs
+    (``api='unknown'``), shaped so the late-registration path can re-resolve it.
+    ``kind`` names the step that decided (for tests, sabotage and the child
+    pin); ``warning`` is the one line printed at launch (a custom id, guard 2).
     """
 
-    user_defined = user_defined_providers(registry)
-    if not user_defined or not model_ref:
-        return None
-    prefix, sep, rest = model_ref.partition("/")
-    if sep and rest:
-        # Matched against the user's providers ALONE (Codex C1): a catalogue
-        # spelling must not win over a user-defined one that differs in case.
-        canon, clash = _user_defined_prefix(prefix, user_defined)
-        if canon is not None:
-            return canon, rest
-        if clash:
-            # Ambiguous between two of the user's own providers: the prefix as
-            # typed, which :func:`_openrouter_cannot_serve` holds unrunnable.
-            return prefix, rest
-    registered_ids: dict[str, frozenset[str]] = {}
-    for name in user_defined:
+    model: Model
+    kind: str
+    error: str | None = None
+    warning: str | None = None
+
+
+def route_authenticated(registry: Any, provider: str, *, runtime_overrides: bool = True) -> bool:
+    """Guard 1 — does ``provider`` hold a credential the user configured outside a cwd ``.env``?
+
+    :meth:`ModelRegistry.has_route_auth` when the registry has it. Without a
+    registry, only the environment layer exists, with the ``.env`` names taken
+    out. A duck-typed registry (an embedder's, a test double) gets its
+    ``has_configured_auth`` — except when the provider's environment layer is
+    held only by ``.env`` names, which that predicate cannot see past, so it
+    fails CLOSED (#362 critique S3: falling back to it unconditionally let the
+    record be ignored).
+    """
+
+    if not provider:
+        return False
+    if registry is not None:
+        getter = getattr(registry, "has_route_auth", None)
+        if callable(getter):
+            try:
+                return bool(getter(provider, runtime_overrides=runtime_overrides))
+            except Exception:  # noqa: BLE001 — resolution must never break launch
+                return False
+    from aelix_ai.providers._env_api_keys import ENV_API_KEYS
+
+    from aelix_coding_agent.core.dotenv_provenance import dotenv_admitted_names, env_name
+
+    admitted = dotenv_admitted_names()
+    present = [n for n in ENV_API_KEYS.get(provider, ()) if os.environ.get(n)]
+    if any(env_name(n) not in admitted for n in present):
+        return True
+    if registry is None or present:
+        return False
+    return _configured_auth(registry, provider)
+
+
+def holds_route_auth(registry: Any, *, runtime_overrides: bool = True) -> bool:
+    """Guard 1's switch: does the user hold a route-authenticating credential of their own anywhere?
+
+    While this is True, every implicit chooser (``/model <arg>``'s match, the
+    post-``/login`` pick, RPC ``cycle_model``) sets aside the providers only a
+    cwd ``.env`` authenticates (ADR-0250 §2.2, §2.8, §2.10). It does not read
+    model rows: a credential of the user's own on a provider that serves no
+    model counts too (Codex's second cross-review of ``a0edf615``, F3 —
+    ``get_available()`` missed an ``auth.json`` key for a provider registered
+    with no models, and the session then counted as ``.env``-only). The
+    candidates are :meth:`ModelRegistry.route_auth_candidates` (model rows,
+    ``auth.json`` entries, runtime overrides, models.json providers and
+    extension registrations, models or not) plus every provider an environment
+    key name belongs to; a duck-typed registry contributes the providers it
+    serves. Each is asked :func:`route_authenticated`, whose failure counts as
+    not route-authenticated (fail-closed), as before. ``runtime_overrides=False``
+    leaves ``--api-key`` out, as :func:`route_authenticated` does (a delegated
+    child never receives it).
+
+    An installed fallback resolver (``AuthStorage.set_fallback_resolver``,
+    :meth:`ModelRegistry.has_fallback_resolver`) counts by itself: a resolver is
+    a function, and the providers it answers for cannot be listed, so a provider
+    only it authenticates is in no candidate set (Codex's third cross-review of
+    #362, C2: an embedder's resolver answering for ``private-seat``, which has no
+    rows, registration or stored entry - held was False, and with a ``.env``
+    ``OPENAI_API_KEY`` ``/model openai/gpt-4o-mini`` went to ``api.openai.com``
+    on the file's key). Failing toward the guard has a cost, stated in
+    ADR-0250 §2.8 and §6: an embedder that installs a resolver and holds only
+    ``.env`` credentials gets the strict guard's refusals, not the residual.
+    The stock CLI installs none.
+    """
+
+    from aelix_ai.providers._env_api_keys import ENV_API_KEYS
+
+    if registry is not None:
+        has_fallback = getattr(registry, "has_fallback_resolver", None)
+        try:
+            if callable(has_fallback) and has_fallback():
+                return True
+        except Exception:  # noqa: BLE001 — an unreadable registry adds nothing
+            pass
+    names: set[str] = set(ENV_API_KEYS)
+    if registry is not None:
+        getter = getattr(registry, "route_auth_candidates", None)
+        sources: list[Any] = [getter] if callable(getter) else []
+        sources += [getattr(registry, "get_all", None), getattr(registry, "get_available", None)]
+        for source in sources:
+            if not callable(source):
+                continue
+            try:
+                found: Any = source()
+                for item in found:
+                    name = item if isinstance(item, str) else getattr(item, "provider", "")
+                    if name:
+                        names.add(str(name))
+            except Exception:  # noqa: BLE001 — a source that fails adds no names
+                continue
+    return any(
+        route_authenticated(registry, name, runtime_overrides=runtime_overrides)
+        for name in sorted(names)
+    )
+
+
+def _configured_auth(registry: Any, provider: str) -> bool:
+    """Auth from ANY source, ``.env`` included — the "can this route run" question.
+
+    A duck-typed registry without ``has_configured_auth`` is read through what
+    it offers: ``get_available()`` is the auth-filtered list by contract.
+    """
+
+    if registry is None:
+        from aelix_ai.providers._env_api_keys import get_env_api_key
+
+        return bool(get_env_api_key(provider))
+    try:
+        checker = getattr(registry, "has_configured_auth", None)
+        if callable(checker):
+            return bool(checker(Model(id="", provider=provider)))
+        return any(m.provider == provider for m in registry.get_available())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _dotenv_only_names(registry: Any, provider: str) -> list[str]:
+    """The ``.env`` names that are the only reason ``provider`` counts as configured."""
+
+    if route_authenticated(registry, provider) or not _configured_auth(registry, provider):
+        return []
+    from aelix_ai.providers._env_api_keys import ENV_API_KEYS
+
+    from aelix_coding_agent.core.dotenv_provenance import dotenv_admitted_names, env_name
+
+    admitted = dotenv_admitted_names()
+    names = [
+        n for n in ENV_API_KEYS.get(provider, ()) if os.environ.get(n) and env_name(n) in admitted
+    ]
+    try:
+        configs = getattr(registry, "_provider_request_configs", None)
+        config = configs.get(provider) if isinstance(configs, Mapping) else None
+        key = getattr(config, "api_key", None)
+        if isinstance(key, str) and os.environ.get(key) and env_name(key) in admitted:
+            names.append(key)
+    except Exception:  # noqa: BLE001
+        pass
+    return sorted(set(names))
+
+
+def _route_universe(registry: Any) -> list[Model]:
+    """Every model a ``--model`` string can name: pi's ``modelRuntime.getModels()``.
+
+    The registry's models (catalogue, models.json, extension registrations),
+    plus the catalogue of any provider the registry serves nothing for (a
+    duck-typed registry; for :class:`ModelRegistry` this adds nothing). A
+    catalogued provider an extension took over contributes only its
+    registration's models (:func:`_registration_models`, #365 scope) — pi
+    replaces a provider's models on ``registerProvider`` the same way.
+    """
+
+    from aelix_ai.models import get_models, get_providers
+
+    models: list[Model] = []
+    if registry is not None:
+        try:
+            models = list(registry.get_all())
+        except Exception:  # noqa: BLE001 — resolution must never break launch
+            models = []
+    served = {m.provider for m in models}
+    models += [m for p in get_providers() if p not in served for m in get_models(p)]
+    for name in sorted(user_defined_providers(registry)):
         registered = _registration_models(registry, name)
         if registered is not None:
-            registered_ids[name] = frozenset(m.id for m in registered)
-    try:
-        owners = {
-            m.provider
-            for m in registry.get_all()
-            if m.id == model_ref
-            and m.provider in user_defined
-            and (m.provider not in registered_ids or m.id in registered_ids[m.provider])
-        }
-    except Exception:  # noqa: BLE001 — resolution must never break launch
+            models = [m for m in models if m.provider != name] + list(registered)
+    return models
+
+
+def _launch_shape(model: Model, registry: Any) -> Model:
+    """A catalogued hit as the launch returns it: the catalogue entry, host adopted (S).
+
+    Whatever step found it — a swap or raw match reads the registry's copy —
+    so every catalogued route has one shape (ADR-0249 §2.4; the full
+    composition is #363's). Registration and registry-only models as they are.
+    """
+
+    if _registration_models(registry, model.provider) is not None:
+        return model
+    from aelix_ai.models import get_model
+
+    catalog = get_model(model.provider, model.id)
+    if catalog is not None:
+        return _adopt_base_url_override(catalog, registry)
+    return model
+
+
+def _find_in(provider: str, model_id: str, registry: Any) -> Model | None:
+    """``model_id`` exactly, inside ``provider`` only (pi :514-517, minus fuzzy matching)."""
+
+    registered = _registration_models(registry, provider)
+    if registered is not None:
+        return next((m for m in registered if m.id == model_id), None)
+    from aelix_ai.models import get_model
+
+    catalog = get_model(provider, model_id)
+    if catalog is not None:
+        return _adopt_base_url_override(catalog, registry)
+    return _registry_lookup(registry, provider, model_id)
+
+
+def _custom_in(provider: str, model_id: str, registry: Any, user_defined: frozenset[str]) -> Model:
+    """pi's ``buildFallbackModel`` (:570-597), with aelix's tail: never another provider."""
+
+    registered = _registration_models(registry, provider)
+    if registered is not None:
+        backfilled = _unanimous_backfill(registered, provider, model_id)
+        return backfilled if backfilled is not None else Model(id=model_id, provider=provider)
+    return _resolve_in_provider(provider, model_id, registry, user_defined)
+
+
+def _custom_warning(provider: str, model_id: str, model: Model) -> str | None:
+    """pi's custom-id warning (:593-594), only for a model a turn can run."""
+
+    if model.api == "unknown":
         return None
-    if len(owners) == 1:
-        return next(iter(owners)), model_ref
+    return f'Model "{model_id}" not found for provider "{provider}". Using custom model id.'
+
+
+def _openrouter_base(model: Model) -> Model:
+    """``OPENROUTER_BASE_URL`` (shell, or hatched) on every route that lands on OpenRouter."""
+
+    base_url = os.environ.get("OPENROUTER_BASE_URL")
+    if model.provider == "openrouter" and base_url:
+        return replace(model, base_url=base_url)
+    return model
+
+
+def _matches(
+    universe: list[Model], strings: frozenset[str], *, ids_only: bool = False
+) -> list[Model]:
+    """Models whose id (or ``provider/id``) is one of ``strings``, each pair once, in order."""
+
+    seen: set[tuple[str, str]] = set()
+    found: list[Model] = []
+    for m in universe:
+        hit = m.id in strings or (not ids_only and f"{m.provider}/{m.id}" in strings)
+        if hit and (m.provider, m.id) not in seen:
+            seen.add((m.provider, m.id))
+            found.append(m)
+    return found
+
+
+def _ambiguous_message(model_ref: str, hits: list[Model], registry: Any, overrides: bool) -> str:
+    """pi's ambiguity error (:493-501), naming the ``.env`` keys that did not count."""
+
+    listed = ", ".join(sorted({f"{m.provider}/{m.id}" for m in hits}))
+    trusted = [
+        m for m in hits if route_authenticated(registry, m.provider, runtime_overrides=overrides)
+    ]
+    hint = (
+        "No matching provider is authenticated."
+        if not trusted
+        else "More than one matching provider is authenticated."
+    )
+    names = sorted({n for m in hits for n in _dotenv_only_names(registry, m.provider)})
+    if names:
+        hint += (
+            f" ({', '.join(_sanitize(n) for n in names)} came from a project .env, which "
+            "does not choose between providers.)"
+        )
+    return f'Model "{model_ref}" is ambiguous across providers: {listed}. {hint} Use --provider or provider/model.'
+
+
+def _default_aside(provider: str, registry: Any) -> str:
+    """Why step 2 set settings ``defaultProvider`` aside (ADR-0250 §2.1), for the refusal."""
+
+    message = (
+        f' Settings defaultProvider "{_sanitize(provider)}" was not used: no credential of '
+        "your own authenticates it, and a project .aelix/settings.json can set it"
+    )
+    names = _dotenv_only_names(registry, provider)
+    if names:
+        message += f" ({', '.join(_sanitize(n) for n in names)} came from a project .env)"
+    return message + "."
+
+
+def _not_found_message(model_ref: str, registry: Any) -> str:
+    """pi's not-found error (:599-605), plus why guard 2 declined a ``.env`` OpenRouter key."""
+
+    message = f'Model "{model_ref}" not found. Use --list-models to see available models.'
+    names = _dotenv_only_names(registry, "openrouter")
+    if names and _guard2_shape(model_ref):
+        message += (
+            f" ({', '.join(_sanitize(n) for n in names)} came from a project .env, which "
+            "does not send ids this build does not know to OpenRouter; use "
+            f"openrouter/{model_ref} or --provider openrouter.)"
+        )
+    return message
+
+
+def _dotenv_declined_hint(
+    model_ref: str, candidates: list[Model], registry: Any, taken: str
+) -> str | None:
+    """Why a raw match on another provider was NOT taken: its only key came from a ``.env``.
+
+    ``taken`` is the provider the route went to. A candidate on that same
+    provider offers no other route — the request already goes there, on that
+    key — so it is skipped (#362 verify round 4, N4: ``--model openrouter/auto``
+    on a ``.env`` OpenRouter key went to OpenRouter AND printed "use
+    openrouter/openrouter/auto ... to send it there").
+    """
+
+    for m in candidates:
+        if m.provider == taken:
+            continue
+        names = _dotenv_only_names(registry, m.provider)
+        if names:
+            return (
+                f'"{model_ref}" is also {m.provider}\'s model id, but '
+                f"{', '.join(_sanitize(n) for n in names)} came from a project .env, which "
+                f"does not choose a route; use {m.provider}/{model_ref} or export the key "
+                "to send it there."
+            )
     return None
 
 
-def _openrouter_cannot_serve(model_ref: str, registry: Any) -> Model | None:
-    """Rung 0 — a ``--model`` string OpenRouter-from-env must not take (ADR-0249).
+def _guard2_shape(model_ref: str) -> bool:
+    """OpenRouter ids are ``<vendor>/<model>``: a slash, and no empty segment.
 
-    Runs only with ``OPENROUTER_API_KEY`` set, a non-empty ``--model`` and no
-    ``--provider``; ``None`` hands the string to the OpenRouter rung unchanged.
-
-    * 0a — the prefix names a USER-DEFINED provider → resolved inside it, and
-      never falls through to OpenRouter, even for an id it does not list (a
-      registry-sibling backfill, else a refusal). For a catalogued name an
-      extension took over, "inside it" is inside the registration
-      (:func:`_registration_models`).
-    * 0b — the whole string is an id exactly ONE user-defined provider serves →
-      that model (the owner's bare ``qwen3.6:35b-a3b`` from their ollama
-      provider; a gateway listing ``openai/gpt-4o`` verbatim).
-    * 0c — the prefix names a CATALOGUED provider that is not an OpenRouter
-      namespace (:func:`openrouter_namespaces`) → resolved inside it:
-      ``openai-codex/gpt-5.1`` used to reach OpenRouter and fail 400.
-
-    Everything else — the 9 overlapping namespaces (``openai/…``,
-    ``anthropic/…``), unknown prefixes, bare ids no user-defined provider
-    serves — goes to OpenRouter exactly as before. No credential is read here:
-    whether the user ALSO holds an OpenAI key does not decide ``openai/…``.
+    Measured over this build's catalogue: of 356 OpenRouter ids the only one
+    without a slash is pi's ``auto`` alias, so a bare id this build does not
+    know is pi's "not found", never a guess at OpenRouter.
     """
 
-    route = user_defined_route(model_ref, registry)
+    parts = model_ref.split("/")
+    return len(parts) >= 2 and all(part.strip() for part in parts)
+
+
+def _guard2(
+    model_ref: str,
+    inferred: str | None,
+    registry: Any,
+    overrides: bool,
+) -> bool:
+    """Guard 2 — may ``model_ref`` go to OpenRouter as written?
+
+    Only when the user holds an OpenRouter credential of their own
+    (:func:`route_authenticated`: exported, ``/login``-stored in ``auth.json``,
+    or their models.json — all outside the repo; ADR-0203 locks
+    ``AELIX_CODING_AGENT_DIR``/``AELIX_AUTH_PATH`` against a ``.env``), and, when
+    the prefix names a provider, only when that provider is one of OpenRouter's
+    namespaces in this build (:func:`openrouter_namespaces`) — ``xai/grok-4``
+    stays a refusal, OpenRouter spells xAI ``x-ai/``.
+
+    Two conditions are the CALLERS', not re-checked here (the #362 review and
+    its verification each found a re-check here unreachable — one-line
+    sabotages of them stayed green): a user-defined prefix never reaches this
+    (step 3 returns inside it; step 2 has no inferred provider), and steps (4)
+    and (5) call this only when the inferred provider is not route-authenticated
+    (and never under ``--api-key``, step 3b).
+    """
+
+    if not _guard2_shape(model_ref):
+        return False
+    if inferred is not None and inferred.lower() not in openrouter_namespaces():
+        return False
+    return route_authenticated(registry, "openrouter", runtime_overrides=overrides)
+
+
+def _guard2_route(
+    model_ref: str, registry: Any, user_defined: frozenset[str], warning: str
+) -> ResolvedRoute:
+    """``model_ref`` on OpenRouter as written, catalogue-enriched when OpenRouter lists it."""
+
+    model = _openrouter_base(_custom_in("openrouter", model_ref, registry, user_defined))
+    return ResolvedRoute(model, "guard2", warning=warning)
+
+
+def resolve_route(
+    model_flag: str | None,
+    provider_flag: str | None,
+    registry: Any = None,
+    default_provider: str | None = None,
+    *,
+    runtime_overrides: bool = True,
+    typed_key: bool = False,
+) -> ResolvedRoute:
+    """The launch route for ``--model``/``--provider`` — pi's ``resolveCliModel`` order.
+
+    ``provider_flag`` means "the user explicitly named this provider"
+    (``--provider``, a profile's ``provider:``, the seeded settings pair);
+    ``default_provider`` (settings ``defaultProvider`` split from its model) is
+    the weakest signal (ADR-0195 Decision 4) and only breaks a bare-id tie or
+    homes a bare id nothing else claims. ``registry`` is optional (catalogue
+    only). ``runtime_overrides=False`` asks what a delegated child — which never
+    receives ``--api-key`` — would decide (:mod:`agents.resolver`).
+    ``typed_key`` says this launch carries ``--api-key``: see (3b).
+
+    0. no ``--model``: shell ``OPENROUTER_DEFAULT_MODEL`` as
+       ``--provider openrouter --model <it>``, when OpenRouter has any key;
+    E. ``--provider``: aelix's case rule (:func:`_named_provider`); inside it
+       the id exactly, else pi's ``<provider>/`` strip (:506-512), else a custom
+       id under it — stripped too, as pi builds it (:570-597);
+    1. a first-slash prefix naming a known provider (a user-defined one first
+       and alone) — the INFERRED provider (:429-463);
+    2. none inferred: the whole string as an id or ``provider/id`` across every
+       model (:465-504) — one hit wins; several: settings ``defaultProvider``
+       (when it counts, below), else the sole route-authenticated one, else the
+       sole user-defined one among those, else pi's ambiguity error; none: a
+       bare id under settings ``defaultProvider`` (when it counts), else guard
+       2, else pi's not-found error. ``defaultProvider`` is the MERGED setting,
+       which a project ``.aelix/settings.json`` sets even over the user's global
+       one (and in an untrusted directory), so while the user holds a
+       route-authenticating credential of their own anywhere
+       (:func:`holds_route_auth`) it counts only when it names a provider that
+       credential authenticates, or the user's own endpoint
+       (:func:`_own_endpoint_providers`); otherwise both arms fall through as if
+       it were unset (#362 verify round 4, B1: a project
+       ``{"defaultProvider": "anthropic"}`` plus a ``.env`` ``ANTHROPIC_API_KEY``
+       sent ``--model claude-haiku-4-5`` to ``api.anthropic.com`` while the
+       user's own ``OPENROUTER_API_KEY`` was exported). pi has no
+       ``defaultProvider`` tie-break at all (:465-503); the home is ADR-0195's.
+       A session holding no credential of its own keeps both arms (ADR-0250 §6);
+    3. inside the inferred provider, the id EXACTLY. A user-defined provider
+       never lets the string leave it (the #344 principle): a custom id there
+       or a refusal;
+    3b. ``--api-key`` (``typed_key``) and a catalogued inferred provider: the
+       found id, else a custom id there — no swap, no raw match on another
+       provider, no guard 2. The key is attached after resolution to the
+       route's provider (pi ``main.ts:476-484``, ``:827-834``), so nothing at
+       resolve time counted it, and the swap or guard 2 carried a key typed for
+       the provider the prefix names to ``openrouter.ai`` as the bearer — over
+       the user's own OpenRouter key (#362 review, R02/R03);
+    4. found, inferred provider not route-authenticated: the sole
+       route-authenticated model whose raw id is the string (:519-541), else
+       the sole user-defined one; with neither, guard 2 (S1, below); else the
+       hit;
+    5. not found: a route-authenticated raw match (:543-556), else — the
+       inferred provider being route-authenticated — the custom id there
+       (where pi takes the first raw match with no auth check, which is where a
+       planted key captured ``anthropic/claude-haiku-4.5``), else guard 2, else
+       pi's first raw match, else the custom id.
+
+    Ids are compared case-sensitively (aelix's rule), but in (4) and (5) the
+    string is also tried with the prefix in its canonical spelling: pi
+    lower-cases both sides there (:526-527), and without it ``OpenAI/gpt-4o-mini``
+    lost the swap and stayed on a planted ``OPENAI_API_KEY`` (#362 critique M4).
+
+    Guard 2 also covers (4) — a DIVERGENCE from pi, stated in ADR-0250: an
+    OpenRouter namespace provider the user holds no key of their own for, with
+    an OpenRouter key they do hold, sends the string to OpenRouter as written
+    even when the vendor's catalogue lists the id. pi reaches the same answer
+    through its swap whenever pi.dev's live list carries the id on OpenRouter;
+    aelix's snapshot lacks 133 such ids (``anthropic/claude-haiku-4-5``,
+    ``openai/o1-pro`` …), and without this a planted vendor key in a ``.env``
+    captured them from an OpenRouter user (#362 critique S1/S2).
+    """
+
     user_defined = user_defined_providers(registry)
-    if route is not None:
-        provider, model_id = route
-        if provider not in user_defined:
-            # A prefix two user-defined providers share up to case (Codex C1):
-            # refused (``api='unknown'``), never resolved in the catalogue's
-            # same-spelled provider and never handed to OpenRouter.
-            # :func:`ambiguous_provider_message` names both.
-            return Model(id=model_id, provider=provider)
-        registered = _registration_models(registry, provider)
-        if registered is not None:
-            # A catalogued name an extension took over: its registration's
-            # entry, else a backfill from the registration's models, else a
-            # refusal — never the catalog's vendor host with the extension's key.
-            for model in registered:
-                if model.id == model_id:
-                    return model
-            backfilled = _unanimous_backfill(registered, provider, model_id)
-            return backfilled if backfilled is not None else Model(id=model_id, provider=provider)
-        if model_id == model_ref:
-            # 0b — the registry entry itself (it is exactly one provider's).
-            found = _registry_lookup(registry, provider, model_id)
-            if found is not None:
-                return found
-        return _resolve_in_provider(provider, model_id, registry, user_defined)
-    prefix, sep, rest = model_ref.partition("/")
-    if not (sep and rest):
-        return None
-    catalogued = _catalogued_providers()
-    canon = canonical_provider(prefix, catalogued)
-    if canon is None or canon.lower() in openrouter_namespaces():
-        return None
-    return _resolve_in_provider(canon, rest, registry, user_defined)
+    overrides = runtime_overrides
+
+    def _ra(provider: str) -> bool:
+        return route_authenticated(registry, provider, runtime_overrides=overrides)
+
+    def _shape(model: Model) -> Model:
+        return _openrouter_base(_launch_shape(model, registry))
+
+    def _default_counts(named: str) -> bool:
+        # Step 2's settings ``defaultProvider`` (see the docstring): the user's
+        # own endpoint, or a provider their own credential authenticates, or a
+        # session holding no credential of its own.
+        if named in _own_endpoint_providers(registry, user_defined) or _ra(named):
+            return True
+        return not holds_route_auth(registry, runtime_overrides=overrides)
+
+    # --- 0: no model string ------------------------------------------------------
+    if not model_flag:
+        named = _named_provider(provider_flag, registry, user_defined)[0] if provider_flag else None
+        default_id = os.environ.get("OPENROUTER_DEFAULT_MODEL")
+        if (
+            default_id
+            and named in (None, "openrouter")
+            and _configured_auth(registry, "openrouter")
+        ):
+            # The variable chose OpenRouter, not the key, so a key from any
+            # source authenticates it (ADR-0250 §2.6).
+            inner = resolve_route(
+                default_id, "openrouter", registry, runtime_overrides=runtime_overrides
+            )
+            return replace(inner, kind="openrouter_default")
+        return ResolvedRoute(Model(id="", provider=named or provider_flag or ""), "none")
+
+    # --- E: an explicitly named provider -----------------------------------------
+    if provider_flag:
+        provider, clash = _named_provider(provider_flag, registry, user_defined)
+        if clash:
+            return ResolvedRoute(
+                Model(id=model_flag, provider=provider),
+                "held",
+                ambiguous_provider_name_message(provider_flag, registry),
+            )
+        hit = _find_in(provider, model_flag, registry)
+        model_id = model_flag
+        if hit is None and model_flag.lower().startswith(f"{provider.lower()}/"):
+            stripped = model_flag[len(provider) + 1 :]
+            if stripped:
+                model_id = stripped
+                hit = _find_in(provider, model_id, registry)
+        if hit is not None:
+            return ResolvedRoute(_openrouter_base(hit), "explicit")
+        custom = _openrouter_base(_custom_in(provider, model_id, registry, user_defined))
+        return ResolvedRoute(
+            custom, "explicit", warning=_custom_warning(provider, model_id, custom)
+        )
+
+    universe = _route_universe(registry)
+
+    # --- 1: a prefix naming a known provider -------------------------------------
+    inferred: str | None = None
+    rest = model_flag
+    prefix, sep, tail = model_flag.partition("/")
+    if sep and prefix and tail:
+        canon, clash = _user_defined_prefix(prefix, user_defined)
+        if clash:
+            return ResolvedRoute(
+                Model(id=tail, provider=prefix),
+                "held",
+                ambiguous_provider_message(model_flag, registry),
+            )
+        if canon is None:
+            known = _catalogued_providers() | user_defined | {m.provider for m in universe}
+            canon = canonical_provider(prefix, frozenset(known))
+        if canon is not None:
+            inferred, rest = canon, tail
+
+    # --- 2: no inferred provider -------------------------------------------------
+    if inferred is None:
+        aside = ""  # why settings defaultProvider did not count, for the refusal
+        hits = _matches(universe, frozenset({model_flag}))
+        if len(hits) == 1:
+            return ResolvedRoute(_shape(hits[0]), "exact")
+        if hits:
+            if default_provider:
+                named, dclash = _named_provider(default_provider, registry, user_defined)
+                if dclash:
+                    return ResolvedRoute(
+                        Model(id=model_flag, provider=named),
+                        "held",
+                        ambiguous_provider_name_message(
+                            default_provider, registry, source="settings defaultProvider"
+                        ),
+                    )
+                on_default = [m for m in hits if m.provider == named]
+                if len(on_default) == 1:
+                    if _default_counts(named):
+                        return ResolvedRoute(_shape(on_default[0]), "default_provider")
+                    aside = _default_aside(named, registry)
+            trusted = [m for m in hits if _ra(m.provider)]
+            if len(trusted) == 1:
+                return ResolvedRoute(_shape(trusted[0]), "auth_tiebreak")
+            mine = [m for m in trusted if m.provider in user_defined]
+            if len(mine) == 1:
+                return ResolvedRoute(_shape(mine[0]), "user_defined")
+            return ResolvedRoute(
+                Model(id=model_flag, provider=""),
+                "error",
+                _ambiguous_message(model_flag, hits, registry, overrides) + aside,
+            )
+        if default_provider and not sep:
+            # ADR-0195: a bare id nothing else claimed is homed under the
+            # settings default provider — when it counts (see the docstring).
+            named, dclash = _named_provider(default_provider, registry, user_defined)
+            if dclash:
+                return ResolvedRoute(
+                    Model(id=model_flag, provider=named),
+                    "held",
+                    ambiguous_provider_name_message(
+                        default_provider, registry, source="settings defaultProvider"
+                    ),
+                )
+            if _default_counts(named):
+                custom = _openrouter_base(_custom_in(named, model_flag, registry, user_defined))
+                return ResolvedRoute(
+                    custom, "default_provider", warning=_custom_warning(named, model_flag, custom)
+                )
+            aside = _default_aside(named, registry)
+        if _guard2(model_flag, None, registry, overrides):
+            return _guard2_route(
+                model_flag,
+                registry,
+                user_defined,
+                f'Model "{model_flag}" is not in this build\'s catalog; sending it to '
+                "OpenRouter as written.",
+            )
+        # The placeholder keeps the prefix as a provider so the late-registration
+        # path can re-resolve it once ``session_start`` has registered it.
+        placeholder = (
+            Model(id=tail, provider=prefix)
+            if (sep and prefix and tail)
+            else Model(id=model_flag, provider="")
+        )
+        return ResolvedRoute(placeholder, "error", _not_found_message(model_flag, registry) + aside)
+
+    # --- 3: inside the inferred provider, the id exactly -------------------------
+    found = _find_in(inferred, rest, registry)
+    if inferred in user_defined:
+        if found is not None:
+            return ResolvedRoute(found, "prefix")
+        custom = _custom_in(inferred, rest, registry, user_defined)
+        return ResolvedRoute(custom, "custom", warning=_custom_warning(inferred, rest, custom))
+
+    # --- 3b: --api-key keeps the string on the provider it names -------------------
+    if typed_key:
+        # A divergence from pi, which swaps first and attaches the key after
+        # (``main.ts:476-484``, ``:827-834`` @ 88ff80b98): there
+        # ``--model openai/gpt-4o-mini --api-key K`` with an OpenRouter key
+        # exported puts K on openrouter. The key is typed for the provider the
+        # string names; ``--provider openrouter`` / ``openrouter/<id>`` name
+        # OpenRouter.
+        if found is not None:
+            return ResolvedRoute(_openrouter_base(found), "prefix")
+        custom = _openrouter_base(_custom_in(inferred, rest, registry, user_defined))
+        return ResolvedRoute(custom, "custom", warning=_custom_warning(inferred, rest, custom))
+    strings = frozenset({model_flag, f"{inferred}/{rest}"})
+    inferred_ra = _ra(inferred)
+
+    # --- 4: found — pi's swap, then guard 2 --------------------------------------
+    if found is not None:
+        if not inferred_ra:
+            others = [
+                m
+                for m in _matches(universe, strings, ids_only=True)
+                if not (m.provider == found.provider and m.id == found.id)
+            ]
+            trusted = [m for m in others if _ra(m.provider)]
+            if len(trusted) == 1:
+                return ResolvedRoute(_shape(trusted[0]), "auth_swap")
+            mine = [m for m in trusted if m.provider in user_defined]
+            if len(mine) == 1:
+                return ResolvedRoute(_shape(mine[0]), "user_defined")
+            if not trusted and _guard2(model_flag, inferred, registry, overrides):
+                note = (
+                    f'"{model_flag}" goes to OpenRouter as written: you hold no {inferred} '
+                    "credential of your own, and this build's OpenRouter catalog does not "
+                    f"list the id. Use --provider {inferred} to send it to {inferred}."
+                )
+                names = _dotenv_only_names(registry, inferred)
+                if names:
+                    note += (
+                        f" ({', '.join(_sanitize(n) for n in names)} came from a project "
+                        ".env, which does not choose a route.)"
+                    )
+                return _guard2_route(model_flag, registry, user_defined, note)
+            hint = (
+                None
+                if trusted
+                else _dotenv_declined_hint(model_flag, others, registry, found.provider)
+            )
+            return ResolvedRoute(_openrouter_base(found), "prefix", warning=hint)
+        return ResolvedRoute(_openrouter_base(found), "prefix")
+
+    # --- 5: not found inside it --------------------------------------------------
+    raw = _matches(universe, strings)
+    trusted = [m for m in raw if _ra(m.provider)]
+    mine = [m for m in trusted if m.provider in user_defined]
+    if len(mine) == 1:
+        return ResolvedRoute(_shape(mine[0]), "user_defined")
+    if trusted:
+        return ResolvedRoute(_shape(trusted[0]), "raw_trusted")
+    if inferred_ra:
+        # The decision the owner left open (pi :548-555 takes the first raw
+        # match with no auth check). Measured: that is where a planted key
+        # captures an OpenRouter-spelled id — ``anthropic/claude-haiku-4.5``
+        # with ``ANTHROPIC_API_KEY`` exported and ``OPENROUTER_API_KEY`` from a
+        # ``.env`` went to OpenRouter on the file's key. The user holds a key
+        # for the provider they named, so the id stays there.
+        custom = _openrouter_base(_custom_in(inferred, rest, registry, user_defined))
+        warning = _custom_warning(inferred, rest, custom)
+        hint = _dotenv_declined_hint(model_flag, raw, registry, inferred)
+        if hint is not None:
+            warning = f"{warning} {hint}" if warning else hint
+        return ResolvedRoute(custom, "custom", warning=warning)
+    if _guard2(model_flag, inferred, registry, overrides):
+        return _guard2_route(
+            model_flag,
+            registry,
+            user_defined,
+            f'Model "{model_flag}" is not in this build\'s catalog; sending it to '
+            "OpenRouter as written.",
+        )
+    if raw:
+        # pi's first raw match. No route-authenticated credential is involved
+        # anywhere, so nothing a ``.env`` supplied chose it (it may still
+        # authenticate it — ADR-0203 residual risk 1, ADR-0250 §6).
+        return ResolvedRoute(_shape(raw[0]), "raw_first")
+    custom = _openrouter_base(_custom_in(inferred, rest, registry, user_defined))
+    return ResolvedRoute(custom, "custom", warning=_custom_warning(inferred, rest, custom))
 
 
 def resolve_model(
@@ -1398,154 +2101,15 @@ def resolve_model(
     registry: Any = None,
     default_provider: str | None = None,
 ) -> Model:
-    """Resolve the turn :class:`Model` from flags + env + the live registry.
+    """The turn :class:`Model` of :func:`resolve_route` — what every caller drives.
 
-    Resolution order (ADR-0249 amends ADR-0195 §Decision 4): (0) with
-    ``OPENROUTER_API_KEY`` set, a ``--model`` (no ``--provider``) that
-    OpenRouter cannot serve — a user-defined provider's prefix, an id only one
-    user-defined provider serves, or a catalogued provider that is not an
-    OpenRouter namespace — resolved inside that provider
-    (:func:`_openrouter_cannot_serve`); (1) OpenRouter-from-env
-    (``OPENROUTER_API_KEY`` + a model id, no conflicting ``--provider``); (2) an
-    exact static-catalog hit for ``--provider``/``--model``, the
-    ``<provider>/<model>`` slash shorthand (prefix matched case-insensitively),
-    or ``default_provider`` — a models.json ``baseUrl`` override of that
-    provider adopted; (3) ``registry`` — the models.json custom +
-    extension-registered providers the build-time catalog cannot know
-    (:func:`_registry_lookup`); (4) an uncatalogued id backfilled from unanimous
-    siblings — the registry's for a user-defined provider, the catalog's
-    otherwise; (5) a bare model whose ``api`` stays the ``Model`` default
-    ``"unknown"``.
-
-    ``provider_flag`` means "the user EXPLICITLY named this provider" (``--provider``)
-    and NOTHING else — rung 0, the OpenRouter-env branch and the slash shorthand
-    are all gated on its emptiness, so anything weaker must not be passed through
-    it. ``default_provider`` (settings.json ``defaultProvider``) is that weaker
-    signal and has its own, lowest-precedence slot below (#98).
-
-    ``registry`` is optional (:data:`None` = catalog-only) because callers resolve
-    at points where no registry exists yet; with none, rung 0 can still see the
-    catalog (0c) but no user-defined provider. Outcome (5) CANNOT drive a turn,
-    so callers MUST gate on ``core.runnable_models.is_runnable`` (#98) — see the
-    note at the bare return.
+    TOTAL: an ambiguous or unknown string comes back as a placeholder whose
+    ``api`` stays ``"unknown"``, so callers still gate on
+    ``core.runnable_models.is_runnable`` (#98); the launch paths read
+    :func:`resolve_route`'s ``error`` for the message.
     """
 
-    user_defined = user_defined_providers(registry)
-    clash: tuple[str, ...] = ()
-    if provider_flag:
-        # The prefix rule's case matching for a NAMED provider too (Codex second
-        # pass on ``ebfe411a``, F1; :func:`_named_provider`): with a models.json
-        # ``OpenAI``, ``--provider openai`` is the user's, never the vendor's
-        # host with the user's ``--api-key``; ``--provider OPENAI`` resolves;
-        # a case clash between two of the user's providers is held below. What
-        # a named provider does to routing is unchanged — it still switches
-        # rung 0 and the OpenRouter rung off unless it names ``openrouter``.
-        provider_flag, clash = _named_provider(provider_flag, registry, user_defined)
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if openrouter_key and model_flag and not provider_flag:
-        # (0) Only ``model_flag``: an id that came from ``OPENROUTER_DEFAULT_MODEL``
-        # was named FOR OpenRouter and stays an OpenRouter id.
-        claimed = _openrouter_cannot_serve(model_flag, registry)
-        if claimed is not None:
-            return claimed
-    model_id = model_flag or os.environ.get("OPENROUTER_DEFAULT_MODEL")
-    if openrouter_key and model_id and (provider_flag in (None, "", "openrouter")):
-        # Enrich from the Pi catalog when the id is known: a bare Model has
-        # ``context_window=0`` / ``max_tokens=0`` / empty cost, which silently
-        # disables the context-usage meter (``getContextUsage`` returns None
-        # when the window is 0), zeroes ``/cost``, and drops the model's
-        # ``thinking_level_map``. The full catalog entry carries all of these.
-        # Falls back to a bare model for ids absent from the catalog (custom /
-        # newly-released OpenRouter models). Honors a custom OPENROUTER_BASE_URL
-        # first, then a models.json ``providers.openrouter.baseUrl`` (ADR-0249 S:
-        # the same override every other catalog hit adopts).
-        from aelix_ai.models import get_model
-
-        catalog = get_model("openrouter", model_id)
-        env_base_url = os.environ.get("OPENROUTER_BASE_URL")
-        if catalog is not None:
-            if env_base_url:
-                return replace(catalog, base_url=env_base_url)
-            return _adopt_base_url_override(catalog, registry)
-        uncatalogued = Model(
-            id=model_id,
-            provider="openrouter",
-            api=OPENAI_COMPLETIONS_API,
-            base_url=env_base_url or _DEFAULT_OPENROUTER_BASE_URL,
-        )
-        if env_base_url:
-            return uncatalogued
-        return _adopt_base_url_override(uncatalogued, registry)
-    # Explicit --provider/--model path. Three enrichments over the old bare
-    # ``Model(id, provider)`` return, which left ``api="unknown"`` (streaming.py
-    # Model default) and so made the stream loop raise the internal
-    # ``No provider registered for api='unknown'. Sprint 6a ... register_all()``
-    # error for the documented flagship commands (e.g.
-    # ``aelix --provider anthropic --model claude-sonnet-4-6 -p hi``):
-    #
-    #  1. ``<provider>/<model>`` slash shorthand — split it when no separate
-    #     ``--provider`` was given (Pi ``resolveModelFromCli`` main.ts:303-304),
-    #     so ``aelix --model openai/gpt-4o-mini`` resolves ``provider=openai``
-    #     instead of falling through with an empty provider ("No model selected").
-    #     With an ``OPENROUTER_API_KEY`` set, only a string rung 0 declined
-    #     reaches the OpenRouter branch above, and ``openai/gpt-4o-mini`` is one
-    #     of them (``openai`` is an OpenRouter namespace) — it never reaches
-    #     here. The prefix is matched case-insensitively against every provider
-    #     this build or the user knows (#344, C20).
-    #  2. ``default_provider`` — see below; strictly weaker than both 1 and the
-    #     OpenRouter branch, so it is applied only after they decline.
-    #  3. Catalog enrichment — resolve the full Pi catalog entry (carrying the
-    #     real ``api``, context window, cost, thinking map), then the live
-    #     registry, then unanimous siblings. Catalogued ids are always exact; the
-    #     later steps are the best-effort tail for ids the catalog never saw.
-    provider = provider_flag or ""
-    resolved_id = model_flag or ""
-    if not provider and "/" in resolved_id:
-        prefix, _, resolved_id = resolved_id.partition("/")
-        # A user-defined provider first and on its own (Codex C1, as in rung
-        # 0a): without an OpenRouter key, a custom ``OpenAI`` used to lose
-        # ``openai/m1`` to the catalogue's ``openai`` — the vendor's host. A
-        # case clash between two of the user's providers keeps the prefix as
-        # typed and is refused below — never resolved in a same-spelled
-        # catalogue provider, whose host would get the user's key.
-        canon, clash = _user_defined_prefix(prefix, user_defined)
-        if canon is None and not clash:
-            known = _catalogued_providers() | user_defined | _registry_providers(registry)
-            canon = canonical_provider(prefix, known)
-        provider = canon or prefix
-    # (2) settings.json ``defaultProvider`` — the LOWEST-precedence provider
-    # source, applied only once every stronger signal has declined. It is a
-    # SEPARATE parameter, never folded into ``provider_flag``, because the
-    # OpenRouter branch and the slash split are both gated on that flag being
-    # empty: a persisted default routed through it silently disables them —
-    # ``--model openai/gpt-4o-mini`` ignores its own ``openai/`` prefix and an
-    # ``OPENROUTER_API_KEY`` user is locked out of OpenRouter. Both then land on
-    # a DIFFERENT vendor holding an id it never heard of, and both still satisfy
-    # ``is_runnable`` (the default provider's own api backfills cleanly), so no
-    # downstream gate can catch it (#98).
-    if not provider and default_provider:
-        # Named, so matched as ``--provider`` is (F1): a case clash is held.
-        provider, clash = _named_provider(default_provider, registry, user_defined)
-    if resolved_id:
-        if clash:
-            return Model(id=resolved_id, provider=provider)
-        if provider:
-            return _resolve_in_provider(provider, resolved_id, registry, user_defined)
-        found = _registry_lookup(registry, provider, resolved_id)
-        if found is not None:
-            return found
-    # Bare model — ``api`` stays the ``Model`` default "unknown": no catalog
-    # entry, no registry entry, and no unanimous sibling api to adopt. Driving a
-    # turn with it raises the internal "No provider registered for api='unknown'"
-    # from the PROTECTED ``aelix_ai.api_registry``, so every caller must first
-    # gate on ``core.runnable_models.is_runnable``: print/json refuses the run,
-    # the TUI warns at startup and points at ``/model``.
-    #
-    # That gate CANNOT be a ``not model.provider`` emptiness check: an
-    # uncatalogued provider (a models.json custom, an extension
-    # ``register_provider``, or a plain typo) is non-empty and sails straight
-    # past it into the raw adapter error (#98).
-    return Model(id=resolved_id, provider=provider)
+    return resolve_route(model_flag, provider_flag, registry, default_provider).model
 
 
 def enrich_copilot_base_url(model: Model, registry: Any) -> Model:
@@ -1585,62 +2149,64 @@ def late_registered_route(
     current_model: Any,
     model_registry: Any,
 ) -> str | None:
-    """Why the launch model went to OpenRouter although the ``--model`` is now the user's.
+    """Why the launch model is not the provider ``--model`` names now, if it is not.
 
-    #344 / ADR-0249 §2.3. X1 resolves the launch model after the extensions'
-    ``setup()`` registrations are replayed, but a provider registered in a
-    ``session_start`` handler arrives later still — inside
-    ``create_agent_session_runtime``, after the first build. With
-    ``OPENROUTER_API_KEY`` set, ``--model sessext/m1`` was therefore taken by the
-    OpenRouter rung and the prompt went to ``openrouter.ai`` (review of
-    ``0fcc3333``: 12 × ``CONNECT openrouter.ai:443``), while the print-mode #98
-    gate in ``cli/entry.py`` re-resolved AFTER ``session_start``, found ``sessext`` and passed
-    the run. pi resolves at the same point but has no OpenRouter rung, so there
-    the same launch is an error, not a leak.
+    #344 / ADR-0249 §2.3, kept by ADR-0250 (#367 is the issue that changes it to
+    a refusal). X1 resolves the launch model after the extensions' ``setup()``
+    registrations are replayed, but a provider registered in a ``session_start``
+    handler arrives later still — inside ``create_agent_session_runtime``, after
+    the first build. At launch its prefix is therefore UNKNOWN, and
+    :func:`resolve_route` either sends the string to OpenRouter (guard 2, an
+    OpenRouter credential of the user's own; review of ``0fcc3333`` measured 12 ×
+    ``CONNECT openrouter.ai:443`` for this shape under the old rung) or refuses it
+    as not found (no such credential) and holds the harness on a placeholder.
 
-    Returns the message when the harness is on ``openrouter``, the string came
-    from ``--model`` (not ``OPENROUTER_DEFAULT_MODEL``, not with ``--provider``)
-    and a re-resolve over the registry as it is NOW lands on a user-defined
-    provider; ``None`` otherwise. Reads no credential beyond the one the rung
-    itself is gated on. Also when the re-resolve is HELD because the prefix now
-    matches two late-registered providers that differ only in case (Codex
-    second pass on ``ebfe411a``, F3: ``session_start`` registering ``SessExt``
-    and ``SESSEXT``, ``--model sessext/m1`` — print refused it at its #98 gate,
-    but RPC started on ``openrouter sessext/m1`` and sent the prompt there,
-    because the held spelling is in neither set): the caller then holds the
-    harness in every mode (:func:`ambiguous_provider_message` names both).
+    Returns the reason text when ``--model`` came without ``--provider`` and
+    either the harness is on ``openrouter`` and a re-resolve over the registry
+    as it is NOW lands on a user-defined provider — or two that differ only in
+    case (Codex second pass on ``ebfe411a``, F3) — or the harness holds the
+    not-found placeholder and the re-resolve now lands on a user-defined
+    provider a turn can run. The second arm is #362's: under the old rung a
+    ``.env`` OpenRouter key put the string on OpenRouter and this switched it,
+    and with no OpenRouter key at all the first turn failed with
+    ``No provider registered for api='unknown'``; both now switch (critique S5).
+    ``None`` otherwise. Reads no credential.
 
     A provider registered and then unregistered before ``session_start``
-    returns is not in the registry as it is NOW, so an unknown prefix goes to
-    OpenRouter by the owner's rule (F2, ADR-0249 §2.3) — nothing to catch here.
+    returns is not in the registry as it is NOW, so the string stays where the
+    launch put it (F2, ADR-0249 §2.3) — nothing to catch here.
 
     What the caller does with it: every mode switches the harness through the
     ``/model`` path
-    (:func:`~aelix_coding_agent.cli.model_switch.switch_to_late_registered_route`)
-    — interactive and RPC since fix round 2 (they used to warn and then send the
-    first prompt to OpenRouter), print and json since round 3 (they used to
-    refuse with this message). The message itself is now only the reason text of
-    the trigger; nothing prints it.
+    (:func:`~aelix_coding_agent.cli.model_switch.switch_to_late_registered_route`),
+    without persisting it. The message itself is only the reason text of the
+    trigger; nothing prints it.
     """
 
-    if not (os.environ.get("OPENROUTER_API_KEY") and model_flag and not provider_flag):
+    if not (model_flag and not provider_flag):
         return None
-    if getattr(current_model, "provider", "") != "openrouter":
+    current_provider = getattr(current_model, "provider", "") or ""
+    held = getattr(current_model, "api", "") == "unknown"
+    if current_provider != "openrouter" and not held:
         return None
     try:
-        now = resolve_model(model_flag, None, model_registry)
+        now = resolve_route(model_flag, None, model_registry).model
         user_defined = user_defined_providers(model_registry)
     except Exception:  # noqa: BLE001 — a diagnostic must never break launch
         return None
-    ambiguous = ambiguous_provider_message(model_flag, model_registry)
-    if ambiguous is not None:
-        return ambiguous
+    if current_provider == "openrouter":
+        ambiguous = ambiguous_provider_message(model_flag, model_registry)
+        if ambiguous is not None:
+            return ambiguous
+    elif now.api == "unknown":
+        # Held, and still nothing a turn can run: a refusal the launch already
+        # reports (a case clash, an id the user's provider does not serve).
+        return None
     if not now.provider or now.provider == "openrouter" or now.provider not in user_defined:
         return None
     return (
         f"--model {model_flag} names provider '{now.provider}', which was registered "
-        "after the launch model was chosen (in a session_start handler), so this run "
-        "resolved it as an OpenRouter model id and would send the prompt to OpenRouter. "
+        "after the launch model was chosen (in a session_start handler). "
         f"Register '{now.provider}' in the extension's setup() instead."
     )
 
@@ -1658,7 +2224,9 @@ __all__ = [
     "load_dotenv",
     "openrouter_namespaces",
     "register_providers",
+    "ResolvedRoute",
     "resolve_model",
+    "resolve_route",
+    "route_authenticated",
     "user_defined_providers",
-    "user_defined_route",
 ]

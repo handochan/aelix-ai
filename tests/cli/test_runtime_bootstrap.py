@@ -1,4 +1,9 @@
-"""Tests for cli/runtime_bootstrap — .env load + model resolution (OpenRouter)."""
+"""Tests for cli/runtime_bootstrap — .env load + model resolution (OpenRouter).
+
+The OpenRouter rows predate #362 / ADR-0250; they hold under pi's order
+(``openrouter/…`` swap, guard 2, the shell ``OPENROUTER_DEFAULT_MODEL``) and the
+ones whose meaning changed say so.
+"""
 
 from __future__ import annotations
 
@@ -309,15 +314,34 @@ def test_default_provider_never_hijacks_the_slash_shorthand(
     assert "api.openai.com" in m.base_url  # NOT api.anthropic.com
 
 
-def test_default_provider_never_disables_the_openrouter_env_path(
+def test_default_provider_never_disables_guard_2(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """REWRITTEN for #362 / ADR-0250: there is no OpenRouter-from-env path to disable.
+
+    A ``<vendor>/<model>`` this build cannot place goes to OpenRouter on an
+    exported key (guard 2) whatever settings ``defaultProvider`` says; a BARE id
+    nothing claims is homed under that default (ADR-0195), as pi homes nothing
+    and OpenRouter ids always carry a vendor segment.
+
+    SUBJECT CHANGED (#362 verify round 4, B1): the home needs the default to
+    count. With only the OpenRouter key exported, ``anthropic`` is a provider no
+    credential of the user's own authenticates (a project
+    ``.aelix/settings.json`` can name it), so the bare id is pi's not-found;
+    with ``ANTHROPIC_API_KEY`` exported too, it is homed as before.
+    """
+
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
-    # A BARE id: a "/"-only guard would not save this one.
-    m = resolve_model("some-or-model", None, None, "anthropic")
-    assert m.provider == "openrouter"
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    m = resolve_model("vendor/new-model", None, None, "anthropic")
+    assert (m.provider, m.id) == ("openrouter", "vendor/new-model")
     assert "openrouter.ai" in m.base_url
+    bare = resolve_model("some-or-model", None, None, "anthropic")
+    assert (bare.provider, bare.api) == ("", "unknown")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    bare = resolve_model("some-or-model", None, None, "anthropic")
+    assert (bare.provider, bare.id) == ("anthropic", "some-or-model")
 
 
 def test_explicit_provider_flag_still_outranks_default_provider(

@@ -1,19 +1,17 @@
 """#344 / ADR-0249 — a ``--model`` OpenRouter cannot serve is resolved before OpenRouter-from-env.
 
-With ``OPENROUTER_API_KEY`` set and no ``--provider``, ``resolve_model`` used to
-turn EVERY ``--model`` string into an OpenRouter id. The owner's policy
-(2026-09-30) puts a rung 0 in front of that, consulting no credentials:
-
-* 0a — the first-slash prefix (case-insensitive) names a USER-DEFINED provider
-  (models.json custom, a built-in re-pointed by a models.json ``baseUrl``, an
-  extension ``register_provider``) → resolved inside it, never OpenRouter;
-* 0b — the whole string is an id exactly one user-defined provider serves;
-* 0c — the prefix names a catalogued provider that is NOT an OpenRouter
-  namespace (``openai-codex``, ``xai`` …) → that provider.
-
-Everything else — ``openai/…``, ``anthropic/…`` and the rest of the 9
-overlapping namespaces, unknown prefixes, ``OPENROUTER_DEFAULT_MODEL`` — stays on
-OpenRouter exactly as before, whatever vendor credential is present.
+PARTLY SUPERSEDED by #362 / ADR-0250 (2026-10-02): rung 0 and the
+OpenRouter-from-env rung are gone, replaced by pi's ``resolveCliModel`` order with
+two guards (``tests/cli/test_route_follows_pi_362.py``). What this file still
+pins is what ADR-0250 kept from #344: a user-defined prefix (models.json custom,
+a re-pointed built-in, an extension ``register_provider``, case-insensitively,
+user-defined first) is resolved inside that provider and never falls to
+OpenRouter; a catalogued provider that is not an OpenRouter namespace stays
+itself; a re-pointed built-in's ``baseUrl`` is adopted; a NAMED provider gets the
+case rule. The rows whose meaning ADR-0250 changed are rewritten in place and
+say so (the dual-key ``openai/…`` goes to OpenAI, ``openrouter/<id>`` is
+stripped, ``--provider X --model X/<id>`` strips the repeated prefix, a stored
+credential is the user's own route).
 
 Every row builds a REAL :class:`ModelRegistry` over a ``tmp_path`` models.json and
 auth.json, with fake keys; nothing here opens a socket. The design lane's
@@ -312,10 +310,12 @@ async def test_a_re_pointed_openrouter_keeps_openrouter_ids(
 ) -> None:
     """``providers.openrouter.baseUrl`` moves the host, never the id's meaning.
 
-    ``openrouter/auto`` is itself an OpenRouter id: had the re-pointed
-    ``openrouter`` counted as user-defined, 0a would have claimed it as the id
-    ``auto``. Instead the OpenRouter rung keeps the whole string and adopts the
-    ``baseUrl`` (ADR-0249 §2.4) — for ``openai/…`` too.
+    REWRITTEN for #362 / ADR-0250. ``openrouter/<id>`` is now an explicit route
+    whose prefix pi strips: ``openrouter/auto`` is OpenRouter's ``auto`` (pi's
+    generator alias, ``packages/ai/scripts/generate-models.ts:3341-3360`` @
+    88ff80b98 — the catalogue holds both ``auto`` and ``openrouter/auto``, and
+    pi's order finds ``auto`` first). ``openai/gpt-4o-mini`` reaches OpenRouter by
+    pi's swap. Both adopt the ``baseUrl`` (ADR-0249 §2.4).
     """
 
     proxy = "http://127.0.0.1:9/or-proxy/api/v1"
@@ -328,8 +328,9 @@ async def test_a_re_pointed_openrouter_keeps_openrouter_ids(
     registry = ModelRegistry.create(storage, str(scrubbed / "models.json"))
     assert registry.get_error() is None
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
-    for ref in ("openrouter/auto", "openai/gpt-4o-mini"):
-        assert _route(resolve_model(ref, None, registry)) == ("openrouter", ref, proxy)
+    pairs = (("openrouter/auto", "auto"), ("openai/gpt-4o-mini", "openai/gpt-4o-mini"))
+    for ref, model_id in pairs:
+        assert _route(resolve_model(ref, None, registry)) == ("openrouter", model_id, proxy)
 
 
 # === an extension that registers a BUILT-IN name ==============================
@@ -370,7 +371,12 @@ async def test_an_extension_taking_over_a_built_in_keeps_its_prefix_inside_the_r
     catalog — ``api.openai.com`` with the extension's key — where ``fbead6e0``
     sent it to OpenRouter with the user's. Now an id the registration does not
     list is backfilled from the registration's own models (one api), and a bare
-    catalog id is not "served" by the extension for 0b.
+    catalog id is not "served" by the extension.
+
+    #362 / ADR-0250: the bare ``gpt-4o-mini`` is pi's ambiguity (several
+    providers serve it, none authenticated) — and the extension's ``openai`` is
+    not among them, because its registration's models replace the catalogue's
+    in the set a string can name.
     """
 
     registry = await _openai_taken_over_by_an_extension(scrubbed, "openai-completions")
@@ -382,8 +388,12 @@ async def test_an_extension_taking_over_a_built_in_keeps_its_prefix_inside_the_r
     assert _route(unlisted) == ("openai", "gpt-4o-mini", _EXT)
     assert unlisted.api == "openai-completions"
     assert _route(resolve_model("corp-model-0", None, registry)) == ("openai", "corp-model-0", _EXT)
-    # A catalog id the registration does not bring is not the extension's for 0b.
-    assert resolve_model("gpt-4o-mini", None, registry).provider == "openrouter"
+    # A catalog id the registration does not bring is not the extension's.
+    from aelix_coding_agent.cli.runtime_bootstrap import resolve_route
+
+    bare = resolve_route("gpt-4o-mini", None, registry)
+    assert bare.error is not None and "is ambiguous across providers" in bare.error
+    assert "openai/gpt-4o-mini" not in bare.error
 
 
 async def test_an_extension_taking_over_a_built_in_with_split_apis_refuses_an_unlisted_id(
@@ -427,8 +437,9 @@ async def test_codex_prefix_goes_to_codex_not_openrouter(
 ) -> None:
     """``openai-codex/gpt-5.1`` reached OpenRouter and failed 400 (R4).
 
-    No Codex credential exists in this registry: rung 0 reads none, so the
-    route does not depend on one.
+    No Codex credential exists in this registry, and none is needed: OpenRouter
+    lists no ``openai-codex/`` id, so neither pi's swap nor guard 2 (ADR-0250)
+    can move it.
     """
 
     registry = await _registry(scrubbed)
@@ -467,17 +478,21 @@ async def test_xai_prefix_goes_to_xai_hit_or_backfill(
     [None, "exported", "dotenv"],
     ids=["no-openai-key", "exported-openai-key", "cwd-dotenv-openai-key"],
 )
-async def test_overlapping_namespace_stays_openrouter_whatever_vendor_key(
+async def test_overlapping_namespace_goes_where_pi_sends_it_and_a_dotenv_key_cannot_move_it(
     scrubbed: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     vendor_key: str | None,
 ) -> None:
-    """``openai`` IS an OpenRouter namespace, so ``openai/gpt-4o-mini`` stays there.
+    """``openai/gpt-4o-mini`` with an OpenRouter key exported (REWRITTEN for #362 / ADR-0250).
 
-    With no key, an exported ``OPENAI_API_KEY``, and one ``load_dotenv`` admitted
-    from a cloned repo's ``.env`` — the critique's M1: had rung 0 consulted
-    credentials, the repo's key would have chosen the vendor.
+    No OpenAI key: pi's swap (``model-resolver.ts:525-540`` @ 88ff80b98) —
+    ``openai`` is unauthenticated and OpenRouter's raw id is — so OpenRouter.
+    An EXPORTED ``OPENAI_API_KEY``: the dual-key user goes to OpenAI direct, as
+    pi does (the owner's decision; ADR-0249 kept it on OpenRouter). A key
+    ``load_dotenv`` admitted from a cloned repo's ``.env`` — the #344 critique's
+    M1: guard 1 keeps it out of the swap, so the route stays OpenRouter; with
+    pi's order and no guard the repo's key chose the vendor.
     """
 
     # A registry WITHOUT the openai override (which would make openai user-defined).
@@ -500,13 +515,22 @@ async def test_overlapping_namespace_stays_openrouter_whatever_vendor_key(
     assert registry.has_configured_auth(Model(provider="openai")) is (vendor_key is not None)
 
     model = resolve_model("openai/gpt-4o-mini", None, registry)
-    assert _route(model) == ("openrouter", "openai/gpt-4o-mini", _OPENROUTER)
+    if vendor_key == "exported":
+        assert _route(model) == ("openai", "gpt-4o-mini", "https://api.openai.com/v1")
+    else:
+        assert _route(model) == ("openrouter", "openai/gpt-4o-mini", _OPENROUTER)
 
 
-async def test_stale_stored_credential_does_not_move_a_route(
+async def test_a_stale_stored_credential_is_the_users_own_route(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Critique S2: an expired Anthropic OAuth record in auth.json changes nothing."""
+    """The #344 critique's S2, decided the other way by ADR-0250 (§4; pi's rule).
+
+    An expired Anthropic OAuth record in ``auth.json`` is configured auth to
+    pi's ``hasConfiguredAuth``, and it is the user's own file — so
+    ``anthropic/claude-haiku-4-5`` stays on Anthropic (where the refresh, or its
+    failure, is loud) instead of guard 2 taking it to OpenRouter.
+    """
 
     registry = await _registry(
         scrubbed,
@@ -522,12 +546,14 @@ async def test_stale_stored_credential_does_not_move_a_route(
     assert registry.has_configured_auth(Model(provider="anthropic"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     model = resolve_model("anthropic/claude-haiku-4-5", None, registry)
-    assert model.provider == "openrouter"
+    assert model.provider == "anthropic"
 
 
 async def test_unknown_id_under_an_overlapping_namespace_stays_openrouter(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Since #362 / ADR-0250 this is guard 2: an exported OpenRouter key, no key for the vendor."""
+
     registry = await _registry(scrubbed)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     for ref in ("anthropic/claude-new-9", "meta-llama/llama-3.3-70b-instruct:free"):
@@ -538,7 +564,10 @@ async def test_unknown_id_under_an_overlapping_namespace_stays_openrouter(
 async def test_openrouter_default_model_stays_an_openrouter_id(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The variable is named for OpenRouter; rung 0 reads ``--model`` only."""
+    """The variable is named for OpenRouter: an explicit ``--provider openrouter`` route.
+
+    Shell-only since #362 / ADR-0250 (a project ``.env`` can no longer set it).
+    """
 
     registry = await _registry(scrubbed)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
@@ -550,6 +579,8 @@ async def test_openrouter_default_model_stays_an_openrouter_id(
 async def test_explicit_provider_openrouter_is_unchanged(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """``--provider openrouter`` is an explicit route (ADR-0250 step E): no swap, no strip here."""
+
     registry = await _registry(scrubbed)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     model = resolve_model("retryprobe/held-model", "openrouter", registry)
@@ -779,9 +810,13 @@ async def test_every_catalogued_prefix_lands_where_the_partition_says(
 ) -> None:
     """Codex C5: dropping ``groq/`` from rung 0c passed every earlier test.
 
-    Each catalogued provider, with an id from its own catalogue: the 26 that are
-    not an OpenRouter namespace resolve to themselves with ``OPENROUTER_API_KEY``
-    set; the 9 that are stay on OpenRouter, as the whole string.
+    Each catalogued provider, with an id from its own catalogue and
+    ``OPENROUTER_API_KEY`` exported, no vendor key: the 26 that are not an
+    OpenRouter namespace resolve to themselves (ADR-0250: nothing can take them
+    elsewhere). The 9 that are go to OpenRouter as the whole string (#362 /
+    ADR-0250: pi's swap when OpenRouter's snapshot lists it, guard 2 when it does
+    not — the user holds no key of their own for that vendor), except
+    ``openrouter/<id>``, an explicit route whose prefix pi strips.
     """
 
     from aelix_ai.models import get_models
@@ -790,7 +825,9 @@ async def test_every_catalogued_prefix_lands_where_the_partition_says(
     model_id = sorted(model.id for model in get_models(provider))[0]
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     model = resolve_model(f"{provider}/{model_id}", None, None)
-    if provider in overlapping:
+    if provider == "openrouter":
+        assert (model.provider, model.id) == ("openrouter", model_id)
+    elif provider in overlapping:
         assert (model.provider, model.id) == ("openrouter", f"{provider}/{model_id}")
     else:
         assert (model.provider, model.id) == (provider, model_id)
@@ -863,14 +900,14 @@ async def test_a_named_provider_two_user_defined_share_up_to_case_is_held(
     message = ambiguous_route_message("m1", "openai", registry)
     assert message is not None and message.startswith("--provider openai matches")
     assert "'OPENAI' and 'OpenAI'" in message
-    if not with_openrouter_key:
-        # settings.json ``defaultProvider`` is the weakest signal: with the key a
-        # bare id two providers serve is OpenRouter's before it is consulted.
-        fallback = resolve_model("m1", None, registry, "openai")
-        assert (fallback.provider, fallback.api) == ("openai", "unknown")
-        assert (ambiguous_route_message("m1", None, registry, "openai") or "").startswith(
-            "settings defaultProvider openai matches"
-        )
+    # settings.json ``defaultProvider`` breaks a bare-id tie (ADR-0250 step 2),
+    # so its case clash is held too — with the key as without it (on
+    # ``9ca53a4f`` the key made the bare id OpenRouter's before it was consulted).
+    fallback = resolve_model("m1", None, registry, "openai")
+    assert (fallback.provider, fallback.api) == ("openai", "unknown")
+    assert (ambiguous_route_message("m1", None, registry, "openai") or "").startswith(
+        "settings defaultProvider openai matches"
+    )
     assert _route(resolve_model("m1", "OpenAI", registry)) == ("OpenAI", "m1", _CUSTOM)
     assert _route(resolve_model("m1", "OPENAI", registry)) == ("OPENAI", "m1", _SHOUTED)
     assert ambiguous_route_message("m1", "OpenAI", registry) is None
@@ -900,13 +937,17 @@ async def test_a_named_provider_still_switches_the_openrouter_rungs_off(
     """The case rule is about spelling, not routing: a named provider keeps its meaning.
 
     With the OpenRouter key set, ``--provider OPENAI --model openai/m1`` is the
-    user's ``OpenAI`` with the WHOLE string as the id (no rung 0, no slash
-    split, no OpenRouter), and ``--provider openrouter`` is still OpenRouter.
+    user's ``OpenAI`` — no swap, no guard 2, no OpenRouter — and
+    ``--provider openrouter`` is still OpenRouter. REWRITTEN for #362 /
+    ADR-0250: the id is ``m1``, because pi tolerates ``--model <provider>/<id>``
+    under an explicit provider by stripping the repeated prefix
+    (``model-resolver.ts:506-512`` @ 88ff80b98; ``OpenAI`` lists ``m1``, not
+    ``openai/m1``).
     """
 
     registry = await _case_registry(scrubbed, {"OpenAI": _custom(_CUSTOM, "custom-fake-literal")})
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake-literal")
     whole = resolve_model("openai/m1", "OPENAI", registry)
-    assert (whole.provider, whole.id) == ("OpenAI", "openai/m1")
+    assert (whole.provider, whole.id) == ("OpenAI", "m1")
     routed = resolve_model("openai/gpt-4o-mini", "openrouter", registry)
     assert (routed.provider, routed.id) == ("openrouter", "openai/gpt-4o-mini")

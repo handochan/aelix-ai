@@ -1772,7 +1772,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
-    which, since ``agents/resolver.py:413-414`` makes the whole task the initial
+    which, since ``agents/resolver.py:431-432`` makes the whole task the initial
     prompt, is the only thing a subagent ever does.
 
     Driven through a HELPER parent so the test process is not the one killed.

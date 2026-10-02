@@ -339,13 +339,13 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             # made a wrong-provider resolution look identical to a right one (#134).
             ctx.commit(Text(f"model → {model_id} ({provider})", style="green"))
     else:
-        # resolve_model returns a bare Model (empty provider) when no adapter is
-        # resolvable — the switch "succeeds" but turns will fail later. Caution
-        # rather than green so the failure isn't deferred to a confusing point.
+        # A bare Model (empty provider) — the switch "succeeds" but turns will
+        # fail later; caution, not green (ADR-0250: an OpenRouter key no longer
+        # makes an arbitrary id OpenRouter's, so that advice is gone).
         ctx.commit(
             Text(
                 f"model → {model_id} (no provider resolved — turns may fail; "
-                "set OPENROUTER_API_KEY or pass a provider)",
+                "write it as <provider>/<id>)",
                 style="yellow",
             )
         )

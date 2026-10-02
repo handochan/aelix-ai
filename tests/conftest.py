@@ -38,6 +38,24 @@ def _no_real_tool_downloads(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_dotenv_provenance_record(monkeypatch):
+    """Start every test with no ``AELIX_DOTENV_ADMITTED`` (#362, ADR-0250).
+
+    ``load_dotenv`` writes that record into the REAL ``os.environ`` (it must
+    reach delegated children), and a test that runs the loader cleans the keys
+    it loaded but not the record. Measured on the design prototype without this
+    fixture: 27 more failures in the affected subset (46 vs 19), each a later
+    test reading an earlier test's record — a key it had exported was taken for
+    a planted one. ``setenv`` first, so ``monkeypatch`` records the OUTER value
+    even when there is none and undoes a record the test's own loader wrote
+    (``delenv`` alone records nothing for an absent name).
+    """
+
+    monkeypatch.setenv("AELIX_DOTENV_ADMITTED", "")
+    monkeypatch.delenv("AELIX_DOTENV_ADMITTED")
+
+
+@pytest.fixture(autouse=True)
 def _no_default_catalog(monkeypatch):
     """Disable the built-in default discover catalog for the whole suite.
 

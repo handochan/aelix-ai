@@ -1,6 +1,6 @@
 # 0195. Registry-aware startup model resolution (#98) + OS trust store & cause-preserving TLS diagnostics (#99)
 
-Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1
+Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -99,6 +99,20 @@ But three product defects made it undiagnosable:
    credentials with it — to whichever sorted first. That guess IS the #100 leak.
    Trigger (A) therefore still yields `api='unknown'`, now gated with an
    actionable message rather than an internal error.
+
+   **#362 amendment 2026-10-02** ([ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)):
+   pi's order replaces the guess with a rule, not with a guess. A bare id several
+   providers serve goes to settings `defaultProvider` when it is one of them (and,
+   while the user holds a credential of their own, only when that credential
+   authenticates it or the user defined it — Decision 4's note), else
+   to the **one** of them the user holds a credential of their own for (exported,
+   `/login`, `models.json` — never a cwd `.env`'s), else — when several of them
+   are the user's — to the **sole user-defined** one among those (ADR-0250's rule
+   U: a gateway the user defined that lists `openai/gpt-4o` verbatim keeps it),
+   else it is pi's error listing
+   them (`Model "gpt-4o-mini" is ambiguous across providers: …`), refused before
+   any request instead of held as `api='unknown'`. "Unresolved on purpose" stands
+   for every case where no such credential decides.
 3. **The sibling backfill adopts only an UNANIMOUS sibling `api`**, and carries
    `base_url` only when it too is unanimous. Five catalog providers span several
    apis and every one of them includes `anthropic-messages`. Unanimity means the
@@ -122,6 +136,19 @@ But three product defects made it undiagnosable:
    configuration only, no credential consulted. The slash prefix is matched
    case-insensitively, and a catalog hit adopts a models.json provider-level
    `baseUrl`. Everything this decision says about `default_provider` stands.
+
+   **#362 amendment 2026-10-02** ([ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)):
+   the ladder is pi's `resolveCliModel` order now — explicit provider, known
+   prefix, the whole string as an id, the swap to an authenticated raw match, the
+   raw fallback, a custom id — with no OpenRouter-env rung at all: an OpenRouter
+   key reaches an id this build cannot place only through guard 2 (an OpenRouter
+   credential of the user's own). `default_provider` stays its own argument and
+   the weakest signal: it breaks a bare-id tie and homes a bare id nothing else
+   claims; merged into `parsed.provider` it would still impersonate `--provider`
+   and switch the whole order off. Its value is the MERGED settings, which a
+   project `.aelix/settings.json` sets, so (the fourth #362 verification, ADR-0250
+   §2.1) while the user holds a credential of their own it counts in both arms only
+   for a provider that credential authenticates or a provider the user defined.
 5. **`is_runnable` startup gate**, placed AFTER `bind_model_registry` so extension
    providers are visible. Interactive **warns** and points at `/model` (the cure,
    so a warning beats refusing to launch); print/json **hard-refuses**. The

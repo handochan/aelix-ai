@@ -1,17 +1,13 @@
 """Resolve an explicit ``/model <argument>`` against the LIVE model registry (#134).
 
-``cli.runtime_bootstrap.resolve_model`` resolves a model for LAUNCH, where the
-environment is the strongest signal available: with ``OPENROUTER_API_KEY`` set
-and no explicit ``--provider`` it treats any argument that does not name an
-endpoint OpenRouter cannot serve (ADR-0249: a user-defined provider, or a
-catalogued provider outside OpenRouter's namespaces) as an OpenRouter id and
-returns ``openrouter/<argument>`` on the OpenRouter host, falling back to a bare
-model for ids its catalog never saw. That is right for a flag parsed before any
-session exists — and wrong for ``/model <id>`` typed INSIDE a session, where it
-silently re-stamps the environment's provider onto an id that provider does not
-serve: the switch reports success, the footer updates, the pair is persisted as
-the default, and the only symptom is the provider's ``400 … is not a valid model
-ID`` on the NEXT send (#134).
+``cli.runtime_bootstrap.resolve_route`` resolves a model for LAUNCH (pi's
+``resolveCliModel`` order, ADR-0250). Before ADR-0250 it was an
+OpenRouter-from-env rung that, with ``OPENROUTER_API_KEY`` set, re-stamped the
+environment's provider onto any argument — right enough for a flag parsed
+before any session exists, and wrong for ``/model <id>`` typed INSIDE a session,
+where the switch reported success, the footer updated, the pair was persisted
+as the default, and the only symptom was the provider's ``400 … is not a valid
+model ID`` on the NEXT send (#134).
 
 This module is the in-session counterpart. It resolves the argument the way the
 ``/model`` picker does — against ``ModelRegistry`` narrowed by configured auth
@@ -66,6 +62,24 @@ in-session command. Ours is strictly stricter: pi's does not check auth at all,
 and pi's spreads a sibling model (fabricating its context window and pricing),
 while ours builds the bare shape. pi has no in-session equivalent — its ``/model``
 miss path just reopens the picker pre-filtered (``interactive-mode.ts:3966-4005``).
+
+ADR-0250 guard 1, in-session (#362). The pool is ``get_available()``, which
+counts a credential a cwd ``.env`` supplied — so a planted vendor key decided
+what an OpenRouter user's ``/model openai/gpt-4o-mini`` switched to, and the
+switch is then PERSISTED for every later launch (measured on the design
+prototype: ``['openai', 'gpt-4o-mini']`` under a ``.env`` ``OPENAI_API_KEY``).
+:func:`_route_aware_pool` therefore removes every provider only a ``.env``
+authenticates whenever the session holds a credential of the user's own (an
+``--api-key`` runtime override included), so a cwd ``.env`` key never chooses
+the destination — where it would, ``/model`` refuses (fail-closed) — with no
+exemption for the session's current provider (Codex's cross-review of
+``854bf319``, C1/C2). :func:`_user_defined_owner` applies the launch's provider
+case rule: a prefix naming a provider the user defined stays inside it, and
+since the prefix already chose that destination, the provider is kept whatever
+authenticates it, a ``.env`` key included, as ``--model`` keeps it (ADR-0250
+§2.8; the round-2 verification of ``ecb4e0bc``, B1). A session whose only
+credentials came from a ``.env`` keeps this module's answer (ADR-0250 §6 —
+nothing of the user's own competes there).
 
 Degradation: no registry, an empty registry, or a failed introspection returns
 UNDECIDED so the caller keeps its previous behaviour (headless, RPC, test
@@ -336,6 +350,42 @@ async def resolve_model_argument(
             # ``known`` stays available for the diagnosis text only.
             return _UNDECIDED
 
+    # The provider case rule (ADR-0249 §2.1, ADR-0250 §2.1 step 1): a
+    # ``<prefix>/<id>`` whose prefix names a provider the USER defined stays
+    # inside it, as ``--model`` does — never another provider's id that happens
+    # to read the same (OpenRouter's ``openai/gpt-4o-mini`` against a
+    # models.json ``OpenAI``).
+    owned = _user_defined_owner(reference, registry)
+    if isinstance(owned, ArgumentResolution):
+        return owned
+    if owned is not None:
+        # The prefix IS the destination, chosen by the user who defined the
+        # provider, so guard 1 has nothing to decide: the provider stays in the
+        # pool whatever authenticates it, and a cwd ``.env`` key may then
+        # authenticate the route the user chose — the launch's step 3 (ADR-0250
+        # §2.1, §2.8). The round-2 verification of ``ecb4e0bc`` (B1): dropping
+        # it refused ``/model mygw/m1``, and the late switch to a
+        # ``session_start`` provider whose key is in the ``.env``, both of which
+        # ``--model`` runs.
+        dropped: frozenset[str] = frozenset()
+        pool = [m for m in pool if (getattr(m, "provider", "") or "") == owned]
+        if not pool:
+            return ArgumentResolution(
+                error=(
+                    f"model '{reference}' names '{owned}', a provider you defined, which "
+                    "this session does not offer (no credential for it, or "
+                    "/scoped-models excludes it). Run /model with no argument to pick one."
+                )
+            )
+    else:
+        # ADR-0250 guard 1, in-session (#362): a cwd ``.env`` key never chooses
+        # the destination. Whenever the user holds a route-authenticating
+        # credential of their own anywhere, a provider that only a ``.env`` key
+        # authenticates leaves the pool before anything below reads it — the
+        # match, the current-provider tie-break, the backfill licence and the
+        # diagnosis alike.
+        pool, dropped = _route_aware_pool(pool, registry)
+
     from aelix_coding_agent.core.runnable_models import partition_runnable
 
     runnable, _blocked = partition_runnable(pool)
@@ -345,12 +395,13 @@ async def resolve_model_argument(
 
     from aelix_coding_agent.core.model_resolver import find_exact_model_reference_match
 
+    current_provider = getattr(current_model, "provider", None) or ""
+
     match = find_exact_model_reference_match(reference, pool)
     if match is not None:
         return ArgumentResolution(model=match)
 
     candidates = _candidates(pool, reference)
-    current_provider = getattr(current_model, "provider", None) or ""
     if current_provider and "/" not in reference:
         on_current = [m for m in candidates if m.provider == current_provider]
         if len(on_current) == 1:
@@ -358,10 +409,7 @@ async def resolve_model_argument(
     if candidates:
         listed = ", ".join(sorted({f"{m.provider}/{m.id}" for m in candidates}))
         return ArgumentResolution(
-            error=(
-                f"model '{reference}' is served by several providers — name one: "
-                f"{listed}"
-            )
+            error=(f"model '{reference}' is served by several providers — name one: {listed}")
         )
 
     # #136 — a `<provider>/<id>` under a provider this session IS credentialled
@@ -381,6 +429,35 @@ async def resolve_model_argument(
                 "first-class."
             ),
         )
+    if owned is not None:
+        # Inside a provider the user defined. When it LISTS the id, the pool
+        # simply does not offer it — say so, as the "IS logged in to" refusal
+        # below does; blaming disagreeing siblings named the wrong cause
+        # (Codex's second cross-review of ``a0edf615``, F5: MyGw lists m1 and
+        # m2 on one host, the allow-list keeps only MyGw/m1).
+        lists_it = find_exact_model_reference_match(
+            reference, [m for m in known if (getattr(m, "provider", "") or "") == owned]
+        )
+        if lists_it is not None:
+            return ArgumentResolution(
+                error=(
+                    f"model '{reference}' is one '{owned}' (a provider you defined) "
+                    "lists, but it is not offered here: /scoped-models excludes it, or "
+                    "it is not runnable in this environment. Run /scoped-models to "
+                    "re-enable it, or /model with no argument to see what is offered."
+                )
+            )
+        # It neither lists the id nor agrees on one api/base_url to send an
+        # unlisted one to. Naming the providers elsewhere that serve the string
+        # would invite exactly the crossing the case rule forbids.
+        return ArgumentResolution(
+            error=(
+                f"model '{reference}' is not one '{owned}' (a provider you defined) "
+                "offers, and its models do not agree on one api and base URL to send "
+                "an unlisted id to. Add it to that provider's models in models.json, "
+                "or run /model with no argument to pick one."
+            )
+        )
 
     # Not offered. Distinguish "the registry has never heard of this" from "it
     # exists, but not for you right now": telling a logged-out user their id is
@@ -395,6 +472,7 @@ async def resolve_model_argument(
     )
     excluded = [p for p in elsewhere if p in offered_providers]
     unauthed = [p for p in elsewhere if p not in offered_providers]
+    planted = [p for p in unauthed if p in dropped]
     if excluded:
         return ArgumentResolution(
             error=(
@@ -403,6 +481,7 @@ async def resolve_model_argument(
                 "the model itself is not offered here: /scoped-models excludes it, "
                 "or it is not runnable in this environment. Run /scoped-models to "
                 "re-enable it, or /model with no argument to see what is offered."
+                + _dotenv_hint(planted)
             )
         )
     if unauthed:
@@ -411,7 +490,7 @@ async def resolve_model_argument(
                 f"no model '{reference}' is available in this session — it is "
                 f"served by {', '.join(unauthed)}, which this session has no "
                 "configured credentials for (or which is filtered out by "
-                "/scoped-models). Run /login, or use <provider>/<id>."
+                "/scoped-models). Run /login, or use <provider>/<id>." + _dotenv_hint(planted)
             )
         )
     # Teach the #136 hatch by SHAPE, never by example. Naming a concrete
@@ -421,14 +500,152 @@ async def resolve_model_argument(
     # ``openrouter/anthropic/claude-fable-5`` — i.e. the refusal would hand the
     # user the exact string #134 is about and the backfill would then honour it.
     # The shape alone is actionable and cannot be pasted back verbatim.
+    #
+    # An id the catalog does not hold, under a prefix naming a provider guard 1
+    # set aside, lands here too (``anthropic/claude-new-9`` with the Anthropic
+    # key only in a cwd ``.env``): ``_candidates`` finds nothing, so the branch
+    # above never names it. The user believes they are logged in to that
+    # provider — say why it was set aside (the round-3 verification of #362).
+    head = reference.split("/", 1)[0].lower() if "/" in reference else ""
     return ArgumentResolution(
         error=(
             f"no model '{reference}' is available in this session — run /model "
             "with no argument to pick from the available models. To use an id "
             "this build's catalog does not know, write it as <provider>/<id> "
             "with a provider you are logged in to."
+            + _dotenv_hint(sorted(p for p in dropped if head and p.lower() == head))
         )
     )
+
+
+def _dotenv_hint(planted: list[str]) -> str:
+    """The refusal's note naming the providers guard 1 set aside, or ``""``."""
+
+    if not planted:
+        return ""
+    return (
+        f" ({', '.join(planted)}: the key came from a project .env, which "
+        "does not choose a provider while you hold a credential of your "
+        "own; export it or /login to use it.)"
+    )
+
+
+def _route_aware_pool(pool: list[Any], registry: Any) -> tuple[list[Any], frozenset[str]]:
+    """``pool`` without the providers only a cwd ``.env`` authenticates — when that matters.
+
+    ADR-0250 guard 1 for ``/model`` (§2.8). ``pool`` came from
+    ``get_available()``, where a credential a cwd ``.env`` supplied counts. When
+    the session holds a route-authenticating credential of the user's own for
+    ANY provider (:func:`~aelix_coding_agent.cli.runtime_bootstrap.holds_route_auth`
+    — not read off this pool, since an allow-list must not turn a
+    user-with-their-own-key into a ``.env``-only session, nor off model rows at
+    all, since a provider holding the user's key may serve none: Codex's second
+    cross-review of ``a0edf615``, F3), every provider that is not
+    route-authenticated leaves the pool,
+    so a ``.env`` key cannot choose the destination; where it would have, the
+    caller refuses. That is usually the answer the same session gives with no
+    ``.env``, not always: an allow-list naming only the ``.env`` provider's
+    models, or a models.json / ``auth.json`` key NAMING a variable only the
+    ``.env`` sets, refuse (or leave the string to the user's own keys) where the
+    no-``.env`` session resolves (ADR-0250 §2.8). A runtime override
+    (``--api-key``) is the user's own on both reads. The caller skips this for a
+    prefix naming a provider the user defined.
+
+    There is no exemption for the session's CURRENT provider. Codex's
+    cross-review of ``854bf319`` measured the one ``854bf319`` had: with
+    ``OPENROUTER_API_KEY`` exported and the session on ``openai``, a cwd ``.env``
+    ``OPENAI_API_KEY`` moved ``/model openai/gpt-4o-mini`` from ``openrouter.ai``
+    (the user's key) to ``api.openai.com`` (the file's key) — the session being
+    "on" a provider only the file authenticates is no licence.
+
+    A session with no credential of the user's own keeps its pool: nothing of
+    theirs competes (ADR-0250 §6, the stated residual). Returns the pool and the
+    providers taken out of it (for the refusal's hint). Fails open to the pool
+    as given — a guard must never break ``/model`` — except that a provider
+    whose check raised is treated as not route-authenticated.
+
+    The other implicit choosers use this same helper, so one rule answers all
+    of them: the post-``/login`` pick (``tui.shell._RouteAuthView``) and RPC
+    ``cycle_model``'s rotation (``rpc.rpc_mode._handle_cycle_model``; Codex's
+    second cross-review of ``a0edf615``, F1 and F2).
+    """
+
+    try:
+        from aelix_coding_agent.cli.runtime_bootstrap import holds_route_auth, route_authenticated
+    except Exception:  # noqa: BLE001 — a guard must never break /model
+        return pool, frozenset()
+    if not holds_route_auth(registry):
+        return pool, frozenset()
+    pooled = {getattr(m, "provider", "") or "" for m in pool}
+    dropped = frozenset(p for p in pooled if not route_authenticated(registry, p))
+    if not dropped:
+        return pool, dropped
+    return [m for m in pool if (getattr(m, "provider", "") or "") not in dropped], dropped
+
+
+def _user_defined_owner(reference: str, registry: Any) -> str | ArgumentResolution | None:
+    """The user-defined provider a ``<prefix>/<id>`` names, by aelix's case rule.
+
+    ``--model`` matches a user-defined provider first and alone (ADR-0249 §2.1,
+    kept by the owner in ADR-0250 §2.1 step 1), and a user-defined provider never
+    lets the string leave it. ``/model`` used the pool's own case-folded match,
+    so with a models.json ``OpenAI`` next to a credentialled built-in ``openai``
+    (or OpenRouter's verbatim ``openai/gpt-4o-mini``) the same string landed on a
+    provider the user had not meant. Returns the provider's name, a refusal when
+    two user-defined names differ only in case and the prefix spells neither
+    (the launch's rule), or ``None`` — a bare id, or a prefix no user-defined
+    provider answers to.
+    """
+
+    prefix, sep, rest = reference.partition("/")
+    if not (sep and prefix.strip() and rest.strip()):
+        return None
+    try:
+        from aelix_coding_agent.cli.runtime_bootstrap import _user_defined_prefix
+
+        owner, clash = _user_defined_prefix(prefix.strip(), _case_rule_providers(registry))
+    except Exception:  # noqa: BLE001 — a guard must never break /model
+        return None
+    if clash:
+        names = " and ".join(f"'{name}'" for name in clash)
+        return ArgumentResolution(
+            error=(
+                f"model '{reference}': the provider prefix '{prefix}' matches the "
+                f"providers you defined {names}, which differ only in case. Spell the "
+                "prefix exactly as one of them."
+            )
+        )
+    return owner
+
+
+def _case_rule_providers(registry: Any) -> frozenset[str]:
+    """The providers ``/model``'s case rule treats as user-defined.
+
+    The launch's set (``runtime_bootstrap.user_defined_providers``), plus
+    ``openrouter`` when models.json re-points it. The launch drops
+    ``openrouter`` from its set because there an ``openrouter/<id>`` is an
+    explicit route anyway (ADR-0250 §2.5) and "user-defined" would only keep
+    it from guard 2; ``/model`` has no such explicit-route rule (§2.8), so
+    without this a re-pointed ``openrouter`` — a provider whose endpoint the
+    user chose, like every other re-pointed built-in — was refused on a
+    ``.env`` key that ``--model openrouter/auto`` runs on (Codex's second
+    cross-review of ``a0edf615``, F6). A ``openrouter`` the user did NOT
+    re-point stays route-deciding: ``/model openrouter/<id>`` is refused while
+    a ``.env`` alone authenticates it and the user holds a key elsewhere (F7).
+    """
+
+    from aelix_coding_agent.cli.runtime_bootstrap import user_defined_providers
+
+    found = user_defined_providers(registry)
+    getter = getattr(registry, "get_user_defined_providers", None)
+    if callable(getter):
+        try:
+            returned: Any = getter()
+            if "openrouter" in frozenset(str(name) for name in returned):
+                found = found | {"openrouter"}
+        except Exception:  # noqa: BLE001 — a guard must never break /model
+            pass
+    return found
 
 
 __all__ = ["ArgumentResolution", "resolve_model_argument"]

@@ -23,93 +23,154 @@ aelix --list-models claude     # filter by substring
 ```
 
 Inside the interactive TUI, `/model` opens a picker to switch the active model
-mid-session.
+mid-session. The picker lists every provider you have a key for, a project
+`.env` key included — choosing one there is your own pick. `/model <id>` and
+`/model <provider>/<id>` follow the same two rules as the launch below. While
+you hold a credential of your own anywhere (an `--api-key` counts, and so does
+a key for a provider that lists no models), a project `.env` key never decides
+where the string goes: a provider only the `.env` authenticates is left out of
+the match — even when the session is already on it — and where only such a
+provider could serve the string, `/model` refuses and says so rather than
+switch (export the key or `/login` to use it). A prefix that names a provider
+you defined (in `models.json`, including a re-pointed built-in — a re-pointed
+`openrouter` too — or by an extension) stays inside it, and its key may come
+from the `.env`: the prefix chose the destination, the file only authenticates
+it — as with `--model`. One difference from `--model`: the built-in
+`openrouter/` prefix is not an exemption in `/model`, so with the OpenRouter
+key only in a project `.env` and a key of your own elsewhere,
+`/model openrouter/auto` is refused, while `--model openrouter/auto` runs on
+the `.env` key.
 
-### How `--model <provider>/<id>` is resolved when `OPENROUTER_API_KEY` is set
+The model picked for you after `/login` (when the current one cannot run)
+follows the same rule: a saved `defaultProvider`/`defaultModel` — your
+settings or a project's `.aelix/settings.json` — that only a project `.env`
+key authenticates is skipped while you hold a key of your own. A program
+that runs RPC mode with a model registry gets the same from `cycle_model`,
+which rotates only through models the rule leaves; `set_model` names its
+provider, so a `.env` key may authenticate it, as with `--provider`.
+(`aelix --mode rpc` itself wires no registry, and answers both with "requires
+a ModelRegistry".)
 
-With `OPENROUTER_API_KEY` in the environment and no `--provider`, a `--model`
-string can mean two things: `openai/gpt-4o-mini` is both OpenAI's model and an
-OpenRouter id. Aelix decides it from **configuration only** — which provider
-names exist, which ones *you* defined — never from which credentials happen to be
-present ([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)):
+### How a `--model` string becomes a provider
 
-1. **A provider you defined** — a `models.json` custom provider, a built-in
-   provider you re-pointed with a `models.json` `baseUrl`, or a provider an
-   extension registered with `register_provider` (in its `setup()` — see
-   below). `ollama/qwen3.6:35b-a3b`, `mygateway/some-model` and `extprov/m1` go
-   to that endpoint, and never to OpenRouter — an id that provider does not list
-   is either backfilled from its own models (when they all speak one protocol)
-   or refused with an error that names the provider. An extension that
-   registers a **built-in** name with models (`openai`, say) owns that prefix
-   the same way: `openai/<id>` resolves among the models it registered, never
-   to `api.openai.com` with the extension's key.
-2. **An id only one of your providers lists**, spelled exactly as it lists it:
-   `--model qwen3.6:35b-a3b` reaches the one `models.json` provider that lists
-   it. This covers slashed ids too: `anthropic/claude-sonnet-4.5` goes to a
-   gateway of yours that lists it verbatim, not to OpenRouter (this rule is
-   checked before rule 4 below). A built-in provider you re-pointed with a
-   `baseUrl` lists every catalog id it has, so with `providers.openai.baseUrl`
-   set a bare `--model gpt-4o-mini` goes to your gateway — without that
-   `baseUrl` it goes to OpenRouter.
-3. **A built-in provider OpenRouter has no namespace for** — `openai-codex`,
-   `xai`, `groq`, `mistral`, `github-copilot`, `zai` and the other catalogued
-   providers whose name is not the first segment of any OpenRouter id in this
-   build's catalog. `openai-codex/gpt-5.1` goes to Codex.
-4. **Everything else goes to OpenRouter**, exactly as before: the nine prefixes
-   that are both a provider and an OpenRouter namespace (`openai`, `anthropic`,
-   `google`, `deepseek`, `minimax`, `moonshotai`, `nvidia`, `xiaomi`,
-   `openrouter`), prefixes that are not providers (`meta-llama/…`, `qwen/…`) and
-   bare ids none of your providers serve. `--model anthropic/claude-haiku-4-5`
-   goes to OpenRouter even if you also hold an Anthropic key.
+Aelix follows pi's order (`resolveCliModel`), with exact ids only and two guards
+of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)):
 
-Without `OPENROUTER_API_KEY` the prefix simply names the provider. Either way the
-prefix is matched case-insensitively (`RetryProbe/held-model` works), and a
-provider you defined wins over a built-in spelled the same up to case: with a
-`models.json` provider named `OpenAI`, `openai/m1` is yours, never OpenRouter's
-or `api.openai.com`'s. If two of your providers differ only in case (`OpenAI`
-and `OPENAI`), a prefix that spells neither exactly is refused with an error
-naming both.
+1. **`--provider` names the provider.** The id is looked up inside it; a repeated
+   prefix is tolerated (`--provider anthropic --model anthropic/claude-haiku-4-5`
+   is `claude-haiku-4-5`), and an id the provider does not list is sent as a
+   custom id, with a one-line warning.
+2. **A prefix that names a provider** — any provider aelix knows: the catalog,
+   your `models.json`, an extension's `register_provider` — picks it,
+   case-insensitively (`RetryProbe/held-model` works). A provider **you defined**
+   wins over a built-in spelled the same up to case, and never lets the string go
+   anywhere else: `ollama/qwen3.6:35b-a3b`, `mygateway/some-model` and
+   `extprov/m1` reach that endpoint, and an id it does not list is backfilled from
+   its own models (when they all speak one protocol) or refused naming the
+   provider. Two of your providers that differ only in case (`OpenAI`, `OPENAI`)
+   and a prefix that spells neither are refused naming both.
+3. **Otherwise the whole string is matched as an id** across every provider.
+   One match wins (`x-ai/grok-4.3` is OpenRouter's, `held-model` is your
+   `models.json` provider's). Several matches: the settings `defaultProvider`
+   decides if it is one of them, else the **one** matching provider you hold a
+   credential for; otherwise it is an error that lists them —
+   `Model "gpt-4o-mini" is ambiguous across providers: azure-openai-responses/gpt-4o-mini,
+   cloudflare-ai-gateway/gpt-4o-mini, openai/gpt-4o-mini. … Use --provider or
+   provider/model.` A bare id nothing lists is sent to the `defaultProvider` as a
+   custom id. In both cases `defaultProvider` is the merged setting — a project's
+   `.aelix/settings.json` can set it, over yours — so while you hold a credential
+   of your own it counts only when it names a provider your own credential
+   authenticates, or a provider you defined (`models.json`, an extension, a
+   re-pointed built-in); otherwise it is ignored and the error says so
+   (`Settings defaultProvider "anthropic" was not used: …`).
+4. **Inside the provider a prefix named, the id must match exactly** (no fuzzy
+   matching). When it does, but you hold no credential for that provider and
+   exactly one provider you do hold a credential for lists the whole string as
+   its id, that one is used: with only `OPENROUTER_API_KEY`,
+   `openai/gpt-4o-mini` goes to OpenRouter; with an OpenAI key as well, to
+   OpenAI.
+5. **When it does not match**, the whole string is tried as an id elsewhere — a
+   provider you hold a credential for first; if you hold one for the provider
+   the prefix named, the id stays there as a custom id.
 
-A provider you **name** is matched the same way — `--provider`, `defaultProvider`
-in `settings.json` and an agent profile's `provider:`. `--provider OPENAI` works,
-and with that `models.json` `OpenAI`, `--model m1 --provider openai` is yours too
-(your host, your `--api-key`); a built-in whose name differs from one of your
-providers only in case cannot be reached that way — rename your provider if you
-need both. A name two of your providers share up to case is refused naming both.
-Spelling aside, `--provider` keeps its meaning: it turns the OpenRouter rule off
-unless it names `openrouter`.
+Then the two guards:
 
-A provider an extension registers in a `session_start` handler exists only after
-the launch model was chosen, so with `OPENROUTER_API_KEY` set its prefix would
-have been read as an OpenRouter id. Every mode — interactive, RPC, `-p` and
-`--mode json` — switches to the provider before the first prompt, exactly as
-`/model <name>/<id>` would, and prints one line on stderr saying so (with
-`/model`'s caution when the id is one the provider does not list). Unlike
-`/model`, it does not save the choice as your default model. If `/model` would
-refuse it, no prompt is sent: the interactive and RPC modes start and tell you
-to run `/model`; `-p` and `--mode json` stop with an error. The same happens when
-the handler registers two providers whose names differ only in case and your
-prefix spells neither. A provider the handler registers and then unregisters is
-simply unknown, so with `OPENROUTER_API_KEY` set its prefix goes to OpenRouter
-like any other unknown prefix. Register providers in the extension's `setup()` to
-avoid all of this.
+- **A key from a project `.env` never chooses where a prompt goes.** It still
+  authenticates the route your flags, your `models.json` and your own keys
+  chose — but the "provider you hold a credential for" questions above count
+  only credentials you exported in your shell, stored with `/login` (in your
+  agent dir's `auth.json`) or wrote into your `models.json`. So a cloned repo's
+  `OPENROUTER_API_KEY` cannot pull `anthropic/claude-haiku-4-5` off your own
+  Anthropic key, and its `OPENAI_API_KEY` cannot pull `openai/gpt-4o-mini` off
+  OpenRouter. Delegated agents and an `aelix` the bash tool starts inherit the
+  same judgement (aelix passes them the list of names the `.env` supplied, in
+  `AELIX_DOTENV_ADMITTED`). Nor does a `.env` value choose a **host**: a
+  `{NAME}` placeholder in a base URL is filled from a project `.env` only for
+  Cloudflare's two ids; for anything else (a `{TENANT_KEY}` in your own
+  `models.json` template) export the variable — until then the model is not
+  runnable and the refusal says so. An embedder that installs an
+  `AuthStorage.set_fallback_resolver` counts as holding a credential of its
+  own (the providers a resolver answers for cannot be listed), and a resolver
+  answer that carries a `.env` value (equal to it ignoring case and
+  surrounding spaces, or - both 8 characters or longer - with it inside) does
+  not count as one - a resolver must not derive its answer from a variable a
+  project `.env` supplied (`aelix_ai.dotenv_record.dotenv_supplied`).
+- **New OpenRouter ids.** This build's catalog lacks many of OpenRouter's live
+  ids (pi refreshes its catalog from pi.dev; aelix does not). So a
+  `<vendor>/<model>` string **that OpenRouter's part of this build's catalog does
+  not list** goes to OpenRouter as written, with a one-line note, **only when you
+  hold an OpenRouter key of your own** (exported, `/login`, or `models.json`) —
+  when its prefix is one no provider has (`newlab/model-x`), or one of the
+  prefixes OpenRouter shares with a provider (`anthropic/…`, `openai/…`, …) and
+  you hold no key of your own for that provider. That includes an id the
+  vendor's own catalog lists: with only `OPENROUTER_API_KEY`, `openai/o1-pro`
+  goes to OpenRouter, because OpenRouter is the only provider you can reach it
+  through. It never happens under a provider you defined, nor under a catalogued
+  provider OpenRouter has no ids for (`xai/…`, `openai-codex/…`, `groq/…`), nor
+  for a bare id: those stay pi's errors.
 
-To override the rule, say what you mean:
+The explicit routes to OpenRouter are `openrouter/<id>` (the prefix is stripped,
+as in pi: `openrouter/newlab/model-x` sends `newlab/model-x`) and
+`--provider openrouter --model <id>`; both work with a key from anywhere,
+a project `.env` included. `OPENROUTER_DEFAULT_MODEL`, read from your **shell**
+only, is the id used when no `--model` is given, as
+`--provider openrouter --model <it>` — "shell only" unless you hatch it yourself:
+with `AELIX_DOTENV_ALLOW=OPENROUTER_DEFAULT_MODEL` in your shell, a project
+`.env`'s value is admitted and picks that model. `OPENROUTER_BASE_URL` (your shell, or a
+`.env` name you listed in `AELIX_DOTENV_ALLOW`) applies to every route that lands
+on OpenRouter.
 
 ```bash
-aelix --provider openrouter --model openai/gpt-4o-mini "..."   # force OpenRouter
-aelix --provider anthropic  --model claude-haiku-4-5 "..."     # force the vendor
+aelix --model openrouter/openai/gpt-4o-mini "..."              # OpenRouter, whatever keys you hold
+aelix --provider openrouter --model openai/gpt-4o-mini "..."   # the same
+aelix --provider anthropic  --model claude-haiku-4-5 "..."     # the vendor
 ```
 
 (`--provider anthropic` is the vendor unless you defined a provider of that name
-in some case — then it is yours, as above. The same goes for `--provider
-openrouter`: if you named one of your providers `OpenRouter` in any case, that
-flag selects yours, so rename it if you also want to force OpenRouter.)
+in some case — then it is yours. The same goes for `--provider openrouter`: if
+you named one of your providers `OpenRouter` in any case, that flag selects
+yours, so rename it if you also want to force OpenRouter.)
 
-`OPENROUTER_DEFAULT_MODEL` (used when no `--model` is given) is always an
-OpenRouter id. The same rule applies to an agent profile's `model:`, to a
-hand-written `defaultModel` in `settings.json`, and — with the parent's view of
-your providers spelled out as `--provider`/`--model` — to delegated children.
+A provider an extension registers in a `session_start` handler exists only after
+the launch model was chosen, so at launch its prefix is unknown: with an
+OpenRouter key of your own it would go to OpenRouter, without one it is "not
+found". Every mode — interactive, RPC, `-p` and `--mode json` — switches to the
+provider before the first prompt, exactly as `/model <name>/<id>` would, and
+prints one line on stderr saying so (with `/model`'s caution when the id is one
+the provider does not list). Unlike `/model`, it does not save the choice as
+your default model. If `/model` would refuse it, no prompt is sent: the
+interactive and RPC modes start and tell you to run `/model`; `-p` and
+`--mode json` stop with an error. The same happens when the handler registers
+two providers whose names differ only in case and your prefix spells neither. A
+provider the handler registers and then unregisters is simply unknown. Register
+providers in the extension's `setup()` to avoid all of this.
+
+The same rules apply to an agent profile's `model:`, to a hand-written
+`defaultModel` in `settings.json`, and to delegated children — which are told
+`--provider` too wherever they could not reach the parent's route alone (a
+provider you defined, which a child without your extensions does not have). A
+route only your `--api-key` would decide is left to the child, which never
+receives the key.
 
 ## Providing an API key
 
@@ -120,10 +181,18 @@ A credential can come from four places. Pick whichever fits your setup:
 2. **`--api-key <key>`** — an inline key for a single run, attached to the
    provider the run actually resolved (after extensions have loaded), and it
    outranks every other source for that provider in that invocation. So
-   `--model ollama/<id> --api-key K` sends `K` to your ollama endpoint;
-   `--model openai/gpt-4o-mini --api-key K` with `OPENROUTER_API_KEY` set sends
-   `K` to **OpenRouter** (rule 4 above) — add `--provider openai` if `K` is an
-   OpenAI key. The key is not forwarded to delegated children.
+   `--model ollama/<id> --api-key K` sends `K` to your ollama endpoint. With
+   `--api-key`, a prefix that names a provider keeps the string there — the id
+   it lists, else a custom id — whatever else you hold:
+   `--model openai/gpt-4o-mini --api-key K` sends `K` to **OpenAI** even with an
+   OpenRouter key exported (rules 4 and 5 and the OpenRouter guard below are
+   skipped; pi would send it to OpenRouter with `K` as the bearer). The price of
+   that choice: if `K` is an **OpenRouter** key, `--model openai/gpt-4o-mini
+   --api-key K` sends it to `api.openai.com` as the bearer, where pi would have
+   put it on OpenRouter — write `openrouter/openai/gpt-4o-mini` or
+   `--provider openrouter` for an OpenRouter key. A prefix no provider has (`newlab/model-x`) still goes to
+   OpenRouter by the guard below. A string that does not resolve (ambiguous, not
+   found) gets no key. It is not forwarded to delegated children.
 3. **`models.json`** — an `apiKey` field on a provider, which itself may point
    at an environment variable or a `!command` (see
    [models-json.md](models-json.md)).

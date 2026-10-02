@@ -98,20 +98,38 @@ export the vendor's, or pass `--api-key` for the run. (Whether this file's
 `apiKey` should win for a re-pointed provider is
 [#363](https://github.com/handochan/aelix-ai/issues/363).)
 
-A re-pointed built-in also counts as **your** provider for the
-`OPENROUTER_API_KEY` rule in
-[providers-and-models.md](providers-and-models.md#how---model-providerid-is-resolved-when-openrouter_api_key-is-set):
-`--model openai/<id>` then goes to your `baseUrl`, not to OpenRouter — including
-an OpenRouter-only spelling such as `openai/gpt-4o:extended`, which your gateway
-will have to reject. Use `--provider openrouter` for those. The same rule makes
-every **bare** id of the provider yours: with `OPENROUTER_API_KEY` set, a plain
-`--model gpt-4o-mini` goes to your gateway (without this `baseUrl` it goes to
-OpenRouter), because it is an id exactly one of your providers serves — as is a
-slashed id such as `anthropic/claude-sonnet-4.5` that exactly one provider you
-defined lists verbatim. `modelOverrides`,
-`headers` or `compat` **alone** do not re-point anything and do not change that
-rule; neither does a `baseUrl` on an individual model definition (only the
-provider-level one does).
+A re-pointed built-in also counts as **your** provider in the rules of
+[providers-and-models.md](providers-and-models.md#how-a---model-string-becomes-a-provider)
+([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)):
+`--model openai/<id>` then goes to your `baseUrl` and never to OpenRouter —
+including an OpenRouter-only spelling such as `openai/gpt-4o:extended`, which your
+gateway will have to reject. Use `openrouter/<id>` or `--provider openrouter` for
+those. A **bare** id is matched across every provider: a plain
+`--model gpt-4o-mini` that several providers list goes to the one you hold a
+credential for (this `apiKey` counts), else it is refused naming them; a slashed
+id such as `anthropic/claude-sonnet-4.5` that a gateway of yours lists verbatim is
+your gateway's when you hold no key of your own for `anthropic`, or when your
+gateway is the only one of the authenticated matches that you defined.
+`modelOverrides`, `headers` or `compat` **alone** do not re-point anything and do
+not make the provider yours; neither does a `baseUrl` on an individual model
+definition (only the provider-level one does).
+
+**`{NAME}` placeholders in a `baseUrl`** are filled from the environment when the
+request is built, as pi does for Cloudflare's `{CLOUDFLARE_ACCOUNT_ID}` /
+`{CLOUDFLARE_GATEWAY_ID}`: `"baseUrl": "https://{TENANT}.gateway.example/v1"` with
+`TENANT` exported reaches that tenant's host. A value from a project `.env` fills a
+placeholder **only** for those two Cloudflare ids, which the `.env` loader accepts
+only as plain ids, and only in the URL's path (after the host, before any `?`
+or `#`) — never the host, port, user-info, query or fragment, even in a template
+you wrote; any other variable, including one
+you admit with `AELIX_DOTENV_ALLOW`, must come from your shell. A credential in a
+`.env` authenticates a request but never addresses one: with `TENANT_KEY` only in a
+cloned repo's `.env`, the token stays unfilled, the model is not runnable, and
+`--model` / `/model` refuse with `TENANT_KEY came from a project .env, which may
+authenticate a request but never address one; export it in your shell to use it.`
+(otherwise a value such as `attacker.example/v1#` would have replaced your host —
+[ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)
+§2.2).
 
 ### Model fields
 
@@ -374,9 +392,9 @@ and that a turn reaches your endpoint:
 aelix --model my-provider/my-model -p "hi"
 ```
 
-That goes to `my-provider`'s `baseUrl` even with `OPENROUTER_API_KEY` exported —
-a `models.json` provider's prefix is resolved before OpenRouter-from-env, and so
-is a bare id only one of your providers lists (`--model my-model`). The prefix is
+That goes to `my-provider`'s `baseUrl` whatever keys you hold — a prefix that
+names one of your providers is resolved inside it, and a bare id only one
+provider lists (`--model my-model`) is that provider's. The prefix is
 matched case-insensitively, and your provider wins over a built-in whose name
 differs from it only in case (a provider named `OpenAI` takes `openai/…`). The
 same holds for `--provider`, `defaultProvider` in `settings.json` and an agent

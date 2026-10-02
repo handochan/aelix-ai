@@ -96,23 +96,60 @@ ADR-0203 replaced the unfiltered read with **default-deny admission control**
 inside `load_dotenv`. A repo `.env` may set:
 
 - **credential-shaped names** — anything ending `_API_KEY`, `_KEY`, `_TOKEN`,
-  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:132`), because supplying your
+  `_SECRET`, `_PASSWORD` (`cli/runtime_bootstrap.py:124`), because supplying your
   own provider key from your own project is the workflow this must not break;
 - a short list of **provider-configuration names whose values are shape-checked**
   (a base URL must look like a URL, and so on).
 
 Everything else is refused. A subtraction rule (`_DOTENV_NEVER`,
-`runtime_bootstrap.py:154-157`) takes back the credential-shaped names that are
+`runtime_bootstrap.py:146-149`) takes back the credential-shaped names that are
 really paths, URLs, programs, or aelix's own knobs — so a future aelix variable
 named `*_KEY` cannot become repo-settable by accident.
 
 There is a per-key escape hatch, `AELIX_DOTENV_ALLOW`, read from the **real**
 environment only — a `.env` cannot widen the gate it is judged by. Underneath it
-sits a floor of 14 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:370-397`) that
+sits a floor of 14 names (`_DOTENV_LOCKED`, `runtime_bootstrap.py:358-385`) that
 the hatch cannot open, on one criterion: *the hatch may let a repo redirect; it
 may never let a repo execute, and never let a repo choose the global settings or
 auth store.* `AELIX_SETTINGS_PATH`, `AELIX_CODING_AGENT_DIR`, `HOME`,
 `AELIX_MCP_CONFIG`, `BASH_ENV`, `LD_PRELOAD`, `EDITOR` and friends are on it.
+
+**A key from a repo `.env` authenticates a route; it never chooses one**
+([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md),
+#362). `load_dotenv` records the names it admitted in `AELIX_DOTENV_ADMITTED` —
+which a `.env` cannot set, even through the hatch, and which delegated agents
+and an `aelix` the bash tool starts inherit — and every judgement that picks
+*where* a prompt goes (which of several providers serves a bare id, whether
+`openai/…` goes to OpenAI or OpenRouter, whether an id this build does not know
+goes to OpenRouter, what `/model` switches to, the model picked after `/login`,
+the next model RPC `cycle_model` rotates to) counts only credentials you
+exported, stored with `/login`, typed with `--api-key`, or wrote into your
+`models.json` — on any provider, including one that lists no models. Before this, a cloned repo's `OPENROUTER_API_KEY` sent
+`--model anthropic/claude-haiku-4-5` to its owner's OpenRouter account although
+you had exported `ANTHROPIC_API_KEY`. What remains: when you hold **no**
+credential of your own for the route your flags chose — or the route a
+`/model <provider>/<id>` naming a provider you defined (models.json, an
+extension) chose — the file's key is the one used — the `Notice: loaded
+credentials from …` line names it; and when your
+`models.json` re-points a built-in provider at a gateway
+(`providers.openai.baseUrl`), the file's key for that provider still comes
+before the entry's `apiKey`, so your gateway receives it (#363). A project
+`.aelix/settings.json` that sets `defaultProvider` alone no longer chooses
+between providers for a `--model` id while you hold a key of your own (it
+counts only for a provider your own key authenticates, or one you defined).
+One that sets the `defaultProvider`/`defaultModel` pair still picks
+the launch model when you pass no `--model` — and the `.env` key then
+authenticates it — although the model picked after `/login` skips such a
+default while you hold a key of your own (ADR-0250 §6, §7; pi does not read an
+untrusted project's settings at all, and #369 brings that here). A key name that is
+not a plain environment name (`X,ANTHROPIC_API_KEY`) is refused outright. Nor does a
+`.env` value **address** a request: a `{NAME}` placeholder in a base URL — your own
+`models.json` template included — is filled from a repo `.env` only for Cloudflare's
+two shape-checked ids; any other name (`TENANT_KEY`, admitted as a credential) leaves
+the token unfilled, so the model is not runnable and aelix tells you to export it.
+Before this, `https://{TENANT_KEY}.owner-gateway.invalid/v1` plus a `.env`
+`TENANT_KEY=repo-chosen.invalid/v1#` sent the prompt and the repo's key to
+`repo-chosen.invalid`.
 
 ## Answering the question
 
@@ -166,7 +203,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:718-720`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:2742-2752`), because a silent drop looks identical to a
+(`cli/entry.py:2746-2756`), because a silent drop looks identical to a
 misconfiguration.
 
 ## Where the answer is stored

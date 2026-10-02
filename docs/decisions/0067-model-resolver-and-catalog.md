@@ -2,6 +2,11 @@
 
 Status: Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)
 
+> **#362 note 2026-10-02** ([ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)): the launch
+> resolver now follows pi's `resolveCliModel` order (`88ff80b98`), transcribed into
+> `cli/runtime_bootstrap.resolve_route` with exact ids only and two guards. The
+> `core/model_resolver.py` port below is still not wired to a production caller.
+
 ## Context
 
 ADR-0064 / 0065 closed the per-model field shape + ModelRegistry

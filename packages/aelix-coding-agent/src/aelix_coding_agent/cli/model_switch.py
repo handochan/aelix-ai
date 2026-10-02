@@ -3,8 +3,8 @@
 ``/model <argument>`` (``tui/commands.py``) resolved, guarded, switched and
 persisted inline. #344 (ADR-0249 §2.3) needs the SAME switch at launch: a
 provider an extension registers in ``session_start`` arrives after the launch
-model was chosen, and with ``OPENROUTER_API_KEY`` set that model is an OpenRouter
-id — so the launch moves the harness onto the provider exactly as the user typing
+model was chosen, so that model is an OpenRouter id (ADR-0250 guard 2) or a
+placeholder no turn runs — so the launch moves the harness onto the provider exactly as the user typing
 ``/model <that model>`` would. Sharing the function is what keeps the two from
 drifting: the same resolution (:func:`~aelix_coding_agent.core.model_argument.
 resolve_model_argument` over the live registry, the launch resolver only when it
@@ -69,7 +69,7 @@ async def switch_model_argument(
     try:
         from aelix_coding_agent.cli.runtime_bootstrap import (
             enrich_copilot_base_url,
-            resolve_model,
+            resolve_route,
         )
         from aelix_coding_agent.core.model_argument import resolve_model_argument
         from aelix_coding_agent.core.runnable_models import (
@@ -98,15 +98,19 @@ async def switch_model_argument(
             # UNDECIDED — no usable registry (headless / RPC / test doubles), or
             # one whose introspection failed (``resolve_model_argument`` degrades
             # to this on an exception, so a real registry CAN arrive here). The
-            # launch-path resolution, handed the registry it has (#344, S5): with
-            # ``None`` its rung 0 could not see a models.json or extension
-            # provider, and an ``OPENROUTER_API_KEY`` session sent
-            # ``/model retryprobe/held-model`` to OpenRouter from here.
+            # launch-path resolution, handed the registry it has (#344, S5: with
+            # ``None`` it could not see a models.json or extension provider), and
+            # its refusal (ADR-0250: pi's ambiguity / not-found) when there IS a
+            # registry. With none, the resolver sees no credential and no
+            # user-defined provider, so its "ambiguous … none authenticated" would
+            # be a claim about nothing; the placeholder goes to the runnability
+            # gate below and the caller's "no provider resolved" caution instead.
             # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
-            # business host); resolve_model alone returns the static individual host.
-            model = enrich_copilot_base_url(
-                resolve_model(argument, None, model_registry), model_registry
-            )
+            # business host); the resolver alone returns the static individual host.
+            route = resolve_route(argument, None, model_registry)
+            if route.error is not None and model_registry is not None:
+                return ModelSwitch(refusal=f"✖ {route.error}")
+            model = enrich_copilot_base_url(route.model, model_registry)
         # WP-8 follow-up — guard an explicit id whose api has no adapter (e.g.
         # ``/model gpt-5.x`` → openai-responses): surface the actionable reason,
         # not the cryptic ``No provider registered for api=...`` the loop raises.
@@ -139,9 +143,10 @@ async def switch_to_late_registered_route(
 ) -> tuple[str, str]:
     """Move a launch that ``late_registered_route`` flagged off OpenRouter.
 
-    #344 / ADR-0249 §2.3. A provider an extension registers in ``session_start``
-    lands after the launch resolve, so with ``OPENROUTER_API_KEY`` set the
-    harness holds ``--model <provider>/<id>`` as an OpenRouter id. Every mode —
+    #344 / ADR-0249 §2.3, kept by ADR-0250. A provider an extension registers in
+    ``session_start`` lands after the launch resolve, so the harness holds
+    ``--model <provider>/<id>`` as an OpenRouter id (guard 2, an OpenRouter key
+    of the user's own) or on the not-found placeholder. Every mode —
     interactive, RPC, print and json (fix round 3, R4b; print/json used to
     refuse) — now switches the harness through :func:`switch_model_argument`,
     what ``/model <that model>`` runs: the same resolution, the same refusal,

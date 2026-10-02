@@ -277,6 +277,139 @@ class ModelRegistry:
                 pass
         return False
 
+    def has_route_auth(self, provider: str, *, runtime_overrides: bool = True) -> bool:
+        """:meth:`has_configured_auth` without a credential a cwd ``.env`` supplied.
+
+        #362 / ADR-0250 guard 1. pi's ``resolveCliModel`` lets auth decide three
+        things — a bare id several providers serve, a ``<provider>/<id>`` whose
+        provider is unauthenticated while the raw id is authenticated elsewhere,
+        and a raw fallback (``model-resolver.ts:470-504``, ``:525-540`` @
+        88ff80b98) — and npm pi reads no ``.env``. aelix does
+        (``runtime_bootstrap.load_dotenv``), so in pi's order a cloned repo's
+        ``.env`` key would CHOOSE the route: measured on the design prototype,
+        ``OPENAI_API_KEY`` from a ``.env`` moved an OpenRouter user's
+        ``openai/gpt-4o-mini`` to ``api.openai.com`` under the planted key. This
+        is the predicate every such judgement asks instead. A ``.env``
+        credential still AUTHENTICATES a route once chosen — the request's
+        bearer is :meth:`get_api_key_and_headers`, unchanged.
+
+        The layers, with what a ``.env`` can reach in each:
+
+        1. runtime override (``--api-key``) — True; ``runtime_overrides=False``
+           asks what a delegated child, which never receives it, would see;
+        2. ``auth.json`` (``/login``; api key or OAuth, an expired OAuth too —
+           pi counts it, the user's own file): True, except an api-key entry
+           that names an environment variable a ``.env`` supplied;
+        3. environment: a name of ``ENV_API_KEYS[provider]`` that is set and
+           not in the record (``core.dotenv_provenance``);
+        4. a models.json / registration ``apiKey``: a ``!command`` or a literal
+           counts; the name of a set variable counts unless a ``.env`` supplied
+           it (``resolve_config_value`` reads ``os.environ.get(name, name)``);
+        5. a registration's ``oauth`` — True;
+        6. the fallback resolver: a ``str`` answer counts unless it carries the
+           current value of a variable the record names
+           (:func:`_derived_from_dotenv`). Codex's third cross-review of #362
+           (C1): an embedder's ``set_fallback_resolver(get_env_api_key)`` (the
+           shipped helper) handed layer 3's excluded ``.env`` key straight back,
+           and ``/model openai/gpt-4o-mini`` went to ``api.openai.com`` on it
+           while the user's own OpenRouter key was exported; the fourth (F1)
+           measured the same through a resolver that prefixed, suffixed or
+           stripped the value, or returned it as ``bytes``. A resolver is opaque,
+           so the answer is compared by VALUE; one that ENCODES a ``.env`` value
+           (a hash, base64) is the embedder's to avoid - a resolver must not
+           derive its answer from a variable
+           :func:`aelix_ai.dotenv_record.dotenv_supplied` names. Only this
+           predicate applies the rule: :meth:`has_configured_auth` and the
+           request's bearer are unchanged (a fallback key still authenticates a
+           chosen route).
+        """
+
+        from aelix_ai.providers._env_api_keys import ENV_API_KEYS
+
+        from .core.dotenv_provenance import dotenv_admitted_names, env_name
+
+        admitted = dotenv_admitted_names()
+
+        def _named_value_counts(value: str) -> bool:
+            # ``!command`` and literals are the user's own config; an env-var
+            # name counts unless the .env put it there.
+            if value.startswith("!"):
+                return True
+            if os.environ.get(value) is not None:
+                return env_name(value) not in admitted
+            return True
+
+        if runtime_overrides and provider in self._auth_storage._runtime_overrides:
+            return True
+        if self._auth_storage.has(provider):
+            stored = self._auth_storage.get_all().get(provider) or {}
+            key = stored.get("key") if stored.get("type") == "api_key" else None
+            if not isinstance(key, str) or not key or _named_value_counts(key):
+                return True
+        for name in ENV_API_KEYS.get(provider, ()):
+            if os.environ.get(name) and env_name(name) not in admitted:
+                return True
+        request_config = self._provider_request_configs.get(provider)
+        if (
+            request_config is not None
+            and request_config.api_key is not None
+            and _named_value_counts(request_config.api_key)
+        ):
+            return True
+        config = self._registered_providers.get(provider)
+        if config is not None:
+            if config.api_key and _named_value_counts(config.api_key):
+                return True
+            if config.oauth is not None:
+                return True
+        fallback = self._auth_storage._fallback_resolver
+        if fallback is not None:
+            try:
+                answer = fallback(provider)
+            except Exception:  # noqa: BLE001 — sync, swallowed as has_configured_auth does
+                answer = None
+            if isinstance(answer, str) and str.strip(answer):
+                planted = [value for name in admitted if (value := os.environ.get(name))]
+                if not _derived_from_dotenv(answer, planted):
+                    return True
+        return False
+
+    def has_fallback_resolver(self) -> bool:
+        """Is a fallback resolver installed (``AuthStorage.set_fallback_resolver``)?
+
+        #362 / ADR-0250 §2.8: :func:`~aelix_coding_agent.cli.runtime_bootstrap.holds_route_auth`
+        counts an installed resolver as a credential source of the user's own,
+        because a resolver is a function — the providers it answers for cannot be
+        listed (:meth:`route_auth_candidates` cannot name them).
+        """
+
+        return self._auth_storage._fallback_resolver is not None
+
+    def route_auth_candidates(self) -> frozenset[str]:
+        """Every provider name a credential of the user's own could sit on, rows or not.
+
+        #362 / ADR-0250 guard 1 asks "does the user hold a route-authenticating
+        credential of their own for ANY provider". Reading that off model rows
+        (``get_available()``) missed a provider that holds one but serves no
+        model — an ``auth.json`` key for a provider registered with no models
+        (Codex's second cross-review of ``a0edf615``, F3: with the ``.env``,
+        ``/model openai/gpt-4o-mini`` then went to ``api.openai.com`` on the
+        file's key). The names come from the registry's own sources: model
+        rows, ``auth.json`` entries, runtime (``--api-key``) overrides,
+        models.json provider entries and extension registrations, models or
+        not. :func:`~aelix_coding_agent.cli.runtime_bootstrap.holds_route_auth`
+        asks :meth:`has_route_auth` of each.
+        """
+
+        names: set[str] = {m.provider for m in self._models}
+        names.update(self._provider_request_configs)
+        names.update(self._registered_providers)
+        names.update(self._auth_storage._runtime_overrides)
+        # An unreadable auth.json adds no names.
+        with contextlib.suppress(Exception):
+            names.update(self._auth_storage.get_all())
+        return frozenset(n for n in names if n)
+
     async def get_api_key_and_headers(self, model: Model) -> ResolvedRequestAuth:
         """Pi parity: ``model-registry.ts::getApiKeyAndHeaders``.
 
@@ -547,14 +680,15 @@ class ModelRegistry:
         * an extension ``register_provider`` provider — every one whose name is
           not catalogued, and a catalogued name only when the registration brings
           models (an auth-only or header-only registration tunes a built-in the
-          same way ``headers`` does). Rung 0 then scopes such a catalogued name
-          to the models the registration brought
+          same way ``headers`` does). The launch resolver then scopes such a
+          catalogued name to the models the registration brought
           (``runtime_bootstrap._registration_models``).
 
-        ``cli.runtime_bootstrap.resolve_model`` reads this to decide that a
-        ``<provider>/<id>`` names an endpoint OpenRouter can never serve, BEFORE
-        the OpenRouter-from-env rung sees it. It is a statement about
-        configuration only: no credential is consulted, so a key in a cwd
+        ``cli.runtime_bootstrap.resolve_route`` (ADR-0250) reads this so that a
+        ``<provider>/<id>`` under one of these never leaves it — a custom id
+        there or a refusal, never OpenRouter (guard 2 skips it) — and to match
+        such a prefix first and alone, with aelix's case rule. It is a statement
+        about configuration only: no credential is consulted, so a key in a cwd
         ``.env`` cannot change it.
         """
 
@@ -871,6 +1005,44 @@ class ModelRegistry:
             return OAuthCredentials.from_json(creds_dict)
         except ValueError:
             return None
+
+
+# A fallback answer is matched by containment only when both strings are at
+# least this long: a short common run inside a long key is chance, not derivation.
+_DERIVED_MIN = 8
+
+
+def _derived_from_dotenv(answer: str, planted: list[str]) -> bool:
+    """Does a fallback ``answer`` carry a value a cwd ``.env`` supplied (#362, ADR-0250 §2.8)?
+
+    Equal after stripping whitespace and case-folding, or - both at least
+    :data:`_DERIVED_MIN` characters - one containing the other:
+    ``"namespace:" + value``, ``value + ":namespace"``, ``value.strip()`` and
+    ``value.lower()`` all hand the planted key back (Codex's fourth and fifth
+    cross-reviews of #362). The answer is read through the BUILTIN ``str.strip``
+    (a ``str`` subclass may override ``strip``/``__contains__``; the fifth pass
+    measured one hiding an equal answer), so every comparison is on a plain
+    ``str``. A planted value under :data:`_DERIVED_MIN` characters is matched by
+    equality only - containment would refuse an own vault key that happens to
+    contain ``dev`` - so a resolver prefixing a 4-character ``.env`` value is the
+    embedder's to avoid, like an encoding. Every planted value is checked, not
+    the first that differs (F4: an any/all slip passed every test).
+    """
+
+    mine = str.strip(answer).casefold()
+    for value in planted:
+        theirs = value.strip().casefold()
+        if not theirs:
+            continue
+        if mine == theirs:
+            return True
+        if (
+            len(mine) >= _DERIVED_MIN
+            and len(theirs) >= _DERIVED_MIN
+            and (theirs in mine or mine in theirs)
+        ):
+            return True
+    return False
 
 
 def clear_command_value_cache(registry: object | None) -> None:

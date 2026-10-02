@@ -1741,7 +1741,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3226``) always passes one, so this is
+            # production caller (``entry.py:3268``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -1772,7 +1772,7 @@ async def run_tui(
             result = await find_initial_model(
                 default_provider=default_provider,
                 default_model_id=default_model_id,
-                model_registry=model_registry,
+                model_registry=cast("Any", _RouteAuthView(model_registry)),
             )
             chosen = result.model
             # #150: when the cascade refuses everything because the credentials
@@ -3970,7 +3970,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3169-3185 and
+            # Two audiences, discriminated exactly as entry.py:3199-3215 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider
@@ -4047,6 +4047,53 @@ async def _input_loop(
 async def _safe_abort(harness: AgentHarness) -> None:
     with contextlib.suppress(Exception):
         await harness.abort()
+
+
+class _RouteAuthView:
+    """The registry as the post-``/login`` model pick sees it (ADR-0250 guard 1, #362).
+
+    ``find_initial_model`` (a pi port, left untouched) takes the first runnable
+    model of ``get_available()`` in ``DEFAULT_MODEL_PER_PROVIDER`` order — and
+    ``get_available()`` counts a credential a cwd ``.env`` supplied. Measured on
+    ``9ca53a4f`` (``/tmp/362-work/design/probe_initial_model.out``): a stored
+    Codex login plus a ``.env`` ``ANTHROPIC_API_KEY`` picked
+    ``anthropic claude-opus-4-7``, i.e. the file chose the provider the session
+    then ran on. While the user holds a route-authenticating credential of their
+    own for any provider (``holds_route_auth``, which does not read model rows),
+    this view drops every provider only a ``.env`` authenticates — the same
+    helper ``/model <arg>`` and RPC ``cycle_model`` use
+    (``core.model_argument._route_aware_pool``). A ``.env``-only user keeps
+    everything, so they still get a model.
+
+    ``find`` offers only what ``get_available`` offers. The saved-default arm
+    (settings ``defaultProvider``/``defaultModel`` — a project
+    ``.aelix/settings.json`` is the repo's) reads ``find``; forwarding it to the
+    registry let that arm pick a provider only a cwd ``.env`` authenticated
+    (Codex's second cross-review of ``a0edf615``, F1: ``google-vertex`` on the
+    file's key, where the session without the ``.env`` went to ``openrouter.ai``
+    on the user's own). Such a saved default is now skipped exactly as an
+    unrunnable one is, and the cascade falls through to ``get_available``.
+    """
+
+    def __init__(self, registry: Any) -> None:
+        self._registry = registry
+
+    def find(self, provider: str, model_id: str) -> Any:
+        for model in self.get_available():
+            if model.provider == provider and model.id == model_id:
+                return model
+        return None
+
+    def get_available(self) -> list[Any]:
+        from aelix_coding_agent.core.model_argument import _route_aware_pool
+
+        available, _dropped = _route_aware_pool(
+            list(self._registry.get_available()), self._registry
+        )
+        return available
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._registry, name)
 
 
 __all__ = ["run_tui"]

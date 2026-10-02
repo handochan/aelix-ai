@@ -1135,7 +1135,7 @@ class _SubagentRuntimeImpl:
         try:
             # #344 — the registry too, so the id shown is the id on the argv
             # (``extprov/m1`` reaches the child as ``--model m1 --provider
-            # extprov``; see ``resolver._pin_user_defined_route``).
+            # extprov``; see ``resolver._pin_route``).
             return child_model_id(resolved.profile, self.host.model(), self.host.model_registry())
         except Exception:  # noqa: BLE001 — a display term is never worth a spawn
             return None

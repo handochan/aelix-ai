@@ -23,6 +23,7 @@ runnable so it never over-filters.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -619,8 +620,44 @@ def _single_block_hint(
                         names.append(name)
         except Exception:  # noqa: BLE001 — introspection must never break a flow
             names = []
-        return f"set {', '.join(names)}" if names else "required configuration missing"
+        if not names:
+            return "required configuration missing"
+        withheld = [name for name in names if _dotenv_withheld(name)]
+        if withheld:
+            return (
+                f"set {', '.join(names)} (export {', '.join(withheld)}: "
+                "a project .env value does not fill a base URL)"
+            )
+        return f"set {', '.join(names)}"
     return ""
+
+
+def _dotenv_withheld(name: str) -> bool:
+    """Is ``name`` set, but by a cwd ``.env`` that may not fill a base-URL placeholder?
+
+    Asked only of names :func:`unexpanded_placeholder_names` returned, so a set
+    one was withheld - by its name, or because its token sits in the URL's
+    authority (``may_fill_placeholder``'s position rule); either way the user
+    must export it.
+    """
+
+    try:
+        from aelix_ai.dotenv_record import dotenv_supplied
+
+        return bool(os.environ.get(name)) and dotenv_supplied(name)
+    except Exception:  # noqa: BLE001 — introspection must never break a flow
+        return False
+
+
+def _withheld_note(names: list[str]) -> str:
+    """The why for :func:`_dotenv_withheld` names (#362, ADR-0250 §2.2), or ``""``."""
+
+    if not names:
+        return ""
+    return (
+        f" {', '.join(names)} came from a project .env, which may authenticate a "
+        "request but never address one; export it in your shell to use it."
+    )
 
 
 def _unresolved_api_message(model: Any) -> str:
@@ -699,16 +736,21 @@ def unsupported_message(model: Any) -> str:
     # base_url has unexpanded ``{ENV_VAR}`` tokens (e.g. cloudflare-ai-gateway).
     if _base_url_unconfigured(model):
         base_url = getattr(model, "base_url", None)
+        withheld: list[str] = []
         try:
-            from aelix_ai.providers._base_url import unexpanded_placeholder_names
+            from aelix_ai.providers._base_url import (
+                dotenv_withheld_placeholder_names,
+                unexpanded_placeholder_names,
+            )
 
             missing = ", ".join(unexpanded_placeholder_names(base_url)) or "(unknown)"
+            withheld = dotenv_withheld_placeholder_names(base_url)
         except Exception:  # noqa: BLE001 — introspection must never break a flow
             missing = "(unknown)"
         return (
             f"model '{model_id}' needs configuration before it can run: set the "
             f"environment variable(s) {missing} to fill the base-URL "
-            "placeholder(s), then re-select it."
+            f"placeholder(s), then re-select it.{_withheld_note(withheld)}"
         )
     api = getattr(model, "api", None) or "?"
     # Unresolved-api case (#98): ``api`` is still the ``Model`` dataclass default,

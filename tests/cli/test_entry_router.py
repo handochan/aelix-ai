@@ -493,17 +493,19 @@ async def test_interactive_slash_shorthand_beats_persisted_default_provider(
     assert "api.openai.com" in getattr(model, "base_url", "")
 
 
-async def test_interactive_openrouter_env_beats_persisted_default_provider(
+async def test_interactive_guard_2_beats_persisted_default_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """#98: an OPENROUTER_API_KEY user keeps OpenRouter despite a persisted default.
 
-    The OpenRouter-from-env branch requires ``provider_flag in (None, "",
-    "openrouter")``, so a persisted default written into ``parsed.provider`` reads
-    as a "conflicting --provider" the user never passed and locks them out of the
-    key they configured. Note a ``"/" not in model`` guard would ALSO pass this
-    case by accident — hence the bare-id variant below.
+    REWRITTEN for #362 / ADR-0250, through ``_async_main``: the OpenRouter-from-env
+    branch is gone, and a ``<vendor>/<model>`` this build cannot place reaches
+    OpenRouter by guard 2 (an exported OpenRouter key). A persisted default
+    written into ``parsed.provider`` would read as an explicit ``--provider`` the
+    user never passed and switch guard 2 off — so it must stay in its own,
+    lowest slot. (A BARE id nothing claims is now homed under that default, as
+    ADR-0195 decided; OpenRouter ids always carry a vendor segment.)
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
@@ -527,9 +529,7 @@ async def test_interactive_openrouter_env_beats_persisted_default_provider(
 
     monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
 
-    # A BARE id (no slash): the OpenRouter branch owns it purely on the env key,
-    # so only a real precedence fix — not a slash special-case — keeps this green.
-    code = await _async_main(["--no-session", "--model", "some-or-model"])
+    code = await _async_main(["--no-session", "--model", "vendor/some-or-model"])
     assert code == 0
     model = seen["model"]
     assert getattr(model, "provider", None) == "openrouter"

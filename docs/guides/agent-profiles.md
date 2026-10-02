@@ -170,15 +170,17 @@ other posture — including `auto-accept-edits` and `auto` — still asks.
 ## How the child reaches its model
 
 The child is launched with `--model` / `--provider` flags and resolves its route
-in its own process, with the environment it inherited — `OPENROUTER_API_KEY`
-included — and, by default, **no extensions** (`inherit_extensions: false`).
-That is why the parent does one thing for it: it resolves the profile's `model:`
-(or its own model, when the profile names none) exactly as its own `--model`
-would, and when that lands on a provider **you** defined — a `models.json`
-provider, a built-in you re-pointed with a `models.json` `baseUrl`, or one an
-extension registered — the child gets `--model <id> --provider <provider>`
-instead of the string as written
-([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)).
+in its own process, with the environment it inherited — your keys, and the
+record of which ones a project `.env` supplied (`AELIX_DOTENV_ADMITTED`), so it
+weighs them exactly as the parent does — and, by default, **no extensions**
+(`inherit_extensions: false`). That is why the parent does one thing for it: it
+resolves the profile's `model:` (or its own model, when the profile names none)
+exactly as its own `--model` would, and when that lands on a
+provider **you** defined — a `models.json` provider, a built-in you re-pointed
+with a `models.json` `baseUrl`, or one an extension registered — the child gets
+`--model <id> --provider <provider>` instead of the string as written
+([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md),
+[ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)).
 The child then reaches that provider, or — for an extension provider it did not
 load — stops with an error naming it. It never re-derives the route through
 OpenRouter. `/agents show` and the consent dialog render the same flags. One
@@ -189,9 +191,15 @@ catalog and reaches the vendor's own host with its own credentials; set
 
 Everything else reaches the child as written and is resolved by the same rule as
 `--model` (see
-[providers-and-models.md](providers-and-models.md#how---model-providerid-is-resolved-when-openrouter_api_key-is-set)):
-`model: openai/gpt-4o-mini` with an inherited `OPENROUTER_API_KEY` runs on
-OpenRouter; add `provider: openai` to pin the vendor.
+[providers-and-models.md](providers-and-models.md#how-a---model-string-becomes-a-provider)):
+`model: openai/gpt-4o-mini` runs on OpenRouter when the inherited keys include an
+OpenRouter key and no OpenAI key of your own, and on OpenAI when they include an
+OpenAI key; add `provider: openai` (or write `openrouter/openai/gpt-4o-mini`) to
+pin it. A profile that brings its **own** `extensions:` is left to resolve its
+`model:` with them — the parent never loaded them, so it does not guess. A route
+that only the parent's `--api-key` would decide is not pinned either: the key
+never reaches the child, and a child pinned to that provider would authenticate
+it with whatever it has — a project `.env` key included.
 
 ## How the child authenticates
 

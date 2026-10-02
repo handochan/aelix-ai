@@ -1,6 +1,7 @@
 # 0203. A cwd `.env` carries credentials, and a short checked list — nothing else
 
-Status: Accepted (2026-08-01)
+Status: Accepted (2026-08-01) — residual risk 1 and the provider-configuration arm amended by
+ADR-0250 (2026-10-02, #362)
 Date: 2026-08-01
 Supersedes: the scope line in ADR-0149 ("explicit `-e`/`$AELIX_MCP_CONFIG`/entry_points
 are user choices, never gated") — still the behaviour, but it now rests on a
@@ -255,7 +256,13 @@ and broke that setup in every Codespace. It gets a disclosure line instead.
   service-account-file variant needs an `export`. Both recipes and that refusal
   are in `.env.example`. The README states the six-name rule and names Vertex and
   Cloudflare; it does not enumerate `GOOGLE_APPLICATION_CREDENTIALS`, and an
-  earlier draft of this bullet said it did.
+  earlier draft of this bullet said it did. (**#362 amendment 2026-10-02,
+  ADR-0250:** the arm admitted a sixth name, `OPENROUTER_DEFAULT_MODEL`, "bounded
+  to model choice"; a model choice is a route choice, so it is now read from the
+  shell only — five names remain, and the hatch still admits it by name: "shell
+  only" means "unless you hatch it yourself" — with `AELIX_DOTENV_ALLOW=OPENROUTER_DEFAULT_MODEL`
+  set in the user's shell, a cwd `.env` value picks the no-model route, which Codex's
+  cross-review of the #362 commit measured and the main loop kept, ADR-0250 §2.6.)
 - **Refused-and-disclosed, because the failure is confusing rather than loud.**
   TLS trust (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
   `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`) is refused and named in
@@ -363,6 +370,39 @@ Both were re-pointed at names only those rules can refuse.
    patched. `GOOGLE_API_KEY` (admitted; the registered name is `GEMINI_API_KEY`)
    looks like the same shape; that one was **not** measured end-to-end and is not
    claimed.
+
+   > **#362 amendment 2026-10-02 (ADR-0250).** A `.env` credential was also a
+   > route SWITCH, not only a substituted key: with `ANTHROPIC_API_KEY` exported
+   > and a repo `.env` carrying `OPENROUTER_API_KEY`, `--model
+   > anthropic/claude-haiku-4-5` went to `openrouter.ai` under the file's key
+   > (measured, `/tmp/362-work/design/live/today.out` A11) — the shell-wins
+   > guarantee above was bypassed by routing around the provider it protects.
+   > `load_dotenv` now records every name it admitted in `AELIX_DOTENV_ADMITTED`
+   > (a `.env` cannot set it, even through the hatch; delegated children and a
+   > nested `aelix` inherit it), and every judgement that CHOOSES a route counts
+   > only credentials the user exported, stored with `/login` or wrote into
+   > `models.json`. A `.env` credential still authenticates the route once
+   > chosen: a user with **no** credential of their own for that route still
+   > sends under the file's key — this risk exactly, narrowed from "can move a
+   > route" to "can be the key of a route the user's flags chose". A `.env` key
+   > that is not a plain environment name (`X,ANTHROPIC_API_KEY`) is now refused
+   > outright, because the record is comma-joined.
+
+   > **#362 amendment 2026-10-02 (ADR-0250 §2.2, Codex's third cross-review C3).**
+   > A `.env`-admitted credential name no longer fills a base-URL placeholder.
+   > `expand_base_url` filled any `{NAME}` from the environment, and the credential
+   > rule admits a name by its suffix with no value-shape rule — so a user's own
+   > models.json template `https://{TENANT_KEY}.owner-gateway.invalid/v1` plus a
+   > repo `.env` `TENANT_KEY=repo-chosen.invalid/v1#` put the prompt and the repo's
+   > key on host `repo-chosen.invalid` (measured on `5e983992`, real CLI: `CONNECT
+   > repo-chosen.invalid:443`). This ADR gave value-shape rules exactly to the
+   > configuration it admits for templates; a name the record holds now fills a
+   > placeholder only when it is that configuration (`CLOUDFLARE_ACCOUNT_ID`,
+   > `CLOUDFLARE_GATEWAY_ID`, below — `aelix_ai.dotenv_record.DOTENV_TEMPLATE_NAMES`),
+   > and any other `.env` name leaves its token unexpanded: the model is not
+   > runnable and the refusal says to export the variable. An exported value fills
+   > every placeholder, as before. The catalogue's Cloudflare templates are
+   > unaffected (measured: `CONNECT gateway.ai.cloudflare.com:443` on both).
 2. **A repo-chosen GCP project or Cloudflare id is attribution and path, not
    host redirection.** `GOOGLE_CLOUD_PROJECT` never reaches the host — measured,
    it lands in the request path under a host fixed by the location, and the same
