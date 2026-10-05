@@ -135,10 +135,11 @@ you had exported `ANTHROPIC_API_KEY`. What remains: when you hold **no**
 credential of your own for the route your flags chose — or the route a
 `/model <provider>/<id>` naming a provider you defined (models.json, an
 extension) chose — the file's key is the one used — the `Notice: loaded
-credentials from …` line names it; and when your
-`models.json` re-points a built-in provider at a gateway
-(`providers.openai.baseUrl`), the file's key for that provider still comes
-before the entry's `apiKey`, so your gateway receives it (#363). An untrusted
+credentials from …` line names it. (When your `models.json` gives a provider an
+`apiKey`, that key now comes before the file's key for the provider — a
+gateway re-pointed with `providers.openai.baseUrl` receives the entry's
+`apiKey`, not the file's, ADR-0251 — unless the `apiKey` names the very
+variable the file sets.) An untrusted
 project's `.aelix/settings.json` is not read at all (#369, below). A trusted
 one that sets `defaultProvider` alone does not choose between providers for a
 `--model` id while you hold a key of your own (it counts only for a provider
@@ -217,7 +218,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:765-767`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:2842-2847`, the text at `:598-603`), because a silent drop looks identical to a
+(`cli/entry.py:2845-2850`, the text at `:598-603`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

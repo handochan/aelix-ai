@@ -12,7 +12,8 @@ Public surface:
   :data:`ANTHROPIC_OAUTH_PROVIDER` — :mod:`.anthropic`.
 - :func:`get_oauth_provider` / :func:`register_oauth_provider` and
   friends — :mod:`._registry`.
-- :class:`AuthStorage` / :func:`default_auth_path` — :mod:`.auth_storage`.
+- :class:`AuthStorage` / :class:`OAuthRefreshError` / :class:`StoredCredentialError` /
+  :func:`default_auth_path` — :mod:`.auth_storage`.
 - :func:`get_oauth_api_key_from_credentials` — :mod:`._high_level`.
 """
 
@@ -45,7 +46,12 @@ from aelix_ai.oauth.anthropic import (
     login_anthropic,
     refresh_anthropic_token,
 )
-from aelix_ai.oauth.auth_storage import AuthStorage, default_auth_path
+from aelix_ai.oauth.auth_storage import (
+    AuthStorage,
+    OAuthRefreshError,
+    StoredCredentialError,
+    default_auth_path,
+)
 from aelix_ai.oauth.github_copilot import (
     GITHUB_COPILOT_OAUTH_ID,
     GITHUB_COPILOT_OAUTH_PROVIDER,
@@ -90,6 +96,7 @@ __all__ = [
     "OAuthLoginCallbacks",
     "OAuthPrompt",
     "OAuthProvider",
+    "OAuthRefreshError",
     "OAuthRefreshResult",
     "OAuthSelectOption",
     "OAuthSelectPrompt",
@@ -97,6 +104,7 @@ __all__ = [
     "OPENAI_CODEX_OAUTH_PROVIDER",
     "REDIRECT_URI",
     "SCOPES",
+    "StoredCredentialError",
     "TOKEN_URL",
     "_OAUTH_DEFERRED_PROVIDERS",
     "_PHASE_4_DEFERRED_FEATURES",

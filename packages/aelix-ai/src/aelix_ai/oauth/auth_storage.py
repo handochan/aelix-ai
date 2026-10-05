@@ -59,6 +59,92 @@ except ImportError:  # pragma: no cover — Windows / non-POSIX
 _LOG = logging.getLogger(__name__)
 
 
+class StoredCredentialError(RuntimeError):
+    """A stored ``auth.json`` entry that gives no key (#363 / ADR-0251 §2.2).
+
+    A stored credential owns its provider: whatever the entry yields is the
+    answer, and a request must not go out on anything else. Raised by
+    :meth:`AuthStorage.get_api_key_cascade` only when the caller passes
+    ``stored_owns=True`` (the request path,
+    ``ModelRegistry._request_api_key``), for an entry that cannot become a key:
+    an ``api_key`` entry whose key is empty or resolves empty (a ``!command``
+    that prints nothing) or whose ``!command`` fails (``"!false"``: the
+    helper's error is chained as the cause, its command line and output are not
+    in the message), an OAuth record whose OAuth provider is not
+    registered in this process (expired or not), and an entry of a type aelix
+    does not know. The message names the entry, ``/login`` and ``auth.json``.
+
+    pi @ b223082bb gives no key for the last two (``resolve.ts:70-87``: a stored
+    credential with no matching handler is ``return undefined``, never the
+    environment). For an empty ``api_key`` it does not: the built-in
+    ``envApiKeyAuth.resolve`` (``packages/ai/src/auth/helpers.ts:18-28``) reads
+    the environment when ``credential.key`` is empty, and a ``models.json``
+    provider inherits it (``provider-composer.ts:459-463``). aelix is stricter
+    there (ADR-0251 §4).
+    """
+
+    def __init__(self, provider_id: str, reason: str, auth_path: Path | None = None) -> None:
+        where = str(auth_path) if auth_path is not None else "auth.json"
+        super().__init__(
+            f"The auth.json entry for {provider_id} {reason}. A stored entry is the only "
+            f"credential used for {provider_id}, so a request has no key. Run /login to sign "
+            f"in to {provider_id} again, or remove the {provider_id} entry from {where}."
+        )
+        self.provider_id = provider_id
+
+
+class OAuthRefreshError(StoredCredentialError):
+    """A stored OAuth credential's refresh failed (#363 / ADR-0251 §2.2).
+
+    Raised by :meth:`AuthStorage.get_api_key_cascade` only when the caller
+    passes ``stored_owns=True``. A stored credential owns its provider, so a
+    request must not go out on anything else - pi throws
+    ``ModelsError("oauth", "OAuth refresh failed for <id>")``
+    (``packages/ai/src/auth/resolve.ts:142`` @ b223082bb). The message keeps
+    the cause's text so the user sees why the refresh failed. It is NOT
+    retried: the callback's raise becomes ``AgentHarnessError("auth")`` in
+    ``_make_stream_fn`` before any assistant message exists, and the harness's
+    auto-retry reads only the last assistant message. pi differs (ADR-0251 §4):
+    its ``lazyStream`` turns the error into an error assistant message whose
+    text keeps the cause, so a ``502`` or ``fetch failed`` refresh is retried
+    and a ``401`` is not (``packages/ai/src/api/lazy.ts:52-58``,
+    ``utils/retry.ts:250``).
+    """
+
+    def __init__(self, provider_id: str, cause: BaseException) -> None:
+        detail = str(cause).strip() or type(cause).__name__
+        prefix = f"Failed to refresh OAuth token for {provider_id}: "
+        if detail.startswith(prefix):
+            detail = detail[len(prefix) :]
+        RuntimeError.__init__(
+            self,
+            f"OAuth refresh failed for {provider_id}: {detail}. "
+            f"Run /login to sign in to {provider_id} again.",
+        )
+        self.provider_id = provider_id
+
+
+def _helper_failure(exc: BaseException) -> str:
+    """How a stored ``!command`` failed, without its command line or output (#363).
+
+    ``CalledProcessError.__str__`` repeats the command (``Command '['/bin/sh',
+    '-c', ...]'``), which may carry a literal key, so only the exit status is
+    named - ``-1`` is ``resolve_config_value``'s "never finished" (a timeout, the
+    output cap, no shell) - or the fixed text of a terminal stop
+    (``_StoppedByTerminal.reason``); any other error by its type.
+    """
+
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, str) and reason:
+        return reason.rstrip(".")
+    code = getattr(exc, "returncode", None)
+    if code == -1:
+        return "it did not finish: a timeout, too much output, or no shell to run it"
+    if isinstance(code, int):
+        return f"killed by signal {-code}" if code < 0 else f"exit status {code}"
+    return type(exc).__name__
+
+
 def default_auth_path() -> Path:
     """Pi parity: ``cli/config.ts::getAuthPath()``.
 
@@ -592,6 +678,7 @@ class AuthStorage:
         provider_id: str,
         *,
         include_fallback: bool = True,
+        stored_owns: bool = False,
     ) -> str | None:
         """Pi parity: ``auth-storage.ts:455-516`` ``getApiKey`` with
         ``includeFallback`` flag.
@@ -606,6 +693,22 @@ class AuthStorage:
         5. Fallback resolver (if ``include_fallback`` is True).
 
         Returns :data:`None` if no layer has a key.
+
+        ``stored_owns`` (#363 / ADR-0251 §2.2): an ``auth.json`` entry owns
+        its provider whatever it yields, so steps 4-5 are never asked when one
+        exists. An entry that gives no key RAISES instead of returning
+        :data:`None` or an empty string: a failed OAuth refresh raises
+        :class:`OAuthRefreshError`; an ``api_key`` entry whose key is empty or
+        resolves empty (``"!true"``) or whose ``!command`` fails (``"!false"``,
+        the error chained), an OAuth record whose OAuth provider is
+        not registered in this process (expired or not) and an entry of an
+        unknown type raise :class:`StoredCredentialError`. "No key" is not
+        enough: a request with no key lets an adapter read the environment
+        itself (``openai_responses.py``, ``openai_completions.py``, the google
+        adapters, the Anthropic SDK) - which sent an exported vendor key to a
+        gateway ``models.json`` re-pointed. The request path
+        (``ModelRegistry._request_api_key``) passes it; the default keeps every
+        other caller's answer (these entries fall through to the environment).
 
         NB: This is a NEW method (Sprint 6e). The existing
         :meth:`get_api_key` is the persistence-only accessor (layer 2
@@ -627,7 +730,31 @@ class AuthStorage:
         if entry is not None and entry.get("type") == "api_key":
             key = entry.get("key")
             if isinstance(key, str) and key:
-                return resolve_config_value(key, self._resolve_cache)
+                if not stored_owns:
+                    return resolve_config_value(key, self._resolve_cache)
+                try:
+                    resolved = resolve_config_value(key, self._resolve_cache)
+                except Exception as exc:
+                    # #363: a ``!command`` that FAILS ("!false") sent nothing, but
+                    # the raw subprocess text named neither the entry nor /login.
+                    # The cause stays chained; the message names only how it
+                    # failed - never the command line (it may hold a key) or output.
+                    raise StoredCredentialError(
+                        provider_id,
+                        f"is an api_key whose !command failed ({_helper_failure(exc)})",
+                        self._path,
+                    ) from exc
+                if not resolved:
+                    # #363: "" would read as "no key" and the adapter would
+                    # send the environment's (Codex pass 2: ``"!true"``).
+                    raise StoredCredentialError(
+                        provider_id,
+                        "is an api_key whose value resolves to an empty key",
+                        self._path,
+                    )
+                return resolved
+            if stored_owns:
+                raise StoredCredentialError(provider_id, "is an api_key with no key", self._path)
             # Sprint 6e W6 (W4 m5): log when a stored ``api_key`` entry
             # has an empty/non-string key field — silent ``None`` here
             # indicates a malformed auth.json that the operator should
@@ -639,6 +766,18 @@ class AuthStorage:
 
         # 3. Stored OAuth (auto-refresh).
         if entry is not None and entry.get("type") == "oauth":
+            if stored_owns:
+                from aelix_ai.oauth._registry import get_oauth_provider as _registered
+
+                if _registered(provider_id) is None:
+                    # #363: unexpired, the cascade fell through to the env; expired,
+                    # the refresh failed as "Unknown OAuth provider". Neither is a key.
+                    raise StoredCredentialError(
+                        provider_id,
+                        f"is an OAuth login, but no OAuth provider {provider_id!r} is "
+                        "registered in this session",
+                        self._path,
+                    )
             try:
                 oauth_key = await self.get_oauth_api_key(provider_id)
                 if oauth_key:
@@ -673,8 +812,20 @@ class AuthStorage:
                     self._errors.append(reload_exc)
                 # Pi parity: auth-storage.ts:498 — returns undefined
                 # here, does NOT fall through to env/fallback on
-                # refresh failure.
+                # refresh failure. The request path asks for the error
+                # instead (#363): "no key" would let the adapter read the env.
+                if stored_owns:
+                    raise OAuthRefreshError(provider_id, exc) from exc
                 return None
+            if stored_owns:
+                raise StoredCredentialError(
+                    provider_id, "is an OAuth login that gave no key", self._path
+                )
+
+        if stored_owns and entry is not None:
+            raise StoredCredentialError(
+                provider_id, f"has type {entry.get('type')!r}, which aelix cannot use", self._path
+            )
 
         # 4. Environment variable.
         from aelix_ai.providers._env_api_keys import get_env_api_key
@@ -701,4 +852,4 @@ class AuthStorage:
         return None
 
 
-__all__ = ["AuthStorage", "default_auth_path"]
+__all__ = ["AuthStorage", "OAuthRefreshError", "StoredCredentialError", "default_auth_path"]

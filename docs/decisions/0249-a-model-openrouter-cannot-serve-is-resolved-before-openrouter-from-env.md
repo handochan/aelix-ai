@@ -1,7 +1,7 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
 Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7)
-Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand)
+Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand); [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) (2026-10-06, #363: §2.4's bearer paragraph and its "only the host moves" paragraph)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
 now runs before the OpenRouter-env path) and **ADR-0195 §"Known limitations" bullet 1**
@@ -422,11 +422,27 @@ alternative (a) — the `models.json` `apiKey` of a provider re-pointed by a
 provider-level `baseUrl` outranks the cascade, a stated pi divergence — is filed as
 **#363**.
 
+**#363 amendment 2026-10-06** ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)):
+superseded. The bearer is now pi's order — `--api-key`, `auth.json`, the `models.json`
+`apiKey`, then the environment — for every provider with a `models.json` `apiKey`, so the
+gateway receives the entry's key whatever OpenAI key the shell or a `.env` holds
+(`test_re_pointed_built_in_bearer_is_the_models_json_api_key`). "(b) is pi's order" above
+was true of pi only before `9993c9690` (2026-07-14), not of pi `88ff80b98`; the #363 issue
+comment's attribution of the change to the 2026-06-22 model-registry merge
+(`abbd91169` → `732bb1617`) is also wrong — `732bb1617` still asked `authStorage` first
+(ADR-0251 §2.1).
+
 At launch only the host moves: the `models.json` provider-level `compat` and
 `modelOverrides` that `/model` applies (it hands over the registry copy) are not adopted —
 decision 3 says "keep the catalog api and metadata". `tests/cli/test_runtime_bootstrap.py::test_resolve_model_catalog_hit_wins_over_registry`
 pins the `api` only and stays green unchanged. That launch/`/model` difference is part
 of **#363**.
+
+**#363 amendment 2026-10-06** ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) §2.7):
+superseded. A catalog hit at launch is composed as `/model`'s copy — provider `baseUrl`,
+`merge_compat` of the provider `compat`, then `modelOverrides` — on every built-in, through
+`ModelRegistry.compose_built_in`; the catalog `api` stays pinned, and the test above is
+still unchanged.
 
 ### 2.5 What `--api-key` means
 
@@ -661,7 +677,10 @@ still has no production caller.
   vendor env var, a `/login` credential or `--api-key` outranks the `models.json`
   `apiKey` — option (b), decided; the alternative (a), the `apiKey` winning, is #363. And
   the launch adopts only the host, not the provider-level `compat` / `modelOverrides`
-  that `/model` applies (§2.4).
+  that `/model` applies (§2.4). **Closed 2026-10-06 by #363**
+  ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)): the
+  `models.json` `apiKey` now comes before the environment, and the launch composes
+  `compat` / `modelOverrides`.
 - **#365 — rung 0 is the only place that scopes an extension's take-over of a built-in
   name** (§2.2). An extension registering `openai` with models: without an OpenRouter
   key, or with `--provider openai`, a catalog id it did not register

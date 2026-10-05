@@ -7,7 +7,9 @@ matching `resolve_config_value_uncached`. Both are recorded in ADR-0238, which
 owns that spawn site; **#240 amendment 2026-09-08** — the registry's `!command`
 resolution is cached per `ModelRegistry` (successes only, cleared on reload and
 on a failed interactive turn); the env/literal branch and
-`get_api_key_for_provider` stay uncached)
+`get_api_key_for_provider` stay uncached; **#363 amendment 2026-10-06** — the key order
+is pi's current one, a `models.json` `apiKey` before the environment, and a provider entry
+may carry only `apiKey` or only `authHeader`; see ADR-0251)
 Date: 2026-06-20
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -158,8 +160,15 @@ never imports the registry:
   (`model.headers` < provider < per-model, each resolved) → `authHeader`
   → `Authorization: Bearer`. Wrapped in try/except → `ok=False` on a
   resolution failure.
+  **#363 amendment 2026-10-06** ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)):
+  the key is now `--api-key` → `auth.json` (which owns the provider) →
+  `models.json` `apiKey` → environment → an extension's `api_key` — pi's
+  order since `9993c9690`; the pinned `734e08e` order above is no longer
+  aelix's. Header layering is unchanged.
 - `get_provider_auth_status` — Pi fallback to `models_json_command` /
-  `environment` / `models_json_key` sources.
+  `environment` / `models_json_key` sources. **#363 amendment 2026-10-06:**
+  a `models.json` `apiKey` is reported ahead of the environment (pi
+  `model-runtime.ts:638-648` @ b223082bb).
 - `has_configured_auth` (+ `get_api_key_for_provider`) — consult
   `_provider_request_configs.api_key`.
 - `get_provider_display_name` — registered/`name` precedence added.

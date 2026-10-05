@@ -1207,23 +1207,49 @@ def ambiguous_route_message(
     return None
 
 
-def _adopt_base_url_override(model: Model, registry: Any) -> Model:
-    """A catalog model of a provider models.json re-pointed takes that ``baseUrl``.
+def _compose_catalog_model(model: Model, registry: Any) -> Model:
+    """A static catalog model as ``/model``'s registry copy composes it (#363).
 
-    ADR-0249 (S). The registry's copy of a built-in model carries the
-    models.json provider-level ``baseUrl`` (``load_built_in_models``), but the
-    launch path returns the STATIC catalog entry before it asks the registry, so
-    the override was ignored: measured on ``fbead6e0``, ``--provider openai
-    --model gpt-4o-mini`` with ``providers.openai.baseUrl`` → a local proxy went
-    to ``api.openai.com:443`` and the proxy saw nothing (C7). Only the host moves
-    — the catalog ``api``, window, cost and thinking map stay (the
-    :func:`enrich_copilot_base_url` shape), which is why
-    ``test_resolve_model_catalog_hit_wins_over_registry`` (it pins the ``api``)
-    stays as it is.
+    ADR-0251, replacing ADR-0249 (S)'s host-only adoption. The launch path
+    returns the STATIC catalog entry before it asks the registry (the catalog
+    ``api`` pin, ADR-0249 decision 3:
+    ``test_resolve_model_catalog_hit_wins_over_registry``), so whatever
+    ``models.json`` composes onto a built-in had to be put back here. #344 put
+    back only the provider ``baseUrl``; the provider ``compat`` and the
+    ``modelOverrides`` were still lost at launch - measured on ``5dee21d1``:
+    ``openai/gpt-4o-mini`` launched with ``compat=None`` and a 128000 window
+    while ``/model``'s copy had ``supportsDeveloperRole: False`` and 1234, and an
+    ``anthropic`` ``modelOverrides`` entry was ignored for a provider nobody
+    re-pointed. Now the registry answers (:meth:`ModelRegistry.compose_built_in`):
+    its own copy when that copy has the same ``provider``, ``id`` and ``api`` -
+    so an OAuth ``modify_models`` change ``/model`` keeps reaches the launch too
+    (review round 1, R4) - else the catalog entry composed by the same function
+    ``/model``'s copy is built with. pi's launch reads its composed models
+    (``model-resolver.ts:420`` @ b223082bb).
+
+    The answer is adopted only when it is still the same ``provider``, ``id``
+    and ``api``. Anything else - an error, another ``api``, or a duck-typed
+    registry without ``compose_built_in`` - falls back to #344's host-only
+    adoption through ``get_base_url_override``, so a re-pointed provider's
+    request never goes back to the vendor's host. :func:`_openrouter_base` and
+    :func:`enrich_copilot_base_url` still run after this, so an exported
+    ``OPENROUTER_BASE_URL`` still beats ``providers.openrouter.baseUrl``.
     """
 
     if registry is None:
         return model
+    try:
+        compose = getattr(registry, "compose_built_in", None)
+        composed = compose(model) if callable(compose) else None
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        composed = None
+    if (
+        isinstance(composed, Model)
+        and composed.provider == model.provider
+        and composed.id == model.id
+        and composed.api == model.api
+    ):
+        return composed
     try:
         getter = getattr(registry, "get_base_url_override", None)
         override = getter(model.provider) if callable(getter) else None
@@ -1330,11 +1356,11 @@ def _resolve_in_provider(
 ) -> Model:
     """Resolve ``model_id`` INSIDE ``provider`` — never another provider.
 
-    The explicit-provider tail: (a) an exact static-catalog hit, with a
-    models.json ``baseUrl`` override adopted; (b) the registry's own entry (a
+    The explicit-provider tail: (a) an exact static-catalog hit, composed as
+    ``/model``'s copy (:func:`_compose_catalog_model`); (b) the registry's own entry (a
     models.json custom model, an extension model, an OAuth-modified copy); (c)
     for a user-defined provider, a backfill from its own registry models; (d)
-    unanimous static siblings, override adopted; (e) a bare ``Model`` whose
+    unanimous static siblings, composed the same way; (e) a bare ``Model`` whose
     ``api`` stays ``"unknown"`` — which ``is_runnable`` refuses with a message
     naming the provider, so an id the provider does not serve is a clear
     refusal and never a silent fall-through to OpenRouter.
@@ -1344,7 +1370,7 @@ def _resolve_in_provider(
 
     catalog = get_model(provider, model_id)
     if catalog is not None:
-        return _adopt_base_url_override(catalog, registry)
+        return _compose_catalog_model(catalog, registry)
     found = _registry_lookup(registry, provider, model_id)
     if found is not None:
         return found
@@ -1354,7 +1380,7 @@ def _resolve_in_provider(
             return backfilled
     backfilled = _sibling_backfill(provider, model_id)
     if backfilled is not None:
-        return _adopt_base_url_override(backfilled, registry)
+        return _compose_catalog_model(backfilled, registry)
     # (e) — ``api`` stays "unknown": no catalog entry, no registry entry, no
     # unanimous sibling api. Driving a turn with it raises the internal
     # "No provider registered for api='unknown'", so every caller gates on
@@ -1575,11 +1601,12 @@ def _route_universe(registry: Any) -> list[Model]:
 
 
 def _launch_shape(model: Model, registry: Any) -> Model:
-    """A catalogued hit as the launch returns it: the catalogue entry, host adopted (S).
+    """A catalogued hit as the launch returns it: the catalogue entry, composed.
 
     Whatever step found it — a swap or raw match reads the registry's copy —
-    so every catalogued route has one shape (ADR-0249 §2.4; the full
-    composition is #363's). Registration and registry-only models as they are.
+    so every catalogued route has one shape: the catalogue ``api``, composed as
+    ``/model``'s copy (ADR-0249 §2.4, ADR-0251 / #363). Registration and
+    registry-only models as they are.
     """
 
     if _registration_models(registry, model.provider) is not None:
@@ -1588,7 +1615,7 @@ def _launch_shape(model: Model, registry: Any) -> Model:
 
     catalog = get_model(model.provider, model.id)
     if catalog is not None:
-        return _adopt_base_url_override(catalog, registry)
+        return _compose_catalog_model(catalog, registry)
     return model
 
 
@@ -1602,7 +1629,7 @@ def _find_in(provider: str, model_id: str, registry: Any) -> Model | None:
 
     catalog = get_model(provider, model_id)
     if catalog is not None:
-        return _adopt_base_url_override(catalog, registry)
+        return _compose_catalog_model(catalog, registry)
     return _registry_lookup(registry, provider, model_id)
 
 

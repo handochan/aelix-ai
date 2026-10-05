@@ -1,6 +1,6 @@
 # 0250. Model routing follows pi's `resolveCliModel`, and a `.env` credential cannot choose a route
 
-Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2); §2.10 amended and §6's settings default pair and §7 item 11 closed 2026-10-06 (#369, [ADR-0252](0252-project-settings-follow-project-trust.md)): an untrusted project's `.aelix/settings.json` is not read, so it no longer chooses a route (nor takes a typed key to OpenRouter, §2.7), and the post-`/login` pick reads the global pair only
+Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2); §2.10 amended and §6's settings default pair and §7 item 11 closed 2026-10-06 (#369, [ADR-0252](0252-project-settings-follow-project-trust.md)): an untrusted project's `.aelix/settings.json` is not read, so it no longer chooses a route (nor takes a typed key to OpenRouter, §2.7), and the post-`/login` pick reads the global pair only; #363 amendment 2026-10-06 ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)): §2.2's "the request's key is the AuthStorage cascade" now reads pi's order (a `models.json` `apiKey` before the environment); guard 1's decisions are unchanged, and one input to it changes (ADR-0251 §2.6)
 Date: 2026-10-02
 Supersedes: **ADR-0249 §2.1** (rung 0 and the OpenRouter-from-env rung), **§2.6**'s split
 rule and **§5** (the stated divergence from pi). ADR-0249's X1 (§2.3), S (§2.4) and the
@@ -246,6 +246,17 @@ naming a provider the user defined, which has already chosen) and the post-`/log
 (§2.10). **Where it does not**: authenticating the chosen route (the
 request's key is the AuthStorage cascade, unchanged — a `.env` key included), and the
 "can this route run" gates (print/json's #98 gate, `is_runnable`, first-run onboarding).
+
+**#363 amendment 2026-10-06** ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)):
+the request's key is now pi's order — `--api-key`, `auth.json`, the `models.json` `apiKey`,
+the environment (a `.env` key included), then an extension's `api_key`. The order moves
+no guard 1 decision (`has_route_auth` is a union, and a literal or `!command` `models.json`
+`apiKey` already counted), but one input changes: an extension registration carrying only
+`headers` or `authHeader` now leaves that `apiKey` in place, so it counts again (ADR-0251
+§2.6). What also changes is that a route it chose *because of* that `apiKey` now
+carries it — on `5dee21d1`, `--model gpt-4o-mini` with `providers.openai.apiKey` a literal
+and `OPENAI_API_KEY` in a `.env` was an `auth_tiebreak` to `api.openai.com` on the `.env`
+key. An `apiKey` naming the `.env` variable still sends the `.env` value (ADR-0251 §4).
 
 A duck-typed registry (an embedder's, a test double) without `has_route_auth` is asked
 `has_configured_auth` — except when the provider's environment layer holds only `.env`
@@ -587,7 +598,8 @@ refuses `sessenv/m1` — §2.11 — and the same `/model sessenv/m1` in the held
 there). A re-pointed built-in
 counts as defined by the user (`providers.openai.baseUrl`, ADR-0249): with `OPENAI_API_KEY`
 only in the `.env`, `/model openai/gpt-4o-mini` goes to the user's gateway on the `.env` key,
-as `--model` does (`ecb4e0bc`: refused; the key order is #363) — the one case where the
+as `--model` does (`ecb4e0bc`: refused; the key order is #363 — since ADR-0251, 2026-10-06,
+a `models.json` `apiKey` for it goes ahead of the `.env` key) — the one case where the
 `.env` turns a `/model` refusal into a switch, the prefix having chosen the destination
 (`/tmp/362-work/fix3/probes/after.out`, `/tmp/362-work/fix3/live/matrix.out`). That
 includes a re-pointed `openrouter` (`providers.openrouter.baseUrl`): `/model`'s case rule
@@ -1810,7 +1822,8 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   namespace ids, `auto`) is OpenRouter's answer, not aelix's; see §3 for the one measured.
 - **Mixed-case control names on Windows** (`Aelix_Future_API_KEY` slips past
   `_DOTENV_NEVER`'s case-sensitive `^AELIX_`) predate this and are a follow-up.
-- #363 (the launch composition and a re-pointed built-in's key order), #365, #368. Closed:
+- #365, #368. Closed: #363 (the launch composition and a re-pointed built-in's key order;
+  [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md), 2026-10-06),
   #367 (the late path refuses; §2.11, 2026-10-03) and #369 (an untrusted project's
   settings, the pair above; ADR-0252, 2026-10-06).
 

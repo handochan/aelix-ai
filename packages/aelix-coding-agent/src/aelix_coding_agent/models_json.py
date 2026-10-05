@@ -304,11 +304,19 @@ def validate_config_semantics(
         has_model_overrides = bool(model_overrides) and len(model_overrides) > 0
 
         if len(models) == 0:
+            # #363 / ADR-0251: an entry carrying only ``apiKey`` or only
+            # ``authHeader`` is valid, as in pi since 9993c9690
+            # (``provider-composer.ts:310-323`` @ b223082bb) - it pins the user's
+            # own key ahead of the environment for a built-in. The message is
+            # pi's, unchanged. It does not make the provider user-defined (only a
+            # ``baseUrl`` or custom models do).
             if (
                 not provider_config.get("baseUrl")
                 and not provider_config.get("headers")
                 and not provider_config.get("compat")
                 and not has_model_overrides
+                and not provider_config.get("apiKey")
+                and provider_config.get("authHeader") is None
             ):
                 raise ValueError(
                     f"Provider {provider_name}: must specify "
@@ -564,25 +572,45 @@ def load_built_in_models(
     out: list[Model] = []
     for provider in get_providers():
         provider_override = overrides.get(provider)
-        per_model_overrides = model_overrides.get(provider)
+        per_model_overrides = model_overrides.get(provider) or {}
         for model in get_models(provider):
-            current = model
-            if provider_override is not None:
-                current = replace(
-                    current,
-                    base_url=(
-                        provider_override.base_url
-                        if provider_override.base_url is not None
-                        else current.base_url
-                    ),
-                    compat=merge_compat(current.compat, provider_override.compat),
-                )
-            if per_model_overrides is not None:
-                model_override = per_model_overrides.get(model.id)
-                if model_override:
-                    current = apply_model_override(current, model_override)
-            out.append(current)
+            out.append(
+                compose_built_in_model(model, provider_override, per_model_overrides.get(model.id))
+            )
     return out
+
+
+def compose_built_in_model(
+    model: Model,
+    provider_override: ProviderOverride | None,
+    model_override: dict[str, Any] | None,
+) -> Model:
+    """One catalog model as ``models.json`` composes it (#363 / ADR-0251).
+
+    The provider-level ``baseUrl`` and ``merge_compat(model.compat, provider
+    compat)``, then the model's ``modelOverrides`` entry - pi's ``applyModelsJson``
+    and ``getAllModels`` (``provider-composer.ts:325-330``, ``:571-574`` @
+    b223082bb). :func:`load_built_in_models` builds ``/model``'s registry copy
+    with it, and the launch path (``cli.runtime_bootstrap._compose_catalog_model``)
+    builds the launch model with it, so the two are the same model. Never changes
+    ``provider``, ``id`` or ``api``: :func:`apply_model_override` has no ``api``
+    field.
+    """
+
+    current = model
+    if provider_override is not None:
+        current = replace(
+            current,
+            base_url=(
+                provider_override.base_url
+                if provider_override.base_url is not None
+                else current.base_url
+            ),
+            compat=merge_compat(current.compat, provider_override.compat),
+        )
+    if model_override:
+        current = apply_model_override(current, model_override)
+    return current
 
 
 # ── loadCustomModels ───────────────────────────────────────────────────
@@ -701,6 +729,7 @@ __all__ = [
     "LoadCustomModelsResult",
     "ProviderOverride",
     "apply_model_override",
+    "compose_built_in_model",
     "empty_custom_models_result",
     "load_built_in_models",
     "load_custom_models",

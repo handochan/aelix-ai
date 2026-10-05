@@ -198,12 +198,12 @@ async def test_built_in_base_url_override_takes_the_override_host(
 ) -> None:
     """Decision 3 (S + M2): a re-pointed built-in counts as user-defined.
 
-    ``openai/gpt-4o-mini`` keeps the catalog api/metadata and adopts the
+    ``openai/gpt-4o-mini`` keeps the catalog api and adopts the
     models.json ``baseUrl`` — not OpenRouter (the old route), and not
     api.openai.com with the gateway key (what a prefix-only fix would have done,
-    critique M2). The bearer here is the models.json ``apiKey`` only because this
-    env holds no OpenAI credential: which key the gateway receives is the auth
-    cascade's call, pinned by the next test.
+    critique M2). The bearer is the models.json ``apiKey``: since #363 (ADR-0251)
+    it is sent even when the environment also holds an OpenAI key (the next test
+    pins that).
     """
 
     registry = await _registry(scrubbed)
@@ -216,32 +216,27 @@ async def test_built_in_base_url_override_takes_the_override_host(
 
 
 @pytest.mark.parametrize(
-    ("vendor_key", "bearer"),
-    [
-        (None, "corp-gateway-fake-literal"),
-        ("exported", "sk-exported-fake-literal"),
-        ("dotenv", "sk-planted-by-repo-fake"),
-    ],
+    "vendor_key",
+    [None, "exported", "dotenv"],
     ids=["no-openai-key", "exported-openai-key", "cwd-dotenv-openai-key"],
 )
-async def test_re_pointed_built_in_bearer_follows_the_auth_cascade(
+async def test_re_pointed_built_in_bearer_is_the_models_json_api_key(
     scrubbed: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     vendor_key: str | None,
-    bearer: str,
 ) -> None:
-    """The gateway gets the host from models.json but the KEY from the cascade.
+    """The gateway gets the host AND the key from models.json (#363 / ADR-0251).
 
-    Review of ``0fcc3333`` (must_fix): ``ModelRegistry.get_api_key_and_headers``
-    asks the AuthStorage cascade (runtime ``--api-key``, auth.json, the env var)
-    BEFORE the models.json ``apiKey`` — pi's order (``authStorage`` before the
-    provider's ``apiKey``). So an OpenAI key anywhere in that cascade, including
-    one ``load_dotenv`` admitted from a cloned repo's ``.env``, is what the
-    re-pointed provider sends to the gateway. This pins that behaviour — kept,
-    not changed, in #344 (ADR-0249 §2.4); making the models.json ``apiKey`` win
-    for a re-pointed provider is an owner decision, and this test is where it
-    would show. The ROUTE is the same in all three rows: no credential moves it.
+    Rewritten by #363. Review of ``0fcc3333`` (must_fix) found the AuthStorage
+    cascade (runtime ``--api-key``, auth.json, the env var) asked BEFORE the
+    models.json ``apiKey``, so an OpenAI key anywhere in it - one ``load_dotenv``
+    admitted from a cloned repo's ``.env`` included - went to the re-pointed
+    provider's gateway; #344 kept that and this test pinned it (rows 2 and 3 sent
+    the exported and the ``.env`` key). The owner's decision (2026-10-02) is pi's
+    order since 9993c9690: ``--api-key``, auth.json, the models.json ``apiKey``,
+    then the environment - so all three rows now send the models.json key. The
+    ROUTE is the same in all three rows: no credential moves it.
     """
 
     registry = await _registry(scrubbed)
@@ -261,7 +256,7 @@ async def test_re_pointed_built_in_bearer_follows_the_auth_cascade(
     model = resolve_model("openai/gpt-4o-mini", None, registry)
     assert _route(model) == ("openai", "gpt-4o-mini", _CORP)
     auth = await registry.get_api_key_and_headers(model)
-    assert auth.ok and auth.api_key == bearer
+    assert auth.ok and auth.api_key == "corp-gateway-fake-literal"
 
 
 async def test_built_in_base_url_override_is_honoured_without_openrouter_too(

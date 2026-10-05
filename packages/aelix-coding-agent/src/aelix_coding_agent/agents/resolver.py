@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2448-2455``).
+  (``cli/entry.py:2451-2458``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -139,7 +139,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the rest of the resolver's order (#98,
-``cli/entry.py:1567-1572``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1570-1575``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -452,7 +452,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2877-2881``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2880-2884``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

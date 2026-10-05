@@ -1902,11 +1902,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1330-1332``
+    # The double count was the same text twice over: ``cli/entry.py:1333-1335``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:613-619``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1329``.
+    # level up, at ``cli/entry.py:1332``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

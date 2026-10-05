@@ -50,7 +50,7 @@ provider in code.
 | Field            | Type    | Notes                                                        |
 | ---------------- | ------- | ------------------------------------------------------------ |
 | `baseUrl`        | string  | Required for a new provider that defines `models`. API endpoint base URL. |
-| `apiKey`         | string  | Required for a new provider that defines `models`. Supports indirection (below). |
+| `apiKey`         | string  | Required for a new provider that defines `models`. Supports indirection (below). Comes before the provider's environment variable ([which key is sent](#which-key-a-request-carries)). |
 | `api`            | string  | Adapter id, e.g. `openai-completions` / `anthropic-messages`.|
 | `headers`        | object  | Extra request headers (string → string).                    |
 | `authHeader`     | boolean | When `true`, send `Authorization: Bearer <apiKey>`.         |
@@ -59,9 +59,11 @@ provider in code.
 | `modelOverrides` | object  | Field overrides keyed by model id (see below).              |
 
 A provider id that matches a **built-in** provider extends it; you may omit
-`baseUrl`/`apiKey` and just add `models` or `modelOverrides`. A **new** provider
-that defines its own `models` requires both `baseUrl` and `apiKey`; a new
-provider that only adds `modelOverrides` (or `headers`/`compat`) does not.
+`baseUrl`/`apiKey` and just add `models` or `modelOverrides` — or give it only an
+`apiKey` (or only `authHeader`), to use your own key for it ahead of the
+environment. A **new** provider that defines its own `models` requires both
+`baseUrl` and `apiKey`; a new provider that only adds `modelOverrides` (or
+`headers`/`compat`) does not. An entry with none of these is refused.
 
 ### Re-pointing a built-in provider with `baseUrl`
 
@@ -82,21 +84,16 @@ gpt-4o-mini`, `--model openai/gpt-4o-mini`, the `/model` picker and a settings
 default — with the provider's `headers`. (Until
 [ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md)
 the launch path returned the static catalog entry and quietly sent those two
-commands to `api.openai.com` instead.) At launch the catalog's protocol, context
-window, cost and thinking map are kept and only the host moves; the `/model`
-picker additionally applies the entry's `compat` and `modelOverrides`, which the
-launch path does not (tracked as
-[#363](https://github.com/handochan/aelix-ai/issues/363)).
+commands to `api.openai.com` instead.) Every one of those paths uses the same
+model: the catalog's protocol (`api`) is kept, and the entry's `compat` and
+`modelOverrides` apply at launch exactly as in the `/model` picker (until
+[ADR-0251](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0251-own-api-key-before-environment-and-composed-launch-model.md)
+the launch took only the host).
 
-**Which key the gateway receives** is decided the same way as for any provider:
-an `--api-key`, a key stored with `/login`, or the provider's environment
-variable (`OPENAI_API_KEY` here) all come **before** the `apiKey` in this file,
-which is used only when none of them is set. So with `OPENAI_API_KEY` in your
-shell — or admitted from a project's `.env` — that key, not `CORP_GATEWAY_KEY`,
-is what your gateway receives. If your gateway needs its own key, do not also
-export the vendor's, or pass `--api-key` for the run. (Whether this file's
-`apiKey` should win for a re-pointed provider is
-[#363](https://github.com/handochan/aelix-ai/issues/363).)
+**Your gateway receives this file's `apiKey`** — see
+[Which key a request carries](#which-key-a-request-carries). Here that is the value
+of `CORP_GATEWAY_KEY`, even with `OPENAI_API_KEY` in your shell or in a project's
+`.env`.
 
 A re-pointed built-in also counts as **your** provider in the rules of
 [providers-and-models.md](providers-and-models.md#how-a---model-string-becomes-a-provider)
@@ -331,6 +328,49 @@ The `apiKey` value is resolved at request time and supports three forms:
 
 The same indirection applies to each value in a `headers` map.
 
+## Which key a request carries
+
+When several sources hold a key for the same provider, a request uses the first
+of these
+([ADR-0251](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0251-own-api-key-before-environment-and-composed-launch-model.md),
+Pi's order):
+
+1. `--api-key` for this run;
+2. a credential stored with `/login` (`auth.json`) — it owns the provider,
+   whatever it yields: if a stored OAuth login can no longer refresh, the request
+   fails before anything is sent, with `OAuth refresh failed for <provider>: <why>.
+   Run /login to sign in to <provider> again.` (it is not retried). An entry that
+   gives no key at all — an `api_key` that is empty or whose `!command` prints
+   nothing or fails, an OAuth login whose OAuth provider is not available in this session,
+   an entry of an unknown type — fails the same way, naming the entry:
+   `The auth.json entry for <provider> … Run /login to sign in to <provider> again,
+   or remove the <provider> entry from <path>.` No key below is tried in its place;
+3. this file's `apiKey` for the provider;
+4. the provider's environment variable (`OPENAI_API_KEY`, …), whether you
+   exported it or a project's `.env` supplied it;
+5. a key an extension registered for the provider (until
+   [#365](https://github.com/handochan/aelix-ai/issues/365) — Pi puts it with
+   step 3).
+
+This applies to every provider, re-pointed or not: an `apiKey` here beats an
+exported vendor key. An extension that registers the same provider name changes
+it in one of two ways. If the registration carries its own key, that key replaces
+this file's `apiKey` and is tried at step 5, after the environment. If it carries
+no key (only models, `headers` or `authHeader`), this file's `apiKey` stays at
+step 3. A registration that carries a key, `headers` or `authHeader` — any of
+them, even a key alone — replaces both this file's `headers` and its `authHeader`,
+with nothing when it carries none. For an extension or a program embedding Aelix,
+`ModelRegistry.get_provider_auth_status` reports the source in the same order,
+`--api-key` first.
+
+One exception comes from the indirection above: an `apiKey` that **names** an
+environment variable reads that variable, so `"apiKey": "OPENAI_API_KEY"` sends
+whatever `OPENAI_API_KEY` holds — a project `.env` value included. To keep a
+`.env` key away from a gateway, give the gateway's key as a literal, a
+`!command`, or the name of a variable of your own. (Pi reads a bare value as a
+literal and `$NAME` as a variable; Aelix keeps the bare-name form documented
+above.)
+
 ## Custom headers and Bearer auth
 
 ```json
@@ -377,6 +417,13 @@ catalog without redefining the model:
   }
 }
 ```
+
+An override applies wherever the model is chosen — `--model`, `--provider`, an
+agent profile, a delegated agent and the `/model` picker alike — and so does a
+provider-level `compat`. (Until
+[ADR-0251](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0251-own-api-key-before-environment-and-composed-launch-model.md)
+only `/model` applied them; a model chosen at launch kept the catalog's values.)
+Overrides never change a built-in model's protocol (`api`).
 
 ## Verifying
 

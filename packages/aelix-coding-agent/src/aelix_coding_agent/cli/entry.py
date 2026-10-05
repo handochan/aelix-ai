@@ -196,12 +196,12 @@ def should_offer_first_run_login(
 
       1. ``AuthStorage._runtime_overrides``  (``--api-key``)
       2. ``AuthStorage.has(provider)``       (auth.json: API keys AND OAuth records)
-      3. ``get_env_api_key(provider)``       (process env, read live)
-      4. ``_provider_request_configs[p].api_key``  (models.json ``apiKey`` —
+      3. ``_provider_request_configs[p].api_key``  (models.json ``apiKey`` —
          counts even when it names an unset env var, pi parity)
+      4. ``get_env_api_key(provider)``       (process env, read live)
       5. ``_registered_providers[p].api_key`` / ``.oauth``  (extension /
          issue-#77 login providers)
-      6. ``AuthStorage._fallback_resolver``
+      6. ``AuthStorage._fallback_resolver``  (counts here; never a request's key)
 
     ``is_runnable(startup_model)`` is deliberately NOT the predicate. It is
     False for a fully-configured user who merely typo'd ``--model``, and a
@@ -959,7 +959,10 @@ def _make_auth_callback(
     - ``ok=True`` with NEITHER a key NOR headers → :data:`None` so the
       harness's "neither apiKey nor headers" guard (@3463) is not tripped
       and the adapter's env fallback (``get_env_api_key``) still resolves.
-      This keeps OAuth-only / env-only providers working.
+      This keeps OAuth-only / env-only providers working. A stored auth.json
+      entry that gives no key (a failed refresh, an empty key) never gets here:
+      the registry answers ``ok=False`` (#363 review rounds 1-2), because "no
+      opinion" would let the adapter send an environment key to a gateway.
     """
 
     async def _resolve(model: Model) -> dict[str, Any] | None:
@@ -2238,8 +2241,8 @@ async def _async_main(argv: list[str]) -> int:
     # was never consulted by the harness — it fell through to env vars only, which
     # is why a custom provider like ``openwebui`` failed with "No API key for
     # provider". WP-8 follow-up.) ``_make_auth_callback`` returns "no opinion"
-    # (``None``) for a provider with no stored key, so env-only providers keep
-    # working via the adapter's ``get_env_api_key`` fallback.
+    # (``None``) when the registry has no key and no headers (never for a stored
+    # entry that gives no key, which raises - #363), so the adapter's env fallback runs.
     get_api_key_and_headers: Callable[..., Any] | None = _make_auth_callback(
         model_registry
     )

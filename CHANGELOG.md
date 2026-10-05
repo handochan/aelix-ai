@@ -77,6 +77,51 @@ unwritten. Add them with the next release.
   `source add` then wrote the repository's entries into your global file. If
   you kept install sources in a project file on purpose, move them to your
   global `settings.json`. (#369)
+- **A `models.json` `apiKey` now comes before the provider's environment
+  variable, and a model chosen at launch gets the same `compat` and
+  `modelOverrides` as in `/model` (#363, ADR-0251).** The key a request carries
+  is now Pi's order: `--api-key`, then a `/login` credential, then the
+  provider's `apiKey` in `models.json`, then its environment variable. Until now
+  the environment variable came first, so a gateway you re-pointed a built-in
+  at (`providers.openai = {baseUrl: <gateway>, apiKey: …}`) received your
+  exported `OPENAI_API_KEY` — or one a cloned repo's `.env` supplied — instead
+  of the key you wrote for it. **This switches credentials silently:** if you
+  have both an `apiKey` for a provider in `models.json` and its vendor key in
+  your shell, requests now carry the `models.json` key, for every provider, not
+  only a re-pointed one. An `apiKey` that names an environment variable
+  (`"apiKey": "OPENAI_API_KEY"`) still reads that variable, a project `.env`
+  value included; use a literal, a `!command` or a variable of your own to keep
+  a `.env` key away from a gateway. A stored `/login` credential owns its
+  provider, whatever it yields: an OAuth login whose refresh fails now fails the
+  request, saying `OAuth refresh failed for <provider>: … Run /login to sign in
+  to <provider> again.`, and sends nothing (it is not retried) — before, the
+  request went out on the `models.json` `apiKey` or on the provider's
+  environment variable. An `auth.json` entry that gives no key — an empty
+  `api_key`, a `!command` key that prints nothing, an OAuth login whose OAuth
+  provider is not available, an entry of an unknown type — fails the same way,
+  naming the entry, `/login` and the `auth.json` path; before, the request went
+  out on the provider's environment variable (to your gateway, if you re-pointed
+  the provider). A `!command` key that fails now names them too (it already
+  sent nothing, but said only that the command failed). For
+  extensions, `ModelRegistry.get_provider_auth_status` reports `--api-key` ahead
+  of a stored credential, as the request uses it. A key an extension registers for a provider stays after the
+  environment variable for now (#365); an extension that registers the
+  provider without a key (only models, `headers` or `authHeader`) no longer drops
+  your `models.json` `apiKey`. A `models.json` provider entry
+  may now carry only an `apiKey` (or only `authHeader`) — before, aelix refused
+  the whole file (`must specify "baseUrl", "headers", "compat",
+  "modelOverrides", or "models"`). **At launch**, `--model`, `--provider`, an
+  agent profile and a delegated agent used to take only the host from a
+  provider's `models.json` entry; they now apply the provider `compat` and the
+  `modelOverrides` too, on every built-in provider whether re-pointed or not —
+  so a gateway that needs `supportsDeveloperRole: false` now works from the
+  command line, and **launch metadata now follows your `modelOverrides`**
+  (`contextWindow`, which moves when compaction starts, `maxTokens`, `cost`,
+  `name`, `reasoning`, the thinking map). The launch model is the one `/model`
+  shows, including what an OAuth login changes on it. The model's protocol (`api`) is still
+  the catalog's, and an exported `OPENROUTER_BASE_URL` still wins over
+  `providers.openrouter.baseUrl` at launch (only there: picking the same
+  OpenRouter model in `/model` keeps `providers.openrouter.baseUrl`).
 - **`--model` is resolved the way pi resolves it, and an OpenRouter key no
   longer turns every model string into an OpenRouter id (#362, ADR-0250).** The
   prefix names the provider and the id must match exactly inside it; a bare id
@@ -235,10 +280,9 @@ unwritten. Add them with the next release.
   pre-existing) — since #369 only in a directory you trusted (see above). A `.env`
   key still authenticates the route your own choices made — with no key of your
   own for that route it is the one sent, and the `Notice: loaded credentials`
-  line names it. It is also still the one sent when your `models.json`
-  re-points a built-in provider at a gateway (`providers.openai.baseUrl`): a
-  `.env` `OPENAI_API_KEY` comes before that entry's `apiKey`, so your gateway
-  receives it (#363). A `.env` key whose name is not a plain environment name
+  line names it. (It was also the one sent when your `models.json` re-pointed
+  a built-in provider at a gateway with an `apiKey` of its own; since #363 the
+  entry's `apiKey` goes first — see above.) A `.env` key whose name is not a plain environment name
   (such as `X,ANTHROPIC_API_KEY`) is now refused. Nor does a `.env` value pick a
   **host**: a `{NAME}` placeholder in a base URL (your own `models.json`
   template, say `https://{TENANT_KEY}.owner-gateway.invalid/v1`) is filled from a

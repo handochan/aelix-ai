@@ -35,7 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
-from aelix_ai.oauth import AuthStorage
+from aelix_ai.oauth import AuthStorage, StoredCredentialError
 from aelix_ai.oauth._resolve_config import (
     resolve_config_value_or_throw,
     resolve_config_value_uncached,
@@ -45,6 +45,8 @@ from aelix_ai.oauth.types import AuthStatus, OAuthProvider
 from aelix_ai.streaming import Model
 
 from .models_json import (
+    ProviderOverride,
+    compose_built_in_model,
     empty_custom_models_result,
     load_built_in_models,
     load_custom_models,
@@ -112,6 +114,14 @@ class ProviderRequestConfig:
     api_key: str | None = None
     headers: dict[str, str] | None = None
     auth_header: bool | None = None
+    # #363 / ADR-0251: True when ``api_key`` is the ``models.json`` provider
+    # ``apiKey`` - the loader's callback stored this config, or an extension
+    # ``register_provider`` for the same name that carries no ``api_key``
+    # replaced it and kept that key (``_load_models`` step 3, review round 1
+    # R5). False when a registration's own ``api_key`` (or none) is here. Only
+    # a models.json ``api_key`` comes before the environment; a registration's
+    # stays after it until #365 (see :meth:`ModelRegistry._request_api_key`).
+    from_models_json: bool = False
 
 
 # Pi parity: ``model-registry.ts`` — provider display names. Sprint 6f₁
@@ -167,6 +177,12 @@ class ModelRegistry:
         # or an extension set the registry no longer holds.
         self._user_defined_providers: frozenset[str] = frozenset()
         self._base_url_overrides: dict[str, str] = {}
+        # #363 — the models.json provider overrides (``baseUrl`` / ``compat``) and
+        # ``modelOverrides`` of the BUILT-IN providers, from the same load, so the
+        # launch path composes a catalog hit exactly as ``/model``'s copy is
+        # composed (:meth:`compose_built_in`).
+        self._built_in_overrides: dict[str, ProviderOverride] = {}
+        self._built_in_model_overrides: dict[str, dict[str, dict[str, Any]]] = {}
         self._load_models()
 
     # ── Factories ──────────────────────────────────────────────────
@@ -230,9 +246,11 @@ class ModelRegistry:
         """Pi parity: ``model-registry.ts::hasConfiguredAuth``.
 
         Returns :data:`True` if ANY auth layer has a key for
-        ``model.provider`` (runtime override, stored credential, env
-        var, registered ProviderConfigInput, fallback resolver). Does
-        NOT trigger OAuth refresh.
+        ``model.provider`` (runtime override, stored credential,
+        models.json ``apiKey``, env var, registered ProviderConfigInput,
+        fallback resolver). Does NOT trigger OAuth refresh. The layers are
+        checked in the request's order (#363, :meth:`_request_api_key`), but
+        the answer is a union, so the order cannot change it.
 
         Implementation note: this is a sync method (matches Pi). It
         consults :class:`AuthStorage` state plus the dynamic provider
@@ -247,15 +265,15 @@ class ModelRegistry:
             return True
         if self._auth_storage.has(provider):
             return True
-        from aelix_ai.providers._env_api_keys import get_env_api_key
-
-        if get_env_api_key(provider):
-            return True
         # Pi parity: a models.json (or re-applied registered) provider
         # ``apiKey`` counts as configured auth even before it's resolved
         # (Pi ``providerRequestConfigs.get(p)?.apiKey !== undefined``).
         request_config = self._provider_request_configs.get(provider)
         if request_config is not None and request_config.api_key is not None:
+            return True
+        from aelix_ai.providers._env_api_keys import get_env_api_key
+
+        if get_env_api_key(provider):
             return True
         # Dynamic registration: ProviderConfigInput.api_key or oauth.
         config = self._registered_providers.get(provider)
@@ -291,7 +309,11 @@ class ModelRegistry:
         ``openai/gpt-4o-mini`` to ``api.openai.com`` under the planted key. This
         is the predicate every such judgement asks instead. A ``.env``
         credential still AUTHENTICATES a route once chosen — the request's
-        bearer is :meth:`get_api_key_and_headers`, unchanged.
+        bearer is :meth:`get_api_key_and_headers`. Since #363 (ADR-0251) that
+        bearer is a ``models.json`` ``apiKey`` ahead of the environment, so a
+        route layer 4 chose (a literal or ``!command`` ``apiKey``) also carries
+        that key, not a ``.env`` one. The layers below are a union: their order
+        decides nothing here.
 
         The layers, with what a ``.env`` can reach in each:
 
@@ -415,8 +437,7 @@ class ModelRegistry:
 
         Returns a :class:`ResolvedRequestAuth` carrying:
 
-        - ``api_key``: resolved via :meth:`AuthStorage.get_api_key_cascade`
-          (Sprint 6e contract, ``include_fallback=False`` per Pi).
+        - ``api_key``: :meth:`_request_api_key` - pi's order (#363 / ADR-0251).
         - ``headers``: merged from per-provider ``ProviderConfigInput``
           + OAuth provider override (Copilot adds ``COPILOT_HEADERS``
           via the provider's :meth:`OAuthProvider.modify_models`
@@ -425,10 +446,11 @@ class ModelRegistry:
 
         Resolution order (Pi):
 
-        1. ``api_key`` = AuthStorage cascade (``include_fallback=False``);
-           else the ``models.json`` provider ``apiKey`` resolved via
-           :func:`resolve_config_value_or_throw` (env-var / ``!command`` /
-           literal indirection).
+        1. ``api_key`` = :meth:`_request_api_key`: ``--api-key``, then
+           ``auth.json`` (which owns the provider), then the ``models.json``
+           provider ``apiKey`` (resolved via :func:`resolve_config_value_or_throw`
+           - env-var / ``!command`` / literal indirection), then the
+           environment, then an extension registration's ``api_key``.
         2. ``headers`` = ``model.headers`` < provider request-config headers
            < per-model request headers (each value resolved through the
            same indirection; later sources win).
@@ -456,19 +478,7 @@ class ModelRegistry:
             provider = model.provider
             provider_config = self._provider_request_configs.get(provider)
 
-            api_key = await self._auth_storage.get_api_key_cascade(
-                provider, include_fallback=False
-            )
-            if (
-                api_key is None
-                and provider_config is not None
-                and provider_config.api_key
-            ):
-                api_key = resolve_config_value_or_throw(
-                    provider_config.api_key,
-                    f'API key for provider "{provider}"',
-                    cache=self._command_value_cache,
-                )
+            api_key = await self._request_api_key(provider)
 
             provider_headers = resolve_headers_or_throw(
                 provider_config.headers if provider_config is not None else None,
@@ -502,43 +512,131 @@ class ModelRegistry:
         except Exception as exc:  # noqa: BLE001 — Pi reports the message.
             return ResolvedRequestAuth(ok=False, error=str(exc))
 
+    async def _request_api_key(self, provider: str, *, uncached: bool = False) -> str | None:
+        """The key a request to ``provider`` carries: pi's order (#363 / ADR-0251).
+
+        1. ``--api-key`` (a runtime override) and
+        2. ``auth.json`` (``/login``; an api key or OAuth): a stored credential
+           OWNS the provider whatever it yields - the AuthStorage cascade
+           answers (``stored_owns=True``) and nothing below is asked. An entry
+           that gives no key RAISES a
+           :class:`~aelix_ai.oauth.StoredCredentialError`: a failed OAuth
+           refresh (:class:`~aelix_ai.oauth.OAuthRefreshError`; pi
+           ``packages/ai/src/auth/resolve.ts:56-87``, ``:142`` @ b223082bb), an
+           ``api_key`` whose key is empty or resolves empty (``"!true"``), an
+           OAuth record whose OAuth provider is not registered (expired or
+           not), an entry of an unknown type (review round 2). So
+           :meth:`get_api_key_and_headers` answers ``ok=False`` and the request
+           fails before anything is sent. Answering "no key" instead was not
+           enough (review round 1, R1): the CLI's auth callback reads no key and
+           no headers as "no opinion", and the adapter then reads the
+           environment itself, so an exported vendor key went to the gateway;
+        3. the ``models.json`` provider ``apiKey`` (env-var name / ``!command`` /
+           literal, :func:`resolve_config_value_or_throw`) - pi's
+           ``composeApiKeyAuth.resolve`` hands this ``rawKey`` to the built-in
+           resolver as the credential and asks the environment only when there
+           is none (``coding-agent/src/core/provider-composer.ts:457-479``);
+        4. the environment (``ENV_API_KEYS``; ``include_fallback=False``, so the
+           fallback resolver never authenticates a request, as before);
+        5. an extension ``register_provider`` ``api_key`` - where it was before
+           #363. pi puts it in step 3 (``configuredApiKey = extension?.apiKey ??
+           config?.apiKey``, ``provider-composer.ts:388-393``); aelix keeps it
+           after the environment until #365 lands, because a registration that
+           brings models for a catalogued name still leaves the catalogue's rows
+           in the registry, and step 3 would put the extension's key on them
+           (measured: ``/model`` row ``openai/gpt-4o-mini`` on
+           ``api.openai.com`` went from the exported vendor key to the
+           extension's).
+
+        Before #363 the AuthStorage cascade (1, 2, environment) ran first and
+        the provider ``apiKey`` only when it found nothing, so an exported
+        vendor key or a cwd ``.env`` one beat a ``models.json`` ``apiKey`` - and
+        went to the gateway that ``apiKey`` was for.
+        """
+
+        storage = self._auth_storage
+        await storage._ensure_loaded()
+        if storage._runtime_overrides.get(provider) or storage.has(provider):
+            return await storage.get_api_key_cascade(
+                provider, include_fallback=False, stored_owns=True
+            )
+        config = self._provider_request_configs.get(provider)
+        if config is not None and config.api_key and config.from_models_json:
+            if uncached:
+                return resolve_config_value_uncached(config.api_key)
+            return resolve_config_value_or_throw(
+                config.api_key,
+                f'API key for provider "{provider}"',
+                cache=self._command_value_cache,
+            )
+        api_key = await storage.get_api_key_cascade(provider, include_fallback=False)
+        if api_key is not None:
+            return api_key
+        if config is not None and config.api_key:
+            if uncached:
+                return resolve_config_value_uncached(config.api_key)
+            return resolve_config_value_or_throw(
+                config.api_key,
+                f'API key for provider "{provider}"',
+                cache=self._command_value_cache,
+            )
+        return None
+
     async def get_api_key_for_provider(self, provider: str) -> str | None:
         """Pi parity: ``model-registry.ts::getApiKeyForProvider``.
 
-        AuthStorage cascade first; else the ``models.json`` provider
-        ``apiKey`` resolved uncached (env-var / ``!command`` / literal).
+        The order of :meth:`get_api_key_and_headers` (:meth:`_request_api_key`,
+        #363), with a ``models.json`` ``apiKey`` resolved uncached (env-var /
+        ``!command`` / literal). A stored entry that gives no key (a failed
+        OAuth refresh, an empty key, an unregistered OAuth provider) gives
+        :data:`None`, as pi's ``getApiKeyForProvider`` catches the error
+        (``model-registry.ts:198-204`` @ b223082bb) - never a key from below.
         """
 
-        api_key = await self._auth_storage.get_api_key_cascade(
-            provider, include_fallback=False
-        )
-        if api_key is not None:
-            return api_key
-        provider_config = self._provider_request_configs.get(provider)
-        if provider_config is not None and provider_config.api_key:
-            return resolve_config_value_uncached(provider_config.api_key)
-        return None
+        try:
+            return await self._request_api_key(provider, uncached=True)
+        except StoredCredentialError:
+            return None
 
     async def get_provider_auth_status(self, provider: str) -> AuthStatus:
-        """Pi parity: ``model-registry.ts::getProviderAuthStatus``.
+        """Pi parity: ``model-runtime.ts::getProviderAuthStatus``.
 
-        Delegates to :meth:`AuthStorage.get_auth_status` for the
-        layered-source resolution (stored / runtime / environment /
-        fallback). When no source resolves, falls back to the
-        ``models.json`` provider ``apiKey`` and reports its source
-        (``models_json_command`` for a ``!command``, ``environment`` when
-        the value names a set env var, else ``models_json_key``). Reports
-        source WITHOUT exposing the credential value or refreshing OAuth.
+        Reports the source the request's key comes from, in the order of
+        :meth:`_request_api_key` (#363 / ADR-0251; pi ``model-runtime.ts:638-648``
+        @ b223082bb): ``runtime`` (``--api-key``) first, then ``stored``
+        (``auth.json``); then a ``models.json`` provider ``apiKey``
+        (``models_json_command`` for a ``!command``, ``environment`` when the
+        value names a set env var, else ``models_json_key``); then the
+        environment / fallback answer of :meth:`AuthStorage.get_auth_status`;
+        then an extension registration's ``api_key``, reported the same way as a
+        ``models.json`` one (where it was before #363). Reports source WITHOUT
+        exposing the credential value or refreshing OAuth.
+
+        ``runtime`` is checked here, before :meth:`AuthStorage.get_auth_status`,
+        which checks ``stored`` first (as the pi ``auth-storage.ts:342-361`` @
+        734e08e it ports did): with both ``--api-key`` and an ``auth.json``
+        entry the request carries the ``--api-key`` key, and the status said
+        ``stored`` (review round 1, R2). The shape is :class:`AuthStorage`'s
+        (``configured=False``, label ``--api-key``); pi reports
+        ``configured: true``.
         """
 
-        auth_status = await self._auth_storage.get_auth_status(provider)
-        if auth_status.source:
+        storage = self._auth_storage
+        await storage._ensure_loaded()
+        if storage._runtime_overrides.get(provider):
+            return AuthStatus(configured=False, source="runtime", label="--api-key")
+        auth_status = await storage.get_auth_status(provider)
+        if auth_status.source in ("stored", "runtime"):
             return auth_status
 
         provider_config = self._provider_request_configs.get(provider)
         provider_api_key = (
             provider_config.api_key if provider_config is not None else None
         )
+        if auth_status.source and not (
+            provider_api_key and provider_config is not None and provider_config.from_models_json
+        ):
+            return auth_status
         if not provider_api_key:
             return auth_status
 
@@ -706,6 +804,39 @@ class ModelRegistry:
 
         return self._base_url_overrides.get(provider)
 
+    def compose_built_in(self, model: Model) -> Model:
+        """A catalog model as ``/model``'s registry copy has it (#363 / ADR-0251).
+
+        The launch path calls this on a static catalog hit
+        (``cli.runtime_bootstrap._compose_catalog_model``) so the launch model
+        and ``/model``'s copy agree.
+
+        1. When the registry holds a copy with the same ``provider``, ``id`` and
+           ``api``, that copy is the answer, field for field - the ``models.json``
+           composition AND everything ``_load_models`` applied after it: an OAuth
+           provider's ``modify_models`` (review round 1, R4: a launch dropped the
+           name, window, compat and headers ``/model`` kept), a ``models.json``
+           ``models`` entry or an extension's model that redefines the id on the
+           same ``api``.
+        2. Otherwise - no copy, or one on another ``api`` (the catalog ``api``
+           stays, ADR-0249 decision 3) - the catalog model composed as
+           :func:`~aelix_coding_agent.models_json.load_built_in_models` composes
+           it: the provider ``baseUrl`` and ``compat``, then the ``modelOverrides``
+           entry (:func:`~aelix_coding_agent.models_json.compose_built_in_model`).
+           A provider the user did not configure comes back unchanged.
+
+        Neither step can change ``provider``, ``id`` or ``api``.
+        """
+
+        copy = self.find(model.provider, model.id)
+        if copy is not None and copy.api == model.api:
+            return copy
+        return compose_built_in_model(
+            model,
+            self._built_in_overrides.get(model.provider),
+            (self._built_in_model_overrides.get(model.provider) or {}).get(model.id),
+        )
+
     # ── Display ────────────────────────────────────────────────────
     def get_provider_display_name(self, provider: str) -> str:
         """Pi parity: ``model-registry.ts::getProviderDisplayName``.
@@ -753,17 +884,23 @@ class ModelRegistry:
         api_key: str | None,
         headers: dict[str, str] | None,
         auth_header: bool | None,
+        from_models_json: bool = False,
     ) -> None:
         """Pi parity: ``model-registry.ts::storeProviderRequestConfig``.
 
         Only stores a config carrying at least one of
         ``apiKey``/``headers``/``authHeader`` (Pi early-returns otherwise).
+        ``from_models_json`` records where it came from (#363, see
+        :attr:`ProviderRequestConfig.from_models_json`).
         """
 
         if not api_key and not headers and not auth_header:
             return
         self._provider_request_configs[provider_name] = ProviderRequestConfig(
-            api_key=api_key, headers=headers, auth_header=auth_header
+            api_key=api_key,
+            headers=headers,
+            auth_header=auth_header,
+            from_models_json=from_models_json,
         )
 
     def _store_provider_request_config_from_config(
@@ -780,6 +917,7 @@ class ModelRegistry:
             api_key=provider_config.get("apiKey"),
             headers=provider_config.get("headers"),
             auth_header=provider_config.get("authHeader"),
+            from_models_json=True,
         )
 
     def _store_model_headers(
@@ -855,6 +993,14 @@ class ModelRegistry:
             for name, override in result.overrides.items()
             if name in catalogued and override.base_url
         }
+        self._built_in_overrides = {
+            name: override for name, override in result.overrides.items() if name in catalogued
+        }
+        self._built_in_model_overrides = {
+            name: dict(per_model)
+            for name, per_model in result.model_overrides.items()
+            if name in catalogued
+        }
         self._user_defined_providers = frozenset(
             {name for name, override in result.overrides.items() if override.base_url}
             | {m.provider for m in result.models if m.provider not in catalogued}
@@ -871,13 +1017,29 @@ class ModelRegistry:
 
         # Step 3: re-apply dynamically-registered providers' request configs
         # (register_provider stores into _registered_providers; the maps
-        # were just cleared above).
+        # were just cleared above). A registration that carries no
+        # ``api_key`` keeps the models.json ``apiKey`` of the same name at the
+        # request's step 3 (#363 review round 1, R5; pi ``configuredApiKey =
+        # extension?.apiKey ?? config?.apiKey``, ``provider-composer.ts:388-393``
+        # @ b223082bb); before, a headers-only registration dropped it and the
+        # exported vendor key went out. One that carries nothing leaves the
+        # models.json config as it is (the store's early return).
         for name, config in self._registered_providers.items():
+            kept_key: str | None = None
+            prior = self._provider_request_configs.get(name)
+            if (
+                not config.api_key
+                and (config.headers or config.auth_header)
+                and prior is not None
+                and prior.from_models_json
+            ):
+                kept_key = prior.api_key
             self._store_provider_request_config(
                 name,
-                api_key=config.api_key,
+                api_key=config.api_key or kept_key,
                 headers=config.headers,
                 auth_header=config.auth_header,
+                from_models_json=kept_key is not None,
             )
 
         # Step 3b (Issue #77 Gap B): merge dynamically-registered providers'
