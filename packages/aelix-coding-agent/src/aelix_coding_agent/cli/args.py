@@ -114,7 +114,7 @@ class Args:
 
     # Model
     provider: str | None = None
-    """Pi parity: ``--provider <id>``."""
+    """Pi parity: ``--provider <id>``; requires ``--model`` (#368, ``cli/entry.py``)."""
 
     model: str | None = None
     """Pi parity: ``--model <id>``."""
@@ -706,7 +706,7 @@ Session:
   --session-dir <path>  Override the sessions root directory
 
 Model:
-  --provider <id>       Provider id (e.g., anthropic, openai)
+  --provider <id>       Provider to search for --model (requires --model)
   --model <id>          Model id
   --models <csv>        Comma-separated model id list
   --api-key <key>       Inline API key

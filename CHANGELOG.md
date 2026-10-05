@@ -192,6 +192,34 @@ unwritten. Add them with the next release.
   segment (`newlab//model-x`) gets the plain not-found text, without the
   OpenRouter routes.
 
+- **`--provider` without `--model` stops with pi's error in every mode — the
+  TUI and `--mode rpc` no longer start (#368, ADR-0250).** `aelix --provider
+  openai` (no `--model`) now exits 1 with `Error: --provider requires --model
+  (for example: --provider openai --model <id>)` before any MCP server starts,
+  the session's extensions load or any `session_start` handler runs — and,
+  with no `--agent`/`--agent-file`, before the project-trust question too, so
+  in a directory with `.aelix/` resources (`.aelix/settings.json` alone
+  included) nothing is asked and no extension's
+  `setup()` runs. `-p` and `--mode json` used to exit 1 with "model '?'
+  (provider 'openai') could not be resolved …" after the extensions had loaded
+  and started; **the interactive mode used to start** on that unrunnable model
+  with a Warning (pick one with `/model`), and **`--mode rpc` used to start
+  silently and exit 0** — both now exit 1 instead, as pi does. An agent
+  profile with `provider:` and no `model:` gets the same line, as its
+  delegated child now does; the profile is read under the project-trust
+  answer, so in a directory with `.aelix/` resources (a `.aelix/settings.json`
+  alone counts, #369) and no `--approve` /
+  `--no-approve` the trust question (interactive) and its load of your user,
+  global and `-e` extensions' `setup()` come before the line. A settings
+  `defaultModel` does not count as the `--model`; a settings `defaultProvider`
+  on its own (no flag typed) and an empty `--provider ""` keep their old
+  messages. Kept: `--provider openrouter` with `OPENROUTER_DEFAULT_MODEL` in
+  your shell runs that model with an OpenRouter key from any source — an
+  extension that registers one in `setup()` included — and without a key
+  fails as it did before (pi has no such variable). `--help` and
+  `--list-models` still work with `--provider`; its help line now reads
+  "Provider to search for --model (requires --model)".
+
 - **Session totals now include what delegated agents spent, so totals from
   this release on — History's included — are higher than the same work was
   before.** The footer, `/cost`, `/session`, `/stats`, the History tab and RPC

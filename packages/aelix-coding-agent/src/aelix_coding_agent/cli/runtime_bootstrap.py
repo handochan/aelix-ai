@@ -1815,6 +1815,45 @@ def _guard2_route(
     return ResolvedRoute(model, "guard2", warning=warning)
 
 
+def openrouter_default_named(provider_flag: str | None, registry: Any) -> bool:
+    """Whether a launch with no ``--model`` NAMES the ``OPENROUTER_DEFAULT_MODEL`` rung — argv only.
+
+    ADR-0250 §2.6: a shell ``OPENROUTER_DEFAULT_MODEL`` is read as
+    ``--provider openrouter --model <it>`` when no provider other than
+    OpenRouter is named (``provider_flag`` through the case rule,
+    :func:`_named_provider`). This is the half that needs no credential:
+    the variable is set and the provider names OpenRouter (or none is named).
+
+    The ONE definition of "names the rung", asked in two places:
+
+    - :func:`resolve_route` step 0, which takes the rung when this holds AND
+      OpenRouter has a key (:func:`_configured_auth`). The variable chose
+      OpenRouter, not the key, so a key from any source authenticates it —
+      including one an extension's ``setup()`` registers, which exists only
+      once the extensions have loaded.
+    - ``cli/entry.py``'s ``--provider requires --model`` check (#368, pi
+      ``main.ts:469-474`` @ b223082bb), which runs before any extension loads
+      and therefore asks no credential: a launch this names is let through,
+      and step 0 decides it afterwards exactly as before #368 (a key from any
+      source runs the model; no key reaches step 0's no-model route). pi has no
+      such variable; a stated divergence (ADR-0235).
+
+    The check sees the registry before any extension has registered a
+    provider, step 0 after. An extension can only ADD provider names, and a
+    name added can only take the case rule away from ``openrouter`` (a
+    user-defined spelling wins, two spellings are ambiguous), never give it:
+    ``openrouter`` is always catalogued. So whenever step 0 takes the rung,
+    the check has let the launch through.
+    """
+
+    if not os.environ.get("OPENROUTER_DEFAULT_MODEL"):
+        return False
+    if not provider_flag:
+        return True
+    named = _named_provider(provider_flag, registry, user_defined_providers(registry))[0]
+    return named == "openrouter"
+
+
 def resolve_route(
     model_flag: str | None,
     provider_flag: str | None,
@@ -1914,19 +1953,19 @@ def resolve_route(
 
     # --- 0: no model string ------------------------------------------------------
     if not model_flag:
-        named = _named_provider(provider_flag, registry, user_defined)[0] if provider_flag else None
-        default_id = os.environ.get("OPENROUTER_DEFAULT_MODEL")
-        if (
-            default_id
-            and named in (None, "openrouter")
-            and _configured_auth(registry, "openrouter")
+        if openrouter_default_named(provider_flag, registry) and _configured_auth(
+            registry, "openrouter"
         ):
             # The variable chose OpenRouter, not the key, so a key from any
             # source authenticates it (ADR-0250 §2.6).
             inner = resolve_route(
-                default_id, "openrouter", registry, runtime_overrides=runtime_overrides
+                os.environ["OPENROUTER_DEFAULT_MODEL"],
+                "openrouter",
+                registry,
+                runtime_overrides=runtime_overrides,
             )
             return replace(inner, kind="openrouter_default")
+        named = _named_provider(provider_flag, registry, user_defined)[0] if provider_flag else None
         return ResolvedRoute(Model(id="", provider=named or provider_flag or ""), "none")
 
     # --- E: an explicitly named provider -----------------------------------------
@@ -2308,9 +2347,14 @@ def late_registered_route(
         subject = f"{provider_flag}/{model_flag}" if provider_flag else model_flag
         lead, chosen = f'The launch model "{subject}"', "the launch model"
     else:
-        # A provider with no model (``--provider <late>`` alone, or a settings
-        # ``defaultProvider`` alone): there is no launch model to quote (#367
-        # verify round 1, N2). pi's "--provider requires --model" is #368.
+        # A provider with no model — reached from a settings
+        # ``defaultProvider`` alone: a typed ``--provider`` or a profile's
+        # ``provider:`` with no model exits at launch with pi's "--provider
+        # requires --model" (#368, ``cli/entry.py``) before the session's
+        # extensions load, so it gets here only when that check let it through
+        # (``--provider`` naming OpenRouter with a shell
+        # ``OPENROUTER_DEFAULT_MODEL``, :func:`openrouter_default_named`). There
+        # is no launch model to quote (#367 verify round 1, N2).
         lead, chosen = f'The launch provider "{provider_flag}" (no model named)', "the launch route"
     if len(named) == 1:
         register = (
@@ -2600,6 +2644,7 @@ __all__ = [
     "LateRouteHold",
     "late_registered_route",
     "load_dotenv",
+    "openrouter_default_named",
     "openrouter_namespaces",
     "register_providers",
     "ResolvedRoute",

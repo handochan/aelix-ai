@@ -448,9 +448,40 @@ async def test_a_provider_with_no_model_is_worded_as_a_provider(
     capsys: pytest.CaptureFixture[str],
     openrouter: str,
 ) -> None:
-    """N2. ``--provider sessext`` alone: dcc78170 said 'The launch model
-    "--provider sessext" names provider ...'. (#368 adds pi's "--provider
-    requires --model"; not here.)"""
+    """N2. A provider with no model: dcc78170 said 'The launch model
+    "--provider sessext" names provider ...'. Since #368 a typed ``--provider
+    sessext`` alone never gets here (pi's "--provider requires --model" exits
+    before any extension loads — ``test_provider_requires_model_368.py``); a
+    settings ``defaultProvider`` alone, no flags, is the input that still does."""
+
+    _openrouter(monkeypatch, env, openrouter)
+    (env / "agent" / "settings.json").write_text(
+        json.dumps({"defaultProvider": "sessext"}), encoding="utf-8"
+    )
+    turns = _stub_print(monkeypatch)
+    code = await entry_mod._async_main(["--no-session", "-e", str(env / "sessext.py"), "-p", "hi"])
+    err = capsys.readouterr().err
+    assert (code, turns) == (1, [])
+    assert "The launch model" not in err
+    assert "--provider requires --model" not in err
+    assert (
+        "Error: The launch provider 'sessext' (no model named) was registered by an "
+        "extension while a session was starting (for example in a session_start handler), "
+        "after the launch route was chosen. "
+        "Register 'sessext' in the extension's setup() (its factory) to use it at "
+        "launch. No prompt was sent."
+    ) in err
+
+
+@pytest.mark.parametrize("openrouter", ["exported", "none"])
+async def test_a_typed_provider_with_no_model_never_reaches_the_late_check(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    openrouter: str,
+) -> None:
+    """#368: the N2 input as typed (``--provider sessext`` alone) is pi's usage
+    error now, before ``sessext.py`` loads — no late-provider text."""
 
     _openrouter(monkeypatch, env, openrouter)
     turns = _stub_print(monkeypatch)
@@ -459,11 +490,7 @@ async def test_a_provider_with_no_model_is_worded_as_a_provider(
     )
     err = capsys.readouterr().err
     assert (code, turns) == (1, [])
-    assert "The launch model" not in err
+    assert "registered by an extension" not in err
     assert (
-        "Error: The launch provider 'sessext' (no model named) was registered by an "
-        "extension while a session was starting (for example in a session_start handler), "
-        "after the launch route was chosen. "
-        "Register 'sessext' in the extension's setup() (its factory) to use it at "
-        "launch. No prompt was sent."
-    ) in err
+        "Error: --provider requires --model (for example: --provider sessext --model <id>)" in err
+    )

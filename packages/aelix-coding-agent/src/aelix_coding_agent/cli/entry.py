@@ -2316,6 +2316,28 @@ async def _async_main(argv: list[str]) -> int:
         return 1
     session, session_lock, session_read_only = ownership
 
+    # #368 — ``--provider`` requires ``--model`` (pi ``main.ts:469-474`` @
+    # b223082bb, 0c453048b): an argv usage error, in EVERY mode — print, json,
+    # interactive and RPC exit 1. Not ADR-0250 §2.4's interactive hold: that is
+    # for a route ``/model`` can cure; this is how the command was typed
+    # (ADR-0250 §7 item 14). :func:`_provider_requires_model` reads argv (and,
+    # for ``--provider``'s case rule, the provider names ``models.json``
+    # defines) — no settings, no credential, no extension — so with no agent
+    # profile it runs HERE, before the trust gate: no trust question is asked
+    # (a ``.aelix/settings.json`` alone asks since #369; the project settings
+    # are not read here either: ``settings_manager`` is still untrusted) and the
+    # throwaway vote load below (which runs the user, global and ``-e``
+    # extensions' ``setup()``) never happens, and nothing after it — route,
+    # MCP, the session's extensions, ``session_start`` — runs either (#368
+    # verify round 1, B2). A profile's ``provider:``/``model:`` are known only
+    # after the overlay, which needs the trust answer; that launch is checked
+    # right after the overlay instead (below).
+    if parsed.agent is None and parsed.agent_file is None:
+        usage_error = _provider_requires_model(parsed, model_registry)
+        if usage_error is not None:
+            print(usage_error, file=sys.stderr)
+            return 1
+
     # === Project Trust gate (Sprint P0 #10) — resolve ONCE, BEFORE any =======
     # project-local code executes (MCP subprocess spawn + extension
     # exec_module). The interactive prompt is the A1 one-shot selector; print/
@@ -2567,6 +2589,29 @@ async def _async_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
 
+    # #368 — with an agent profile, the "--provider requires --model" check
+    # runs HERE, right after the overlay: the profile's ``provider:``/``model:``
+    # count (the overlay feeds ``parsed``), so a provider-only profile gets the
+    # same line in-process as its delegated child does through argv
+    # (``agents/resolver.py::child_model_flags`` emits ``--provider`` alone).
+    # Without a profile it already ran, before the trust gate (above). Placed
+    # before the settings seed below, so a settings ``defaultModel`` is not a
+    # ``--model`` and a settings ``defaultProvider`` alone is not a
+    # ``--provider`` (pi ``main.ts:497-500`` reads settings after its check).
+    #
+    # The documented cost of a profile (ADR-0250 §7 item 14): in a directory
+    # with trust-requiring ``.aelix/`` resources and no ``--approve`` /
+    # ``--no-approve``, the trust gate above has already run — the throwaway
+    # vote load ran the user, global and ``-e`` extensions' ``setup()``, and an
+    # interactive launch was asked the trust question — because the profile is
+    # resolved under that trust. Nothing past the vote load has run: no route,
+    # no MCP, no session extension load, no ``session_start``.
+    if active_profile is not None:
+        usage_error = _provider_requires_model(parsed, model_registry)
+        if usage_error is not None:
+            print(usage_error, file=sys.stderr)
+            return 1
+
     # WP-2 (ADR-0160) — seed the startup model from the PERSISTED default when the
     # user passed NO ``--model``/``--provider`` flag. This is what makes the
     # /settings → "Default model" choice actually apply on the next launch (not
@@ -2601,10 +2646,12 @@ async def _async_main(argv: list[str]) -> int:
     # inherit ``defaultModel``: seeding ``parsed.model`` unconditionally would
     # override ``OPENROUTER_DEFAULT_MODEL`` for anyone running
     # ``--provider openrouter``, sending the persisted id of some other vendor's
-    # model to OpenRouter. Filling that gap needs a ``default_model`` step on
-    # ``resolve_route`` (``OPENROUTER_DEFAULT_MODEL`` is read there when no id is
-    # given); until then it stays unfilled and the is_runnable gate below
-    # reports it.
+    # model to OpenRouter — and pi does not fill it either. The #368 check
+    # above refuses it ("--provider requires --model", pi ``main.ts:469-474``)
+    # except where ``--provider`` names OpenRouter with a shell
+    # ``OPENROUTER_DEFAULT_MODEL`` set: that one reaches here unfilled and
+    # ``resolve_route`` step 0 decides it (an OpenRouter key from any source
+    # runs the variable's model; with none it is step 0's no-model route).
     #
     # ADR-0196 RELOCATION: this block used to run immediately after the
     # SettingsManager was constructed, i.e. UPSTREAM of the profile overlay —
@@ -4061,6 +4108,40 @@ async def _resolve_session_ownership(
         return None
     print(f"Forked into a new session: {forked_path}", file=sys.stderr)
     return forked, forked_lock, False
+
+
+def _provider_requires_model(parsed: Args, registry: Any) -> str | None:
+    """#368 — pi's "--provider requires --model" usage error, or :data:`None`.
+
+    pi ``main.ts:469-474`` @ b223082bb (0c453048b). An argv check: it reads
+    ``parsed.provider``/``parsed.model`` as the user typed them and, once the
+    overlay has run, as an agent profile's ``provider:``/``model:`` set them —
+    no settings (pi reads them after its check, ``main.ts:497-500``), no
+    credential and no extension. ``registry`` is read only for the exemption's
+    case rule: the provider names ``models.json`` defines. An empty ``--provider ""`` is no provider, as
+    in pi (falsy), and keeps its "No model selected." text.
+
+    The one exemption is ADR-0250 §2.6's: a shell ``OPENROUTER_DEFAULT_MODEL``
+    with ``--provider`` naming OpenRouter (any case) is let through, and
+    :func:`~.runtime_bootstrap.resolve_route` step 0 decides it after the
+    extensions load — both ask
+    :func:`~.runtime_bootstrap.openrouter_default_named`, and only step 0 asks
+    for an OpenRouter key, so a key an extension's ``setup()`` registers still
+    counts (#368 verify round 1, B1).
+    """
+
+    from .runtime_bootstrap import openrouter_default_named
+
+    if (
+        parsed.provider
+        and not parsed.model
+        and not openrouter_default_named(parsed.provider, registry)
+    ):
+        return (
+            f"Error: --provider requires --model (for example: --provider "
+            f"{parsed.provider} --model <id>)"
+        )
+    return None
 
 
 __all__ = [

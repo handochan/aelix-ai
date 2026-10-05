@@ -60,7 +60,23 @@ of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/deci
 1. **`--provider` names the provider.** The id is looked up inside it; a repeated
    prefix is tolerated (`--provider anthropic --model anthropic/claude-haiku-4-5`
    is `claude-haiku-4-5`), and an id the provider does not list is sent as a
-   custom id, with a one-line warning.
+   custom id, with a one-line warning. **`--provider` requires `--model`**, as in
+   pi: `aelix --provider openai` alone — or an agent profile with `provider:` and
+   no `model:` — stops with `Error: --provider requires --model (for example:
+   --provider openai --model <id>)` and exit 1 in every mode, the interactive one
+   and `--mode rpc` included, before any MCP server starts or the session's
+   extensions load. Without `--agent`/`--agent-file` it also comes before the
+   project-trust question, so nothing is asked and no extension's `setup()`
+   runs. With a profile it comes after the profile is read, and the profile is
+   read under the trust answer: in a directory with `.aelix/` resources (a
+   `.aelix/settings.json` alone counts) and no
+   `--approve`/`--no-approve`, the trust question (interactive) and its load of
+   your user, global and `-e` extensions' `setup()` come first. Your settings
+   `defaultModel` does not count as the `--model`, and `--provider ""` is no
+   provider. The one exception is `--provider openrouter` with
+   `OPENROUTER_DEFAULT_MODEL` in your shell: it runs that model with an
+   OpenRouter key from anywhere — one an extension registers included — and
+   without one fails as it did before (below).
 2. **A prefix that names a provider** — any provider aelix knows: the catalog,
    your `models.json`, an extension's `register_provider` — picks it,
    case-insensitively (`RetryProbe/held-model` works). A provider **you defined**
@@ -136,7 +152,8 @@ as in pi: `openrouter/newlab/model-x` sends `newlab/model-x`) and
 `--provider openrouter --model <id>`; both work with a key from anywhere,
 a project `.env` included. `OPENROUTER_DEFAULT_MODEL`, read from your **shell**
 only, is the id used when no `--model` is given, as
-`--provider openrouter --model <it>` — "shell only" unless you hatch it yourself:
+`--provider openrouter --model <it>` (so `aelix --provider openrouter` alone runs
+with it, where pi, which has no such variable, refuses) — "shell only" unless you hatch it yourself:
 with `AELIX_DOTENV_ALLOW=OPENROUTER_DEFAULT_MODEL` in your shell, a project
 `.env`'s value is admitted and picks that model. `OPENROUTER_BASE_URL` (your shell, or a
 `.env` name you listed in `AELIX_DOTENV_ALLOW`) applies to every route that lands
@@ -163,7 +180,8 @@ exists only after the launch model was chosen, so at launch its name is unknown,
 that no provider registered at launch could take — `--model <name>/<id>`,
 `--provider <name> --model <id>`, a bare id only it lists, a
 `defaultProvider`/`defaultModel` pair in `settings.json`, an agent profile's
-`model:`, or `--provider <name>` alone — is refused, as in pi. A launch model a
+`model:`, or a settings `defaultProvider` alone — is refused, as in pi
+(`--provider <name>` alone never gets that far: it is the usage error above). A launch model a
 provider registered at launch does serve (a built-in, one in `models.json`, one
 registered in `setup()`) stays on that provider, as pi's launch model does, even
 if the new provider serves the same id or your settings `defaultProvider` names
