@@ -439,11 +439,27 @@ class AgentProfileService:
                     if refused is not None:
                         raise refused
             elif self.parsed.model is not None or self.parsed.provider is not None:
+                # #370 — when this re-resolves the LAUNCH inputs (``--none``, or
+                # a profile whose ``model:``/``provider:`` did not apply), it is
+                # told about ``--api-key`` as the launch and every rebuild's
+                # factory are (ADR-0250 §2.1 steps 2 and 3b): without it, a
+                # launch string no provider places (pi's not-found under
+                # ``--api-key``, the key attached nowhere) re-resolved here by
+                # guard 2 to OpenRouter on the user's own key, and the next
+                # ``/new`` put the placeholder back. A profile's OWN route is a
+                # new pick, not the string the key was typed with: it resolves
+                # as before #370 (round 2, ADR-0250 §2.7) — guard 2 on the
+                # user's own OpenRouter credential; the key stays where the
+                # launch attached it.
                 route = resolve_route(
                     self.parsed.model,
                     self.parsed.provider,
                     self.model_registry,
                     None,
+                    typed_key=(
+                        not profile_named_route
+                        and getattr(self.parsed, "api_key", None) is not None
+                    ),
                 )
                 if route.error is not None and self.model_registry is not None:
                     # ADR-0250 — pi's ambiguity / not-found refusal, before the

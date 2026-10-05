@@ -648,25 +648,26 @@ async def test_a_rebuild_whose_session_start_triggers_a_turn_sends_nothing(
     assert wire == []
 
 
-async def test_a_guard_two_launch_that_is_not_late_sends_with_the_typed_key(
+async def test_a_launch_no_provider_places_under_api_key_is_not_found_and_sends_nothing(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     wire: list[tuple[str, str]],
     attached: list[str],
 ) -> None:
-    """#367 verify round 3, B3. ``--model newlab/x --api-key K`` is guard 2
-    (OpenRouter as written), pending while ``session_start`` runs, so the key
-    waits for the late decision (D4). ``sessext`` does not claim
-    ``newlab/x``: the launch route is restored and the TYPED key attached to
-    it, and the prompt goes to OpenRouter with it. Without that attach the key
-    was silently unused — the user's own OpenRouter key went instead
-    ("Bearer typed-g2-fake" -> "Bearer or-own-fake" in the verifier's probe)
-    — and every test stayed green. (Guard 2 needs that exported key: with
-    none, ``newlab/x`` is "not found" at launch.)"""
+    """#367 verify round 3, B3 — subject changed by #370. ``--model newlab/x
+    --api-key K`` with the user's own OpenRouter key exported was guard 2
+    (OpenRouter as written), pending while ``session_start`` ran, and the
+    TYPED key was attached to ``openrouter`` after the late decision: the
+    prompt went to OpenRouter with it ("Bearer typed-fake-literal", pinned
+    here until #370). Guard 2 never carries a typed key now: the launch is
+    pi's not-found (``resolveCliModel`` :599-605), ``sessext`` does not claim
+    it, so print exits 1 with the explicit routes named and no key is
+    attached anywhere. The post-decision attach is pinned below."""
 
     _openrouter(monkeypatch, env, "exported")
     ext = _write(env, "plain.py", _extension())
-    await entry_mod._async_main(
+    code = await entry_mod._async_main(
         [
             "--no-session",
             "-e",
@@ -679,9 +680,56 @@ async def test_a_guard_two_launch_that_is_not_late_sends_with_the_typed_key(
             "hi",
         ]
     )
-    assert attached == ["openrouter"]
-    assert [auth for _url, auth in wire] == ["Bearer typed-fake-literal"]
-    assert "/chat/completions" in wire[0][0]
+    err = capsys.readouterr().err
+    assert (code, attached, wire) == (1, [], [])
+    assert (
+        'Error: Model "newlab/x" not found. Use --list-models to see available models. '
+        "(--api-key does not send an id this build does not know to OpenRouter; to send it "
+        "there with that key, use --model openrouter/newlab/x or --provider openrouter "
+        "--model newlab/x.)"
+    ) in err
+
+
+async def test_a_pending_launch_that_is_not_late_gets_the_typed_key_after_the_decision(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: list[tuple[str, str]],
+    attached: list[str],
+) -> None:
+    """#367 verify round 3, B3, re-pinned by #370. A pending launch waits for
+    the late decision before ``--api-key`` is attached (D4), and when nothing
+    late claims the inputs the key is attached to the launch route then.
+    Before #370 guard 2 was that route (the row above); under ``--api-key``
+    the one pending shape left with no error is a route whose ``api`` is
+    unknown: ``setup()`` registers an auth-only ``emptyext`` (a key, no
+    models), so ``emptyext/x`` is a custom id there, ``api='unknown'``, and
+    ``sessext`` (registered in ``session_start``) does not claim it. Without
+    the post-decision attach the key was attached to nothing and every other
+    test stayed green. No request goes out: the model cannot run."""
+
+    _openrouter(monkeypatch, env, "exported")
+    source = _extension().replace(
+        "def setup(aelix):\n    pass",
+        'def setup(aelix):\n    aelix.register_provider("emptyext", '
+        'ProviderConfigInput(api_key="empty-fake-literal"))',
+    )
+    assert "emptyext" in source
+    ext = _write(env, "emptyext.py", source)
+    await entry_mod._async_main(
+        [
+            "--no-session",
+            "-e",
+            ext,
+            "--model",
+            "emptyext/x",
+            "--api-key",
+            "typed-fake-literal",
+            "-p",
+            "hi",
+        ]
+    )
+    assert attached == ["emptyext"]
+    assert wire == []
 
 
 @pytest.mark.parametrize("default", [True, False], ids=["default-sessext", "no-default"])

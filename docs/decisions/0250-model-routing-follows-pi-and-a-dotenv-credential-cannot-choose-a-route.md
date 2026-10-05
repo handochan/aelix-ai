@@ -1,6 +1,6 @@
 # 0250. Model routing follows pi's `resolveCliModel`, and a `.env` credential cannot choose a route
 
-Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`
+Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2)
 Date: 2026-10-02
 Supersedes: **ADR-0249 §2.1** (rung 0 and the OpenRouter-from-env rung), **§2.6**'s split
 rule and **§5** (the stated divergence from pi). ADR-0249's X1 (§2.3), S (§2.4) and the
@@ -24,7 +24,8 @@ placeholder rule), `tests/cli/test_late_provider_refused_367.py`,
 `tests/cli/test_late_provider_landing_367.py`,
 `tests/cli/test_late_route_hold_apply_367.py`,
 `tests/tui/test_post_login_late_hold_367.py` and
-`tests/harness/test_harness_turn_gate_367.py` (§2.11, #367).
+`tests/harness/test_harness_turn_gate_367.py` (§2.11, #367);
+`tests/cli/test_api_key_unknown_prefix_370.py` (§2.1 step 2, §2.7, #370).
 Cross-review: Codex on `854bf319` (§5) — `/model` reworked (§2.8), guard 2's scope and the
 hatch stated (§2.3, §2.6); Codex again on `a0edf615` (§5) — the post-`/login` pick's
 saved default, RPC `cycle_model` and a held credential with no model rows (§2.8, §2.10).
@@ -126,7 +127,8 @@ returns its model, so every caller keeps its signature.
   **sole route-authenticated** one (pi), else the sole user-defined one among the
   route-authenticated (aelix, "rule U": keeps a gateway that lists `openai/gpt-4o`
   verbatim), else pi's error. None: a bare id is homed under settings `defaultProvider`
-  when it counts (ADR-0195), else guard 2, else pi's not-found.
+  when it counts (ADR-0195), else guard 2 — never under `--api-key` (#370, 2026-10-06) —
+  else pi's not-found.
 
   **Settings `defaultProvider` is not "the persisted choice".** It is the MERGED value, and
   a project `.aelix/settings.json` sets it — over the user's global one, and in a directory
@@ -165,8 +167,15 @@ returns its model, so every caller keeps its signature.
   Note claiming they held no Anthropic credential (the review of `d58cbb3e`, R03); the same
   for guard 2 as decided (`anthropic/claude-new-9`, R02), for pi's swap (`openai/gpt-4o-mini`,
   A40 — pi does this too) and for (5)'s raw match (`anthropic/claude-haiku-4.5`). A prefix no
-  provider has (`newlab/model-x`) still reaches guard 2; `openrouter/<id>` and
-  `--provider openrouter` name OpenRouter.
+  provider has (`newlab/model-x`) reached guard 2 until #370 (2026-10-06): with an
+  OpenRouter key of the user's own exported, `--model newlab/model-x --api-key K` went to
+  `openrouter.ai` with K as the bearer, in print, json, RPC and the TUI (measured on
+  `62e2238b`). Under `--api-key` such a string is now pi's not-found (step 2;
+  `resolveCliModel` `:599-605` @ b223082bb, where `main.ts:828-837` attaches the key only to
+  a model that resolved) and the key is attached to nothing; `openrouter/<id>` and
+  `--provider openrouter` name OpenRouter. An id OpenRouter's catalogue lists under a
+  prefix that is not a provider (`x-ai/grok-4.3`) is step 2's exact hit, as in pi
+  (`:465-504`), and takes the key to OpenRouter (§2.7).
 - **4. Found, and the inferred provider is not route-authenticated**: the sole
   route-authenticated model whose raw id is the string (pi's swap, `:519-541`), else the
   sole user-defined one among them, else guard 2 (§2.3), else the hit.
@@ -327,7 +336,9 @@ the provider whose key the user exported. The clauses, all of which must hold:
 4. OpenRouter IS route-authenticated: exported, stored by `/login` in the agent dir's
    `auth.json`, or the user's `models.json`. Both of the first two are the user's own act
    outside the repo — the shell is theirs, and ADR-0203 locks `AELIX_CODING_AGENT_DIR` /
-   `AELIX_AUTH_PATH` against a `.env`. A key from a cwd `.env` never enables it.
+   `AELIX_AUTH_PATH` against a `.env`. A key from a cwd `.env` never enables it;
+5. the launch carries no `--api-key` (#370, 2026-10-06): under it guard 2 fires in no step
+   (§2.1 steps 2 and 3b), and a string no provider places is pi's not-found.
 
 The model is OpenRouter's catalogue entry when it lists the string, else the unanimous
 OpenRouter backfill, with `OPENROUTER_BASE_URL`; a one-line Note says so.
@@ -343,7 +354,7 @@ from OpenRouter into `No API key found for OpenAI`, and with a planted `.env`
 ids. pi itself reaches OpenRouter here whenever pi.dev's live list carries the id (its
 swap); aelix, lacking that list, applies guard 2 when the inferred namespace provider has
 no route-authenticating credential and no route-authenticated raw match exists — and
-never under `--api-key` (§2.1 step 3b).
+never under `--api-key` (§2.1 steps 2 and 3b).
 
 Guard 2 is also NARROWER than the owner's wording in two ways, both safer: it takes only
 `<segment>/<segment>` strings (a bare unknown id is pi's not-found, clause 1), and a
@@ -355,7 +366,11 @@ clause 3).
 - **Guard 1** — pi reads no `.env`; aelix does, so a `.env` credential is kept out of
   route-deciding judgements.
 - **Guard 2** — pi overlays pi.dev's catalogue; aelix sends ids it cannot place to
-  OpenRouter on the user's own OpenRouter key, including the widening in §2.3.
+  OpenRouter on the user's own OpenRouter key, including the widening in §2.3 — never
+  under `--api-key`, where a string no provider places is pi's not-found (#370): print
+  and json exit 1 with it, nothing sent; interactive holds the placeholder with a Warning
+  (the "errors are held" divergence below); RPC keeps the unresolved route's shape — no
+  message at start, the first prompt refused (#371 is that silent start).
 - **No fuzzy matching, no `:thinking` suffix**; **ids compared case-sensitively** (pi
   folds case), with the canonical-prefix variant in (4)/(5).
 - **aelix's provider case rule** (the owner's decision): pi has one case-folded map.
@@ -379,7 +394,9 @@ clause 3).
   not be resolved to a known API protocol…`), not pi's `Unknown provider "X". Use
   --list-models …` (`:436-441`); pre-existing, unchanged here.
 - **Errors are held as placeholders** (`api='unknown'`, the prefix kept as the provider)
-  so the late-registration check can still recognise them (§2.11); pi returns no model.
+  so the late-registration check can still recognise them (§2.11); pi returns no model,
+  and exits 1 in every mode (`main.ts:915-925` @ b223082bb). Interactive keeps the
+  placeholder and a Warning, so `/model` can leave it.
 - **An expired stored OAuth counts** as route-authentication — pi's rule; the user's own
   file, and its failure is loud (the #344 critique's S2 asked otherwise; reversed here).
 
@@ -427,7 +444,69 @@ ignored it.
   `d58cbb3e` the not-found placeholder got the key on its prefix, the review's nit). The
   late path used to switch to a `session_start` provider and move the key there; since #367
   it refuses, and a pending launch attaches the key only after the late decision (§2.11,
-  D4), so a refused launch attaches it to no provider at all.
+  D4), so a refused launch attaches it to no provider at all. Since #370 (2026-10-06)
+  guard 2 never takes a typed key: a string no provider places (`newlab/model-x`, an
+  OpenRouter vendor namespace with an id the snapshot lacks such as `x-ai/grok-4`, a
+  provider an extension registered and unregistered in `session_start`) is pi's not-found
+  and gets no key. The typed key still goes to OpenRouter by routes that name it or that
+  pi takes, none of them guard 2:
+  - an explicit OpenRouter route (§2.5, `OPENROUTER_DEFAULT_MODEL` included, §2.6);
+  - the settings routes that name OpenRouter: `defaultProvider: openrouter` homing a bare
+    id (`--model model-x`; step 2's ADR-0195 home, when it counts, §2.1) and the seeded
+    settings pair `openrouter` + `<id>` with no `--model` (an explicit provider, step E) —
+    from the global settings or a project `.aelix/settings.json`, which today aelix reads
+    whatever the trust answer (§6; #369 makes it a trusted project's only). Measured by the
+    round-1 verification on `62e2238b` and the fix alike (`.omc/probes/370-live/verify/kit/
+    launch-compare.txt` L20p, L22p, L23p: `TYPED` to `openrouter.ai/api/v1` with the
+    custom-id Warning) and again in round 2, with and without `--approve` and with and
+    without an OpenRouter key of the user's own (`.omc/probes/370-live/fix2/
+    settings-routes.txt`: global pair, global and project `defaultProvider`, project
+    pair — 12 of 12 attached to `openrouter`, the typed key sent there);
+  - an id OpenRouter's catalogue lists under a prefix that is not a provider
+    (`x-ai/grok-4.3`) — step 2's hit, as in pi (`model-resolver.ts:465-504`). This build
+    has 195 such ids: 163 are sole exact hits and go there; the 32 another provider also
+    lists (`arcee-ai/trinity-large-preview`, `inception/mercury-2`, …) are step 2's
+    several hits, which go to OpenRouter by the auth tie-break only when OpenRouter is the
+    sole authenticated provider among those listing the id — settings `defaultProvider`
+    decides first when it counts, and with none authenticated it is pi's ambiguity error
+    (`.omc/probes/370-live/verify/kit/count195.py`, recounted in
+    `.omc/probes/370-live/fix2/count195.txt`).
+
+  A provider an extension registers in `setup()` and unregisters in `session_start` (the
+  round-1 verification's `sgone`): with `--api-key` in print/json, `62e2238b` sent the typed
+  key to that extension's own endpoint (the harness kept the `setup()`-time model); now
+  the re-resolve after `session_start`, where no provider has the prefix, is pi's
+  not-found, so the run exits 1 with the hinted not-found and sends nothing (L15p). Without `--api-key` (L15n) or without an OpenRouter key (L15o, L15q) it
+  already exited 1; RPC (L15r) is unchanged and still sends to the extension's endpoint.
+- **In-session, the launch's key goes where the launch put it** (#370's sweep, measured on
+  `62e2238b` and after). `/new`, `/fork`, `/resume` and `/reload` re-resolve through the
+  harness factory with `typed_key`, so a not-found launch stays held. `/model <s>`'s
+  registry path never applies guard 2 (§2.8: `/model newlab/model-x` is refused on either
+  side); its UNDECIDED fallback — no registry, which no stock-CLI session lacks (`entry.py`
+  always creates one), or an empty one, or one whose introspection raised — re-resolves through `resolve_route` without `typed_key`, so
+  guard 2 applies there as on a launch without `--api-key`: on the user's own OpenRouter
+  key after a not-found launch, on the typed key only where the launch attached it to
+  `openrouter` (round-1 verification, `verify/kit/sweep-tree.txt` rows 20-21 and 43-44;
+  on `62e2238b` the not-found launch's fallback carried the typed key, row 21 of
+  `sweep-base.txt`). RPC
+  `set_model`/`cycle_model` have no registry in `--mode rpc` and select nothing. A
+  delegated child never receives `--api-key` (§2.9). The post-`/login` pick chooses from
+  `get_available()` (§2.10), never guard 2. `/agents use` re-resolves the launch inputs
+  and, until #370, did so without `typed_key`: after a not-found `--api-key` launch it took
+  guard 2 to OpenRouter on the user's own key while the next `/new` put the placeholder
+  back; it is now told about the key as the factory is, and refuses with the launch's
+  text. **Round 2 scoped that**: only a re-resolve of the LAUNCH inputs is told about the
+  key — `/agents use --none`, a profile with no `model:`/`provider:` of its own, or one
+  whose `model:` an explicit `--model` beat (`profile_named_route` false). A profile's own
+  `model:`/`provider:` is a new pick, not the string the key was typed with, and resolves
+  as on `62e2238b`: with the settings pair `anthropic`/`claude-haiku-4-5` and `--api-key
+  K` (K attached to `anthropic`), `/agents use` of a profile with `model: newlab/model-x`
+  takes guard 2 to OpenRouter on the user's own key, through the next `/new` too, and K
+  never goes to OpenRouter (round 1 refused it — `.omc/probes/370-live/fix2/
+  scope-probe-before.txt`). Where the launch attached the key to `openrouter` (the routes
+  above), a later
+  guard-2 route in-session carries it there — the key is OpenRouter's by the user's
+  choice, their settings or pi's catalogue, not guard 2's.
 - `/agents use` and `/model`'s UNDECIDED fallback refuse with the route's error when a
   registry exists (without one the resolver sees no credential and no user-defined
   provider, so its "none authenticated" would be a claim about nothing).
@@ -900,7 +979,8 @@ continues, so providers registered there are available to startup model selectio
   inside `session_start` is not in the registry afterwards, so the launch's guard-2 route
   stands — with `--api-key`, the typed key to OpenRouter (Codex finding 4): #370
   (`--api-key` with an uncatalogued, non-user-defined prefix should not take guard 2, as
-  pi), not this rule.
+  pi), not this rule. Since #370 (2026-10-06) that launch is pi's not-found under
+  `--api-key`: print/json exit 1, no key attached, nothing sent.
 - **The print gate also judges the harness's own model**, not only the re-resolve, so a
   placeholder never reaches a turn even if the check above says nothing. After a launch on
   a registered provider (B1) whose re-resolve now lands on a late provider, or is made
@@ -981,7 +1061,7 @@ is a keyed `setup()` provider, `late` a `session_start` one, both serving `m1`:
 | TUI (pty): that launch with `late` keyed; `hi`, `/new`, `hi` (and `/reload`) | launch held: 0, 0, 0 | `hi` → `/other/v1`; after `/new` (or `/reload`) held: `✖ The launch model "m1" names provider 'late' …`, no request |
 | the same, no `defaultProvider` (control) | `/other/v1` both times | the same |
 | (B2) TUI `--model late/m1`, the hook triggers a turn on rebuilds only; `/new`, `/reload`, `hi` | 0 throughout; with the factory's rebuild hold removed: `/new` 0, `/reload` 2 to `/late/v1` | 0 throughout; with it removed (sabotage on a throwaway worktree of round 4): `/new` 1, `/reload` 2 to `/late/v1` |
-| (B3) `--model newlab/x --api-key typed-g2-fake`, a hook registering an unrelated provider | `Bearer typed-g2-fake`; with the post-decision attach removed: `Bearer or-own-fake` | the same (and the same under that sabotage) — now pinned by a test |
+| (B3) `--model newlab/x --api-key typed-g2-fake`, a hook registering an unrelated provider | `Bearer typed-g2-fake`; with the post-decision attach removed: `Bearer or-own-fake` | the same (and the same under that sabotage) — now pinned by a test. Since #370 this launch is not found (exit 1, no key, nothing sent); the post-decision attach is pinned by an auth-only `emptyext` from `setup()` (`--model emptyext/x`, attached to `emptyext`) |
 
 Round 5 (verify round 4 of `76055424`), each row reproduced on `76055424` with the
 verifier's own probes first (copied to `/tmp/367-work/fix5/`, `extra-base/` and `gaps/`
@@ -1081,7 +1161,17 @@ traced around the `session_start` emit; `--model sessext/m1` with an OpenRouter 
   ` (<NAMES> came from a project .env, which does not choose between providers.)` before
   `Use` when a `.env` name is why a match counted as configured;
 - not found (pi `:599-605`): `Model "<s>" not found. Use --list-models to see available
-  models.`, plus why a `.env` OpenRouter key did not send it to OpenRouter;
+  models.`, plus why a `.env` OpenRouter key did not send it to OpenRouter; under
+  `--api-key` every slashed string whose segments are non-empty (guard 2's shape, §2.3
+  clause 1 — `newlab/model-x`, `newlab/org/model-x`) instead gets ` (--api-key does not
+  send an id this build does not know to OpenRouter; to send it there with that key, use
+  --model openrouter/<s> or --provider openrouter --model <s>.)` — whether or not the user
+  holds an OpenRouter credential (the typed key may be one; the text says nothing about
+  which credentials exist; #370). A string with an empty segment (`newlab//model-x`,
+  `newlab/model-x/`, `/newlab/model-x`, `/`) gets the bare text: it cannot be an OpenRouter
+  id, so naming OpenRouter's routes for it would mislead (#370 round 2, Codex's second
+  category; pinned by `test_a_string_with_an_empty_segment_gets_the_bare_not_found` and
+  the `empty-segment-*` resolver rows);
 - after either, when step 2 set settings `defaultProvider` aside (§2.1): ` Settings
   defaultProvider "<p>" was not used: no credential of your own authenticates it, and a
   project .aelix/settings.json can set it (<NAMES> came from a project .env).`;
@@ -1286,6 +1376,47 @@ and proved by the mutant. Four sabotages on a worktree of this round's tree
 baseline 305 passed): C1's equality check reverted (2 red), C2's resolver rule reverted (4),
 C3's placeholder rule reverted (4), Codex's C5 mutant (2, the `oai-tuned-home` halves) —
 four of four red, each file md5-restored.
+
+**#370 (2026-10-06).** `tests/cli/test_api_key_unknown_prefix_370.py` drives
+`_async_main` with every request recorded: print/json with `--api-key` and `newlab/model-x`
+(own OpenRouter key, none) and `x-ai/grok-4` exit 1 with the hinted not-found and attach
+nothing; the late-gone extension the same; interactive and RPC hold the placeholder through
+the first prompt, `/new` and `/reload` (the unknown prefix, the late-gone and the late
+extension); `/agents use` refuses with the launch's text; the explicit routes and
+`x-ai/grok-4.3` take the typed key to OpenRouter, and guard 2 without `--api-key` the
+user's own. `test_route_follows_pi_362.py`'s `TYPED_KEY` rows (`unknown-prefix`, its
+no-OpenRouter twin, `xai-unlisted`, `xai-listed`) pin the resolver, and #367's B3 row is
+split: the guard-2 launch it pinned is now not found, and the post-decision attach is
+pinned with an auth-only `emptyext` registered in `setup()`. On `62e2238b` with the files
+copied in: 18 failed, 232 passed (`.omc/probes/370-live/impl/red-on-base.txt`). Four sabotages on
+a throwaway worktree of the fix (four route files, 275 passed clean): the `typed_key`
+condition on guard 2 removed (15 red), the hint removed (15), #367's post-decision attach
+skipped (1, the `emptyext` row), `/agents use`'s `typed_key` removed (2) — each restored
+byte-identical (`.omc/probes/370-live/impl/sabotage.txt`).
+
+**#370 round 2 (2026-10-06).** The independent verification of round 1 passed (no
+blocking finding); Codex's first pass reproduced no typed-key leak in 33 cases but found two
+gaps. (1) Nested ids: a guard-2 condition that still fired for more than one slash
+(`(not typed_key or model_flag.count("/") > 1) and _guard2(...)`) and a hint limited to one
+slash each passed all 250 tests of the three route files (`.omc/probes/370-live/fix2/
+mutants-on-07ff4dae.txt`); `newlab/org/model-x` rows now pin both — print/json (exit 1, the
+hinted not-found, nothing attached or sent), interactive/RPC (held through the first
+prompt, `/new` and `/reload`) and the resolver (`nested`). (2) Strings with an empty
+segment get pi's bare not-found, decided and pinned (§2.12; one launch row,
+`newlab//model-x`, and four `empty-segment-*` resolver rows). The verification's notes
+moved §2.7: the settings routes that take the typed key to OpenRouter, the `/model`
+fallback, the 163/32 split of the 195 ids and the `sgone` shape. And `/agents use`'s
+`typed_key` is scoped to a re-resolve of the launch inputs (§2.7, §7 item 13): a
+model-less profile row joins `--none` and the flag-beaten profile, and a new row pins a
+profile's own `model: newlab/model-x` after a settings-pair `anthropic` launch with
+`--api-key` — guard 2 on the user's own OpenRouter key, the typed key never sent there,
+as on `62e2238b`. With the round-2 test files on `07ff4dae` only that row fails (1 failed,
+261 passed); on `62e2238b`, 24 failed, 238 passed (`fix2/red-before.txt`). Sabotage on a
+throwaway worktree (four route files plus `tests/agents`, 403 passed clean): the two nested
+mutants (5 and 4 red), the hint given to empty-segment strings (5), `/agents use`'s scope
+reverted to round 1's every resolve (1), removed as on `62e2238b` (3), inverted (4); round
+1's guard-2 condition (21), hint (20) and post-decision attach (1) — each restored
+md5-identical (`fix2/sabotage.txt`).
 
 ## 5. Cross-review
 
@@ -1512,7 +1643,12 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   gating") its `SettingsManager` reads project settings only when the project is trusted
   (`settings-manager.ts` `fromStorageWithPaths` → `tryLoadFromStorage(storage, "project",
   projectTrusted)`; `setProjectTrusted(false)` empties them, @ `88ff80b98`), while aelix's
-  reads `.aelix/settings.json` whatever the trust answer. Porting that is #369.
+  reads `.aelix/settings.json` whatever the trust answer. Porting that is #369. Under
+  `--api-key` the typed key rides such a route as well: a project file's
+  `defaultProvider: openrouter` (homing a bare `--model model-x`) or its pair
+  `openrouter` + `<id>` takes the typed key to `openrouter.ai`, with or without
+  `--approve` (§2.7; #370 round 2, `.omc/probes/370-live/fix2/settings-routes.txt`) — not
+  guard 2, and unchanged by #370.
 - **A trusted project's agent profile naming `provider:`** is an explicit route (§2.1 E)
   that a `.env` key then authenticates: `--agent repo --approve` with a project
   `.aelix/agents/repo.md` carrying `provider: openai` and `model: gpt-4o-mini` reaches
@@ -1730,3 +1866,24 @@ Decided in this lane, each with the recommendation followed and put to the owner
    the global one — the merged settings do not say which file a value came from, and the
    global one can itself have been laundered (§6). A session with no credential of its own
    keeps both arms.
+13. **Guard 2 never carries a typed key** (#370; owner direction on #362, 2026-10-02 — pi,
+   plus the guards — and the main loop's decisions of 2026-10-06 on the research's open
+   points). With `--api-key`, a string whose prefix is neither catalogued, nor user-defined,
+   nor registered by an extension's `setup()` is pi's not-found (§2.1 step 2, §2.3 clause
+   5); print/json exit 1 with it, interactive keeps the held placeholder and its Warning
+   (§2.4), RPC the unresolved route's shape (its silent start is #371). The hint names both
+   explicit routes for every slashed string whose segments are non-empty under
+   `--api-key` (nested ids included; a string with an empty segment gets pi's bare text,
+   since it cannot be an OpenRouter id — round 2), whether or not the user
+   holds an OpenRouter credential (alternative: only when guard 2 would have fired, which
+   would make the text reveal that credential). Kept: an id OpenRouter's catalogue lists
+   under a prefix that is not a provider (`x-ai/grok-4.3`) takes the typed key to
+   OpenRouter by step 2's exact hit, as in pi (alternative: 3b-style protection in step 2,
+   a new divergence from pi). **The price**: an OpenRouter key typed with an unlisted
+   vendor id (`--model newvendor/model --api-key sk-or-…`) now exits 1 in print/json and is
+   held in interactive; `openrouter/<id>` or `--provider openrouter` sends it.
+   `/agents use` is told about the key only where it re-resolves the launch inputs
+   (`--none`, a profile with no `model:`/`provider:` of its own, or one an explicit flag
+   beat); a profile's own route resolves as before #370 (round 2, the main loop's
+   decision; alternative: round 1's every resolve, which refused a profile's own new pick
+   because of a key typed for the launch's provider).

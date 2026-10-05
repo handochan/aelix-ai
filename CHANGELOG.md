@@ -86,7 +86,8 @@ unwritten. Add them with the next release.
     in which case that file's value picks the model — and
     `OPENROUTER_BASE_URL` now applies to `--provider openrouter` too;
   - `--api-key` with a bare extension id (`-e ext.py --model m1 --api-key K`) is
-    no longer refused before the extension loads, and with a vendor prefix it
+    no longer refused before the extension loads (and with a prefix no provider
+    has it is "not found" — see the #370 entry below), and with a vendor prefix it
     keeps the string on that vendor: `--model openai/gpt-4o-mini --api-key K`
     with an OpenRouter key exported goes to OpenAI with K (it used to go to
     OpenRouter with K as the bearer, as pi still does) — so if K is an
@@ -96,6 +97,30 @@ unwritten. Add them with the next release.
     route alone (a provider you defined); a route only your `--api-key` would
     decide is left to the child, which never receives the key; a profile that
     brings its own `extensions:` resolves its `model:` with them.
+
+- **`--api-key` with a model id no provider has is "not found", as in pi — your
+  typed key is no longer sent to OpenRouter for it (#370, ADR-0250).** With an
+  OpenRouter key of your own exported, `--model newlab/model-x --api-key K` sent
+  the prompt to `openrouter.ai` with **K** as the bearer (in `-p`, `--mode json`,
+  RPC and the TUI), though K was typed for whatever `newlab` is. Now `-p` and
+  `--mode json` exit 1 before anything is sent, with `Error: Model
+  "newlab/model-x" not found. Use --list-models to see available models.
+  (--api-key does not send an id this build does not know to OpenRouter; to send
+  it there with that key, use --model openrouter/newlab/model-x or --provider
+  openrouter --model newlab/model-x.)`; the TUI starts with that Warning and
+  sends nothing until `/model` picks a model; RPC starts on the unresolved model
+  and refuses the prompt. **If K is an OpenRouter key and the id is one this
+  build does not list** (`--model newvendor/model --api-key sk-or-…`), write
+  `openrouter/newvendor/model` or `--provider openrouter`. Unchanged: those two
+  explicit routes, an id OpenRouter's part of the catalog lists
+  (`x-ai/grok-4.3` still goes to OpenRouter with K, as in pi), and the same
+  `--model newlab/model-x` without `--api-key` (OpenRouter, on your own key,
+  with the one-line note). `/agents use` now re-resolves the launch model with
+  the key in view too, so it refuses such a launch string instead of sending it
+  to OpenRouter on your own key; a profile's own `model:` is resolved as before.
+  A nested id (`newlab/org/model-x`) is refused the same way; an id with an empty
+  segment (`newlab//model-x`) gets the plain not-found text, without the
+  OpenRouter routes.
 
 - **Session totals now include what delegated agents spent, so totals from
   this release on — History's included — are higher than the same work was

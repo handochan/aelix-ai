@@ -3138,8 +3138,8 @@ async def _async_main(argv: list[str]) -> int:
 
     launch_providers = user_defined_providers(model_registry)
     late_rule.launch_providers = launch_providers
-    # #367 round 3, D4 — a launch route no registered provider claimed (guard 2
-    # sends the string to OpenRouter as written; an unresolved placeholder) is
+    # #367 round 3, D4 — a launch route no registered provider claimed (guard 2, never
+    # under --api-key since #370, sends it to OpenRouter as written; an unresolved placeholder) is
     # PENDING while ``session_start`` runs: a provider registered there may turn
     # out to be where the inputs land. The harness then sits on ``Model(id,
     # provider)`` with ``api='unknown'`` for the handlers' duration, so a turn a
@@ -3167,9 +3167,9 @@ async def _async_main(argv: list[str]) -> int:
     if parsed.api_key is not None:
         # #344 — see the ``--api-key`` block above: the key follows the model the
         # harness resolved (after extensions loaded), falling back to the early
-        # resolve only if that model somehow names no provider. A route that did
-        # not resolve (ambiguous, not found — its placeholder may still carry
-        # the typed prefix as a provider) gets no key.
+        # resolve only if that model somehow names no provider. A route that did not
+        # resolve (ambiguous, not found — since #370 any string no provider places under
+        # --api-key; its placeholder may keep the typed prefix as a provider) gets no key.
         api_key_provider = (
             ""
             if launch_route.error is not None

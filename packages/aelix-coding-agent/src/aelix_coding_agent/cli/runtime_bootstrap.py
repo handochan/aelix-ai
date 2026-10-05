@@ -1682,10 +1682,23 @@ def _default_aside(provider: str, registry: Any) -> str:
     return message + "."
 
 
-def _not_found_message(model_ref: str, registry: Any) -> str:
-    """pi's not-found error (:599-605), plus why guard 2 declined a ``.env`` OpenRouter key."""
+def _not_found_message(model_ref: str, registry: Any, *, typed_key: bool = False) -> str:
+    """pi's not-found error (:599-605), plus why guard 2 did not send it to OpenRouter.
+
+    Under ``--api-key`` (``typed_key``) a ``<vendor>/<model>``-shaped string
+    gets the two explicit OpenRouter routes whether or not the user holds an
+    OpenRouter credential (#370): the typed key may itself be an OpenRouter
+    key, and the text says nothing about which credentials exist. Otherwise a
+    ``.env``-only OpenRouter key is named, as guard 2 declined it.
+    """
 
     message = f'Model "{model_ref}" not found. Use --list-models to see available models.'
+    if typed_key and _guard2_shape(model_ref):
+        return message + (
+            " (--api-key does not send an id this build does not know to OpenRouter; to "
+            f"send it there with that key, use --model openrouter/{model_ref} or "
+            f"--provider openrouter --model {model_ref}.)"
+        )
     names = _dotenv_only_names(registry, "openrouter")
     if names and _guard2_shape(model_ref):
         message += (
@@ -1755,7 +1768,8 @@ def _guard2(
     sabotages of them stayed green): a user-defined prefix never reaches this
     (step 3 returns inside it; step 2 has no inferred provider), and steps (4)
     and (5) call this only when the inferred provider is not route-authenticated
-    (and never under ``--api-key``, step 3b).
+    (and never under ``--api-key``, step 3b), and step 2 never under
+    ``--api-key`` (#370).
     """
 
     if not _guard2_shape(model_ref):
@@ -1806,7 +1820,7 @@ def resolve_route(
        (when it counts, below), else the sole route-authenticated one, else the
        sole user-defined one among those, else pi's ambiguity error; none: a
        bare id under settings ``defaultProvider`` (when it counts), else guard
-       2, else pi's not-found error. ``defaultProvider`` is the MERGED setting,
+       2 (never under ``--api-key``, #370), else pi's not-found error. ``defaultProvider`` is the MERGED setting,
        which a project ``.aelix/settings.json`` sets even over the user's global
        one (and in an untrusted directory), so while the user holds a
        route-authenticating credential of their own anywhere
@@ -1982,7 +1996,11 @@ def resolve_route(
                     custom, "default_provider", warning=_custom_warning(named, model_flag, custom)
                 )
             aside = _default_aside(named, registry)
-        if _guard2(model_flag, None, registry, overrides):
+        # #370 — guard 2 never carries a typed key: with --api-key, a string no
+        # provider places is pi's not-found (``resolveCliModel`` :599-605 @
+        # b223082bb), and the key is attached to nothing (ADR-0250 §2.7).
+        # ``openrouter/<id>`` and ``--provider openrouter`` name OpenRouter (§2.5).
+        if not typed_key and _guard2(model_flag, None, registry, overrides):
             return _guard2_route(
                 model_flag,
                 registry,
@@ -1997,7 +2015,11 @@ def resolve_route(
             if (sep and prefix and tail)
             else Model(id=model_flag, provider="")
         )
-        return ResolvedRoute(placeholder, "error", _not_found_message(model_flag, registry) + aside)
+        return ResolvedRoute(
+            placeholder,
+            "error",
+            _not_found_message(model_flag, registry, typed_key=typed_key) + aside,
+        )
 
     # --- 3: inside the inferred provider, the id exactly -------------------------
     found = _find_in(inferred, rest, registry)
@@ -2186,7 +2208,7 @@ def late_registered_route(
     provider any of them registers is unknown to its launch.
     At launch its name is therefore unknown, and :func:`resolve_route` either
     sends the string to OpenRouter (guard 2, an OpenRouter credential of the
-    user's own) or holds the harness on a placeholder (``api='unknown'``). pi
+    user's own, never under ``--api-key``, #370) or holds the harness on a placeholder (``api='unknown'``). pi
     refuses that launch outright (``session_start`` fires only in
     ``AgentSession.bindExtensions``; ``main.ts`` exits on the resolver's error);
     aelix follows it, and no longer switches (the #344 switch is gone).
@@ -2222,9 +2244,9 @@ def late_registered_route(
     A provider registered and then unregistered before ``session_start``
     returns is not in the registry as it is NOW, so the string stays where the
     launch put it (F2, ADR-0249 §2.3) — nothing to catch here; with
-    ``--api-key`` that route is guard 2, the typed key to OpenRouter, which is
-    issue #370 (an uncatalogued, non-user-defined prefix under ``--api-key``
-    should not take guard 2, as pi), not this check.
+    ``--api-key`` that route is pi's not-found and the key is attached to
+    nothing (#370: an uncatalogued, non-user-defined prefix under ``--api-key``
+    does not take guard 2, as in pi), not this check.
 
     What the caller does with it: on a pending launch, print and json exit 1
     with it before any request, and interactive and RPC hold the harness on the

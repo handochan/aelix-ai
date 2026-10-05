@@ -1351,14 +1351,31 @@ async def test_openrouter_default_model_runs_on_an_openrouter_key_from_any_sourc
     assert (got.provider, got.id, got.base_url) == ("openrouter", "x-ai/grok-4.3", _OR)
 
 
+def _typed_not_found(model: str) -> str:
+    """pi's not-found text with #370's ``--api-key`` hint (ADR-0250 §2.12)."""
+
+    return (
+        f'Model "{model}" not found. Use --list-models to see available models. (--api-key '
+        "does not send an id this build does not know to OpenRouter; to send it there with "
+        f"that key, use --model openrouter/{model} or --provider openrouter --model {model}.)"
+    )
+
+
+def _bare_not_found(model: str) -> str:
+    """pi's not-found text alone (``model-resolver.ts`` :599-605)."""
+
+    return f'Model "{model}" not found. Use --list-models to see available models.'
+
+
 TYPED_KEY: list[tuple[Any, ...]] = [
-    # id, shell, --model, expected (provider, id, base_url), warning
+    # id, shell, --model, expected (provider, id, base_url), warning, error
     # The review's R03: guard 2's widened arm carried K to openrouter.ai.
     (
         "R03",
         OR,
         "anthropic/claude-haiku-4-5",
         ("anthropic", "claude-haiku-4-5", _ANT),
+        None,
         None,
     ),
     # R02: guard 2 as decided (an uncatalogued id under a catalogued prefix).
@@ -1368,9 +1385,10 @@ TYPED_KEY: list[tuple[Any, ...]] = [
         "anthropic/claude-new-9",
         ("anthropic", "claude-new-9", _ANT),
         'Model "claude-new-9" not found for provider "anthropic". Using custom model id.',
+        None,
     ),
     # A40: pi's swap carried K to openrouter.ai (pi does too; aelix diverges).
-    ("A40", OR, "openai/gpt-4o-mini", ("openai", "gpt-4o-mini", _OAI), None),
+    ("A40", OR, "openai/gpt-4o-mini", ("openai", "gpt-4o-mini", _OAI), None, None),
     # (5)'s raw match on OpenRouter (it lists the dotted spelling verbatim).
     (
         "raw",
@@ -1378,21 +1396,76 @@ TYPED_KEY: list[tuple[Any, ...]] = [
         "anthropic/claude-haiku-4.5",
         ("anthropic", "claude-haiku-4.5", _ANT),
         'Model "claude-haiku-4.5" not found for provider "anthropic". Using custom model id.',
+        None,
     ),
-    # Unchanged: the explicit OpenRouter spelling, and a prefix that names no provider.
-    ("explicit", {}, "openrouter/auto", ("openrouter", "auto", _OR), None),
+    # Unchanged: the explicit OpenRouter spelling.
+    ("explicit", {}, "openrouter/auto", ("openrouter", "auto", _OR), None, None),
+    # #370: a prefix that names no provider is pi's not-found under --api-key
+    # (guard 2 sent it to openrouter.ai with the typed key as the bearer; on
+    # 62e2238b this row was ("openrouter", "newlab/model-x", _OR) with guard 2's
+    # Note). The placeholder keeps the typed prefix for the late path (#367).
     (
         "unknown-prefix",
         OR,
         "newlab/model-x",
-        ("openrouter", "newlab/model-x", _OR),
-        'Model "newlab/model-x" is not in this build\'s catalog; sending it to OpenRouter as written.',
+        ("newlab", "model-x", ""),
+        None,
+        _typed_not_found("newlab/model-x"),
+    ),
+    # The same text without an OpenRouter key of the user's own (decision: the
+    # hint does not depend on which credentials exist).
+    (
+        "unknown-prefix-no-or",
+        {},
+        "newlab/model-x",
+        ("newlab", "model-x", ""),
+        None,
+        _typed_not_found("newlab/model-x"),
+    ),
+    # An OpenRouter vendor namespace that is not a provider, with an id the
+    # snapshot does not list: not found too (was guard 2, the issue's row I).
+    (
+        "xai-unlisted",
+        OR,
+        "x-ai/grok-4",
+        ("x-ai", "grok-4", ""),
+        None,
+        _typed_not_found("x-ai/grok-4"),
+    ),
+    # ... but an id OpenRouter's catalogue lists is step 2's exact hit, as in pi
+    # (``model-resolver.ts`` :465-504): K goes to OpenRouter (ADR-0250 §2.7).
+    ("xai-listed", OR, "x-ai/grok-4.3", ("openrouter", "x-ai/grok-4.3", _OR), None, None),
+    # #370 round 2 (Codex cat 4): a nested id is not found too, with the hint —
+    # guard 2's shape takes every slashed string whose segments are non-empty.
+    # A "two segments only" condition on guard 2 or a one-slash hint passed
+    # every row above.
+    (
+        "nested",
+        OR,
+        "newlab/org/model-x",
+        ("newlab", "org/model-x", ""),
+        None,
+        _typed_not_found("newlab/org/model-x"),
+    ),
+    # Round 2 (Codex cat 2), decided: a string with an empty segment cannot be
+    # an OpenRouter id, so it gets pi's bare not-found, no OpenRouter routes
+    # named (ADR-0250 §2.12).
+    *(
+        (f"empty-segment-{i}", OR, model, placeholder, None, _bare_not_found(model))
+        for i, (model, placeholder) in enumerate(
+            [
+                ("newlab//model-x", ("newlab", "/model-x", "")),
+                ("newlab/model-x/", ("newlab", "model-x/", "")),
+                ("/newlab/model-x", ("", "/newlab/model-x", "")),
+                ("/", ("", "/", "")),
+            ]
+        )
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    ("row", "shell", "model", "expected", "warning"),
+    ("row", "shell", "model", "expected", "warning", "error"),
     TYPED_KEY,
     ids=[r[0] for r in TYPED_KEY],
 )
@@ -1403,12 +1476,15 @@ async def test_api_key_keeps_the_string_on_the_provider_its_prefix_names(
     model: str,
     expected: tuple[str, str, str],
     warning: str | None,
+    error: str | None,
 ) -> None:
     """``--api-key`` (``typed_key``) is attached after resolution to the route's provider.
 
     The #362 review's must_fix: counted nowhere at resolve time, it let the swap,
     (5)'s raw match and guard 2 move a key typed for the provider the prefix
     names to ``openrouter.ai`` as the bearer, over the user's own OpenRouter key.
+    #370: guard 2 never fires under it — a string no provider places is pi's
+    not-found, and the route's provider (none) gets no key.
     """
 
     from aelix_coding_agent.cli.runtime_bootstrap import resolve_route
@@ -1417,7 +1493,34 @@ async def test_api_key_keeps_the_string_on_the_provider_its_prefix_names(
     route = resolve_route(model, None, await world.registry(), typed_key=True)
     got = route.model
     assert (got.provider, got.id, got.base_url) == expected, row
-    assert route.error is None and route.warning == warning, row
+    assert (route.warning, route.error) == (warning, error), row
+    if error is not None:
+        assert (route.kind, got.api) == ("error", "unknown"), row
+
+
+@pytest.mark.parametrize("typed", [False, True], ids=["no-api-key", "api-key"])
+async def test_guard_two_without_api_key_is_unchanged(world: World, typed: bool) -> None:
+    """#370 changes guard 2 only under ``--api-key``: without it the user's own
+    OpenRouter key still takes an unplaceable ``<vendor>/<model>`` as written,
+    with the Note (ADR-0250 §2.4)."""
+
+    from aelix_coding_agent.cli.runtime_bootstrap import resolve_route
+
+    world.shell(**OR)
+    route = resolve_route("newlab/model-x", None, await world.registry(), typed_key=typed)
+    if typed:
+        assert (route.kind, route.model.provider) == ("error", "newlab")
+        return
+    assert route.kind == "guard2"
+    assert (route.model.provider, route.model.id, route.model.base_url) == (
+        "openrouter",
+        "newlab/model-x",
+        _OR,
+    )
+    assert route.warning == (
+        'Model "newlab/model-x" is not in this build\'s catalog; sending it to OpenRouter as '
+        "written."
+    )
 
 
 # === verify round 4, B1: settings defaultProvider is not the user's choice =======

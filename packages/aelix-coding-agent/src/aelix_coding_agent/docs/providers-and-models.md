@@ -127,7 +127,7 @@ Then the two guards:
   goes to OpenRouter, because OpenRouter is the only provider you can reach it
   through. It never happens under a provider you defined, nor under a catalogued
   provider OpenRouter has no ids for (`xai/…`, `openai-codex/…`, `groq/…`), nor
-  for a bare id: those stay pi's errors.
+  for a bare id, nor **with `--api-key`**: those stay pi's errors.
 
 The explicit routes to OpenRouter are `openrouter/<id>` (the prefix is stripped,
 as in pi: `openrouter/newlab/model-x` sends `newlab/model-x`) and
@@ -233,9 +233,12 @@ A credential can come from four places. Pick whichever fits your setup:
    that choice: if `K` is an **OpenRouter** key, `--model openai/gpt-4o-mini
    --api-key K` sends it to `api.openai.com` as the bearer, where pi would have
    put it on OpenRouter — write `openrouter/openai/gpt-4o-mini` or
-   `--provider openrouter` for an OpenRouter key. A prefix no provider has (`newlab/model-x`) still goes to
-   OpenRouter by the guard below. A string that does not resolve (ambiguous, not
-   found) gets no key. It is not forwarded to delegated children.
+   `--provider openrouter` for an OpenRouter key. A prefix no provider has (`newlab/model-x`) is
+   refused as not found, as in pi — write `openrouter/newlab/model-x` or
+   `--provider openrouter --model newlab/model-x` to send it to OpenRouter with
+   that key (an id OpenRouter's part of the catalog lists, such as
+   `x-ai/grok-4.3`, goes there with it, as in pi). A string that does not resolve
+   (ambiguous, not found) gets no key. It is not forwarded to delegated children.
 3. **`models.json`** — an `apiKey` field on a provider, which itself may point
    at an environment variable or a `!command` (see
    [models-json.md](models-json.md)).
