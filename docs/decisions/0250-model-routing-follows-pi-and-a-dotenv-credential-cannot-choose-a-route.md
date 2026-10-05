@@ -1,6 +1,6 @@
 # 0250. Model routing follows pi's `resolveCliModel`, and a `.env` credential cannot choose a route
 
-Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2)
+Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2); §2.10 amended and §6's settings default pair and §7 item 11 closed 2026-10-06 (#369, [ADR-0252](0252-project-settings-follow-project-trust.md)): an untrusted project's `.aelix/settings.json` is not read, so it no longer chooses a route (nor takes a typed key to OpenRouter, §2.7), and the post-`/login` pick reads the global pair only
 Date: 2026-10-02
 Supersedes: **ADR-0249 §2.1** (rung 0 and the OpenRouter-from-env rung), **§2.6**'s split
 rule and **§5** (the stated divergence from pi). ADR-0249's X1 (§2.3), S (§2.4) and the
@@ -131,8 +131,8 @@ returns its model, so every caller keeps its signature.
   else pi's not-found.
 
   **Settings `defaultProvider` is not "the persisted choice".** It is the MERGED value, and
-  a project `.aelix/settings.json` sets it — over the user's global one, and in a directory
-  that was never trusted. So while the user holds a route-authenticating credential of
+  a project `.aelix/settings.json` sets it — over the user's global one, and (until #369,
+  ADR-0252) in a directory that was never trusted. So while the user holds a route-authenticating credential of
   their own anywhere (`holds_route_auth`, §2.2), it counts in both arms only when it names
   a provider that credential authenticates (`route_authenticated`) or the user's own
   endpoint — a models.json provider, an extension's, a re-pointed built-in, `openrouter`
@@ -454,14 +454,20 @@ ignored it.
   - the settings routes that name OpenRouter: `defaultProvider: openrouter` homing a bare
     id (`--model model-x`; step 2's ADR-0195 home, when it counts, §2.1) and the seeded
     settings pair `openrouter` + `<id>` with no `--model` (an explicit provider, step E) —
-    from the global settings or a project `.aelix/settings.json`, which today aelix reads
-    whatever the trust answer (§6; #369 makes it a trusted project's only). Measured by the
+    from the global settings or a TRUSTED project's `.aelix/settings.json` — since #369
+    (ADR-0252) an untrusted project's is not read at all (§6). Measured by the
     round-1 verification on `62e2238b` and the fix alike (`.omc/probes/370-live/verify/kit/
     launch-compare.txt` L20p, L22p, L23p: `TYPED` to `openrouter.ai/api/v1` with the
-    custom-id Warning) and again in round 2, with and without `--approve` and with and
-    without an OpenRouter key of the user's own (`.omc/probes/370-live/fix2/
-    settings-routes.txt`: global pair, global and project `defaultProvider`, project
-    pair — 12 of 12 attached to `openrouter`, the typed key sent there);
+    custom-id Warning) and again in round 2, before #369 landed, with and without
+    `--approve` and with and without an OpenRouter key of the user's own
+    (`.omc/probes/370-live/fix2/settings-routes.txt`: global pair, global and project
+    `defaultProvider`, project pair — 12 of 12 attached to `openrouter`, the typed key sent
+    there). Re-measured with #369 merged (`.omc/probes/369-live/rebase2/
+    settings-routes-head.txt`): 8 of 12 — the global rows and the `--approve` project rows —
+    still send it there; the four untrusted project rows attach nothing and send nothing
+    (the project `defaultProvider` row is pi's not-found, the project pair leaves no model:
+    `--api-key requires a model`). A route from the global settings or a trusted project's
+    is the user's own choice, so the typed key going there is a stated residual;
   - an id OpenRouter's catalogue lists under a prefix that is not a provider
     (`x-ai/grok-4.3`) — step 2's hit, as in pi (`model-resolver.ts:465-504`). This build
     has 195 such ids: 163 are sole exact hits and go there; the 32 another provider also
@@ -730,6 +736,13 @@ it offers nothing and the user is told to `/model`. The call site itself (the vi
 to `find_initial_model`, not the raw registry) is pinned through the real `run_tui` and
 `/login` (§4, round 5): the fourth verification replaced it with the registry and every
 test stayed green while `probe_login.py` went to `aiplatform.googleapis.com` again.
+
+> **2026-10-06 note (#369, [ADR-0252](0252-project-settings-follow-project-trust.md) §2.D).**
+> The saved-default arm now reads the user's GLOBAL pair only, never the merged one: the
+> pick is persisted globally, and a merged read laundered a project's pair into the
+> default every other directory uses. An untrusted project's file is not read at all any
+> more. The call-site test above moved its pair from the project file to the global
+> settings so its raw-registry sabotage keeps biting.
 
 ### 2.11 The late-registered path refuses (#367, 2026-10-03)
 
@@ -1643,12 +1656,23 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   gating") its `SettingsManager` reads project settings only when the project is trusted
   (`settings-manager.ts` `fromStorageWithPaths` → `tryLoadFromStorage(storage, "project",
   projectTrusted)`; `setProjectTrusted(false)` empties them, @ `88ff80b98`), while aelix's
-  reads `.aelix/settings.json` whatever the trust answer. Porting that is #369. Under
-  `--api-key` the typed key rides such a route as well: a project file's
-  `defaultProvider: openrouter` (homing a bare `--model model-x`) or its pair
-  `openrouter` + `<id>` takes the typed key to `openrouter.ai`, with or without
-  `--approve` (§2.7; #370 round 2, `.omc/probes/370-live/fix2/settings-routes.txt`) — not
-  guard 2, and unchanged by #370.
+  reads `.aelix/settings.json` whatever the trust answer. Porting that is #369.
+  **Closed 2026-10-06 by #369 ([ADR-0252](0252-project-settings-follow-project-trust.md)):**
+  an untrusted directory's `.aelix/settings.json` is neither read nor written, and the file
+  is now a trust-requiring resource, so S1 and S3 make no request ("No model selected.");
+  the post-`/login` pick reads the global pair only, so the laundering is gone too. A
+  TRUSTED project's pair is still applied, `.env` key included (S1A) — the reinforcement
+  was declined, ADR-0252 §2.F, the same reasoning as the trusted agent-profile row below.
+  Under `--api-key` the typed key rides such a route as well — not guard 2, and unchanged
+  by #370 (§2.7): #370's round 2, measured before #369 landed, sent it to `openrouter.ai`
+  from a project file's `defaultProvider: openrouter` (homing a bare `--model model-x`) or
+  its pair `openrouter` + `<id>`, with or without `--approve`
+  (`.omc/probes/370-live/fix2/settings-routes.txt`). Since #369 only a TRUSTED project's
+  file can (`--approve`, or a Trust answer); an untrusted one is not read, so those rows
+  without `--approve` attach and send nothing (4 of 4; the 8 global and `--approve` rows
+  still send it, `.omc/probes/369-live/rebase2/settings-routes-head.txt`). The global
+  settings' routes and a trusted project's are the user's own choice and stay — a stated
+  residual (§2.7).
 - **A trusted project's agent profile naming `provider:`** is an explicit route (§2.1 E)
   that a `.env` key then authenticates: `--agent repo --approve` with a project
   `.aelix/agents/repo.md` carrying `provider: openai` and `model: gpt-4o-mini` reaches
@@ -1786,9 +1810,9 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   namespace ids, `auto`) is OpenRouter's answer, not aelix's; see §3 for the one measured.
 - **Mixed-case control names on Windows** (`Aelix_Future_API_KEY` slips past
   `_DOTENV_NEVER`'s case-sensitive `^AELIX_`) predate this and are a follow-up.
-- #363 (the launch composition and a re-pointed built-in's key order), #365, #368, #369 (an
-  untrusted project's settings, the pair above). #367 (the late path refuses) is closed
-  (§2.11, 2026-10-03).
+- #363 (the launch composition and a re-pointed built-in's key order), #365, #368. Closed:
+  #367 (the late path refuses; §2.11, 2026-10-03) and #369 (an untrusted project's
+  settings, the pair above; ADR-0252, 2026-10-06).
 
 ## 7. Owner decisions recorded here
 
@@ -1859,6 +1883,10 @@ Decided in this lane, each with the recommendation followed and put to the owner
    launch-semantics change, not made here. Note the laundering path (§6): a
    no-credential session's post-`/login` pick can persist the project's pair into the
    global settings, where it then reads as the user's own.
+   **Closed 2026-10-06 by #369 ([ADR-0252](0252-project-settings-follow-project-trust.md)):**
+   the pi direction — an untrusted project's settings are not read; guard 1 is NOT applied
+   to a trusted project's pair (ADR-0252 §2.F); the post-`/login` pick reads the global
+   pair only (§2.D there).
 12. **Settings `defaultProvider` in step 2 counts only for the user's own credential or
    endpoint while the user holds one** (§2.1; the main loop's decision on the fourth
    verification's B1). Alternatives: drop the tie-break (pi) — which also drops the

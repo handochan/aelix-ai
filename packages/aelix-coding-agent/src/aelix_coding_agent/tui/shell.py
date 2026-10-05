@@ -1608,11 +1608,18 @@ async def run_tui(
 
         aelix had no way to answer the project-trust question after startup: the
         one-shot selector runs before ``run_tui`` exists, so a user who declined
-        (or was never asked, then saw resources appear) could only restart. pi
-        has had ``/trust`` all along; this is pure parity, and it is what makes
-        the #112 pi-parity decision livable — the store is read fresh on every
-        access, so a decision made here is picked up by the next rebuild with no
-        restart.
+        (or was never asked, then saw resources appear) could only edit
+        ``trust.json`` by hand. pi has had ``/trust`` all along; this is parity.
+
+        It SAVES a decision for the next launch; it does not change this one
+        (pi @ ``b223082bb`` ``interactive-mode.ts:5299``: "Restart … for this to
+        take effect."). The process's trust is decided once in ``cli/entry.py``
+        and passed by value into every rebuild and into ``SettingsManager``, so
+        ``/reload`` does not apply it either. This docstring and the message
+        used to say the opposite ("the store is read fresh … picked up by the
+        next rebuild", "Run /reload to apply it"); measured false in a pty on
+        ``5dee21d1`` (#369): untrusted at launch, ``/trust`` → Trust, ``/reload``,
+        and the project prompt template was still "Unknown command".
         """
 
         from pathlib import Path
@@ -1629,7 +1636,9 @@ async def run_tui(
         try:
             label = await context.select(
                 format_project_trust_prompt(cwd_path),
-                project_trust_options(cwd_path),
+                # No "this session only" options (pi ``trust-selector.ts:44``):
+                # nothing decided here applies to this session.
+                project_trust_options(cwd_path, include_session_only=False),
             )
         except Exception as exc:  # noqa: BLE001 — never kill the REPL
             _commit(Text(f"✖ trust: {exc}", style="bold red"))
@@ -1649,7 +1658,7 @@ async def run_tui(
         _commit(
             Text(
                 f"Project {verdict} ({scope}): {target}\n"
-                "Run /reload to apply it to project-local resources.",
+                "Restart aelix for this to take effect.",
                 style="yellow",
             )
         )
@@ -1735,8 +1744,9 @@ async def run_tui(
         #          ever replaces something already broken.
         #      (b) pi scopes the pick to the provider just authenticated; we
         #          reuse ``find_initial_model``'s cascade over everything now
-        #          available, which additionally honours a saved settings
-        #          default that pi's login path ignores. On the first-run path
+        #          available, which additionally honours the user's own saved
+        #          default (GLOBAL settings — never a project's, #369) that pi's
+        #          login path ignores. On the first-run path
         #          the two coincide (``get_available()`` was empty a moment ago,
         #          so everything in it came from the credential just stored); on
         #          a later ``/login`` the cascade can prefer the user's saved
@@ -1750,7 +1760,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3442``) always passes one, so this is
+            # production caller (``entry.py:3501``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -1772,9 +1782,17 @@ async def run_tui(
             default_provider = None
             default_model_id = None
             if settings_manager is not None:
+                # #369 — the GLOBAL pair only. The pick is persisted to global
+                # settings below, so a merged read turned a project
+                # ``.aelix/settings.json`` pair into the user's own default for
+                # every later directory (measured on ``5dee21d1``: an untrusted
+                # repo's ``openai``/``gpt-4o-mini`` landed in global settings
+                # after ``/login``). A trusted project's pair still runs its own
+                # launches; it just is not laundered into the user's file.
                 with contextlib.suppress(Exception):
-                    default_provider = settings_manager.get_default_provider()
-                    default_model_id = settings_manager.get_default_model()
+                    own = settings_manager.get_global_settings()
+                    default_provider = own.default_provider
+                    default_model_id = own.default_model
             # No cli_provider/cli_model is passed: that arm of the cascade can
             # ``sys.exit(1)`` on a bad pair, which must never happen inside a
             # live TUI.
@@ -3512,11 +3530,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1311``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1329``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1312`` already printed at startup, and one that
+    #       what ``entry.py:1330`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3999,7 +4017,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3373-3389 and
+            # Two audiences, discriminated exactly as entry.py:3432-3448 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider
@@ -4101,8 +4119,9 @@ class _RouteAuthView:
     everything, so they still get a model.
 
     ``find`` offers only what ``get_available`` offers. The saved-default arm
-    (settings ``defaultProvider``/``defaultModel`` — a project
-    ``.aelix/settings.json`` is the repo's) reads ``find``; forwarding it to the
+    (settings ``defaultProvider``/``defaultModel`` — the GLOBAL pair since
+    #369; it used to be the merged one, which a project
+    ``.aelix/settings.json`` set) reads ``find``; forwarding it to the
     registry let that arm pick a provider only a cwd ``.env`` authenticated
     (Codex's second cross-review of ``a0edf615``, F1: ``google-vertex`` on the
     file's key, where the session without the ``.env`` went to ``openrouter.ai``

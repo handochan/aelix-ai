@@ -12,6 +12,12 @@ Gates the arbitrary-code-execution and identity surfaces aelix exposes from an
   tool allow-list and skill dirs. See
   :func:`has_trust_requiring_project_resources` for why this is gated while
   ``AGENTS.md`` is not.
+- ``cwd/.aelix/skills/`` and ``cwd/.aelix/prompt-templates/`` (#115) — text
+  placed into the agent's instructions.
+- ``cwd/.aelix/settings.json`` (#369, pi ``trust-manager.ts:30-39``) — the
+  project settings scope, which can choose the default model and provider the
+  prompts go to. ``SettingsManager`` neither reads nor writes it until the CLI
+  calls ``set_project_trusted(True)`` after this module's decision.
 
 Explicit ``-e <path>`` extensions, ``$AELIX_MCP_CONFIG`` / global MCP,
 ``--agent-file`` profiles outside the project, and installed entry-point
@@ -35,10 +41,10 @@ This is a since-pin pi feature (pi added Project Trust after aelix's pin
 - ``cli/project-trust.ts`` — the UI bridge (TUI vs non-interactive).
 
 Aelix narrows the resource set to the surfaces listed above (pi's
-``settings.json``/``skills``/``prompts``/``themes``/``SYSTEM.md``/
-``APPEND_SYSTEM.md`` loaders do not exist in aelix yet — Sprint spec §2.2) and
-widens it by one aelix-original family, ``agents/``, which pi has no analogue
-for.
+``themes``/``SYSTEM.md``/``APPEND_SYSTEM.md`` loaders do not exist in aelix
+yet — Sprint spec §2.2; ``skills`` and ``prompts`` joined with #115 and
+``settings.json`` with #369) and widens it by one aelix-original family,
+``agents/``, which pi has no analogue for.
 
 Issue #5 (Lane C) closed ONE of the originally-deferred protected-core items
 end-to-end — ``ctx.is_project_trusted()`` (the event types live in
@@ -131,6 +137,8 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
 
     Returns ``True`` iff ANY of:
 
+    - ``cwd/.aelix/settings.json`` exists, whatever its kind (#369 — see the
+      clause comment below), OR
     - ``cwd/.aelix/extensions/`` exists as a directory with at least one
       entry (an empty dir loads nothing → no gate), OR
     - ``cwd/.aelix/mcp.json`` is a file, OR
@@ -155,6 +163,30 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
     """
 
     aelix_dir = cwd / CONFIG_DIR_NAME
+
+    # #369 — the project SETTINGS file (pi @ ``b223082bb``
+    # ``trust-manager.ts:30-39`` lists ``settings.json`` first).
+    # ``SettingsManager`` now follows the trust decision (pi ``89a92207f``), and
+    # that is only half a mechanism without this clause: a repo whose ONLY
+    # ``.aelix`` resource is ``settings.json`` would short-circuit to trusted at
+    # step 2 with no prompt, exactly as the ``agents/`` and #115 clauses below
+    # record for their families. Measured on ``5dee21d1``: such a repo's
+    # ``{"defaultProvider": "openai", "defaultModel": "gpt-4o-mini"}`` plus a
+    # ``.env`` ``OPENAI_API_KEY`` sent a plain ``aelix -p hi`` to
+    # api.openai.com, with ``--no-approve`` too.
+    #
+    # EXISTENCE, as pi (``existsSync``, ``trust-manager.ts:192``), not a file
+    # test (#369 round 2): with ``is_file()`` a FIFO or a directory named
+    # ``settings.json`` was "no resource", so a saved DENIAL never applied —
+    # step 2 trusted the repo and the loader then opened the FIFO (measured on
+    # ``67281070``, ``.omc/probes/369-live/fix2/c1_fifo_on_67281070.out``).
+    # Anything at that path asks; an untrusted manager never opens it.
+    settings_json = aelix_dir / "settings.json"
+    try:
+        if settings_json.exists():
+            return True
+    except OSError:
+        pass
 
     extensions_dir = aelix_dir / "extensions"
     try:
@@ -284,8 +316,8 @@ def format_project_trust_prompt(cwd: Path) -> str:
     consent to exactly what this string discloses, and a user cannot approve a
     surface the prompt never mentioned. "agent profiles" was added with the
     ``.aelix/agents/`` clause (ADR-0196); "skills" and "prompt templates" with
-    the #115 clause. Keep them in lockstep, and extend both together when
-    ``.aelix/teams/`` lands in P4.
+    the #115 clause; ".aelix/settings.json" with the #369 clause. Keep them in
+    lockstep, and extend both together when ``.aelix/teams/`` lands in P4.
 
     The consequence is spelled in TWO clauses because the families carry two
     different risks and one sentence covering both would misdescribe each. Code
@@ -293,15 +325,19 @@ def format_project_trust_prompt(cwd: Path) -> str:
     into the agent's instructions is the skills/templates risk and understates
     what an extension can do. A user reading "can execute arbitrary code" next
     to "skills" would reasonably conclude a skill runs code, which is false.
+    The settings file carries a third risk, so it gets a third clause: it runs
+    no code and writes no instructions, but it can choose where the prompts go
+    (#369).
     """
 
     return (
         "Trust project folder?\n"
         f"{cwd}\n\n"
         "This allows Aelix to load .aelix extensions, MCP servers, and agent "
-        "profiles, which can execute arbitrary code on your machine — and to "
+        "profiles, which can execute arbitrary code on your machine — to "
         "load .aelix skills and prompt templates, whose text is placed into "
-        "the agent's instructions."
+        "the agent's instructions — and to apply .aelix/settings.json, which "
+        "can choose the model and provider your prompts are sent to."
     )
 
 
@@ -314,13 +350,20 @@ _OPT_NO_TRUST_SESSION = "Do not trust (this session only)"
 _OPT_TRUST_PARENT_FMT = "Trust parent folder ({parent})"
 
 
-def project_trust_options(cwd: Path, *, include_parent: bool = True) -> list[str]:
+def project_trust_options(
+    cwd: Path, *, include_parent: bool = True, include_session_only: bool = True
+) -> list[str]:
     """Pi-faithful option list for the trust selector.
 
     Order mirrors pi's ``getProjectTrustOptions``: Trust, then the optional
     Trust-parent, then the session-only + do-not-trust variants. ``cwd`` is
     canonicalized for the parent label only; the parent option is omitted at
     the filesystem root (no distinct parent).
+
+    ``include_session_only=False`` is pi's ``/trust`` selector
+    (``trust-selector.ts:44`` calls ``getProjectTrustOptions(cwd)`` without
+    ``includeSessionOnly``): a decision made mid-session applies from the next
+    launch, so a "this session only" answer there would change nothing (#369).
     """
 
     options = [_OPT_TRUST]
@@ -328,7 +371,11 @@ def project_trust_options(cwd: Path, *, include_parent: bool = True) -> list[str
         parent = cwd.parent
         if parent != cwd:
             options.append(_OPT_TRUST_PARENT_FMT.format(parent=parent))
-    options.extend([_OPT_TRUST_SESSION, _OPT_NO_TRUST, _OPT_NO_TRUST_SESSION])
+    if include_session_only:
+        options.append(_OPT_TRUST_SESSION)
+    options.append(_OPT_NO_TRUST)
+    if include_session_only:
+        options.append(_OPT_NO_TRUST_SESSION)
     return options
 
 

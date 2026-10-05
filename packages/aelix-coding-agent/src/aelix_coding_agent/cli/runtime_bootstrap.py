@@ -1821,8 +1821,8 @@ def resolve_route(
        sole user-defined one among those, else pi's ambiguity error; none: a
        bare id under settings ``defaultProvider`` (when it counts), else guard
        2 (never under ``--api-key``, #370), else pi's not-found error. ``defaultProvider`` is the MERGED setting,
-       which a project ``.aelix/settings.json`` sets even over the user's global
-       one (and in an untrusted directory), so while the user holds a
+       which a TRUSTED project's ``.aelix/settings.json`` sets even over the
+       user's global one (an untrusted one is not read since #369), so while the user holds a
        route-authenticating credential of their own anywhere
        (:func:`holds_route_auth`) it counts only when it names a provider that
        credential authenticates, or the user's own endpoint

@@ -229,11 +229,17 @@ async def test_the_login_command_picks_through_the_route_auth_view(
     the ``.env`` key again. This drives the real ``run_tui`` and the real
     ``/login`` command (``test_first_run_onboarding_shell``'s headless
     scaffolding; only ``run_login`` is replaced by what its API-key sub-flow
-    stores): the project's ``.aelix/settings.json`` names
-    ``openai/gpt-4o-mini`` and, in one half, its ``.env`` carries
-    ``OPENAI_API_KEY``; ``/login`` stores the user's own OpenRouter key. The
-    model set on the harness, and the bearer the registry hands its request,
-    are the user's in both halves.
+    stores): the saved settings default names ``openai/gpt-4o-mini`` and, in
+    one half, the project's ``.env`` carries ``OPENAI_API_KEY``; ``/login``
+    stores the user's own OpenRouter key. The model set on the harness, and the
+    bearer the registry hands its request, are the user's in both halves.
+
+    #369 moved the pair from the project's ``.aelix/settings.json`` to the
+    user's GLOBAL settings: the post-login pick now reads the global pair only
+    (a project pair never reaches it, ``test_project_settings_trust_369.py``),
+    so a project pair would leave the saved-default arm empty and the
+    raw-registry sabotage above green. In global settings the arm still offers
+    ``openai/gpt-4o-mini``, and only the view keeps it off the ``.env`` key.
     """
 
     from aelix_ai.settings import SettingsManager
@@ -248,12 +254,12 @@ async def test_the_login_command_picks_through_the_route_auth_view(
 
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".aelix").mkdir()
-    (project / ".aelix" / "settings.json").write_text(
-        json.dumps({"defaultProvider": "openai", "defaultModel": "gpt-4o-mini"}),
+    (agent / "settings.json").write_text(
+        json.dumps(
+            {"checkForUpdates": False, "defaultProvider": "openai", "defaultModel": "gpt-4o-mini"}
+        ),
         encoding="utf-8",
     )
-    (agent / "settings.json").write_text(json.dumps({"checkForUpdates": False}), encoding="utf-8")
     monkeypatch.setenv("AELIX_SETTINGS_PATH", str(agent / "settings.json"))
     if with_dotenv:
         (project / ".env").write_text("OPENAI_API_KEY=project-openai-fake\n", encoding="utf-8")

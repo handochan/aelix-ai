@@ -17,7 +17,7 @@ own ``explorer``.
 
 The project tier is gated because a profile is an identity: it can replace the
 system prompt, swap the model, and (outside project scope) name extensions.
-``cli/project_trust.py:174-199`` learns about ``.aelix/agents/`` in the same
+``cli/project_trust.py:206-231`` learns about ``.aelix/agents/`` in the same
 change that adds this module — without that, ``project_trusted`` here is
 decorative (an agents-only ``.aelix`` resolves trusted with no prompt in every
 mode).
@@ -101,7 +101,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:82``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_dirs`` (``entry.py:1068``).
+    same convention as ``_resolve_skill_dirs`` (``entry.py:1086``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"

@@ -13,7 +13,7 @@ pinned here:
   the child's Notice goes to stderr where a successful run never surfaces it;
 * clause 2 is the escalation the flag exists for — a MODEL-CHOSEN cwd
   inheriting a monorepo root's persisted ``trust.json`` through the
-  nearest-ancestor walk (``project_trust.py:703-710``, transitivity documented
+  nearest-ancestor walk (``project_trust.py:750-757``, transitivity documented
   at ``:60-61``) and executing a vendored ``.aelix/extensions/*.py`` the parent
   itself never loaded.
 """
@@ -41,7 +41,7 @@ def _aelix(root: Path) -> Path:
 def test_same_cwd_no_trust_resources_emits_nothing(tmp_path: Path) -> None:
     """THE CLAUSE-1 PIN — an empty directory has no authority to withhold.
 
-    Step 2 of ``resolve_project_trusted`` (``project_trust.py:678-680``) would
+    Step 2 of ``resolve_project_trusted`` (``project_trust.py:725-727``) would
     have returned ``True`` for the PARENT in this directory too, so denying the
     child buys nothing.
 

@@ -295,6 +295,10 @@ def deep_merge_settings(base: Settings, overrides: Settings) -> Settings:
     return result
 
 
+# #369 — pi @ ``b223082bb`` ``settings-manager.ts:664`` verbatim.
+_PROJECT_NOT_TRUSTED_WRITE = "Project is not trusted; refusing to write project settings"
+
+
 class SettingsManager:
     """Pi parity: ``settings-manager.ts:241-1067`` ``SettingsManager``.
 
@@ -316,8 +320,15 @@ class SettingsManager:
         global_load_error: BaseException | None = None,
         project_load_error: BaseException | None = None,
         initial_errors: list[SettingsError] | None = None,
+        project_trusted: bool = True,
     ) -> None:
         self._storage: SettingsStorage = storage
+        # #369 (pi ``89a92207f``; lines below are pi @ ``b223082bb``): whether
+        # the project scope is read and written at all. Default TRUSTED, as pi's
+        # ``projectTrusted ?? true`` (``settings-manager.ts:442``), so embedders and unit tests keep the
+        # merged view; the CLI builds untrusted and flips it after the trust
+        # decision (``cli/entry.py``).
+        self._project_trusted: bool = project_trusted
         self._global_settings: Settings = initial_global
         self._project_settings: Settings = initial_project
         self._global_load_error: BaseException | None = global_load_error
@@ -343,9 +354,19 @@ class SettingsManager:
 
     @staticmethod
     def create(
-        cwd: str | Path, agent_dir: str | Path | None = None
+        cwd: str | Path,
+        agent_dir: str | Path | None = None,
+        *,
+        project_trusted: bool = True,
     ) -> SettingsManager:
         """Pi parity: ``settings-manager.ts:273-276`` ``SettingsManager.create``.
+
+        ``project_trusted`` (#369, pi @ ``b223082bb``
+        ``SettingsManagerCreateOptions`` ``:269-271``): ``False`` means the project ``.aelix/settings.json`` is
+        neither opened nor written until :meth:`set_project_trusted` says so.
+        The default is pi's (trusted). Every production construction site in
+        ``aelix_coding_agent.cli`` passes it explicitly (pinned by
+        ``tests/cli/test_project_settings_trust_369.py``).
 
         Resolves ``agent_dir`` via :func:`default_settings_path` when not
         supplied. Mirrors :func:`aelix_ai.oauth.auth_storage.default_auth_path`
@@ -373,17 +394,26 @@ class SettingsManager:
                 # would resolve to.
                 agent_dir = default_settings_path().parent
             storage = FileSettingsStorage(cwd, agent_dir)
-        return SettingsManager.from_storage(storage)
+        return SettingsManager.from_storage(
+            storage, project_trusted=project_trusted
+        )
 
     @staticmethod
-    def from_storage(storage: SettingsStorage) -> SettingsManager:
-        """Pi parity: ``settings-manager.ts:279-298`` ``SettingsManager.fromStorage``."""
+    def from_storage(
+        storage: SettingsStorage, *, project_trusted: bool = True
+    ) -> SettingsManager:
+        """Pi parity: ``settings-manager.ts:279-298`` ``SettingsManager.fromStorage``.
+
+        ``project_trusted`` as in pi @ ``b223082bb`` ``fromStorageWithPaths``
+        (``:437-464``): an
+        untrusted manager never calls ``storage.with_lock("project", …)``.
+        """
 
         global_settings, global_err = SettingsManager._try_load(
             storage, "global"
         )
         project_settings, project_err = SettingsManager._try_load(
-            storage, "project"
+            storage, "project", project_trusted
         )
         initial_errors: list[SettingsError] = []
         if global_err is not None:
@@ -401,11 +431,14 @@ class SettingsManager:
             global_err,
             project_err,
             initial_errors,
+            project_trusted=project_trusted,
         )
 
     @staticmethod
     def in_memory(
         settings: Settings | dict[str, Any] | None = None,
+        *,
+        project_trusted: bool = True,
     ) -> SettingsManager:
         """Pi parity: ``settings-manager.ts:301-306`` ``SettingsManager.inMemory``.
 
@@ -431,13 +464,25 @@ class SettingsManager:
             storage.with_lock(
                 "global", lambda _: json.dumps(initial_dict, indent=2)
             )
-        return SettingsManager.from_storage(storage)
+        return SettingsManager.from_storage(
+            storage, project_trusted=project_trusted
+        )
 
     @staticmethod
     def _load_from_storage(
-        storage: SettingsStorage, scope: SettingsScope
+        storage: SettingsStorage,
+        scope: SettingsScope,
+        project_trusted: bool = True,
     ) -> Settings:
-        """Pi parity: ``settings-manager.ts:308-320`` ``loadFromStorage``."""
+        """Pi parity: ``settings-manager.ts:308-320`` ``loadFromStorage``.
+
+        #369 (pi @ ``b223082bb`` ``:473-476``): an untrusted project scope is empty BEFORE any
+        storage access, so the file is never opened, flock'd or parsed — a
+        malformed untrusted file reports nothing either.
+        """
+
+        if scope == "project" and not project_trusted:
+            return Settings()
 
         content_holder: list[str | None] = [None]
 
@@ -455,13 +500,17 @@ class SettingsManager:
 
     @staticmethod
     def _try_load(
-        storage: SettingsStorage, scope: SettingsScope
+        storage: SettingsStorage,
+        scope: SettingsScope,
+        project_trusted: bool = True,
     ) -> tuple[Settings, BaseException | None]:
         """Pi parity: ``settings-manager.ts:322-331`` ``tryLoadFromStorage``."""
 
         try:
             return (
-                SettingsManager._load_from_storage(storage, scope),
+                SettingsManager._load_from_storage(
+                    storage, scope, project_trusted
+                ),
                 None,
             )
         except BaseException as exc:  # noqa: BLE001 — Pi parity
@@ -580,6 +629,12 @@ class SettingsManager:
 
         self._errors.append(SettingsError(scope=scope, error=error))
 
+    def _assert_project_trusted_for_write(self) -> None:
+        """#369, pi @ ``b223082bb`` ``assertProjectTrustedForWrite`` (``:662-666``), text verbatim."""
+
+        if not self._project_trusted:
+            raise RuntimeError(_PROJECT_NOT_TRUSTED_WRITE)
+
     def _clear_modified_scope(self, scope: SettingsScope) -> None:
         """Pi parity: ``settings-manager.ts:463-472`` ``clearModifiedScope``."""
 
@@ -589,6 +644,46 @@ class SettingsManager:
         else:
             self._modified_project_fields.clear()
             self._modified_project_nested_fields.clear()
+
+    # === Project trust (#369, pi @ ``b223082bb`` ``settings-manager.ts:578-603``) ===
+
+    def is_project_trusted(self) -> bool:
+        """Pi parity: ``isProjectTrusted`` (pi @ ``b223082bb`` ``:578-580``)."""
+
+        return self._project_trusted
+
+    def set_project_trusted(self, trusted: bool) -> None:
+        """Pi parity: ``setProjectTrusted`` (pi @ ``b223082bb`` ``:582-603``).
+
+        Untrusted: the project scope becomes empty (and its load error is
+        forgotten) without touching the file. Trusted: the project file is read
+        now, and a load error is recorded for :meth:`drain_errors` exactly as at
+        construction. Either way the project modification sets are cleared and
+        the merged view is rebuilt. A no-op when the value does not change.
+        """
+
+        if self._project_trusted == trusted:
+            return
+        self._project_trusted = trusted
+        self._modified_project_fields.clear()
+        self._modified_project_nested_fields.clear()
+        if not trusted:
+            self._project_settings = Settings()
+            self._project_load_error = None
+            self._settings = deep_merge_settings(
+                self._global_settings, self._project_settings
+            )
+            return
+        project_settings, project_err = SettingsManager._try_load(
+            self._storage, "project", True
+        )
+        self._project_settings = project_settings
+        self._project_load_error = project_err
+        if project_err is not None:
+            self._record_error("project", project_err)
+        self._settings = deep_merge_settings(
+            self._global_settings, self._project_settings
+        )
 
     # === Public read surface ===
 
@@ -622,6 +717,8 @@ class SettingsManager:
         2. Load global storage -> ``_global_settings`` (or capture error).
         3. Clear all 4 modification tracking sets (Pi `:414-417`).
         4. Load project storage -> ``_project_settings`` (or capture error).
+           An untrusted project stays empty (#369, pi @ ``b223082bb``
+           ``:623`` keeps ``projectTrusted`` across a reload).
         5. Re-merge via :func:`deep_merge_settings`.
         """
 
@@ -642,7 +739,7 @@ class SettingsManager:
         self._modified_project_nested_fields.clear()
 
         project_settings, project_err = SettingsManager._try_load(
-            self._storage, "project"
+            self._storage, "project", self._project_trusted
         )
         if project_err is None:
             self._project_settings = project_settings
@@ -749,6 +846,11 @@ class SettingsManager:
     ) -> None:
         async with self._async_locks.for_scope(scope):
             try:
+                if scope == "project":
+                    # pi ``enqueueWrite`` (@ b223082bb :683-694) asserts INSIDE the queued
+                    # task too: a write queued while trusted and run after
+                    # ``set_project_trusted(False)`` is refused, recorded.
+                    self._assert_project_trusted_for_write()
                 self._persist_scoped_settings(
                     scope,
                     snapshot_settings,
@@ -861,6 +963,7 @@ class SettingsManager:
     def _save_project_settings(self, settings: Settings) -> None:
         """Pi parity: ``settings-manager.ts:540-554`` ``saveProjectSettings``."""
 
+        self._assert_project_trusted_for_write()
         self._project_settings = copy.deepcopy(settings)
         self._settings = deep_merge_settings(
             self._global_settings, self._project_settings
@@ -1075,11 +1178,14 @@ class SettingsManager:
         """Pi parity: ``settings-manager.ts::getDefaultProjectTrust`` (884-887). Default: "ask".
 
         SECURITY (issue #5): reads the GLOBAL scope ONLY (``self._global_settings``),
-        NOT the merged ``self._settings`` that every other getter uses. A project's
-        own ``.aelix/settings.json`` is loaded ungated, so reading the merged view
-        would let an untrusted project set ``defaultProjectTrust: "always"`` in its
-        project settings and SELF-ELEVATE to trusted, defeating the trust gate. pi
-        makes this a global-only setting for exactly this reason.
+        NOT the merged ``self._settings`` that every other getter uses. The trust
+        decision this setting feeds is taken BEFORE the project scope is read (the
+        CLI builds the manager untrusted and calls :meth:`set_project_trusted`
+        after deciding — #369), and even a TRUSTED project must not choose the
+        default for every other directory: a merged read would let a repo set
+        ``defaultProjectTrust: "always"`` and SELF-ELEVATE. pi makes this a
+        global-only setting for exactly this reason. (Before #369 the project
+        scope was loaded ungated, which made this the only barrier.)
 
         PRECONDITION (ADR-0203). This protects against a repo's
         ``.aelix/settings.json``. It protects against a repo's ``.env`` only
@@ -1113,11 +1219,12 @@ class SettingsManager:
         is willing to spawn a second aelix process at all.
 
         SECURITY: reads the GLOBAL scope ONLY (``self._global_settings``), never
-        the merged ``self._settings`` that every other getter uses. Project
-        settings are loaded UNGATED, so a merged read would let any cloned repo
-        switch delegation ON by shipping ``.aelix/settings.json`` — the same
-        self-elevation defeat, and the same fix, as
-        :meth:`get_default_project_trust`.
+        the merged ``self._settings`` that every other getter uses. Since #369
+        project settings follow project trust, so an untrusted repo's file is
+        not read at all; global-only stays as defence in depth, because a
+        TRUSTED repo must not switch delegation ON by shipping
+        ``.aelix/settings.json`` either — the same self-elevation defeat, and
+        the same fix, as :meth:`get_default_project_trust`.
 
         PRECONDITION (ADR-0203). "A cloned repo cannot switch delegation ON" is
         true of ``.aelix/settings.json`` unconditionally, and of a repo ``.env``
@@ -1387,6 +1494,7 @@ class SettingsManager:
     def set_project_packages(self, packages: list[PackageSource]) -> None:
         """Pi parity: ``settings-manager.ts::setProjectPackages`` (line 817-822)."""
 
+        self._assert_project_trusted_for_write()
         project_settings = copy.deepcopy(self._project_settings)
         project_settings.packages = list(packages)
         self._mark_project_modified("packages")
@@ -1399,9 +1507,18 @@ class SettingsManager:
     # dedupe, name-resolution) lives in the coding-agent CLI; this manager just
     # persists the raw list, keeping the aelix-ai settings layer thin.
     def get_extension_sources(self) -> list[ExtensionSourceObject]:
-        """Return the registered extension install sources (defensive copy)."""
+        """Return the registered extension install sources (defensive copy).
 
-        return list(self._settings.extension_sources or [])
+        Reads the GLOBAL scope only (#369), as the comment above always said:
+        the merged read let a project ``.aelix/settings.json`` list an index
+        that ``aelix extension source add`` then wrote into the user's global
+        file, and that ``install`` folds into pip's ``--index-url``. Global-only
+        holds whatever the project's trust (a TRUSTED project must not register
+        a user-level install source either) — the :meth:`get_features_agents`
+        precedent.
+        """
+
+        return list(self._global_settings.extension_sources or [])
 
     def set_extension_sources(
         self, sources: list[ExtensionSourceObject]
@@ -1425,9 +1542,14 @@ class SettingsManager:
     # identities the user has suppressed via ``source remove``; the coding-agent
     # CLI owns the identity/tombstone logic, this manager just persists the list.
     def get_suppressed_default_catalogs(self) -> list[str]:
-        """Return the suppressed default-catalog identities (defensive copy)."""
+        """Return the suppressed default-catalog identities (defensive copy).
 
-        return list(self._settings.suppressed_default_catalogs or [])
+        GLOBAL scope only (#369), for the reason :meth:`get_extension_sources`
+        gives: the merged read let a project opt the user out of the built-in
+        catalog, which the comment above says it must not.
+        """
+
+        return list(self._global_settings.suppressed_default_catalogs or [])
 
     def set_suppressed_default_catalogs(self, identities: list[str]) -> None:
         """Replace the suppressed default-catalog identities (GLOBAL scope).
@@ -1458,6 +1580,7 @@ class SettingsManager:
     def set_project_extension_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setProjectExtensionPaths`` (line 834-839)."""
 
+        self._assert_project_trusted_for_write()
         project_settings = copy.deepcopy(self._project_settings)
         project_settings.extensions = list(paths)
         self._mark_project_modified("extensions")
@@ -1479,6 +1602,7 @@ class SettingsManager:
     def set_project_skill_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setProjectSkillPaths`` (line 851-856)."""
 
+        self._assert_project_trusted_for_write()
         project_settings = copy.deepcopy(self._project_settings)
         project_settings.skills = list(paths)
         self._mark_project_modified("skills")
@@ -1500,6 +1624,7 @@ class SettingsManager:
     def set_project_prompt_template_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setProjectPromptTemplatePaths`` (line 868-873)."""
 
+        self._assert_project_trusted_for_write()
         project_settings = copy.deepcopy(self._project_settings)
         project_settings.prompts = list(paths)
         self._mark_project_modified("prompts")
@@ -1521,6 +1646,7 @@ class SettingsManager:
     def set_project_theme_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setProjectThemePaths`` (line 885-890)."""
 
+        self._assert_project_trusted_for_write()
         project_settings = copy.deepcopy(self._project_settings)
         project_settings.themes = list(paths)
         self._mark_project_modified("themes")

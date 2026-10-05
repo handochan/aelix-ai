@@ -42,9 +42,10 @@ key only in a project `.env` and a key of your own elsewhere,
 the `.env` key.
 
 The model picked for you after `/login` (when the current one cannot run)
-follows the same rule: a saved `defaultProvider`/`defaultModel` — your
-settings or a project's `.aelix/settings.json` — that only a project `.env`
-key authenticates is skipped while you hold a key of your own. A program
+follows the same rule: your saved `defaultProvider`/`defaultModel` (global
+settings only — a project's `.aelix/settings.json` is never read there, #369)
+that only a project `.env` key authenticates is skipped while you hold a key
+of your own. A program
 that runs RPC mode with a model registry gets the same from `cycle_model`,
 which rotates only through models the rule leaves; `set_model` names its
 provider, so a `.env` key may authenticate it, as with `--provider`.
@@ -77,8 +78,9 @@ of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/deci
    `Model "gpt-4o-mini" is ambiguous across providers: azure-openai-responses/gpt-4o-mini,
    cloudflare-ai-gateway/gpt-4o-mini, openai/gpt-4o-mini. … Use --provider or
    provider/model.` A bare id nothing lists is sent to the `defaultProvider` as a
-   custom id. In both cases `defaultProvider` is the merged setting — a project's
-   `.aelix/settings.json` can set it, over yours — so while you hold a credential
+   custom id. In both cases `defaultProvider` is the merged setting — a trusted
+   project's `.aelix/settings.json` can set it, over yours (an untrusted one is
+   not read, [project-trust.md](project-trust.md)) — so while you hold a credential
    of your own it counts only when it names a provider your own credential
    authenticates, or a provider you defined (`models.json`, an extension, a
    re-pointed built-in); otherwise it is ignored and the error says so

@@ -1600,7 +1600,7 @@ async def test_agent_tool_refuses_project_scoped_profile_without_confirmation(
     """FINDING B5 — the model chose this string, so a repo file must not answer it.
 
     Directory trust is a yes-once decision ancestors inherit
-    (``project_trust.py:71-72``); it is NOT consent to a project-local IDENTITY,
+    (``project_trust.py:77-78``); it is NOT consent to a project-local IDENTITY,
     which additionally WINS a name collision against the user's own. No prompt
     is offered, because a prompt here would be a prompt the MODEL summoned.
     """

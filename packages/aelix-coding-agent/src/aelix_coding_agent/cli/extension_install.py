@@ -1799,6 +1799,22 @@ def _load_settings() -> SettingsManager:
 
     Mirrors the ``--list-models`` construction (entry.py): the SAME
     ``agent_dir`` as auth.json / mcp.json so ``settings.json`` is not split off.
+
+    #369 — ``project_trusted=False``, explicitly: this CLI reads and writes
+    only GLOBAL-scope fields (``extensionSources``,
+    ``suppressedDefaultCatalogs``, whose getters are global-only), so it has
+    no use for a project ``.aelix/settings.json`` and never opens one.
+
+    pi differs, for a reason this CLI does not share. Its package CLI also
+    builds untrusted (``package-manager-cli.ts:750``), but then resolves trust
+    for EVERY package/config command — vote extensions,
+    ``resolveProjectTrusted``, ``setProjectTrusted``; ``update`` uses the saved
+    decision only (``createCommandSettingsManager``, ``:743-789``) — because
+    those commands read the project's ``packages``; and it refuses a ``-l``
+    install/remove in an untrusted project (``:931``, ``:940-944``). aelix's
+    extension CLI reads no project-scoped field, so it stays untrusted and
+    never resolves (#369 round 2 corrected an earlier "pi resolves trust only
+    for its ``-l`` writes", which was false).
     """
 
     from aelix_ai.settings import SettingsManager
@@ -1806,7 +1822,7 @@ def _load_settings() -> SettingsManager:
     from .config import get_agent_dir
 
     return SettingsManager.create(
-        cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir())
+        cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir()), project_trusted=False
     )
 
 

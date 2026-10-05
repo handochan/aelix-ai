@@ -20,6 +20,14 @@ The Project-Trust orchestrator `resolve_project_trusted` (cli/project_trust.py) 
 
 > **AMENDED by [ADR-0203](0203-dotenv-admission-control.md).** That locking test covers only the project-`settings.json` route, so the guarantee above was narrower than it read. A global-scope-only **read** is worthless if the repo picks the **file** — and it could: a cwd `.env` setting `AELIX_SETTINGS_PATH` (or its sibling `AELIX_CODING_AGENT_DIR`) made a repo-controlled file the global settings store, self-elevating an untrusted directory end-to-end (`TRUST_GATE_DEFEATED`; both "skipped in an untrusted directory" notices disappeared). `.env` is read from `main_sync` before this gate exists. This decision is load-bearing as stated **only** because `load_dotenv` now refuses the four names in `_DOTENV_LOCKED` that decide where the global file lives. The two halves must be maintained together.
 
+> **2026-10-06 amendment ([ADR-0252](0252-project-settings-follow-project-trust.md), #369).**
+> "aelix loads a project's `.aelix/settings.json` ungated" is no longer true: the CLI builds
+> its `SettingsManager` untrusted and adds the project scope only after the trust decision,
+> and the file is itself a trust-requiring resource. The global-only read stays, as defence
+> in depth: a TRUSTED project must not set the default for every other directory either.
+> The vote-load above now also runs for a directory whose only `.aelix` resource is
+> `settings.json` (it has something to gate), as in pi.
+
 **2. Bootstrap reorder** (coding-agent glue, entry.py). Before `_resolve_project_trust`, load the **user/global-only** vote surface via `discover_and_load_extensions(..., no_project_local=True)` with **no `prepend` built-ins**, then thread `extensions=` + `default_project_trust=settings_manager.get_default_project_trust()` + an `on_extension_error` stderr sink into `resolve_project_trusted`.
 
 **🔒 SECURITY — the vote-load is user/global ONLY** (`no_project_local=True`): an untrusted `cwd/.aelix/extensions/*.py` is NEVER `exec_module`'d before the gate. Built-ins are excluded (Guardrail/permission have no `project_trust` handler and the held-ref `permission_ext` must be instantiated exactly once, by the factory).

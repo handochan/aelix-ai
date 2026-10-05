@@ -522,7 +522,7 @@ class _SubagentRuntimeImpl:
         """Resolve one profile BY NAME, refusing project scope by default.
 
         SECURITY (finding B5). Directory trust is a yes-once decision that
-        ancestors inherit (``cli/project_trust.py:71-72``); it is NOT consent to
+        ancestors inherit (``cli/project_trust.py:77-78``); it is NOT consent to
         a project-local IDENTITY, which additionally WINS a name collision
         against the user's own (``agents/service.py:102-103``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a

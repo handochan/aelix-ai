@@ -18,6 +18,12 @@ logged *after* loading. A recon pass (`.omc/specs/sprint-p0-10-project-trust-spe
 Project Trust from HEAD and surfaced the scope decisions. The user chose **A+** (minimal gate +
 on-disk persistence) with **deny-by-default** headless.
 
+> **2026-10-06 amendment ([ADR-0252](0252-project-settings-follow-project-trust.md), #369).**
+> The gated set gains `cwd/.aelix/settings.json` (pi `trust-manager.ts:30-39` lists it
+> first): `SettingsManager` neither reads nor writes an untrusted project's settings, and a
+> settings-only repository is no longer trusted at step 2 without a prompt. The set is now
+> six — extensions, `mcp.json`, agents, skills, prompt templates, settings.
+
 ## Decision (A+)
 
 All in `packages/aelix-coding-agent` — **zero protected `aelix-agent-core` change**.

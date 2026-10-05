@@ -3,10 +3,10 @@
 Before this entry ``_is_auto_allowable_write`` returned :data:`True` for
 ``.aelix/agents/evil.md``, ``.aelix/extensions/evil.py``, ``.aelix/mcp.json``
 and ``.aelix/settings.json`` — those are EXACTLY the three resources the Project
-Trust gate exists to guard (``cli/project_trust.py:124-249``) plus the user's
+Trust gate exists to guard (``cli/project_trust.py:130-275``) plus the user's
 own configuration. An auto-accepting agent could therefore WRITE the project
 identity / project extension that a LATER run then EXECUTES under an ancestor
-``trust.json: true`` (``project_trust.py:703-710``; transitivity is documented
+``trust.json: true`` (``project_trust.py:750-757``; transitivity is documented
 at ``:60-61``). ``--no-approve`` cannot touch that: it stops a child LOADING
 such a file, never writing one.
 

@@ -52,6 +52,31 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A repository's `.aelix/settings.json` now asks for trust (#369,
+  ADR-0252).** It is the project scope of your settings — it can choose the
+  default model and provider your prompts go to — and it is now read only in a
+  trusted directory, as pi does. A repository that carries one now shows the
+  trust selector once when you run `aelix` there (the selector names the file),
+  and in `-p`, `--mode json` and `--mode rpc` its settings are skipped until you
+  pass `--approve` or save a decision (`aelix` interactively, or `/trust`);
+  the stderr notice now lists "settings". Scripts and CI that relied on a
+  checked-in project settings file under `-p` need `--approve`.
+  `--list-models` follows `--approve`/`--no-approve`, a saved decision or your
+  global `defaultProjectTrust` without asking, and prints the same stderr
+  notice when it skipped the repository's `enabledModels`. Anything named
+  `.aelix/settings.json` counts, not only a regular file (as in pi). A
+  delegated agent in such a repository runs untrusted.
+- **`/trust` says what it does.** It saves your answer for the next launch and
+  now says "Restart aelix for this to take effect." — it used to say "Run
+  /reload to apply it to project-local resources.", which was not true (the
+  session's trust is decided once, at launch). For the same reason it no
+  longer offers "this session only" answers. (#369)
+- **`aelix extension source list/add/remove` read install sources from your
+  global settings only.** A project `.aelix/settings.json` listing
+  `extensionSources` or `suppressedDefaultCatalogs` used to be merged in, and
+  `source add` then wrote the repository's entries into your global file. If
+  you kept install sources in a project file on purpose, move them to your
+  global `settings.json`. (#369)
 - **`--model` is resolved the way pi resolves it, and an OpenRouter key no
   longer turns every model string into an OpenRouter id (#362, ADR-0250).** The
   prefix names the provider and the id must match exactly inside it; a bare id
@@ -162,6 +187,19 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A cloned repository's `.aelix/settings.json` no longer chooses where your
+  prompt goes when you have not trusted it (#369, ADR-0252).** Its
+  `defaultProvider`/`defaultModel` pair, with an `OPENAI_API_KEY` in its
+  `.env`, sent a plain `aelix -p hi` to `api.openai.com` on the repository's
+  key while your own `OPENROUTER_API_KEY` was exported — with `--no-approve`
+  too, because the file was read whatever the trust answer. An untrusted
+  directory's settings file is now neither read nor written. Nor is a
+  repository's pair laundered into your own defaults any more: the model
+  picked after `/login` starts from your global saved default only, where it
+  used to pick the repository's pair and save it to your global settings, from
+  which it chose the model in every other directory. In a directory you
+  trusted the repository's settings still apply, its pair included (a `.env`
+  key may then authenticate it), as pi treats them.
 - **A key in a cloned repo's `.env` no longer chooses where your prompt goes
   (#362, ADR-0250).** With `ANTHROPIC_API_KEY` exported and a repo's `.env`
   carrying `OPENROUTER_API_KEY`, `--model anthropic/claude-haiku-4-5` went to
@@ -179,9 +217,9 @@ unwritten. Add them with the next release.
   a `.env` key if that is where its key is, as `--model` does — a re-pointed
   `openrouter` included; the built-in `openrouter/` prefix is not exempt, so
   `/model openrouter/<id>` on a `.env`-only OpenRouter key is refused where
-  `--model` runs it), the model picked after `/login` (a saved default,
-  yours or a project `.aelix/settings.json`'s, that only the `.env`
-  authenticates is skipped), RPC `cycle_model` for a program that runs RPC
+  `--model` runs it), the model picked after `/login` (a saved default
+  that only the `.env` authenticates is skipped; since #369 only your global
+  one is read there), RPC `cycle_model` for a program that runs RPC
   mode with a model registry (`set_model` names its provider and is
   unchanged; `aelix --mode rpc` wires no registry), delegated agents and an `aelix` started
   from the bash tool. "A key of your own" counts one held for any provider,
@@ -194,8 +232,7 @@ unwritten. Add them with the next release.
   OpenRouter, past an exported `OPENROUTER_API_KEY` too). A project
   `defaultProvider`/`defaultModel` pair still picks the launch model when you
   pass no `--model`, and a `.env` key then authenticates it (ADR-0250 §6,
-  pre-existing; #369 is to stop reading an untrusted project's settings, as pi
-  does). A `.env`
+  pre-existing) — since #369 only in a directory you trusted (see above). A `.env`
   key still authenticates the route your own choices made — with no key of your
   own for that route it is the one sent, and the `Notice: loaded credentials`
   line names it. It is also still the one sent when your `models.json`

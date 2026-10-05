@@ -570,7 +570,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:736-758``).
+    made ``--tools ''`` enable everything (``entry.py:754-776``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -770,7 +770,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3555-3572`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3573-3590`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -890,7 +890,7 @@ async def _confirm_project_agent_for_run(
     """The per-identity gate for a project-scoped ``/agents run`` (finding B5).
 
     SECURITY. Directory trust is a yes-once decision ancestors inherit
-    (``cli/project_trust.py:71-72``); it is NOT consent to a project-local
+    (``cli/project_trust.py:77-78``); it is NOT consent to a project-local
     IDENTITY that showed up in the repo later. ``/agents run`` is user-typed, so
     it MAY take that consent — the model-driven ``agent`` tool never can, and
     fail-closes with no prompt (``aelix_agents/runtime.py``'s
@@ -901,7 +901,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2768`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2786`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1902,11 +1902,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1312-1314``
+    # The double count was the same text twice over: ``cli/entry.py:1330-1332``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:613-619``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1311``.
+    # level up, at ``cli/entry.py:1329``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

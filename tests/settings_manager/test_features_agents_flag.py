@@ -77,7 +77,7 @@ async def test_roundtrip_through_disk(
 ) -> None:
     manager.set_features_agents(True)
     assert manager.get_features_agents() is True
-    # ``_save`` only ENQUEUES (settings_manager.py:850-859) — without the flush the
+    # ``_save`` only ENQUEUES (settings_manager.py:952-961) — without the flush the
     # file is still empty and this test would pass vacuously on the in-memory
     # value alone.
     await manager.flush()

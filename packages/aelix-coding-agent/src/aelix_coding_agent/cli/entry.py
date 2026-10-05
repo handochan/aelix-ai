@@ -585,6 +585,24 @@ def _validate_continue_flag(parsed: Args) -> str | None:
     return None
 
 
+def _print_untrusted_project_notice() -> None:
+    """The headless untrusted-project notice (stderr; stdout stays clean).
+
+    One text for both headless sites — the run's non-interactive modes and
+    ``--list-models`` (#369 round 2). Every family it names is skipped by the
+    same decision: extensions (the factory's ``no_project_local``), skills
+    (``_resolve_skill_dirs``), agent profiles (``discover_profiles``) and,
+    since #369, ``.aelix/settings.json`` (``SettingsManager`` built untrusted).
+    """
+
+    print(
+        "Notice: project-local .aelix resources (extensions, skills, agent "
+        "profiles, settings) skipped in an untrusted directory; pass "
+        "--approve to trust.",
+        file=sys.stderr,
+    )
+
+
 def _validate_resume_flag(parsed: Args) -> str | None:
     """``--resume`` argument-compatibility validation (mirrors --continue).
 
@@ -1991,9 +2009,34 @@ async def _async_main(argv: list[str]) -> int:
         # allow-list for parity with the /model picker. MUST pass
         # ``agent_dir=get_agent_dir()`` (same as the main path at ~684) so both
         # read the same settings.json. An empty-match list degrades to all.
+        #
+        # #369 — built UNTRUSTED, then trusted only by a non-interactive
+        # decision: ``--approve``/``--no-approve``, a saved ``trust.json`` entry
+        # or the GLOBAL ``defaultProjectTrust`` (read from the untrusted
+        # manager, so a project-scoped value cannot count), otherwise
+        # untrusted. That is pi's print-mode trust for ``--list-models`` (no
+        # prompt, ``main.ts:723``). No ``project_trust`` extension vote: nothing
+        # is loaded on this path, so a vote extension cannot answer here (a
+        # stated narrowing). Each step is pinned by
+        # ``tests/cli/test_project_settings_trust_369.py``.
         list_settings = SettingsManager.create(
-            cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir())
+            cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir()), project_trusted=False
         )
+        list_trusted = await resolve_project_trusted(
+            Path.cwd(),
+            override=parsed.project_trust_override,
+            has_ui=False,
+            prompt=None,
+            store=ProjectTrustStore(get_agent_dir()),
+            default_project_trust=list_settings.get_default_project_trust(),
+        )
+        list_settings.set_project_trusted(list_trusted)
+        # #369 round 2 — the run's headless notice, on stderr, when the
+        # project's ``enabledModels`` (or any other gated resource) was
+        # skipped: an unscoped list is otherwise indistinguishable from a
+        # repo that scopes nothing. stdout carries only the table.
+        if not list_trusted and has_trust_requiring_project_resources(Path.cwd()):
+            _print_untrusted_project_notice()
         await list_models(model_registry, parsed.list_models, list_settings)
         return 0
 
@@ -2133,8 +2176,14 @@ async def _async_main(argv: list[str]) -> int:
     # raised). Surface any load errors as a startup warning (MCP/extension parity).
     from aelix_ai.settings import SettingsManager
 
+    # #369 (pi ``89a92207f``; @ ``b223082bb`` ``main.ts:736-748``): built UNTRUSTED. The project
+    # ``.aelix/settings.json`` is neither opened nor written until the trust
+    # decision below calls ``set_project_trusted`` — before any project-scoped
+    # reader. Between here and there the only read is the global-only
+    # ``get_default_project_trust``. A reader inserted in between sees the
+    # empty project scope, which fails safe.
     settings_manager = SettingsManager.create(
-        cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir())
+        cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir()), project_trusted=False
     )
     for setting_err in settings_manager.drain_errors():
         print(
@@ -2337,6 +2386,18 @@ async def _async_main(argv: list[str]) -> int:
         extensions=trust_vote_extensions,
         default_project_trust=settings_manager.get_default_project_trust(),
     )
+    # #369 — project settings follow project trust (pi @ ``b223082bb``
+    # ``resource-loader.ts:520`` ``setProjectTrusted(projectTrusted)``). FIRST thing after the
+    # decision: the default-pair seed, the ``default_provider`` every rebuild
+    # gets, the harness options, ``harness.reload``, ``run_tui`` and RPC all
+    # read this manager below. An untrusted directory's file stays unread; a
+    # trusted one's load error is reported now, as at construction.
+    settings_manager.set_project_trusted(project_trusted)
+    for setting_err in settings_manager.drain_errors():
+        print(
+            f"Warning: settings ({setting_err.scope}): {setting_err.error}",
+            file=sys.stderr,
+        )
 
     # === Agent delegation (ADR-0197 §(a)/§(b), P2) ============================
     # The bundled ``aelix-agents`` extension. Constructed ONCE and threaded by
@@ -2765,27 +2826,25 @@ async def _async_main(argv: list[str]) -> int:
 
     # Non-interactive untrusted notice for the surfaces the gate suppresses
     # SILENTLY — extensions (inside the factory via ``no_project_local``), skills
-    # (``_resolve_skill_dirs``) and, since ADR-0196, agent profiles
-    # (``discover_profiles``). Interactive users already saw/answered the A1
-    # prompt, so only warn for headless runs.
+    # (``_resolve_skill_dirs``), agent profiles (``discover_profiles``, ADR-0196)
+    # and project settings (``.aelix/settings.json``, #369: the run's
+    # ``SettingsManager`` stays untrusted). The text names exactly those four
+    # (``_print_untrusted_project_notice``; ``--list-models`` prints the same
+    # one). Interactive users already saw/answered the A1 prompt, so only warn
+    # for headless runs.
     #
-    # The wording is deliberately generic: this fires on the SAME predicate that
-    # ``has_trust_requiring_project_resources`` widened to include
-    # ``.aelix/agents``, so naming only ``.aelix/extensions`` here would report
-    # the wrong resource for an agents-only project. (``.aelix/mcp.json`` keeps
-    # its own targeted notice above, which is emitted only when contribs were
-    # actually dropped.)
+    # The wording is deliberately generic: this fires on the SAME predicate,
+    # ``has_trust_requiring_project_resources``, which also counts the
+    # prompt-templates family and ``.aelix/mcp.json``, so naming one directory
+    # here would report the wrong resource for, say, an agents-only project.
+    # (``.aelix/mcp.json`` keeps its own targeted notice above, which is emitted
+    # only when contribs were actually dropped.)
     if (
         not project_trusted
         and app_mode != "interactive"
         and has_trust_requiring_project_resources(Path(cwd))
     ):
-        print(
-            "Notice: project-local .aelix resources (extensions, skills, agent "
-            "profiles) skipped in an untrusted directory; pass --approve to "
-            "trust.",
-            file=sys.stderr,
-        )
+        _print_untrusted_project_notice()
 
     # WP-8 (Feature 3) — a stable holder the factory fills with the discovered
     # extensions on the FIRST build so run_tui's /extension viewer gets the live
