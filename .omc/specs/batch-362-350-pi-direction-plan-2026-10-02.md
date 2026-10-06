@@ -1,0 +1,592 @@
+# Batch plan — pi 방향 결정의 실행: #362 · #350 (→ #367 · #363 · #368) — 2026-10-02
+
+오너가 물었다(2026-10-02): "정해야 할 것들 모두 pi 방향으로 하는 게 좋지 않을까요?"
+
+## 근거 조사: `wf_8a93f349-ff7` (읽기 전용)
+
+- 구성: 네 갈래 조사와 반박 검증 하나. 모두 opus이고, 합계 787k 토큰, 19분 걸렸다.
+- 비교 대상: pi는 새 스냅샷 `/tmp/pi-88ff80b98`(origin/main `88ff80b98`, 1ff5b6fdd보다 91커밋 뒤)이고, aelix는 `9ca53a4f`다.
+- 갈래별 결론:
+  - **A 라우팅(#362)**
+    - pi에는 OpenRouter-from-env 규칙이 없다. 해석 순서는 알려진 접두 먼저다. 그다음 정확한 raw id를 보고, 인증 여부로 동점을 가린다(`:470-504`, `:525-540`).
+    - npm pi는 `.env`를 읽지 않는다.
+    - 그대로 복사하면 문제가 둘 생긴다.
+      - aelix의 `.env` 로딩 때문에 M1(레포 `.env`의 벤더 키가 경로를 결정)이 생긴다.
+      - pi.dev 원격 카탈로그 오버레이가 없어서, aelix 정적 카탈로그가 모르는 실제 OpenRouter id(약 45%)가 실패한다.
+    - 반박 검증이 놓친 호출 경로 하나를 찾았다: `remote-catalog-provider.ts`가 4시간마다 갱신하고 시작 시 캐시를 쓴다.
+  - **B #363**: pi의 키 순서는 (c)다: runtime → auth.json → **models.json apiKey** → env.
+    - aelix는 (b)이고, 이것은 pi의 2026-03-27 ~ 06-16 시기 순서다. pi는 06-22 병합에서 바꿨다.
+    - 반박 검증이 레인이 쓴 커밋 날짜(9993c9690)를 바로잡았다.
+    - 시작 경로도 합성 모델(baseUrl, compat, modelOverrides)을 쓴다.
+  - **C #350**: pi의 `waitForChildProcess`에는 cap이 없다. 100 ms 타이머이고, 이벤트 루프가 굶으면 helper 출력 꼬리를 자른다(Node 3/3 실측). aelix의 지금 idle 규칙이 pi와 같은 부류다. → #350은 하지 않고 문서화한다. drain 전체를 pi로 되돌리면 #221과 #260이 회귀한다.
+  - **D**
+    - 늦게 등록된 프로바이더: pi는 session_start 전에 모르는 모델이면 exit 1로 끝낸다. 전환하지 않는다.
+    - 대소문자 규칙: 핵심 규칙은 이미 pi와 같다. 남은 차이 셋은 aelix 쪽이 더 엄격하다.
+
+## 오너 결정 (2026-10-02)
+
+- **라우팅: "pi 방향 + 보완 2개"**(권고안). ADR-0249의 rung 0과 OpenRouter-from-env rung을 대체한다.
+  - 보완 1: `.env`에서 들어온 자격은 경로를 정하는 인증 판단에 쓰지 않는다.
+  - 보완 2: 어느 카탈로그에도 없는 id는 셸의 OR 키가 있을 때만 OpenRouter로 보낸다. 사용자 정의 접두는 절대 떨어지지 않는다.
+  - fuzzy 매칭은 하지 않고, `OPENROUTER_DEFAULT_MODEL`은 셸 전용으로 둔다.
+- **대소문자 규칙: 지금 유지**(권고안).
+- 원칙("모두 pi 방향")에 따라 진행하는 것:
+  - #363: (c) 순서와 시작 시 합성 모델
+  - #350: 닫고 문서화
+  - #367(새 이슈): 늦게 등록된 프로바이더는 거부한다
+
+## 이슈
+
+- 결정 코멘트를 달았다: #362, #363, #350.
+- 새 이슈:
+  - **#367**(P2): session_start 프로바이더를 pi처럼 거부한다.
+  - **#368**(P2): `--provider requires --model` 메시지를 pi에 맞춘다.
+- 보드: #362와 #350을 In progress로 옮겼다.
+
+## 기준점 (2026-10-02)
+
+- `origin/main` = 로컬 main = **`aa026d08`**(핸드오프 커밋). 코드는 `9ca53a4f`이고 main CI는 36774695349 6/6이다.
+- 전체 스위트(9ca53a4f, 새 워크트리): `11407 passed, 23 skipped`.
+- 다음 빈 ADR 번호는 **0250**이다. #362에 배정한다(ADR-0249를 부분 대체).
+- pi: `/tmp/pi-88ff80b98`.
+- 플러그인: `/tmp/flake-plugins/`(지속 사본은 `.omc/flake-plugins/`).
+
+## 레인과 순서
+
+파일이 겹치므로 #362 → #367 → #363 순서로 한다. #350은 문서만 바꾸므로 병렬로 돌린다.
+
+| 레인 | 이슈 | 워크트리 | 브랜치 |
+| --- | --- | --- | --- |
+| R | #362 (P1, 보안) | `/tmp/wt-362` | `fix/362-model-routing-follows-pi` |
+| C | #350 (문서) | `/tmp/wt-350` | `fix/350-helper-tail-after-exit-is-best-effort` |
+
+## 실행 기록
+
+- 워크트리 `/tmp/wt-362`, `/tmp/wt-350`을 aa026d08에서 만들었다(`uv sync --all-packages`).
+- **`wf_ead6ac10-78b`** 실행 중.
+  - #362: design → critic → implement → review → fix? → verify. 모두 opus.
+  - #350: implement(문서만) → verify.
+- 다음 순서:
+  - #362 verify가 끝나면 Codex 교차 리뷰. P1 보안이고 라우팅 재설계라 2차 패스까지 예상한다.
+  - 그다음 메인 루프가 직접 라이브·TUI를 확인하고, CI를 돌린 뒤 머지한다.
+  - 이어서 #367(늦은 등록은 거부) → #363(키 순서 (c)와 시작 시 합성) → #368(메시지).
+
+## 1차 결과 (`wf_ead6ac10-78b`, 4시간 53분, agent 8개, 2.9M 토큰)
+
+- **#362**: design → critic(revise: must 4, should 7) → implement `d58cbb3e` → review(must 1, should 3) → fix → **`854bf319` verify PASS**(차단 0).
+  - must 1: `--api-key`가 벤더 접두 id에서 openrouter.ai로 갔다 → step 3b를 넣었다. `--api-key`가 있으면 카탈로그 접두를 그대로 유지한다. pi와 다른 점이고 ADR-0250 §7.8에 적었다.
+  - 설계 결정 G1–G13. 주요 셋:
+    - G1(엄격한 보완 1): OR 키가 `.env`에만 있으면 `openai/gpt-4o-mini`(A34)가 거부된다. **오너 레포의 작업 흐름이 그렇다** → 오너에게 알린다.
+    - G2: 심어진 키가 OpenRouter 철자 id를 가로채는 경우(A10)를 막는다. 추론한 프로바이더가 route 인증돼 있으면 그 안에서 custom id를 쓴다.
+    - G10: /login 직후 모델 선택에도 보완 1을 적용한다.
+- **#350**: implement `a5e03e17` → verify FAIL(차단 1: 메시지가 선례 커밋을 "아홉"이라고 셌는데 실제로는 열하나).
+  - 메인 루프가 메시지를 고쳐 `04b20d7b`를 만들었다.
+  - 2차 독립 확인 FAIL: 메인 루프가 ADR에 쓴 "pi의 명령 출력 보존은 실측이 아니다"가 #260 문단의 실측(60회 중 0회 유실)과 모순됐다.
+  - #260 실측을 인용하는 문장으로 바로잡아 **`21db8c8a`**를 만들었다(문서 게이트 `50 passed`, `950 gated, none drifted`). 브랜치 push 완료.
+- **메인 루프 라이브(#362 854bf319)**: 레인 키트 `/tmp/362-work/fix/live46/matrix.py` 46행을 실제 CLI로 돌렸다. 리스너는 18961–18964다.
+  - A11(#362 신고 경우) → `api.anthropic.com`
+  - A10(심어진 키의 가로채기) → `api.anthropic.com`
+  - A06(M1) → `openrouter.ai`
+  - A05(두 키) → `api.openai.com`
+  - A08(OR 키만, 새 id) → `openrouter.ai`
+  - A19, A24, A33, A34 → 요청 없음(보완 1)
+  - A29와 A30 → 사용자 엔드포인트
+  - A26–A28(session_start) → EXT(전환 유지, #367에서 바꾼다)
+  - main 기준 표도 같은 키트로 돌리는 중이다.
+- **Codex #362**(854bf319, effort high, 183,024 토큰):
+  - C1·C2: in-session `/model`의 보완 1이 현재 프로바이더면 건너뛴다. 그래서 `.env` 키가 경로를 바꾸고, 사용자 정의 `OpenAI`를 벤더 host로 덮어쓴다 → **고친다**.
+  - C3: 셸의 `AELIX_DOTENV_ALLOW`로 허용하면 `.env`가 `OPENROUTER_DEFAULT_MODEL`을 정한다 → 사용자가 명시적으로 opt-in한 경우이므로 문서화한다.
+  - C4: 보완 2가 OR 스냅샷에 없는 벤더 카탈로그 id에도 적용된다 → pi 원격 카탈로그와 같은 효과이고 OR 키를 가진 사용자에게만 해당하므로 **유지하고 범위를 명시한다**.
+  - 깨끗한 것: 출처 기록 위조·제거 경로 없음, `.env`만 있는 OR 키로는 보완 2가 발동하지 않음, `--api-key` 경로 이상 없음.
+- → **`wf_364802cc-4b0`**: fix r2(C1–C4, 검증 비차단 V1–V5) → verify r2.
+- 보존: 레인 키트를 `.omc/probes/362-live/`에 복사했다.
+- **오너 작업 흐름 시뮬레이션**: `/tmp/362-work/owner-sim/run.sh`. 레포 `.env`와 같은 변수 이름에 가짜 값을 넣었고, 아무것도 export하지 않았다.
+
+  | 실행 | main aa026d08 | #362 854bf319 |
+  | --- | --- | --- |
+  | (a) `--model` 없음 | `.env`의 `OPENROUTER_DEFAULT_MODEL`로 OpenRouter | "pass --model … or /login … or /model" 안내 |
+  | (b) `--model openai/gpt-4o-mini` | OpenRouter | 거부. 경고가 `openrouter/openai/gpt-4o-mini`를 쓰거나 키를 export하라고 알린다 |
+  | (c) `--provider openrouter --model …` | OpenRouter | OpenRouter(그대로) |
+  | (d) `--model anthropic/claude-haiku-4-5` | OpenRouter(#362 결함) | 접두대로 감 |
+
+  → 핸드오프와 오너 보고에 적는다: 레포 `.env`에만 키를 둔 실행은 export, `--provider openrouter`, settings 기본 모델 중 하나가 필요하다.
+- **메인 루프 실측 전후 비교**: 같은 키트, main aa026d08과 #362 854bf319. **41행 중 16행이 바뀌었고 모두 의도한 방향이다.**
+  - 두 키: A05, A07 → 벤더 직접. A09 → anthropic.
+  - 보안: A10(심어진 키의 가로채기)과 A11(#362) → anthropic.
+  - 모호 오류: A15 베어 `gpt-4o-mini`(OR 키만).
+  - 거부되던 것이 동작: A16 베어 `claude-haiku-4-5`(ANT 키만) → anthropic(전에는 거부). A17 → anthropic.
+  - 보완 1: A19, A24, A34 → 요청 없음.
+  - 명시 경로: A20 `openrouter/newlab/model-x`, A21 `openrouter/auto` → openrouter.ai.
+  - A28: session_start 프로바이더를 OR 키 없이 실행하면 EXT로 간다(전에는 거부). #367에서 다시 다룬다.
+  - A40(`--api-key`) → api.openai.com.
+  - K1: `-e extprov --model m1 --api-key` → EXT(전에는 거부).
+- #362 `854bf319` 브랜치 CI 36974559361: **6/6 green**(Windows 포함).
+- `wf_364802cc-4b0` fix r2 → `ecb4e0bc`.
+  - C1·C2를 고쳤다: `/model`에 route-aware pool을 두고, 사용자 정의 접두에 대소문자 규칙을 적용했다.
+  - resolve_route로 `/model`을 대체하는 안은 기각했다(#134/#136 행 24개가 빨갛게 된다).
+  - C3·C4는 문서화했다. V1–V5를 처리했다. 사보타주 10종이 모두 빨강이다. 전체 스위트 `11616 passed, 23 skipped`.
+- **verify r2 FAIL(차단 2)**:
+  - B1 회귀: `/model`과 session_start 전환이 `.env` 키를 쓰는 **사용자 정의** 프로바이더를 거부한다. 시작 경로는 받아들인다.
+  - B2: `--api-key` 런타임 키 처리를 깨는 사보타주 X12·X14가 초록이다.
+- 결정: B1은 (a)로 고친다. 사용자가 접두로 지목한 자기 프로바이더는 `.env` 키로 인증해도 유지하고, 경로를 정하는 단계에서만 `.env` 전용을 뺀다.
+- → **`wf_c186ba74-a4f`**: fix r3 → verify r3. 그 뒤 Codex 2차 패스.
+- #350 브랜치 CI `21db8c8a` 36975608165: **6/6 green** → **main = `21db8c8a`**(#350, ff, aa026d08 위). 요약 코멘트를 달고 닫았다. 워크트리와 로컬 브랜치를 삭제했다. 원격 `fix/350-…`는 오너 몫이다.
+- #362는 r3 뒤에 main 21db8c8a 위로 rebase한다. 예상 충돌은 docs/decisions/README.md 행이다(0238 vs 0249/0250/0195/0203, 행이 달라 없을 수도 있다).
+
+- **verify r3 PASS** (`wf_c186ba74-a4f`, `7722f732`, 차단 0, 비차단 4):
+  - N1: 카탈로그에 없는 id(M-a `anthropic/claude-new-9`)의 일반 거부에 `.env` 안내가 없었다. 문서의 "says so"가 과장이었다.
+  - N2: 확장이 내장 이름을 가져가면 `/model`과 `--model`이 다른 host로 간다. r3 전부터 있던 것이고 #365 범위다.
+  - N3: fix3 사보타주 X1의 앵커가 잘못돼 있었다. 검증이 다시 재서 빨강을 확인했다.
+  - N4: 메시지 556행이 리플로 과정에서 깨졌다.
+- **메인 루프 후속** (`7722f732` amend):
+  - N1: `_dotenv_hint` 헬퍼를 만들고, 일반 거부와 "IS logged in to" 거부에도 안내를 붙였다. M-a·M-d 행은 이제 안내를 기대한다. 코드 변경 없이는 `2 failed, 43 passed`, 변경 후 green이다.
+  - N2: ADR-0250 §6에 #365 모양을 적었다. §2.8의 "exactly"를 고쳤다.
+  - N4: 메시지에 VERIFY ROUND 3 절을 넣었다. `#`으로 시작하는 줄은 0이다.
+  - 브랜치 테스트 파일: `965 passed, 10 skipped`.
+- **rebase**: main `21db8c8a` 위 **`a0edf615`**. 충돌 없고 메시지도 보존됐다. `citations OK — 950 gated, none drifted`. 타입 게이트 PASS. 문서 테스트 `50 passed`.
+- **Codex 2차 패스**: `/tmp/362-work/codex2/`(prompt.txt, review.out) 실행 중. 트리는 `/tmp/362-work/codex-tree`(a0edf615)다.
+- **메인 루프 라이브** (`a0edf615`; 보존본 `.omc/probes/362-live/main-live/`, `owner-sim/`):
+  - 46행 매트릭스: `854bf319` 대비 **0행** 변화(시작 경로 불변). 옛 main 대비 19행이 모두 의도대로 바뀌었다.
+  - TUI pty 5개(리스너 18971/18974):
+    - m-a-hint: 안내를 붙여 거부, 전환 없음
+    - u-env-gw: GW, `mygw-dotenv-fake`
+    - c1, d: openrouter.ai
+    - c-issue362: api.anthropic.com
+  - 실제 호출:
+    - OR `--provider openrouter --model openai/gpt-4o-mini` → `pong` rc=0
+    - `--model openrouter/openai/gpt-4o-mini` → `pong` rc=0. 둘 다 `.env` 키, 격리된 에이전트 디렉터리
+    - Codex OAuth `--model openai-codex/gpt-5.5` → `pong` rc=0. 실제 디렉터리였지만 `find ~/.aelix -newer stamp`는 0건이다. `gpt-5.1-codex-mini`와 `gpt-5.4-mini`는 ChatGPT 계정에서 400(미지원 모델)이었다.
+  - 오너 시뮬레이션: 저장된 OR 키가 없으면 전과 같다. **저장된 OR 키가 있으면**(오너의 실제 `auth.json`에는 openrouter api_key가 있다):
+    - (b) `openai/gpt-4o-mini` → OR, 동작함
+    - (a) 모델 선택 안내
+    - (d) `anthropic/claude-haiku-4-5` → OR로 감(보완 2 확장 C4, `--provider anthropic`을 권하는 Note)
+- **Codex 2차 패스** (`a0edf615`, `/tmp/362-work/codex2/review.out` 18849행부터): P1 3건, P2 3건, 테스트 공백 1건.
+  - F1(P1): `/login` 직후 선택의 `_RouteAuthView.find()`가 필터 없이 레지스트리로 넘긴다. 프로젝트 settings의 기본값(google-vertex)과 `.env` 키를 심으면 Vertex로 간다.
+  - F2(P1): RPC `cycle_model`이 OR에서 `.env` openai로 넘어간다. `set_model`도 같다(오너 결정: 명시 지정이므로 유지하고 문서화).
+  - F3(P1): "자기 키 보유"를 모델 행으로 감지한다. 모델이 없는 프로바이더의 자기 키를 보지 못한다.
+  - F4(P2): 늦은 등록과 `--api-key`의 순서. 요청은 나가지 않는다. #367로 넘긴다.
+  - F5(P2): 사용자 정의 모델이 `/scoped-models`로 빠졌을 때 거부 문구가 엉뚱하다.
+  - F6(P2): 재지정한 openrouter가 `/model`의 사용자 정의 예외에서 빠져 있다.
+  - F7(공백): `openrouter/` 면제 mutant가 테스트 49개를 모두 통과한다.
+  - 깨끗한 것: 매트릭스 405개 비교에서 위반 0건. 신뢰되지 않은 프로젝트 확장의 우회 없음(신뢰한 프로젝트는 원래 코드 실행 권한이 있다). 대소문자 규칙 정상. 키 값 노출 없음.
+- 메인 루프 실측: 시작 경로에서 `--model openrouter/openai/gpt-4o-mini`(자기 OPENAI 키 export, OR 키는 `.env`에만) → CONNECT openrouter.ai:443. `/model`은 같은 문자열을 거부한다. → F7 결정은 거부를 유지하고, §7에 오너 질문으로 남긴다.
+- → **`wf_2b32d6b9-ad9`**: fix r4(F1–F7과 암묵 선택 경로 전수 조사) → verify r4. 그 뒤 Codex 3차 패스(r4 변경분)를 할지는 결과를 보고 정한다.
+- **r4 결과** (`wf_2b32d6b9-ad9`, 1시간 40분):
+  - fix r4 → **`001ef77d`**.
+    - F1: `_RouteAuthView.find()`를 필터에 맞췄다.
+    - F2: RPC 순환이 route-aware가 됐다(배포되는 `aelix --mode rpc`는 레지스트리를 넘기지 않아 원래 "requires a ModelRegistry"다).
+    - F3: `holds_route_auth`와 `route_auth_candidates`를 추가해 모델 행에 의존하지 않게 했다.
+    - F5: 거부 문구를 고쳤다.
+    - F6: `/model`에서만 재지정한 openrouter를 사용자 정의로 본다.
+    - F7: 행 3개로 고정했다.
+    - 전수 조사에서 프로젝트 settings의 기본 쌍(`--model` 없음)이 막혀 있지 않은 것을 찾았다. main에도 있던 문제이고, §7 item 11로 남겼다.
+    - 스위트 `11651 passed, 23 skipped`.
+  - **verify r4 FAIL(차단 2)**:
+    - B1 회귀: resolve_route step 2가 settings `defaultProvider`(프로젝트 파일이 덮는다)로 동률을 가르고 베어 id의 집을 정하는데, route 인증 확인보다 먼저다. 그래서 프로젝트 `defaultProvider=anthropic`과 `.env` 키로 `--model claude-haiku-4-5`가 api.anthropic.com으로 간다(자기 OR 키 보유 중). main은 OR로 보냈다. pi에는 이 단계가 없다.
+    - B2: `/login` 직후 선택 호출부의 `_RouteAuthView`를 지워도(V1c) 테스트가 모두 초록이다.
+    - 비차단: N1 F3 출처가 서로를 통해서만 고정돼 있다(V3c, V3d 초록). N2 `.env`만 있는 세션에서 `/login` 선택이 프로젝트 쌍을 전역 settings에 저장한다. N4 `openrouter/auto` 시작 경고 문구가 모순된다. N5 py3.11 `89 passed`.
+- 결정:
+  - B1은 고친다. 자기 키를 가진 동안 `defaultProvider`는 route 인증됐거나 사용자 정의일 때만 따른다.
+  - item 11(`--model` 없는 기본 쌍)은 main에도 있던 문제다. 이번 변경과 묶지 않고, 후속 이슈와 오너 결정으로 넘긴다(추천: 같은 규칙 적용).
+- → **`wf_dd71645a-f8a`**: fix r5(B1, B2, N1, N4, N5) → verify r5. 그 뒤 Codex 3차 패스(r4와 r5 변경분)를 하고, 메인 루프가 라이브를 다시 확인한다.
+- **#369 등록**(보드 P1): 신뢰하지 않은 프로젝트의 `.aelix/settings.json`을 pi처럼 읽지 않는다. pi는 `89a92207f`(2026-06-05)부터 프로젝트 settings를 신뢰에 묶었다. aelix의 `SettingsManager`는 신뢰와 상관없이 읽는다. item 11과 B1 경로의 공통 원인이다.
+- **r5 결과** (`wf_dd71645a-f8a`, 1시간 54분):
+  - fix r5 → `4c7cce36`.
+    - B1: 자기 키를 가진 동안 step 2의 `defaultProvider`는 route 인증됐거나 자기 엔드포인트(`_own_endpoint_providers`)일 때만 따른다. 따르지 않으면 거부 문구에 이유를 덧붙인다.
+    - B2: 실제 run_tui와 `/login`으로 도는 테스트를 넣었다.
+    - N1: 출처별 행. N4: 경고 조건. 사보타주 10종이 모두 빨강이다.
+    - 스위트 `11680 passed, 23 skipped`.
+  - **verify r5 FAIL(차단 1)**: B1h. 내장 openrouter를 자기 엔드포인트로 치는 사보타주가 초록이다. 실제 CLI에서는 프로젝트 `defaultProvider=openrouter`와 `.env` OR 키로 openrouter.ai에 간다.
+  - 비차단: CHANGELOG 예시가 출하된 적 없는 동작을 적었다. 신뢰된 프로젝트 프로필의 `provider:`가 §6에 없다. 문구 nit 1건.
+- **메인 루프 amend** → **`5e983992`**(코드 변경 없음, 테스트와 문서만):
+  - B1h 행 3개(or-builtin-tie, or-builtin-home, or-tuned-home)를 `.env` 있음·없음으로 돌렸다. B1h 사보타주에서는 `6 failed, 18 passed`이고, 파일을 md5로 복원했다.
+  - CHANGELOG 예시를 고쳤다. ADR §6에 프로필 항목과 pi의 신뢰 게이팅을 넣었고, §7 item 11의 "pi's semantics" 오류를 바로잡았다. project-trust.md(번들 포함)에 #369를 연결했다.
+  - 메시지에 VERIFY ROUND 5 절을 넣었다.
+  - 브랜치 테스트 파일 `1006 passed, 10 skipped`. 문서 게이트 `50 passed`. 인용 OK.
+- 메인 루프 라이브(`5e983992`): 실제 OR 2건과 Codex OAuth 1건 모두 `pong` rc=0이고, `~/.aelix`에 새로 쓰인 파일은 0이다. TUI 6개 시나리오(b1-s13 포함)는 실행 중이다.
+- **Codex 3차 패스** 실행 중: `/tmp/362-work/codex3/`(prompt.txt, review.out), 트리는 codex-tree `5e983992`다.
+- 메인 루프 TUI(`5e983992`, pty 6개): 모두 의도대로 동작한다.
+  - b1-s13: 경고, 요청 0
+  - m-a-hint: `.env` 안내를 붙여 거부
+  - u-env-gw: GW에 `mygw-dotenv-fake`
+  - c1·d: openrouter.ai
+  - c-issue362: api.anthropic.com
+- **Codex 3차 패스** (`5e983992`, `/tmp/362-work/codex3/REPORT.md`): 2차의 F1–F3 재현은 모두 막혔다. 새로 나온 것:
+  - C1(P1, 임베더): fallback resolver가 `.env` 값을 돌려주면 route 인증으로 센다.
+  - C2(P1, 임베더): 이름을 모르는 프로바이더의 fallback 자격을 후보가 보지 못해 held=false가 된다.
+  - C3(P1): 사용자 models.json의 `{TENANT_KEY}` URL 템플릿을 `.env` 값으로 채워 host가 탈출한다. 시작 경로는 원래 있던 문제이고, `/model`은 F6이 열었다.
+  - C4: 유일한 베어 id. 기존 잔여 위험이다.
+  - C5: headers만 덮은 openai mutant가 279개를 모두 통과한다.
+- 결정:
+  - C1은 `.env` 값과 같은 fallback 답을 세지 않는다.
+  - C2는 fallback 설치를 held로 친다.
+  - C3은 `.env`가 들인 자격 이름으로는 URL 자리표시자를 채우지 않는다. ADR-0203의 모양 규칙이 있는 Cloudflare 두 이름만 예외다.
+  - C4는 예시만 명시한다. C5는 행을 추가한다.
+- → **`wf_1c9e2da9-4e7`**: fix r6 → verify r6. 키트를 `.omc/probes/362-live/codex3/`에 보존했다.
+- **r6 결과** (`wf_1c9e2da9-4e7`, 1시간 26분):
+  - fix r6 → `f5731ae5`. C1(같은 값은 세지 않음), C2(fallback 설치 = held), C3(`aelix_ai/dotenv_record.py`, `DOTENV_TEMPLATE_NAMES`), C4 문서, C5 행. 스위트 `11708 passed`.
+  - **verify r6 PASS**(차단 0): 686개 조합에서 `.env` 확장 0, 사보타주 7종 빨강, 매트릭스 0행 변화, py3.11 `334 passed`.
+  - 비차단 5건: 사용자 템플릿의 host 자리에 `.env` Cloudflare id가 들어간다. hatch 이름이 자리표시자를 채우지 않는다(문서 없음). C2 비용이 문서보다 넓다. §4 문구. CHANGELOG "One shape".
+- **메인 루프 amend** → **`139c72ca`**:
+  - 위치 규칙: `.env` 값은 경로에만 들어가고 scheme, userinfo, host, port에는 들어가지 않는다. 행 9개를 추가했고, 사보타주에서 `6 failed`가 나왔다.
+  - hatch는 동작을 유지하고 문서화했다. C2 비용을 문서에 적었다. §4와 CHANGELOG 문구를 고쳤다.
+  - 실제 CLI(가짜 키): host 자리는 요청 0, export한 경우 mytenant, 카탈로그 Cloudflare는 동작.
+  - 브랜치 테스트와 providers `1800 passed`. runnable_models 관련 `750 passed`.
+- 메인 루프 라이브(`139c72ca`): 실제 OR 2건과 Codex OAuth 1건 모두 `pong`이고 `~/.aelix` 쓰기 0. TUI b1-s13, m-a-hint, u-env-gw는 이전과 같다.
+- **Codex 4차 패스** 실행 중: `/tmp/362-work/codex4/`, 범위는 `5e983992..139c72ca`.
+- **Codex 4차 패스** (`139c72ca`, `/tmp/362-work/codex4/REPORT.md`):
+  - 깨끗한 것: host 탈출, 기록 위조와 유실, export 회귀(240개), 카탈로그 Cloudflare(56개).
+  - 찾은 것:
+    - F1(P1, 임베더): fallback이 `.env` 값을 변형해 돌려준다(접두, 접미, strip, bytes, int).
+    - F2(P2, Windows 시뮬레이션): 대소문자를 섞은 hatch가 값 모양 검사를 우회한다.
+    - F3(P2): query와 fragment 안의 `/`를 경로로 오인한다.
+    - F4: any/all mutant가 통과한다.
+- **메인 루프 amend** → **`34612ef0`**:
+  - F1: `_derived_from_dotenv`가 strip한 같음과 8자 이상의 포함을 보고, str이 아니면 세지 않는다. 인코딩은 임베더 책임으로 문서화했다.
+  - F2: 읽는 쪽이 `TEMPLATE_VALUE_SHAPE`(= `_CF_ID`)로 값을 다시 검사한다.
+  - F3: `_path_span`.
+  - F4: 두 값 테스트.
+  - 사보타주 4종 모두 빨강(5, 4, 6, 4). 대상 `2062 passed`.
+- `34612ef0` 전체 스위트: `11736 passed, 23 skipped, 104 warnings in 454.84s`.
+- **Codex 5차 패스**(좁은 범위). 최종 보고서는 OpenAI 콘텐츠 필터에 잘렸고, 탐침 출력은 직접 읽었다.
+  - 찾은 것: `strip()`을 덮어쓴 str 하위 클래스, `.lower()`한 답. 8자 미만 값은 같음으로만 비교한다는 것은 문서화한 한계다. mutant 3개(마지막 `?`/`#`, strip한 모양, 한쪽 길이)가 333개를 모두 통과했다.
+  - 메인 루프 amend → **`f3c898f1`**: 내장 `str.strip`에 casefold를 적용하고 행 5개를 추가했다. 사보타주 4종이 모두 빨강(1, 1, 1, 2)이다. 대상 `2067 passed`.
+- **push** `f3c898f1`(force-with-lease, 854bf319를 덮음) → **CI 37028092212** 실행 중.
+- 그와 동시에 **독립 검증 에이전트**(opus, 새 컨텍스트)가 `139c72ca..f3c898f1`을 검증했다. scratch는 `/tmp/362-work/verify8/`이다.
+- CI 37028092212(`f3c898f1`): **6/6 success**.
+- **독립 검증 FAIL**(코드는 옳다. 테스트 공백과 문서 과장):
+  - fuzz 6000건, 자리표시자 2720행, 경로 구간 50000건 모두 불일치 0.
+  - B1: 기록된 값 쪽 casefold 사보타주가 초록이다.
+  - B2: 가이드와 CHANGELOG에 8자 하한이 빠졌다.
+  - 비차단: 해시 시드에 따라 결과가 갈리는 테스트, 템플릿 이름 조건, scheme을 아무 위치에서나 찾음, §5 문구.
+- **메인 루프 amend** → **`6b0607e3`**: 위 항목을 모두 고쳤다(`_SCHEME_RE`, 행 4개, 문서). 사보타주는 모두 빨강이고, "첫 값만 검사"는 시드 0–3 모두에서 빨강이다. 대상 `2071 passed`.
+- push → CI 37031994933. 검증 에이전트에 재확인을 요청했다(SendMessage).
+- **재확인 PASS**(차단 0): 사보타주 모두 빨강, 이상한 scheme 16개 불일치 0, 회귀 0, 게이트 green. 비차단 3건(§5 개수 표기, scheme 문자 집합과 앞 공백 행, casefold `ß` 행)은 고쳤다 → **`5dee21d1`**. 사보타주(앞 공백 1, 임의 문자 3, lower 1)는 빨강이다. `999 passed`(providers, model_registry, docs).
+- push(`5dee21d1`). 진행 중이던 CI 37031994933은 취소됐고, 새 run **CI 37032653260이 6/6 success**다.
+- **#362 머지**: main을 **`5dee21d1`**로 ff하고 push했다. 종료 코멘트를 달고 닫았다(보드 Done). #365, #367 코멘트, #369 등록(P1). 리스너 7개를 종료했다. `/tmp/wt-362` 워크트리와 로컬 브랜치를 삭제했다. 원격 `fix/362-…` 삭제는 오너 몫이다.
+- **#367 착수**: 보드 In progress. 워크트리 `/tmp/wt-367`(`fix/367-late-provider-refused`, main 5dee21d1). pi는 `88ff80b98` 이후 27커밋이 있으나 관련 파일은 바뀌지 않았다. → **`wf_1d03f30d-12e`**(implement, 진입점 전수 조사 먼저 → verify).
+- **#367 1차 결과** (`wf_1d03f30d-12e`, 1시간 35분):
+  - implement → **`dcc78170`**.
+    - print과 json은 exit 1로 거부하고 setup() 안내를 낸다. interactive와 RPC는 hold한다(api unknown, 요청 0).
+    - rebuild hold, --api-key 거부(F4 종결), print 게이트가 하네스 모델도 판정한다.
+    - 진입점 조사 20경로. `switch_to_late_registered_route`를 제거했다.
+    - 스위트 `11768 passed`. 사보타주 6종 빨강.
+  - **verify FAIL(차단 1)**: hold 상태에서 `/agents use <model 없는 프로필>` 또는 `--none`이면 거부된 `sessext/m1`을 다시 해석해 EXT로 보낸다. 원인은 `AgentProfileService.use`가 hold를 읽지 않는 것이다.
+  - 비차단:
+    - RPC 경고의 "/model" 안내가 거짓이다(배포 RPC는 레지스트리가 없다).
+    - `--provider sessext` 단독일 때의 문구.
+    - /model 선택은 rebuild하면 되돌아가고, 기본값으로 저장돼 다음 실행에서 거부된다(LEFT에 있음).
+    - `--api-key`가 session_start 창 동안 openrouter에 붙어 있다(요청은 0).
+  - #362 매트릭스: 46행 중 3행(A26–A28, session_start)만 바뀌었고 의도한 방향이다.
+  - 오너 결정 후보:
+    - settings 기본 쌍이 session_start 프로바이더를 가리키면 거부한다(pi는 findInitialModel이 첫 사용 가능 모델로 대체).
+    - /model 뒤에도 rebuild는 hold로 돌아간다.
+- → **`wf_c8254af9-456`**(fix r2: `/agents use` hold, RPC 문구 → verify r2). 동시에 **Codex**가 `dcc78170`을 리뷰한다(`/tmp/367-work/codex/`, `/agents use` 건은 알려진 항목으로 제외).
+- **Codex #367** (`dcc78170`, `/tmp/367-work/codex/review.out`, 사본은 `.omc/probes/367-live/codex/`):
+  - P1 ① session_start 훅의 `send_message(trigger_turn=True)` → guard 2 경로로 OpenRouter에 요청이 간다(`--api-key`면 타이핑한 키가 실린다). 거부 메시지는 "No prompt was sent"라고 말한다.
+  - P1 ② 훅의 `set_model(late)`가 거부를 우회한다(late 판단이 훅 이후의 현재 모델을 본다, `runtime_bootstrap.py:2196`).
+  - P1 ③ rebuild(`/new`, `/reload`)의 session_start 훅 `set_model`이 hold를 푼다.
+  - ④ register 후 unregister와 `--api-key`면 guard 2로 OR에 타이핑한 키가 간다. F2 테스트가 이를 의도적으로 허용하므로 정책 충돌이다.
+  - ⑤ settings tie-break를 뺀 mutant가 77개를 통과한다.
+  - 깨끗한 것: setup() 경로(print, json, RPC, TUI), 명시적 /model과 `/agents use pick`, PrintChannel 자식, `--continue`/`--resume`, `.env` guard.
+- **r3 결정**(r2가 끝난 뒤):
+  - (A) launch 경로가 "늦게 등록될 수 있는" 경로(모르는 접두, guard 2, 미해결)이면 session_start 동안 하네스를 대기 placeholder(api unknown)에 두고, `--api-key`는 late 판단 뒤에 붙인다.
+  - (B) late 판단은 launch 입력(문자열과 `default_provider`)을 session_start 이후 레지스트리로 다시 해석해서 하고, 훅이 바꾼 현재 모델은 보지 않는다.
+  - (C) rebuild는 session_start가 끝난 뒤 hold를 다시 적용한다. 명시적 선택 전까지 훅의 `set_model`은 hold를 풀지 못한다.
+  - (D) `--api-key`와 모르는 접두에 guard 2를 적용하는 문제는 #362 정책이므로 별도 후속 이슈로 낸다(pi는 not found).
+  - (E) late 두 개와 `defaultProvider` 행을 추가한다.
+- **#370 등록**(P1): `--api-key`와 카탈로그에 없는 접두이면 guard 2가 타이핑한 키를 OpenRouter에 싣는다. pi는 not found로 끝낸다. Codex ④.
+- **#367 r2 결과** (`wf_c8254af9-456`, 2시간 18분):
+  - fix r2 → `9e233be9`.
+    - 정확한 쌍 키로 hold하는 `LateRouteHold` dict를 factory, `AgentProfileService`, `run_tui`가 공유한다.
+    - `/login` 직후 선택에도 hold를 건다. RPC 문구를 고쳤다. `--provider` 단독 문구.
+    - 스위트 `11784 passed`.
+  - **verify r2 FAIL(차단 1)**: 정확한 쌍 키라서 launch 프로필이 모델이나 프로바이더를 공급하면 `--none`이나 모델 없는 프로필 baseline이 다른 쌍이 되고, late에 도착한다. 형태 (a) settings 쌍과 `--agent lateprof`, (b) provonly와 `--model m1`, (c) hold되지 않은 orprof 실행. `dcc78170`에도 있었다.
+- → **r3**(`wf_07498db5-b82`). 결정 D1–D6:
+  - D1 도착 규칙: L = user_defined − launch_providers. 암묵적인 재해석(launch, rebuild, 모델 없는 `/agents use`, `--none`, `/login` 직후 선택)이 L에 도착하면 hold한다. 명시적 선택(`/model`, `model:` 또는 `provider:`가 적용되는 프로필)은 전환한다.
+  - D2 launch 입력(`default_provider` 포함)으로 판단하고, 훅이 바꾼 상태는 증거로 보지 않는다.
+  - D3 모든 session_start 뒤에 다시 적용한다.
+  - D4 session_start 동안 대기 placeholder를 두고, `--api-key`는 판단 뒤에 붙인다.
+  - D5 행 추가.
+  - D6 #370은 범위 밖이다.
+  - 그 뒤 Codex 2차 패스.
+- **#367 r3 결과** (`wf_07498db5-b82`, 2시간 4분):
+  - fix r3 → `5a1330b5`.
+    - `LateRoute`로 도착 규칙을 구현했다. late는 session_start에서 실제로 등록된 것만 친다(단순 차집합은 #344 `/reload` 행을 빨갛게 만들었다).
+    - D2, D3(`set_after_session_start` seam), D4(pending placeholder, `--api-key`는 나중에 붙임).
+    - 턴 게이트 문구가 hold 사유를 반복한다.
+    - Codex ①②③⑤와 r2의 (a)(b)(c)를 모두 막았다. 스위트 `11808 passed`.
+  - **verify r3 FAIL(차단 3)**:
+    - B1: 등록된 프로바이더로 정상 해석된 launch인데 입력이 나중에 late에 도착하면 D2가 거부한다. 그런데 session_start 훅의 턴이 등록된 경로로 이미 나가고 "No prompt was sent"를 출력한다(거짓 문구).
+    - B2: factory의 rebuild hold 사보타주가 초록이다.
+    - B3: pending launch가 late가 아닐 때 `--api-key`를 붙이는 사보타주가 초록이다.
+- **r4 결정**(pi 방향): late 거부는 launch 시점에 아무 등록 프로바이더도 받지 않은 pending 경로에만 적용한다. 등록된 경로로 해석된 launch는 그대로 진행한다(pi). 이후 late에 도착하는 암묵적 재해석은 D1로 hold한다. B2와 B3는 행으로 고정한다. → **`wf_f32cb305-c3d`**.
+- **#367 r4 결과** (`wf_f32cb305-c3d`, 1시간 42분):
+  - fix r4 → `76055424`.
+    - 거부는 pending launch에만 적용한다. 등록된 경로로 해석된 launch는 진행한다.
+    - 인쇄 게이트가 launch 경로를 판정한다. B2와 B3는 행으로 고정했다.
+    - 스위트 `11820 passed`.
+  - **verify r4 FAIL(차단 2)**:
+    - B1: pending launch의 훅이 직접 `set_model`을 부르고 `trigger_turn`을 보내면 session_start 동안 턴이 나간다. 그 뒤 "No prompt was sent"를 출력하므로 거짓 문구다. held rebuild에서도 같다.
+    - B2: 한 줄 mutation 4개(V-settle-no-record, V-use-no-second-ask, V-no-before-snapshot, V-restore-overrides-handler)가 163개를 모두 통과한다.
+- **r5 결정**: 턴 게이트. pending launch이거나 hold 중인 rebuild의 session_start 동안에는 어떤 턴도 시작하지 못한다. 결정이나 재hold 뒤에 게이트를 푼다. mutation 4개는 각각 행으로 고정한다. → **`wf_f15a9037-fa6`**.
+- **#367 r5 결과** (`wf_f15a9037-fa6`, 2시간 37분):
+  - fix r5 → `a543754c`.
+    - `AgentHarness.hold_turns` 턴 게이트를 넣었다(prompt, compact, navigate가 거부되고 trigger는 next_turn에 큐잉된다).
+    - mutation 4개와 G6/D1d를 행으로 고정했다. 스위트 `11849 passed`.
+  - **verify r5 FAIL(차단 2)**:
+    - B1: launch hold 경로에서 `set_model(placeholder)` 뒤에 `model_select` 핸들러가 late로 옮기면 hold가 풀린다. 경고는 거짓이 되고 첫 프롬프트가 late로 간다(`76055424`부터).
+    - B2: rebuild 재확인 fallback 사보타주가 초록이다.
+  - 비차단: 게이트가 무한 대기를 만든다. session_start 핸들러가 자기 trigger의 완료를 기다리면 `aelix -p`가 멈춘다. late가 아닌 guard 2 실행도 마찬가지다.
+- **r6 결정**: launch와 rebuild가 같은 helper로 placeholder를 다시 확정한다(`model_select` 이후). 게이트에 막힌 trigger는 "요청 없이 실패한 턴"으로 끝나 대기자를 깨운다. → **`wf_fdd2e33f-c6d`**.
+- **#367 멈춤 기준**(메인 루프):
+  - aelix가 보장하는 것은 자기 결정이다. session_start에서 판정까지 게이트를 유지하고, 판정 시점에 hold를 한 번 확정하며, hold 중에는 aelix가 스스로 late로 전환하거나 요청을 보내지 않는다.
+  - 판정 이후 확장이 명시적으로 하는 행동(스폰한 태스크의 `set_model`과 trigger 등)은 확장의 책임으로 ADR §6에 적는다. 경고 문구는 그 경계에 맞춰 사실대로 둔다.
+  - r6 검증이 판정 이후의 확장 행동만 새로 지적하면 비차단으로 분류하고 Codex 2차 → 라이브 → CI → 머지로 간다.
+- **#367 r6 결과** (`wf_fdd2e33f-c6d`, 3시간 3분):
+  - fix r6 → `343e75cd`.
+    - `LateRouteHold.apply`가 `set_model(placeholder)`를 한 뒤 다시 확인한다(launch, rebuild settle, `/agents use`가 공유).
+    - 게이트에 막힌 trigger는 거부된 턴으로 끝난다(무한 대기 해소).
+    - 커밋 trailer에 Claude-Session 줄을 추가했다(새 지침).
+    - 스위트 `11862 passed`.
+  - **verify r6 FAIL(차단 1)**: `/agents use`가 게이트 없이 apply를 부른다. 그래서 `model_select` 핸들러가 late로 `set_model`하고 trigger를 걸면 late 키로 요청이 나간다(r1부터 있었다).
+- **재부팅(10-04 밤, uptime 1일)**: `/tmp`가 통째로 사라졌다(`wt-367`, `367-work`, codex-tree, pi 스냅샷).
+  - 커밋은 main 저장소 ref에 살아 있었다. `worktree prune`과 `add`로 트리를 복구했다.
+  - pi 스냅샷은 `git archive`로 다시 만들었다.
+  - r6 검증 키트는 보존본이 없어 잃었다.
+  - 메모리 `macos-tmp-three-day-cleanup`에 재부팅 사례를 추가했다.
+- 사용자: "리밋 해제, 이어서 진행"(10-05). ultracode가 켜졌다.
+- → **r7**(`wf_58c0fc98-1d4`): 모든 hold 적용 지점을 조사하고, 하나의 helper로 게이트 아래에서 apply하게 한다. 지점마다 `model_select="trigger"` 행을 추가한다. 그 뒤 독립 검증과 **Codex 2차 패스를 병렬로** 돌린다(키트는 `.omc/probes/367-live/`에 보존).
+- **남은 것**: Codex 5차와 스위트 확인 → push → CI 6/6 → ff → #362 종료 코멘트, #365 코멘트, #367에 F4 메모 → 리스너 종료(11910–11913, 11103/11104, 23058) → #367 → #363 → #368 → #369.
+- **오너 보고에 추가**: (5) `/model openrouter/<id>`는 OR 키가 `.env`에만 있고 다른 자기 키가 있으면 거부된다. 시작 경로는 받아들인다. 완화할지 정해야 한다. (6) 저장된 OR 키가 있는 오너의 실제 환경에서는 (b)가 동작하고, (d) `anthropic/claude-haiku-4-5`는 OR로 간다(C4).
+
+- **#367 r7 결과** (`wf_58c0fc98-1d4`, 2시간 15분):
+  - fix r7 → `f3fd162c`.
+    - `LateRouteHold.apply`가 hold를 적용하는 유일한 helper가 됐다. 게이트가 없으면 스스로 건다. 검사는 거부된 턴을 기다린 뒤 마지막에 한다.
+    - sweep에서 세 번째 무게이트 경로(rebuild-first settle, `/new` → `/late/v1`)를 찾아 고쳤다.
+    - 스위트 `11870 passed, 23 skipped`.
+  - **verify r7 FAIL(차단 1, 문구)**: 요청은 모든 hold 경로에서 0건이다. 다만 launch와 factory-held rebuild에서 apply 도중 거부된 턴이 호출자의 낡은 사유("…session_start handlers run")를 출력한다. 비차단: v7-mst-launch 인용 오류, model_select 거부 턴 메시지가 다음 프롬프트에 실린다는 문구 누락, RPC get_state 과도 상태, 사보타주 G7/G9/R6e는 실패 대신 멈춘다.
+  - **Codex 7차**(요청 위반 0): P2 input/before_agent_start 핸들러가 session_start 창 안에서 등록한 provider를 "in a session_start handler"라고 부르는 거짓 문구. P3 setup() provider로 옮긴 뒤에도 guard-2 Note가 OpenRouter라고 말한다(기존 문제). 테스트 공백: `navigate_tree(summarize=True)` 게이트 제거 mutant가 통과한다.
+  - fix 레인 오너 결정 후보: 지연 없는 spawned task의 set_model과 trigger를 launch apply 동안 hold한다(343e75cd보다 엄격하다).
+- **r8 결정**(메인 루프):
+  - apply 동안 게이트 사유를 hold 사유로 바꾸고 끝나면 호출자 사유로 되돌린다.
+  - P2는 동작을 유지한다(pi는 어떤 핸들러보다 먼저 모델을 확정한다). 문구만 "session_start 핸들러가 도는 동안 등록"으로 고친다.
+  - P3는 session_start 뒤 harness 모델이 launch 모델일 때만 Note/Warning을 출력한다.
+  - navigate_tree 행과 fail-fast 행을 추가하고 비차단 문서를 고친다.
+  - 멈춤 규칙에 따라 **Codex 재패스 없이** 새 맥락 opus 검증 1회만 한다. → **`wf_d1f8484f-564`**.
+
+- **#367 r8 결과**(`wf_d1f8484f-564`, 1시간 47분):
+  - fix r8 → `29499345`.
+    - 사유를 바꿔 끼운다.
+    - 늦은 등록 문구를 "while session_start handlers ran"으로 바꿨다.
+    - Note 조건을 (provider, id)로 정했다.
+    - navigate 행을 추가했고, G7/G9/R6e는 10초와 5초 상한으로 실패한다.
+    - 스위트 `11877 passed`.
+  - **verify r8 FAIL(차단 2)**. 요청 위반은 0건이고, V-B1은 37개 시나리오에서 PASS다.
+    - B1: fire-and-forget trigger와 지연 없는 task는 emit 뒤 `_finish_refused_turns` 안에서 등록되는데도 문구가 "session_start handlers ran"이라고 말한다. ADR §6도 틀렸다.
+    - B2: Note 조건을 provider만 또는 id만 비교하는 mutant가 테스트를 통과한다.
+  - → **r9**(`wf_804e4725-19b`): 실제 창(빌드 끝부터 session_start 뒤 aelix의 검사까지)을 문구와 문서에 쓰고, 행과 좁은 검증을 추가한다.
+
+## ▶ 이어받을 지점 (2차 압축 직전, 2026-10-05)
+
+- **기준점**: main = origin/main = **`5dee21d1`**(#362 머지, main CI 37035221427 success). #350·#362는 닫혔다.
+- **기준점 갱신**: main = **`986f5916`**(#367, #370, #369, #363, #368). 배치 7건을 모두 닫았다.
+- **실행 중**: 없음. 배치를 마쳤다(핸드오프 참조).
+  - 순서: fix(모든 hold 적용 지점을 게이트 아래로) → 독립 verify와 Codex 2차 패스를 병렬로.
+  - r8 순서: fix → 새 맥락 verify(델타 중심). 결과 객체 `{fix, verify}`. 완료 알림이 오면 `…/subagents/workflows/wf_d1f8484f-564/journal.jsonl`(또는 task output)에서 읽는다.
+  - verify r8이 통과하면 Codex 재패스 없이 아래 머지 순서로 간다.
+- **#367 현재 상태**:
+  - 트리 `/tmp/wt-367`, 브랜치 `fix/367-late-provider-refused`, 커밋 하나(r7이 amend). 재부팅 뒤 복구한 트리다.
+  - 키트 보존본은 `.omc/probes/367-live/`(codex, verify2–5, fix4, 그리고 r7이 쓸 fix7, verify7, codex7)에 있다. pi 스냅샷은 `/tmp/pi-88ff80b98`이다(재생성: `git -C ~/dev/pi archive 88ff80b98 packages scripts | tar -x -C …`).
+  - 커밋 trailer는 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` 다음 줄에 `Claude-Session: https://claude.ai/code/session_01Do2UFL3cZqAwCokMAQsPU4`를 붙인다(새 지침).
+- **r7 뒤 판단**(멈춤 기준):
+  - aelix 자신의 결정 경로에 대한 지적만 차단으로 본다. 판정 이후의 확장 행동은 비차단(§6)이다.
+  - verify와 Codex가 모두 깨끗하면 다음 순서로 간다.
+    1. 메인 루프가 TUI를 직접 띄워 본다(`uv run aelix` pty, late hold와 `/model` 해제).
+    2. 실제 모델 1회(정상 launch가 여전히 동작하는지).
+    3. push(`--force-with-lease`는 처음이라 불필요, 그냥 push).
+    4. 브랜치 CI 6/6.
+    5. main ff 머지 → 별도 명령으로 push.
+    6. #367 종료 코멘트, 보드 Done.
+- **병행 조사**: `wf_3cc0206f-40b`(읽기 전용, #363·#368·#370·#369 각 1개 에이전트). 기준은 main `5dee21d1` 위의 detached 트리 `/tmp/research-next/tree`와 #367 커밋, 최신 pi `b223082bb`(`/tmp/pi-b223082bb`, 88ff80b98보다 74커밋 뒤)다. 결과는 이슈별 설계, 테스트 행, 문서, 겹치는 파일이다. 다 쓰면 트리를 지운다(`git worktree remove /tmp/research-next/tree`).
+- **조사 결과**(`wf_3cc0206f-40b`, 22분): `.omc/specs/next-issues-research-2026-10-06.json`(배열, [0]=#363, [1]=#368, [2]=#370, [3]=#369)에 있고, 프로브 사본은 `.omc/probes/<n>-live/research/`에 있다.
+  - #363·#369는 #367과 코드 겹침이 없다(문서만 겹친다). #368·#370은 #367과 해석 경로가 겹친다.
+  - 메인 루프 결정(pi 방향 원칙과 조사 권고에 따름):
+    - #363:
+      - 순서 (c)를 따른다. stored가 provider를 소유하므로 OAuth refresh가 실패하면 fallthrough하지 않는다.
+      - 3단계는 **models.json apiKey만** 다룬다. 확장 api_key는 #365 전까지 env 뒤에 두고 ADR에 임시 divergence로 적는다.
+      - apiKey만 또는 authHeader만 있는 항목도 허용한다.
+      - 시작 경로에서 합성 모델을 쓴다.
+      - config 문법(bare=env)은 유지하고 divergence와 후속 이슈로 남긴다.
+      - ADR **0251**.
+    - #369:
+      - settings.json을 trust 리소스에 넣는다.
+      - untrusted 프로젝트의 settings는 읽지도 쓰지도 않는다.
+      - post-/login은 global 설정만 쓴다.
+      - extension sources는 global만 읽는다.
+      - `/trust` 뒤에는 재시작을 안내한다(pty로 실측 후).
+      - 보강(신뢰한 프로젝트의 쌍)은 하지 않는다.
+      - `--list-models`는 비대화형으로 판단한다.
+      - ADR **0252**.
+    - #368: 오너 후보가 나왔다. interactive와 RPC의 exit 1(pi)이냐, ADR-0250 §2.4에 맞춘 Warning과 hold냐. 나는 §2.4 일관성(Warning)을 권하고, RPC가 조용히 시작하는 문제는 #370의 RPC 항목과 함께 후속 이슈로 낸다.
+    - #370: 조사 권고를 따른다. 힌트는 모든 경우에 보이고, 카탈로그에 있는 OR id는 유지하며, RPC 미해결 경로는 후속 이슈, interactive divergence는 유지한다.
+- **#363 ∥ #369 레인**: `wf_83156f81-144`(implement → verify ∥ Codex). 트리는 `/tmp/wt-363`(`fix/363-own-key-before-env-and-composed-launch`)와 `/tmp/wt-369`(`fix/369-project-settings-follow-trust`)이고, 둘 다 5dee21d1에서 시작한다. #367 머지 뒤 리베이스한다. 키트는 `.omc/probes/{363,369}-live/{impl,verify,codex}/`.
+- **#363·#369 1차 결과**(`wf_83156f81-144`, 1시간 37분):
+  - #363 구현 → `4cbff14e`.
+    - 결과 JSON 파싱이 5회 실패해 리뷰 단계가 돌지 못했다.
+    - 커밋 메시지에 재현, S1–S12 사보타주, 라이브 recorder 결과가 모두 있다.
+    - 스위트 `11779 passed`.
+  - #369 구현 → `67281070`.
+    - 스위트 `11788 passed`.
+    - verify FAIL(차단 3): `--list-models` trust 행 공백, 게이트 밖 인용 2개가 옛 줄을 가리킴, ADR의 pi 패키지 CLI 서술 오류.
+    - Codex: FIFO settings.json이 `is_file()`를 피함, 문서 문구, never→always mutant가 통과.
+  - → `wf_3a7e6cdc-405`: #363 verify ∥ Codex, #369 r2 → 좁은 verify.
+- **#367 r9 결과**(`wf_804e4725-19b`):
+  - fix → `f34bde34`. 문구를 "while a session was starting (for example in a session_start handler)"로 바꾸고 C-P3 행 4개를 추가했다.
+  - **verify r9 PASS**(차단 0).
+  - 메인 루프가 메시지의 개수 표기만 고쳤다(트리 diff 0) → **`62e2238b`**.
+  - TUI pty(`.omc/probes/367-live/main-tui/`):
+    - c02: Warning, `hi`는 ✖에 요청 0, `/model late/m1` 뒤 `/late/v1`.
+    - c01: setup provider는 정상이다.
+    - main 5dee21d1의 p23은 session_start 턴을 `/or/v1`로 보낸다(고친 결함).
+  - 실제 OR `anthropic/claude-haiku-4.5`: `pong` rc=0, `~/.aelix` 쓰기 0.
+  - push → **CI 37356882668**.
+  - 종료 코멘트 초안은 `/tmp/367-work/close.md`(사본 main-tui/)에 있다.
+  - 후속 이슈 초안 3개(`/tmp/367-work/issues/`): rpc registry, 게이트 사유 문구, Resumed session.
+- **#363 r1 리뷰**(`wf_3a7e6cdc-405`):
+  - verify FAIL과 Codex 1차 cat1–4 FAIL의 결론이 같다.
+  - **P1 회귀**: OAuth refresh가 실패하면 레지스트리는 None을 돌려주고, 콜백이 이를 "의견 없음"으로 바꿔 어댑터가 env 키를 읽는다. 그 결과 models.json + export 키 조합에서 벤더 키가 게이트웨이로 간다.
+  - 그 밖에 status 순서, launch가 OAuth modify_models를 놓침, mutant(V3, V13, cost/reasoning, V12)가 있다.
+- **#369 r2** → `890c982a`. verify 차단 1: `--list-models` 알림 조건의 두 번째 항이 테스트에 고정되지 않았다.
+- → **`wf_eb4c7ae7-a30`**: #363 r2 → verify ∥ Codex 2차, #369 r3 → 좁은 verify.
+- **#367 머지**:
+  - 브랜치 CI 37356882668이 6/6 success였다. main을 **`62e2238b`**로 ff하고 push했다.
+  - 종료 코멘트를 달고 닫았다(보드 Done).
+  - 후속 이슈 **#371**(rpc model registry), **#372**(게이트 사유 문구), **#373**(Resumed session)를 모두 P2로 올렸다.
+  - `/tmp/wt-367`과 로컬 브랜치를 삭제했다. 원격 `fix/367-late-provider-refused` 삭제는 오너 몫이다.
+  - main CI 37359718181: 6/6 success.
+- **#370 레인**: `wf_9a0d8a3d-458`(implement → verify ∥ Codex). 트리는 `/tmp/wt-370`(`fix/370-api-key-unknown-prefix-is-not-found`)이고 62e2238b에서 시작했다.
+  - 결정: `--api-key`가 있으면 guard 2를 쓰지 않는다. 힌트는 항상 붙인다. 카탈로그에 있는 OR id는 pi와 같이 유지한다. RPC는 #371로 넘긴다.
+  - 보드: #363, #369, #370을 In progress로 옮겼다.
+- **#370 r1 결과**(`wf_9a0d8a3d-458`, 1시간 29분):
+  - 구현 → `07ff4dae`. 스위트 `11911 passed`.
+  - `/agents use`에도 typed_key를 넘기도록 했다. sweep에서 #370 모양이 `/agents use`에서 guard 2로 가는 것을 찾았기 때문이다.
+  - **verify PASS**(차단 0).
+  - **Codex**: typed key 누출은 0건이다(33개 경우). cat4에서 중첩 id `a/b/c`만 새는 mutant가 250개 테스트를 통과했다. 빈 세그먼트에는 힌트가 없다.
+  - verify 비차단:
+    - `/agents use`에서 프로필 자체 `model:`까지 거부하고 힌트 문구도 틀렸다(범위 초과).
+    - ADR §2.7의 settings 경로 누락, 과장, 숫자 정밀도.
+    - 별건: `/model`의 OR 선택이 `OPENROUTER_BASE_URL`을 무시한다. `openrouter/auto`에서 `/agents use`와 `/new`를 하면 id가 바뀐다.
+  - → **r2**(`wf_ed6eb193-503`):
+    - 중첩 행을 추가한다.
+    - `/agents use`의 typed_key는 launch 입력을 다시 해석할 때만 쓴다.
+    - 빈 세그먼트는 bare not-found로 두고 문서화한다.
+    - §2.7을 정밀하게 고친다.
+    - 좁은 verify를 한다.
+- **#363 r2·#369 r3 결과**(`wf_eb4c7ae7-a30`, 2시간):
+  - #363 fix r2 → `a79861ce`. OAuth refresh 실패 시 8개 경로 모두 요청 0건이다(`OAuthRefreshError`). status는 runtime을 먼저 본다. launch는 레지스트리 사본을 쓴다. 스위트 `11798`.
+    - verify r2 FAIL(차단 2): 502 자동 재시도라는 거짓 주장, authHeader만 있는 등록의 M12 mutant.
+    - Codex 2차: stored `!true` 빈 헬퍼에서 env 누출, 커스텀 anthropic-messages의 SDK env 누출, OR base_url 예외, ADR §4 문구, max_tokens mutant.
+  - #369 r3 → `1c265168`, **verify PASS**.
+- → **`wf_5fa66760-4c3`**:
+  - #363 r3: stored가 모든 경우를 소유한다(pi), 재시도 주장을 지운다, M12·M9 행, 레지스트리 사본과의 완전 동등 행, 문서. 이어서 좁은 verify.
+  - #369는 62e2238b로 rebase한 뒤 rebase verify.
+- **후속 이슈**:
+  - **#374**(P1): 커스텀 anthropic-messages에서 SDK가 `ANTHROPIC_API_KEY`를 읽는다. pi는 `apiKey: null`로 막는다.
+  - **#375**(P2): `OPENROUTER_BASE_URL`이 launch에만 적용된다. `openrouter/auto` id 이동도 함께 적었다.
+  - **#376**(P2): `--continue` 세션의 compaction이 실패한다.
+  - **#377**(P2): 피커 상세 줄이 키 출처를 잘못 보여 준다.
+  - #365에 확장 키 순서와 headers 병합 메모를 달았다.
+- **#370 r2 결과**(`wf_ed6eb193-503`):
+  - fix → `a7435b9f`. 중첩 행을 추가했고, `/agents use`의 typed_key는 launch 입력을 다시 해석할 때만 쓴다. 빈 세그먼트는 bare not-found로 둔다. §2.7을 정밀하게 고쳤다. 스위트 `11923`.
+  - **verify r2 PASS**.
+- **메인 루프 #370**:
+  - TUI pty(`.omc/probes/370-live/main/`): Warning에 힌트가 붙고, `hi`는 ✖이며 OR 요청 0건이다.
+  - 실제 OR 모델: `pong` rc=0, `~/.aelix` 쓰기 0.
+  - 브랜치 CI 37375237207은 6/6이었다. main을 **`a7435b9f`**로 ff하고 push했다. main CI 37377731047: 6/6 success.
+  - 종료 코멘트를 달고 닫았다. 후속 이슈 **#378**(P2): hold된 not-found placeholder의 턴 거부 문구가 일반 #98 문구다.
+  - `/tmp/wt-370`과 로컬 브랜치를 삭제했다.
+  - 오너 보고 후보: 신뢰한 프로젝트 settings의 `defaultProvider=openrouter`가 typed key를 OR로 보낸다(§2.7). 신뢰하지 않은 경우는 #369가 닫는다.
+- **#368 레인**: `wf_e45f89a1-18e`(implement → verify). 트리는 `/tmp/wt-368`(`fix/368-provider-requires-model`)이고 a7435b9f에서 시작했다.
+  - 결정을 바꿨다: interactive와 RPC를 포함한 **모든 모드에서 시작 전 exit 1**로 끝낸다(pi). argv 사용법 오류이고, §2.4의 hold는 해석 오류에만 쓴다.
+  - `OPENROUTER_DEFAULT_MODEL` 예외는 유지한다. provider만 있는 프로필에도 같은 줄을 낸다. 문구는 `<id>`를 쓴다.
+- **#369 다음 할 일**: #370이 먼저 머지됐으므로 `a7435b9f`로 다시 rebase한다. 이때 #370 ADR §2.7·§6의 "until #369" 문구도 정리한다.
+- **#363 r3·#369 rebase 1 결과**(`wf_5fa66760-4c3`):
+  - #363 fix r3 → **`dbc5fd71`**(5dee21d1 위). **verify r3 PASS**.
+    - 이제 stored가 모든 경우를 소유한다(`StoredCredentialError`). 빈 키, `!true`, 등록되지 않은 OAuth, 알 수 없는 type이 모두 해당한다.
+    - 재시도 주장은 지웠다. 레지스트리 사본과의 완전 동등 행을 추가했다. 스위트 `11848`.
+    - pi 실측으로 전제 둘이 반증됐다. pi는 refresh가 502일 때 **재시도한다**. pi는 stored 키가 빈 값이면 **env를 쓴다**. aelix는 더 엄격하게 두었고, 오너 보고 후보다.
+    - 비차단: `!false` 헬퍼의 오류 문구가 항목을 가리키지 않는다(문서 주장과 다르다). rebase 때 고친다.
+  - #369는 62e2238b로 rebase해 `52bc0885`, rebase verify PASS다. 이 사이 #370이 머지돼 **다시 rebase**해야 한다. → `wf_ce0efad7-e69`.
+  - 후속 **#379**(P2): refresh 실패를 재시도하지 않는다(pi는 한다).
+- **머지 순서(직렬)**: #369(rebase 2 → TUI 확인 → 라이브 → CI → 머지) → #363(main으로 rebase, `!false` 문구 → rebase verify → 라이브 → CI → 머지) → #368(rebase → CI → 머지).
+- **#368 r1 결과**(`wf_e45f89a1-18e`): implement → `da112cdd`. 스위트 `11948`.
+  - verify FAIL(차단 2):
+    - 이른 검사가 확장이 주는 OR 키를 보지 못한다. 그래서 `OPENROUTER_DEFAULT_MODEL` rung이 깨지는 회귀가 있다.
+    - 프로젝트 디렉터리에서는 trust-vote 로드가 검사보다 먼저 확장 `setup()`을 돌린다. 문서는 이와 다르게 적혀 있다.
+  - → **r2**(`wf_fa09f90d-20d`):
+    - argv만 보는 검사로 바꾼다. env와 openrouter 지목이면 자격과 상관없이 면제하고, 판단은 step 0에 맡긴다.
+    - 프로필이 없으면 trust vote보다 먼저 검사한다.
+    - MCP 행과 빈 provider 행을 추가한다.
+- **#369 머지**:
+  - rebase 2 → `9bdd2cc2`, verify PASS. 메인 루프가 ADR-0250 §6의 후속 목록에 남은 "#369 열림"을 고치고, 메시지의 `#`로 시작하는 줄 2개를 다시 감쌌다 → **`547099f3`**.
+  - TUI pty(`.omc/probes/369-live/main/`):
+    - 시작 프롬프트에 settings 문구가 나온다. 거부하면 쌍이 적용되지 않는다.
+    - `/trust`는 선택지 3개를 보여 주고 "Restart aelix…"를 출력한다. 요청은 버전 확인 CONNECT 하나뿐이다.
+  - 실제 모델: `pong` rc=0, `~/.aelix` 쓰기 0.
+  - 브랜치 CI 37384593826은 6/6이었다. main을 **`547099f3`**로 ff하고 push했다. main CI 37386874825: 6/6 success.
+  - 종료 코멘트를 달고 닫았다. 후속 **#380**(P2): 신뢰 프롬프트 줄바꿈과 `/trust` 첫 줄 문제.
+  - 워크트리와 로컬 브랜치를 삭제했다.
+- **#363 rebase**: `wf_4ede0799-213`. 547099f3 위로 옮기면서 `!false` 헬퍼 문구를 함께 고친다. 이어서 rebase verify를 한다.
+- **#368 r2 결과**(`wf_fa09f90d-20d`):
+  - fix → **`0689139d`**(a7435b9f 위).
+    - 판정은 argv만 보는 `openrouter_default_named`로 하고, 자격은 step 0만 본다.
+    - 프로필이 없으면 trust gate보다 먼저 검사한다.
+    - MCP 행과 빈 provider 행을 추가했다. 스위트 `11963`.
+  - **verify r2 PASS**.
+  - 비차단:
+    - main이 547099f3으로 움직였으므로 rebase한 뒤 B2를 다시 재야 한다. `.aelix/settings.json`도 이제 trust 리소스다.
+    - "argv only"라는 표현을 고쳐야 한다. models.json의 provider 이름이 case rule에 들어간다.
+  - 오너 후보:
+    - 키 없이 `--provider openrouter`와 `OPENROUTER_DEFAULT_MODEL`을 주면 a7435b9f처럼 interactive와 rpc가 시작한다.
+    - 프로필이 없으면 aelix가 pi보다 엄격하다(trust 전에 검사한다).
+  - **#363 머지 뒤 rebase**한다.
+- **#363 rebase 결과**(`wf_4ede0799-213`):
+  - rebase → `a8703fd3`(547099f3 위). `!false` 헬퍼는 이제 `StoredCredentialError`를 내고, 문구에 항목·`/login`·경로가 나온다. 스위트 `12075`.
+  - **rebase verify PASS**.
+  - 메인 루프가 메시지의 `#`로 시작하는 줄 2개를 다시 감쌌다 → **`9456a57c`**(트리 diff 0).
+  - 실제 실행: OR `pong` rc=0, 오너 OAuth `openai-codex/gpt-5.5` `pong` rc=0, `~/.aelix` 쓰기 0.
+    - 오너의 anthropic과 copilot OAuth는 만료됐다. #363 뒤로는 anthropic 요청이 refresh를 시도하고, 실패하면 `/login`을 요구한다. `.env`의 `ANTHROPIC_API_KEY`로 내려가지 않는다(오너 보고).
+  - push는 GitHub 500으로 한 번 실패했고 재시도에서 성공했다 → 브랜치 CI 진행 중. 종료 코멘트 초안은 `/tmp/363-work/main/close.md`에 있다.
+- **#368 rebase**: `wf_9352aa4b-e67`. 9456a57c 위로 옮긴다. #363이 ff되면 그대로 머지할 수 있다. #369 기준으로 B2를 다시 재고 문구를 고친다.
+- **#363 머지**: 브랜치 CI 37391508061은 6/6이었다. main을 **`9456a57c`**로 ff하고 push했다. 종료 코멘트를 달았다(이슈는 push로 이미 닫혀 있었다). 워크트리와 브랜치를 삭제했다. main CI 37393577331: 6/6 success.
+- **#368 rebase와 머지**:
+  - rebase → `1f9bc625`(9456a57c 위). B2를 #369 기준으로 다시 쟀다(settings.json만 있는 디렉터리도 신뢰 게이트 전에 끝난다). 문구를 고쳤다. 스위트 `12124`.
+  - **rebase verify PASS**.
+  - 메인 루프가 README 0250 행의 "#363 열림"과 쌍 문구를 고쳤다 → **`986f5916`**.
+  - pty: interactive와 rpc 모두 0.4초 안에 rc 1로 끝나고 pi 문구를 낸다. 실제 모델 `pong` ×2, `~/.aelix` 쓰기 0.
+  - 브랜치 CI 37396141277은 6/6이었다. main을 **`986f5916`**로 ff하고 push했다.
+  - 종료 코멘트를 달고 닫았다. 워크트리와 브랜치를 삭제했다. main CI는 37398119003이다.
+- **최종 전체 스위트**: `/tmp/final-suite`(986f5916 detached, `.aelix/` 없음, `AELIX_*` 해제)에서 실행 중이다.
+- 핸드오프 초안은 `.omc/specs/handoff-pi-direction-batch-2026-10-06.md`에 있다.
+- **최종 전체 스위트**(`/tmp/final-suite`, 986f5916, `.aelix/` 없음, `AELIX_*` 해제): **`12124 passed, 23 skipped, 104 warnings in 464.52s`**, rc 0. 출력 사본은 `.omc/probes/final-suite-986f5916.out`.
+- **main CI 37398119003**:
+  - attempt 1: windows py3.12에서 `test_every_byte_is_delivered_under_a_loaded_loop`가 `timed_out=True`(20 s)로 1 failed.
+  - attempt 2(`gh run rerun --failed`): 6/6 success.
+  - 플레이크 이슈 **#381**(P2)을 올렸다. 로그 사본은 `.omc/probes/ci-flakes/`.
+- **핸드오프**: `.omc/specs/handoff-pi-direction-batch-2026-10-06.md`.
+- **그 뒤 순서**:
+  - #363(재지정 내장의 bearer 순서 (c)와 시작 시 합성 모델)
+  - #368(`--provider requires --model`)
+  - #370(`--api-key`와 모르는 접두에서 guard 2를 끔, P1)
+  - #369(신뢰하지 않은 프로젝트 settings, P1, pi 89a92207f)
+  - 마지막으로 새 워크트리에서 전체 스위트를 돌리고, 핸드오프 `.omc/specs/handoff-…-2026-10-0x.md`를 쓰고, 이 계획 문서와 함께 커밋한다.
+- **오너에게 알릴 것**:
+  - ADR-0250 §7의 결정들(보완 2 확장, step 3b, `/model openrouter/` 엄격성, defaultProvider 규칙).
+  - #367 오너 결정 후보:
+    - settings 쌍이 late를 가리키면 거부한다(pi는 대체).
+    - rebuild는 launch 입력을 재해석해 hold로 돌아간다(pi는 세션 모델 유지).
+    - hold되지 않은 rebuild의 session_start는 게이트하지 않는다.
+    - 거부된 턴의 메시지는 다음 프롬프트에 실린다.
+  - 원격 브랜치 삭제(fix/351, 341, 344, 350, 362-…)와 `~/.aelix/sessions` 정리(#366).
+- **세션 규칙**: ultracode가 켜져 있다(모든 실질 작업은 Workflow). 오너에게는 한국어로 답한다. Codex는 워크플로 안의 에이전트가 `codex exec`를 백그라운드로 돌리고 폴링하는 방식으로 실행한다.
