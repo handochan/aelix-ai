@@ -700,8 +700,9 @@ async def test_one_prompt_cannot_start_unbounded_delegations(tmp_path: Path) -> 
 
     Each is a full ``-m aelix_coding_agent`` process holding the parent's API
     keys with up to ``DEFAULT_TIMEOUT_MS`` (10 min) of wall clock, and
-    ``"agent"`` is deliberately absent from ``builtin/permission.py``'s
-    ``_MUTATING``, so the parent's own permission ladder never saw them either. A
+    ``"agent"`` passes ``builtin/permission.py``'s ladder unasked by design
+    (ADR-0197 §(i); ADR-0253 keys that on the aelix-built tool's ``delegation``
+    provenance), so the parent's own permission ladder never saw them either. A
     prompt-injected README saying "call agent() 200 times" therefore cost real
     money and 200 real processes with no gate at all.
     """
@@ -732,7 +733,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:922``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:923``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1393,7 +1394,7 @@ async def test_rule_8_timeout_ms_is_bounded_at_both_ends(
     apart, and for ``True`` that is the whole test. ``isinstance(True, int)`` is
     True, so ``timeout_ms: true`` reaches the range check as the integer ``1``
     and today's ``MIN_TIMEOUT_MS`` of 1000 refuses it anyway — dropping
-    ``isinstance(timeout_ms, bool) or`` from ``tool.py:501`` therefore changes
+    ``isinstance(timeout_ms, bool) or`` from ``tool.py:502`` therefore changes
     nothing an ``is_error`` assertion can see. (An earlier version of this
     docstring claimed a bare ``true`` would "become a 1 ms deadline". It would
     not, and a reader who believed it would conclude the guard was load-bearing
@@ -1469,7 +1470,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so the note's repeat check could be dropped from
-    ``tool.py:854`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:867`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the

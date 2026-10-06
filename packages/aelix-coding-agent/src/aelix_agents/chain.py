@@ -29,7 +29,7 @@ element.
 THE SUBSTITUTED TEXT IS NOT HUMAN-APPROVED, AND THIS MODULE SAYS SO (§3.1.1).
 The consent grant is taken once, in the hook, BEFORE step 1 exists
 (``extension.py:906-908``, frozen into ``PendingSpawn`` at ``:920-922``), and
-``build_consent_title`` renders the task verbatim (``consent.py:573-630``) — so
+``build_consent_title`` renders the task verbatim (``consent.py:576-633``) — so
 what the human read on screen for step 2 is the literal string ``{previous}``.
 What actually reaches child *k ≥ 2* is text minted mid-call by a child process
 that has itself read ``cwd`` content an attacker may control.

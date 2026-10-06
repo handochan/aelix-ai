@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Awaitable, Callable
 
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
+
 # Bounded render width — matches the ``custom()`` overlay precedent
 # (``_RENDER_WIDTH = 80``) so the Panel border never wraps/clips the Float.
 _RENDER_WIDTH = 80
@@ -57,7 +59,7 @@ class ApprovalRequest:
 
     ``kind`` selects the body rendering: ``bash`` shows the full command,
     ``write`` shows an empty→content diff, ``edit`` shows an old→new block per
-    edit, ``other`` shows the raw arg summary.
+    edit, ``other`` shows every raw argument (:func:`argument_rows`).
 
     ``redirect_label`` / ``yes_label`` are issue #161 shape 3. When
     ``redirect_label`` is set the dialog grows a fourth row offering the OTHER
@@ -250,7 +252,10 @@ def build_approval_view(
     - bash → "Run command:" + the FULL untruncated command.
     - write → "Create/overwrite {path}" + an empty→content diff (capped).
     - edit → "Edit {path}" + an old→new block per edit (verbatim fallback).
-    - other → a compact arg summary.
+    - other → the tool name, the argument count and EVERY argument, one row
+      each, with each value bounded (:func:`argument_rows`, #188). Bounding
+      the values does not bound the number of rows: the runner holds Yes
+      until all of them have been on screen (:class:`_ArgumentViewport`).
 
     ``render_diff`` (default :func:`render._render_diff`) colours the diff so it
     matches the transcript; a ``None`` / raising callback degrades to plain
@@ -287,10 +292,80 @@ def build_approval_view(
         )
     else:
         title = f"Allow {request.tool_name}?"
-        summary = ", ".join(f"{k}={v!r}" for k, v in list(request.args.items())[:6])
-        body = Group(Text(f"Tool: {request.tool_name}", style="bold"), Text(summary, style="dim"))
+        rows = argument_rows(request.args)
+        body = Group(
+            Text(f"Tool: {request.tool_name}", style="bold"),
+            Text(_argument_count(len(rows)), style="bold"),
+            *(Text(row) for row in rows),
+        )
 
     return _panel_to_ansi(title, body, width)
+
+
+#: How much of one argument's VALUE (its ``repr``) the approval prompt prints
+#: before cutting it with a visible marker, so one long value is a few lines,
+#: not dozens. It does not keep the body inside the screen: six values of this
+#: length already overflow an 80x24 terminal, which is why Yes waits for the
+#: whole body to have been shown (:class:`_ArgumentViewport`).
+_ARG_VALUE_CHARS = 200
+#: The same for an argument's NAME — a key is chosen by whoever sent the call.
+_ARG_KEY_CHARS = 60
+
+
+def _bounded(text: str, limit: int) -> str:
+    """*text*, or its first *limit* characters and how many were cut."""
+
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… (+{len(text) - limit} more chars)"
+
+
+def _argument_count(n: int) -> str:
+    if n == 0:
+        return "(no arguments)"
+    return f"{n} argument{'s' if n != 1 else ''}:"
+
+
+def argument_rows(args: dict[str, Any]) -> list[str]:
+    """One ``key=value`` row for EVERY argument, in the order they were sent.
+
+    #188 round 1. This is the consent surface for every tool aelix did not
+    build (``kind="other"``), and it used to print only the first six
+    arguments with no sign of the rest — so a model could put six filler keys
+    first and the write target seventh, and the user approved a call whose
+    target they were never shown (measured: ``hidden.txt`` written after a
+    dialog that listed ``label0``…``label5``). The argument dict is the one the
+    loop hands to ``execute`` (unknown keys are kept), so nothing short of every
+    key describes the call.
+
+    No row is dropped and none is capped by count. Each VALUE is cut at
+    :data:`_ARG_VALUE_CHARS` and each key at :data:`_ARG_KEY_CHARS`, with a
+    marker that says how much was cut, so one huge value cannot run on for
+    dozens of lines. Many arguments still make a body taller than the screen;
+    the dialog does not let Yes through until every row has been shown
+    (:class:`_ArgumentViewport`, #188 review round 2). Values are ``repr``'d and a
+    key that is not printable is too: a newline or an escape sequence in either
+    cannot draw a fake row.
+    """
+
+    rows: list[str] = []
+    for key, value in args.items():
+        name = key if isinstance(key, str) and key.isprintable() else repr(key)
+        rows.append(f"{_bounded(name, _ARG_KEY_CHARS)}={_bounded(repr(value), _ARG_VALUE_CHARS)}")
+    return rows
+
+
+def argument_summary(args: dict[str, Any]) -> str:
+    """:func:`argument_rows` on one line, with the count, for a one-line prompt.
+
+    The generic ``ctx.ui.select`` fallback (``builtin/permission.py``, a host
+    with a UI but no approval dialog) has only a title to show the call in.
+    """
+
+    rows = argument_rows(args)
+    if not rows:
+        return _argument_count(0)
+    return f"{_argument_count(len(rows))} {', '.join(rows)}"
 
 
 #: A Rich ``Panel`` costs 4 cells per row: two border columns and two of default
@@ -367,6 +442,138 @@ def build_options_view(
     return view
 
 
+#: Answers the dialog takes whatever is on screen. Every other row approves
+#: something, so it is held while the arguments are not all shown (#188).
+_ALWAYS_ANSWERABLE = frozenset({ApprovalDecision.NO, ApprovalDecision.CANCEL})
+
+
+class _ArgumentViewport:
+    """The scrolled argument body of a ``kind="other"`` prompt and its footer.
+
+    #188 review round 2. Every argument row is in the body, but the body sits
+    in a height-capped modal: at 80x24 six 198-character values filled it and
+    ``path`` and ``content`` were below the fold, with nothing saying so, and
+    Yes wrote the file. Bounding each value does not bound the row COUNT.
+
+    So the body control draws its own slice of the lines (the height it is
+    given by the window it renders into, never a guess), and records every line
+    index it actually handed to the screen. :meth:`all_shown` is what Yes waits
+    for. The footer is a separate one-row window under the body, outside the
+    scrolled slice, that says how many lines are not on screen, how to reach
+    them, and that Yes is held until all of them have been shown. When the
+    whole body fits, the footer is blank and Yes is answerable from the first
+    paint on. A Yes typed before that paint is held like any other (nothing has
+    been shown yet): it is dropped, not queued, and has to be pressed again.
+
+    "Shown" means drawn by a real render: scrolling without a repaint in
+    between does not count, so keys typed ahead of the screen cannot approve.
+    A width change re-wraps the body into different lines, so it forgets what
+    was shown.
+    """
+
+    def __init__(self, lines: Callable[[], list[str]], width_key: Callable[[], Any]) -> None:
+        self._lines = lines
+        self._width_key = width_key
+        self.top = 0
+        # What the last render drew: the first line, how many, out of how many.
+        self._frame: tuple[Any, int, int, int] | None = None
+        self._seen: set[int] = set()
+        self._seen_for: Any = object()
+
+    def all_shown(self) -> bool:
+        """Has every line of the CURRENT body been drawn at least once?"""
+
+        lines = self._lines()
+        if self._seen_for != self._width_key():
+            return False
+        return self._seen.issuperset(range(len(lines)))
+
+    def scroll(self, delta: int, chrome: Any) -> None:
+        self.top = max(0, self.top + delta)
+        if self._frame is not None:
+            _stamp, _top, shown, total = self._frame
+            self.top = min(self.top, max(0, total - shown))
+        chrome.invalidate()
+
+    def _draw(self, height: int | None) -> list[str]:
+        lines = self._lines()
+        total = len(lines)
+        shown = total if height is None else max(0, min(total, height))
+        self.top = max(0, min(self.top, total - shown))
+        if self._seen_for != self._width_key():
+            self._seen = set()
+            self._seen_for = self._width_key()
+        self._seen.update(range(self.top, self.top + shown))
+        self._frame = (_render_stamp(), self.top, shown, total)
+        return lines[self.top : self.top + shown]
+
+    def footer_text(self) -> str:
+        """The footer row for the frame being drawn (blank when all fits)."""
+
+        frame = self._frame
+        if frame is None or frame[0] != _render_stamp():
+            # The body was not drawn this frame (no room for it at all).
+            return "The arguments do not fit on screen. Yes is held. Enlarge the terminal."
+        _stamp, top, shown, total = frame
+        hidden = total - shown
+        if hidden <= 0:
+            return ""
+        above, below = top, total - top - shown
+        text = f"{hidden} of {total} lines hidden (↑{above} ↓{below}) · PgUp/PgDn to scroll"
+        if not self.all_shown():
+            text += " · Yes held until all seen"
+        return text
+
+    def body_control(self) -> Any:
+        from prompt_toolkit.formatted_text import ANSI, to_formatted_text  # noqa: PLC0415
+        from prompt_toolkit.layout.controls import UIContent, UIControl  # noqa: PLC0415
+
+        viewport = self
+
+        class _Body(UIControl):
+            def preferred_height(
+                self,
+                width: int,
+                max_available_height: int,
+                wrap_lines: bool,
+                get_line_prefix: Any,
+            ) -> int | None:
+                return len(viewport._lines())
+
+            def create_content(self, width: int, height: int) -> UIContent:
+                fragments = [to_formatted_text(ANSI(line)) for line in viewport._draw(height)]
+                return UIContent(
+                    get_line=lambda i: fragments[i],
+                    line_count=len(fragments),
+                    show_cursor=False,
+                )
+
+        return _Body()
+
+    def footer_control(self) -> Any:
+        from prompt_toolkit.layout.controls import UIContent, UIControl  # noqa: PLC0415
+
+        viewport = self
+
+        class _Footer(UIControl):
+            def create_content(self, width: int, height: int) -> UIContent:
+                text = viewport.footer_text()
+                if len(text) > width:
+                    text = text[: max(0, width - 1)] + "…"
+                fragments: StyleAndTextTuples = [("bold" if text else "", text)]
+                return UIContent(get_line=lambda _i: fragments, line_count=1, show_cursor=False)
+
+        return _Footer()
+
+
+def _render_stamp() -> int:
+    """Which paint this is (prompt-toolkit's per-app render counter)."""
+
+    from prompt_toolkit.application.current import get_app  # noqa: PLC0415
+
+    return get_app().render_counter
+
+
 async def run_approval_dialog(
     *,
     request: ApprovalRequest,
@@ -390,6 +597,12 @@ async def run_approval_dialog(
     the diff body is far taller than the cap. The body scrolls (PageUp/PageDown,
     a cursor-tracking control so prompt-toolkit's scroll-to-cursor reaches the
     bottom) instead of clipping its overflow off the terminal.
+
+    #188 review round 2 — for ``kind="other"`` (a tool aelix did not build) the
+    body is an :class:`_ArgumentViewport` and the spacer row is its footer. Yes,
+    "Yes, for this session" (and any other approving row) is not taken until
+    every line of the body has been drawn; No, Esc and Ctrl+C always are. The
+    ``bash`` / ``write`` / ``edit`` bodies keep the scrolling above unchanged.
     """
 
     from prompt_toolkit.data_structures import Point  # noqa: PLC0415
@@ -448,6 +661,12 @@ async def run_approval_dialog(
     # how many there are.
     rows_spec = rows_for(request)
 
+    # #188 review round 2: the body of a tool aelix did not build is all the
+    # user has to judge the call by, so Yes waits until every line of it has
+    # been on screen (:class:`_ArgumentViewport`).
+    gated = request.kind == "other"
+    arguments = _ArgumentViewport(_body_lines, lambda: _body["width"])
+
     def _render_options() -> str:
         return "\n".join(build_options_view(state["idx"], rows_spec))
 
@@ -455,6 +674,12 @@ async def run_approval_dialog(
         kb = KeyBindings()
 
         def _resolve(value: ApprovalDecision) -> None:
+            if gated and value not in _ALWAYS_ANSWERABLE and not arguments.all_shown():
+                # #188 review round 2: an approval while part of the
+                # arguments has never been on screen is not taken. The footer
+                # says how many lines are hidden and how to reach them.
+                chrome.invalidate()
+                return
             if not result.done():
                 result.set_result(value)
 
@@ -477,10 +702,19 @@ async def run_approval_dialog(
             state["scroll"] = max(0, min(state["scroll"] + delta, int(_body["last"])))
             chrome.invalidate()
 
-        kb.add("pageup")(lambda _e: _scroll(-5))
-        kb.add("pagedown")(lambda _e: _scroll(5))
-        kb.add("c-up")(lambda _e: _scroll(-1))
-        kb.add("c-down")(lambda _e: _scroll(1))
+        if not gated:
+            kb.add("pageup")(lambda _e: _scroll(-5))
+            kb.add("pagedown")(lambda _e: _scroll(5))
+            kb.add("c-up")(lambda _e: _scroll(-1))
+            kb.add("c-down")(lambda _e: _scroll(1))
+
+        if gated:
+            # #188 review round 2. Bound to ``arguments`` (not the generic
+            # ``_scroll``) so the clamp follows what the body ACTUALLY draws.
+            kb.add("pageup")(lambda _e: arguments.scroll(-5, chrome))
+            kb.add("pagedown")(lambda _e: arguments.scroll(5, chrome))
+            kb.add("c-up")(lambda _e: arguments.scroll(-1, chrome))
+            kb.add("c-down")(lambda _e: arguments.scroll(1, chrome))
 
         kb.add("enter")(_confirm)
         kb.add("c-j")(_confirm)
@@ -503,13 +737,21 @@ async def run_approval_dialog(
         # so the dialog navigates), pinned below the body OUTSIDE the cap's
         # squeeze so Yes/No can never be clipped. A blank spacer separates them.
         n_option_rows = len(rows_spec) + 1  # rows + the hint line
-        body_window = Window(
-            FormattedTextControl(
-                lambda: ANSI(_render_body()), get_cursor_position=_body_cursor
-            ),
-            scroll_offsets=ScrollOffsets(top=1, bottom=1),
-            wrap_lines=False,
-        )
+        if gated:
+            # #188 review round 2: the argument body draws its own slice of
+            # the rows, so it knows exactly which ones reached the screen, and
+            # the line under it (where the blank spacer was) is the footer.
+            body_window = Window(arguments.body_control(), wrap_lines=False)
+            spacer = Window(arguments.footer_control(), height=Dimension.exact(1))
+        else:
+            body_window = Window(
+                FormattedTextControl(
+                    lambda: ANSI(_render_body()), get_cursor_position=_body_cursor
+                ),
+                scroll_offsets=ScrollOffsets(top=1, bottom=1),
+                wrap_lines=False,
+            )
+            spacer = Window(height=Dimension.exact(1))
         options_window = Window(
             FormattedTextControl(
                 lambda: ANSI(_render_options()), focusable=True, key_bindings=kb
@@ -517,7 +759,6 @@ async def run_approval_dialog(
             height=Dimension.exact(n_option_rows),
             dont_extend_height=True,
         )
-        spacer = Window(height=Dimension.exact(1))
         return HSplit([body_window, spacer, options_window])
 
     decision = await show_modal(chrome, build)
@@ -527,6 +768,8 @@ async def run_approval_dialog(
 __all__ = [
     "ApprovalDecision",
     "ApprovalRequest",
+    "argument_rows",
+    "argument_summary",
     "build_approval_view",
     "build_options_view",
     "run_approval_dialog",

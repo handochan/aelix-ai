@@ -27,6 +27,7 @@ from aelix_coding_agent.tools._file_mutation_queue import (
     with_file_mutation_queue,
 )
 from aelix_coding_agent.tools._path_utils import resolve_to_cwd
+from aelix_coding_agent.tools.provenance import mark_builtin
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,7 @@ def create_edit_tool(
 
         return await with_file_mutation_queue(path, _do_edit)
 
-    return AgentTool(
+    tool = AgentTool(
         name="edit",
         # Pi parity, verbatim: ``editToolSystemPromptContribution.snippet``
         # (``coding-agent/src/core/tools/edit.ts:56``).
@@ -238,6 +239,8 @@ def create_edit_tool(
         execute=execute,
         execution_mode="sequential",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "write")
 
 
 __all__ = ["EditOperations", "EditToolDetails", "create_edit_tool"]

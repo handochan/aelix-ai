@@ -100,15 +100,32 @@ def test_the_no_bash_fallback_route_is_real() -> None:
     assert bundled_docs_dir().is_dir()
 
 
-def test_the_plan_mode_caveat_is_true_of_the_real_permission_ladder() -> None:
+async def test_the_plan_mode_caveat_is_true_of_the_real_permission_ladder() -> None:
     """The skill tells the reader to fall back to ``read`` because ``bash`` is
-    blocked in plan mode. Re-derived from the ladder rather than trusted:
-    ``bash`` is in ``_MUTATING``, PLAN blocks every mutating tool
-    (``builtin/permission.py:550``), and that check sits ABOVE the read-only
-    short-circuit at ``:441`` — so ``read`` is unaffected."""
+    blocked in plan mode. Re-derived from the ladder rather than trusted: the
+    real gate, at PLAN, given the real built-in ``bash`` and ``read`` objects
+    (ADR-0253 decides by the tool object's provenance, not by its name), blocks
+    the first and lets the second through."""
 
-    from aelix_coding_agent.builtin import permission
+    from aelix_coding_agent.builtin.permission import PermissionExtension
+    from aelix_coding_agent.builtin.permission_mode import (
+        PermissionMode,
+        PermissionPosture,
+    )
+
+    from tests.builtin.gate_tools import builtin_event
+
+    class _Ctx:
+        has_ui = False
+        ui = None
+        cwd = "/proj"
+
+    perm = PermissionExtension(posture=PermissionPosture(mode=PermissionMode.PLAN))
+    bash_event = builtin_event("bash", {"command": "ls"})
+    read_event = builtin_event("read", {"path": "a"})
+    bash = await perm._on_tool_call(bash_event, _Ctx())  # type: ignore[arg-type]
+    read = await perm._on_tool_call(read_event, _Ctx())  # type: ignore[arg-type]
 
     assert "blocked in plan mode" in _body()
-    assert "bash" in permission._MUTATING
-    assert "read" not in permission._MUTATING
+    assert bash is not None and bash.block
+    assert read is None

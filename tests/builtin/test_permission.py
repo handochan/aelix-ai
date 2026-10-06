@@ -22,6 +22,8 @@ from aelix_coding_agent.builtin.permission import (
     _session_wildcard,
 )
 
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
+
 # ============================================================
 # Fakes
 # ============================================================
@@ -78,6 +80,7 @@ def _bash_event(command: str) -> ToolCallHookEvent:
         tool_call_id="t1",
         tool_name="bash",
         args={"command": command},
+        context=BUILTIN_CONTEXT,
     )
 
 
@@ -86,6 +89,7 @@ def _write_event(path: str, tool_name: str = "write") -> ToolCallHookEvent:
         tool_call_id="t1",
         tool_name=tool_name,
         args={"path": path},
+        context=BUILTIN_CONTEXT,
     )
 
 
@@ -94,6 +98,7 @@ def _read_event() -> ToolCallHookEvent:
         tool_call_id="t1",
         tool_name="read",
         args={"path": "/etc/hosts"},
+        context=BUILTIN_CONTEXT,
     )
 
 

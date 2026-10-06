@@ -630,7 +630,7 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
 
     ASSERTED ON THE TAIL, and that is the contract rather than a weakening. The
     ``Directory:`` row elides its MIDDLE at ``DIALOG_FIELD_CHARS`` and
-    guarantees the tail (``consent.py:386-399``: "WHERE inside is the question
+    guarantees the tail (``consent.py:389-402``: "WHERE inside is the question
     this row exists to answer, and it is answered by the TAIL"). Asserting the
     whole absolute path made this test pass or fail on how long
     ``/tmp/pytest-of-<user>/pytest-<N>/...`` happened to be on the day — it goes
@@ -799,7 +799,7 @@ async def test_a_batch_refused_for_height_reads_as_split_it_not_as_declined(
     """``SpawnGrant.reason`` must survive the hook, and it must WIN over ``_DECLINED``.
 
     ``_DECLINED`` says "do not retry it", which is true of a human answer and
-    false of a dialog that was never shown (``consent.py:261-270``). A model told
+    false of a dialog that was never shown (``consent.py:264-273``). A model told
     "the user declined" when the user was never asked stops delegating for the
     rest of the prompt; a model told the terminal is too short splits the call
     and gets its work done.

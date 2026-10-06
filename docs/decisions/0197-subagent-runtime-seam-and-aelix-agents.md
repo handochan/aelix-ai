@@ -8,6 +8,10 @@ DECLARED it needs write authority — see `#### Amendment (2026-07-27, owner)` i
 **Amended 2026-09-19 (ADR-0243, #199): a child runs with a session file its
 parent allocated (`--session <path>`), and `--no-session` is only the
 fallback — see the amendment under the argv paragraph.**
+**Amended 2026-10-06 (ADR-0253, #188): the permission ladder decides by tool
+PROVENANCE. §(e)'s child floor now also blocks every MCP / extension tool, and
+§(i)'s "`agent` is not mutating" is now the `delegation` provenance of the object
+`aelix_agents` builds. See the dated note at the end of §(e).**
 Design record that lands with the P2 implementation (same pattern as
 ADR-0186/0187/0188/0189/0196).
 Date: 2026-07-26
@@ -368,6 +372,17 @@ shipped guarantee is one clause longer:
 
 The shorter version must not survive anywhere: it is written in this longer form
 in `aelix_agents/posture.py`'s module docstring and in `consent.py` as well.
+
+#### Note (2026-10-06, ADR-0253)
+
+The ladder above decided "mutating" by name, so an MCP or extension tool fell into the
+"non-mutating" row and a child ran it in every posture. Since ADR-0253 such a tool is
+mutating. In a child it reaches the headless row and is **blocked** under `default`,
+`auto-accept-edits` and `auto`, blocked under `plan`, and allowed only under `yolo`, which
+is exactly what the child's own `bash` gets when nothing auto-allows it. The `agent` row
+is unchanged in effect: the bundled `agent` object carries `delegation` provenance, and
+the ladder still returns `None` for it in every posture. A tool that is merely *named*
+`agent` no longer gets that pass.
 
 ### (f) Project-scoped identity consent — the model door is fail-closed
 

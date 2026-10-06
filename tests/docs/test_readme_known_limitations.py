@@ -12,15 +12,22 @@ WHAT WAS WRONG. `README.md` said, of headless mode:
     patterns, and `--permission-mode plan` blocks every mutating tool on the
     headless path too.
 
-`README.ko.md` said the same. Both clauses are false, and #188 only found the
-second one. Both subsystems identify "mutating" by a fixed frozenset of BARE
+`README.ko.md` said the same. Both clauses were false, and #188 only found the
+second one. Both subsystems identified "mutating" by a fixed frozenset of BARE
 tool names, and every tool that does not come from the built-in set registers
 under a different one — MCP prefixes with its server (`adapter.py`:
 ``qualified = f"{name_prefix}__{tool.name}"``), so `write_file` arrives as
-`fs__write_file` and matches nothing.
+`fs__write_file` and matched nothing.
 
-The tests below assert the DEFECT, deliberately. When #188 is fixed they fail,
-which is the signal to rewrite both READMEs.
+THE TURN THIS FILE WAS WAITING FOR. Its first tests asserted that defect,
+deliberately, so that fixing #188 would fail them. ADR-0253 fixed the
+PERMISSION half — the gate now keys on the provenance of the tool object, so
+anything Aelix did not build is mutating — and the READMEs were rewritten in the
+same commit. The GUARDRAIL half is unchanged and is still a stated limitation;
+:func:`test_no_guardrail_rule_applies_to_every_tool` keeps pinning it, and
+:func:`test_the_guardrail_goes_by_bare_name_whatever_registered_the_tool` pins
+what the READMEs now say about it (#188 round 1: the first rewrite said it
+looked "only at the built-in" tools, and an extension's ``shell`` is checked).
 """
 
 from __future__ import annotations
@@ -40,34 +47,57 @@ def _read(name: str) -> str:
 # === the claim, in code ====================================================
 
 
-def test_both_safety_nets_match_bare_tool_names_only() -> None:
-    """The measurement the README wording is derived from.
+async def test_plan_blocks_an_mcp_tool_on_the_headless_path() -> None:
+    """The measurement behind "`--permission-mode plan` does hold there".
 
-    Not a paraphrase of #188: #188 asserts in its own Scope section that "the
-    floor still holds — GuardrailExtension runs first, so catastrophic patterns
-    are still hard-denied". That is refuted here. Every guardrail rule is scoped
-    to the same bare-name sets the permission check uses, so on the MCP path
-    NEITHER net is in the way.
+    The real gate at PLAN with no UI, handed an MCP tool built by the real
+    adapter (``fs__write_file``) inside a turn context that also holds the
+    built-ins — the shape the loop hands the hook. On ``aab1f210`` this
+    returned ``None``: allowed.
     """
 
-    from aelix_coding_agent.builtin.guardrail import _BASH_TOOLS, _WRITE_TOOLS
-    from aelix_coding_agent.builtin.permission import _MUTATING
+    import mcp.types as mcp_types
+    from aelix_agent_core.harness.hooks import ToolCallHookEvent
+    from aelix_agent_core.types import AgentContext
+    from aelix_coding_agent.builtin.permission import PermissionExtension
+    from aelix_coding_agent.builtin.permission_mode import (
+        PermissionMode,
+        PermissionPosture,
+    )
+    from aelix_coding_agent.mcp.adapter import mcp_tool_to_agent_tool
+    from aelix_coding_agent.tools import create_all_tools
 
-    assert _MUTATING == _BASH_TOOLS | _WRITE_TOOLS
-    # Bare names, all of them. A qualified/prefixed spelling anywhere in here
-    # would mean the sets had grown a namespace concept and this whole section
-    # needs rereading.
-    assert all("__" not in name for name in _MUTATING)
-    for prefixed in ("fs__write_file", "filesystem__edit_file", "shell__execute_command"):
-        assert prefixed not in _MUTATING
+    mcp_tool = mcp_tool_to_agent_tool(
+        object(),  # type: ignore[arg-type] — never called: the gate refuses first
+        mcp_types.Tool(name="write_file", inputSchema={"type": "object"}),
+        name_prefix="fs",
+    )
+    tools = [*create_all_tools("/proj").values(), mcp_tool]
+    event = ToolCallHookEvent(
+        tool_call_id="t1",
+        tool_name="fs__write_file",
+        args={"path": "a.txt", "content": "x"},
+        context=AgentContext(tools=tools),
+    )
+
+    class _Headless:
+        has_ui = False
+        ui = None
+        cwd = "/proj"
+
+    perm = PermissionExtension(posture=PermissionPosture(mode=PermissionMode.PLAN))
+    result = await perm._on_tool_call(event, _Headless())  # type: ignore[arg-type]
+    assert result is not None and result.block
 
 
 def test_no_guardrail_rule_applies_to_every_tool() -> None:
     """`applies_to_tools=None` would mean "any tool" — and there is none.
 
-    This is the assertion that makes the first clause of the old README
-    sentence false rather than merely imprecise. One rule with `None` here and
-    "GuardrailExtension still hard-denies its patterns" would be defensible.
+    This is the assertion that made the first clause of the old README
+    sentence false rather than merely imprecise, and it is what the current
+    README still says: the hard-deny patterns go by a fixed set of bare tool
+    names, so an MCP tool is not checked. One rule with `None` here and that
+    sentence goes stale.
     """
 
     from aelix_coding_agent.builtin.guardrail import GuardrailExtension
@@ -76,6 +106,39 @@ def test_no_guardrail_rule_applies_to_every_tool() -> None:
     rules = ext._active_rules()  # noqa: SLF001 — the gate is about internals
     assert rules, "no rules at all — the fixture, not the product, is broken"
     assert all(rule.applies_to_tools is not None for rule in rules)
+
+
+def test_the_guardrail_goes_by_bare_name_whatever_registered_the_tool() -> None:
+    """What the READMEs say: by NAME, not by what built the tool.
+
+    An extension tool named ``shell`` is checked (it is not aelix's, and the
+    guardrail blocks its ``rm -rf`` anyway); an MCP tool is not, because the
+    manager always names it ``<server>__<tool>``. Decision only: nothing runs.
+    """
+
+    from aelix_agent_core.harness.hooks import ToolCallHookEvent
+    from aelix_coding_agent.builtin.guardrail import GuardrailExtension
+
+    ext = GuardrailExtension()
+
+    def _blocked(name: str, args: dict[str, str]) -> bool:
+        event = ToolCallHookEvent(tool_call_id="t1", tool_name=name, args=args)
+        result = ext._on_tool_call(event, None)  # type: ignore[arg-type]  # noqa: SLF001
+        return result is not None and result.block
+
+    assert _blocked("shell", {"command": "rm -rf fake-dir"})
+    assert _blocked("write_file", {"path": ".env", "content": "x"})
+    assert not _blocked("fs__shell", {"command": "rm -rf fake-dir"})
+    assert not _blocked("fs__write_file", {"path": ".env", "content": "x"})
+
+    for name, phrase in (
+        ("README.md", "go by bare tool name"),
+        ("README.ko.md", "이름만 보고"),
+    ):
+        text = _read(name)
+        assert phrase in text, f"{name} no longer says the guardrail goes by name"
+        assert "only look at the built-in shell" not in text
+        assert "내장 셸·파일 툴만 봅니다" not in text
 
 
 # === the claim, in prose ===================================================
@@ -92,6 +155,9 @@ def test_the_false_guarantee_sentence_is_gone(name: str) -> None:
         "헤드리스 경로에서도 모든 변경 툴을 차단합니다",
         "Two guarantees survive",
         "두 가지 보장은 남습니다",
+        # The pre-ADR-0253 wording: true on `aab1f210`, false after #188.
+        "reaches neither `GuardrailExtension` nor the",
+        "`--permission-mode plan` 차단에도 걸리지 않습니다",
     ):
         assert false_claim not in text, f"{name} still claims: {false_claim}"
 
@@ -110,6 +176,8 @@ def test_the_limitations_section_names_every_open_issue_it_describes(
     text = _read(name)
     for issue in (188, 137, 138, 14, 110, 260):
         assert f"issues/{issue}" in text, f"{name} does not link #{issue}"
+    # The fix's record, so a reader can see what "plan holds" rests on.
+    assert "decisions/0253-" in text, f"{name} does not link ADR-0253"
 
 
 @pytest.mark.parametrize("name", READMES)

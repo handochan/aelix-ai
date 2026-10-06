@@ -131,7 +131,7 @@ def test_ordinary_write_targets_are_not_protected(target: str | None) -> None:
         "C:\\app\\.env.local",
         "C:\\app\\.env.production",
         # Private keys and a password store outside any ``.ssh`` directory.
-        # ``permission.py:338-355`` already refuses to WRITE all three.
+        # ``permission.py:436-453`` already refuses to WRITE all three.
         "C:\\Users\\me\\keys\\id_ecdsa",
         "C:\\Users\\me\\keys\\id_dsa",
         "C:\\Users\\me\\.pgpass",

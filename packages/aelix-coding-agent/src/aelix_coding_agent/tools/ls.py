@@ -18,6 +18,7 @@ from aelix_coding_agent.tools._truncate import (
     format_size,
     truncate_head,
 )
+from aelix_coding_agent.tools.provenance import mark_builtin
 
 _DEFAULT_LIMIT = 500
 
@@ -155,7 +156,7 @@ def create_ls_tool(
             ),
         )
 
-    return AgentTool(
+    tool = AgentTool(
         name="ls",
         # Pi parity, verbatim: ``lsToolSystemPromptContribution``
         # (``coding-agent/src/core/tools/ls.ts:19-22``).
@@ -169,6 +170,8 @@ def create_ls_tool(
         execute=execute,
         execution_mode="parallel",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "read_only")
 
 
 __all__ = ["LsOperations", "LsToolDetails", "create_ls_tool"]

@@ -131,3 +131,16 @@ files a later run executes. Under AUTO_ACCEPT and AUTO those writes now fall
 through to this ADR's 4-option prompt instead of being silently accepted. It is a
 user-visible behaviour change for interactive AUTO_ACCEPT users (CHANGELOG'd), and
 it is a hard prerequisite for allowing any spawn-time widening at all.
+
+## Note (2026-10-06) — "mutating" is every tool aelix did not build (ADR-0253)
+
+**Amended by:** ADR-0253 (#188). This ADR's ladder decided "mutating" from a set of eight
+bare tool names, and anything not on the list was treated as read-only. Every MCP,
+extension and pack tool therefore skipped the prompt, and it was not stopped by PLAN either,
+so the "PLAN denies mutations even headless" decision above did not hold for those tools
+(measured on `aab1f210`: an MCP `fs__write_file` wrote a file under `plan`). The ladder now
+keys on the **provenance of the tool object** the loop will execute. Only aelix's own
+`read` / `grep` / `find` / `ls` / `aelix_status` are read-only. Every other tool is mutating:
+it is prompted in DEFAULT and blocked in PLAN, AUTO_ACCEPT / AUTO never auto-allow it, and
+its session grant is an exact `tool:<name>` key. YOLO and the headless ALLOW are unchanged.
+The order of the ladder and every security decision above are unchanged.

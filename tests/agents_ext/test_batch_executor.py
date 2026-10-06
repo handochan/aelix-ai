@@ -1395,7 +1395,7 @@ async def test_a_steady_posture_gives_every_member_the_consented_mode(
     INCLUDING A WIDENED GRANT, and that is the whole reason the §3.9 floor is a
     GATE rather than an unconditional ``min(grant.mode, live)``.
     ``consent._may_widen`` offers the rung only when ``AUTO_ACCEPT`` is strictly
-    looser than the clamp (``consent.py:527``), so in the widened case
+    looser than the clamp (``consent.py:530``), so in the widened case
     ``grant.mode`` is strictly above the live clamp BY CONSTRUCTION — an
     unconditional rank-min would revoke every widening a human explicitly
     granted, on every batch, with no posture change at all.
@@ -1433,7 +1433,7 @@ async def test_tightening_the_parent_mid_batch_revokes_a_widening(
 
     Why it was inert. The gate compared the live CHILD CLAMP against
     ``clamp_at_start``, and that reference point SATURATES: ``_may_widen``
-    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:527``),
+    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:530``),
     the clamp's reachable set is ``{PLAN, AUTO_ACCEPT, YOLO}``
     (``posture.py:231`` folds ``DEFAULT`` into ``PLAN``), so a widened batch
     always began at ``PLAN`` — rank 0, with nothing strictly below it.
@@ -1470,7 +1470,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1244-1255``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1245-1256``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1580,7 +1580,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:923``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:924``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.

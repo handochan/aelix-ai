@@ -6,9 +6,11 @@ calls) and whose ``ui.select`` is an async spy. No process is ever created and
 no real TUI is involved — the modal's rendering is explicitly out of scope
 (residual R3, covered by a manual live smoke).
 
-The gate exists because the shipped one is EMPTY: ``"agent"`` is not in
-``builtin/permission.py``'s ``_MUTATING``, so a model-driven ``agent`` call is
-silently allowed at ``permission.py:555-557``. Adding it there is not the fix —
+The gate exists because the shipped one is EMPTY: ``builtin/permission.py``
+lets the aelix-built ``agent`` tool through unasked (it was absent from the old
+``_MUTATING`` name set; since ADR-0253 that is its ``delegation`` provenance),
+so a model-driven ``agent`` call is silently allowed there. Gating it there is
+not the fix —
 ``_rule_key`` falls through to an args-blind ``f"tool:{tool_name}"``, so one
 "allow this session" would approve every profile against every task.
 
@@ -1241,7 +1243,7 @@ async def test_approving_one_spawn_never_suppresses_the_next(
 # earlier draft of that work re-typed THIS function's ``task`` parameter to
 # ``Sequence[str]`` instead of adding a second entry point — and ``str``
 # SATISFIES ``Sequence[str]``, so ``/agents run scout "review the auth module"``
-# (``runtime.py:603-608`` passes a bare ``str``) would have type-checked green
+# (``runtime.py:604-609`` passes a bare ``str``) would have type-checked green
 # while the renderer iterated the string: *"Delegate 23 tasks to agent 'scout'?"*
 # with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
 # typed, past the height budget, with ``Cancel`` clipped off the bottom by
@@ -1274,7 +1276,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
     """THE USER-TYPED DOOR, driven end to end — the one nothing covered.
 
     ``runtime.spawn`` passes a bare ``str`` to :func:`request_spawn_consent`
-    (``runtime.py:603-608``). This test renders that dialog through the real
+    (``runtime.py:604-609``). This test renders that dialog through the real
     runtime with a live UI and a widenable profile — the case P3's batch work had
     to leave untouched — and answers ``Cancel``, so no child process is created:
     the assertion is about what was on SCREEN, not about a spawn.

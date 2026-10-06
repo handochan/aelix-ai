@@ -762,7 +762,7 @@ async def test_two_batches_ask_twice() -> None:
 
 
 async def test_a_default_parent_fans_out_with_no_dialog_at_all() -> None:
-    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:457-478``).
+    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:460-481``).
 
     A ``default`` parent clamps a non-declaring profile to ``plan``:
     ``grants_write_authority`` is False and nothing may be widened, so eight
@@ -992,7 +992,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:570-573`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:571-574`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards
@@ -1027,7 +1027,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:272``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:273``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.
@@ -1097,7 +1097,7 @@ async def test_a_one_member_batch_is_never_refused_for_height(
 def test_the_module_still_exports_no_session_memo() -> None:
     """The batch is not the rung the removed memo was.
 
-    ``consent.py:218-245`` forbids a memo; P3 adds a batch. If a future edit
+    ``consent.py:221-248`` forbids a memo; P3 adds a batch. If a future edit
     smuggles the memo back in beside the batch, this fails first.
     """
 

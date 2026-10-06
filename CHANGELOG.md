@@ -863,6 +863,55 @@ unwritten. Add them with the next release.
   offline guide: MCP servers you configured, remote `http`/`sse` ones included,
   still connect under `--offline`, and a project `.env` cannot set either name
   unless you list it in `AELIX_DOTENV_ALLOW`.
+- **MCP, extension and pack tools now ask before they run, and plan mode blocks
+  them (#188, ADR-0253).** The permission gate used to recognise a mutating tool
+  by a fixed list of built-in names (`bash`, `write`, `edit`, …) and let every
+  other name through without asking, in every posture, `--permission-mode
+  plan` included. MCP tools are named `<server>__<tool>`, so an MCP server's
+  `write_file` arrived as `fs__write_file`. It wrote files with no prompt in the
+  default posture, and in plan mode too, interactive or headless. The gate now
+  goes by what a tool is, not what it is called. Only Aelix's own `read`,
+  `grep`, `find`, `ls` and `aelix_status` run unasked, and every other tool is
+  handled like a file edit or a shell command:
+  - **default**: a prompt before each call, showing the tool's name and every
+    argument it was called with, one per row. A long value is cut, with a note
+    saying how many characters were left out, but no argument is left off.
+    When the arguments are taller than the prompt has room for, a line under
+    them says how many lines are hidden and that PgUp/PgDn scroll to them, and
+    Yes and "Yes, for this session" do nothing until every line has been on
+    screen. No and Esc always answer.
+    "Yes, for this session" approves that one tool, by its exact name, for
+    every argument, until you exit.
+  - **plan**: blocked, in `-p`, `--mode json` and `--mode rpc` as well, with a
+    reason that tells the model why.
+  - **auto-accept-edits** and **auto** still accept Aelix's own file edits inside
+    the project. An MCP or extension tool asks, whether or not it takes a
+    path. `auto` no longer runs an extension's own `shell`-style tool through the
+    bash classifier.
+  - **yolo**: unchanged, nothing asks.
+  - **`-p`, `--mode json`, `--mode rpc`** outside plan mode: unchanged. Mutating
+    tools, these included, still run without asking (see SECURITY.md).
+  - **Inside a delegated agent** (the `agent` tool, `/agents run`), nobody can
+    be asked. In the `default`, `auto-accept-edits` and `auto` postures an MCP
+    or extension tool is now refused there. Before this change the child ran
+    it. In `default` and `auto-accept-edits` that is what the child's `bash`
+    already got. In `auto` the child's `bash` still runs a command the
+    classifier rates safe, but an MCP or extension tool is never classified, so
+    it is refused like a command the classifier would have asked about. It is
+    refused under `plan` too, and `yolo` children are unchanged.
+  - An MCP server's `readOnlyHint` annotation does not lower the gate. It is a
+    claim made by the tool being gated. A third-party tool that reuses a
+    built-in name (an extension's `grep`, say) is not treated as the built-in.
+  - Unchanged: the bundled `agent` tool is still left to the spawn-consent
+    dialog (ADR-0197). `GuardrailExtension`'s hard-deny patterns still go by
+    bare tool name, whatever registered the tool: an extension tool named
+    `shell` or `write_file` is checked like the built-in shell and file tools,
+    and an MCP tool, which is always named `<server>__<tool>`, is not checked.
+  - For SDK users: the gate finds the tool in the turn's tool list, so a
+    `ToolCallHookEvent` built by hand without a `context`, or a built-in tool
+    copied with `dataclasses.replace`, now counts as an unknown tool and asks.
+    A host with a UI but no approval dialog is asked through `ctx.ui.select`,
+    and for these tools the title now lists every argument too.
 
 ## [0.1.0-beta.2] - 2026-09-09
 

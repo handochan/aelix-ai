@@ -265,13 +265,17 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 [#6](https://github.com/handochan/aelix-ai/issues/6),
 [#52](https://github.com/handochan/aelix-ai/issues/52)).
 
-**헤드리스 모드는 변경 툴을 자동 승인하고, 두 안전망은 내장 툴만 알아봅니다.**
-`--print`, `--mode json`, `--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서
-`write`·`edit`·`bash`가 묻지 않고 실행됩니다. 그리고 두 안전망 모두 고정된 내장 툴
-이름 목록으로 판단하므로, MCP 서버·스킬·서드파티 확장이 제공한 툴은
-`GuardrailExtension`에도 `--permission-mode plan` 차단에도 걸리지 않습니다. 헤드리스
-실행에는 컨테이너나 버려도 되는 체크아웃을 주세요
-([#188](https://github.com/handochan/aelix-ai/issues/188)).
+**헤드리스 모드는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`,
+`--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서 `write`·`edit`·`bash`와 MCP
+서버·확장이 제공한 모든 툴이 묻지 않고 실행됩니다. 다만 `--permission-mode plan`은
+여기서도 지켜집니다 — [#188](https://github.com/handochan/aelix-ai/issues/188) 이후
+권한 게이트는 Aelix 자신의 읽기 전용 툴이 아닌 모든 툴을 변경 툴로 취급하므로, plan은
+MCP·확장 툴도 차단하고 대화형 실행은 그런 툴마다 먼저 묻습니다
+([ADR-0253](docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-not-know-as-mutating.md)).
+`GuardrailExtension`의 하드 거부 패턴은 여전히 툴을 누가 등록했든 이름만 보고
+판단합니다 — `shell`이나 `write_file`이라는 이름의 확장 툴은 검사하지만, 항상
+`<server>__<tool>` 이름을 받는 MCP 툴은 검사하지 않습니다. 헤드리스 실행에는
+컨테이너나 버려도 되는 체크아웃을 주세요.
 
 **세션 하나에 터미널 하나.** 세션 JSONL은 append-only이고 파일 잠금이 없어서, 같은
 세션을 두 번 열면 한쪽 터미널의 작업이 어떤 `--resume`도 따라가지 않는 가지가 됩니다 —

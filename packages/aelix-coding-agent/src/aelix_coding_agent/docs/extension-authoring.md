@@ -66,6 +66,30 @@ over extension tools at harness assembly.
 This is the worked example shipped at
 `packages/aelix-coding-agent/src/aelix_coding_agent/examples/echo/echo.py`.
 
+### Your tool goes through the approval prompt
+
+Aelix's permission gate treats every tool it did not build itself as one that
+can change things, the same way it treats `bash`, `write` and `edit`
+([ADR-0253](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-not-know-as-mutating.md)).
+That covers your extension's tools and every MCP tool. The gate decides from
+the tool *object* that will run, not from its name, so naming your tool `read`
+or `grep` does not make it read-only. Posture by posture:
+
+| posture | your tool |
+| --- | --- |
+| `default` | asks first. The dialog shows the tool name and every argument, one per row; a long value is cut with a note saying how much. If the arguments do not fit, a line under them says how many lines are hidden and that PgUp/PgDn scroll to them, and Yes is held until every line has been on screen. "Yes, for this session" approves this one tool, by its exact name, for any arguments, until exit. |
+| `plan` | blocked, headless included. The model is told why. |
+| `auto-accept-edits`, `auto` | asks. These postures auto-accept only Aelix's own file edits, and only inside the project. |
+| `yolo` | runs, no prompt. |
+| `-p` / `--mode json` / `--mode rpc` | runs, no prompt, as `bash` does (blocked in `plan`). |
+| inside a delegated agent | refused in every posture except `yolo`. |
+
+There is no flag your tool can set to skip this. For an MCP tool, a
+`readOnlyHint` annotation does not skip it either, because a hint is the tool
+describing itself. If a read-only tool of yours prompts too often, "Yes, for
+this session" is the answer today. Persistent per-tool rules are tracked in
+[#29](https://github.com/handochan/aelix-ai/issues/29).
+
 ## Registering a slash command
 
 ```python

@@ -474,7 +474,7 @@ async def test_prompt_states_write_creates_dirs_instead_of_ordering_a_mkdir(
 ) -> None:
     """(b) "mkdir if missing" bought only a redundant bash call.
 
-    ``tools/write.py:78-83`` mkdirs the parent (``parents=True,
+    ``tools/write.py:79-84`` mkdirs the parent (``parents=True,
     exist_ok=True``) before EVERY write, so an instruction to mkdir first
     induced a bash call whose work the next tool call redoes — and on the
     extension path that bash call is itself a second approval surface.
@@ -579,8 +579,8 @@ async def test_emitted_api_grep_command_actually_RUNS_in_every_surface() -> None
     three engines a model can actually reach:
 
       (a) real ``/bin/grep`` via the shipped bash tool,
-      (b) ripgrep via the shipped grep tool (``tools/grep.py:311``),
-      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:364-366``).
+      (b) ripgrep via the shipped grep tool (``tools/grep.py:312``),
+      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:365-367``).
 
     All three must agree, exit clean, and surface ``register_tool`` (the call
     the block is mostly about) AND the ``def on(`` hook surface.
@@ -817,7 +817,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:571-572``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:683-684``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -908,9 +908,9 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     - PLAN mode blocks every mutating tool on EVERY surface — the check sits
       above the read-only short-circuit precisely so it binds headless too
-      (``permission.py:545-553``).
+      (``permission.py:655-663``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:619-622``, ``headless_default == "block"``).
+      (``permission.py:741-744``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most

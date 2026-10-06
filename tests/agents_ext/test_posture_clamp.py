@@ -31,8 +31,10 @@ from aelix_agents.posture import (
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
 
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
+
 # Every posture, tightest first. Written out rather than derived from
-# ``CYCLE_ORDER`` (``builtin/permission_mode.py:71-77``) on purpose: the cycle
+# ``CYCLE_ORDER`` (``builtin/permission_mode.py:75-81``) on purpose: the cycle
 # is a shift+tab UX rotation and carries NO authority ordering — it would rank
 # PLAN above AUTO_ACCEPT.
 _PARENTS = [
@@ -420,7 +422,10 @@ async def test_write_authority_matches_the_real_permission_ladder(
 
     cwd = str(tmp_path)
     event = ToolCallHookEvent(
-        tool_call_id="t1", tool_name="write", args={"path": "src/app.py"}
+        tool_call_id="t1",
+        tool_name="write",
+        args={"path": "src/app.py"},
+        context=BUILTIN_CONTEXT,
     )
     result = await _child_permission_extension(mode)._on_tool_call(
         event, _ChildCtx(cwd)  # type: ignore[arg-type]
@@ -443,7 +448,10 @@ async def test_a_no_authority_child_cannot_run_bash_either(tmp_path: object) -> 
     """
 
     event = ToolCallHookEvent(
-        tool_call_id="t1", tool_name="bash", args={"command": "echo hi"}
+        tool_call_id="t1",
+        tool_name="bash",
+        args={"command": "echo hi"},
+        context=BUILTIN_CONTEXT,
     )
     for mode in (PermissionMode.PLAN, PermissionMode.DEFAULT):
         assert grants_write_authority(mode) is False

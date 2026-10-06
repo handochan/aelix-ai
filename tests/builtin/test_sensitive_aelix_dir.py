@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 from aelix_agent_core.harness.hooks import ToolCallHookEvent
 from aelix_coding_agent.builtin.permission import (
-    _MUTATING,
     _SENSITIVE_DIR_COMPONENTS,
     PermissionExtension,
     _is_auto_allowable_write,
@@ -33,6 +32,8 @@ from aelix_coding_agent.builtin.permission_mode import (
     PermissionMode,
     PermissionPosture,
 )
+
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
 
 _CWD = "/proj"
 
@@ -253,7 +254,10 @@ async def test_a_headless_child_cannot_widen_into_dot_aelix_via_a_symlink(
         headless_default="block",
     )
     event = ToolCallHookEvent(
-        tool_call_id="t1", tool_name="write", args={"path": "docs/agents/pwned.md"}
+        tool_call_id="t1",
+        tool_name="write",
+        args={"path": "docs/agents/pwned.md"},
+        context=BUILTIN_CONTEXT,
     )
     result = await perm._on_tool_call(  # type: ignore[arg-type]
         event, _FakeCtx(has_ui=False, ui=ui, cwd=str(symlinked_repo))
@@ -273,7 +277,7 @@ async def test_aelix_write_prompts_under_auto_accept() -> None:
     """Interactive AUTO_ACCEPT + ``.aelix/agents/x.md`` → the 4-option prompt.
 
     The deliberate, user-visible behaviour change (ADR-0197 §(i) / CHANGELOG):
-    branch (f) declines, control reaches the prompt at ``permission.py:624-631``
+    branch (f) declines, control reaches the prompt at ``permission.py:746-754``
     instead of returning ``None``.
     """
 
@@ -282,7 +286,10 @@ async def test_aelix_write_prompts_under_auto_accept() -> None:
         posture=PermissionPosture(mode=PermissionMode.AUTO_ACCEPT)
     )
     event = ToolCallHookEvent(
-        tool_call_id="t1", tool_name="write", args={"path": ".aelix/agents/x.md"}
+        tool_call_id="t1",
+        tool_name="write",
+        args={"path": ".aelix/agents/x.md"},
+        context=BUILTIN_CONTEXT,
     )
     result = await perm._on_tool_call(event, _FakeCtx(has_ui=True, ui=ui))  # type: ignore[arg-type]
     assert ui.select_calls == 1
@@ -297,7 +304,10 @@ async def test_ordinary_write_under_auto_accept_is_still_silent() -> None:
         posture=PermissionPosture(mode=PermissionMode.AUTO_ACCEPT)
     )
     event = ToolCallHookEvent(
-        tool_call_id="t1", tool_name="write", args={"path": "src/app.py"}
+        tool_call_id="t1",
+        tool_name="write",
+        args={"path": "src/app.py"},
+        context=BUILTIN_CONTEXT,
     )
     assert await perm._on_tool_call(event, _FakeCtx(has_ui=True, ui=ui)) is None  # type: ignore[arg-type]
     assert ui.select_calls == 0
@@ -308,17 +318,43 @@ async def test_ordinary_write_under_auto_accept_is_still_silent() -> None:
 # ============================================================
 
 
-def test_agent_is_not_in_mutating() -> None:
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_the_bundled_agent_tool_never_reaches_the_ladder(
+    mode: PermissionMode,
+) -> None:
     """Pins ADR-0197 §(i)'s rejected alternative, with the reason executable.
 
-    Adding ``"agent"`` to ``_MUTATING`` looks like the delegation consent gate
-    and is not one: ``_rule_key`` falls through to an ARGS-BLIND
-    ``f"tool:{tool_name}"``, so one "Yes, for this session" would approve every
-    profile against every task for the rest of the run. The gate therefore lives
-    in ``aelix_agents/consent.py``, keyed on what actually varies.
+    Treating ``agent`` as mutating looks like the delegation consent gate and is
+    not one: ``_rule_key`` falls through to an ARGS-BLIND ``f"tool:{tool_name}"``,
+    so one "Yes, for this session" would approve every profile against every
+    task for the rest of the run. The gate therefore lives in
+    ``aelix_agents/consent.py``, keyed on what actually varies.
+
+    ADR-0253 keeps that treatment and keys it on PROVENANCE: the ``agent`` tool
+    ``aelix_agents`` builds passes this gate in every posture, PLAN and a
+    headless child included, with no prompt and no session grant recorded.
     """
 
-    assert "agent" not in _MUTATING
+    from aelix_agent_core.types import AgentContext
+    from aelix_agents.tool import create_agent_tool
+
+    async def _never(*_a: object, **_k: object) -> None:  # pragma: no cover
+        raise AssertionError("not executed by the gate")
+
+    agent = create_agent_tool(description="roster", execute=_never)
+    event = ToolCallHookEvent(
+        tool_call_id="t1",
+        tool_name="agent",
+        args={"profile": "a", "task": "x"},
+        context=AgentContext(tools=[*BUILTIN_CONTEXT.tools, agent]),
+    )
+    ui = _RecordingUI()
+    perm = PermissionExtension(posture=PermissionPosture(mode=mode), headless_default="block")
+    for has_ui in (True, False):
+        ctx = _FakeCtx(has_ui=has_ui, ui=ui)
+        assert await perm._on_tool_call(event, ctx) is None  # type: ignore[arg-type]
+    assert ui.select_calls == 0
+    assert perm._session_allows == set()
     assert _rule_key("agent", {"profile": "a", "task": "x"}) == _rule_key(
         "agent", {"profile": "b", "task": "y"}
     )

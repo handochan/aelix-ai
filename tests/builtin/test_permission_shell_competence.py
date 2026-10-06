@@ -14,7 +14,7 @@ the bash grammar produced for a shell it does not describe was not merely
 unknown, it was misleading — and the ALLOW got downgraded to ASK.
 
 **#204 replaced that downgrade for PowerShell and ``cmd``, and this module's
-tests were rewritten around the replacement.** ``permission.py:685-711`` now
+tests were rewritten around the replacement.** ``permission.py:808-834`` now
 reads the DIALECT off the resolved shell: ``pwsh``/``powershell``/``cmd`` get
 their own classifier with the bash DENY kept as a floor and ``competent`` set
 outright, so ``is_classifiable_shell`` is never consulted for them and ``dir``
@@ -41,6 +41,8 @@ from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
 from aelix_coding_agent.tools import bash as bash_mod
 from aelix_coding_agent.tools.bash import ShellConfig
+
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
 
 _POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 _PWSH = r"C:\Program Files\PowerShell\7\pwsh.exe"
@@ -85,7 +87,12 @@ class _FakeCtx:
 
 
 def _bash_event(command: str) -> ToolCallHookEvent:
-    return ToolCallHookEvent(tool_call_id="t1", tool_name="bash", args={"command": command})
+    return ToolCallHookEvent(
+        tool_call_id="t1",
+        tool_name="bash",
+        args={"command": command},
+        context=BUILTIN_CONTEXT,
+    )
 
 
 # === is_classifiable_shell ==================================================

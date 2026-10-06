@@ -34,18 +34,22 @@ class PermissionMode(StrEnum):
     plain name without ``.value`` ceremony.
 
     - :data:`DEFAULT` — prompt for every mutating tool (the safe default).
-    - :data:`AUTO_ACCEPT` — auto-allow *edits/writes*; STILL prompt for bash
-      (bash can do arbitrary damage, so "auto-accept" means edits only).
-    - :data:`PLAN` — block ALL mutating tools (read-only still allowed so the
-      agent can investigate); the user exits with shift+tab.
+      "Mutating" is every tool that is not one of aelix's own read-only tools
+      — MCP, extension and pack tools included (ADR-0253).
+    - :data:`AUTO_ACCEPT` — auto-allow aelix's own *edits/writes*; STILL prompt
+      for bash and for every tool aelix did not build (bash can do arbitrary
+      damage, so "auto-accept" means edits only).
+    - :data:`PLAN` — block ALL mutating tools (aelix's own read-only tools still
+      allowed so the agent can investigate); the user exits with shift+tab.
     - :data:`YOLO` — skip the permission PROMPT for all mutating tools. The
       regex ``GuardrailExtension`` STILL hard-denies catastrophic patterns
       (``rm -rf`` etc.) because it runs first via the prepend order — YOLO
       bypasses the prompt, NOT the floor.
     - :data:`AUTO` — route bash through the tree-sitter classifier (ADR-0158):
-      ALLOW → no prompt, ASK → prompt, DENY → block; writes auto-allowed like
-      AUTO_ACCEPT. Falls back to DEFAULT semantics if the classifier is
-      unavailable.
+      ALLOW → no prompt, ASK → prompt, DENY → block; aelix's own writes
+      auto-allowed like AUTO_ACCEPT; a tool aelix did not build is neither
+      classified nor auto-allowed, so it prompts. Falls back to DEFAULT
+      semantics if the classifier is unavailable.
     """
 
     DEFAULT = "default"
@@ -94,7 +98,9 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
     PermissionMode.DEFAULT: ModeMeta(
         badge_text="",
         badge_style="",
-        description="Default — prompt before each file edit or shell command.",
+        description=(
+            "Default — prompt before each file edit, shell command, or MCP or extension tool."
+        ),
         block_reason="",
     ),
     PermissionMode.AUTO_ACCEPT: ModeMeta(
@@ -102,7 +108,7 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
         badge_style="yellow",
         description=(
             "Auto-accept edits — file edits/writes run without a prompt; "
-            "shell commands still prompt."
+            "shell commands and MCP or extension tools still prompt."
         ),
         block_reason="",
     ),
@@ -110,8 +116,8 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
         badge_text="⏸ plan",
         badge_style="cyan",
         description=(
-            "Plan mode — read-only investigation; all edits and shell "
-            "commands are blocked. shift+tab to exit plan mode."
+            "Plan mode — read-only investigation; edits, shell commands and "
+            "MCP or extension tools are blocked. shift+tab to exit plan mode."
         ),
         block_reason=(
             "Plan mode is active: file edits and shell commands are blocked so "
@@ -123,9 +129,9 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
         badge_text="⚠ yolo",
         badge_style="bold red",
         description=(
-            "Yolo — edits, shell commands and delegated subagents run WITHOUT "
-            "a prompt. Guardrail still blocks catastrophic patterns (rm -rf, "
-            "fork-bomb, .env/.git writes)."
+            "Yolo — edits, shell commands, MCP and extension tools and delegated "
+            "subagents run WITHOUT a prompt. Guardrail still blocks catastrophic "
+            "patterns (rm -rf, fork-bomb, .env/.git writes)."
         ),
         block_reason="",
     ),
@@ -134,8 +140,8 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
         badge_style="green",
         description=(
             "Auto — shell commands are classified (safe→run, risky→prompt, "
-            "dangerous→block); edits auto-run. Falls back to prompting if the "
-            "classifier is unavailable."
+            "dangerous→block); edits auto-run; MCP and extension tools still "
+            "prompt. Falls back to prompting if the classifier is unavailable."
         ),
         block_reason="",
     ),

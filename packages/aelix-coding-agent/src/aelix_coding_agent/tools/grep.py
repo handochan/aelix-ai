@@ -25,6 +25,7 @@ from aelix_coding_agent.tools._truncate import (
     truncate_head,
     truncate_line,
 )
+from aelix_coding_agent.tools.provenance import mark_builtin
 from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 100
@@ -538,7 +539,7 @@ def create_grep_tool(
             ),
         )
 
-    return AgentTool(
+    tool = AgentTool(
         name="grep",
         # Pi parity, verbatim: ``grepToolSystemPromptContribution``
         # (``coding-agent/src/core/tools/grep.ts:38-41``) — snippet only, pi's
@@ -554,6 +555,8 @@ def create_grep_tool(
         execute=execute,
         execution_mode="parallel",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "read_only")
 
 
 __all__ = ["GrepOperations", "GrepToolDetails", "create_grep_tool"]

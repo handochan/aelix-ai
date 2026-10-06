@@ -285,7 +285,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
                 out.append(_text(block))
             elif t == "image":
                 # ``mime_type``/``data`` are the pi-canonical pair and the ONLY
-                # ones the Read tool populates (``tools/read.py:141,170,184``
+                # ones the Read tool populates (``tools/read.py:142,171,185``
                 # passes ``source=""``). Reading ``source`` alone meant a
                 # resumed session re-sent an image with an empty payload, which
                 # the provider rejects outright rather than degrading. Legacy

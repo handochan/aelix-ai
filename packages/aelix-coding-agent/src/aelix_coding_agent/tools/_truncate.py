@@ -194,7 +194,7 @@ def truncate_head(
     continue.]" about an offset with nothing behind it (#309). Only the
     truncated/not verdict in that sentence was this function's: the ``2001``
     printed inside the notice is ``read``'s own ``total_lines``
-    (``tools/read.py:195``, still a raw ``split("\\n")``, pi parity
+    (``tools/read.py:196``, still a raw ``split("\\n")``, pi parity
     ``read.ts:130``), so every file ``read`` DOES still truncate is still
     announced as one line longer than it is, disagreeing by one with the
     ``original_lines`` this returns in the same ``ToolResult``.

@@ -286,3 +286,246 @@ def test_runner_pins_options_in_fixed_height_window_outside_cap() -> None:
     # The body, by contrast, is flexible (no exact pin) so it absorbs the squeeze.
     body_dim = body_win.preferred_height(80, 6)
     assert body_dim.min <= n_rows  # body can shrink below the option height
+
+
+# === #188 review round 2: Yes waits until every argument has been on screen ===
+#
+# The body of a tool aelix did not build lists every argument, but it sits in a
+# height-capped modal. On 1efb91d1, at 80x24, six 198-character values filled
+# it, ``path`` and ``content`` were below the fold with nothing saying so, and
+# Yes wrote the file. These rows paint the REAL dialog container at a fixed
+# size (prompt-toolkit's own ``write_to_screen``), so what counts as "shown" is
+# what reached the screen.
+
+_LONG_VALUES = {
+    **{f"note{i}": "r" * 198 for i in range(1, 7)},
+    "path": "decisive-188.txt",
+    "content": "pwned",
+}
+_MANY_SHORT = {
+    **{f"note{i:02d}": "routine" for i in range(1, 41)},
+    "path": "decisive-188.txt",
+    "content": "pwned",
+}
+_SIXTY = {**{f"note{i:02d}": "routine" for i in range(1, 61)}, "path": "decisive-188.txt"}
+
+
+class _Open:
+    """A ``kind="other"`` dialog held open, painted and keyed by hand."""
+
+    def __init__(self, args: dict[str, Any], width: Any = 80) -> None:
+        self.request = ApprovalRequest("fs__write_file", dict(args), "other")
+        self.width = width
+        self.captured: dict[str, Any] = {}
+        self.screens: list[str] = []
+
+    async def __aenter__(self) -> _Open:
+        self.task = asyncio.ensure_future(
+            run_approval_dialog(
+                request=self.request,
+                show_modal=_build_runner_modal(self.captured),
+                chrome=_FakeChrome(),
+                width=self.width,
+            )
+        )
+        for _ in range(50):
+            if "kb" in self.captured:
+                break
+            await asyncio.sleep(0)
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        if not self.task.done():
+            self.captured["result"].cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+
+    def paint(self, width: int, height: int) -> str:
+        from prompt_toolkit.layout.containers import to_container
+        from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+        from prompt_toolkit.layout.screen import Screen, WritePosition
+
+        screen = Screen()
+        to_container(self.captured["window"]).write_to_screen(
+            screen, MouseHandlers(), WritePosition(0, 0, width, height), "", False, None
+        )
+        text = "\n".join(
+            "".join(screen.data_buffer[y][x].char for x in range(width)).rstrip()
+            for y in range(height)
+        )
+        self.screens.append(text)
+        return text
+
+    def press(self, key: str) -> None:
+        _press(self.captured, key)
+
+    @property
+    def answered(self) -> bool:
+        return bool(self.captured["result"].done())
+
+    async def answer(self) -> ApprovalDecision:
+        return await asyncio.wait_for(self.task, timeout=2)
+
+
+def _footer(screen: str) -> str:
+    """The row above the option rows (``→ 1.`` starts the options)."""
+
+    lines = screen.splitlines()
+    first_option = next(i for i, line in enumerate(lines) if line.startswith(("→ 1.", "  1.")))
+    return lines[first_option - 1]
+
+
+# (args, terminal width, height the modal gets). 80x24 leaves the modal 18
+# rows in the pty runs; 120x40 leaves it 34.
+_OVERFLOWING = [
+    pytest.param(_LONG_VALUES, 80, 18, id="six-198-char-values-80x24"),
+    pytest.param(_MANY_SHORT, 120, 34, id="forty-short-fillers-120x40"),
+    pytest.param(_SIXTY, 80, 18, id="sixty-fillers-80x24"),
+]
+
+
+@pytest.mark.parametrize(("args", "width", "height"), _OVERFLOWING)
+async def test_yes_is_held_until_the_decisive_argument_has_been_on_screen(
+    args: dict[str, Any], width: int, height: int
+) -> None:
+    async with _Open(args, width=width) as dialog:
+        first = dialog.paint(width, height)
+        assert "path=" not in first, "the scenario must start with path below the fold"
+        footer = _footer(first)
+        assert re.match(r"\d+ of \d+ lines hidden \(↑0 ↓\d+\) · PgUp/PgDn to scroll", footer)
+        assert "Yes held until all seen" in footer
+
+        for key in ("1", "y", "Y", "2", "s", "S", "enter", "c-j"):
+            dialog.press(key)
+            assert not dialog.answered, f"{key!r} approved a call whose path was never shown"
+            dialog.paint(width, height)
+
+        for _ in range(40):
+            if "Yes held" not in _footer(dialog.screens[-1]):
+                break
+            dialog.press("pagedown")
+            dialog.paint(width, height)
+        assert "Yes held" not in _footer(dialog.screens[-1])
+        assert any("path='decisive-188.txt'" in s for s in dialog.screens)
+
+        dialog.press("1")
+        assert await dialog.answer() is ApprovalDecision.YES
+
+
+@pytest.mark.parametrize("key", ["3", "n", "N", "escape", "c-c"])
+async def test_no_and_esc_answer_while_arguments_are_hidden(key: str) -> None:
+    async with _Open(_LONG_VALUES) as dialog:
+        dialog.paint(80, 18)
+        dialog.press(key)
+        expected = ApprovalDecision.NO if key in ("3", "n", "N") else ApprovalDecision.CANCEL
+        assert await dialog.answer() is expected
+
+
+async def test_yes_for_this_session_is_held_the_same_way() -> None:
+    async with _Open(_LONG_VALUES) as dialog:
+        dialog.paint(80, 18)
+        dialog.press("down")  # highlight "Yes, for this session"
+        dialog.press("enter")
+        dialog.press("2")
+        assert not dialog.answered
+        for _ in range(10):
+            dialog.press("pagedown")
+            dialog.paint(80, 18)
+        dialog.press("2")
+        assert await dialog.answer() is ApprovalDecision.YES_SESSION
+
+
+async def test_scrolling_without_a_repaint_shows_nothing() -> None:
+    """Keys typed ahead of the screen cannot approve: only a paint counts, and
+    jumping to the end does not count the lines it jumped over."""
+
+    async with _Open(_SIXTY) as dialog:
+        dialog.paint(80, 18)
+        for _ in range(30):
+            dialog.press("pagedown")
+        dialog.press("1")
+        assert not dialog.answered
+        bottom = dialog.paint(80, 18)
+        assert "path='decisive-188.txt'" in bottom
+        dialog.press("1")
+        assert not dialog.answered, "the middle rows were never painted"
+        assert "Yes held until all seen" in _footer(bottom)
+
+
+async def test_yes_typed_before_the_first_paint_is_held() -> None:
+    """Even for a body that fits: nothing is on screen before the first paint.
+    The held key is dropped, not queued (ADR-0253 §9, review round 3)."""
+
+    async with _Open({"path": "a.txt", "content": "x"}) as dialog:
+        dialog.press("1")
+        assert not dialog.answered
+        screen = dialog.paint(80, 18)
+        assert _footer(screen) == ""
+        assert not dialog.answered, "the held Yes was queued and answered at the paint"
+        dialog.press("1")
+        assert await dialog.answer() is ApprovalDecision.YES
+
+
+async def test_a_body_that_fits_has_a_blank_footer_and_yes_works_at_once() -> None:
+    async with _Open(_MANY_SHORT, width=120) as dialog:
+        screen = dialog.paint(120, 60)
+        assert "path='decisive-188.txt'" in screen
+        assert _footer(screen) == ""
+        dialog.press("1")
+        assert await dialog.answer() is ApprovalDecision.YES
+
+
+async def test_a_width_change_forgets_what_was_shown() -> None:
+    """The body re-wraps at a new width, so the lines it was shown are not the
+    lines it has now. Narrow first (more lines, all painted), then wide."""
+
+    width = {"v": 60}
+    async with _Open(_LONG_VALUES, width=lambda: width["v"]) as dialog:
+        assert _footer(dialog.paint(60, 80)) == ""  # everything shown at 60
+        width["v"] = 120
+        dialog.press("1")
+        assert not dialog.answered, "nothing has been painted at the new width"
+        screen = dialog.paint(120, 10)
+        assert re.match(r"\d+ of \d+ lines hidden \(↑0 ↓\d+\) · PgUp/PgDn", _footer(screen))
+        dialog.press("1")
+        assert not dialog.answered, "lines shown at the old width counted at the new one"
+
+
+async def test_no_room_for_the_body_holds_yes_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aelix_coding_agent.tui.approval_dialog as approval_mod
+
+    paints = {"n": 0}
+    monkeypatch.setattr(approval_mod, "_render_stamp", lambda: paints["n"])
+    async with _Open(_LONG_VALUES) as dialog:
+        paints["n"] += 1
+        assert "lines hidden" in _footer(dialog.paint(80, 18))
+        paints["n"] += 1
+        screen = dialog.paint(80, 5)  # four option rows + the footer, no body
+        # Not the previous paint's numbers: this paint drew no body at all.
+        assert "do not fit on screen" in _footer(screen)
+        dialog.press("1")
+        assert not dialog.answered
+        dialog.press("3")
+        assert await dialog.answer() is ApprovalDecision.NO
+
+
+def test_the_footer_is_one_fixed_row_between_the_body_and_the_options() -> None:
+    from prompt_toolkit.layout.containers import to_container
+
+    content = to_container(_captured_content(ApprovalRequest("t", dict(_LONG_VALUES), "other")))
+    body, footer, options = content.get_children()
+    n_rows = len(build_options_view(0))
+    for avail in (4, 18, 200):
+        assert footer.preferred_height(80, avail).preferred == 1
+        assert footer.preferred_height(80, avail).max == 1
+        assert options.preferred_height(80, avail).preferred == n_rows
+    assert body.preferred_height(80, 200).preferred == len(
+        build_approval_view(ApprovalRequest("t", dict(_LONG_VALUES), "other"))
+    )
+
+
+async def test_aelix_own_bash_dialog_is_not_held() -> None:
+    """The hold is for a tool aelix did not build; bash keeps its behaviour."""
+
+    assert await _drive(_REQ, "1") is ApprovalDecision.YES

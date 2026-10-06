@@ -14,6 +14,7 @@ from aelix_coding_agent.tools._file_mutation_queue import (
     with_file_mutation_queue,
 )
 from aelix_coding_agent.tools._path_utils import resolve_to_cwd
+from aelix_coding_agent.tools.provenance import mark_builtin
 
 
 class WriteOperations(Protocol):
@@ -99,7 +100,7 @@ def create_write_tool(
 
         return await with_file_mutation_queue(absolute_path, _do_write)
 
-    return AgentTool(
+    tool = AgentTool(
         name="write",
         # Pi parity, verbatim: ``writeToolSystemPromptContribution``
         # (``coding-agent/src/core/tools/write.ts:20-23``). Unlike edit's, this
@@ -116,6 +117,8 @@ def create_write_tool(
         execute=execute,
         execution_mode="sequential",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "write")
 
 
 __all__ = ["WriteOperations", "create_write_tool"]

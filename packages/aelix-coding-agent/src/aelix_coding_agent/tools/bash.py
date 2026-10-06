@@ -58,6 +58,7 @@ from aelix_coding_agent.tools._truncate import (
     split_lines_for_counting,
     truncate_tail,
 )
+from aelix_coding_agent.tools.provenance import mark_builtin
 from aelix_coding_agent.util.shell_env import get_shell_env
 
 # Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB.
@@ -1347,7 +1348,7 @@ def create_bash_tool(
             is_error=True,
         )
 
-    return AgentTool(
+    tool = AgentTool(
         name="bash",
         # Pi parity, verbatim: ``bashToolSystemPromptContribution.snippet``
         # (``coding-agent/src/core/tools/bash.ts:46-49``).
@@ -1369,6 +1370,8 @@ def create_bash_tool(
         execute=execute,
         execution_mode="sequential",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "bash")
 
 
 __all__ = [

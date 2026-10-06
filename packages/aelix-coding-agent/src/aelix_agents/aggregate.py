@@ -5,7 +5,7 @@ outcome classification both arrive as arguments, so the whole batch layout, the
 ``is_error`` rule and the usage roll-up are pinned without spawning anything.
 
 ONE ``ToolResult`` PER ``agent`` CALL, ALWAYS. ``mode="single"`` never reaches
-this module — it stays on ``render_subagent_result`` (``tool.py:834-867``)
+this module — it stays on ``render_subagent_result`` (``tool.py:847-880``)
 byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:510-515``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:511-516``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -39,7 +39,7 @@ from aelix_agents.envelope import (
     recap_summary,
 )
 
-# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:699-784``
+# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:712-797``
 # already owns that format and ``render_subagent_result`` prints it for the
 # single-mode path; a second spelling here would drift the moment either is
 # edited, and a batch whose member lines disagree with a single call's line is
@@ -208,7 +208,7 @@ def _member_block(
 
     Single newlines inside a member, blank lines BETWEEN members. That differs
     from ``render_subagent_result``, which joins with blank lines
-    (``tool.py:866``) — there it has the whole tool result to itself, whereas
+    (``tool.py:879``) — there it has the whole tool result to itself, whereas
     here a blank line is the only thing separating one child's answer from the
     next one's, and reusing it would make the two levels indistinguishable.
 
@@ -219,7 +219,7 @@ def _member_block(
     tag = _DID_NOT_START_TAG if not member.started else member.result.status
     summary = member.result.summary or NO_OUTPUT
     error = member.result.error
-    # The note set mirrors ``render_subagent_result`` (``tool.py:853-865``) so a
+    # The note set mirrors ``render_subagent_result`` (``tool.py:866-878``) so a
     # batch member never says less about itself than the same child would say on
     # the single-mode path. Asked of the UNCAPPED summary: an error that the
     # budget cut out of the body is part of the summary still, and re-adding it
@@ -263,7 +263,7 @@ def _member_block(
     # "FAILED AND NEVER STARTED" paragraph in the module docstring): the reader
     # is told twice, in two words, and the second one is wrong. The override is
     # passed rather than the status re-spelled here so ``tool._usage_line``
-    # stays the single owner of the format (``tool.py:699-784``).
+    # stays the single owner of the format (``tool.py:712-797``).
     lines.append(
         _usage_line(
             member.result, status=None if member.started else _DID_NOT_START_TAG
@@ -376,7 +376,7 @@ def _join_details(profile: str, total: int, members: Sequence[MemberOutcome]) ->
     member's full output is its child session file (#199). Empty ones are
     omitted rather than rendered as an empty section, and an all-empty batch
     yields ``None`` — which is what ``render_subagent_result`` passes when a
-    single child had nothing (``tool.py:869``).
+    single child had nothing (``tool.py:882``).
     """
 
     chunks = [

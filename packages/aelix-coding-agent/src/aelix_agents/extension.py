@@ -876,7 +876,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:914-922``),
+        # inside ``runtime._run``'s admission block (``runtime.py:915-923``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -902,7 +902,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:272-274``), so the single and batch doors are
+        # always non-empty (``tool.py:273-275``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -910,7 +910,7 @@ class AgentsExtension:
         )
         if not grant.consented:
             # ``reason`` is set by exactly ONE branch — a batch whose dialog would
-            # not fit the terminal (``consent.py:204-208``, ``:261-270``) — where no
+            # not fit the terminal (``consent.py:207-211``, ``:264-273``) — where no
             # human was asked at all and the model CAN act on the refusal by
             # splitting the call. ``_DECLINED``'s "do not retry it" is only true
             # of a human answer, so it must not be pasted over a refusal no human
@@ -939,7 +939,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1287-1293``). The
+        EVERY member or refuses the call outright (``consent.py:1290-1296``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -1033,7 +1033,7 @@ class AgentsExtension:
         # chose the profile, the tasks and the directory. A batch is ONE dialog
         # for tasks that are all inside the one call this hook has already
         # validated, which is a different thing from a memo that would outlive it
-        # (``consent.py:238-245``): ``_pending.clear()`` still runs per prompt.
+        # (``consent.py:241-248``): ``_pending.clear()`` still runs per prompt.
         return await request_spawn_consent_batch(
             ctx,
             resolved,
@@ -1136,7 +1136,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:305-322``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:306-323``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1201,7 +1201,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:923``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:924``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1233,7 +1233,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1190-1194``) with no ``await`` between them, so THIS
+            # (``runtime.py:1191-1195``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a

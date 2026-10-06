@@ -269,13 +269,17 @@ real backstops; none of them bounds spend
 [#6](https://github.com/handochan/aelix-ai/issues/6),
 [#52](https://github.com/handochan/aelix-ai/issues/52)).
 
-**Headless mode auto-approves mutating tools, and the two safety nets only see
-built-in ones.** `--print`, `--mode json` and `--mode rpc` have no terminal for an
-approval dialog, so `write`, `edit` and `bash` run without asking; and both
-backstops match a fixed list of built-in tool names, so a tool from an MCP server,
-a skill or a third-party extension reaches neither `GuardrailExtension` nor the
-`--permission-mode plan` block. Give a headless run a container or a checkout you
-can throw away ([#188](https://github.com/handochan/aelix-ai/issues/188)).
+**Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
+`--mode rpc` have no terminal for an approval dialog, so `write`, `edit`, `bash` and
+every tool from an MCP server or an extension run without asking. `--permission-mode
+plan` does hold there: since [#188](https://github.com/handochan/aelix-ai/issues/188)
+the gate treats any tool that is not one of Aelix's own read-only tools as mutating,
+so plan blocks MCP and extension tools too, and an interactive run asks before each
+one ([ADR-0253](docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-not-know-as-mutating.md)).
+`GuardrailExtension`'s hard-deny patterns still go by bare tool name, whatever
+registered the tool: an extension tool named `shell` or `write_file` is checked, and
+an MCP tool, which is always named `<server>__<tool>`, is not. Give a headless run a
+container or a checkout you can throw away.
 
 **One session, one terminal.** Session JSONL is append-only and nothing locks it,
 so opening the same session twice makes one terminal's work a branch that no

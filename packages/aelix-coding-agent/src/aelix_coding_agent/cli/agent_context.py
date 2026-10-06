@@ -376,19 +376,19 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
 
     ABSOLUTE PATHS, NOT ``aelix docs <topic>``. The CLI verb exists (#101,
     ``cli/docs.py``) and is what the extending-aelix skill points a human at,
-    but it needs the ``bash`` tool, and ``bash`` is in
-    ``builtin/permission.py`` ``_MUTATING`` (measured: ``'bash' in _MUTATING``
-    -> ``True``, ``'read' in _MUTATING`` -> ``False``). PLAN mode blocks every
-    mutating tool at ``permission.py:550``, which sits ABOVE the read-only
-    short-circuit at ``:441`` — so in the one mode where the user has explicitly
-    asked the agent to look and not touch, an ``aelix docs`` pointer is a
-    pointer the model cannot follow. ``read`` on an absolute path works in every
-    mode.
+    but it needs the ``bash`` tool, and ``builtin/permission.py`` treats the
+    built-in ``bash`` as mutating and the built-in ``read`` as read-only (by
+    provenance since ADR-0253; ``tests/cli/test_extending_aelix_skill.py``
+    drives the real gate at PLAN to check both). PLAN mode blocks every mutating
+    tool ABOVE the read-only short-circuit — so in the one mode where the user
+    has explicitly asked the agent to look and not touch, an ``aelix docs``
+    pointer is a pointer the model cannot follow. ``read`` on an absolute path
+    works in every mode.
 
     "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED AGAINST BOTH CAPS,
     and it is the claim most likely to rot. ``read`` truncates when EITHER
     binds — ``truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
-    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:221-223`` — so both are
+    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:222-224`` — so both are
     pinned by ``tests/cli/test_docs_signpost.py``. Widest guide on this tree::
 
         extension-authoring.md   33620 bytes   (DEFAULT_MAX_BYTES = 51200)
@@ -598,7 +598,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         '`aelix.on("tool_call", handler)` for hooks). Aelix imports and RUNS IT IN '
         "THIS PROCESS — for that file there is no manifest, no JSON, no build "
         "step, nothing to install. Never invent a config format for it.\n",
-        # MINOR 4: ``tools/write.py:78-83`` mkdirs the parent (``parents=True,
+        # MINOR 4: ``tools/write.py:79-84`` mkdirs the parent (``parents=True,
         # exist_ok=True``) before EVERY write, so "mkdir if missing" only bought
         # a redundant bash call. Stated as a fact about the tool instead.
         #
@@ -709,8 +709,8 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # bash tool. ``-E`` costs three characters and makes the command the
         # model is handed actually run. Verified 48/10/38 identically in all
         # three engines the model can reach: real ``/bin/grep -E`` via the bash
-        # tool, ripgrep via ``tools/grep.py:311``, and the Python ``re``
-        # fallback at ``tools/grep.py:364-366``. The ``-E`` sits outside the
+        # tool, ripgrep via ``tools/grep.py:312``, and the Python ``re``
+        # fallback at ``tools/grep.py:365-367``. The ``-E`` sits outside the
         # quotes so the quoted pattern is still copy-pastable verbatim into the
         # grep TOOL's ``pattern`` argument, which takes no flags.
         #
@@ -748,7 +748,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # 50KB cap, so a session that can read but not search would otherwise
         # lose the API surface entirely — a worse outcome than a slower route.
         # ``read``'s own truncation notice already reports the next ``offset``
-        # (``tools/read.py:252-259``), so windowing is a real instruction and
+        # (``tools/read.py:253-260``), so windowing is a real instruction and
         # not a suggestion to guess.
         how = (
             "grep -nE 'def (register_|on\\()' it, then read at the line it reports"
@@ -774,11 +774,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:571-572``) BEFORE the write check, and a headless run
+    # (``permission.py:683-684``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
-    # branch (d) at ``:486-489`` allows (or, for a delegated child, blocks).
-    # The prompt is reached only via branch (h) at ``:491-498``, because
-    # ``.aelix`` is in ``_SENSITIVE_DIR_COMPONENTS`` (``:253-255``) so
+    # branch (d) at ``permission.py:741-744`` allows (or, for a delegated
+    # child, blocks). The prompt is reached only via branch (h) at
+    # ``permission.py:746-754``, because ``.aelix`` is in
+    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:473-475``) so
     # ``_is_auto_allowable_write`` refuses to short-circuit (f)/(g).
     #
     # So the bullet asserts only the conditional ("may ask"), and spends its
@@ -793,12 +794,13 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:550-553``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:660-663``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
-    # (``:486-489``, ``headless_default == "block"``). Those are policy, not a
-    # human saying no, and retrying cannot change them — so the clause names
-    # "blocked" alongside "declines" and routes both to the same stop.
+    # (``permission.py:741-744``, ``headless_default == "block"``). Those are
+    # policy, not a human saying no, and retrying cannot change them — so the
+    # clause names "blocked" alongside "declines" and routes both to the same
+    # stop.
     # Scoped to "either path", not to "`.aelix/`" (round-3 audit): the global
     # target lives under ``<agent_dir>`` which is ``~/.aelix/agent`` by default,
     # so it too contains a ``.aelix`` component and its permission table is

@@ -31,6 +31,8 @@ from aelix_coding_agent.builtin.permission_mode import (
     PermissionPosture,
 )
 
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
+
 # ============================================================
 # Fakes — mirrors ``tests/builtin/test_permission.py``'s shape
 # ============================================================
@@ -72,17 +74,28 @@ def _child(mode: PermissionMode = PermissionMode.DEFAULT) -> PermissionExtension
 
 def _bash_event(command: str = "echo hi") -> ToolCallHookEvent:
     return ToolCallHookEvent(
-        tool_call_id="t1", tool_name="bash", args={"command": command}
+        tool_call_id="t1",
+        tool_name="bash",
+        args={"command": command},
+        context=BUILTIN_CONTEXT,
     )
 
 
 def _write_event(path: str = "src/app.py") -> ToolCallHookEvent:
-    return ToolCallHookEvent(tool_call_id="t1", tool_name="write", args={"path": path})
+    return ToolCallHookEvent(
+        tool_call_id="t1",
+        tool_name="write",
+        args={"path": path},
+        context=BUILTIN_CONTEXT,
+    )
 
 
 def _read_event() -> ToolCallHookEvent:
     return ToolCallHookEvent(
-        tool_call_id="t1", tool_name="read", args={"path": "src/app.py"}
+        tool_call_id="t1",
+        tool_name="read",
+        args={"path": "src/app.py"},
+        context=BUILTIN_CONTEXT,
     )
 
 
@@ -138,7 +151,7 @@ async def test_headless_default_block_blocks_write_and_bash(
 async def test_headless_block_still_allows_read_only() -> None:
     """The floor gates MUTATING tools only — a child must still be able to investigate.
 
-    Branch (a) (``permission.py:555-557``) returns before branch (d) is reached,
+    Branch (a) (``permission.py:665-669``) returns before branch (d) is reached,
     so ``read`` is unaffected. A floor that also blocked reads would make a
     read-only delegated agent useless, which is P2's entire default posture.
     """
@@ -169,7 +182,7 @@ async def test_headless_block_applies_under_yolo() -> None:
 
 @pytest.mark.parametrize("headless_default", ["allow", "block"])
 async def test_plan_mode_blocks_above_headless_branch(headless_default: str) -> None:
-    """PLAN blocks at branch (b) (``permission.py:545-553``), above branch (d).
+    """PLAN blocks at branch (b) (``permission.py:655-663``), above branch (d).
 
     This is why ``child_permission_mode`` tightens a clamped DEFAULT to PLAN
     rather than relying on ``headless_default``: the PLAN denial holds no matter

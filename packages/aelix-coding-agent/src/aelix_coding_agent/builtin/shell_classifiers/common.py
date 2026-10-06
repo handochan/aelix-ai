@@ -98,7 +98,7 @@ _SENSITIVE_BASENAMES = frozenset(
         "id_rsa",
         "id_ed25519",
         # `id_ecdsa`, `id_dsa` and `.pgpass` are private keys and a password
-        # store that `permission.py:338-355` already refuses to WRITE without a
+        # store that `permission.py:436-453` already refuses to WRITE without a
         # prompt; reading one out is the same secret by the same name, and
         # measured ALLOW here in both dialects outside a `.ssh` directory
         # (`type C:\Users\me\keys\id_ecdsa`).
@@ -118,7 +118,7 @@ _SENSITIVE_BASENAMES = frozenset(
 # refused `~/.aws/credentials` while measuring ALLOW on the two stores that
 # carry an extension — gcloud's `credentials.db` and Terraform's
 # `credentials.tfrc.json` — which is the exact-vs-suffix half of the same
-# finding. `.env.` follows `permission.py:407`, which has folded `.env.local`
+# finding. `.env.` follows `permission.py:505`, which has folded `.env.local`
 # in with `.env` for writes since the write guard existed.
 _SENSITIVE_BASENAME_STEMS: tuple[str, ...] = ("credentials.", ".env.")
 

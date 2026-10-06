@@ -38,6 +38,8 @@ from aelix_coding_agent.tui.approval_dialog import (
     rows_for,
 )
 
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
+
 
 class _Ctx:
     """The two attributes the permission hook reads off its context."""
@@ -64,7 +66,9 @@ def _event(path: Path) -> ToolCallHookEvent:
         tool_name="write",
         args={"path": str(path), "content": "print('hi')\n"},
         assistant_message=None,  # type: ignore[arg-type]
-        context=None,  # type: ignore[arg-type]
+        # The built-in ``write`` object: the redirect is offered for aelix's own
+        # write only (ADR-0253), and the gate knows that tool by provenance.
+        context=BUILTIN_CONTEXT,
     )
 
 

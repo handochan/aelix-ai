@@ -64,8 +64,12 @@ consent very much is:
 - **Headless modes auto-approve mutating tools by default, including `bash`.**
   `--print`, `--mode json` and RPC mode have no interactive approval prompt to show,
   so the built-in permission gate falls through to allow
-  (`builtin/permission.py`, `headless_default = "allow"`). Do not point a headless
-  Aelix at untrusted input on a machine you care about.
+  (`builtin/permission.py`, `headless_default = "allow"`). That covers every tool
+  from an MCP server or an extension too: the gate treats any tool that is not one
+  of Aelix's own read-only tools as mutating, and `--permission-mode plan` blocks
+  all of them, headless included
+  ([ADR-0253](docs/decisions/0253-the-permission-gate-treats-any-tool-it-does-not-know-as-mutating.md)).
+  Do not point a headless Aelix at untrusted input on a machine you care about.
 - **In `yolo` posture a delegated subagent starts without a confirmation, at a
   posture that can write.** Every other posture opens a spawn-consent dialog
   when the child would be write-capable; `yolo` does not, because `yolo` means

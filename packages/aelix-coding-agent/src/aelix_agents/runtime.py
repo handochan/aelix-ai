@@ -194,9 +194,10 @@ nothing bounded how many of those one turn could start. Measured against the
 shipped runtime before this cap: ``dialogs shown to the human: 0`` /
 ``child processes started: 200``. A prompt-injected README saying "call agent()
 200 times" therefore cost real money and 200 real processes with no gate and no
-ceiling; ``"agent"`` is deliberately absent from ``builtin/permission.py``'s
-``_MUTATING``, so the parent's own permission ladder never saw those calls
-either.
+ceiling; ``"agent"`` was deliberately absent from ``builtin/permission.py``'s
+old ``_MUTATING`` name set, so the parent's own permission ladder never saw
+those calls either — and since ADR-0253 the aelix-built ``agent`` tool's
+``delegation`` provenance lets it through that ladder for the same reason.
 
 Scoped to the MODEL-driven door only (:meth:`_SubagentRuntimeImpl.spawn_granted`).
 ``/agents run`` is a human typing a command, one delegation per keystroke burst,
@@ -409,7 +410,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:360``/``tool.py:750`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:360``/``tool.py:763`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -1246,7 +1247,7 @@ def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMo
 
     The rank comes from :mod:`aelix_agents.posture`, which is the module that
     owns the authority ordering — NOT ``CYCLE_ORDER``
-    (``builtin/permission_mode.py:71-77``), which is a UX rotation and would
+    (``builtin/permission_mode.py:75-81``), which is a UX rotation and would
     silently rank ``PLAN`` above ``AUTO_ACCEPT``.
     """
 

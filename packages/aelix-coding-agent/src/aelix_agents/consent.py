@@ -7,19 +7,22 @@ Protocol in ``subagent_contract.py`` deliberately carries no grant parameter
 (pinned by ``test_protocol_has_no_consent_parameter`` and
 ``test_product_core_never_prompts_for_spawn_consent``).
 
-THE PROBLEM IS AN EMPTY GATE, NOT UX. Measured on the shipped ladder:
-``_MUTATING`` (``builtin/permission.py:77``) is
+THE PROBLEM IS AN EMPTY GATE, NOT UX. Measured on the ladder this module was
+written against: its name set ``_MUTATING`` was
 ``['bash','create_file','edit','execute_command','sh','shell','write','write_file']``
-— ``"agent"`` is NOT in it, so an ``agent`` tool call falls into the
-non-mutating branch at ``permission.py:556-557`` and is **silently allowed**.
-Delegation is today the one action a model can take that starts a whole second
-agent with real authority and asks nobody.
+— ``"agent"`` was NOT in it, so an ``agent`` tool call fell into the
+non-mutating branch and was **silently allowed**. ADR-0253 (#188) replaced that
+name set with tool PROVENANCE and kept this outcome on purpose: the ``agent``
+object this package builds carries ``delegation`` provenance
+(``aelix_agents/tool.py`` ``create_agent_tool``), which the ladder lets through
+unasked in every posture, PLAN included. Delegation is therefore still the one
+action a model can take that starts a whole second agent with real authority
+and asks nobody — unless this module asks.
 
-WHY NOT JUST ADD ``"agent"`` TO ``_MUTATING``. ``_rule_key``
-(``permission.py:222-244``) falls through to an args-blind ``f"tool:{tool_name}"``
-at ``:116``. One "allow for this session" would then approve EVERY profile
-against EVERY task for the rest of the run. The gate has to live here, keyed on
-what actually varies. ``builtin/permission.py`` is deliberately left alone.
+WHY NOT JUST MAKE ``agent`` MUTATING. ``_rule_key`` in ``builtin/permission.py``
+falls through to an args-blind ``f"tool:{tool_name}"``. One "allow for this
+session" would then approve EVERY profile against EVERY task for the rest of the
+run. The gate has to live here, keyed on what actually varies.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
@@ -102,7 +105,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:626``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:749``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -239,7 +242,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:305-329``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:306-330``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -776,7 +779,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:603-606``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:604-607``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The
@@ -991,15 +994,15 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
-# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:505-521``
+# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:739-762``
 # already solves this shape — ``HSplit([scrollable_body, spacer, options])`` with
 # the options at ``Dimension.exact(n)`` so "the security-critical deny option is
 # ALWAYS visible even when the diff body is far taller than the cap"
-# (``:277-285``) — and ADR-0197 residual R3 named it as the mitigation for this
-# dialog. It is not taken because ``ctx.ui.select`` is product-core and P3
-# decision S2 sets the product-core delta for this phase at ZERO. R3 stays OPEN
-# and is restated in ADR-0199; it is the natural companion to the P4 work that
-# will touch these surfaces anyway.
+# (``tui/approval_dialog.py:596-597``) — and ADR-0197 residual R3 named it as
+# the mitigation for this dialog. It is not taken because ``ctx.ui.select`` is
+# product-core and P3 decision S2 sets the product-core delta for this phase at
+# ZERO. R3 stays OPEN and is restated in ADR-0199; it is the natural companion
+# to the P4 work that will touch these surfaces anyway.
 #
 # SO: compose short, measure the composition, and REFUSE what will not fit.
 
@@ -1414,7 +1417,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:272``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:273``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1422,7 +1425,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:272)."
+            "AgentCall guarantees at least one task (tool.py:273)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter

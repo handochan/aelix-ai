@@ -43,6 +43,8 @@ from aelix_coding_agent.builtin.permission import (
     _is_auto_allowable_write,
 )
 
+from tests.builtin.gate_tools import BUILTIN_CONTEXT
+
 _CWD = "/proj"
 
 
@@ -51,6 +53,7 @@ def _write_event(path: str) -> ToolCallHookEvent:
         tool_call_id="t1",
         tool_name="write",
         args={"path": path},
+        context=BUILTIN_CONTEXT,
     )
 
 

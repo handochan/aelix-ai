@@ -21,7 +21,7 @@ Why a clamp and not a lookup table (P2 review finding B4). The obvious shape —
 map ``approval_mode`` to a posture and hand it to the child — lets a profile
 declaring ``approval_mode: auto`` lift a DEFAULT (prompt-for-everything) parent
 into a child that auto-accepts repo-wide writes with no human in the loop. The
-child cannot compensate: ``builtin/permission.py:580-585`` returns ``None``
+child cannot compensate: ``builtin/permission.py:697-702`` returns ``None``
 (allow) for an AUTO_ACCEPT in-cwd write roughly thirty lines ABOVE the
 ``if not ctx.has_ui:`` headless branch at ``:382-383``, so the child-only
 headless floor (``PermissionExtension.headless_default``) never runs for
@@ -35,7 +35,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode
 
 # The total order the clamp is taken over: PLAN (tightest) → YOLO (loosest).
 # It is a rank map rather than the shipped ``CYCLE_ORDER``
-# (``builtin/permission_mode.py:71-77``) on purpose — the cycle is a UX
+# (``builtin/permission_mode.py:75-81``) on purpose — the cycle is a UX
 # rotation (DEFAULT → AUTO_ACCEPT → PLAN → YOLO → AUTO) and carries no
 # authority ordering at all. Reusing it here would silently rank PLAN above
 # AUTO_ACCEPT.

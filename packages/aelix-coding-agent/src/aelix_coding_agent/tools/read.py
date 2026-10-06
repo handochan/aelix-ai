@@ -21,6 +21,7 @@ from aelix_coding_agent.tools._truncate import (
     format_size,
     truncate_head,
 )
+from aelix_coding_agent.tools.provenance import mark_builtin
 from aelix_coding_agent.util.image_detect import detect_image_mime_type_from_file
 from aelix_coding_agent.util.image_resize import format_dimension_note, resize_image
 
@@ -277,7 +278,7 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
         # Branch D — no truncation.
         return ToolResult(content=[TextContent(text=body)])
 
-    return AgentTool(
+    tool = AgentTool(
         name="read",
         # Pi parity, verbatim: ``readToolSystemPromptContribution.snippet``
         # (``coding-agent/src/core/tools/read.ts:28``). Only the snippet is
@@ -308,6 +309,8 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
         execute=execute,
         execution_mode="parallel",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "read_only")
 
 
 __all__ = ["ReadOperations", "ReadToolDetails", "create_read_tool"]

