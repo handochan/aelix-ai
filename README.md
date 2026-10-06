@@ -20,7 +20,7 @@ just a Python function — so the stack you already work in becomes the agent's 
 Self-hosted, auditable, and running on the model budgets you already pay for.
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="Aelix demo — the agent writes a DuckDB query tool into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process against a Parquet file">
+  <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/demo.gif" width="100%" alt="Aelix demo — the agent writes a DuckDB query tool into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process against a Parquet file">
 </p>
 <p align="center"><em>The agent extends itself: it authors a <code>duckdb_query</code> tool into <code>my_ext.py</code>, <code>/reload</code> hot-loads it without restarting, and the very next prompt runs it in-process. Idle waits are cut and the recording plays at 2×.</em></p>
 

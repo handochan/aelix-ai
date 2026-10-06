@@ -52,6 +52,20 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **Packaging: the `aelix` sdist no longer carries the demo recording, and the
+  README's demo image now shows on PyPI (#387).** `docs/assets/demo.gif`
+  (2.3 MB, about 40% of the tarball) and the three files that produce it
+  (`demo.tape`, `dedup_frames.py`, `make_demo_fixture.py`) are excluded from
+  the root sdist, which drops from 5,974,799 B to 3,666,895 B; nothing that
+  unpacks an sdist read them, and the brand assets under `docs/assets/brand/`
+  still ship. `README.md` and `README.ko.md` load the GIF from
+  `raw.githubusercontent.com` as the logo already did, so it looks the same on
+  GitHub and now renders on the PyPI project page, where the relative path was
+  broken. The files stay in the repository. The size gate had started failing
+  on Windows checkouts, whose CRLF line endings add about 24 KB to the same
+  tree, which put it just over its 6 MB cap; the cap is unchanged. The per-package sdists and all five
+  wheels never carried `docs/assets/`.
+
 - **A repository's `.aelix/settings.json` now asks for trust (#369,
   ADR-0252).** It is the project scope of your settings — it can choose the
   default model and provider your prompts go to — and it is now read only in a

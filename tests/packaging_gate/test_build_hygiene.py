@@ -83,6 +83,7 @@ directions, or the guard is worth nothing.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tarfile
@@ -710,6 +711,16 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
 # tarball (6,343,886 B) and the dirty-worktree build (10,308,093 B) that
 # produced the issue's headline. A cap loose enough to admit those would be
 # decorative.
+#
+# #387 — the cap was reached by organic doc growth, not by a leak: main aab1f210
+# built 5,974,799 B with LF endings, and a Windows checkout (CRLF on every text
+# file — this fixture builds from the WORKING TREE, so it sees them) adds about
+# 24 KB: the #288 branch failed both windows legs of CI 37507000678 at
+# 6,004,132 B, against 5,980,113 B for that tree built locally with LF. The release itself builds
+# on Linux (`release.yml`). Rather than raise the cap, #387 dropped
+# `docs/assets/demo.gif` and its tooling from the sdist: 3,666,895 B LF and
+# 3,690,549 B with every text file converted to CRLF. The cap stays where it is
+# because its reasons above still hold.
 MAX_SDIST_BYTES = 6_000_000
 
 
@@ -828,6 +839,63 @@ def test_the_inventory_check_catches_a_stray(
     planted = [*members, "aelix-0.1.0b1/uk4414917.html"]
     top = {n.split("/", 1)[1].split("/", 1)[0] for n in planted if "/" in n}
     assert sorted(top - ALLOWED_SDIST_TOP_LEVEL) == ["uk4414917.html"]
+
+
+# #387 — the demo recording and the tooling that produces it stay in git (the
+# READMEs load the GIF from raw.githubusercontent.com) but not in the sdist.
+DEMO_ONLY_PATHS = (
+    "docs/assets/demo.gif",
+    "docs/assets/demo.tape",
+    "docs/assets/dedup_frames.py",
+    "docs/assets/make_demo_fixture.py",
+)
+DEMO_GIF_URL = (
+    "https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/demo.gif"
+)
+
+
+def test_the_release_sdist_leaves_the_demo_recording_behind(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """#387: the 2.3 MB demo GIF was ~40% of the sdist and nothing reads it there.
+
+    The brand assets beside it are tens of KB and are what `TRADEMARK.md`
+    points at, so they stay — and are asserted here, so a broadened exclude
+    (`docs/assets`) reads as a regression rather than as a size win.
+    """
+    _, members = release_sdist
+    inner = {n.split("/", 1)[1] for n in members if "/" in n}
+    for gone in DEMO_ONLY_PATHS:
+        assert gone not in inner, f"{gone} is back in the published sdist"
+    for kept in (
+        "README.md",
+        "README.ko.md",
+        "docs/assets/brand/BRAND.md",
+        "docs/assets/brand/mark.svg",
+        "docs/assets/brand/lockup-stacked.png",
+    ):
+        assert kept in inner, f"the release sdist lost {kept}"
+    # Excluded from the BUILD, not from git: the absolute URL the READMEs use
+    # only resolves while main still tracks the GIF.
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", *DEMO_ONLY_PATHS],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert sorted(tracked) == sorted(DEMO_ONLY_PATHS)
+
+
+@pytest.mark.parametrize("readme", ["README.md", "README.ko.md"])
+def test_the_readme_loads_the_demo_gif_by_absolute_url(readme: str) -> None:
+    """#387: a relative `docs/assets/demo.gif` breaks wherever the repo tree is
+    not beside the README — on the PyPI project page always, and in the sdist
+    now that the GIF is excluded from it. The lockup already uses this form.
+    """
+    text = (REPO_ROOT / readme).read_text(encoding="utf-8")
+    srcs = re.findall(r'src="([^"]*demo\.gif)"', text)
+    assert srcs == [DEMO_GIF_URL], f"{readme} demo image src: {srcs}"
 
 
 def test_the_predicate_itself_knows_a_credential_file() -> None:

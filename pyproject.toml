@@ -182,15 +182,29 @@ exclude = [
   "citations.lock.json",
   # An internal work-in-progress memo about the Windows slice.
   "SLICE-STATUS.md",
+  # #387 — the demo recording (2,338,184 B, ~40% of the tarball) and the
+  # three files that produce it. The READMEs load the GIF from
+  # raw.githubusercontent.com, so nothing in an unpacked sdist points at it.
+  # They stay tracked in git — that URL resolves only while `main` has the
+  # file — so `.gitignore` gets no matching line: it is the belt for files
+  # that must never be committed, and these must be. The brand assets beside
+  # them (`docs/assets/brand/`, tens of KB, what TRADEMARK.md points at) ship.
+  "/docs/assets/demo.gif",
+  "/docs/assets/demo.tape",
+  "/docs/assets/dedup_frames.py",
+  "/docs/assets/make_demo_fixture.py",
 ]
 
 # DELIBERATELY NOT EXCLUDED, so the next reader does not have to re-derive it:
 #   `.env.example`   — 7 KB, zero values on any line. It is the only place the
 #                      supported environment variables are enumerated for a
 #                      human, so it earns its passage.
-#   `docs/`          — 4.8 MB, of which `docs/assets/demo.gif` is 2.0 MB. A
-#                      real candidate for a later trim, but the READMEs link
-#                      into it and that is a separate decision from this one.
+#   `docs/`          — the ADRs, guides and brand assets. Its one bulk item,
+#                      `docs/assets/demo.gif`, IS excluded above since #387
+#                      (the READMEs now load it by absolute URL); the rest is
+#                      text that grows with every batch and is what the size
+#                      cap in tests/packaging_gate/test_build_hygiene.py
+#                      watches.
 
 [tool.uv.workspace]
 members = ["packages/*"]

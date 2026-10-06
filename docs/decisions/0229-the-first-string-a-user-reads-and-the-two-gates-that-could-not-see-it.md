@@ -232,4 +232,5 @@ Python 3.13's `X509_V_FLAG_X509_STRICT`.
   question is not a beta item.
 - The replay double-render described above.
 - `docs/assets/demo.gif` (2.0 MB of the remaining 4.76 MB sdist) — a real trim
-  candidate, but a separate decision from #190's.
+  candidate, but a separate decision from #190's. Taken in #387: the GIF and its tooling are
+  excluded from the root sdist, and the READMEs load it by absolute URL.
