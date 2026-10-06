@@ -19,12 +19,18 @@ import base64
 import contextlib
 import inspect
 import os
+import sys
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
 import httpx
 
 from aelix_ai.oauth._callback_server import start_callback_server
+from aelix_ai.oauth._helpers import (
+    format_error_details,
+    quote_server_text,
+    quoting_transport_errors,
+)
 
 # Sprint 6e W6 (P-157): single-owner ``maybe_await`` helper. The local
 # ``_maybe_await`` name remains importable for back-compat.
@@ -106,14 +112,11 @@ def _parse_authorization_input(input_str: str) -> dict[str, str | None]:
     return {"code": value, "state": None}
 
 
-def _format_error_details(error: BaseException) -> str:
-    """Pi parity: ``anthropic.ts:81-96`` ``formatErrorDetails``."""
+def _format_error_details(error: BaseException, *, handled: BaseException | None) -> str:
+    """Pi parity: ``anthropic.ts:81-96`` ``formatErrorDetails``, stopping at the
+    exception the caller was handling (#186, :func:`format_error_details`)."""
 
-    parts: list[str] = [f"{type(error).__name__}: {error}"]
-    cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
-    if cause is not None:
-        parts.append(f"cause={_format_error_details(cause)}")
-    return "; ".join(parts)
+    return format_error_details(error, handled=handled)
 
 
 async def _post_json(url: str, body: dict[str, Any]) -> str:
@@ -121,22 +124,29 @@ async def _post_json(url: str, body: dict[str, Any]) -> str:
 
     POST JSON; raise on non-2xx with a Pi-shape error message
     (``HTTP request failed. status=<n>; url=<u>; body=<b>``).
+
+    ``<b>`` is :func:`quote_server_text` of the body, not the body (#186):
+    pi interpolates it raw, and a body carrying ``ESC[2J`` cleared the screen.
+    A transport error leaves with its text quoted too - a proxy's CONNECT
+    refusal carries the proxy's own reason phrase - and both callers
+    interpolate it into ``details=``.
     """
 
     async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            url,
-            json=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
+        with quoting_transport_errors():
+            response = await client.post(
+                url,
+                json=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
         response_body = response.text
         if response.status_code < 200 or response.status_code >= 300:
             raise RuntimeError(
                 f"HTTP request failed. status={response.status_code}; "
-                f"url={url}; body={response_body}"
+                f"url={url}; body={quote_server_text(response_body)}"
             )
         return response_body
 
@@ -151,6 +161,9 @@ async def _exchange_authorization_code(
 
     import json as _json
     import time as _time
+
+    # What the caller is handling: details= stops there (#186).
+    handled = sys.exc_info()[1]
 
     try:
         response_body = await _post_json(
@@ -168,7 +181,7 @@ async def _exchange_authorization_code(
         raise RuntimeError(
             f"Token exchange request failed. url={TOKEN_URL}; "
             f"redirect_uri={redirect_uri}; response_type=authorization_code; "
-            f"details={_format_error_details(exc)}"
+            f"details={_format_error_details(exc, handled=handled)}"
         ) from exc
 
     try:
@@ -176,7 +189,8 @@ async def _exchange_authorization_code(
     except (_json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(
             f"Token exchange returned invalid JSON. url={TOKEN_URL}; "
-            f"body={response_body}; details={_format_error_details(exc)}"
+            f"body={quote_server_text(response_body)}; "
+            f"details={_format_error_details(exc, handled=handled)}"
         ) from exc
 
     # Sprint 6c W6 (W4 m7): preserve unknown fields (notably ``scope``)
@@ -358,6 +372,9 @@ async def refresh_anthropic_token(refresh_token: str) -> OAuthCredentials:
     import json as _json
     import time as _time
 
+    # What the caller is handling: details= stops there (#186).
+    handled = sys.exc_info()[1]
+
     try:
         response_body = await _post_json(
             TOKEN_URL,
@@ -370,7 +387,7 @@ async def refresh_anthropic_token(refresh_token: str) -> OAuthCredentials:
     except Exception as exc:
         raise RuntimeError(
             f"Anthropic token refresh request failed. url={TOKEN_URL}; "
-            f"details={_format_error_details(exc)}"
+            f"details={_format_error_details(exc, handled=handled)}"
         ) from exc
 
     try:
@@ -378,7 +395,8 @@ async def refresh_anthropic_token(refresh_token: str) -> OAuthCredentials:
     except (_json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(
             f"Anthropic token refresh returned invalid JSON. url={TOKEN_URL}; "
-            f"body={response_body}; details={_format_error_details(exc)}"
+            f"body={quote_server_text(response_body)}; "
+            f"details={_format_error_details(exc, handled=handled)}"
         ) from exc
 
     # Sprint 6c W6 (W4 m7): preserve unknown fields (``scope``, etc.)

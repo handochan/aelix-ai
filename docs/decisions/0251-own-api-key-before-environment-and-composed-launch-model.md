@@ -104,6 +104,81 @@ carries an `apiKey` sends that key ahead of its environment variable.
 
 ### 2.2 A stored credential owns the provider
 
+> **Amended 2026-10-06 (#186; review rounds 2 and 3 on 2026-10-07, below).** "Its message keeps the cause's text" below still
+> holds, but the text it keeps is no longer the server's raw bytes. Measured on
+> `aab1f210` with a real `aelix -p` against a local token endpoint answering 502 with a
+> 48 KB page: `OAuth refresh failed for openai-codex: OpenAI Codex token refresh failed
+> (502): ESC[2J ESC]52;c;… ESC[?1049h …` reached stderr, and through
+> `rich.Console(force_terminal=True)` onto an 80x24 emulator the prior transcript line did
+> not survive. Every OAuth raise site that interpolates the server's text now quotes it
+> (`aelix_ai.oauth._helpers.quote_server_text`: steering characters deleted, runs of blank
+> space collapsed to one, trimmed, then cut at 512 code points - at most 513 characters
+> per quoted string). The bound is per quotation, not per message: the pi-shaped
+> `details=` of the Anthropic sign-in and refresh wrappers and of the Codex sign-in
+> wrapper repeats every link of the exception chain, so a proxy's refusal appears there
+> twice (1,138-1,225 characters measured) and a garbled status line three times
+> (1,698-1,785). Transport errors are included: a proxy's CONNECT
+> refusal puts its own reason phrase into `httpx.ProxyError` before any response exists,
+> and h11 quotes a garbled status line in `RemoteProtocolError`, so every OAuth HTTP call
+> runs inside `quoting_transport_errors`, which quotes every `httpx.HTTPError` and the
+> httpx, httpcore and h11 links of its chain in place and keeps their types (review round
+> 1 measured 55,044 characters with `ESC[2J` and OSC 52 from every entry point before
+> it). The walk stops at the first link of any other type and at the exception the caller
+> was handling when the request started, which is not the request's to rewrite. The Codex
+> "missing fields" error names the response's keys and never its values (they are live
+> tokens), and `get_oauth_api_key_from_credentials` neuters the cause before its existing
+> 300-character cut, which covers an extension's provider too.
+> An OAuth error built from an HTTP error answer keeps its status code, so nothing about
+> §4's retry discussion moves. A 200 answer that is not JSON carries no status: Anthropic says
+> `returned invalid JSON` and quotes the body, Codex raises the JSON parser's own message
+> (`Expecting value: ...`), as pi's `response.json()` does.
+>
+> **Review round 2 (2026-10-07, #186).** Three gaps closed and one surface added. (1)
+> `quoting_transport_errors` compared the quote with `text.strip()`, so a reason phrase
+> padded with 2,048 tabs counted as unchanged and was re-raised whole (2,063 characters
+> from the direct calls, 4,254-4,313 from the Anthropic wrappers, measured on `157c7b73`
+> through a real local proxy); it now compares with the original text. (2) The chain walk
+> followed `__context__` past the transport chain and rewrote, newlines deleted, an
+> exception the caller was handling; it now stops there. It still crosses a suppressed
+> context inside the chain, because httpcore's pool re-raises with `raise exc from None`
+> and h11's `RemoteProtocolError` - the garbled status line itself - sits behind it. (3)
+> Blank space inside the text spent the budget (`Bad Gateway`, 2,000 spaces, then the
+> diagnostic kept no diagnostic); runs are collapsed now. And the MODEL request: a proxy
+> that refuses the CONNECT of a model request put its reason phrase, whole, into the
+> turn's error for every built-in adapter (55,053-55,075 bytes on `aelix -p`'s stderr for
+> openai-codex, anthropic, openrouter and google; the TUI blank), because
+> `providers/_error_hints.describe_provider_error` passed exception text through.
+> That function is the one boundary all six built-in adapters' errors pass on their way
+> into an `AssistantErrorEvent` (the two Google adapters now call it too), and it now
+> quotes the message and the recovered cause with the same helper; OpenRouter's
+> `error.metadata.raw` and the Anthropic adapter's 401/403 `_AuthError` are quoted
+> beside it. An extension-registered provider's own stream function builds its own
+> message and does not pass this boundary.
+>
+> **Review round 3 (2026-10-07, #186).** Two gaps closed, and one claim narrowed. (1) The
+> pi-shaped `details=` of the Anthropic sign-in and refresh wrappers and the Codex sign-in
+> wrapper followed `__context__` past the request's own chain into the exception the caller
+> was handling - which the transport walk leaves alone by design - and copied it raw: a
+> library caller retrying a refresh inside `except httpx.ProxyError` got 4,278 characters
+> with `ESC[2J` and OSC 52 back on `cdeeb166`. `details=` now stops at that exception (read
+> with `sys.exc_info()` at the wrapper's entry) and leaves it untouched; pi's `cause` is
+> explicit and never reaches a caller's error either. (2) The model request's error string
+> is also what the context-overflow patterns and the harness's auto-retry regex read, and
+> the 512-character cut decided the class: a valid HTTP 400 putting
+> `"code": "context_length_exceeded"` after a 592-character diagnostic lost its
+> compact-and-retry, and a proxy's 502 page with "502 Bad Gateway" at character 644 its
+> retry. The displayed string now carries, for those classifiers only, the description as
+> it was built before the quoting (`aelix_ai.utils.overflow.ClassifiedErrorText`), so they
+> give the answer they gave before #186; it is never shown or serialised, and a message
+> rebuilt from its fields (a resumed session) is classified on its display text. A model
+> request's line break now becomes a space before the quoting, so its words stay apart.
+> The status claim above is the OAuth paths': a model request's error carries the status
+> only where the provider's SDK puts it in its message - a plain-text 403 from Anthropic or
+> an OpenAI-compatible endpoint reads as its body alone, as it did before #186.
+>
+> pi interpolates the body raw (`auth/oauth/openai-codex.ts:124`, `anthropic.ts:85` @
+> b223082bb); this is a divergence stated under ADR-0235, not a parity gap.
+
 When `auth.json` holds an entry for the provider (or `--api-key` set one), the AuthStorage
 cascade answers and nothing after it is asked. **A stored OAuth whose refresh fails makes
 the request fail before anything is sent**: `get_api_key_and_headers` answers `ok=False`

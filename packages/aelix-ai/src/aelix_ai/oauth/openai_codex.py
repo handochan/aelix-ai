@@ -19,6 +19,7 @@ import inspect
 import json
 import os
 import secrets
+import sys
 import time
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -29,6 +30,12 @@ from aelix_ai.oauth._callback_server import start_callback_server
 
 # Sprint 6e W6 (P-157): single-owner ``maybe_await`` helper. The local
 # ``_maybe_await`` name remains importable for back-compat.
+from aelix_ai.oauth._helpers import (
+    describe_token_response_keys,
+    format_error_details,
+    quote_server_text,
+    quoting_transport_errors,
+)
 from aelix_ai.oauth._helpers import maybe_await as _maybe_await
 from aelix_ai.oauth._pkce import generate_pkce
 from aelix_ai.oauth.types import (
@@ -172,14 +179,11 @@ def _get_account_id(access_token: str) -> str | None:
     return account_id
 
 
-def _format_error_details(error: BaseException) -> str:
-    """Pi parity: ``anthropic.ts:81-96`` ``formatErrorDetails`` (reused)."""
+def _format_error_details(error: BaseException, *, handled: BaseException | None) -> str:
+    """Pi parity: ``anthropic.ts:81-96`` ``formatErrorDetails`` (reused), stopping
+    at the exception the caller was handling (#186, :func:`format_error_details`)."""
 
-    parts: list[str] = [f"{type(error).__name__}: {error}"]
-    cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
-    if cause is not None:
-        parts.append(f"cause={_format_error_details(cause)}")
-    return "; ".join(parts)
+    return format_error_details(error, handled=handled)
 
 
 async def _exchange_authorization_code(
@@ -192,22 +196,25 @@ async def _exchange_authorization_code(
     """
 
     async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "authorization_code",
-                "client_id": CLIENT_ID,
-                "code": code,
-                "code_verifier": verifier,
-                "redirect_uri": redirect_uri,
-            },
-        )
+        with quoting_transport_errors():
+            response = await client.post(
+                TOKEN_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": CLIENT_ID,
+                    "code": code,
+                    "code_verifier": verifier,
+                    "redirect_uri": redirect_uri,
+                },
+            )
         body_text = response.text
         if response.status_code < 200 or response.status_code >= 300:
+            # #186: quoted, not interpolated - the server's body and reason
+            # phrase may carry ESC[2J, and this reaches the /login screen.
             raise RuntimeError(
                 f"OpenAI Codex token exchange failed ({response.status_code}): "
-                f"{body_text or response.reason_phrase}"
+                f"{quote_server_text(body_text) or quote_server_text(response.reason_phrase)}"
             )
         data = response.json()
 
@@ -219,8 +226,10 @@ async def _exchange_authorization_code(
         or not isinstance(refresh_token, str)
         or not isinstance(expires_in, (int, float))
     ):
+        # #186: the keys, not ``{data}`` - its values are live tokens.
         raise RuntimeError(
-            f"OpenAI Codex token exchange response missing fields: {data}"
+            "OpenAI Codex token exchange response missing fields: "
+            f"{describe_token_response_keys(data)}"
         )
     return data
 
@@ -408,12 +417,14 @@ async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials
                 callbacks.on_progress("Exchanging authorization code for tokens...")
             )
 
+        # What the caller is handling: details= stops there (#186).
+        handled = sys.exc_info()[1]
         try:
             token_data = await _exchange_authorization_code(code, verifier)
         except Exception as exc:
             raise RuntimeError(
                 f"Token exchange request failed. url={TOKEN_URL}; "
-                f"details={_format_error_details(exc)}"
+                f"details={_format_error_details(exc, handled=handled)}"
             ) from exc
 
         return _credentials_from_token_response(token_data)
@@ -425,20 +436,23 @@ async def refresh_openai_codex_token(refresh_token: str) -> OAuthCredentials:
     """Pi parity: ``openai-codex.ts:418-435`` ``refreshOpenAICodexToken``."""
 
     async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": CLIENT_ID,
-            },
-        )
+        with quoting_transport_errors():
+            response = await client.post(
+                TOKEN_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": CLIENT_ID,
+                },
+            )
         body_text = response.text
         if response.status_code < 200 or response.status_code >= 300:
+            # #186: quoted, not interpolated - a 48 KB body carrying ESC[2J
+            # cleared the screen from ``-p`` stderr on every refresh attempt.
             raise RuntimeError(
                 f"OpenAI Codex token refresh failed ({response.status_code}): "
-                f"{body_text or response.reason_phrase}"
+                f"{quote_server_text(body_text) or quote_server_text(response.reason_phrase)}"
             )
         data = response.json()
 
@@ -450,8 +464,10 @@ async def refresh_openai_codex_token(refresh_token: str) -> OAuthCredentials:
         or not isinstance(new_refresh_token, str)
         or not isinstance(expires_in, (int, float))
     ):
+        # #186: the keys, not ``{data}`` - its values are live tokens.
         raise RuntimeError(
-            f"OpenAI Codex token refresh response missing fields: {data}"
+            "OpenAI Codex token refresh response missing fields: "
+            f"{describe_token_response_keys(data)}"
         )
     return _credentials_from_token_response(data)
 

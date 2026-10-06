@@ -750,27 +750,27 @@
   "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:707-707": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:823-823": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:829-829": [
    "content=list(output_content),"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:992-992": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:998-998": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:307-307": [
+  "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:309-309": [
    "clamped = clamp_thinking_level(model, options.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:307-308": [
+  "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:309-310": [
    "clamped = clamp_thinking_level(model, options.reasoning)",
    "effort = \"high\" if clamped in (\"off\", None) else clamped"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:413-414": [
+  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:415-416": [
    "return _VERTEX_BUDGET_2_5_PRO.get(effort, -1)",
    "if \"2.5-flash\" in model_id:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:432-432": [
+  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:434-434": [
    "clamped = clamp_thinking_level(model, options.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:650-650": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:664-664": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1233-1234": [
@@ -790,7 +790,7 @@
    "provider=model.provider,",
    "model=model.id,"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1493-1493": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1501-1501": [
    "reasoning_effort = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:339-339": [

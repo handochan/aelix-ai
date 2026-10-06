@@ -53,7 +53,7 @@ from aelix_ai.api_registry import register_provider_object
 from aelix_ai.messages import AssistantMessage
 from aelix_ai.models import clamp_thinking_level
 from aelix_ai.oauth.openai_codex import OPENAI_CODEX_OAUTH_ID, _get_account_id
-from aelix_ai.providers._error_hints import describe_provider_error
+from aelix_ai.providers._error_hints import describe_provider_error, quote_model_text
 from aelix_ai.providers._openai_prompt_cache import clamp_openai_prompt_cache_key
 from aelix_ai.providers._openai_responses_shared import (
     OPENAI_TOOL_CALL_PROVIDERS,
@@ -367,17 +367,31 @@ async def _iter_codex_events(response: Any) -> AsyncIterator[dict[str, Any]]:
 
 
 class _CodexHTTPError(RuntimeError):
-    """A non-retryable (or retries-exhausted) codex HTTP error response."""
+    """A non-retryable (or retries-exhausted) codex HTTP error response.
+
+    The body is quoted with :func:`~aelix_ai.providers._error_hints.quote_model_text` (#186):
+    it used to be cut at 500 characters and nothing else, and a proxy's 400
+    page carrying ``ESC[2J`` and an OSC 52 clipboard write reached ``-p``
+    stderr intact, and C1 CSI and BiDi reached ``--mode rpc`` stdout (its JSON
+    keeps non-ASCII as is). Measured with the TUI's own render sanitising
+    (#177) in place: the TUI was contained, those two paths were not.
+
+    ``classifier_text`` is the message as it was before that quoting - the body
+    stripped and cut at 500 characters - which
+    :func:`~aelix_ai.providers._error_hints.describe_provider_error` hands the
+    overflow and auto-retry classifiers, so the quoting changes what is shown
+    and not what the error is classified as (review round 3, #186).
+    """
 
     def __init__(self, status: int, body: str) -> None:
-        detail = body.strip()
-        if len(detail) > 500:
-            detail = detail[:500] + "…"
-        super().__init__(
-            f"OpenAI Codex request failed ({status})"
-            + (f": {detail}" if detail else "")
-        )
+        head = f"OpenAI Codex request failed ({status})"
+        detail = quote_model_text(body)
+        super().__init__(head + (f": {detail}" if detail else ""))
         self.status = status
+        raw = body.strip()
+        if len(raw) > 500:
+            raw = raw[:500] + "…"
+        self.classifier_text = head + (f": {raw}" if raw else "")
 
 
 def _create_codex_client(opts: OpenAIResponsesOptions) -> httpx.AsyncClient:

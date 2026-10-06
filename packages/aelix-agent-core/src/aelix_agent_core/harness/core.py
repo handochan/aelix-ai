@@ -2295,7 +2295,7 @@ class AgentHarness:
         budget re-running the same oversized context.
         """
 
-        from aelix_ai.utils.overflow import is_context_overflow
+        from aelix_ai.utils.overflow import classifier_text_of, is_context_overflow
 
         # pi ``:2486`` — context overflow is handled by compaction, not retry.
         model = self._state.model
@@ -2310,7 +2310,7 @@ class AgentHarness:
         err = getattr(message, "error_message", None)
         if not err:
             return False
-        return _RETRYABLE_ERROR_PATTERN.search(err) is not None
+        return _RETRYABLE_ERROR_PATTERN.search(classifier_text_of(err)) is not None  # #186
 
     async def _handle_retryable_error(self, message: Any) -> bool:
         """pi parity ``agent-session.ts:2432-2506`` ``_handleRetryableError``.

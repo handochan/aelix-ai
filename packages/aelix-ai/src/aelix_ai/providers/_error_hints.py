@@ -22,7 +22,9 @@ store is live instead of asserting one.
 
 from __future__ import annotations
 
+import re
 import ssl
+from collections.abc import Callable
 
 # Substrings that mark a TLS trust failure across httpx / OpenSSL / SDK wrappers.
 # Cert-specific ONLY: a bare "SSL" / "ConnectError" substring would drag 401s,
@@ -307,23 +309,67 @@ def _tls_hint(err: BaseException) -> str:
     return _untrusted_issuer_hint()
 
 
-def _cause_text(exc: BaseException, base: str) -> str | None:
+#: Every line boundary :meth:`str.splitlines` knows, ``\r\n`` as one.
+_LINE_BREAK = re.compile("\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+def quote_model_text(text: str) -> str:
+    """:func:`~aelix_ai.oauth._helpers.quote_server_text` for a MODEL request's error.
+
+    The same quoting - steering characters deleted, blank runs collapsed,
+    trimmed, cut at 512 code points - except that a line break becomes a space
+    first, so a multi-line error keeps its word boundaries: ``upstream failed``
+    and ``retry later`` on two lines read ``upstream failed retry later``, not
+    ``upstream failedretry later`` (review round 3, #186). The OAuth sites keep
+    deleting them.
+    """
+
+    # Imported here: see describe_provider_error.
+    from aelix_ai.oauth._helpers import quote_server_text
+
+    return quote_server_text(_LINE_BREAK.sub(" ", text))
+
+
+def _raw_text(exc: BaseException) -> str:
+    """The text of ``exc`` as the classifiers read it before #186 quoted it.
+
+    An exception that is bounded where it is raised (``_CodexHTTPError``)
+    carries that text as ``classifier_text``; any other is its ``str()``.
+    """
+
+    carried = getattr(exc, "classifier_text", None)
+    return carried if isinstance(carried, str) else str(exc)
+
+
+def _cause_text(
+    exc: BaseException, base: str, *, text_of: Callable[[BaseException], str]
+) -> str | None:
     """The innermost cause message ``base`` does not already carry.
 
     Innermost-first because the outer wrappers are the uninformative ones
     ("Connection error.", or an empty ``httpx.ConnectError``); the OpenSSL error
     at the bottom is what names the reason AND the host. Substring-checked
     against ``base`` so a directly-raised error is not repeated back to itself.
+    ``text_of`` is the quoting for the displayed message and the unquoted text
+    for the classifiers' copy.
     """
 
     for e in reversed(_causes(exc)[1:]):
-        text = str(e).strip()
+        text = text_of(e)
         if text and text not in base:
             return text
     return None
 
 
-def describe_provider_error(exc: BaseException) -> str:
+def _quoted(exc: BaseException) -> str:
+    return quote_model_text(str(exc))
+
+
+def _unquoted(exc: BaseException) -> str:
+    return _raw_text(exc).strip()
+
+
+def describe_provider_error(exc: BaseException, *, classifier_text: str | None = None) -> str:
     """Base message + the innermost real cause + a TLS remedy when relevant.
 
     Non-TLS errors keep their base message (plus the recovered cause), so this
@@ -332,16 +378,50 @@ def describe_provider_error(exc: BaseException) -> str:
 
     The cause is appended, never prepended: callers/tests anchor on the SDK's
     own leading text (e.g. ``startswith("Connection error.")``).
+
+    THE ONE BOUNDARY a built-in adapter's error passes on its way into an
+    :class:`~aelix_ai.streaming.AssistantErrorEvent` (#186, review round 2):
+    the base message and the recovered cause are each quoted with
+    :func:`quote_model_text` - line breaks to spaces, steering characters
+    deleted, blank runs collapsed, trimmed, cut at 512 code points. Exception
+    text is the other end's text here too: a proxy that refuses the CONNECT
+    puts its own reason phrase into ``httpx.ProxyError`` before any response
+    exists, and every adapter passed it on whole (55,000 characters with
+    ``ESC[2J``, OSC 52 and ``ESC[?1049h`` measured on ``aelix -p``'s stderr for
+    openai-codex, anthropic, openrouter and google). The TLS remedy below is
+    aelix's own text and keeps its lines. Two server strings travel beside this
+    boundary rather than through it, and their sites quote them with the same
+    helper: OpenRouter's ``error.metadata.raw``, which ``openai_completions``
+    appends on a line of its own, and the 401/403 text the Anthropic adapter
+    raises as ``_AuthError``. An extension-registered provider builds its own
+    message and does not pass here.
+
+    The cut must not decide what the error IS (review round 3, #186): the
+    overflow patterns and the harness's auto-retry regex read this string, and
+    a ``context_length_exceeded`` code serialised after a long diagnostic, or a
+    ``502`` deep in a proxy's page, fell past it. The returned text therefore
+    carries the description as it was built before #186 quoted it - the same
+    algorithm on the unquoted text - for
+    :func:`aelix_ai.utils.overflow.classifier_text_of`, or ``classifier_text``
+    when the caller passes the text its classifiers read before (the two Google
+    adapters used ``str(exc)``).
     """
 
-    base = str(exc) if str(exc) else type(exc).__name__
-    cause = _cause_text(exc, base)
+    from aelix_ai.utils.overflow import with_classifier_text
+
+    base = _quoted(exc) or type(exc).__name__
+    cause = _cause_text(exc, base, text_of=_quoted)
     if cause is not None:
         base = f"{base} — {cause}"
     tls = _tls_error(exc)
-    if tls is not None:
-        return f"{base}\n\n{_tls_hint(tls)}"
-    return base
+    hint = "" if tls is None else f"\n\n{_tls_hint(tls)}"
+    if classifier_text is None:
+        raw = _raw_text(exc) or type(exc).__name__
+        raw_cause = _cause_text(exc, raw, text_of=_unquoted)
+        if raw_cause is not None:
+            raw = f"{raw} — {raw_cause}"
+        classifier_text = raw + hint
+    return with_classifier_text(base + hint, classifier_text)
 
 
-__all__ = ["describe_provider_error", "is_tls_verification_error"]
+__all__ = ["describe_provider_error", "is_tls_verification_error", "quote_model_text"]

@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from aelix_ai.oauth._helpers import quote_server_text, quoting_transport_errors
 from aelix_ai.oauth.types import (
     OAuthAuthInfo,
     OAuthCredentials,
@@ -67,19 +68,9 @@ _MIN_INTERVAL_MS: int = 1000
 # 30s timeout on HTTP requests — mirrors the Anthropic flow's pattern.
 _HTTP_TIMEOUT_SECONDS: float = 30.0
 
-# How much of a server body may travel inside an exception message (issue #186).
-#
-# Not a taste call. The body #184's reporter actually received was **54,889
-# characters over 164 lines** — GitHub's "Unicorn" page, most of it a single
-# 45,736-character base64 PNG data URI — and every byte was interpolated raw into
-# a ``RuntimeError`` the TUI printed. At 80 columns that is ~815 rendered rows:
-# the entire transcript, gone.
-#
-# Bounded HERE as well as at the render site, and that is not belt-and-braces:
-# these exceptions also reach logs, ``--print`` output and the JSON modes, none
-# of which pass through the TUI. An unbounded server body inside an exception
-# message makes every future consumer responsible for remembering.
-_ERROR_BODY_MAX_CHARS: int = 512
+# How much of a server body may travel inside an exception message (#186) is
+# ``oauth/_helpers.SERVER_TEXT_MAX_CHARS`` - one bound for every OAuth flow, with
+# the measurement that set it.
 
 # Statuses worth trying again during a device-code login (issue #184).
 #
@@ -147,11 +138,17 @@ def _http_error(response: httpx.Response, url: str) -> RuntimeError:
 
     from aelix_ai.utils.terminal_text import safe_for_terminal
 
-    detail = f"{response.status_code} {response.reason_phrase} from {url}"
+    # The reason phrase is the server's too: h11 admits ESC in it and httpx
+    # decodes it as ASCII, so with an EMPTY body ``ESC[2J`` still arrived here
+    # (measured, #186). The fallback is httpx's own table, never empty.
+    reason = quote_server_text(response.reason_phrase) or httpx.codes.get_reason_phrase(
+        response.status_code
+    )
+    detail = f"{response.status_code} {reason} from {url}"
     retry_after = response.headers.get("retry-after")
     if retry_after:
         detail += f" (Retry-After: {safe_for_terminal(retry_after, max_chars=32)})"
-    body = safe_for_terminal(response.text, max_chars=_ERROR_BODY_MAX_CHARS).strip()
+    body = quote_server_text(response.text)
     if body:
         detail += f"; server said: {body}"
     return RuntimeError(detail)
@@ -239,18 +236,19 @@ async def _start_device_flow(domain: str) -> dict[str, Any]:
 
     urls = _get_urls(domain)
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            urls["device_code_url"],
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "GitHubCopilotChat/0.35.0",
-            },
-            data={
-                "client_id": CLIENT_ID,
-                "scope": "read:user",
-            },
-        )
+        with quoting_transport_errors():
+            response = await client.post(
+                urls["device_code_url"],
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "GitHubCopilotChat/0.35.0",
+                },
+                data={
+                    "client_id": CLIENT_ID,
+                    "scope": "read:user",
+                },
+            )
         if response.status_code < 200 or response.status_code >= 300:
             raise _http_error(response, urls["device_code_url"])
         data = response.json()
@@ -325,19 +323,22 @@ async def _poll_for_github_access_token(
         raw: Any = None
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    urls["access_token_url"],
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "User-Agent": "GitHubCopilotChat/0.35.0",
-                    },
-                    data={
-                        "client_id": CLIENT_ID,
-                        "device_code": device_code,
-                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    },
-                )
+                # Quoted before the except below reads it (#186): a proxy's
+                # CONNECT refusal puts its own reason phrase into the error.
+                with quoting_transport_errors():
+                    response = await client.post(
+                        urls["access_token_url"],
+                        headers={
+                            "Accept": "application/json",
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "User-Agent": "GitHubCopilotChat/0.35.0",
+                        },
+                        data={
+                            "client_id": CLIENT_ID,
+                            "device_code": device_code,
+                            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        },
+                    )
                 if response.status_code < 200 or response.status_code >= 300:
                     error_ = _http_error(response, urls["access_token_url"])
                     if response.status_code not in _TRANSIENT_STATUS:
@@ -403,8 +404,13 @@ async def _poll_for_github_access_token(
                     # access_denied, expired_token, incorrect_device_code,
                     # device_flow_disabled. Retrying any of them re-sends a
                     # single-use code that the server has already ruled on.
-                    suffix = f": {description}" if description else ""
-                    raise RuntimeError(f"Device flow failed: {error}{suffix}")
+                    #
+                    # Both strings are the server's, inside an HTTP 200, so the
+                    # status-path quoting never saw them (#186).
+                    shown = quote_server_text(error) or "(unnamed error)"
+                    said = quote_server_text(str(description)) if description else ""
+                    suffix = f": {said}" if said else ""
+                    raise RuntimeError(f"Device flow failed: {shown}{suffix}")
 
         # Sprint 6e W6 (W4 M1 + P-144): sleep AFTER the fetch+check, Pi
         # parity. ``math.ceil`` matches Pi's ``Math.ceil(intervalMs *
@@ -461,14 +467,15 @@ async def refresh_github_copilot_token(
     urls = _get_urls(domain)
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-        response = await client.get(
-            urls["copilot_token_url"],
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {refresh_token}",
-                **COPILOT_HEADERS,
-            },
-        )
+        with quoting_transport_errors():
+            response = await client.get(
+                urls["copilot_token_url"],
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {refresh_token}",
+                    **COPILOT_HEADERS,
+                },
+            )
         if response.status_code < 200 or response.status_code >= 300:
             raise _http_error(response, urls["copilot_token_url"])
         raw = response.json()
@@ -533,17 +540,18 @@ async def enable_github_copilot_model(
     url = f"{base_url}/models/{model_id}/policy"
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                url,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}",
-                    **COPILOT_HEADERS,
-                    "openai-intent": "chat-policy",
-                    "x-interaction-type": "chat-policy",
-                },
-                json={"state": "enabled"},
-            )
+            with quoting_transport_errors():
+                response = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                        **COPILOT_HEADERS,
+                        "openai-intent": "chat-policy",
+                        "x-interaction-type": "chat-policy",
+                    },
+                    json={"state": "enabled"},
+                )
     except httpx.TimeoutException:
         return False
     except httpx.TransportError:

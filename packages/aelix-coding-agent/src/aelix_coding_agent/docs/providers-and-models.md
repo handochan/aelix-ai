@@ -271,6 +271,33 @@ A credential can come from four places. Pick whichever fits your setup:
 > `aelix` console script has no `auth` verb, so OAuth login goes through `/login`
 > in the TUI.
 
+When an OAuth sign-in or a token refresh fails on an HTTP error answer, the
+error keeps the status code and quotes what the provider's server answered: at
+most 512 characters per quoted string, with terminal control characters and
+line breaks removed, runs of blank space shortened to one, and leading or
+trailing blank space not counted. A 200 answer that is not JSON (a captive
+portal) carries no status: Anthropic's error says it returned invalid JSON and
+quotes the body, OpenAI Codex's is the JSON parser's own message. The bound is
+per quoted string, not per message: a message that quotes two strings - a
+Copilot device-flow error and its description, or a proxy's connection error
+and its cause - carries about 1.2 KB, and the Codex and Anthropic sign-in
+errors and Anthropic's refresh error, which repeat every link of a connection
+error, up to about 1.8 KB; none of them repeats an exception your own code was
+handling when it called them. A
+proxy's or captive portal's error page, or a proxy that refuses the connection
+with a status line of its own, can no longer clear your screen, switch it to
+the alternate screen or write your clipboard. The same holds for a model
+request: when a proxy refuses it or answers with an error page, the turn's
+error quotes the proxy's words the same way for every built-in provider, except
+that a line break becomes a space (an extension's own provider builds its own
+message). A model request's error shows the HTTP status only where the
+provider's SDK puts it in its message. The automatic retry and the
+context-overflow compaction still read the whole error, so a
+`context_length_exceeded` code or a `502` past the 512th character is acted on
+as before. A token response that is
+missing a field is described by its keys, never by the tokens it did carry.
+The full body is not kept; if you need it, reproduce the request with `curl`.
+
 ## Provider environment variables
 
 Set the variable for the provider you use:

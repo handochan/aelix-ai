@@ -1002,10 +1002,13 @@ async def test_a_55kb_server_body_does_not_reach_the_screen() -> None:
     """Issue #186 at the measured scale.
 
     SABOTAGE: drop ``safe_error_for_terminal`` and commit
-    ``describe_provider_error(exc)`` directly. That is what the code did, and it
-    is NOT fixed by routing through ``describe_provider_error`` — measured, that
-    helper returns a 54,906-character input as 54,906 characters, and with a
-    cause chain returns MORE. This must go RED.
+    ``describe_provider_error(exc)`` directly. That is what the code did, and
+    routing through ``describe_provider_error`` alone did NOT fix it - measured,
+    that helper returned a 54,906-character input as 54,906 characters, and
+    with a cause chain MORE. Since #186's review round 2 it quotes the base
+    message and the cause itself (one line, 512 characters each), so this test
+    now goes RED only when BOTH bounds are dropped; the render-site bound stays
+    for the multi-line TLS remedy that helper appends.
     """
 
     assert len(_BIG_BODY) > 50_000, "positive control: the payload is at scale"
@@ -1017,7 +1020,10 @@ async def test_a_55kb_server_body_does_not_reach_the_screen() -> None:
     text = _plain(errors[0])
     assert len(text) < 2_000, f"{len(text)} chars reached the screen"
     assert text.count("\n") + 1 <= 10
-    assert "more lines omitted" in text, "a clipped body must say it was clipped"
+    # Clipped at the raise-side boundary (a ``…`` marker) or at the render
+    # site (``… (N more lines omitted)``): either way it SAYS it was clipped.
+    clipped = text.endswith("…") or "more lines omitted" in text
+    assert clipped, "a clipped body must say it was clipped"
 
 
 async def test_a_steering_server_body_cannot_drive_the_terminal() -> None:

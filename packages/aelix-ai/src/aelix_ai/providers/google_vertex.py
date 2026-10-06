@@ -45,6 +45,7 @@ from aelix_ai.api_registry import register_provider_object
 from aelix_ai.messages import AssistantMessage
 from aelix_ai.models import clamp_thinking_level
 from aelix_ai.providers._env_api_keys import get_env_api_key
+from aelix_ai.providers._error_hints import describe_provider_error
 from aelix_ai.providers._google_client import (
     create_vertex_client,
     open_generate_content_stream,
@@ -305,7 +306,8 @@ async def stream_google_vertex(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )
         reason: Literal["aborted", "error"] = "aborted" if aborted else "error"
-        err_msg = str(exc) if str(exc) else type(exc).__name__
+        # Quoted as every adapter's (#186); classified on str(exc), as before.
+        err_msg = describe_provider_error(exc, classifier_text=str(exc) or type(exc).__name__)
         error_output = AssistantMessage(
             content=list(state.content),
             stop_reason=reason,

@@ -960,6 +960,46 @@ unwritten. Add them with the next release.
   ran for every provider on this API, against that provider's host. Anthropic
   OAuth (`/login`) and GitHub Copilot Claude requests no longer carry an empty
   `x-api-key` header next to the bearer.
+- **An OAuth server can no longer take over your terminal through an error
+  message.** When the OpenAI Codex or Anthropic sign-in or token refresh failed,
+  aelix put whatever the token endpoint answered into the error, raw and whole:
+  a proxy's 48 KB error page carrying `ESC[2J`, an OSC 52 clipboard write and
+  `ESC[?1049h` reached `aelix -p`'s stderr intact on every turn after the Codex
+  access token expired, and in the TUI it erased the transcript. The same held
+  for a 200 answer that is not JSON (a captive portal), for the HTTP reason
+  phrase (which may carry ESC even with an empty body; GitHub Copilot was still
+  exposed there), for a Copilot device-flow `error_description`, for any
+  extension provider's refresh error, and for `/login`'s custom-provider model
+  fetch. The same bytes arrived two more ways: a proxy that refuses the
+  connection answers with a status line of its own, and its reason phrase went
+  raw into the error every sign-in and token-refresh function raises (55,000
+  characters measured; aelix's own screens already bounded it, a program calling
+  those functions did not), and an OpenAI Codex model request that a proxy
+  answers with an error page put that page on `aelix -p`'s stderr, on
+  `--mode rpc`'s stdout (its BiDi and 8-bit control characters) and on the TUI's
+  screen, which it erased. A proxy that refuses a model request's connection did
+  the same through every built-in provider (OpenAI Codex, Anthropic, OpenAI and
+  OpenAI-compatible ones such as OpenRouter, Google): 55 KB with `ESC[2J` and an
+  OSC 52 write on `aelix -p`'s stderr, and a blank TUI. A sign-in or
+  token-refresh error from an HTTP error answer keeps its status; a model
+  request's error shows the status only where the provider's SDK puts it in its
+  message (a plain-text 403 from Anthropic or an OpenAI-compatible endpoint
+  reads as its body alone, as before). Every server string these errors show is
+  quoted: at most 512 characters each, with control and BiDi characters
+  removed, line breaks removed (a model request's error turns each into a
+  space, so its words stay apart), runs of blank space shortened to one and
+  leading or trailing blank space not counted. The bound is per string, so a
+  message that quotes two (a Copilot device-flow error and its description, or
+  a proxy error and its cause) carries about 1.2 KB, and the Codex and
+  Anthropic sign-in errors and Anthropic's refresh error, which repeat every
+  link of a connection error, up to about 1.8 KB. Those three no longer repeat
+  an exception your own code was handling when it called them. The automatic
+  retry and the context-overflow compaction still read a model request's whole
+  error: a `context_length_exceeded` code or a `502` past the 512th character
+  is acted on as before. An extension's own provider builds its own error
+  message and is not covered. A Codex token response missing a field is
+  described by its keys only — it used to print the response, access token
+  included. (#186)
 
 ## [0.1.0-beta.2] - 2026-09-09
 

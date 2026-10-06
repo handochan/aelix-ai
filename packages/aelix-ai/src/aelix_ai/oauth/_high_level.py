@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from aelix_ai.oauth._registry import get_oauth_provider
 from aelix_ai.oauth.types import OAuthCredentials
+from aelix_ai.utils.terminal_text import Controls, safe_for_terminal
 
 
 @dataclass
@@ -77,9 +78,17 @@ async def get_oauth_api_key_from_credentials(
             # terminal error whose quoted server body happens to contain such a
             # number can now be retried a few times before failing. That costs
             # seconds; the old behaviour cost the turn.
+            #
+            # Neutered as well as cut (#186). Every refresh goes through here,
+            # including an extension-registered provider's, whose message may
+            # quote its server raw: ``[:300]`` alone kept ``ESC[2J`` - it sits in
+            # the first bytes - and cleared the screen from ``-p`` stderr.
+            # SPACE, not delete: this text is a whole message, and deleting its
+            # newlines would glue the last word of one line to the next.
             detail = str(exc).strip() or type(exc).__name__
+            detail = safe_for_terminal(detail, controls=Controls.SPACE, max_chars=300)
             raise RuntimeError(
-                f"Failed to refresh OAuth token for {provider_id}: {detail[:300]}"
+                f"Failed to refresh OAuth token for {provider_id}: {detail}"
             ) from exc
 
     api_key = provider.get_api_key(creds)

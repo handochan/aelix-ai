@@ -1432,7 +1432,15 @@ async def stream_openai_completions(
             if isinstance(meta, dict):
                 raw_meta = meta.get("raw")
         if raw_meta:
-            err_msg = f"{err_msg}\n{raw_meta}"
+            # The provider's words, quoted like the rest of the message (#186),
+            # and classified on what they said before the quoting.
+            from aelix_ai.providers._error_hints import quote_model_text
+            from aelix_ai.utils.overflow import classifier_text_of, with_classifier_text
+
+            err_msg = with_classifier_text(
+                f"{err_msg}\n{quote_model_text(str(raw_meta))}",
+                f"{classifier_text_of(err_msg)}\n{raw_meta}",
+            )
 
         error_output = AssistantMessage(
             content=cleaned,

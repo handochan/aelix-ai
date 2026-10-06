@@ -77,6 +77,51 @@ _NON_OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+class ClassifiedErrorText(str):
+    """An error message bounded for display that remembers what to classify (#186).
+
+    A built-in adapter's error message is quoted before it reaches an
+    :class:`~aelix_ai.messages.AssistantMessage` - steering characters deleted,
+    cut at 512 code points (:func:`aelix_ai.providers._error_hints.
+    describe_provider_error`) - and that same string is what the overflow
+    patterns below and the harness's auto-retry regex read. A valid HTTP 400
+    whose JSON puts ``"code": "context_length_exceeded"`` after a 592-character
+    diagnostic lost the code to the cut, and with it the compact-and-retry
+    (review round 3, #186; measured through the real OpenAI SDK).
+
+    So the display text carries the text the classifiers read before the
+    bounding, as :attr:`classifier_text`. It is never shown: nothing formats
+    it, ``str()`` and every string operation return the display text, and JSON
+    writes the display text. The carrier lives as long as the message object
+    does - from the adapter to the harness's classification in the same
+    process. A message rebuilt from its fields (a resumed session, an
+    extension's ``message_end`` replacement built anew) is a plain ``str`` and
+    is classified on its display text.
+    """
+
+    classifier_text: str
+
+
+def with_classifier_text(display: str, classifier_text: str) -> str:
+    """``display``, carrying ``classifier_text`` for :func:`classifier_text_of`.
+
+    A plain ``str`` comes back when the two are equal: nothing was lost.
+    """
+
+    if display == classifier_text:
+        return display
+    carried = ClassifiedErrorText(display)
+    carried.classifier_text = classifier_text
+    return carried
+
+
+def classifier_text_of(error_message: str) -> str:
+    """The text an error classifier reads: the carried one, else the message."""
+
+    carried = getattr(error_message, "classifier_text", None)
+    return carried if isinstance(carried, str) else error_message
+
+
 def _usage_field(usage: Any, *keys: str) -> int:
     """Read the first present token count from a dict- or object-shaped usage.
 
@@ -113,12 +158,12 @@ def is_context_overflow(message: Any, context_window: int | None = None) -> bool
     stop_reason = getattr(message, "stop_reason", None)
     error_message = getattr(message, "error_message", None)
 
-    # Case 1: error-message patterns.
+    # Case 1: error-message patterns. Read off the text the message was bounded
+    # from when it carries one (#186): the cut must not decide the class.
     if stop_reason == "error" and error_message:
-        is_non_overflow = any(p.search(error_message) for p in _NON_OVERFLOW_PATTERNS)
-        if not is_non_overflow and any(
-            p.search(error_message) for p in _OVERFLOW_PATTERNS
-        ):
+        text = classifier_text_of(error_message)
+        is_non_overflow = any(p.search(text) for p in _NON_OVERFLOW_PATTERNS)
+        if not is_non_overflow and any(p.search(text) for p in _OVERFLOW_PATTERNS):
             return True
 
     if not context_window:
@@ -153,6 +198,9 @@ def get_overflow_patterns() -> list[re.Pattern[str]]:
 
 
 __all__ = [
+    "ClassifiedErrorText",
+    "classifier_text_of",
     "get_overflow_patterns",
     "is_context_overflow",
+    "with_classifier_text",
 ]

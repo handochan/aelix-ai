@@ -501,9 +501,9 @@ async def stream_anthropic(
         else model_output_cap
     )
     # #250: clamp the requested level against what THIS row offers, the way
-    # every sibling adapter already does (google_generative_ai.py:307,
-    # google_vertex.py:432, openai_responses.py:598, openai_completions.py:1493,
-    # openai_codex_responses.py:650). This adapter was the only one passing
+    # every sibling adapter already does (google_generative_ai.py:309,
+    # google_vertex.py:434, openai_responses.py:598, openai_completions.py:1501,
+    # openai_codex_responses.py:664). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
     # ``thinking:``) verbatim and ``harness/core.py`` snapshots the state level
@@ -801,7 +801,13 @@ async def stream_anthropic(
             getattr(exc, "response", None), "status_code", None
         )
         if status in (401, 403):
-            raise _AuthError(str(exc) or f"Anthropic SDK returned {status}") from exc
+            # Quoted like every other provider error (#186): the SDK's message
+            # carries the 401/403 body, which a gateway or proxy chose.
+            from aelix_ai.providers._error_hints import quote_model_text
+
+            raise _AuthError(
+                quote_model_text(str(exc)) or f"Anthropic SDK returned {status}"
+            ) from exc
         aborted = bool(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )

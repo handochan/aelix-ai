@@ -39,7 +39,7 @@ def thinking_level_display(model: Any, level: str) -> str:
 
     One adapter breaks that contract, and the break is the adapter's rather than
     this rule's: both Google adapters revive a clamped ``off`` back into ``high``
-    (``google_generative_ai.py:307-308``, ``google_vertex.py:413-414``), so
+    (``google_generative_ai.py:309-310``, ``google_vertex.py:415-416``), so
     ``(off)`` understates the 13 non-reasoning Gemini/Gemma/Vertex-Llama catalog
     rows — those requests do carry thinking. The other adapter families honour it
     (``_anthropic_transforms.py`` returns ``{}`` on a non-reasoning model and

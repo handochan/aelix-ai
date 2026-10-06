@@ -1271,9 +1271,12 @@ async def _register_custom_models(
     try:
         ids = await _fetch_openai_model_ids(base_url, api_key, api=api)
     except Exception as exc:  # noqa: BLE001 — degrade to the manual note
+        # Bounded and neutered (#186): an ``HTTPStatusError`` quotes the
+        # endpoint's reason phrase, which h11 admits with ESC in it.
         commit(
             Text(
-                f"Could not fetch models from {base_url}/models ({exc}).",
+                f"Could not fetch models from {base_url}/models "
+                f"({safe_error_for_terminal(str(exc))}).",
                 style="yellow",
             )
         )
