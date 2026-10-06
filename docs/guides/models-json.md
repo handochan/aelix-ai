@@ -352,6 +352,28 @@ Pi's order):
    [#365](https://github.com/handochan/aelix-ai/issues/365) — Pi puts it with
    step 3).
 
+Step 4 reads **that provider's own** variable and nothing else. A provider you
+define here has none, so `mygw` with `"api": "anthropic-messages"` and no
+`apiKey` does not borrow `ANTHROPIC_API_KEY` because it speaks Anthropic's
+protocol. Where such a request stops depends on the mode. In the TUI and
+`--mode rpc`, a request that has neither a key nor an auth header of its own
+(`Authorization`, `x-api-key` or `cf-aig-authorization` in `headers`) stops
+before anything is sent, with `No API key for provider: mygw`, as in pi, and a
+gateway you authenticate with one of those headers gets that header and no key
+beside it. `-p` and `--mode json` stop before the turn with
+`No API key found for Mygw.`, and today they do so for a gateway that has only
+an auth header as well; give it an `apiKey` (or pass `--api-key`) to use it
+there. `ANTHROPIC_CUSTOM_HEADERS`, which the Anthropic SDK adds to every
+request, reaches only the provider named `anthropic`: the built-in one, or an
+entry here named `anthropic` (an override with its own `baseUrl`), where an
+auth header in it (`X-Api-Key`, `Authorization` or `cf-aig-authorization`, any
+letter case, with a non-blank value) also counts as that request's auth in the
+TUI and `--mode rpc`, next to any other `headers` the entry adds; `-p` and
+`--mode json` do not read the variable and stop such a setup with
+`No API key found`, as before. A provider you define under any other name never
+gets those headers, and they never stand in for its key
+([#374](https://github.com/handochan/aelix-ai/issues/374), ADR-0254).
+
 This applies to every provider, re-pointed or not: an `apiKey` here beats an
 exported vendor key. An extension that registers the same provider name changes
 it in one of two ways. If the registration carries its own key, that key replaces

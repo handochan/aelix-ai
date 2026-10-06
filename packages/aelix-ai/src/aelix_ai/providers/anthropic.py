@@ -20,14 +20,28 @@ Sprint 6c W6 amendment (P-94, ADR-0052 §"Bearer header injection"):
   into the ``x-api-key`` header. Anthropic's OAuth endpoint rejects
   bearer tokens delivered via ``x-api-key`` with 401. To make OAuth
   actually work in production, this adapter, when ``is_oauth_token``
-  is true, builds the SDK client with empty ``api_key`` plus a
+  is true, builds the SDK client with no ``api_key`` plus a
   manually injected ``Authorization: Bearer <token>`` default header
   (and the ``anthropic-beta: oauth-2025-04-20`` header that Pi's
   ``providers/anthropic.ts`` also injects in the OAuth branch).
+
+#374 amendment (ADR-0254):
+
+- The credential is resolved before any client exists
+  (:func:`_resolve_request_auth`): the caller's key, else this provider's own
+  environment variable, else (provider ``anthropic`` only)
+  ``ANTHROPIC_AUTH_TOKEN`` as a bearer. With neither a key nor an auth header
+  the request fails with pi's ``No API key for provider: <provider>`` and
+  nothing is sent. For provider ``anthropic`` only, an auth header from
+  ``ANTHROPIC_CUSTOM_HEADERS`` counts (its client keeps those headers).
+- The SDK client never reads a credential itself (``_anthropic_client``), and
+  "no key" is ``None`` (no ``x-api-key`` header) rather than ``""`` (an empty
+  one, which the OAuth and Copilot branches used to send).
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -40,7 +54,11 @@ from aelix_ai.messages import (
     ToolCallContent,
 )
 from aelix_ai.models import clamp_thinking_level
-from aelix_ai.providers._anthropic_client import create_async_client
+from aelix_ai.providers._anthropic_client import (
+    create_async_client,
+    has_auth_header,
+    read_env_custom_headers,
+)
 from aelix_ai.providers._anthropic_compat import get_compat
 from aelix_ai.providers._anthropic_transforms import (
     INTERLEAVED_THINKING_BETA,
@@ -50,6 +68,7 @@ from aelix_ai.providers._anthropic_transforms import (
     resolve_anthropic_thinking,
 )
 from aelix_ai.providers._base import Provider
+from aelix_ai.providers._env_api_keys import get_env_api_key
 from aelix_ai.providers._error_hints import describe_provider_error
 from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
@@ -90,6 +109,35 @@ ANTHROPIC_API: str = "anthropic-messages"
 # ``unregister_providers_by_source("aelix-ai.builtin")`` cleanly removes
 # everything Aelix ships out of the box.
 BUILTIN_SOURCE_ID: str = "aelix-ai.builtin"
+
+
+# pi ``ANTHROPIC_AUTH_TOKEN_ENV`` (``packages/ai/src/env-api-keys.ts:29`` @ b223082bb):
+# a bearer token for the ``anthropic`` provider only (#374, ADR-0254).
+ANTHROPIC_AUTH_TOKEN_ENV: str = "ANTHROPIC_AUTH_TOKEN"
+
+
+def _resolve_request_auth(model: Model, opts: SimpleStreamOptions) -> tuple[str | None, str | None]:
+    """The ``(api_key, auth_token)`` a request to ``model`` may carry (#374).
+
+    The only sources are the key the caller resolved (the harness runs aelix's
+    key order, ADR-0251) and, when it resolved none, the environment variables
+    that belong to **this** provider: :func:`get_env_api_key` keyed by
+    ``model.provider``, as the sibling adapters do
+    (``openai_completions.py`` / ``google_generative_ai.py``). For the
+    ``anthropic`` provider alone, ``ANTHROPIC_AUTH_TOKEN`` is a last bearer
+    source when there is still no key and no auth header (pi
+    ``providers/anthropic.ts:34-41``, which also scopes it to ``anthropic``).
+    The Anthropic SDK is never allowed to read either variable itself
+    (``_anthropic_client``): before #374 it did, for every
+    ``anthropic-messages`` provider, so a custom gateway (or ``fireworks``,
+    ``minimax``, ...) with no key of its own received the user's Anthropic key.
+    """
+
+    api_key = opts.api_key or get_env_api_key(model.provider) or None
+    auth_token: str | None = None
+    if api_key is None and model.provider == "anthropic" and not has_auth_header(opts.headers):
+        auth_token = os.environ.get(ANTHROPIC_AUTH_TOKEN_ENV) or None
+    return api_key, auth_token
 
 
 class _AuthError(Exception):
@@ -424,7 +472,10 @@ async def stream_anthropic(
     # We build OAuth-flavored client params here so the request reaches
     # Anthropic with the correct auth header. ``anthropic-beta`` mirrors
     # Pi (``providers/anthropic.ts``) OAuth branch.
-    oauth_mode = is_oauth_token(opts.api_key)
+    # #374: the key is resolved first, so a token found by the provider's own
+    # environment variable (``ANTHROPIC_OAUTH_TOKEN``) takes the OAuth branch too.
+    request_api_key, request_auth_token = _resolve_request_auth(model, opts)
+    oauth_mode = is_oauth_token(request_api_key)
     # ADR-0135 (P0 #1): resolve the per-turn thinking level into the Anthropic
     # request thinking param (adaptive effort for the rows
     # ``supports_adaptive_thinking`` claims — #258 reads the catalog for that —
@@ -510,8 +561,27 @@ async def stream_anthropic(
 
     try:
         # 1) Build / use SDK client.
+        # #374 round 1: the headers the SDK reads from
+        # ``ANTHROPIC_CUSTOM_HEADERS`` (which can carry ``x-api-key`` /
+        # ``Authorization``) are a feature for your own Anthropic proxy; they
+        # never reach another provider's host (ADR-0254 §2.1).
+        env_custom_headers = model.provider == "anthropic"
         if opts.client is not None:
             client = opts.client
+        elif not (
+            request_api_key
+            or request_auth_token
+            or has_auth_header(opts.headers)
+            # Review rounds 2-3: only provider ``anthropic`` keeps the SDK's
+            # ``ANTHROPIC_CUSTOM_HEADERS`` (above), so an auth header there (any
+            # case, non-blank; ADR-0254 §6) counts, also beside non-auth
+            # ``options.headers`` such as a models.json ``x-team``.
+            or (env_custom_headers and has_auth_header(read_env_custom_headers()))
+        ):
+            # pi ``assertRequestAuth`` (anthropic-messages.ts:325-326, called at
+            # :612-613 before any client exists): neither a key nor an auth
+            # header means no request at all (#374).
+            raise RuntimeError(f"No API key for provider: {model.provider}")
         elif model.provider == "github-copilot":
             # Pi parity ``providers/anthropic.ts`` github-copilot branch:
             # ``new Anthropic({ apiKey: null, authToken: apiKey, ... })``. The
@@ -522,7 +592,7 @@ async def stream_anthropic(
             # rejected by the proxy with 401. ``is_oauth_token`` only matches
             # Anthropic ``sk-ant-oat…`` tokens, so this branch MUST key off
             # ``model.provider`` (mirroring the OpenAI adapters), not the token
-            # shape. We reuse the OAuth branch's ``api_key="" + manual
+            # shape. We reuse the OAuth branch's ``api_key=None + manual
             # Authorization`` technique so no SDK ``authToken`` param is needed.
             # Pi sets ``isOAuthToken:false`` here → NO ``oauth-2025-04-20`` /
             # claude-code identity betas, but the interleaved-thinking beta
@@ -542,32 +612,41 @@ async def stream_anthropic(
             )
             if opts.headers:
                 copilot_headers.update(opts.headers)
-            copilot_headers["Authorization"] = f"Bearer {opts.api_key}"
+            if request_api_key:
+                # pi ``authToken: apiKey ?? null``: with no key, a header the
+                # caller supplied carries the auth instead (#374).
+                copilot_headers["Authorization"] = f"Bearer {request_api_key}"
             copilot_headers = dict(
                 _with_interleaved_beta(copilot_headers, needs_interleaved) or {}
             )
             client = create_async_client(
-                # Blank api_key — auth lives in the Authorization header.
-                api_key="",
+                # No api_key: auth lives in the Authorization header, and no
+                # ``x-api-key`` rides along, not even an empty one (#374; pi
+                # ``apiKey: null``).
+                api_key=None,
                 base_url=model.base_url or None,
                 default_headers=copilot_headers,
                 timeout_ms=opts.timeout_ms,
                 max_retries=opts.max_retries,
+                env_custom_headers=env_custom_headers,
             )
         elif oauth_mode:
             oauth_headers: dict[str, str] = dict(opts.headers or {})
-            oauth_headers["Authorization"] = f"Bearer {opts.api_key}"
+            oauth_headers["Authorization"] = f"Bearer {request_api_key}"
             oauth_headers.setdefault("anthropic-beta", "oauth-2025-04-20")
             oauth_headers = dict(
                 _with_interleaved_beta(oauth_headers, needs_interleaved) or {}
             )
             client = create_async_client(
-                # Blank api_key — auth lives in the Authorization header.
-                api_key="",
+                # No api_key: auth lives in the Authorization header. It used to
+                # be ``""``, which the SDK sent as an empty ``x-api-key`` next to
+                # the bearer (#363 verify L14); pi passes ``apiKey: null`` (#374).
+                api_key=None,
                 base_url=model.base_url or None,
                 default_headers=oauth_headers,
                 timeout_ms=opts.timeout_ms,
                 max_retries=opts.max_retries,
+                env_custom_headers=env_custom_headers,
             )
         else:
             default_headers = _with_interleaved_beta(
@@ -587,11 +666,15 @@ async def stream_anthropic(
                 default_headers = dict(default_headers or {})
                 default_headers["x-session-affinity"] = opts.session_id
             client = create_async_client(
-                api_key=opts.api_key,
+                # #374: exactly the resolved credential, or none; the SDK is
+                # never left to find one in the environment.
+                api_key=request_api_key,
+                auth_token=request_auth_token,
                 base_url=model.base_url or None,
                 default_headers=default_headers or None,
                 timeout_ms=opts.timeout_ms,
                 max_retries=opts.max_retries,
+                env_custom_headers=env_custom_headers,
             )
 
         # 2) Map context → SDK params. ``thinking_extra`` injects the

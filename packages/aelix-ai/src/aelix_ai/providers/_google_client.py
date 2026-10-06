@@ -54,7 +54,21 @@ def create_client(
     is applied so the SDK does not append a version onto a URL that already has
     one. ``headers`` (model + option headers, pre-merged by the adapter) ride
     in ``http_options`` when non-empty.
+
+    #374 (ADR-0254): a keyless call is refused. ``google-genai`` has no value
+    that means "no key": ``None`` and ``""`` both fall through to
+    ``GOOGLE_API_KEY`` / ``GEMINI_API_KEY`` (``_api_client.py``
+    ``self.api_key = api_key or env_api_key``), whichever provider the request
+    is for. The adapter resolves the key (or fails with pi's ``No API key for
+    provider``) before it gets here, so this only stops a future caller from
+    letting the SDK choose one.
     """
+
+    if not api_key:
+        raise RuntimeError(
+            "google-genai client built without an API key; the SDK would read "
+            "GOOGLE_API_KEY / GEMINI_API_KEY itself (#374)"
+        )
 
     from google.genai import Client
 
@@ -144,7 +158,21 @@ def create_vertex_client(
     ``GOOGLE_APPLICATION_CREDENTIALS``) when no ``api_key`` is given, so pi's
     ``googleAuthOptions.keyFilename`` plumbing is unnecessary (documented
     divergence — the SDK reads the env var itself).
+
+    #374 (ADR-0254): ADC is Vertex's own ambient auth and stays (pi does the
+    same, for any provider whose ``api`` is ``google-vertex``). What is refused
+    is a keyless call with neither ``project`` nor ``location``: an explicit
+    one of them is what keeps the SDK from taking ``GOOGLE_API_KEY`` /
+    ``GEMINI_API_KEY`` from the environment as a Vertex express-mode key
+    (``_api_client.py``: ``(project or location) and env_api_key`` drops it;
+    neither given keeps it). The adapter always passes both or raises first.
     """
+
+    if not api_key and not (project or location):
+        raise RuntimeError(
+            "Vertex client built with no API key, project or location; the "
+            "SDK would read GOOGLE_API_KEY / GEMINI_API_KEY itself (#374)"
+        )
 
     from google.genai import Client
 

@@ -72,7 +72,10 @@ class ProviderResponse:
 
 `aelix_ai.providers.anthropic.stream_anthropic` uses the official
 `anthropic>=0.40,<1.0` Python SDK behind the thin
-`providers/_anthropic_client.py` wrapper. The adapter:
+`providers/_anthropic_client.py` wrapper. (2026-10-06 note, #374 / ADR-0254: the wrapper
+builds an `AsyncAnthropic` subclass that never reads `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` or the SDK's credential chain; the adapter resolves the credential
+first and fails with `No API key for provider: <p>` when there is none.) The adapter:
 
 1. Detects Anthropic OAuth bearer tokens (`sk-ant-oat…`) and raises
    `AgentHarnessError("auth", …)` — Sprint 6c lands the OAuth flow.

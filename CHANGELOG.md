@@ -912,6 +912,54 @@ unwritten. Add them with the next release.
     copied with `dataclasses.replace`, now counts as an unknown tool and asks.
     A host with a UI but no approval dialog is asked through `ctx.ui.select`,
     and for these tools the title now lists every argument too.
+- **Your Anthropic key no longer goes to another provider's host (#374,
+  ADR-0254).** Any provider on the Anthropic Messages API that had no key of
+  its own (a `models.json` custom provider with `"api": "anthropic-messages"`,
+  or a built-in such as `fireworks`, `minimax`, `opencode`, `vercel-ai-gateway`,
+  `kimi-coding` or the Xiaomi providers with its own variable unset) sent your
+  exported `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) to that host: the
+  Anthropic SDK read the variable itself. A gateway authenticated by a header
+  of its own got your Anthropic key next to that header. Measured with fake
+  keys in `--mode rpc` and the TUI; `-p` and `--mode json` already stopped
+  earlier with "No API key found", and so do one-shot delegated children,
+  which run as `--mode json -p`, while rpc-channel children take the turn path
+  of `--mode rpc`. Such a request now stops before anything is sent, with
+  `No API key for provider: <provider>`, as in pi; in `--mode rpc` and the TUI
+  a header-authenticated gateway gets only its header. No Anthropic client
+  reads `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` or runs the SDK's
+  credential chain on its own: the key it sends is the one aelix's key order
+  resolved for that provider (ADR-0251), or none.
+
+  `ANTHROPIC_CUSTOM_HEADERS`, which the Anthropic SDK merges into every
+  request and which can carry `x-api-key` or `Authorization`, now reaches the
+  `anthropic` provider only (the built-in one, or a `models.json` entry named
+  `anthropic`). Before, it went to every provider on this API: it sat next to
+  a gateway's own header, and an `X-Api-Key` in it replaced the gateway's own
+  key; and it no longer authenticates a provider with no key of its own. For
+  `anthropic` its headers go out as before, including replacing the key, since
+  it is the SDK's way to talk to your own Anthropic proxy, and a proxy you
+  authenticate with nothing but an `X-Api-Key`, `Authorization` or
+  `cf-aig-authorization` header in it gets its request in `--mode rpc` and the
+  TUI, also next to other headers your `models.json` entry adds. The header
+  counts in any letter case and only with a non-blank value; before, the SDK
+  accepted only a non-blank `X-Api-Key` or `Authorization` spelled exactly that
+  way, and refused a lower-case one or `cf-aig-authorization` alone. pi counts
+  none of these (ADR-0254 §6). `-p` and `--mode json` still stop such a
+  header-only setup with "No API key found", as before: they do not read the
+  variable, and whether they should is not decided yet.
+
+  What stays the same: the `anthropic` provider still uses `ANTHROPIC_API_KEY`
+  (and `ANTHROPIC_OAUTH_TOKEN` ahead of it), and the TUI and `--mode rpc`
+  still send `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer` when it is your
+  only Anthropic credential, now to the `anthropic` provider only. A provider
+  with `"api": "google-vertex"` and no key still uses Google Application
+  Default Credentials and sends that token to its base URL, as pi does. What
+  changes: the Anthropic SDK's own credential chain (`ANTHROPIC_PROFILE`,
+  workload identity federation variables, the SDK's active profile on disk) is
+  no longer consulted, for `anthropic` either. aelix never documented it; it
+  ran for every provider on this API, against that provider's host. Anthropic
+  OAuth (`/login`) and GitHub Copilot Claude requests no longer carry an empty
+  `x-api-key` header next to the bearer.
 
 ## [0.1.0-beta.2] - 2026-09-09
 

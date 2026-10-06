@@ -488,15 +488,17 @@ def _dotenv_shadowed_sibling(
 
     KNOWN BLIND SPOT, measured rather than left for a later round to find: this
     guard iterates ``ENV_API_KEYS``, so it says nothing about a name that is not
-    in that table. ``ANTHROPIC_AUTH_TOKEN`` is admitted by the ``_TOKEN`` suffix,
-    is absent from the table, and the anthropic SDK reads it itself — measured at
-    request build, with ``api_key=None`` and no aelix-supplied header, a
-    ``.env``-supplied ``ANTHROPIC_AUTH_TOKEN`` becomes the request's
-    ``Authorization: Bearer`` header (with an explicit api_key, ``x-api-key``
-    carries the user's key instead). That is ADR-0203 residual risk 1's class —
-    a repo supplying a credential — reached by a route this guard cannot see,
-    and it is recorded there rather than silently patched here, because widening
-    the guard past our own selection is the thing the SCOPE note above forbids.
+    in that table. ``ANTHROPIC_AUTH_TOKEN`` is admitted by the ``_TOKEN`` suffix
+    and is absent from the table. Since #374 (ADR-0254) the anthropic SDK no
+    longer reads it; the anthropic adapter does, for provider ``anthropic``
+    only and only when the request has no key and no auth header
+    (``providers/anthropic.py`` ``_resolve_request_auth``), so a
+    ``.env``-supplied ``ANTHROPIC_AUTH_TOKEN`` can still become that request's
+    ``Authorization: Bearer`` header, and no longer any other provider's. That is
+    ADR-0203 residual risk 1's class — a repo supplying a credential — reached
+    by a route this guard cannot see, and it is recorded there rather than
+    silently patched here, because widening the guard past our own selection is
+    the thing the SCOPE note above forbids.
     """
 
     from aelix_ai.providers._env_api_keys import ENV_API_KEYS

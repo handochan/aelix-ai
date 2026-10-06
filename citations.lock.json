@@ -740,20 +740,20 @@
    "if same_model:",
    "out.append(block)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:157-158": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:205-206": [
    "if not (input_tokens or output_tokens or cache_read or cache_write):",
    "return None"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:207-207": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:255-255": [
    "_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:624-624": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:707-707": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:740-740": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:823-823": [
    "content=list(output_content),"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:909-909": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:992-992": [
    "yield ThinkingDeltaEvent("
   ],
   "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:307-307": [

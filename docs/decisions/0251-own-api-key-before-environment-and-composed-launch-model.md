@@ -1,6 +1,6 @@
 # 0251. A provider's own `apiKey` comes before its environment variable, and the launch model is the one `/model` composes
 
-Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379
+Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379; step 4 stated for the anthropic adapter by ADR-0254 (2026-10-06, #374, note in §2.1)
 Date: 2026-10-06
 Supersedes: **ADR-0249 §2.4**'s two closing paragraphs ("The bearer is the auth cascade's,
 unchanged" and "At launch only the host moves"). ADR-0249's S (a re-pointed built-in's
@@ -93,6 +93,14 @@ the `734e08e` pin ADR-0140 ported.
 
 The rule is not limited to re-pointed providers: any provider whose `models.json` entry
 carries an `apiKey` sends that key ahead of its environment variable.
+
+> **2026-10-06 note (#374, ADR-0254):** step 4 is the provider's OWN variables and nothing
+> else. Until then the Anthropic SDK added a step of its own after it: with no key resolved
+> it read `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` (and its credential chain) for every
+> `anthropic-messages` provider, so a custom gateway, `fireworks` or `minimax` with no key
+> received the Anthropic key. Now a request with no key and no auth header fails with
+> `No API key for provider: <p>`; `ANTHROPIC_AUTH_TOKEN` is a last bearer for `anthropic`
+> only.
 
 ### 2.2 A stored credential owns the provider
 

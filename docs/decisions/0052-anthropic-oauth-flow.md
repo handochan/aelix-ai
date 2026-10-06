@@ -64,6 +64,10 @@ client = create_async_client(
 )
 ```
 
+> **2026-10-06 note (#374, ADR-0254):** `api_key=""` was not "no key": the SDK sent it as an
+> empty `x-api-key` header next to the bearer (#363 verify L14). The OAuth branch now passes
+> `api_key=None`, and `_anthropic_client` turns that into no header and no environment read.
+
 `setdefault` for `anthropic-beta` lets callers override the beta flag
 without losing the OAuth bearer header. Caller-supplied headers
 (`opts.headers`) are merged so traces / experiment flags survive.

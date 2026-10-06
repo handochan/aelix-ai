@@ -1,7 +1,8 @@
 # 0203. A cwd `.env` carries credentials, and a short checked list — nothing else
 
 Status: Accepted (2026-08-01) — residual risk 1 and the provider-configuration arm amended by
-ADR-0250 (2026-10-02, #362)
+ADR-0250 (2026-10-02, #362); the `ANTHROPIC_AUTH_TOKEN` paragraph of residual risk 1 narrowed
+by ADR-0254 (2026-10-06, #374)
 Date: 2026-08-01
 Supersedes: the scope line in ADR-0149 ("explicit `-e`/`$AELIX_MCP_CONFIG`/entry_points
 are user choices, never gated") — still the behaviour, but it now rests on a
@@ -367,7 +368,10 @@ Both were re-pointed at names only those rules can refuse.
    the user's key instead, so the window is "aelix resolved no credential at
    all". Widening the guard past our own selection is what the "we change
    precedence only where we implement it" rule forbids, so this is disclosed, not
-   patched. `GOOGLE_API_KEY` (admitted; the registered name is `GEMINI_API_KEY`)
+   patched. **2026-10-06 note (#374, ADR-0254):** the SDK no longer reads it. The anthropic
+   adapter reads it itself for provider `anthropic` only, with no key and no auth header, so
+   the window above stays for `anthropic` and closes for every other provider on the
+   Anthropic API (a custom gateway, `fireworks`, `minimax`, …), which used to receive it. `GOOGLE_API_KEY` (admitted; the registered name is `GEMINI_API_KEY`)
    looks like the same shape; that one was **not** measured end-to-end and is not
    claimed.
 

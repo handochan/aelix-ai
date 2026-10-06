@@ -201,15 +201,16 @@ async def _capture_completions(
 
 
 async def test_copilot_claude_uses_authorization_bearer_not_x_api_key() -> None:
-    """THE fix: Copilot Claude auths via Authorization: Bearer, api_key blank."""
+    """THE fix: Copilot Claude auths via Authorization: Bearer, no api_key."""
 
     opts = SimpleStreamOptions(api_key=_COPILOT_TOKEN)
     captured = await _capture_anthropic(_copilot_claude_model(), opts, _text_ctx())
     headers = captured.get("default_headers") or {}
 
     assert headers.get("Authorization") == f"Bearer {_COPILOT_TOKEN}"
-    # Blank api_key → the Anthropic SDK never emits an x-api-key auth header.
-    assert captured.get("api_key") == ""
+    # No api_key at all. It used to be ``""``, which the SDK sent as an EMPTY
+    # ``x-api-key`` header next to the bearer (#374; #363 verify L14).
+    assert captured.get("api_key") is None
     # Request still goes to the Copilot proxy, not api.anthropic.com.
     assert captured.get("base_url") == "https://api.individual.githubcopilot.com"
 

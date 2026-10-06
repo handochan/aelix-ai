@@ -327,7 +327,7 @@ def test_xhigh_budget_still_leaves_answer_room() -> None:
 
 
 def test_unsat_ceiling_cap_collapses_the_answer_to_the_minimum() -> None:
-    # ``_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000`` (providers/anthropic.py:207) is
+    # ``_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000`` (providers/anthropic.py:255) is
     # the cap a row whose maxTokens >= contextWindow gets. At that cap an xhigh
     # request leaves exactly _MIN_OUTPUT_TOKENS of answer room where "high"
     # leaves 15616. 46 catalog rows are clamped to it, but none of them offers

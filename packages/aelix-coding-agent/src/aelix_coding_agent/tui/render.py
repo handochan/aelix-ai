@@ -905,7 +905,7 @@ class EventRenderer:
         self._thinking_accum = ""
         self._thinking_index = None
         # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
-        # message (anthropic.py:909, _google_shared.py:1024,
+        # message (anthropic.py:992, _google_shared.py:1024,
         # _openai_responses_shared.py:725, openai_completions.py:1259), so
         # keeping the set would retire index 0 for the whole session. The delta
         # arm un-retires a reused index on its own, so what this line actually
@@ -1420,7 +1420,7 @@ class EventRenderer:
                 #
                 # The match is EXACT because an ADAPTER-reported failure carries
                 # the partial text the model really streamed
-                # (``providers/anthropic.py:740`` snapshots ``output_content``
+                # (``providers/anthropic.py:823`` snapshots ``output_content``
                 # onto the error message), and that text must still replay.
                 # ``harness/core.py`` is the only ``[error] `` synthesiser in
                 # ``packages/``, so nothing else produces this shape.

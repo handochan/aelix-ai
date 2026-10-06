@@ -333,6 +333,26 @@ To reproduce this table, enumerate the registered protocols after
 
 For `anthropic`, an `ANTHROPIC_OAUTH_TOKEN` takes precedence over a static
 `ANTHROPIC_API_KEY` when both are set.
+With neither set, the TUI and `--mode rpc` send an exported
+`ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer` to the `anthropic` provider,
+as pi does (`-p` and `--mode json` do not count it as a key yet and stop with
+"No API key found").
+
+Each variable belongs to its provider only. `ANTHROPIC_API_KEY`,
+`ANTHROPIC_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` go to `anthropic` and to no
+other provider on the Anthropic API — not `fireworks`, `minimax`,
+`vercel-ai-gateway` or a `models.json` gateway with `"api":
+"anthropic-messages"`. A request to a provider with no key of its own stops
+before anything is sent, with `No API key for provider: <provider>`
+([#374](https://github.com/handochan/aelix-ai/issues/374)). The Anthropic SDK's
+own credential sources (`ANTHROPIC_PROFILE`, workload identity federation) are
+not used, and the headers it reads from `ANTHROPIC_CUSTOM_HEADERS` are sent to
+the provider named `anthropic` only (a `models.json` override of it included).
+For that provider an auth header in the variable (`X-Api-Key`, `Authorization`
+or `cf-aig-authorization`, any letter case, with a non-blank value) is enough on
+its own, so a proxy you authenticate that way works in the TUI and
+`--mode rpc`; `-p` and `--mode json` do not read the variable and still ask for
+a key ("No API key found"), as before.
 
 ## When no key is found
 

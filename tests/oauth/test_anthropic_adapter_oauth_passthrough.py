@@ -110,11 +110,12 @@ async def _aexit_noop(_self: Any, *_a: Any) -> None:
 
 async def test_oauth_token_sets_bearer_header() -> None:
     """W5 P-94: OAuth path constructs client with ``Authorization: Bearer ...``
-    and empty ``api_key`` so the Anthropic SDK does NOT put the OAuth
+    and no ``api_key`` so the Anthropic SDK does NOT put the OAuth
     token in ``x-api-key`` (which would be rejected with 401).
 
     Captures the kwargs passed to :func:`create_async_client` and asserts:
-      - ``api_key`` is blank
+      - ``api_key`` is ``None`` (#374: ``""`` went out as an empty
+        ``x-api-key`` header next to the bearer, #363 verify L14)
       - ``default_headers['Authorization']`` == ``"Bearer sk-ant-oat-…"``
       - ``default_headers['anthropic-beta']`` == ``"oauth-2025-04-20"``
     """
@@ -133,7 +134,7 @@ async def test_oauth_token_sets_bearer_header() -> None:
         async for _ in stream_anthropic(_model(), Context(), opts):
             pass
 
-    assert captured.get("api_key") == ""
+    assert captured.get("api_key") is None
     headers = captured.get("default_headers") or {}
     assert headers.get("Authorization") == "Bearer sk-ant-oat-FRESH-AT"
     assert headers.get("anthropic-beta") == "oauth-2025-04-20"
