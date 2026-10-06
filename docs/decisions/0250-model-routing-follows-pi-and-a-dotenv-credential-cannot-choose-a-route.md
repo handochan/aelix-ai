@@ -2027,3 +2027,11 @@ Decided in this lane, each with the recommendation followed and put to the owner
    with a baseline model it runs that model on the profile's provider, and with none (an
    `OPENROUTER_DEFAULT_MODEL` launch) it is refused with the #98 text and rolled back
    (measured in a pty, `.omc/probes/368-live/impl/`).
+15. **Kept by the owner (2026-10-06): #367's two divergences from pi** (§2.11, §6).
+   (a) A settings `defaultProvider`/`defaultModel` pair that lands on a late provider is
+   refused like `--model` (aelix seeds the pair as explicit input); pi's
+   `findInitialModel` skips a default it cannot find and falls back to the first available
+   model. (b) A rebuild (`/new`, `/fork`, `/resume`, `/reload`) re-resolves the launch
+   inputs and returns to the hold; pi keeps the session model across a rebuild. Both send
+   nothing; the owner was asked and kept them as they are (alternative: pi's fallback and
+   pi's session-model rebuild).

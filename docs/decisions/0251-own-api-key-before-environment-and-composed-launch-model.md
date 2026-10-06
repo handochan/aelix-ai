@@ -1,6 +1,6 @@
 # 0251. A provider's own `apiKey` comes before its environment variable, and the launch model is the one `/model` composes
 
-Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too
+Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379
 Date: 2026-10-06
 Supersedes: **ADR-0249 §2.4**'s two closing paragraphs ("The bearer is the auth cascade's,
 unchanged" and "At launch only the host moves"). ADR-0249's S (a re-pointed built-in's
@@ -300,7 +300,10 @@ What stays:
   `403` is not (`.omc/probes/363-live/fix3/pi/pi_refresh_retry.out`, run on pi's own
   modules). aelix fails at once: the auth error is raised before an assistant message
   exists. Review round 1 claimed a `502` was retried here; it was not (verify round 2,
-  `retry_json.py`: `auto_retry_start=0`). A follow-up.
+  `retry_json.py`: `auto_retry_start=0`). A follow-up: **#379 — the owner decided on
+  2026-10-06 to follow pi** (retry a refresh that failed on a transient cause such as a
+  `5xx` or a network error; never retry a `401`/`403` or a `StoredCredentialError`, and
+  never fall through to the environment while retrying) (§7).
 - **An empty stored `api_key` fails the request.** pi's built-in `envApiKeyAuth.resolve`
   reads the environment when the stored `credential.key` is empty
   (`packages/ai/src/auth/helpers.ts:18-28`), and a `models.json` provider inherits that
@@ -309,7 +312,8 @@ What stays:
   to the gateway, if `models.json` re-pointed the provider
   (`.omc/probes/363-live/fix3/pi/pi_stored_empty.out`). aelix fails the request and names
   the entry (§2.2): a stored entry owns its provider whatever it yields (main-loop decision,
-  review round 2).
+  review round 2; **kept by the owner on 2026-10-06**, because pi's fall-through sends the
+  exported vendor key to a re-pointed gateway, the leak this ADR closes) (§7).
 - **The `runtime` status reports `configured=False`** (AuthStorage's shape); pi reports
   `configured: true`. Pre-existing.
 
@@ -368,6 +372,9 @@ here (`2 failed, 11668 passed`); the full suite on this change is in the commit 
   `models.json` `apiKey` only until #365 (§2.3); `apiKey`-only / `authHeader`-only entries
   are accepted (§2.5); the stored-OAuth refresh failure follows pi (§2.2); the config-value
   syntax stays and is stated (§4); the ADR-0249 history attribution is corrected (§2.1).
+- 2026-10-06, the owner, after the batch: an empty or empty-resolving stored `api_key`
+  keeps failing the request — stricter than pi, kept (§4); a stored-OAuth refresh that
+  failed on a transient cause is to be retried as pi does — #379 (§4).
 
 ## 8. Review round 1 (2026-10-06)
 

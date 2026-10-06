@@ -37,7 +37,7 @@
 
 - **#365**: 확장이 내장 이름으로 등록하는 경우다. #363이 남긴 확장 `api_key` 순서와 headers 병합이 여기서 풀린다(#365 코멘트).
 - **#371**: `--mode rpc`에 model registry가 없다. hold된 RPC 세션은 빠져나갈 수 없고, 미해결 경로의 RPC launch는 조용히 시작한다.
-- **#379**: OAuth refresh가 502나 네트워크 오류로 실패해도 재시도하지 않는다(pi는 재시도한다).
+- **#379**: OAuth refresh가 502나 네트워크 오류로 실패해도 재시도하지 않는다. **오너가 pi처럼 재시도하기로 결정했다**(2026-10-06).
 - **#375**: `OPENROUTER_BASE_URL`이 launch에만 적용된다. `openrouter/auto` id 이동도 같은 이슈에 있다.
 - **#376**: 모델 플래그 없는 `--continue` 세션에서 compaction이 실패한다.
 - 문구와 UX:
@@ -94,6 +94,14 @@
   - 프로필이 없으면 trust 질문보다 먼저 끝난다(pi보다 엄격하다).
   - 키 없는 `--provider openrouter`와 `OPENROUTER_DEFAULT_MODEL` 조합은 a7435b9f처럼 interactive와 rpc가 시작한다.
 - **ADR-0250 §7**의 #362 결정들: 보완 2 확장, step 3b, `/model openrouter/` 엄격성, defaultProvider 규칙.
+
+### 오너가 배치 뒤에 정한 것 (2026-10-06)
+
+- **빈 stored `api_key`의 엄격한 실패는 유지한다**(ADR-0251 §4·§7). pi처럼 env로 넘어가면 재지정 게이트웨이로 벤더 키가 간다.
+- **일시적 원인(5xx·네트워크)으로 실패한 OAuth refresh는 pi처럼 재시도한다.** #379에서 구현한다. 401·403과 `StoredCredentialError`는 재시도하지 않고, 재시도하는 동안에도 env로 넘어가지 않는다.
+- **#367의 pi와 다른 두 가지는 그대로 둔다**(ADR-0250 §7 item 15):
+  - settings 쌍이 늦은 프로바이더를 가리키면 거부한다.
+  - 재빌드는 launch 입력을 다시 해석하고 hold로 돌아간다.
 
 ### 오너 환경에 직접 닿는 변화
 
