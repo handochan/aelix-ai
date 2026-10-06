@@ -636,7 +636,7 @@ def test_tool_end_normal_cap_honours_configured_value() -> None:
 def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
     # Issue #66 owner decision — the separate 40-line error/diff cap stays 40
     # regardless of the configured NORMAL cap. What this case catches is
-    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1229)
+    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1520)
     # collapsing to the normal cap. The assignment below is deliberately INERT
     # for the delete-the-line mutation — measured: deleting it leaves this test
     # green, because no normal-cap value truncates a 30-line error card under

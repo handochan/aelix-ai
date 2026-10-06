@@ -826,7 +826,7 @@ def test_the_agent_card_footer_is_inside_the_capped_body() -> None:
     Row 1 is the common one and it is where the rendered text is
     ``summary + blank + usage``, so it truncates once ``n + 2 > cap``; a note
     costs two more rows; a failure renders on the separate 40-line error path
-    (``render.py:1229``), which #247 did not move. So the loss is not new, only
+    (``render.py:1520``), which #247 did not move. So the loss is not new, only
     common. ``/expand N`` still reprints the footer verbatim — asserted below,
     because all three shipped documents promise exactly that — which is why the
     trade was taken instead of exempting ``agent`` from the cap it most needs.

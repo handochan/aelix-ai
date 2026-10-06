@@ -1000,6 +1000,27 @@ unwritten. Add them with the next release.
   message and is not covered. A Codex token response missing a field is
   described by its keys only — it used to print the response, access token
   included. (#186)
+- **A model, a tool or a session file can no longer steer your terminal
+  through the transcript (#177).** A tool argument the model wrote reached the
+  terminal as written. A `read` path carrying an OSC 52 sequence could write
+  your clipboard (in a terminal that allows it), and `ESC [ 2 J` cleared the
+  screen. The same held for tool names, tool output, reasoning, answers,
+  provider error lines, an extension's custom messages, components and
+  tool-result views, and all of it again on `/resume`. Before the transcript
+  draws any of these, escape and other control characters, the one-byte CSI
+  and the BiDi overrides and isolates are now removed (or shown as a space on a
+  header row). Tool output loses its colour codes, as in pi. A coloured
+  `git diff` is shown as a diff because of this. A path longer than 160 cells
+  is shortened from the front, so the file name stays. An error message shows
+  its first 8 lines, each cut to 200 characters with `…` where it was cut, and
+  then one `… (N more lines omitted)` line if there were more. The same removal covers the output of your
+  own `!cmd` (live and on `/resume`), a tool-result view's title, column
+  headers and every value it decodes from JSON, and a BiDi control an answer
+  spells as an HTML entity (`&#8238;`). Prose and extension components also
+  drop the BiDi marks U+200E, U+200F and U+061C. An extension component's
+  hyperlink is kept only when it is a clean `http`, `https`, `file` or
+  `mailto` link. The status line, widgets, toasts and modals an extension
+  draws outside the transcript are not covered by this change.
 
 ## [0.1.0-beta.2] - 2026-09-09
 

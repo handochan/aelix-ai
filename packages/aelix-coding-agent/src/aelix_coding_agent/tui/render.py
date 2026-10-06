@@ -29,13 +29,26 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
 from aelix_ai.settings import DEFAULT_TOOL_CARD_MAX_LINES
+from aelix_ai.utils.terminal_text import (
+    Controls,
+    contains_steering_chars,
+    safe_error_for_terminal,
+    safe_for_terminal,
+)
 from rich.cells import cell_len, set_cell_size
 from rich.console import Group, RenderableType
 from rich.constrain import Constrain
 from rich.padding import Padding
-from rich.text import Text
+from rich.style import Style
+from rich.text import Span, Text
 
-from .stream import StreamRenderer, markdown_lines, plain_lines
+from .stream import (
+    StreamRenderer,
+    drop_format_controls,
+    markdown_lines,
+    plain_lines,
+    space_format_controls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +58,98 @@ if TYPE_CHECKING:
     from aelix_ai.streaming import AssistantMessageEvent
 
     from .descriptors import DescriptorRenderer
+
+
+# === #177 — what reaches the terminal ======================================
+#
+# Nearly every string this module writes was authored by someone other than the
+# user: the MODEL writes tool names, tool arguments, reasoning and answers; a
+# TOOL (or the file, page or process behind it) writes results; a PROVIDER
+# writes error messages; an EXTENSION writes custom messages and components;
+# and on ``/resume`` all of it comes back out of a session file that can arrive
+# with a repository. ``rich`` is not a defence: it strips five control codes
+# (BEL, BS, VT, FF, CR) and passes ESC, the one-byte C1 CSI (0x9B) and the
+# BiDi overrides. MEASURED on aab1f210 through ``render_tool_call_line`` and a
+# ``Console(force_terminal=True)``: a ``read`` path carrying an ST-terminated
+# OSC 52 (a clipboard write) and ``ESC [ 2 J`` (erase the screen) reached the
+# output bytes intact, and so did a tool result, a reasoning block, an error
+# line and every replayed copy of them. So every such string goes through ``safe_for_terminal`` on its way to
+# a renderable, in one of four shapes below — chosen by what the text IS, not
+# by where it is drawn.
+
+
+def _header_text(text: str) -> str:
+    """One row: a tool name, a path, a command, an argument summary.
+
+    Every steering character becomes a SPACE rather than vanishing, so a
+    newline inside a ``bash`` command still separates its words (this is the
+    ``command.replace("\\n", " ")`` the bash header always did, extended to the
+    rest of C0/C1, DEL, BiDi and the Unicode line separators). An escape
+    sequence collapses to its inert literal — ``ESC [ 2 J`` reads ``[2J`` — which
+    is the convention of ``safe_for_terminal`` and says, on screen, that the
+    model wrote something odd.
+    """
+
+    return safe_for_terminal(text, controls=Controls.SPACE)
+
+
+def _safe_prose(text: str) -> str:
+    """Model or extension prose: reasoning, an answer, a custom message body.
+
+    Newlines and tabs survive (layout wants them); everything else that steers
+    is deleted. Per CHARACTER, with no sequence parsing, and that is load-bearing
+    for the streamed answer: the strip then commutes with concatenation, so
+    sanitising each delta as it arrives yields exactly the string sanitising the
+    finished ``text_end`` content yields. A sequence-aware strip would not —
+    ``ESC`` in one delta and ``[2J`` in the next strip differently from the
+    joined text — and the stream renderer's committed prefix would then
+    disagree with its own final frame.
+
+    Prose also loses the three BiDi marks the shared helper keeps (U+200E,
+    U+200F, U+061C; :data:`stream._FORMAT_CONTROLS`), also per character. The
+    answer's Markdown can still DECODE one out of an entity after this ran;
+    ``markdown_lines`` removes what it rendered for that reason.
+    """
+
+    return drop_format_controls(safe_for_terminal(text, keep_newline=True, keep_tab=True))
+
+
+#: One ANSI escape SEQUENCE: an OSC (``ESC ]`` … BEL / ``ESC \`` / 0x9C) or a
+#: CSI-like sequence introduced by ``ESC`` or the one-byte C1 CSI. A port of
+#: pi's ``ansiRegex`` (``packages/coding-agent/src/utils/ansi.ts``), which pi
+#: runs over every tool result it displays (``core/tools/render-utils.ts``
+#: ``getTextOutput``: ``sanitizeBinaryOutput(stripAnsi(text))``).
+#:
+#: Two deliberate differences from pi's pattern. The OSC body is
+#: ``[^\x07\x1b\x9c\n]*`` instead of a lazy ``[\s\S]*?``: a lazy scan from every
+#: ``ESC ]`` to the end of a 50 KB result that never terminates one is
+#: quadratic, while stopping at the next possible terminator is linear —
+#: MEASURED on a string of bare ``ESC ]``: the lazy form took 53 / 205 / 829 ms
+#: for 2,500 / 5,000 / 10,000 of them, this one 1.5 ms for 25,000, on the UI
+#: loop the renderer runs on. And the
+#: body may not cross a NEWLINE, so stripping never changes how many lines a
+#: result has — a stray ``ESC ]`` cannot swallow the next thirty lines of a
+#: card (and with them the ``+N more lines`` count), it can only lose the rest
+#: of its own line, which is what the terminal would have done with it.
+_ANSI_SEQUENCE_RE = re.compile(
+    r"\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)"
+    r"|[\x1b\x9b][\[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]"
+)
+
+
+def _safe_tool_output(text: str) -> str:
+    """A tool result body, an edit diff, anything a TOOL printed.
+
+    Whole escape sequences go first (:data:`_ANSI_SEQUENCE_RE`), then every
+    remaining steering character. The sequence pass exists because coloured
+    output is ORDINARY here — ``pytest``, ``git diff --color``, ``ls --color``
+    — and the character pass alone would leave ``[31mFAILED[0m`` on every line
+    of it. This is pi's rule for tool output (colour is dropped, not rendered),
+    and it is also what lets a coloured ``git diff`` be recognised as a diff:
+    its hunk header starts with ``ESC [ 36 m`` until this runs.
+    """
+
+    return safe_for_terminal(_ANSI_SEQUENCE_RE.sub("", text), keep_newline=True, keep_tab=True)
 
 
 def _result_text(result: Any) -> str:
@@ -109,24 +214,96 @@ def component_to_text(component: Any, width: int) -> Text:
     """
 
     lines = component.render(width)
-    return Text.from_ansi("\n".join(str(line) for line in lines))
+    text = Text.from_ansi("\n".join(str(line) for line in lines))
+    # #177 — a component's lines are ANSI BY CONTRACT, so the SGR has to be
+    # read as style rather than stripped; ``from_ansi`` does that and drops the
+    # ESC-introduced sequences it parses. What it leaves in ``.plain`` is the
+    # rest: the one-byte C1 CSI (0x9B), BiDi overrides, an ESC it did not parse.
+    # Replacing each with a SPACE keeps ``.plain`` the same LENGTH, so every
+    # style span still covers exactly the characters it covered — the red stays
+    # on the word that was red. A component is extension PROSE, so it also
+    # loses the three BiDi marks the shared helper keeps (U+200E, U+200F,
+    # U+061C), as a space for the same reason. Measured on 70651cd7: each of
+    # them reached the bytes from a component, live and on replay.
+    text.plain = space_format_controls(
+        safe_for_terminal(text.plain, controls=Controls.SPACE, keep_newline=True, keep_tab=True)
+    )
+    # ``.plain`` is not all of it. ``from_ansi`` also reads an OSC 8 hyperlink
+    # into ``Style.link``, and rich writes that target back out VERBATIM when it
+    # draws the span. MEASURED on 33b6c43f: a target of
+    # ``https://e.x/`` + BEL + an OSC 52 came out as an OSC 8 closed by the BEL
+    # followed by a live clipboard write, live and on replay. A link survives
+    # only when its target is clean (:func:`_link_is_clean`); otherwise the
+    # LINK goes and the text and colour of the span stay.
+    text.spans = [
+        Span(span.start, span.end, _without_unsafe_link(span.style)) for span in text.spans
+    ]
+    if isinstance(text.style, Style):
+        text.style = _without_unsafe_link(text.style)
+    return text
+
+
+#: The URL schemes a component's OSC 8 link may carry (#177). The ones a
+#: terminal opens for a person on a click; anything else (``javascript:``, a
+#: custom handler scheme) is dropped with the rest of an unclean link.
+_LINK_SCHEMES = frozenset({"http", "https", "file", "mailto"})
+
+
+def _link_is_clean(url: str) -> bool:
+    """True when an OSC 8 target can be written back to the terminal as it is.
+
+    No C0, C1 or DEL (``contains_steering_chars`` with nothing spared — a BEL or
+    an ST ends the OSC 8 early and whatever follows is a new sequence), no BiDi
+    or format control (the target is shown on hover), and a scheme from
+    :data:`_LINK_SCHEMES`.
+    """
+
+    if not url or contains_steering_chars(url) or drop_format_controls(url) != url:
+        return False
+    scheme, colon, _rest = url.partition(":")
+    return bool(colon) and scheme.lower() in _LINK_SCHEMES
+
+
+def _without_unsafe_link(style: str | Style) -> str | Style:
+    if isinstance(style, Style) and style.link and not _link_is_clean(style.link):
+        return style.update_link(None)
+    return style
 
 
 def _compact_args(args: dict[str, Any]) -> str:
-    """One-line, length-capped argument summary for a tool header."""
+    """One-line, length-capped argument summary for a tool header.
+
+    The values are ``repr``-ed, which already escapes a control character in a
+    string; the KEYS were not, and a model writes those too (#177). The whole
+    summary is made one terminal-safe row before it is capped, in that order —
+    capping first would measure cells over characters that render as nothing.
+    """
 
     if not args:
         return ""
     items = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    items = items.replace("\n", " ")
-    return _cap_cells(items, _HEADER_MAX_CELLS)
+    return _cap_cells(_header_text(items), _HEADER_MAX_CELLS)
 
+
+#: The ``custom_type`` of the record a ``!cmd`` leaves in the session
+#: (``cli/repl.py``'s ``BASH_EXECUTION_TYPE``; spelled out because the renderer
+#: does not import the REPL). Its body replays in the tool-output shape (#177).
+_BASH_EXECUTION_TYPE = "bash_execution"
 
 #: Tool-header summary cap, in terminal CELLS. Deliberately NOT derived from the
 #: live width: the header is committed as a bare Rich ``Text`` to the adaptive
 #: scrollback console, which soft-wraps it, so this is a density choice rather
 #: than an overflow guard.
 _HEADER_MAX_CELLS = 80
+
+#: Cap on the PATH a ``read``/``write``/``edit`` header shows, in cells (#177).
+#: Larger than :data:`_HEADER_MAX_CELLS` because a path is the one argument a
+#: reader needs whole — two 80-column rows is deeper than any real checkout
+#: nests — and cut from the FRONT, because the file name is at the end. It
+#: exists for the path that is not real: the argument is model-authored, and an
+#: uncapped 55 KB "path" is ~700 rows of header that scroll the transcript off
+#: the screen without a single escape character in it.
+_HEADER_PATH_MAX_CELLS = 160
 
 #: Trailing reasoning lines held in the live tail while a thinking block
 #: streams. Matches ``StreamRenderer``'s window so reasoning and answer text
@@ -168,6 +345,27 @@ def _cap_cells(text: str, limit: int) -> str:
     return text if cell_len(text) <= limit else set_cell_size(text, limit - 1) + "…"
 
 
+def _cap_cells_keep_end(text: str, limit: int) -> str:
+    """Cap *text* at *limit* cells by dropping its START, prefixing ``…``.
+
+    :func:`_cap_cells` keeps the head, which for a path keeps the directories
+    and loses the file name. Walks from the end so a wide glyph is never split.
+    """
+
+    if cell_len(text) <= limit:
+        return text
+    budget = limit - 1
+    kept: list[str] = []
+    used = 0
+    for ch in reversed(text):
+        width = cell_len(ch)
+        if used + width > budget:
+            break
+        kept.append(ch)
+        used += width
+    return "…" + "".join(reversed(kept))
+
+
 def _truncate_lines(
     text: str, max_lines: int, max_line_width: int = 76
 ) -> tuple[list[str], int]:
@@ -179,10 +377,17 @@ def _truncate_lines(
     overflow; a too-wide line is cut to ``max_line_width - 1`` cells plus ``…``.
     The default leaves room for the 2-cell ``│ `` card gutter within an 80-col
     chrome.
+
+    #177 — every KEPT line is made terminal-safe (:func:`_safe_tool_output`)
+    BEFORE it is measured, in that order: a cell count taken over escape bytes
+    that render as nothing is a wrong count, and a cut taken through the middle
+    of a sequence can leave a different, still-live one. Only the kept lines
+    pay for it, so a 50 KB result costs a 40-line strip here. The strip never
+    removes a newline, so ``hidden`` is the same number either way.
     """
 
     lines = text.split("\n")
-    kept = lines[:max_lines]
+    kept = [_safe_tool_output(line) for line in lines[:max_lines]]
     hidden = len(lines) - len(kept)
     capped: list[str] = [
         line if cell_len(line) <= max_line_width else set_cell_size(line, max_line_width - 1) + "…"
@@ -197,11 +402,18 @@ def _tool_header(tool_name: str, args: dict[str, Any]) -> str:
     ``read``/``write``/``edit`` show the ``path`` (read appends an
     ``offset:limit`` line range when present); ``bash`` shows the ``command``;
     every other tool falls back to :func:`_compact_args`.
+
+    Every argument here is MODEL-authored, and until #177 the path came back
+    exactly as written — ``ESC``, an OSC, CR and LF included — with no cap. Each
+    one is now a terminal-safe row (:func:`_header_text`) before it is formatted
+    or measured; the path is capped at :data:`_HEADER_PATH_MAX_CELLS` from the
+    front, the command at :data:`_HEADER_MAX_CELLS` from the back.
     """
 
     if tool_name in ("read", "write", "edit"):
-        path = args.get("path")
-        if isinstance(path, str) and path:
+        raw_path = args.get("path")
+        if isinstance(raw_path, str) and raw_path:
+            path = _cap_cells_keep_end(_header_text(raw_path), _HEADER_PATH_MAX_CELLS)
             if tool_name == "read":
                 offset = args.get("offset")
                 limit = args.get("limit")
@@ -220,8 +432,7 @@ def _tool_header(tool_name: str, args: dict[str, Any]) -> str:
     elif tool_name == "bash":
         command = args.get("command")
         if isinstance(command, str) and command:
-            one_line = command.replace("\n", " ")
-            return _cap_cells(one_line, _HEADER_MAX_CELLS)
+            return _cap_cells(_header_text(command), _HEADER_MAX_CELLS)
     return _compact_args(args)
 
 
@@ -420,27 +631,28 @@ _USER_ECHO_STYLE = "#04171a on #83b0b4"
 _TOOL_MARKER = "●"
 
 
-#: C0 and DEL and C1, minus the newline, mapped to a space rather than deleted so
-#: a word boundary survives. C1 is in the set because ``\x9b`` IS a CSI — the
-#: one-byte spelling of ``\x1b[`` — which is the same reason
-#: ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
-#: The newline is spared because a multi-line paste is meant to be several rows of
-#: one bar.
-#:
-#: THE TAB IS SPARED FOR THE SAME REASON AND IT WAS NOT, AT FIRST. Mapping it to a
-#: space made every nesting level of a tab-indented paste — a Makefile, Go, tab
-#: indented C — render as ONE column, and the loss is permanent: the echo is
-#: replayed from the session file on every ``/resume``. Neither harm this map
-#: exists for is a property of ``\t``. MEASURED at width 60: Rich expands the tab
-#: to its 8-column stop BEFORE writing, so the spaces are painted INSIDE the
-#: background run, no raw ``\t`` reaches the terminal in either arm, and every bar
-#: row is still exactly the full width. What ``\x1b`` and ``\x9b`` do — end the
-#: run and change the terminal's colour state — a tab does not do.
-_ECHO_CONTROL_MAP = {
-    codepoint: " "
-    for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
-    if codepoint not in (0x09, 0x0A)
-}
+# THE ECHO'S STRIP. C0 and DEL and C1, minus the newline and the tab, become a
+# space rather than vanishing so a word boundary survives. C1 is in the set because
+# ``\x9b`` IS a CSI — the one-byte spelling of ``\x1b[`` — which is the same reason
+# ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
+# The newline is spared because a multi-line paste is meant to be several rows of
+# one bar.
+#
+# THE TAB IS SPARED FOR THE SAME REASON AND IT WAS NOT, AT FIRST. Mapping it to a
+# space made every nesting level of a tab-indented paste — a Makefile, Go, tab
+# indented C — render as ONE column, and the loss is permanent: the echo is
+# replayed from the session file on every ``/resume``. Neither harm this strip
+# exists for is a property of ``\t``. MEASURED at width 60: Rich expands the tab
+# to its 8-column stop BEFORE writing, so the spaces are painted INSIDE the
+# background run, no raw ``\t`` reaches the terminal in either arm, and every bar
+# row is still exactly the full width. What ``\x1b`` and ``\x9b`` do — end the
+# run and change the terminal's colour state — a tab does not do.
+#
+# #177 — this was a private ``str.translate`` map, and it is now
+# ``safe_for_terminal`` in SPACE mode, because the map was the C0/C1 half of that
+# helper and nothing else: the BiDi overrides (``\u202e`` renders
+# ``trusted=false`` as ``trusted=true``), U+2028/2029 and the zero-width
+# characters passed it. Same spaces, same spared ``\n`` and ``\t``.
 
 
 #: Below this the ``Padding`` inset leaves no columns for text, so constraining
@@ -454,10 +666,10 @@ def _strip_controls(text: str) -> str:
     The echo is the one renderer here that puts a caller's bytes on the terminal
     unchanged, and the bar made that visible: an escape inside the text ends the
     background run and reaches the glass. See :func:`render_user_message`, and
-    :data:`_ECHO_CONTROL_MAP` for why the tab is not one of those.
+    the comment above for why the tab is not one of those.
     """
 
-    return text.translate(_ECHO_CONTROL_MAP)
+    return safe_for_terminal(text, controls=Controls.SPACE, keep_newline=True, keep_tab=True)
 
 
 def render_user_message(text: str, kind: str = "prompt", *, width: int | None = None) -> Group:
@@ -571,13 +783,21 @@ def render_tool_call_line(tool_name: str, summary: str) -> Text:
     by the live (:meth:`EventRenderer._render_tool_start`) and replayed
     (:meth:`EventRenderer.replay`) paths so a resumed transcript is pixel-identical
     to a freshly-streamed turn.
+
+    #177 — THIS is the boundary both paths share, so it is where the header is
+    made terminal-safe, whatever the caller did first. The tool NAME is the
+    model's as much as the arguments are: ``tool_execution_start`` is emitted
+    before the name is looked up (``loop.py``), so a call to a tool that does
+    not exist still draws a header, and on ``/resume`` the name comes out of the
+    session file. It is capped at :data:`_HEADER_MAX_CELLS`; the summary was
+    already capped by :func:`_tool_header` and is only stripped here.
     """
 
     line = Text()
     line.append(f"{_TOOL_MARKER} ", style="bold cyan")
-    line.append(tool_name, style="bold cyan")
+    line.append(_cap_cells(_header_text(tool_name), _HEADER_MAX_CELLS), style="bold cyan")
     if summary:
-        line.append(f"({summary})", style="cyan")
+        line.append(f"({_header_text(summary)})", style="cyan")
     return line
 
 
@@ -640,7 +860,7 @@ class EventRenderer:
         # reasoning the user just asked to hide stayed welded above the prompt.
         self._thinking_tail_shown: bool = False
         # Adaptive throttle, mirroring ``StreamRenderer``'s governor
-        # (stream.py:173-176). ``_THINKING_TAIL_MIN_DELAY`` is a FLOOR, not the
+        # (tui/stream.py:214-217). ``_THINKING_TAIL_MIN_DELAY`` is a FLOOR, not the
         # interval: if a push ever gets expensive the gap widens with it, so the
         # renderer can never spend an unbounded share of the turn inside its own
         # repaint. Reset per block, like ``_thinking_tail_when``.
@@ -805,11 +1025,15 @@ class EventRenderer:
                 # Render buffered reasoning ABOVE the answer it preceded.
                 self._flush_thinking(self._thinking_accum)
                 self._text_stream = self._new_stream()
-            self._text_accum += sev.delta
+            # #177 — the answer is model prose; stripped per DELTA, which
+            # :func:`_safe_prose` guarantees equals stripping the whole text, so
+            # ``text_end``'s replacement below cannot disagree with the prefix
+            # the stream already committed.
+            self._text_accum += _safe_prose(sev.delta)
             self._text_stream.update(self._text_accum)
         elif sev.type == "text_end":
             if sev.content:
-                self._text_accum = sev.content
+                self._text_accum = _safe_prose(sev.content)
             self._finalize_text()
         elif sev.type == "thinking_delta":
             index = getattr(sev, "content_index", 0)
@@ -826,7 +1050,9 @@ class EventRenderer:
                 # permanently dropped that continuation on the floor.
                 self._thinking_done.discard(index)
             self._thinking_index = index
-            self._thinking_accum += sev.delta
+            # #177 — stripped on the way IN, so the live tail (which renders a
+            # slice of this accumulator) never sees a raw escape.
+            self._thinking_accum += _safe_prose(sev.delta)
             self._push_thinking_tail()
         elif sev.type == "thinking_end":
             self._flush_thinking(
@@ -839,7 +1065,10 @@ class EventRenderer:
             self._finalize_text()
             self._close_thinking()
             message = sev.error_message or f"request {sev.reason}"
-            self._commit(Text(f"✖ {message}", style="bold red"))
+            # #177 — a provider's words, and sometimes a provider's whole
+            # response body; ``safe_error_for_terminal`` is the bound every
+            # error line on its way to a terminal gets (8 lines, 200 per line).
+            self._commit(Text(f"✖ {safe_error_for_terminal(message)}", style="bold red"))
 
     # === helpers ===========================================================
 
@@ -934,7 +1163,10 @@ class EventRenderer:
             "aborted",
         ):
             detail = message.error_message or f"request {message.stop_reason}"
-            self._commit(Text(f"✖ {detail}", style="bold red"))
+            # #177 — sanitised for the GLASS only. ``_reported_error`` keeps the
+            # raw text because ``tui/shell.py`` compares it, byte for byte, with
+            # ``str(exc)`` to suppress the duplicate (#189).
+            self._commit(Text(f"✖ {safe_error_for_terminal(detail)}", style="bold red"))
             self._outcome_reported = True
             self._reported_error = detail
             # #240 — NARROWER than the two flags above on purpose. An
@@ -1135,7 +1367,7 @@ class EventRenderer:
             self._thinking_tail_source(width), width, style="dim italic"
         )
         render_time = self._time() - started
-        # The governor ``StreamRenderer`` has had since 6h₂₄ (stream.py:173-176):
+        # The governor ``StreamRenderer`` has had since 6h₂₄ (tui/stream.py:214-217):
         # hold the gap at ten times the render it just paid for. With the slice
         # above this should never leave the floor — which is the point. It is the
         # backstop that keeps ANY future renderer that is not O(1) in block size
@@ -1186,7 +1418,9 @@ class EventRenderer:
         """
 
         self._finalize_text()
-        text = content.strip()
+        # #177 — ``content`` is either the accumulator (already stripped) or the
+        # ``thinking_end`` event's own copy of the block, which is not.
+        text = _safe_prose(content).strip()
         self._thinking_accum = ""
         if index is None:
             index = self._thinking_index
@@ -1220,14 +1454,27 @@ class EventRenderer:
 
     def _render_tool_end(self, tool_name: str, result: Any, is_error: bool) -> None:
         self._finalize_text()
-        text = _result_text(result).rstrip()
+        raw = _result_text(result)
         # §B — a stored tool-renderer-desc for this tool_name renders a custom view
         # (table/grid/form/text) instead of the default Text dump. The default
         # rendering is unchanged whenever no descriptor matches (or the lookup /
         # build raises — a faulty renderer must not swallow tool output). A
         # matched descriptor keeps full precedence: no truncation is applied.
-        if self._render_with_descriptor(tool_name, text):
+        # #177 — the view gets the body AS IT ARRIVED, because it DECODES it:
+        # its JSON keys, ``rows_path`` and ``text_path`` are looked up byte for
+        # byte, and it makes safe what it DRAWS (:meth:`_render_with_descriptor`).
+        # Handing it the cleaned body lost data (review round 3, measured on
+        # d61473c9): a key holding a literal U+200B, as ``json.dumps(...,
+        # ensure_ascii=False)`` writes it, no longer matched its column, and
+        # ``FIELD<ZWSP>`` and ``FIELD`` became one form field.
+        if self._render_with_descriptor(tool_name, raw.rstrip()):
             return
+        # #177 — every other reader gets the body made terminal-safe ONCE, here:
+        # the edit success line, diff detection and the ``/expand`` store all
+        # get the same safe body. ``/expand N`` prints the stored text with no
+        # renderer of its own in between (``commands.py``), so storing the raw
+        # body would have reopened every card this closes.
+        text = _safe_tool_output(raw).rstrip()
         exit_code = _bash_exit_code(result) if tool_name == "bash" else None
         if not text:
             return
@@ -1239,6 +1486,8 @@ class EventRenderer:
         if not is_error and tool_name == "edit":
             diff_text = getattr(getattr(result, "details", None), "diff", "")
             if isinstance(diff_text, str) and diff_text.strip():
+                # #177 — the diff quotes the FILE, which is not ours either.
+                diff_text = _safe_tool_output(diff_text)
                 cap = self._card_line_width()
                 _, diff_hidden = _truncate_lines(diff_text, max_lines=40, max_line_width=cap)
                 expand_id = self._store_expandable(diff_text) if diff_hidden > 0 else None
@@ -1296,7 +1545,11 @@ class EventRenderer:
         return n
 
     def get_expanded(self, n: int) -> str | None:
-        """Return the full, untruncated body stored for ``/expand N`` (or None)."""
+        """Return the full, untruncated body stored for ``/expand N`` (or None).
+
+        Untruncated but NOT raw (#177): every body is stored after it was made
+        terminal-safe, because the ``/expand`` handler prints it as it is.
+        """
 
         return self._expand_store.get(n)
 
@@ -1447,7 +1700,7 @@ class EventRenderer:
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)
                     if btype == "thinking":
-                        thinking = (getattr(block, "thinking", "") or "").strip()
+                        thinking = _safe_prose(getattr(block, "thinking", "") or "").strip()
                         if thinking:
                             # Issue #164 — the live path gates reasoning on
                             # ``hide_thinking`` (``_flush_thinking``); replay
@@ -1505,7 +1758,9 @@ class EventRenderer:
                         # ``body.strip()`` — an HTML comment or a link-reference
                         # definition is non-blank and renders to nothing, and
                         # the live path commits nothing for it.
-                        rendered = markdown_lines(body, replay_width)
+                        # #177 — stripped AFTER the #194 comparison above, which
+                        # has to see the body exactly as the writer stored it.
+                        rendered = markdown_lines(_safe_prose(body), replay_width)
                         if rendered:
                             self._commit(Text.from_ansi("".join(rendered)))
                     elif btype == "toolCall":
@@ -1514,7 +1769,7 @@ class EventRenderer:
                         self._commit(render_tool_call_line(name, summary))
                 if stop in ("error", "aborted"):
                     detail = getattr(msg, "error_message", None) or f"request {stop}"
-                    self._commit(Text(f"✖ {detail}", style="bold red"))
+                    self._commit(Text(f"✖ {safe_error_for_terminal(detail)}", style="bold red"))
             elif role == "toolResult":
                 # _render_tool_end reads result.content / .is_error and applies
                 # the same truncation + /expand-store as a live tool card.
@@ -1561,9 +1816,19 @@ class EventRenderer:
                 )
         content = getattr(msg, "content", None)
         text = content if isinstance(content, str) else _join_text(content or [])
-        label = Text(f"[{getattr(msg, 'custom_type', '') or 'custom'}]", style="bold magenta")
+        # #177 — both halves are the extension's (and, on replay, the session
+        # file's): the type is a one-row label, the body is prose. Except the
+        # record of the user's own ``!cmd``: its body is the bytes a process
+        # wrote, so it takes the tool-output shape, the one its live line took
+        # (:meth:`user_bash_output`) — the colour codes go whole rather than
+        # leaving ``[31m`` behind, and the marks stay, as in any tool output.
+        custom_type = getattr(msg, "custom_type", "") or "custom"
+        label = Text(f"[{_header_text(str(custom_type))}]", style="bold magenta")
         if text.strip():
-            self._commit(Group(label, Text(text)))
+            if custom_type == _BASH_EXECUTION_TYPE:
+                self._commit(Group(label, Text(_safe_tool_output(text))))
+            else:
+                self._commit(Group(label, Text(_safe_prose(text))))
         else:
             self._commit(label)
 
@@ -1576,11 +1841,46 @@ class EventRenderer:
             envelope = lookup(tool_name)
             if envelope is None:
                 return False
+            # #177 — ``text`` is the result body as it arrived, so the view
+            # decodes the tool's own data and looks its keys up as written. It
+            # is not safe, and decoding would not make it so: ``"\\u001b]52;…"``
+            # is eleven inert characters in the body and a raw ESC in the
+            # decoded value (measured on 33b6c43f: the text view's
+            # ``text_path`` value, a table cell, both halves of a form row and a
+            # grid of strings drew an OSC 52 and ``ESC [ 2 J``, live and on
+            # replay). And the title and column headers are the extension's
+            # descriptor (measured on 70651cd7: an OSC 52 in either reached the
+            # bytes). So the view gets the shapes to draw with, and applies them
+            # to every string it draws, after its lookups: the descriptor's own
+            # words are one header row each, everything taken from the result
+            # (a decoded value, or the body itself when it is not JSON) is tool
+            # output.
             rows = renderer.project_tool_result(envelope, text)
-            self._commit(renderer.build_tool_renderable(envelope, rows))
+            self._commit(
+                renderer.build_tool_renderable(
+                    envelope, rows, heading=_header_text, value=_safe_tool_output
+                )
+            )
         except Exception:  # noqa: BLE001 — fall back to default on any failure
             return False
         return True
+
+    def user_bash_output(self, output: str) -> Text:
+        """The live line for the output of the user's own ``!cmd`` (#177).
+
+        Bytes a process wrote, so they take the tool-output shape
+        (:func:`_safe_tool_output`): escape sequences go whole, the rest of
+        C0/C1 and BiDi go, newlines and tabs stay. ``tui/shell.py`` committed
+        ``Text(output)`` raw while the replay of the same output (the
+        ``bash_execution`` custom message) was already stripped. MEASURED on
+        33b6c43f in a pty: ``!cat`` of a file holding an OSC 52 wrote it to the
+        terminal live. Here rather than in the shell so the shapes stay in one
+        module. The replay takes this shape too (:meth:`_render_custom`), so a
+        resumed ``!cmd`` shows ``FAILED`` where its live line did, not
+        ``[31mFAILED``.
+        """
+
+        return Text(_safe_tool_output(output.rstrip("\n")))
 
 
 __all__ = [

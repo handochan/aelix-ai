@@ -461,28 +461,53 @@ class DescriptorRenderer:
         return [result_text]
 
     @staticmethod
-    def build_tool_renderable(envelope: DescriptorEnvelope, rows: Any = None) -> object:
+    def build_tool_renderable(
+        envelope: DescriptorEnvelope,
+        rows: Any = None,
+        *,
+        heading: Callable[[str], str] = str,
+        value: Callable[[str], str] = str,
+    ) -> object:
+        """Build the Rich renderable for a ``tool-renderer-desc`` view.
+
+        #177 — every string this draws goes through one of two callables.
+        ``heading`` gets what the EXTENSION wrote into the descriptor: the title
+        and the column headers (a column without a header shows its key).
+        ``value`` gets what the TOOL RESULT holds: a cell, a form field's name
+        and its value, a grid item, the text body. Both default to ``str``,
+        which is what the chrome callers (``render_tool_result``,
+        ``open_modal``) draw; the transcript passes its terminal-safe shapes
+        (``render.EventRenderer._render_with_descriptor``).
+
+        They run on what is DRAWN, after every lookup. A column's ``key`` is
+        matched against the row's keys exactly as they arrived, and a form row
+        is drawn entry by entry, so two field names that clean to the same
+        text are still two rows. Review round 2 of #177 measured the other
+        order: rewriting the row's keys first blanked a column keyed
+        ``part<ZWSP>no`` and merged two such fields into one.
+        """
         payload = envelope.payload
         view = getattr(payload, "view", "text")
-        title = getattr(payload, "title", None)
+        raw_title = getattr(payload, "title", None)
+        title = None if raw_title is None else heading(str(raw_title))
         columns = getattr(payload, "columns", None) or []
         row_data = rows if isinstance(rows, list) else []
 
         if view == "table":
             table = Table(title=title)
-            headers = [str(c.get("header", c.get("key", ""))) for c in columns]
+            headers = [heading(str(c.get("header", c.get("key", "")))) for c in columns]
             for header in headers:
                 table.add_column(header)
             keys = [str(c.get("key", c.get("header", ""))) for c in columns]
             for row in row_data:
                 if isinstance(row, dict):
-                    table.add_row(*[str(row.get(k, "")) for k in keys])
+                    table.add_row(*[value(str(row.get(k, ""))) for k in keys])
                 else:
-                    table.add_row(str(row))
+                    table.add_row(value(str(row)))
             return table
 
         if view == "grid":
-            cells = [Text(str(item)) for item in row_data]
+            cells = [Text(value(str(item))) for item in row_data]
             return Columns(cells, title=title) if cells else Columns([Text(title or "")])
 
         if view == "form":
@@ -491,12 +516,12 @@ class DescriptorRenderer:
             form.add_column("value")
             for row in row_data:
                 if isinstance(row, dict):
-                    for label, value in row.items():
-                        form.add_row(str(label), str(value))
+                    for label, item in row.items():
+                        form.add_row(value(str(label)), value(str(item)))
             return form
 
         # text
-        body = "\n".join(str(r) for r in row_data) if row_data else ""
+        body = "\n".join(value(str(r)) for r in row_data) if row_data else ""
         return Panel(Text(body), title=title)
 
     # --- management-modal (FULL render + open) ----------------------------

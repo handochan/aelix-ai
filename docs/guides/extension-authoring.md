@@ -165,6 +165,27 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | `register_shortcut` | Live | Aggregated by `get_shortcuts` and read live by the TUI chrome at key-fire time, so `/reload` handler swaps take effect. First registration wins a key collision. |
 | `register_message_renderer` | Live | Looked up live per custom message by `get_message_renderer`; first extension in load order wins. A renderer that raises falls back to default rendering. |
 
+### What reaches the terminal
+
+The transcript strips control characters from text your extension, a tool or
+the model supplied before it draws that text (#177). Your tool's result is shown
+with escape sequences removed (colour included) and other control characters
+deleted. Newlines and tabs are kept. The tool name and its arguments are shown
+on one header row. A custom message's default rendering is stripped the same
+way, and also loses the BiDi marks U+200E, U+200F and U+061C. A
+`register_message_renderer` component keeps its SGR colours. Any other control
+character in its lines (a C1 CSI, a BiDi override, one of those three marks) is
+drawn as a space. An OSC 8 hyperlink in a component is kept only when its target
+is an `http`, `https`, `file` or `mailto` URL with no control character or BiDi
+control in it. Any other link is dropped and its text is kept. A `tool-renderer-desc`
+view draws its `title` and column headers on one row each, with control
+characters shown as spaces, and strips every value it decodes from your tool's
+JSON (a cell, a form field's name and value, a grid item, the text body) the
+way a tool result is stripped. It strips them after it decodes your JSON, so
+a column's `key`, `rows_path` and `text_path` are matched against your JSON
+keys exactly as you wrote them, escaped (`\u200b`) or not. The status line, widgets, toasts and modals you
+register are drawn outside the transcript and are not stripped this way.
+
 ### Flags
 
 `register_flag` declares a flag and `get_flag` reads it, and a value given on the

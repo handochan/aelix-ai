@@ -35,6 +35,42 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
 
 
+#: #177 — BiDi and format controls that may not reach the terminal from PROSE:
+#: U+202A-202E, U+2066-2069, the marks U+200E/200F/061C (the shared helper keeps
+#: the marks), U+2028/2029, U+200B and U+FEFF. Markdown DECODES ``&#8238;`` into
+#: a raw U+202E after every strip that ran on the source (measured on 33b6c43f:
+#: live tail, committed block and replay), so :func:`markdown_lines` drops them
+#: from what it rendered. U+200D (ZWJ) is kept: it composes ``👩‍💻``.
+_FORMAT_CONTROLS = dict.fromkeys(
+    [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]
+    + [0x2028, 0x2029, 0x200B, 0xFEFF]
+)
+
+
+def drop_format_controls(text: str) -> str:
+    """*text* without :data:`_FORMAT_CONTROLS`.
+
+    Per CHARACTER, so it commutes with concatenation the way the streamed
+    answer needs (``render._safe_prose``), and it never touches an escape
+    sequence, so it is safe to run over rendered ANSI.
+    """
+
+    return text.translate(_FORMAT_CONTROLS)
+
+
+_FORMAT_CONTROLS_AS_SPACE = dict.fromkeys(_FORMAT_CONTROLS, " ")
+
+
+def space_format_controls(text: str) -> str:
+    """*text* with each of :data:`_FORMAT_CONTROLS` replaced by a SPACE.
+
+    For text whose LENGTH must not change: an extension component's ``.plain``,
+    under style spans that index into it (``render.component_to_text``).
+    """
+
+    return text.translate(_FORMAT_CONTROLS_AS_SPACE)
+
+
 def plain_lines(text: str, width: int, *, style: str = "") -> list[str]:
     """Render *text* as PLAIN styled lines wrapped at *width* (no markdown).
 
@@ -93,7 +129,12 @@ def markdown_lines(text: str, width: int) -> list[str]:
     Console(file=buf, force_terminal=True, width=width, legacy_windows=False).print(
         Markdown(text), end=""
     )
-    return buf.getvalue().splitlines(keepends=True)
+    # #177 — AFTER rendering, because rendering is where ``&#8238;`` becomes
+    # U+202E (see :data:`_FORMAT_CONTROLS`), and BEFORE ``splitlines``, which
+    # breaks on U+2028/2029 and would otherwise count a decoded ``&#8232;`` as a
+    # line of its own. The live tail, the committed lines and the replay all
+    # come out of this one function.
+    return drop_format_controls(buf.getvalue()).splitlines(keepends=True)
 
 
 class StreamRenderer:
@@ -195,4 +236,10 @@ class StreamRenderer:
         return markdown_lines(text, self._width)
 
 
-__all__ = ["StreamRenderer", "markdown_lines", "plain_lines"]
+__all__ = [
+    "StreamRenderer",
+    "drop_format_controls",
+    "markdown_lines",
+    "plain_lines",
+    "space_format_controls",
+]
