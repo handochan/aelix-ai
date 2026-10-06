@@ -550,11 +550,13 @@ async def test_discover_refresh_mixed_good_and_bad(
 
 
 async def test_discover_install_resolved_source_with_leading_dash(
-    tmp_path: Path,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # #11: a resolved source that legitimately starts with '-' must reach pip as a
-    # positional (the '--' delegate guard), not be misparsed as a flag. Before the
-    # fix this errored exit 2; assert it now succeeds and the runner sees the spec.
+    # #11 made the '--' delegate guard keep a '-'-leading source from being
+    # misparsed by `discover install` itself. But the INSTALLER's argv has no '--':
+    # pip / uv read '-weird-pkg' (or '-e ./x', measured on uv) as an OPTION. #131
+    # (ADR-0255) therefore refuses a catalog source starting with '-' before
+    # consent — no PEP 508 name starts with one — and names the accepted forms.
     uri = _write_catalog(
         tmp_path / "catalog.json",
         [{"name": "dashy", "source": "-weird-pkg"}],
@@ -564,15 +566,18 @@ async def test_discover_install_resolved_source_with_leading_dash(
         {"extensionSources": [{"spec": uri, "kind": "catalog"}]}
     )
     assert await run_extension_command_async(["discover", "--refresh"], settings=mem) == 0
+    capsys.readouterr()
     runner = _FakeRunner()
     code = await run_extension_command_async(
         ["discover", "install", "dashy", "--yes", "--no-verify"],
         settings=mem,
         runner=runner,
     )
-    assert code == 0
-    assert len(runner.calls) == 1
-    assert "-weird-pkg" in runner.calls[0]
+    assert code == 2
+    assert runner.calls == []
+    err = capsys.readouterr().err
+    assert "source '-weird-pkg' starts with '-'" in err
+    assert "catalog 'corp'" in err
 
 
 async def test_discover_install_duplicate_name_in_one_catalog(

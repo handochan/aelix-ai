@@ -125,11 +125,11 @@ def test_entry_resolves_unambiguously_by_name(tmp_path: Path) -> None:
 
 
 def test_source_is_absolute_and_routes_to_a_path(tmp_path: Path) -> None:
-    """An absolute source is what makes the entry installable from any cwd.
+    """An absolute source installs from any catalog location.
 
-    ``classify_target`` resolves a path against the PROCESS cwd, so a relative
-    source read from elsewhere falls through to a pypi lookup of the same name.
-    Absolute is therefore the default, and this pins it.
+    Since #131 a relative source resolves against a LOCAL catalog file's
+    directory, but one served over https or git has no such directory and its
+    relative source is refused. Absolute therefore stays the default.
     """
     _wheel(tmp_path, "notes-ext", "1.0.0")
 
@@ -140,14 +140,20 @@ def test_source_is_absolute_and_routes_to_a_path(tmp_path: Path) -> None:
     assert ei.classify_target(source) == "path"
 
 
-def test_relative_opt_in_emits_bare_filenames(tmp_path: Path) -> None:
+def test_relative_opt_in_emits_dot_prefixed_paths(tmp_path: Path) -> None:
+    """#131: ``./name.whl``, not a bare ``name.whl``.
+
+    The prefix keeps even a same-directory source path-shaped, so it is never
+    mistaken for a package name by anything that reads the catalog.
+    """
     wheel = _wheel(tmp_path, "notes-ext", "1.0.0")
 
     document = ec.build_index_catalog(
         ec.scan_artifacts(tmp_path), relative_to=tmp_path.resolve()
     )
 
-    assert _entries(document)[0]["source"] == wheel.name
+    assert _entries(document)[0]["source"] == f"./{wheel.name}"
+    assert ec.source_looks_like_path(_entries(document)[0]["source"])
 
 
 def test_relative_tolerates_an_unresolved_root(
@@ -166,7 +172,7 @@ def test_relative_tolerates_an_unresolved_root(
         ec.scan_artifacts(Path(".")), relative_to=Path(".")
     )
 
-    assert _entries(document)[0]["source"] == wheel.name
+    assert _entries(document)[0]["source"] == f"./{wheel.name}"
 
 
 def test_several_versions_collapse_to_one_entry_newest_first(tmp_path: Path) -> None:
@@ -342,7 +348,7 @@ def test_cli_relative_flag_works_from_a_relative_directory(
     catalog = ec.parse_catalog(
         (tmp_path / "catalog.json").read_text(), location="file://rel"
     )
-    assert [e.source for e in catalog.entries] == [wheel.name]
+    assert [e.source for e in catalog.entries] == [f"./{wheel.name}"]
 
 
 def test_cli_relative_directory_without_the_flag_still_emits_absolute(

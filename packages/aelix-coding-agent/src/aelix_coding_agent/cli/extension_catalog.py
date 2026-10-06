@@ -18,8 +18,11 @@ Design (ADR-0188, owner-confirmed 2026-07-05):
   a shared drive / ``file://`` / a git repo). Registered like an
   ``extension_sources`` entry (``kind="catalog"``); many catalogs merge.
 * The catalog is strictly **ADVISORY**: it only chooses WHAT to install. Each
-  entry's ``source`` is a ``path | git+url[@sha] | pypi`` spec handed UNCHANGED
-  to the existing installer, so the source-level ``y/N`` consent prompt +
+  entry's ``source`` is a ``path | git+url[@sha] | pypi`` spec handed to the
+  existing installer — through :func:`resolve_entry_target`, which accepts a
+  fixed list of forms, places a relative path beside a local catalog file (handed
+  on as a :class:`ResolvedPath`, its ``[extras]`` a separate value) and refuses the
+  rest (#131, ADR-0255) — so the source-level ``y/N`` consent prompt +
   ``verify_and_pin`` (#64) remain the sole trust boundary. An entry's optional
   ``sha256`` is **display-only** and MUST NEVER seed the #64 pin store (seeding
   an unauthenticated network hash would manufacture a false green "integrity
@@ -49,12 +52,13 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import run_contained
 
 __all__ = [
+    "ACCEPTED_SOURCE_FORMS",
     "CATALOG_CACHE_FILENAME",
     "DEFAULT_CATALOG_ENV",
     "DEFAULT_CATALOG_FILENAME",
@@ -72,18 +76,26 @@ __all__ = [
     "GitRunner",
     "IndexedArtifact",
     "Opener",
+    "anchor_catalog_location",
     "build_index_catalog",
     "cache_file_path",
+    "cached_copy",
     "fetch_catalog",
     "load_cached_catalog",
+    "location_matches_selector",
     "now_iso",
     "parse_catalog",
     "read_artifact",
     "resolve_default_catalog_url",
     "resolve_entry",
+    "resolve_entry_source",
+    "resolve_entry_target",
     "save_catalogs",
     "scan_artifacts",
     "search_entries",
+    "select_catalogs",
+    "source_looks_like_path",
+    "split_path_extras",
 ]
 
 CATALOG_CACHE_FILENAME = "extension_catalog_cache.json"
@@ -214,11 +226,18 @@ class CatalogEntry:
     """One advertised extension in a catalog.
 
     ``source`` is the ONLY field the installer consumes — a ``path``, a
-    ``git+url[@40-hexsha]``, or a ``pypi-name[==version]`` spec that
-    ``classify_target`` already routes. ``sha256`` is DISPLAY-ONLY (ADR-0188): it
-    is never written to the #64 pin store. ``catalog_name`` records which catalog
-    the entry came from (for grouped display + ambiguous-name disambiguation).
-    ``extra`` preserves unknown keys verbatim for forward compatibility.
+    ``git+url[@40-hexsha]``, or a ``pypi-name[==version]`` spec. It reaches the
+    installer through :func:`resolve_entry_target`, never raw: only a fixed list of
+    forms is accepted, a ``./`` or ``../`` path resolves against the catalog FILE's
+    directory (never the process cwd), and every other form is refused, never
+    rewritten (#131, ADR-0255). ``sha256`` is
+    DISPLAY-ONLY (ADR-0188): it is never written to the #64 pin store.
+    ``catalog_name`` records which catalog the entry came from (for grouped
+    display + ambiguous-name disambiguation) and ``catalog_location`` WHERE that
+    catalog lives — the base a relative ``source`` resolves against. It is not
+    part of the entry's JSON (the catalog block already carries ``location``) and
+    not part of its equality. ``extra`` preserves unknown keys verbatim for
+    forward compatibility.
     """
 
     name: str
@@ -230,6 +249,7 @@ class CatalogEntry:
     homepage: str | None = None
     catalog_name: str | None = None
     extra: dict[str, object] = field(default_factory=dict)
+    catalog_location: str | None = field(default=None, compare=False, repr=False)
 
     #: The keys :meth:`from_json` maps into named fields (everything else → extra).
     _KNOWN = frozenset(
@@ -259,7 +279,13 @@ class CatalogEntry:
         return out
 
     @classmethod
-    def from_json(cls, raw: dict[str, object], *, catalog_name: str | None) -> CatalogEntry | None:
+    def from_json(
+        cls,
+        raw: dict[str, object],
+        *,
+        catalog_name: str | None,
+        catalog_location: str | None = None,
+    ) -> CatalogEntry | None:
         """Parse one entry; return :data:`None` (skip) when name-or-source is missing.
 
         A single malformed entry is skipped, never fatal — the rest of the
@@ -300,6 +326,7 @@ class CatalogEntry:
             homepage=_clean_display(_s("homepage")),
             catalog_name=_clean_display(catalog_name),
             extra=extra,
+            catalog_location=catalog_location,
         )
 
 
@@ -310,6 +337,12 @@ class Catalog:
     ``error`` is set (with ``entries=()``) when a fetch/parse failed but the
     location is still recorded in the cache, so the TUI can show an honest
     "⚠ failed to fetch" row rather than silently dropping the source.
+
+    ``registered_as`` is the spec as REGISTERED when ``discover --refresh``
+    anchored a relative one (``catalog.json`` → ``/abs/catalog.json``, ADR-0255):
+    ``location`` is then the absolute file that was read, and
+    ``discover install --catalog catalog.json`` still selects the catalog by the
+    spec the user registered (:func:`resolve_entry`). ``None`` otherwise.
     """
 
     location: str
@@ -318,6 +351,7 @@ class Catalog:
     entries: tuple[CatalogEntry, ...] = ()
     fetched_at: str | None = None
     error: str | None = None
+    registered_as: str | None = None
 
     def label(self) -> str:
         """A human display label — the document ``name`` else the raw location."""
@@ -334,6 +368,8 @@ class Catalog:
             out["fetchedAt"] = self.fetched_at
         if self.error is not None:
             out["error"] = self.error
+        if self.registered_as is not None:
+            out["registeredAs"] = self.registered_as
         out["extensions"] = [e.to_json() for e in self.entries]
         return out
 
@@ -355,7 +391,9 @@ class Catalog:
         if isinstance(raw_entries, list):
             for item in raw_entries:
                 if isinstance(item, dict):
-                    entry = CatalogEntry.from_json(item, catalog_name=label)
+                    entry = CatalogEntry.from_json(
+                        item, catalog_name=label, catalog_location=location
+                    )
                     if entry is not None:
                         entries.append(entry)
         return cls(
@@ -365,6 +403,7 @@ class Catalog:
             entries=tuple(entries),
             fetched_at=_s("fetchedAt"),
             error=(_clean_error(cached_error) if (cached_error := _s("error")) is not None else None),
+            registered_as=_s("registeredAs"),
         )
 
 
@@ -421,7 +460,7 @@ def parse_catalog(
     entries: list[CatalogEntry] = []
     for item in raw_entries:
         if isinstance(item, dict):
-            entry = CatalogEntry.from_json(item, catalog_name=label)
+            entry = CatalogEntry.from_json(item, catalog_name=label, catalog_location=location)
             if entry is not None:
                 entries.append(entry)
     return Catalog(
@@ -723,6 +762,17 @@ def _run_document_verifier(
         ) from exc
 
 
+def _is_git_location(loc: str) -> bool:
+    """True when a catalog LOCATION is fetched by a git clone (see :func:`fetch_catalog`)."""
+
+    low = loc.lower()
+    return (
+        loc.startswith("git+")
+        or low.startswith(("git://", "ssh://", "git@"))
+        or low.endswith(".git")
+    )
+
+
 def fetch_catalog(
     location: str,
     *,
@@ -750,7 +800,7 @@ def fetch_catalog(
         raise CatalogError("empty catalog location")
     low = loc.lower()
 
-    if loc.startswith("git+") or low.startswith(("git://", "ssh://", "git@")) or low.endswith(".git"):
+    if _is_git_location(loc):
         # The sidecar rides along on the one clone, so it is read unconditionally.
         data, sidecar = _git_clone_bytes(loc, git_runner=git_runner)
         _run_document_verifier(verifier, data, sidecar, location)
@@ -910,6 +960,81 @@ def search_entries(catalogs: Iterable[Catalog], query: str | None) -> list[Catal
     return out
 
 
+def select_catalogs(catalogs: Iterable[Catalog], catalog: str | None) -> list[Catalog]:
+    """The catalogs a ``--catalog`` selector names (all of them for none / blank).
+
+    A catalog is selected by its label, its location or the spec it was
+    registered as (``registered_as``), case-insensitively — or by the local
+    catalog FILE a path selector names (a relative one read from the current
+    directory): ``source add --catalog catalog.json`` stores the absolute path, so
+    ``--catalog catalog.json`` typed beside that file selects it (#131 round 3; it
+    used to match nothing and suggest ``--refresh``), and so does the symlinked
+    spelling of an absolute path ``source add`` stored resolved (review round 4).
+    It reads the CACHE: a registered catalog not fetched yet is not selected here
+    (:func:`location_matches_selector` asks the registered sources).
+    """
+
+    cats = list(catalogs)
+    if not catalog or not catalog.strip():
+        return cats
+    wanted = catalog.strip().lower()
+    named_file = _selector_file(catalog)
+    out: list[Catalog] = []
+    for cat in cats:
+        if wanted in {
+            cat.label().lower(),
+            cat.location.lower(),
+            (cat.registered_as or "").strip().lower(),
+        } or (named_file is not None and _local_file(cat.location) == named_file):
+            out.append(cat)
+    return out
+
+
+def _selector_file(selector: str) -> str | None:
+    """The physical local file a ``--catalog`` selector (or a registered spec)
+    names: a relative path read from the current directory, an absolute or ``~``
+    path, or a ``file://`` URL — resolved, so ``<dir>/link/catalog.json`` and the
+    ``<dir>/real/catalog.json`` that ``source add`` stored for it (or ``/tmp`` and
+    ``/private/tmp`` on macOS) compare equal (#131 review round 4). URLs, git specs
+    and blanks → ``None``."""
+
+    anchored = anchor_catalog_location(selector)
+    return _local_file(anchored if anchored is not None else selector)
+
+
+def location_matches_selector(location: str, selector: str) -> bool:
+    """Does a REGISTERED catalog location (a settings spec, not a cached catalog)
+    match a ``--catalog`` selector? By the spec itself, case-insensitively, or by
+    the local catalog file both name. A label cannot match here: a catalog's name
+    is known only once it has been fetched (#131 review round 4)."""
+
+    wanted = selector.strip().lower()
+    if not wanted:
+        return False
+    if location.strip().lower() == wanted:
+        return True
+    named_file = _selector_file(selector)
+    return named_file is not None and _selector_file(location) == named_file
+
+
+def cached_copy(catalogs: Iterable[Catalog], location: str) -> Catalog | None:
+    """The cached catalog recorded for a REGISTERED ``location``: the one cached
+    under that location, or under the spec it was registered as
+    (``registered_as``), or — a local file — the cached copy of the same physical
+    file; ``None`` when the cache holds none (not fetched since it was registered,
+    or the cache predates ``registeredAs``). An error row counts: it is what the
+    last refresh recorded (#131 review round 4)."""
+
+    loc = location.strip()
+    loc_file = _local_file(loc)
+    for cat in catalogs:
+        if loc in (cat.location, cat.registered_as) or (
+            loc_file is not None and _local_file(cat.location) == loc_file
+        ):
+            return cat
+    return None
+
+
 def resolve_entry(
     catalogs: Iterable[Catalog],
     name: str,
@@ -920,23 +1045,835 @@ def resolve_entry(
 
     Returns ``(resolved, candidates)``: ``candidates`` is every entry whose name
     matches ``name`` case-insensitively (optionally narrowed to the catalog whose
-    label/location matches ``catalog``); ``resolved`` is the single candidate when
+    label, location or ``registered_as`` matches ``catalog`` — the last so a
+    relative registration ``discover --refresh`` anchored is still selected by the
+    spec as registered, #131 — or, for a LOCAL catalog, whose file a path
+    ``catalog`` names, a relative one from the current directory: ``source add
+    --catalog catalog.json`` stores the absolute path, and ``--catalog
+    catalog.json`` typed beside that file selects it, #131 round 3, as does the
+    symlinked spelling of a stored absolute path, review round 4 — see
+    :func:`select_catalogs`); ``resolved`` is the single candidate when
     there is EXACTLY one, else :data:`None`. The caller REFUSES an ambiguous
     resolution (``resolved is None and len(candidates) > 1``) with the candidate
     list — never a silent first-match (ADR-0188).
     """
 
     target = name.strip().lower()
-    cat_filter = catalog.strip().lower() if catalog and catalog.strip() else None
     candidates: list[CatalogEntry] = []
-    for cat in catalogs:
-        if cat_filter is not None and cat.label().lower() != cat_filter and cat.location.lower() != cat_filter:
-            continue
+    for cat in select_catalogs(catalogs, catalog):
         for entry in cat.entries:
             if entry.name.strip().lower() == target:
                 candidates.append(entry)
     resolved = candidates[0] if len(candidates) == 1 else None
     return resolved, candidates
+
+
+#: Archive suffixes pip installs as a FILE (pip's ``ARCHIVE_EXTENSIONS`` plus
+#: ``.whl``; uv's ``looks_like_archive`` reads the same set). A BARE catalog
+#: ``source`` ending in one (no separator) is a relative path — the
+#: ``acme_notes-1.4.0-py3-none-any.whl`` an older ``extension index --relative``
+#: emitted is exactly that shape (#131). One test row per suffix pins this tuple
+#: (round-2 review: a three-suffix list passed; round-3 review: without the lzip /
+#: lzma three, ``x.tar.lz`` from an https catalog went to uv as a cwd file).
+_ARCHIVE_SUFFIXES = (
+    ".whl",
+    ".zip",
+    ".tar.gz",
+    ".tgz",
+    ".tar",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+    ".tlz",
+    ".tar.lz",
+    ".tar.lzma",
+)
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+#: The prefixes that make a TYPED target path-shaped before anything else is asked
+#: (:func:`source_looks_like_path`) — pi's ``parseSource`` reads ``./https://x`` as a
+#: local path for the same reason (#131).
+_PATH_PREFIXES = ("./", "../", ".\\", "..\\", "/", "\\", "~")
+#: The only RELATIVE path spellings a catalog ``source`` may use (ADR-0255 (C)).
+_RELATIVE_PREFIXES = ("./", "../", ".\\", "..\\")
+#: pip's own ``strip_extras`` pattern (``pip._internal.req.constructors``): a
+#: trailing ``[extra,...]`` on a path is installer syntax, not part of the file name
+#: (pip then right-strips the path part — :func:`split_path_extras` does too).
+_EXTRAS_RE = re.compile(r"^(.+)(\[[^\]]+\])$")
+#: A PEP 508 direct reference, ``name[extras] @ <target>`` (``<target>`` up to
+#: whitespace; whatever follows — a marker — rides along untouched).
+_DIRECT_REF_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\s*(?:\[[^\]]*\])?)"
+    r"\s*@\s*(?P<url>\S+)(?P<tail>.*)$",
+    re.DOTALL,
+)
+#: A URL scheme at the start of a source (``https:``, ``file:``, ``git+ssh:`` …).
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+#: scp-style git, ``<user>@<host>:<path>`` with ANY user — ``git@github.com:o/r.git``,
+#: ``deploy@git.corp:team/ext.git`` — no ``://``, no whitespace: what
+#: ``classify_target`` routes as git and ``_normalize_git_spec`` rewrites to
+#: ``git+ssh://<user>@<host>/<path>`` (:func:`is_scp_git`).
+_SCP_RE = re.compile(
+    r"^[A-Za-z0-9._~-]+@(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(?!//)\S+$"
+)
+#: What every shape refusal tells the catalog author (ADR-0255 §2).
+ACCEPTED_SOURCE_FORMS = (
+    "A catalog source must be one of: a package name, optionally with [extras] and a "
+    "version specifier ('acme-notes==1.4.0'); an absolute URL, its scheme in "
+    "lowercase — https://, http://, git+<scheme>://, git://, ssh://, scp-style "
+    "user@host:path, file:/// or file://localhost/ (no %-escapes in a file URL's "
+    "path) — or 'name @ <an https://, http://, git+ or file:/// URL>' (a git "
+    "repository as 'name @ git+…'), passed on unchanged; an absolute path or a ~ "
+    "path; or a path starting with ./ or ../ (optionally followed by [extras]), which "
+    "resolves beside a local catalog file."
+)
+
+
+def is_scp_git(spec: str) -> bool:
+    """True for scp-style git, ``<user>@<host>:<path>`` — any user, not only ``git``.
+
+    Review round 7: round 6 matched only ``git@``, so ``alice@h.example:o/r.git``
+    and ``deploy@git.corp:team/ext.git`` read as PEP 508 direct references
+    (``alice @ h.example:o/r.git``) and went raw to the backend, which read the part
+    after ``@`` as a path in the cwd; ``source add`` refused them. A host spelled
+    like a URL scheme (``name@file:x``) is not one: that stays the ``name @ file:x``
+    reference the resolver refuses.
+    """
+
+    m = _SCP_RE.match(spec.strip())
+    return m is not None and m.group("host").lower() not in _KNOWN_SCHEMES
+
+
+def direct_reference_url(spec: str) -> str | None:
+    """The URL of a PEP 508 direct reference ``name[extras] @ <url> [; marker]``, or
+    ``None`` — scp-style ``<user>@host:path`` is a git remote, not
+    ``<user> @ host:path`` (:func:`is_scp_git`). The installer's git helpers use it
+    so ``name @ git+https://…`` keeps its name and is never given a second ``git+``
+    (#131 review round 5)."""
+
+    s = spec.strip()
+    if is_scp_git(s):
+        return None
+    m = _DIRECT_REF_RE.match(s)
+    return m.group("url") if m is not None else None
+
+
+def _starts_like_a_path(source: str) -> bool:
+    """``./`` ``../`` ``/`` ``~`` (or the Windows ``\\`` / drive forms), ``.``, ``..``."""
+
+    return (
+        source in (".", "..") or source.startswith(_PATH_PREFIXES) or bool(_DRIVE_RE.match(source))
+    )
+
+
+def _is_url_spec(source: str) -> bool:
+    """A URL / VCS spec: a scheme (``file:`` included), ``git+``, scp-style ``git@``,
+    or a ``name @ <url>`` direct reference. Asked only AFTER :func:`_starts_like_a_path`.
+    """
+
+    low = source.lower()
+    return (
+        "://" in source
+        or low.startswith(("git+", "git@", "file:"))
+        or _DIRECT_REF_RE.match(source) is not None
+    )
+
+
+def split_path_extras(spec: str) -> tuple[str, str]:
+    """``./x.whl[feature]`` → ``("./x.whl", "[feature]")``; no extras → ``(spec, "")``.
+
+    The same split pip makes before it looks for the file (``strip_extras``), so
+    the existence check runs on what pip will open and the extras ride along —
+    including pip's right-strip of the path part: ``./x.whl [feature]`` is
+    ``./x.whl`` for pip 26.2.1, never ``./x.whl `` (#131 review round 4; uv
+    rejects the spaced spelling outright; for a catalog path aelix hands either
+    backend ``name[feature] @ file:///<abs>/x.whl``, review round 5).
+    """
+
+    m = _EXTRAS_RE.match(spec)
+    return (m.group(1).rstrip(), m.group(2)) if m else (spec, "")
+
+
+def source_looks_like_path(source: str) -> bool:
+    """True when a TYPED install target is shaped like a local file or directory.
+
+    ``classify_target`` asks it (through ``_path_extras``) whether a target the user
+    typed with pip's trailing ``[extras]`` — ``./x.whl[feature]`` — names a file, so
+    ``foo[bar]`` beside a ``./foo`` stays a package as it does for pip. Decided in
+    this order:
+
+    1. it STARTS like a path — ``./`` ``../`` ``/`` ``~`` (or the Windows ``\\`` /
+       drive forms), ``.`` or ``..`` — even when a ``://`` follows;
+    2. otherwise a URL or VCS spec (a scheme — ``file:`` included —, ``git+``,
+       ``git@``, ``name @ <url>``) is not a path, though it contains ``/``;
+    3. otherwise it contains a path separator, or (extras aside) ends in an archive
+       suffix pip installs as a file.
+
+    A catalog entry's ``source`` is NOT decided here: :func:`resolve_entry_target`
+    accepts a fixed list of forms and refuses the rest (#131, ADR-0255).
+    """
+
+    s = source.strip()
+    if not s:
+        return False
+    if _starts_like_a_path(s):
+        return True
+    if _is_url_spec(s):
+        return False
+    if "/" in s or "\\" in s:
+        return True
+    return split_path_extras(s)[0].lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _catalog_base_dir(location: str | None) -> tuple[Path | None, str]:
+    """The directory a relative entry ``source`` resolves against → ``(dir, why_not)``.
+
+    Only a LOCAL catalog file has one: a bare absolute path or a ``file://`` URL →
+    the PHYSICAL directory of that file (``Path.resolve()``, symlinks followed), the
+    same directory ``extension index --relative`` measures from, so the two can
+    never disagree about a symlinked catalog. When there is none, ``dir`` is
+    ``None`` and ``why_not`` says why, in words that are true of that location:
+    an ``https`` or git catalog is fetched, not read from a directory; a location
+    that is itself relative names no fixed directory (``discover --refresh``
+    records it absolute — see :func:`anchor_catalog_location`).
+    """
+
+    if not location or not location.strip():
+        return None, "the catalog's location is unknown"
+    loc = location.strip()
+    low = loc.lower()
+    if _is_git_location(loc) or low.startswith(("http://", "https://")):
+        return None, f"the catalog is fetched from '{loc}', not read from a local directory"
+    try:
+        path = _file_url_to_path(loc) if low.startswith("file://") else Path(loc).expanduser()
+    except (CatalogError, RuntimeError):
+        return None, f"the catalog location '{loc}' does not name a local file"
+    if not path.is_absolute():
+        return None, (
+            f"the catalog's cached location '{loc}' is itself a relative path, so it "
+            "names no fixed directory — run 'aelix extension discover --refresh' to "
+            "record where it is, or register the catalog by its absolute path"
+        )
+    try:
+        return path.resolve().parent, ""
+    except (OSError, RuntimeError, ValueError):
+        return path.parent, ""
+
+
+def _local_file(location: str | None) -> str | None:
+    """A LOCAL catalog location (bare absolute path or ``file://`` URL) → its
+    physical file, normalised for comparison; anything else → ``None``."""
+
+    if not location:
+        return None
+    loc = location.strip()
+    low = loc.lower()
+    if _is_git_location(loc) or low.startswith(("http://", "https://")):
+        return None
+    try:
+        path = _file_url_to_path(loc) if low.startswith("file://") else Path(loc).expanduser()
+        if not path.is_absolute():
+            return None
+        return os.path.normcase(str(path.resolve()))
+    except (CatalogError, OSError, RuntimeError, ValueError):
+        return None
+
+
+def anchor_catalog_location(location: str) -> str | None:
+    """A bare RELATIVE catalog path → that path from the cwd, absolute; else ``None``.
+
+    ``source add --catalog`` stores a path absolute, but a hand-edited settings file
+    can still hold ``catalog.json``. ``discover --refresh`` reads such a location
+    from the current directory anyway; anchoring it there ONCE, at refresh, and
+    caching the absolute form gives its relative entries the directory of the file
+    that was actually read (ADR-0255). URLs, git specs, ``~`` and absolute paths
+    return ``None``. The join is not normalized, so ``../x`` keeps filesystem
+    semantics through a symlinked cwd.
+    """
+
+    loc = location.strip()
+    if not loc:
+        return None
+    low = loc.lower()
+    if _is_git_location(loc) or "://" in loc or low.startswith(("http:", "https:", "file:")):
+        return None
+    try:
+        path = Path(loc).expanduser()
+    except RuntimeError:
+        return None
+    if path.is_absolute():
+        return None
+    return str(Path.cwd() / path)
+
+
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _is_absolute_file_url(url: str) -> bool:
+    """``file:///…`` or ``file://localhost/…`` — a file URL that names no cwd.
+
+    Byte-exact since review round 7: the host is empty or ``localhost`` in
+    lowercase (uv 0.11 read ``file://LOCALHOST/<abs>`` and ``file://LocalHost/…``
+    as ``<cwd>/LOCALHOST/<abs>`` and installed a cwd decoy), and the path holds no
+    ``%`` (uv decodes ``%23`` to ``#`` and cuts there, installing a sibling; one rule
+    for every escape rather than a list of the dangerous ones). The scheme's own
+    case is refused earlier (:func:`_non_lowercase_scheme`).
+    """
+
+    if not url.startswith(("file:///", "file://localhost/")):
+        return False
+    return "%" not in url.split("#", 1)[0]
+
+
+def _has_host(url: str) -> bool:
+    try:
+        return bool(urlparse(url).netloc)
+    except ValueError:
+        return False
+
+
+def _is_absolute_reference_url(url: str) -> bool:
+    """A URL pip and uv fetch without consulting the cwd, as PEP 508 allows after
+    ``name @``: ``https://host/…``, ``http://host/…``, ``git+<https|http|ssh|git>://host/…``,
+    ``git+file:///…``, ``file:///…``, ``file://localhost/…``."""
+
+    low = url.lower()
+    if low.startswith("git+"):
+        inner = url[4:]
+        if inner.lower().startswith("file:"):
+            return _is_absolute_file_url(inner)
+        return inner.lower().startswith(("https://", "http://", "ssh://", "git://")) and _has_host(
+            inner
+        )
+    if low.startswith("file:"):
+        return _is_absolute_file_url(url)
+    return low.startswith(("https://", "http://")) and _has_host(url)
+
+
+def _is_absolute_source_url(source: str) -> bool:
+    """A whole ``source`` that is an absolute URL: everything
+    :func:`_is_absolute_reference_url` takes, plus the git transports
+    ``classify_target`` routes as git on their own — ``git://host/…``,
+    ``ssh://host/…`` and scp-style ``<user>@host:path`` (:func:`is_scp_git`)."""
+
+    if _is_absolute_reference_url(source):
+        return True
+    low = source.lower()
+    if low.startswith(("git://", "ssh://")):
+        return _has_host(source)
+    return is_scp_git(source)
+
+
+def _is_bare_archive_name(body: str) -> bool:
+    """A bare archive FILE name — any name :func:`scan_artifacts` lists, as an older
+    ``index --relative`` wrote it: no separator, ending in an archive suffix.
+
+    Spaces and any other file-name character are accepted (round-3 review: a
+    character whitelist refused the ``team notes-1.0.tar.gz`` the old generator
+    emitted and uv installs). A name that also reads as a URL (a scheme, ``C:``) or
+    as a ``name @ …`` direct reference is decided by those rules instead, so the
+    round-2 refusals (``file:x.whl``, ``name @ x.whl``) stand.
+    """
+
+    if "/" in body or "\\" in body:
+        return False
+    if _SCHEME_RE.match(body) or _DIRECT_REF_RE.match(body):
+        return False
+    return body.lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _is_path_form(source: str) -> bool:
+    """ADR-0255 (C): an absolute path, a ``~`` path, a ``./`` ``../`` (or ``.\\``
+    ``..\\``) relative path, or a bare archive file name — extras aside."""
+
+    body = split_path_extras(source)[0]
+    if body.startswith(_RELATIVE_PREFIXES) or body.startswith("~"):
+        return True
+    try:
+        if Path(body).is_absolute():
+            return True
+    except (OSError, ValueError):  # pragma: no cover — a NUL in the string
+        return False
+    return _is_bare_archive_name(body)
+
+
+def _is_plain_requirement(source: str) -> bool:
+    """ADR-0255 (A): a PEP 508 requirement with NO direct reference and no marker —
+    a name, optionally with ``[extras]`` and a version specifier."""
+
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        req = Requirement(source)
+    except InvalidRequirement:
+        return False
+    return req.url is None and req.marker is None
+
+
+@dataclass(frozen=True)
+class ResolvedPath:
+    """A path source as the resolver placed it: the file or directory, and pip's
+    ``[extras]`` — two values, split ONCE, here (#131 round 3).
+
+    ``discover install`` hands this object to the installer, which installs,
+    hashes, stages and pins ``path`` and puts ``extras`` back only on the argv. It
+    used to get ``f"{path}{extras}"`` and split it again with its own rule, which
+    preferred a sibling LITERALLY named ``x.whl[feature]`` (a symlink to another
+    wheel) over the ``x.whl`` checked here — the Resolved line named one artifact
+    and another was installed and pinned (round-3 review, P1). ``str()`` is
+    ``path`` + ``extras`` as the user reads them (the Resolved and Install lines, the
+    install record); the installer gets :meth:`installer_arg`, a ``file://`` URI
+    (review round 5).
+    """
+
+    path: str
+    extras: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.path}{self.extras}"
+
+    def installer_arg(self) -> str:
+        """What pip and uv receive: the path as a percent-encoded absolute ``file://``
+        URI (``Path.as_uri()``), never a bare path string (#131 review round 5).
+
+        A path string is parsed AGAIN by the backend, differently from the
+        filesystem: uv cuts at a ``#`` (a URL fragment) and strips an empty ``[]``, a
+        ``[x]`` group and trailing whitespace; pip also strips trailing whitespace and
+        a ``[x]`` group, and splits at ``;`` (a marker) — each opened ANOTHER path
+        than the one resolved (uv 0.11.19, pip 26.2.1:
+        ``.omc/probes/131-live/fix6/uri-matrix.txt``). The URI carries ``[`` ``]``,
+        spaces, ``;``, ``%``, ``?``, a backslash and non-ASCII literally to both.
+        Extras cannot ride on an unnamed URL (pip opens ``file:///x.whl[feature]``
+        as a file of that name), so with extras the argument is PEP 508's
+        ``name[extras] @ file:///…``, the name read from the artifact
+        (:func:`local_project_name`). A ``#`` survives no spelling on uv — it decodes
+        ``%23`` and cuts there too — so a path holding one is refused, here and by
+        :func:`resolve_entry_target`.
+        """
+
+        if "#" in self.path:
+            raise CatalogError(
+                f"local path '{self.path}' contains '#', which uv reads as the start of "
+                "a URL fragment in every spelling (a bare path, or %23 in a file:// "
+                "URI) and would open a different path — rename it"
+            )
+        uri = Path(self.path).as_uri()
+        if not self.extras:
+            return uri
+        name = local_project_name(Path(self.path))
+        if name is None:
+            raise CatalogError(
+                f"local path '{self.path}' is asked for the extras {self.extras}, but "
+                "aelix cannot read its project name (from a wheel or sdist file name, "
+                "or a directory's pyproject.toml [project] name). aelix hands a local "
+                "path to the installer as a file:// URI, and extras on a URI need the "
+                "project's name ('name[extras] @ file:///…'), so it refuses rather "
+                "than guess one — drop the extras, or give the project a "
+                "[project] name"
+            )
+        return f"{name}{self.extras} @ {uri}"
+
+
+def resolved_path_from_installer_arg(spec: str) -> ResolvedPath | None:
+    """The :class:`ResolvedPath` an :meth:`ResolvedPath.installer_arg` string names —
+    ``file:///…`` or ``name[extras] @ file:///…`` — or ``None`` for any other string.
+
+    An install record keeps that string since review round 7, so ``extension
+    update`` re-installs the path through the same URI hand-off ``discover install``
+    used, never a bare path string the backend parses again (verify6 B2: a recorded
+    ``<dir>/trusted[]`` or ``<dir>/trusted `` re-installed the stripped sibling
+    ``trusted`` on update). The path is the URI's, percent-decoded
+    (``url2pathname``); the extras are the ones written before ``@``.
+    """
+
+    s = spec.strip()
+    extras = ""
+    m = _DIRECT_REF_RE.match(s)
+    if m is not None:
+        if m.group("tail").strip():
+            return None
+        name = m.group("name")
+        extras = name[name.index("[") :].strip() if "[" in name else ""
+        s = m.group("url")
+    if not s.startswith("file:///"):
+        return None
+    path = urllib.request.url2pathname(urlsplit(s).path)
+    return ResolvedPath(path, extras)
+
+
+#: A PEP 508 project name.
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+
+def local_project_name(path: Path) -> str | None:
+    """The project name a local artifact declares, for ``name[extras] @ file:///…``:
+    a wheel's file name (PEP 427 ``{name}-{version}-…``), an sdist's
+    (``{name}-{version}`` + an archive suffix) or a directory's ``pyproject.toml``
+    ``[project] name``; ``None`` when there is none to read. pip and uv check it
+    against the metadata they build, so a wrong one fails the install loudly."""
+
+    import tomllib
+
+    try:
+        if path.is_dir():
+            data = tomllib.loads((path / "pyproject.toml").read_text(encoding="utf-8"))
+            project = data.get("project")
+            declared = project.get("name") if isinstance(project, dict) else None
+            name = declared.strip() if isinstance(declared, str) else None
+        else:
+            low = path.name.lower()
+            if low.endswith(".whl"):
+                name = path.name.split("-", 1)[0]
+            else:
+                suffix = next((s for s in _ARCHIVE_SUFFIXES if low.endswith(s)), None)
+                stem = path.name[: -len(suffix)] if suffix else ""
+                name = stem.rsplit("-", 1)[0] if "-" in stem else None
+    except (OSError, ValueError):  # unreadable / undecodable / bad TOML
+        return None
+    return name if name and _PROJECT_NAME_RE.match(name) else None
+
+
+def resolve_entry_source(entry: CatalogEntry) -> tuple[str, bool]:
+    """:func:`resolve_entry_target` as ``(spec, is_path)`` — ``spec`` as shown (a path
+    with its extras joined; the installer gets :meth:`ResolvedPath.installer_arg`) —
+    for callers that only show it."""
+
+    target = resolve_entry_target(entry)
+    return str(target), isinstance(target, ResolvedPath)
+
+
+def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
+    """What an entry installs from — a spec string, or a :class:`ResolvedPath`;
+    :class:`CatalogError` refuses.
+
+    #131 (ADR-0255). The installer reads anything relative from the PROCESS working
+    directory: ``classify_target`` calls a target a path only if it exists there,
+    and pip / uv open ``./x``, ``file:x``, ``x.whl`` there — uv also
+    ``name @ ./x`` and ``name @ x`` (measured). Handing it an entry's raw
+    ``source`` therefore installed whatever the cwd held. So a source is accepted
+    in exactly these forms, and every other one is REFUSED, never rewritten:
+
+    * (A) a package requirement without a direct reference — a name, optionally
+      with ``[extras]`` and a version specifier → unchanged, to the index. Unless
+      it has NO version specifier and a file or directory named like the package
+      (its name, extras aside) sits beside a LOCAL catalog: the entry is then
+      ambiguous (the local copy, or the package?) and is refused;
+    * (B) an absolute URL — ``https://`` / ``http://`` / ``git+<scheme>://`` (and
+      ``git://``, ``ssh://``, scp-style ``<user>@host:path`` with any user),
+      ``file:///`` or ``file://localhost/`` (the host byte-exact, no ``%`` in the
+      path) — or ``name @ <an https, http, git+ or absolute file URL>``, its scheme
+      in lowercase → passed through UNCHANGED, fragments (``#sha256=``,
+      ``#subdirectory=``, ``#egg=``) and extras exactly as written;
+    * (C) a path — an absolute path, a ``~`` path, or a relative path that STARTS
+      with ``./`` or ``../`` (``.\\`` ``..\\`` too), optionally followed by
+      ``[extras]``; a bare archive file name (``x-1.0-py3-none-any.whl``, what an
+      older ``index --relative`` wrote) is a relative path too. It must exist and
+      is passed on ABSOLUTE and ``Path.resolve()``-d (``link/..`` as the OS opens it:
+      link followed on POSIX, lexical on Windows), as a :class:`ResolvedPath` — the
+      path and the extras as two values, never re-split downstream. A relative one resolves
+      against the PHYSICAL directory of the LOCAL catalog file it came from —
+      never the cwd — and is refused in an https or git catalog (or a cached one
+      whose location is itself relative). An absolute or ``~`` path does not
+      depend on the catalog's location, so it is taken from any catalog, ``~``
+      being the installing user's home.
+
+    Refused: ``name @ <relative path or bare word>`` (uv reads it from the cwd), a
+    ``file:`` URL that is not ``file:///`` / ``file://localhost/`` (``file:x``,
+    ``file:``, ``file:#subdirectory=x``, ``name @ file:x``), a source starting with
+    ``-`` (the installer would read an option), a relative path not starting with
+    ``./`` or ``../``, and anything else not listed. Every refusal names the entry
+    and the catalog; a shape refusal also lists the accepted forms
+    (:data:`ACCEPTED_SOURCE_FORMS`). Paths are quoted by hand, not with ``!r``,
+    which doubles a Windows path's backslashes (#208). ``is_path`` tells the
+    caller which branch decided, so it can refuse a package spec its installer
+    would itself read as a path from the cwd.
+
+    Round 3 adds a refusal of a package name ending in ``.git`` (the installer routes
+    it as a git URL, ``git+acme.git``, which no backend can fetch). Review round 5
+    closes the class "resolved right, then re-parsed by the backend": a path reaches
+    the installer as a ``file://`` URI (:meth:`ResolvedPath.installer_arg`), so the
+    round-3 refusal of a resolved name ending in ``[…]`` is gone (the URI carries the
+    brackets) and a resolved path holding ``#`` is refused instead (uv cuts there in
+    every spelling); a URL scheme not written in lowercase is refused (uv takes
+    ``FILE:`` for a relative path segment); and ``name @ <http(s) URL ending in .git>``
+    is refused — the two backends disagree on it (uv clones it, pip downloads it as
+    an archive and fails) — with the ``name @ git+…`` spelling to use instead.
+    Review round 6 (the final round, owner decision): an scp-style git source with
+    any user is git again (:func:`is_scp_git`); a ``file:`` URL whose host is not
+    empty or ``localhost`` byte-exact (``file://LOCALHOST/…``), or whose path holds a
+    ``%``-escape, is refused (uv read both as other paths); every refusal message says
+    what is true of its spelling (:func:`_url_problem`).
+
+    The guarantee (ADR-0255 §12): a TRUSTED catalog's source is never resolved
+    against the cwd, nor handed over as a string the installer reads from there
+    (uv's own cwd config is a stated limit); a hostile catalog is outside it, so
+    adversarial spellings are refused only where a simple rule does it.
+    """
+
+    source = entry.source
+    raw = source.strip()
+    location = entry.catalog_location
+    where = entry.catalog_name or location or "?"
+    who = f"catalog entry '{entry.name}' (catalog '{where}')"
+
+    def refuse(why: str) -> CatalogError:
+        return CatalogError(
+            f"{who}: source '{source}' {why}. Refusing it. {ACCEPTED_SOURCE_FORMS}"
+        )
+
+    if not raw:
+        raise refuse("is empty")
+    if raw.startswith("-"):
+        raise refuse("starts with '-', so the installer would read it as an option")
+    if _is_path_form(raw):
+        body, extras = split_path_extras(raw)
+        placed = ResolvedPath(str(_place_path(body, raw, who, location)), extras)
+        try:
+            placed.installer_arg()  # the hand-off must exist before consent is asked
+        except CatalogError as exc:
+            raise CatalogError(f"{who}: source '{raw}': {exc}. Refusing it.") from exc
+        return placed
+    direct = None if is_scp_git(raw) else _DIRECT_REF_RE.match(raw)
+    url = direct.group("url") if direct is not None else raw
+    upper = _non_lowercase_scheme(url)
+    if upper is not None:
+        raise refuse(
+            f"writes the URL scheme '{upper}' with upper-case letters — write it in "
+            f"lowercase ('{upper.lower()}:'). aelix passes a URL on exactly as written, "
+            "and uv does not read an upper-case scheme as one ('FILE:///x' is a path "
+            "segment 'FILE:' under the current directory to it)"
+        )
+    if _is_absolute_source_url(raw):
+        return source
+    if direct is not None:
+        if _is_absolute_reference_url(url):
+            if url.lower().startswith(("https://", "http://")) and _url_path_is_git(url):
+                name = direct.group("name").strip()
+                raise refuse(
+                    f"is a direct reference to '{url}', a git repository URL without "
+                    "'git+' — uv clones it while pip downloads it as an archive and "
+                    f"fails; write '{name} @ git+{url}'"
+                )
+            return source
+        raise refuse(
+            f"is a direct reference to '{url}', which {_url_problem(url, after_name=True)}"
+        )
+    if _SCHEME_RE.match(raw):
+        raise refuse(_url_problem(raw))
+    if _is_plain_requirement(raw):
+        base, _ = _catalog_base_dir(location)
+        # The NAME as written (extras aside) — only for a requirement with no version
+        # specifier: ``local-ext[extra]`` beside a ``./local-ext`` is ambiguous too,
+        # but ``local-ext==1.0`` says "package", whatever sits beside the catalog
+        # (review round 5: a neighbouring file literally named ``local-ext==1.0``
+        # refused it).
+        named = _unversioned_requirement_name(raw)
+        if base is not None and named is not None and _exists(base / named[0]):
+            meant = f"./{named[0]}{named[1]}"
+            raise CatalogError(
+                f"{who}: source '{source}' reads as a package name, but "
+                f"'{base / named[0]}' exists beside the catalog — write '{meant}' if "
+                "the entry means that local copy. Refusing rather than guessing which "
+                "one to install."
+            )
+        if raw.lower().endswith(".git"):
+            raise refuse(
+                "reads as a package name, but the installer takes a name ending in "
+                "'.git' for a git URL (it would run 'git+" + raw + "', which no "
+                "backend can fetch) — write the repository's absolute git URL"
+            )
+        return source
+    raise refuse(
+        "is neither a package name, an absolute URL nor a path in an accepted form "
+        "(absolute, ~, or starting with ./ or ../)"
+    )
+
+
+#: The schemes a source may use (``git+`` any of them): an upper-case spelling of one
+#: is refused, never passed on (review round 5).
+_KNOWN_SCHEMES = ("file", "http", "https", "git", "ssh")
+
+
+def _non_lowercase_scheme(url: str) -> str | None:
+    """The scheme of ``url`` when it is one aelix knows (``file``, ``http(s)``,
+    ``git``, ``ssh``, ``git+<any>``) written with an upper-case letter; else ``None``.
+    A one-letter scheme is a Windows drive (``C:``), not a URL."""
+
+    m = _SCHEME_RE.match(url)
+    if m is None or len(m.group(0)) <= 2:
+        return None
+    scheme = m.group(0)[:-1]
+    low = scheme.lower()
+    if low != scheme and (low in _KNOWN_SCHEMES or low.startswith("git+")):
+        return scheme
+    return None
+
+
+def _url_path_is_git(url: str) -> bool:
+    """An http(s) URL whose PATH ends in ``.git`` (a trailing ``/`` or ``@<rev>``
+    aside) — the test the installer's ``classify_target`` routes as git."""
+
+    try:
+        path = urlparse(url.lower()).path.rstrip("/")
+    except ValueError:
+        return False
+    if path.endswith(".git"):
+        return True
+    head, sep, _rev = path.rpartition("@")
+    return bool(sep) and head.rstrip("/").endswith(".git")
+
+
+def _url_problem(url: str, *, after_name: bool = False) -> str:
+    """Why a URL-shaped ``url`` (a whole source, or — ``after_name`` — the target of
+    ``name @``) is not accepted, in words true of that spelling (review round 5:
+    ``file:/abs`` was said to be read from the current directory; review round 7:
+    ``ftp://h/x`` and ``name @ ssh://h/x`` were said to need a host they have)."""
+
+    low = url.lower()
+    if low.startswith("git+file:"):
+        return _file_url_problem(url[len("git+") :], "git+file")
+    if low.startswith("file:"):
+        return _file_url_problem(url, "file")
+    m = _SCHEME_RE.match(url)
+    if m is None:
+        return "is not an absolute URL — uv reads it from the current directory"
+    scheme = m.group(0)[:-1].lower()
+    whole_only = ("git", "ssh")
+    known = ("https", "http") if after_name else ("https", "http", *whole_only)
+    git_transport = scheme.startswith("git+") and scheme[len("git+") :] in (
+        "https",
+        "http",
+        "ssh",
+        "git",
+    )
+    if scheme in known or git_transport:
+        return f"is not an absolute URL — '{scheme}:' needs '//' and a host after it"
+    if after_name and scheme in whole_only:
+        return (
+            f"uses the URL scheme '{scheme}:', which a 'name @' reference may not use "
+            f"— write 'name @ git+{scheme}://…', or the URL on its own"
+        )
+    return f"uses the URL scheme '{scheme}:', which a catalog source may not use"
+
+
+def _file_url_problem(url: str, scheme: str) -> str:
+    """:func:`_url_problem` for a ``file:`` URL (``scheme`` is ``file`` or
+    ``git+file``, for the spelling to suggest).
+
+    ``git+file:`` has its own words (#131 verify round 7): what uv does with a
+    ``file:`` host or a ``%23`` is not what happens to a ``git+file:`` URL — git
+    ignores the host (uv 0.11.19 and pip 26.2.1 both cloned ``<abs>`` for
+    ``git+file://h<abs>`` and ``git+file://LOCALHOST<abs>``, never a directory under
+    the cwd), and for ``git+file:///<dir>/t%23r`` it is pip, not uv, that cut the
+    path and cloned the sibling ``t`` (``.omc/probes/131-live/verify7/
+    gitfile-measure.txt``). The refusals stay; the reason given is the true one.
+    """
+
+    rest = url[len("file:") :]
+    good = f"{scheme}:///<absolute path>"
+    git = scheme == "git+file"
+    if rest.startswith("//"):
+        authority = rest[2:].split("#", 1)[0]
+        host = authority.split("/", 1)[0].split("?", 1)[0]
+        if host in ("", "localhost"):
+            if "/" not in authority:
+                return (
+                    f"is a {scheme}://{host} URL with no absolute path after the host — "
+                    f"write {good}"
+                )
+            if git:
+                return (
+                    "is a git+file: URL whose path holds a percent-escape ('%'), which "
+                    "aelix does not accept: pip cuts the path at a '%23' and clones "
+                    "another repository — write git+file:///<absolute path> without "
+                    "escapes"
+                )
+            return (
+                f"is a {scheme}: URL whose path holds a percent-escape ('%'), which "
+                "aelix does not accept: the installer decodes it (uv reads '%23' as "
+                "'#' and cuts the path there, opening another one) — name the path "
+                "directly instead (an absolute path, or ./<path> beside the catalog)"
+            )
+        if git:
+            return (
+                f"is a git+file: URL naming the host '{host}', an unsupported spelling "
+                "— aelix accepts a git+file: host only empty or as 'localhost' in "
+                f"lowercase; write {good}"
+            )
+        if host.lower() == "localhost":
+            return (
+                f"is a {scheme}: URL naming the host '{host}' — aelix accepts the host "
+                f"only empty or as 'localhost' in lowercase; write {good} (uv reads "
+                "any other spelling of the host as a directory under the current "
+                "directory)"
+            )
+        return (
+            f"is a {scheme}: URL naming the host '{host}', which aelix does not accept "
+            f"— write {good} (uv reads such a host as a directory under the current "
+            "directory)"
+        )
+    if rest.startswith("/"):
+        return (
+            f"is a {scheme}: URL written with one slash ('{scheme}:/…'), a spelling "
+            f"aelix does not accept — write it with three, {good}"
+        )
+    if scheme == "file":
+        return (
+            "is a relative file: URL — uv reads it from the current directory; write "
+            "./<path> (beside the catalog) or file:///<absolute path>"
+        )
+    return f"is a relative {scheme}: URL, which aelix does not accept — write {good}"
+
+
+def _unversioned_requirement_name(source: str) -> tuple[str, str] | None:
+    """``(name, "[extras]")`` of a plain requirement with NO version specifier, as
+    written; ``None`` for one with a specifier (or not a requirement)."""
+
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        req = Requirement(source)
+    except InvalidRequirement:
+        return None
+    if str(req.specifier):
+        return None
+    extras = f"[{','.join(sorted(req.extras))}]" if req.extras else ""
+    return req.name, extras
+
+
+def _place_path(body: str, raw: str, who: str, location: str | None) -> Path:
+    """Resolve one path-shaped ``body`` from a catalog entry; :class:`CatalogError` refuses."""
+
+    try:
+        expanded = Path(body).expanduser()
+    except RuntimeError as exc:  # ``~user`` with no such user
+        raise CatalogError(f"{who}: cannot expand source '{raw}': {exc}") from exc
+    if expanded.is_absolute():
+        candidate = expanded
+    else:
+        base, why_not = _catalog_base_dir(location)
+        if base is None:
+            raise CatalogError(
+                f"{who}: relative source '{raw}' has nothing to resolve against — "
+                f"{why_not}. Refusing rather than reading it from the current "
+                "directory or treating it as a package name; the catalog should give "
+                "an absolute path, an absolute URL or a package name."
+            )
+        # Joined, NOT normalized: ``link/..`` is what the OS opens (resolve()).
+        candidate = base / expanded
+    if not _exists(candidate):
+        raise CatalogError(
+            f"{who}: source path '{candidate}' does not exist (the catalog says "
+            f"'{raw}'). Refusing rather than treating it as a package name."
+        )
+    try:
+        return candidate.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CatalogError(f"{who}: cannot resolve source path '{candidate}': {exc}") from exc
 
 
 # =====================================================================
@@ -1112,6 +2049,18 @@ def scan_artifacts(directory: Path) -> list[IndexedArtifact]:
     )
 
 
+def _relative_source(artifact: Path, base: Path) -> str:
+    """``artifact`` as a ``./``- or ``../``-prefixed POSIX path measured from ``base``.
+
+    Forward slashes on every platform (Windows accepts them, and the catalog may be
+    read on another OS). ``os.path.relpath`` raises ``ValueError`` across Windows
+    drives; the CLI turns that into a usage error.
+    """
+
+    rel = Path(os.path.relpath(artifact, base)).as_posix()
+    return rel if rel.startswith("../") else f"./{rel}"
+
+
 def build_index_catalog(
     artifacts: Iterable[IndexedArtifact],
     *,
@@ -1129,12 +2078,19 @@ def build_index_catalog(
     its ``sha256``) and every version found is listed in ``versions``, which is
     what that field is for.
 
-    ``source`` is an ABSOLUTE artifact path by default, because
-    ``classify_target`` resolves a path against the PROCESS working directory,
-    not against the catalog's own location — a relative source silently becomes
-    a pypi lookup from anywhere else. ``relative_to`` opts into relative
-    filenames for a directory meant to be copied or mounted elsewhere; it is
-    then the operator's job to run installs from that directory.
+    ``source`` is an ABSOLUTE artifact path by default — it installs from any
+    catalog location, a served one included. ``relative_to`` opts into a
+    ``./``-prefixed path measured from that directory, which must be the
+    PHYSICAL directory the catalog FILE is written to (the CLI passes
+    ``target.resolve().parent``, or the resolved scanned directory for ``--out -``,
+    which writes no file): since #131 (ADR-0255)
+    :func:`resolve_entry_target` resolves a relative source against the local
+    catalog file's own physical directory (never the process cwd), so such a
+    catalog travels with its wheelhouse, a symlinked catalog file included — and
+    is refused, not read from the cwd, if it is ever served over https or git.
+    The ``./`` prefix is what the resolver's allowlist requires of a relative
+    path, even a same-directory one (a bare ``name.whl`` is still accepted for
+    catalogs an older ``--relative`` wrote).
     """
 
     by_name: dict[str, list[IndexedArtifact]] = {}
@@ -1154,7 +2110,7 @@ def build_index_catalog(
         # side in whatever form the caller happened to hold turned a scan of a
         # relative directory into a ValueError.
         source = (
-            str(newest.path.resolve().relative_to(Path(relative_to).resolve()))
+            _relative_source(newest.path.resolve(), Path(relative_to).resolve())
             if relative_to is not None
             else str(newest.path.resolve())
         )

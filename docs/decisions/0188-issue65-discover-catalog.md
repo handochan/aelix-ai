@@ -130,6 +130,28 @@ sole trust boundary.
      disambiguate) — NEVER a silent first-match. Install flags
      (`--yes/--index-url/--offline/--no-verify/--strict/--repin/--verify-pypi`)
      pass straight through.
+
+     > **Amendment (2026-10-06, revised 2026-10-07, ADR-0255 — #131).** "`entry.source`
+     > … delegates to the UNCHANGED `_cmd_install([source_spec, …])` → `classify_target`"
+     > no longer holds. The installer reads anything relative (`./x`, `file:x`, and on
+     > uv `name @ ./x`) from the PROCESS cwd, so a relative `source` installed the copy
+     > beside the catalog only when run from the catalog's directory and whatever the
+     > cwd held (or nothing) from anywhere else; a bare name meant as a neighbouring
+     > directory went to the index. The source now passes `resolve_entry_target`, an
+     > ALLOWLIST: a package name (extras, version specifier) and an absolute URL
+     > (`https`/`http`/`git+`/`git://`/`ssh://`/`git@host:path`/`file:///`/
+     > `file://localhost/`, or `name @` one of the PEP 508 ones; the scheme in
+     > lowercase) are handed on byte-identical; a `./` / `../` path (or a bare archive file name) resolves against the LOCAL catalog file's physical directory (refused in an
+     > https/git catalog); an absolute or `~` path is taken from any catalog; a path
+     > must exist, and reaches the installer as the path and its `[extras]` — two
+     > values, never re-split — handed over as a `file://` URI (`name[extras] @
+     > file:///…` with extras), never as a path string the backend parses again.
+     > Everything else — `name @ <relative>`, a non-absolute
+     > `file:` URL (`file://host/x` included), a `-`-leading source, a relative path
+     > without `./`, a `.git`-ending package name — is refused, never rewritten, and so
+     > is a package name that also names a file beside the catalog or in the cwd. §4(b)
+     > holds: consent shows the resolved (for a path, absolute) spec, printed
+     > terminal-safe. (Text above intentionally left intact.)
    - ONE new pure module `extension_catalog.py` (`fetch_catalog` for
      path/file/http/git + lenient parse + cap + merged-cache atomic read/write +
      `load_cached_catalog`), injectable like `extension_pins.py` so it unit-tests

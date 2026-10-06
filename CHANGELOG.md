@@ -1021,6 +1021,99 @@ unwritten. Add them with the next release.
   hyperlink is kept only when it is a clean `http`, `https`, `file` or
   `mailto` link. The status line, widgets, toasts and modals an extension
   draws outside the transcript are not covered by this change.
+- **A catalog's `source` must be one of a few accepted forms, and a relative
+  path in it is read from the catalog's own directory, never from the
+  directory you run `aelix` in (#131, ADR-0255).** `aelix extension discover
+  install` used to hand an entry's `source` to the installer as written, and
+  the installer reads anything relative from your current directory: a
+  hand-written `"source": "./acme-notes"` (or `file:acme-notes`, or — with
+  uv — `acme-notes @ ./acme-notes`) installed the directory beside the
+  catalog only when you stood in it, and from anywhere else whatever
+  `./acme-notes` that directory held — or failed. A bare `"source":
+  "acme-notes"` meant as that neighbouring directory went to the package
+  index from everywhere but the catalog's directory. Now a `source` is
+  accepted only as: a package name, optionally with `[extras]` and a version
+  specifier (handed on unchanged); an absolute URL with its scheme in
+  lowercase — `https://`, `http://`, `git+…://`, `git://`, `ssh://`,
+  scp-style `user@host:path` (any user), `file:///…`, `file://localhost/…`
+  (the host empty or `localhost` in lowercase, no `%`-escape in the path) — or
+  `name @ <an https,
+  http, git+ or file:/// URL>`, a git repository there as `name @ git+…`
+  (handed on exactly as written, `#sha256=` / `#subdirectory=` fragments and
+  `[extras]` included — the installer still adds the `git+` to `user@host:path`
+  (as `git+ssh://user@host/path`), `git://`, `ssh://` and a bare URL ending in
+  `.git`, as for one you type, and no longer puts one in front of a `name @`
+  reference, which pip read as a path in your current directory); a path
+  starting with `./` or `../`, or a bare `.whl` / `.tar.gz` / `.zip` (or other
+  archive, `.tar.lz` included) file name — spaces allowed — which resolves
+  against the directory of the local catalog file (the file a symlink points
+  to) and installs from that absolute path, `[extras]` kept and never part of
+  the file that is installed, hashed and pinned (a file literally named
+  `x.whl[feature]` beside `x.whl` changes nothing) — and is refused when the
+  catalog is served over HTTPS or git; or an absolute or `~` path,
+  which is accepted from any catalog, local or served (`~` is the home of
+  whoever installs) and installs as the resolved absolute path. A path must
+  exist, and reaches pip or uv as a `file://` URI (`name[extras] @ file:///…`
+  with extras, the name read from the wheel, sdist or `pyproject.toml`), never as
+  a path string they would parse again — given one, uv installed a different
+  directory for a name ending in `[]`, `[x]` or a space, or holding `#`. The
+  install record keeps that URI, and `aelix extension update` re-installs a
+  recorded path — one an older `aelix` recorded too — through the same URI, not
+  the recorded string; a path you typed yourself that the URI cannot carry
+  (`./legacy[feature]` on a directory with no `[project] name`) is updated as
+  it was installed, the absolute path with its extras, and one extension that
+  cannot be updated does not stop `update` for the others (it is named, and
+  the exit code is non-zero). Everything else is **refused** before the consent prompt, with the
+  entry, the catalog and the accepted forms named — never rewritten: `name @
+  ./x`, `name @ x`, every `file:` URL other than `file:///…` /
+  `file://localhost/…` (`file:x`, `file:`, `file:/abs`, `file://x`,
+  `file://localhost.evil/x`, `file://LOCALHOST/…` — uv read that host as a
+  directory in your current one —, `name @ file:x`), a file URL whose path holds
+  a `%`-escape (uv decoded `%23` and installed a neighbouring directory — name
+  the path directly; for `git+file:` it was pip that cut the path there and
+  cloned another repository), a `git+file:` URL naming a host other than
+  `localhost` (git ignores the host — an unsupported spelling), a URL scheme with a capital
+  letter (`FILE:///…`, `Https://…` — uv took `FILE:` for a directory in your
+  current one), `name @ https://…/repo.git` without `git+`, a source starting
+  with `-` (the installer would read it as an option), a relative path without
+  `./`, a package name ending in `.git`, a path containing `#` (uv cuts it
+  there in every spelling), extras on a directory with no `pyproject.toml`
+  `[project] name`, an unversioned package name that also names a file beside
+  the catalog (`acme-notes[extra]` beside `./acme-notes` too; `acme-notes==1.4.0`
+  is not checked), and a package spec that names a file in your current
+  directory (aelix's installer takes a target that exists on disk for a path
+  and would have installed that instead). The `Resolved` line shows the absolute spec next to
+  what the catalog said; the `Resolved` and `Install extension from` lines,
+  these refusals and every `verify` line print a path through the
+  terminal-safe filter (control characters removed), and the command line
+  shown under them escapes them as before. A catalog registered by a relative
+  path in a hand-edited settings file is read from the directory you refresh
+  in; `discover --refresh` now says so and records it, and `discover install
+  --catalog <the path as registered>` still selects it; `--catalog` also
+  accepts a relative path naming a registered catalog file from where you run
+  it (`source add --catalog catalog.json`, then `--catalog catalog.json` beside
+  it) or another spelling of its absolute path (through a symlink); a selector
+  that names a registered catalog with no cached copy yet, or one whose last
+  refresh failed, says that and how to fetch it — while `AELIX_OFFLINE` or
+  `PI_OFFLINE` is set, how to refresh online, since an offline refresh skips a
+  network catalog — and only one that names no registered catalog says so. `aelix
+  extension install ./x` — what you type yourself — is unchanged, except that
+  `./x.whl[feature]` counts as the path `./x.whl` when that file exists, as
+  pip already read it, even beside a file literally named `x.whl[feature]`.
+  `aelix extension index --relative` now writes `./name.whl` paths measured
+  from the catalog file (so `--out` elsewhere gives `../…`; `--out -` measures
+  from the scanned directory), and catalogs an older `--relative` wrote, with
+  bare file names, still install from a local catalog file. The guarantee is
+  for a catalog you trust: aelix never resolves an entry's `source` against
+  the directory you run `aelix` in, and never hands the installer a string it
+  would read from there. Configuration the installer discovers by itself is
+  outside it: with the uv backend, a `uv.toml` or `pyproject.toml` `[tool.uv]`
+  in that directory or a parent is uv's own, which aelix honours on purpose
+  (ADR-0200), and in a cloned repository it can make a package-name entry
+  install a wheel from there — a known limit, left to a follow-up. A hostile
+  catalog can already name any package or URL; odd spellings in one are
+  refused where cheap, and the forms left open are listed as known limits in
+  the private-catalog guide.
 
 ## [0.1.0-beta.2] - 2026-09-09
 

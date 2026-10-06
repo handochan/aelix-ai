@@ -86,10 +86,12 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
+
+from aelix_ai.utils.terminal_text import safe_for_terminal
 
 from ..extensions.ep_manifest import (
     EpApiLevelRefusal,
@@ -249,6 +251,11 @@ SourceKind = Literal["index", "git", "path", "pypi", "catalog"]
 # A subprocess runner injectable for tests (default = the real pip call).
 PipRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
+#: What the install path accepts: a target string (typed, or a catalog spec that is
+#: not a path), or a catalog path the resolver already split from its ``[extras]``
+#: (:class:`extension_catalog.ResolvedPath` — #131 round 3: never re-split here).
+InstallTarget = str | extension_catalog.ResolvedPath
+
 __all__ = [
     "ENTRY_POINT_GROUP",
     "AmbientIndexConfig",
@@ -276,13 +283,15 @@ __all__ = [
 ]
 
 
-def classify_target(target: str) -> TargetKind:
+def classify_target(target: InstallTarget) -> TargetKind:
     """Classify an install target as a local path, a git URL, or a pypi spec.
 
     A local path WINS if it exists on disk (so ``./my-ext`` beats any URL
     heuristic); otherwise git-URL shapes classify as git:
 
-    * a ``git+…`` VCS spec, or a ``git://`` / ``ssh://`` / ``git@`` transport;
+    * a ``git+…`` VCS spec, or a ``git://`` / ``ssh://`` / ``git@`` transport, or
+      scp-style ``<user>@host:path`` with any user (``deploy@git.corp:team/ext``) —
+      never read as the direct reference ``<user> @ host:path`` (#131 review round 7);
     * anything ending in ``.git`` (the common ``https://host/o/r.git`` form);
     * an http(s) URL whose **PATH** ends in ``.git`` once pip's ``@<rev>`` suffix
       and any trailing slash are stripped — so ``…/r.git/`` (trailing slash),
@@ -297,19 +306,83 @@ def classify_target(target: str) -> TargetKind:
     catalog served from a ``*.github.io`` host — including
     :data:`extension_catalog.DEFAULT_CATALOG_URL` — was misrouted to ``git`` and
     the built-in marketplace catalog was 100% unfetchable (#111 A-1).
+
+    The existence test is relative to the PROCESS working directory, which is the
+    right reading for a target the user typed. It is the wrong one for a catalog
+    entry's ``source``, so ``discover install`` never hands one over raw: it goes
+    through :func:`extension_catalog.resolve_entry_target` first, which accepts a
+    fixed list of forms, resolves a ``./`` / ``../`` path against the catalog file's
+    directory and refuses everything else (#131, ADR-0255).
+
+    A path-shaped target with pip's trailing ``[extras]`` (``./x.whl[feature]``) is
+    a path when the part before the extras exists: pip strips the extras before it
+    opens the file, so that is what it installs (:func:`_path_extras`). A bare name
+    with extras (``foo[bar]``) stays a package spec even beside a ``./foo``, as it
+    does for pip. A :class:`extension_catalog.ResolvedPath` is a path by
+    construction: the catalog resolver decided it, and it is not re-read here.
     """
 
-    if target.strip() and Path(target).expanduser().exists():
+    if isinstance(target, extension_catalog.ResolvedPath):
+        return "path"
+    if target.strip() and (Path(target).expanduser().exists() or _path_extras(target)[1]):
         return "path"
     low = target.lower()
+    direct = extension_catalog.direct_reference_url(target)
+    if direct is not None:
+        # ``name @ git+https://…`` is git, whatever its path ends in (it used to be
+        # ``pypi`` with an ``@<sha>``, ``git`` without); any other ``name @ <url>`` is
+        # a direct reference the backend fetches as given (#131 review round 5).
+        return "git" if direct.startswith("git+") else "pypi"
     if (
         target.startswith("git+")
         or low.startswith(("git://", "ssh://", "git@"))
+        # scp-style ``<user>@host:path`` with any user (review round 7: round 6 read
+        # ``alice@h:o/r.git`` as the direct reference ``alice @ h:o/r.git``).
+        or extension_catalog.is_scp_git(target)
         or low.endswith(".git")
         or _http_url_path_is_git(low)
     ):
         return "git"
     return "pypi"
+
+
+def _path_extras(target: str) -> tuple[str, str]:
+    """``(path, extras)`` for an EXISTING path-shaped target with pip's ``[extras]``.
+
+    ``./x.whl[feature]`` → ``("./x.whl", "[feature]")`` when ``./x.whl`` exists;
+    anything else → ``(target, "")``. Only a path-shaped base counts (``./``, a
+    separator, an archive suffix — the shapes pip itself reads as a file), so
+    ``foo[bar]`` beside a ``./foo`` stays a package spec. Used wherever a TYPED
+    path target touches the filesystem — the existence test, the pip argv, the pin
+    identity, the staged copy — so the extras ride along to pip and never into a
+    file name (#131, ADR-0255).
+
+    A sibling LITERALLY named ``x.whl[feature]`` does not change the split: pip's
+    ``_strip_extras`` and uv split the trailing group whatever exists, and open
+    ``x.whl``. Preferring the literal (round 2) made aelix hash, stage and pin one
+    file while showing another — the round-3 review installed a symlinked 9.0 wheel
+    that way. A catalog path never comes through here: the resolver hands over a
+    :class:`extension_catalog.ResolvedPath`, already split.
+    """
+
+    base, extras = extension_catalog.split_path_extras(target)
+    if not extras or not extension_catalog.source_looks_like_path(base):
+        return target, ""
+    try:
+        if not Path(base).expanduser().exists():
+            return target, ""
+    except (OSError, RuntimeError, ValueError):
+        return target, ""
+    return base, extras
+
+
+def _split_path_target(target: InstallTarget) -> tuple[str, str]:
+    """``(path, extras)`` of a PATH target: a resolver's :class:`ResolvedPath` as it
+    was split, a typed string through :func:`_path_extras`."""
+
+    if isinstance(target, extension_catalog.ResolvedPath):
+        return target.path, target.extras
+    return _path_extras(target)
 
 
 def _http_url_path_is_git(low: str) -> bool:
@@ -368,13 +441,18 @@ def _normalize_git_spec(target: str) -> str:
     """Return a pip-installable ``git+…`` VCS spec for a git target.
 
     pip's VCS grammar requires a ``git+<transport>://`` scheme, so the scp
-    shorthand ``git@host:path`` (which has no ``://``) is rewritten to
-    ``git+ssh://git@host/path`` (review LOW: a bare ``git+`` prefix on the
+    shorthand ``[user@]host:path`` (which has no ``://``) is rewritten to
+    ``git+ssh://user@host/path`` (review LOW: a bare ``git+`` prefix on the
     scp form produces a spec pip rejects at requirement-parse time). Forms
     that already carry a scheme pass through with just the ``git+`` prefix.
     """
 
     if target.startswith("git+"):
+        return target
+    # ``name @ git+https://…`` is already what pip and uv parse: a ``git+`` in front
+    # of the NAME made ``git+name @ …``, which uv rejects and pip read as a PATH in
+    # the cwd (#131 review round 5, verify5 installed a cwd decoy that way).
+    if extension_catalog.direct_reference_url(target) is not None:
         return target
     # scp shorthand: ``[user@]host:path`` with NO ``://`` scheme.
     if "://" not in target and "@" in target and ":" in target:
@@ -383,14 +461,24 @@ def _normalize_git_spec(target: str) -> str:
     return f"git+{target}"
 
 
-def _install_spec(target: str, kind: TargetKind) -> str:
+def _git_url_part(spec: str) -> str:
+    """``name @ git+https://h/r.git@<sha>`` → ``git+https://h/r.git@<sha>``; any other
+    spec unchanged — so the pin identity and the PEP 610 source key of a named git
+    reference are its repository, as for the same URL typed bare (#131 round 5)."""
+
+    url = extension_catalog.direct_reference_url(spec)
+    return url if url is not None else spec
+
+
+def _install_spec(target: InstallTarget, kind: TargetKind) -> str:
     """The exact pip-install argument for a target (also its recorded spec)."""
 
     if kind == "path":
-        return str(Path(target).expanduser().resolve())
+        path, extras = _split_path_target(target)
+        return f"{Path(path).expanduser().resolve()}{extras}"
     if kind == "git":
-        return _normalize_git_spec(target)
-    return target
+        return _normalize_git_spec(str(target))
+    return str(target)
 
 
 def _bare_package_name(target: str) -> str:
@@ -410,7 +498,7 @@ def _bare_package_name(target: str) -> str:
 
 
 def build_pip_args(
-    target: str,
+    target: InstallTarget,
     kind: TargetKind,
     *,
     index_url: str | None = None,
@@ -444,12 +532,16 @@ def build_pip_args(
     if upgrade:
         base.append("--upgrade")
     if kind == "path":
-        return [*base, str(Path(target).expanduser().resolve())]
+        # A catalog path is handed over as a file:// URI, never a path string the
+        # backend would parse again (#131 review round 5, ResolvedPath.installer_arg).
+        if isinstance(target, extension_catalog.ResolvedPath):
+            return [*base, target.installer_arg()]
+        return [*base, _install_spec(target, kind)]
     if kind == "git":
-        return [*base, _normalize_git_spec(target)]
+        return [*base, _normalize_git_spec(str(target))]
     # pypi
     extras = list(extra_index_urls or ())
-    args = [*base, target]
+    args = [*base, str(target)]
     if index_url:
         args += ["--index-url", index_url]
     for extra in extras:
@@ -1143,7 +1235,7 @@ def _uv_volatility_notice() -> str:
 
 
 def install_extension(
-    target: str,
+    target: InstallTarget,
     *,
     yes: bool = False,
     index_url: str | None = None,
@@ -1183,7 +1275,8 @@ def install_extension(
     :func:`_cmd_install` and :func:`_upgrade_and_report`, which do.
     """
 
-    if not target.strip():
+    shown = safe_for_terminal(str(target))
+    if not str(target).strip():
         print("Error: install target is empty.", file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
@@ -1219,7 +1312,7 @@ def install_extension(
             # Quoted by hand, NOT with !r: repr() escapes a Windows path's
             # backslashes, so the path the user sees does not match the one they
             # typed (#208). Same quotes, literal text.
-            _backend_missing_message(verb.lower(), f"'{target}' (source: {kind})"),
+            _backend_missing_message(verb.lower(), f"'{shown}' (source: {kind})"),
             file=sys.stderr,
         )
         return _EXIT_DIDNT_RUN
@@ -1236,7 +1329,7 @@ def install_extension(
         verify_pypi=verify_pypi,
         require_signature=require_signature,
     ):
-        print(_uv_verify_refusal_message(target, backend), file=sys.stderr)
+        print(_uv_verify_refusal_message(shown, backend), file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
     pip_args = build_pip_args(
@@ -1257,8 +1350,10 @@ def install_extension(
     # Consent — pip runs the package's build/setup code (arbitrary at install
     # time), so the manifest capability gate cannot protect this path; the
     # source-level y/N IS the trust boundary. Deny-by-default (headless without
-    # --yes, or a closed stdin, aborts).
-    print(f"{verb} extension from {kind}: {target}")
+    # --yes, or a closed stdin, aborts). The target is shown through the terminal-
+    # safe helper: a catalog path resolved through a symlink can carry control bytes
+    # the catalog never wrote (#131 round 2); the argv line below escapes its own.
+    print(f"{verb} extension from {kind}: {shown}")
     print(f"  → {display_argv(pip_args)}")
     for name in (_UV_TRANSLATED_INDEX_ENV, _UV_TRANSLATED_EXTRA_INDEX_ENV):
         if name in ambient_env:
@@ -1312,7 +1407,12 @@ def install_extension(
             pending_pin = verified.pin
             cleanup_dir = verified.cleanup_dir
         except extension_pins.VerifyRefusal as exc:
-            print(f"Verification refused — pip not run: {exc}", file=sys.stderr)
+            # Every verify line can quote a path or file name — a symlink target's,
+            # never written by the catalog (#131 round 3): terminal-safe.
+            print(
+                f"Verification refused — pip not run: {safe_for_terminal(str(exc))}",
+                file=sys.stderr,
+            )
             return _EXIT_DIDNT_RUN
         except Exception as exc:  # noqa: BLE001 — an internal verify error
             # Fail CLOSED whenever verification was REQUIRED — strict (#64) OR a required
@@ -1323,12 +1423,13 @@ def install_extension(
             if strict or require_signature:
                 gate = "required-signature" if require_signature else "strict"
                 print(
-                    f"Verification error ({gate}) — pip not run: {exc}",
+                    f"Verification error ({gate}) — pip not run: "
+                    f"{safe_for_terminal(str(exc))}",
                     file=sys.stderr,
                 )
                 return _EXIT_DIDNT_RUN
             print(
-                f"Warning: integrity verification skipped ({exc}); "
+                f"Warning: integrity verification skipped ({safe_for_terminal(str(exc))}); "
                 "installing without a pin.",
                 file=sys.stderr,
             )
@@ -1349,7 +1450,7 @@ def install_extension(
                 _record_pin(pending_pin, agent_dir)
             except Exception as exc:  # noqa: BLE001 — pinning is best-effort
                 print(
-                    f"Warning: could not record integrity pin: {exc}",
+                    f"Warning: could not record integrity pin: {safe_for_terminal(str(exc))}",
                     file=sys.stderr,
                 )
         if announce:
@@ -1390,16 +1491,17 @@ def _extract_git_sha(git_spec: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
-def _pin_identity(target: str, kind: TargetKind) -> str:
+def _pin_identity(target: InstallTarget, kind: TargetKind) -> str:
     """The canonical pin-store key for a target (path→abs, git→repo, pypi→name)."""
 
     if kind == "path":
-        return str(Path(target).expanduser().resolve())
+        # The artifact, not the extras asked of it: one pin per file.
+        return str(Path(_split_path_target(target)[0]).expanduser().resolve())
     if kind == "git":
-        return _git_repo_identity(_normalize_git_spec(target))
+        return _git_repo_identity(_normalize_git_spec(_git_url_part(str(target))))
     # pypi: PEP 503 canonical name so 'some-pkg' / 'some_pkg' / 'Some.Pkg' — one
     # PyPI project — key ONE pin (a variant spelling must not TOFI a fresh trust).
-    return extension_pins.canonicalize_name(_bare_package_name(target))
+    return extension_pins.canonicalize_name(_bare_package_name(str(target)))
 
 
 def build_download_args(
@@ -1446,7 +1548,10 @@ def _rewrite_pypi_local(dest: str, spec: str, *, upgrade: bool) -> list[str]:
 
 
 def _print_verify(notice: str) -> None:
-    print(f"  ⓘ verify: {notice}")
+    # A notice can carry a file name — the basename of a catalog path's symlink
+    # target, which no catalog wrote and no earlier filter saw (#131 round 3: an
+    # OSC 52 name reached the first-acquisition line raw).
+    print(f"  ⓘ verify: {safe_for_terminal(notice)}")
 
 
 @dataclass(frozen=True)
@@ -1463,7 +1568,7 @@ class _VerifyResult:
 
 
 def verify_and_pin(
-    target: str,
+    target: InstallTarget,
     kind: TargetKind,
     pip_args: list[str],
     *,
@@ -1508,7 +1613,9 @@ def verify_and_pin(
     existing = pins.get(identity)
 
     if kind == "path":
-        resolved = Path(target).expanduser().resolve()
+        # ``./x.whl[feature]``: hash + stage the FILE; the extras go back on the argv.
+        path_part, extras = _split_path_target(target)
+        resolved = Path(path_part).expanduser().resolve()
         if resolved.is_file():
             # Stage a copy, then hash + install THAT copy so the bytes pip installs
             # are exactly the bytes verified — closes a check-vs-use TOCTOU on the
@@ -1539,7 +1646,12 @@ def verify_and_pin(
                     authenticated=sig.authenticated,
                 )
                 _print_verify(decision.notice)
-                new_args = [*pip_args[:-1], str(staged)]
+                new_args = [
+                    *pip_args[:-1],
+                    replace(target, path=str(staged)).installer_arg()
+                    if isinstance(target, extension_catalog.ResolvedPath)
+                    else f"{staged}{extras}",
+                ]
                 pin = (
                     extension_pins.Pin(
                         identity=identity, kind="path", mode=mode,
@@ -1627,14 +1739,15 @@ def verify_and_pin(
         )
         return _VerifyResult(pip_args, None)
 
-    bare = _bare_package_name(target)
+    spec = str(target)  # a pypi target is always a string
+    bare = _bare_package_name(spec)
     canonical = extension_pins.canonicalize_name(bare)
     dest = tempfile.mkdtemp(prefix="aelix-verify-")
     try:
         dl_args = build_download_args(
-            target, index_url=index_url, extra_index_urls=extra_index_urls, dest=dest
+            spec, index_url=index_url, extra_index_urls=extra_index_urls, dest=dest
         )
-        print(f"  → verify (download): {' '.join(dl_args)}")
+        print(f"  → verify (download): {safe_for_terminal(' '.join(dl_args))}")
         dl_result = runner(dl_args)
         if int(getattr(dl_result, "returncode", 1)) != 0:
             raise extension_pins.VerifyRefusal(
@@ -1644,7 +1757,7 @@ def verify_and_pin(
         if artifact is None:
             if strict or require_signature:
                 raise extension_pins.VerifyRefusal(
-                    f"could not uniquely locate a downloaded artifact for {target!r} to verify"
+                    f"could not uniquely locate a downloaded artifact for {spec!r} to verify"
                 )
             _print_verify(
                 "could not uniquely locate the downloaded artifact — NOT pinned; "
@@ -1671,7 +1784,7 @@ def verify_and_pin(
             authenticated=sig.authenticated,
         )
         _print_verify(decision.notice)
-        new_args = _rewrite_pypi_local(dest, target, upgrade="--upgrade" in pip_args)
+        new_args = _rewrite_pypi_local(dest, spec, upgrade="--upgrade" in pip_args)
         pin = (
             extension_pins.Pin(
                 identity=identity, kind="pypi", mode=mode,
@@ -1830,12 +1943,18 @@ def _source_identity(spec: str, kind: str) -> str:
     ``source add <raw-url>`` (stored normalized) or an install-record (which
     normalizes through ``_install_spec``); without this the two forms
     (``https://x.git`` vs ``git+https://x.git``) would be treated as distinct and
-    the repo would appear twice. An ``index`` spec is compared verbatim.
+    the repo would appear twice. An ``index`` spec is compared verbatim. A path
+    recorded as its installer ``file://`` URI (review round 7) is compared by the
+    path it names, so it dedupes with the bare path an older record or ``source
+    add`` stored.
     """
 
     stripped = spec.strip()
     if kind == "path":
+        recorded = extension_catalog.resolved_path_from_installer_arg(stripped)
         try:
+            if recorded is not None:
+                return f"{Path(recorded.path).resolve()}{recorded.extras}"
             return str(Path(stripped).expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
             return stripped
@@ -2470,7 +2589,7 @@ def _installed_ext_dists() -> dict[str, str | None]:
     return out
 
 
-def _target_dist_hint(target: str, kind: TargetKind) -> str | None:
+def _target_dist_hint(target: InstallTarget, kind: TargetKind) -> str | None:
     """The distribution name the TARGET ITSELF names, when it names one.
 
     The before/after diff catches a first install and an upgrade, but not a
@@ -2497,10 +2616,10 @@ def _target_dist_hint(target: str, kind: TargetKind) -> str | None:
     """
 
     if kind == "pypi":
-        return _bare_package_name(target) or None
+        return _bare_package_name(str(target)) or None
     if kind == "git":
         return None
-    path = Path(target).expanduser()
+    path = Path(_split_path_target(target)[0]).expanduser()
     name = path.name
     if name.endswith(".whl"):
         # PEP 427: {distribution}-{version}(-{build})?-{python}-{abi}-{platform}
@@ -2523,7 +2642,7 @@ def _target_dist_hint(target: str, kind: TargetKind) -> str | None:
     return None
 
 
-def _target_source_key(target: str, kind: TargetKind) -> str | None:
+def _target_source_key(target: InstallTarget, kind: TargetKind) -> str | None:
     """A comparison key for the SOURCE this install came from, or ``None``.
 
     Pairs with :func:`_recorded_source_key`, which reads the same key back out of
@@ -2554,7 +2673,8 @@ def _target_source_key(target: str, kind: TargetKind) -> str | None:
     if kind == "pypi":
         return None
     if kind == "git":
-        spec = target[4:] if target.startswith("git+") else target
+        text = _git_url_part(str(target))
+        spec = text[4:] if text.startswith("git+") else text
         spec = spec.split("#", 1)[0]
         head, sep, tail = spec.rpartition("@")
         # ``…/repo@v1`` is a revision; ``ssh://git@host/repo`` is an authority —
@@ -2563,7 +2683,8 @@ def _target_source_key(target: str, kind: TargetKind) -> str | None:
             spec = head
         return _url_fs_key(spec)
     try:
-        return os.path.realpath(os.path.expanduser(target)).rstrip("/") or None
+        path_part = _split_path_target(target)[0]  # pip records the file, not the extras
+        return os.path.realpath(os.path.expanduser(path_part)).rstrip("/") or None
     except (OSError, ValueError):  # pragma: no cover — realpath on a hostile cwd
         return None
 
@@ -2612,7 +2733,7 @@ def _recorded_source_key(dist: importlib.metadata.Distribution) -> str | None:
 
 
 def _dists_recorded_from(
-    target: str, kind: TargetKind, after: Mapping[str, str | None]
+    target: InstallTarget, kind: TargetKind, after: Mapping[str, str | None]
 ) -> frozenset[str]:
     """Installed extension dists whose PEP 610 record names THIS exact target.
 
@@ -2651,7 +2772,7 @@ def _dists_recorded_from(
 
 
 def _attributed_dists(
-    target: str,
+    target: InstallTarget,
     kind: TargetKind,
     before: Mapping[str, str | None],
     after: Mapping[str, str | None],
@@ -2866,25 +2987,38 @@ def _cmd_index(args: list[str]) -> int:
         print(f"Error: cannot read {directory!r}: {exc}", file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
-    document = extension_catalog.build_index_catalog(
-        artifacts,
-        name=doc_name,
-        # A relative source resolves against the PROCESS working directory (see
-        # classify_target), not against the catalog — so relative is opt-in and
-        # the default is absolute.
-        relative_to=root if relative else None,
+    target = (
+        Path(out).expanduser()
+        if out and out != "-"
+        else root / extension_catalog.DEFAULT_CATALOG_FILENAME
     )
+    # #131 (ADR-0255): a relative source resolves against the PHYSICAL directory of
+    # the catalog FILE that lists it (resolve_entry_target follows a symlinked
+    # catalog to its target), so `--relative` measures from that same directory —
+    # the file written's, never the cwd. `--out -` writes no file: it measures from
+    # the scanned directory itself (already resolved), NOT from whatever a
+    # `<dir>/catalog.json` symlink there happens to point at (round-3 review).
+    # Absolute stays the default: it also installs from a catalog that is later
+    # served over https or git, where a relative source is refused.
+    base = root if out == "-" else target.resolve().parent
+    try:
+        document = extension_catalog.build_index_catalog(
+            artifacts,
+            name=doc_name,
+            relative_to=base if relative else None,
+        )
+    except ValueError as exc:  # os.path.relpath across Windows drives
+        print(
+            f"Error: --relative cannot express the artifacts relative to '{base}': {exc}",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
     payload = json.dumps(document, indent=2, sort_keys=False) + "\n"
 
     if out == "-":
         sys.stdout.write(payload)
         return 0
 
-    target = (
-        Path(out).expanduser()
-        if out
-        else root / extension_catalog.DEFAULT_CATALOG_FILENAME
-    )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(payload, encoding="utf-8")
@@ -2907,6 +3041,8 @@ def _cmd_index(args: list[str]) -> int:
         # as_uri(), not "file://" + path: on Windows the hand-built form yields
         # file://C:\... — two slashes, so urlparse() reads the whole tail as a
         # netloc and the printed command is refused as a remote host (issue #205).
+        # resolve(): the physical file `--relative` measured from (#131); the
+        # resolver lands on the same directory through a symlinked path too.
         print(f"  aelix extension source add --catalog {target.resolve().as_uri()}")
     return 0
 
@@ -3006,6 +3142,7 @@ async def _cmd_install(
     settings: SettingsManager,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
+    resolved_path: extension_catalog.ResolvedPath | None = None,
 ) -> int:
     """``extension install <target>`` — #19 install + resolve + record + VERDICT.
 
@@ -3025,12 +3162,17 @@ async def _cmd_install(
     ``0`` is ALSO returned when attribution came back empty — pip put something on
     disk and this command cannot name it. That is not a success claim and does not
     print one: see :data:`_INSTALLED_NO_VERDICT`.
+
+    ``resolved_path`` is ``discover install``'s catalog path, split from its
+    ``[extras]`` by the resolver; it is installed, verified, pinned and recorded as
+    those two values, and ``args`` carries only its flags and its display form
+    (#131 round 3).
     """
 
     parsed = _parse_install_flags(args)
     if isinstance(parsed, int):
         return parsed
-    target = parsed.target
+    target: InstallTarget = parsed.target if resolved_path is None else resolved_path
     index_url = parsed.index_url
 
     kind = classify_target(target)
@@ -3088,7 +3230,7 @@ async def _cmd_install(
 
 async def _record_install(
     settings: SettingsManager,
-    target: str,
+    target: InstallTarget,
     kind: TargetKind,
     before: set[str],
 ) -> None:
@@ -3105,11 +3247,11 @@ async def _record_install(
         new_names = sorted(_installed_dist_names() - before)
         detected = new_names[0] if new_names else None
         if kind == "pypi":
-            spec = _bare_package_name(target)
+            spec = _bare_package_name(str(target))
             name = detected or spec or None
             record_kind: SourceKind = "pypi"
         else:
-            spec = _install_spec(target, kind)
+            spec = _path_record_spec(target) if kind == "path" else _install_spec(target, kind)
             name = detected
             record_kind = kind  # "git" | "path"
         if not spec:
@@ -3119,7 +3261,79 @@ async def _record_install(
         if changed:
             await _persist(settings, new_sources)
     except Exception as exc:  # noqa: BLE001 — recording is best-effort
-        print(f"Warning: could not record install source: {exc}", file=sys.stderr)
+        print(
+            f"Warning: could not record install source: {safe_for_terminal(str(exc))}",
+            file=sys.stderr,
+        )
+
+
+def _path_record_spec(target: InstallTarget) -> str:
+    """What an install record keeps for a PATH install.
+
+    A catalog path (:class:`extension_catalog.ResolvedPath`) is recorded as its
+    ``file://`` URI hand-off (:meth:`extension_catalog.ResolvedPath.installer_arg` —
+    ``name[extras] @ uri`` with extras), so ``update`` re-installs exactly the path
+    that was installed (#131 review round 7, verify6 B2: the record
+    ``<dir>/trusted[]`` was a string the backend parsed again on update and installed
+    the sibling ``trusted``). A typed path keeps the plain absolute path it always
+    recorded, as does a catalog path the URI cannot carry; :func:`_recorded_path_target`
+    turns either form into the URI at update time when the URI can carry it (a plain
+    record it cannot carry keeps the typed hand-off — #131 verify round 7).
+    """
+
+    if isinstance(target, extension_catalog.ResolvedPath):
+        try:
+            return target.installer_arg()
+        except extension_catalog.CatalogError:
+            pass
+    return _install_spec(target, "path")
+
+
+def _recorded_path_target(spec: str) -> InstallTarget:
+    """A recorded ``path`` source → what ``update`` hands the installer: a
+    :class:`extension_catalog.ResolvedPath` whenever the ``file://`` URI can carry it,
+    so the backend never re-parses a path string (#131 review round 7).
+
+    A record written since round 7 for a CATALOG path is the URI itself
+    (:func:`_path_record_spec`) and goes back as that URI, always. A PLAIN record —
+    one a typed ``aelix extension install <path>`` wrote, one an OLDER version
+    wrote, or ``source add <path>`` — is the plain absolute path: the URI is
+    re-derived from it here. The whole string is the path when it exists
+    (``<dir>/trusted[]``, ``<dir>/trusted `` — the names verify6 measured);
+    otherwise a trailing ``[extras]`` is split off when the rest exists (a record of
+    ``./x.whl[feature]``); otherwise the whole string stays the path and the backend
+    reports it missing.
+
+    A plain record is the user's own string. When the URI cannot carry it — extras
+    on a project with no readable name (``./legacy[feature]``, a
+    ``[build-system]``-only directory), which the typed install accepted — it keeps
+    the hand-off the typed install used and round 6 gave it: the plain absolute
+    path with its extras, as a typed target (verify7 item 1: the URI attempt raised,
+    and the traceback stopped every later extension).
+    """
+
+    recorded = extension_catalog.resolved_path_from_installer_arg(spec)
+    if recorded is not None:
+        return recorded
+    try:
+        whole = Path(spec).expanduser()
+        if whole.exists():
+            placed = extension_catalog.ResolvedPath(str(whole.resolve()))
+        else:
+            base, extras = extension_catalog.split_path_extras(spec)
+            if extras and Path(base).expanduser().exists():
+                placed = extension_catalog.ResolvedPath(
+                    str(Path(base).expanduser().resolve()), extras
+                )
+            else:
+                placed = extension_catalog.ResolvedPath(str(whole.resolve()))
+    except (OSError, RuntimeError, ValueError):
+        placed = extension_catalog.ResolvedPath(spec)
+    try:
+        placed.installer_arg()
+    except extension_catalog.CatalogError:
+        return str(placed)
+    return placed
 
 
 async def _cmd_update(
@@ -3140,8 +3354,9 @@ async def _cmd_update(
     or when there was no verdict to give, which is not a success claim and does
     not print one; :data:`_INSTALL_NOT_BOUND` (3) when every installer run
     succeeded but some attributed endpoint will not bind; :data:`_INSTALLER_FAILED`
-    (1) when an installer ran and failed; ``2`` when one never ran. The last two
-    outrank 3 (:func:`_worse_update_code`).
+    (1) when an installer ran and failed; ``2`` when one never ran — or stopped on
+    an error, which is reported and never stops the packs after it (#131 verify
+    round 7). The last two outrank 3 (:func:`_worse_update_code`).
     """
 
     name_filter: str | None = None
@@ -3241,16 +3456,29 @@ async def _cmd_update(
     worst = 0
     results: list[tuple[str, int, frozenset[str]]] = []
     for s in targets:
-        code, dists = _upgrade_source(
-            s,
-            index_urls,
-            yes=yes,
-            offline=offline,
-            verify=verify,
-            input_fn=input_fn,
-            runner=runner,
-        )
-        results.append((s.name or _source_identity(s.spec, s.kind), code, dists))
+        label = s.name or _source_identity(s.spec, s.kind)
+        # One extension's error never stops the others (verify7 item 1: a
+        # CatalogError from one record's hand-off escaped as a traceback, rc 1, and
+        # every later record was skipped). It is reported, counted as not run, and
+        # the run goes on; the exit code says it failed.
+        try:
+            code, dists = _upgrade_source(
+                s,
+                index_urls,
+                yes=yes,
+                offline=offline,
+                verify=verify,
+                input_fn=input_fn,
+                runner=runner,
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate one record, report it
+            print(
+                f"Error: could not update {safe_for_terminal(label)}: "
+                f"{safe_for_terminal(str(exc))}",
+                file=sys.stderr,
+            )
+            code, dists = _EXIT_DIDNT_RUN, frozenset()
+        results.append((label, code, dists))
         worst = _worse_update_code(worst, code)
     _print_update_summary(results)
     return worst
@@ -3338,7 +3566,7 @@ def _print_update_summary(results: list[tuple[str, int, frozenset[str]]]) -> Non
 
 
 def _upgrade_and_report(
-    target: str,
+    target: InstallTarget,
     *,
     yes: bool,
     index_url: str | None = None,
@@ -3435,9 +3663,12 @@ def _upgrade_source(
             input_fn=input_fn,
             runner=runner,
         )
-    # git / path: the spec is directly installable.
+    # git: the spec is directly installable. path: through the same file:// URI
+    # hand-off discover install uses, never the recorded string re-parsed by the
+    # backend (#131 review round 7) — except a plain record the URI cannot carry,
+    # which keeps the typed hand-off (verify round 7, _recorded_path_target).
     return _upgrade_and_report(
-        source.spec,
+        _recorded_path_target(source.spec) if source.kind == "path" else source.spec,
         yes=yes,
         offline=offline,
         verify=verify,
@@ -3616,7 +3847,8 @@ async def _cmd_discover(
     Browse or search the registered advisory catalogs (#65/ADR-0188), or resolve a
     name and DELEGATE to the unchanged gated install. The catalog is advisory: it
     only picks WHAT to install; consent + ``verify_and_pin`` (#64) + pip run
-    unchanged, always on the RESOLVED ``entry.source`` — never the friendly name.
+    unchanged, always on the target :func:`extension_catalog.resolve_entry_target`
+    accepts for the resolved entry (#131, ADR-0255) — never the friendly name.
     """
 
     if rest and rest[0] == "install":
@@ -3679,6 +3911,28 @@ async def _cmd_discover(
                     fetch_locations.append(loc)
                 else:
                     print(f"  ⓘ skipped {loc}: offline (network transport)")
+        # #131 (ADR-0255): a RELATIVE catalog path (only a hand-edited settings file
+        # holds one — `source add --catalog` stores it absolute) is read from the
+        # cwd. Anchor it there once, say so, and cache the absolute form, so the
+        # entries' relative sources resolve beside the file that was actually read.
+        # The spec as registered is cached beside it (`registeredAs`), so
+        # `discover install --catalog catalog.json` still selects it.
+        anchored: list[str] = []
+        registered_as: dict[str, str] = {}
+        for loc in fetch_locations:
+            absolute = extension_catalog.anchor_catalog_location(loc)
+            if absolute is None:
+                anchored.append(loc)
+                continue
+            print(
+                f"  ⓘ catalog location '{safe_for_terminal(loc)}' is a relative path: "
+                f"read it from the current directory as '{safe_for_terminal(absolute)}', "
+                "and its relative sources resolve beside that file. Register it by its "
+                "absolute path to stop depending on where you refresh from."
+            )
+            anchored.append(absolute)
+            registered_as[absolute] = loc
+        fetch_locations = anchored
         # Guard ⑤ (progressive hardening, ADR-0192 §amendment): the official / default
         # catalog is signature-required ONLY once a first-party trust anchor exists to
         # verify it (FIRST_PARTY_KEYS non-empty) — consistent with #67 per-extension
@@ -3697,7 +3951,12 @@ async def _cmd_discover(
         verifier = _make_catalog_verifier(
             agent_dir, signature_required=signature_required
         )
-        catalogs = extension_catalog.fetch_all(fetch_locations, verifier=verifier)
+        catalogs = [
+            replace(cat, registered_as=registered_as[cat.location])
+            if cat.location in registered_as
+            else cat
+            for cat in extension_catalog.fetch_all(fetch_locations, verifier=verifier)
+        ]
         if fetch_locations:
             extension_catalog.save_catalogs(
                 catalogs, extension_catalog.cache_file_path(agent_dir)
@@ -3752,6 +4011,120 @@ async def _cmd_discover(
     return 0
 
 
+def _refresh_advice(lead: str, locations: Iterable[str]) -> str:
+    """``<lead> with: aelix extension discover --refresh`` — or, while offline
+    (``AELIX_OFFLINE`` / ``PI_OFFLINE``) and one of ``locations`` is a network
+    catalog, how to refresh ONLINE: an offline refresh skips that catalog again, so
+    advising one would loop (#131 review round 5)."""
+
+    if _is_offline(False) and any(not _is_offline_fetchable(loc) for loc in locations):
+        return (
+            f"{lead} online: unset AELIX_OFFLINE and PI_OFFLINE (a refresh skips a "
+            "network catalog while either is set), then run 'aelix extension discover "
+            "--refresh'"
+        )
+    return f"{lead} with: aelix extension discover --refresh"
+
+
+def _catalog_selector_problem(
+    settings: SettingsManager, catalogs: list[extension_catalog.Catalog], selector: str
+) -> str | None:
+    """Why ``discover install <name> --catalog <selector>`` found no entry, when the
+    reason is the CATALOG rather than the name — or ``None`` for the plain "no
+    catalog entry named … (try … --refresh)".
+
+    The cache is not the registry (#131 review round 4): a catalog is registered by
+    ``source add`` and cached only by ``discover --refresh``, so "registered or not"
+    is asked of the registered sources (the effective list, the built-in default
+    included), and "fetched or not" of the cache:
+
+    * the selector picks cached catalogs whose last refresh failed → that, the
+      recorded error, and how to fetch it again;
+    * it picks none, but names a REGISTERED location (the spec, or the same local
+      file) whose cached copy was read from ANOTHER file — a relative registration
+      refreshed in another directory (review round 5: this said "no copy recorded")
+      → where the copy came from, and how to select it;
+    * it names a registered location the cache has no copy of → that (never
+      fetched, skipped by an offline refresh, or cached before ``registeredAs``),
+      and how to fetch it — never "--refresh" alone while offline would skip it;
+    * it names nothing registered either → it matches no registered catalog — and,
+      when some registered catalog has no fetched copy (so its name is not known
+      yet), that a refresh comes first.
+    """
+
+    shown = safe_for_terminal(selector)
+    selected = extension_catalog.select_catalogs(catalogs, selector)
+    if selected:
+        failed = [cat for cat in selected if cat.error]
+        if len(failed) < len(selected):
+            return None
+        return _failed_refresh_message(shown, failed[0])
+    registered = _effective_catalog_locations(settings, offline=False)
+    named = [
+        loc for loc in registered if extension_catalog.location_matches_selector(loc, selector)
+    ]
+    if named:
+        copy = extension_catalog.cached_copy(catalogs, named[0])
+        if copy is not None and copy.error:
+            return _failed_refresh_message(shown, copy)
+        if copy is not None:
+            return (
+                f"--catalog {shown!r} names the registered catalog "
+                f"'{safe_for_terminal(named[0])}', but the cache's copy of it was read "
+                f"from '{safe_for_terminal(copy.location)}', not from the file this "
+                "selector names: a relative registration names the file in the "
+                "directory 'discover --refresh' runs in. Select it as "
+                f"'{safe_for_terminal(named[0])}' or "
+                f"'{safe_for_terminal(copy.location)}', or refresh from the directory "
+                "that holds the catalog you mean."
+            )
+        skipped = (
+            ""
+            if _is_offline_fetchable(named[0])
+            else ", a refresh skipped it while offline (--offline, AELIX_OFFLINE or "
+            "PI_OFFLINE skip a network catalog)"
+        )
+        return (
+            f"--catalog {shown!r} names the registered catalog "
+            f"'{safe_for_terminal(named[0])}', but the catalog cache has no copy recorded "
+            f"for it: it has not been fetched since it was registered{skipped}, or the "
+            "cache was written before aelix recorded how it was registered. "
+            f"{_refresh_advice('Fetch it', named[:1])}"
+        )
+    message = (
+        f"--catalog {shown!r} matches no registered catalog — give its name, its "
+        "location as registered, or a path to its file (a relative one is read from "
+        "the current directory). 'aelix extension source list' shows them."
+    )
+    unnamed = [
+        loc
+        for loc in registered
+        if (copy := extension_catalog.cached_copy(catalogs, loc)) is None or copy.error
+    ]
+    if unnamed:
+        online = _refresh_advice("fetch them", unnamed)
+        message += (
+            f" {len(unnamed)} registered catalog(s) have no fetched copy (never "
+            "fetched, skipped offline, or the last refresh failed), so their names are "
+            "not known yet: "
+            + (
+                "run 'aelix extension discover --refresh' first."
+                if online.startswith("fetch them with:")
+                else f"{online} first."
+            )
+        )
+    return message
+
+
+def _failed_refresh_message(shown: str, cat: extension_catalog.Catalog) -> str:
+    return (
+        f"--catalog {shown!r} names the catalog "
+        f"'{safe_for_terminal(cat.location)}', whose last refresh failed: "
+        f"{safe_for_terminal(cat.error or '')}. "
+        f"{_refresh_advice('Fix that, then fetch it again', [cat.location])}"
+    )
+
+
 async def _cmd_discover_install(
     rest: list[str],
     *,
@@ -3762,10 +4135,17 @@ async def _cmd_discover_install(
     """``discover install <name> [--catalog CAT] [install flags]`` — resolve + delegate.
 
     Reads the CACHED catalogs (no implicit network refresh), resolves ``<name>`` to
-    a single entry (REFUSING an ambiguous name with a candidate list), then hands
-    the RESOLVED ``entry.source`` — never the friendly name — to the unchanged
-    :func:`_cmd_install`, so consent + ``verify_and_pin`` + pip + ``_record_install``
-    + the #154 post-install verdict all run exactly as for a direct install.
+    a single entry (REFUSING an ambiguous name with a candidate list), turns its
+    ``source`` into an install target with
+    :func:`extension_catalog.resolve_entry_target` (only a package name, an
+    absolute URL or a path is accepted; a ``./`` or ``../`` path resolves against
+    the local catalog file's directory, never the cwd; every other form is refused,
+    never rewritten — #131, ADR-0255), then hands that target — never the friendly
+    name; a path as a :class:`extension_catalog.ResolvedPath`, its extras a
+    separate value — to the
+    unchanged :func:`_cmd_install`, so consent + ``verify_and_pin`` + pip +
+    ``_record_install`` + the #154 post-install verdict all run exactly as for a
+    direct install.
 
     That delegation is why ``discover install`` needs no verdict logic of its own,
     and why its exit code (including :data:`_INSTALL_NOT_BOUND`) is IDENTICAL to
@@ -3846,8 +4226,16 @@ async def _cmd_discover_install(
                 )
             for cand in candidates:
                 label = cand.catalog_name or "?"
-                print(f"  {cand.name}  →  {cand.source}   (catalog: {label})", file=sys.stderr)
+                print(
+                    f"  {cand.name}  →  {safe_for_terminal(cand.source)}   (catalog: {label})",
+                    file=sys.stderr,
+                )
             return _EXIT_DIDNT_RUN
+        if catalog_name is not None:
+            problem = _catalog_selector_problem(settings, catalogs, catalog_name)
+            if problem is not None:
+                print(f"Error: {problem}", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
         print(
             f"Error: no catalog entry named {name!r} "
             "(try: aelix extension discover --refresh).",
@@ -3855,18 +4243,75 @@ async def _cmd_discover_install(
         )
         return _EXIT_DIDNT_RUN
 
+    # #131 (ADR-0255): the CATALOG decides what the source is, not the cwd. Only a
+    # fixed list of forms is accepted: a package name, an absolute URL (unchanged),
+    # or a path — a ./ or ../ one resolved against the local catalog file's
+    # directory. Everything else is refused, never rewritten. Every string shown
+    # from here to consent goes through safe_for_terminal: a resolved path can
+    # carry control bytes from a symlink target the catalog never named.
+    try:
+        target = extension_catalog.resolve_entry_target(resolved)
+    except extension_catalog.CatalogError as exc:
+        print(f"Error: {safe_for_terminal(str(exc))}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    spec = str(target)
+    shown_spec = safe_for_terminal(spec)
+    is_path = isinstance(target, extension_catalog.ResolvedPath)
+    # The installer must agree with the catalog. A path travels as the resolver
+    # split it (path, extras — never re-split from the joined string: a sibling
+    # literally named ``x.whl[feature]`` once won that way, #131 round 3), so here
+    # it only has to still exist. A package spec is re-classified by the installer,
+    # which asks what exists relative to the cwd: one that names a file or
+    # directory HERE would be installed from that instead.
+    if isinstance(target, extension_catalog.ResolvedPath):
+        try:
+            still_there = Path(target.path).exists()
+        except (OSError, ValueError):
+            still_there = False
+    else:
+        still_there = classify_target(target) != "path"
+    if not still_there:
+        if is_path:
+            print(
+                f"Error: catalog entry {resolved.name!r}: source path '{shown_spec}' "
+                "disappeared before the install started — refusing.",
+                file=sys.stderr,
+            )
+        else:
+            # True of aelix, not of pip or uv (Codex pass 6: both ignore a literal
+            # 'review-ext[feature]' directory): it is aelix's own classify_target
+            # that takes a target existing on disk for a local path.
+            print(
+                f"Error: catalog entry {resolved.name!r} names the package "
+                f"'{shown_spec}', but a file or directory named '{shown_spec}' exists "
+                "in the current directory, and aelix's installer takes a target that "
+                "exists on disk for a local path — it would install that instead of "
+                "the package. Run the command from another directory.",
+                file=sys.stderr,
+            )
+        return _EXIT_DIDNT_RUN
+
+    via = (
+        ""
+        if spec == resolved.source
+        else f"; the catalog says '{safe_for_terminal(resolved.source)}'"
+    )
     print(
-        f"Resolved {name} -> {resolved.source} (from catalog {resolved.catalog_name or '?'})"
+        f"Resolved {safe_for_terminal(name)} -> {shown_spec} "
+        f"(from catalog {resolved.catalog_name or '?'}{via})"
     )
     # Delegate to the UNCHANGED install path with the RESOLVED spec (never the
     # friendly name), so a name→spec redirection is visible at consent. Flags come
-    # first, then ``--``, then the source as the sole positional — so a resolved
-    # spec that legitimately begins with ``-`` is never misparsed as a flag.
+    # first, then ``--``, then the source as the sole positional — so the spec is
+    # never misparsed as one of OUR flags. (A source starting with ``-`` is refused
+    # above: the installer's own argv has no ``--``, so pip / uv would read it as an
+    # option — #131.)
     return await _cmd_install(
-        [*install_flags, "--", resolved.source],
+        [*install_flags, "--", spec],
         settings=settings,
         input_fn=input_fn,
         runner=runner,
+        resolved_path=target if isinstance(target, extension_catalog.ResolvedPath) else None,
     )
 
 
