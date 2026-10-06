@@ -1,6 +1,9 @@
 # 0139. Built-in Tool Behavior Parity — HEAVY (image resize, ensureTool, bash spawn-hook)
 
 Status: Accepted
+**Amended 2026-10-06 (#288): the rg/fd download reads the one offline predicate
+(`PI_OFFLINE` or `AELIX_OFFLINE`) — see the amendment at the end (review round 1,
+2026-10-07: the export now precedes every verb).**
 Date: 2026-06-20
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -152,3 +155,90 @@ confirmed** (0 BLOCKING). All addressed:
   (pre-existing, unrelated), 0 failures** (the rg/fd lock-in tests no longer skip —
   they run deterministically via stubbed subprocess). No regressions;
   `~/.aelix/agent/bin` stays empty.
+
+## Amendment (2026-10-06, #288) — the download reads the one offline predicate
+
+**What was wrong.** "`PI_OFFLINE` offline env name kept" (Aelix-additive
+divergences above) stayed true for this module after ADR-0185 added
+`AELIX_OFFLINE` as an alias in `cli/extension_install.py` and ADR-0230 reused
+both names in `update_check.py`. Offline was then decided in three places that
+read different names and different values, and `cli/entry.py` exported
+`PI_OFFLINE=1` only from `--offline` or a set `PI_OFFLINE`. Measured on
+`aab1f210`, with `AELIX_OFFLINE=1`, an empty agent dir and no `fd` on `PATH`:
+`tools_manager._is_offline()` was `False`, `ensure_tool("fd", silent=False)`
+printed `fd not found. Downloading...`, and a socket recorder saw
+`DNS api.github.com:443`; a real `aelix --provider fake --model m1 --tools find
+-p …` against a local model stub recorded the same lookup. The update check and
+the extension catalog were already off. The switch failed open on exactly the
+path that fetches an executable.
+
+**Decision.** One predicate, `aelix_coding_agent.util.offline.is_offline`, read
+by every path that reaches the network on its own: `ensure_tool` (rg/fd),
+`update_check` (which re-exports it, so `update_check.is_offline` is the same
+object), `extension_install._is_offline` (catalog refresh and index-less pypi
+install), and the export, `offline.export_if_offline`, which sets
+`PI_OFFLINE=1` when the flag or either name is on, so children inherit it.
+`cli/entry.py` calls it before any verb is dispatched (as pi's `main.ts:576-580`
+@ `b223082bb` exports before `handlePackageCommand` at `:597`) and again with the
+parsed `--offline`. Values: `1`/`true`/`yes`
+(any case) on, as pi's `isOfflineModeEnabled` reads them; `0`/`false`/`no`/`off`
+and blank off, as ADR-0185 decided; **anything else on** — the one divergence
+from pi's `tools-manager.ts`, in the safe direction (pi's own `version-check.ts`
+and `model-runtime.ts` treat any set `PI_OFFLINE` as offline, so pi is not
+consistent on this either). No third name (ADR-0230). Telemetry: there is no
+sink to gate. Provider calls and the login wizard's model listing stay
+ungated: they are requests the user made. So do MCP servers, including the
+remote `http` and `sse` transports: measured on `3012bd3e` with
+`AELIX_OFFLINE=1` (and again with `--offline`), a global `mcp.json` naming a
+local `http`, a local `sse` and an `https://mcp.example.invalid/mcp` server
+produced `POST /mcp`, `GET /sse` and `CONNECT mcp.example.invalid:443`. Not
+gated, deliberately: each server is an endpoint the user declared — the
+global `mcp.json`, `$AELIX_MCP_CONFIG`, a project `.aelix/mcp.json` only once
+Project Trust admits it, or an extension the user installed — the same class
+as the provider endpoint, and offline here (as in pi) means "nothing aelix
+decides to fetch on its own", not an air gap. Pi has no MCP client to compare
+against. The guide says so in its "does not touch" paragraph.
+
+**Where the names can come from.** Neither name can be set by a cwd `.env` on
+its own: `^PI_` and `^AELIX_` are in `runtime_bootstrap._DOTENV_NEVER`, so
+`load_dotenv` refuses both by default. Neither is on ADR-0203's
+`_DOTENV_LOCKED` floor, so a user who exports `AELIX_DOTENV_ALLOW=AELIX_OFFLINE`
+(or `PI_OFFLINE`) lets that repo's `.env` supply it — ADR-0203 measured
+`PI_OFFLINE` as hatchable and kept it that way on purpose. Either way a `.env`
+value never replaces one already in the environment, so a repo can at most turn
+offline on, never off.
+
+**Readings that change — both kept by the owner after review round 1.**
+`PI_OFFLINE=0`/`false`/`no`/`off` now means online: the CLI no longer rewrites
+it to `1` (it used to put everything offline, against ADR-0185's own review
+note; pi's `isTruthyEnvFlag` reads `0` as off too). An unrecognised value turns
+offline **on** — fail closed, stricter than pi's `1`/`true`/`yes` — including
+under `aelix extension …`, which used to read it as off; ADR-0185's review note
+points here.
+
+**Guard.** `tests/util/test_offline.py`: the value table for both names, every
+consumer agreeing with the predicate for every value, the CLI export, a real
+child interpreter launched by the real `extension install` path seeing
+`PI_OFFLINE=1`, and an AST scan that fails if any module other than the
+predicate names `PI_OFFLINE` or `AELIX_OFFLINE` in code (the one write is in
+the predicate module too). `tests/util/test_tools_manager.py`: the download
+gate for `rg` and `fd`, `silent` true and false, both names, with a recording
+guard. `tests/conftest.py` starts every test with neither name set and undoes
+any export. Sabotage: each consumer reverted to its old copy, and each wrong
+form of the predicate, the export or the gate named in the commit, turns it
+red.
+
+**Review round 1 (2026-10-07).** Two gaps, both fixed in the same commit.
+(1) The extension, `docs` and `status` verbs return before `parse_args`, and
+the export ran after it: measured on `3012bd3e`, `AELIX_OFFLINE=1 aelix
+extension install <path> --yes --no-verify` launched its installer (a fake
+`uv` on `PATH`) with `PI_OFFLINE` unset, and `… --offline` with neither name —
+so "children inherit it" was false for exactly the verb that launches
+children. The export now runs first, and the extension verb's own `--offline`
+counts, read the way pi reads its flag (`args.includes("--offline")`). (2) The
+download-gate test covered `rg` with `silent=False` only, while `grep`/`find`
+call `ensure_tool` with the default `silent=True`, and its guard raised an
+`AssertionError` that `ensure_tool`'s best-effort `except Exception` swallowed:
+a gate that ran only when not silent, or only for `rg`, passed all 507 tests
+in the eight offline-related test files (measured on `3012bd3e`).
+The test now covers every (tool, silent) pair and records calls instead.

@@ -77,15 +77,19 @@ def test_fd_asset_name_matrix():
 # --- offline detection ------------------------------------------------------
 
 
+# #288: both names, one predicate (``util/offline.py``). Pi's documented values
+# read as pi reads them; an unrecognised value ("nope") now fails CLOSED — it
+# used to read as online here while ``update_check`` read it as offline.
+@pytest.mark.parametrize("name", ["PI_OFFLINE", "AELIX_OFFLINE"])
 @pytest.mark.parametrize("val,expected", [
     ("1", True), ("true", True), ("TRUE", True), ("yes", True),
-    ("0", False), ("", False), ("nope", False),
+    ("0", False), ("", False), ("nope", True),
 ])
-def test_is_offline(monkeypatch, val, expected):
-    if val == "":
-        monkeypatch.delenv("PI_OFFLINE", raising=False)
-    else:
-        monkeypatch.setenv("PI_OFFLINE", val)
+def test_is_offline(monkeypatch, name, val, expected):
+    monkeypatch.delenv("PI_OFFLINE", raising=False)
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
+    if val != "":
+        monkeypatch.setenv(name, val)
     assert tm._is_offline() is expected
 
 
@@ -133,20 +137,45 @@ async def test_ensure_tool_unknown(monkeypatch):
     assert await tm.ensure_tool("nope") is None
 
 
-async def test_ensure_tool_offline_no_download(monkeypatch):
+@pytest.mark.parametrize("name", ["PI_OFFLINE", "AELIX_OFFLINE"])
+@pytest.mark.parametrize("tool,label", [("rg", "ripgrep"), ("fd", "fd")])
+@pytest.mark.parametrize("silent", [True, False])
+async def test_ensure_tool_offline_no_download(monkeypatch, capsys, name, tool, label, silent):
+    # #288: ``AELIX_OFFLINE=1`` printed "Downloading..." and resolved
+    # api.github.com on aab1f210 — the alias reached every other gate but this.
+    # Review round 1: ``grep``/``find`` call ``ensure_tool`` with the default
+    # ``silent=True``, so a gate that only ran when not silent passed a
+    # ``silent=False``-only test; and a gate for ``rg`` alone passed an
+    # ``rg``-only one. Every (tool, silent) pair, and the guard RECORDS rather
+    # than raises: ``ensure_tool``'s best-effort ``except Exception`` swallowed
+    # the old ``AssertionError`` and still returned ``None``.
     monkeypatch.setattr(tm, "get_tool_path", lambda t: None)
-    monkeypatch.setenv("PI_OFFLINE", "1")
+    monkeypatch.setattr(tm, "_is_android", lambda: False)
+    monkeypatch.delenv("PI_OFFLINE", raising=False)
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
+    monkeypatch.setenv(name, "1")
+    calls: list[tuple[str, str]] = []
 
-    def _boom(_tool):
-        raise AssertionError("download must not run when offline")
+    def _record_download(t):
+        calls.append(("download", t))
+        return f"/fake/bin/{t}"
 
-    monkeypatch.setattr(tm, "_download_tool", _boom)
-    assert await tm.ensure_tool("rg") is None
+    def _record_latest(repo):
+        calls.append(("latest", repo))
+        return "1.0.0"
+
+    monkeypatch.setattr(tm, "_download_tool", _record_download)
+    monkeypatch.setattr(tm, "_get_latest_version", _record_latest)
+    assert await tm.ensure_tool(tool, silent=silent) is None
+    assert calls == []
+    expected = "" if silent else f"{label} not found. Offline mode enabled, skipping download.\n"
+    assert capsys.readouterr().out == expected
 
 
 async def test_ensure_tool_android_no_download(monkeypatch):
     monkeypatch.setattr(tm, "get_tool_path", lambda t: None)
     monkeypatch.delenv("PI_OFFLINE", raising=False)
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
     monkeypatch.setattr(tm, "_is_android", lambda: True)
 
     def _boom(_tool):
@@ -159,6 +188,7 @@ async def test_ensure_tool_android_no_download(monkeypatch):
 async def test_ensure_tool_download_failure_returns_none(monkeypatch):
     monkeypatch.setattr(tm, "get_tool_path", lambda t: None)
     monkeypatch.delenv("PI_OFFLINE", raising=False)
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
     monkeypatch.setattr(tm, "_is_android", lambda: False)
 
     def _fail(_tool):
@@ -180,6 +210,7 @@ def _setup_download(monkeypatch, tmp_path, *, asset_layout: str, archive: str):
     monkeypatch.setattr(tm, "_node_arch", lambda: "x64")
     monkeypatch.setattr(tm, "_command_exists", lambda c: False)
     monkeypatch.delenv("PI_OFFLINE", raising=False)
+    monkeypatch.delenv("AELIX_OFFLINE", raising=False)
     monkeypatch.setattr(tm, "_is_android", lambda: False)
     monkeypatch.setattr(tm, "_get_latest_version", lambda repo: "14.1.0")
 

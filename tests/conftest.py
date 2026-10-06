@@ -56,6 +56,24 @@ def _no_dotenv_provenance_record(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_offline_switch(monkeypatch):
+    """Start every test online, and undo any ``PI_OFFLINE=1`` a test exported (#288).
+
+    ``cli/entry.py`` exports ``PI_OFFLINE=1`` into the REAL ``os.environ`` (it
+    must reach children) — before every verb since #288 review round 1, so any
+    test that drives ``_async_main`` with an offline name or an ``extension …
+    --offline`` would otherwise turn every later test offline (round 1 measured
+    16 extension tests flipped by one such leak). ``setenv`` first, as above: on
+    an absent name ``delenv`` alone records nothing to undo. It also keeps a
+    developer's own exported ``PI_OFFLINE`` / ``AELIX_OFFLINE`` out of the suite.
+    """
+
+    for name in ("PI_OFFLINE", "AELIX_OFFLINE"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
 def _no_default_catalog(monkeypatch):
     """Disable the built-in default discover catalog for the whole suite.
 

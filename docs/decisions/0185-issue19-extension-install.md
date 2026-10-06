@@ -50,6 +50,7 @@ A 4-lens adversarial review (correctness / security / consistency / test-adequac
 - **[LOW] Abort ≡ pip-failure exit code** — both were `1`. Fixed with the 3-way scheme above (abort → 2).
 - **[LOW] `--index-url=` empty value silently dropped** — now rejected like the space-separated form.
 - **[NIT] `PI_OFFLINE=0` engaged offline** — loose `bool()` truthiness; now strict `1/true/yes/on`.
+  - *Changed 2026-10-07 (#288):* the value rule now lives in one predicate, `util/offline.py`, read by every self-initiated network path — see [ADR-0139's #288 amendment](0139-builtin-tool-behavior-parity-heavy.md#amendment-2026-10-06-288--the-download-reads-the-one-offline-predicate). `0`/`false`/`no`/`off` and blank still read as off, and `1`/`true`/`yes`/`on` as on, but a value outside both sets (`enabled`, a typo) now reads as **on** — fail closed — where this strict reading left it off.
 - **[NIT] No `--` end-of-options** — a path starting with `-` couldn't be installed; `--` now forces positional.
 - **[NIT] No `__all__`** — added.
 

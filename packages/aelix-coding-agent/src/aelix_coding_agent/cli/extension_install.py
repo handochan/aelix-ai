@@ -98,6 +98,7 @@ from ..extensions.ep_manifest import (
     environment_site_dirs,
     resolve_entry_point_manifest,
 )
+from ..util.offline import is_offline
 from . import extension_catalog, extension_pins, extension_signing
 from .config import get_agent_dir
 
@@ -273,12 +274,6 @@ __all__ = [
     "uv_ambient_index_env",
     "verify_and_pin",
 ]
-
-
-def _env_truthy(name: str) -> bool:
-    # Strict 1/true/yes/on (case-insensitive) — so ``PI_OFFLINE=0`` reads as OFF,
-    # not "any non-empty" (review NIT). Mirrors the canonical env-flag idiom.
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def classify_target(target: str) -> TargetKind:
@@ -463,9 +458,10 @@ def build_pip_args(
 
 
 def _is_offline(explicit: bool) -> bool:
-    # Mirror the CLI's --offline / PI_OFFLINE contract (entry.py) + an aelix
-    # alias. Strict truthiness so PI_OFFLINE=0 reads as OFF (review NIT).
-    return explicit or _env_truthy("PI_OFFLINE") or _env_truthy("AELIX_OFFLINE")
+    # The subcommand's own ``--offline`` or the shared predicate (#288): one
+    # reading of ``PI_OFFLINE`` / ``AELIX_OFFLINE`` for every self-initiated
+    # network path. ``PI_OFFLINE=0`` still reads as OFF (ADR-0185 review NIT).
+    return is_offline(explicit)
 
 
 def _is_offline_fetchable(loc: str) -> bool:

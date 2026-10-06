@@ -414,8 +414,8 @@ offer you one.
 
 ## Offline
 
-`--offline` (equivalent to `PI_OFFLINE=1`) skips the network operations aelix
-starts on its own:
+`--offline` (equivalent to `PI_OFFLINE=1` or `AELIX_OFFLINE=1`) skips the
+network operations aelix starts on its own:
 
 - the `rg` / `fd` binary auto-download. Measured with `PI_OFFLINE=1` and neither
   binary on `PATH`: `ensure_tool("rg")` printed
@@ -425,13 +425,31 @@ starts on its own:
   here: subcommands are routed before the flag parser runs, so
   `aelix --offline extension …` does **not** reach them. Use the subcommand's
   own flag (`aelix extension discover --refresh --offline`) or export
-  `PI_OFFLINE=1`. With it on, a catalog on a network transport is skipped with a
+  `PI_OFFLINE=1` / `AELIX_OFFLINE=1`. With it on, a catalog on a network transport is skipped with a
   per-source notice, and a bare `aelix extension install <pkg>` with no
   `--index-url` is refused rather than silently reaching PyPI.
+- the once-a-day update check.
+
+The two variable names are the same switch, and every one of the operations
+above reads them the same way: `1`, `true` or `yes` (any case) turns offline
+mode on; `0`, `false`, `no`, `off` or an empty value leaves it off; any other
+value turns it **on**, so a misspelt value fails closed. `aelix` exports
+`PI_OFFLINE=1` when either is on — before it dispatches any subcommand, and for
+`aelix extension …`'s own `--offline` too — so a delegated agent, a `bash`
+command, an extension's subprocess and the installer `aelix extension install`
+starts all see it. Until #288 the `rg`/`fd` download read `PI_OFFLINE` alone:
+with only `AELIX_OFFLINE=1` set, the first `find` still went to
+`api.github.com`.
+
+A project's `.env` cannot switch it: both names are refused there unless you
+name them yourself in `AELIX_DOTENV_ALLOW`, and a `.env` never overrides a value
+you exported.
 
 It does **not** touch provider/LLM calls — those are the request you made, not
 something aelix decided to do. A turn still goes to the network under
-`--offline`.
+`--offline`. The same goes for the MCP servers you configured, remote `http`
+and `sse` ones included: they still connect under `--offline`, because you
+named them.
 
 This section used to say `--offline` was "currently a no-op reserved for forward
 compatibility". That was wrong on both halves.

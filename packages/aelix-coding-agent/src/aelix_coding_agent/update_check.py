@@ -55,6 +55,13 @@ from typing import Any
 
 from aelix_coding_agent.cli.config import get_agent_dir
 
+# Re-exported: the one offline predicate every self-initiated network path
+# reads (#288). It used to be defined here, and ``util/tools_manager`` kept a
+# narrower copy that ignored ``AELIX_OFFLINE``. No new environment name —
+# ADR-0230: every ``os.environ`` read is a consumer a hostile cwd ``.env`` may
+# try to drive, so the user-facing off switch is a settings key.
+from aelix_coding_agent.util.offline import is_offline
+
 #: The published feed. A plain static file on the project's own Pages site,
 #: written by the release ritual and gated by ``tests/test_latest_version_feed.py``
 #: so it cannot silently drift from the version that actually shipped.
@@ -328,25 +335,6 @@ class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
         if not newurl.lower().startswith("https://"):
             raise ValueError(f"update check refused an insecure redirect to {newurl!r}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def is_offline(explicit: bool = False) -> bool:
-    """The CLI's ``--offline`` contract, read the way extensions read it.
-
-    Deliberately reuses ``PI_OFFLINE`` / ``AELIX_OFFLINE`` rather than adding a
-    name. ``cli/entry.py`` records the reason: every ``os.environ`` read is a
-    new consumer a hostile cwd ``.env`` may try to drive, so the safest new
-    control-plane name is none at all. The user-facing off switch is a settings
-    key, not an environment variable.
-    """
-
-    if explicit:
-        return True
-    for name in ("PI_OFFLINE", "AELIX_OFFLINE"):
-        value = os.environ.get(name, "").strip().lower()
-        if value and value not in {"0", "false", "no", "off"}:
-            return True
-    return False
 
 
 def default_fetch(url: str = FEED_URL, timeout: float = FETCH_TIMEOUT_S) -> dict[str, Any]:

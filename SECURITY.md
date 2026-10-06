@@ -172,7 +172,8 @@ consent very much is:
   upstream GitHub Releases into `~/.aelix/agent/bin`, extracts them with Python's
   stdlib safe extractors, and marks them executable — this is what lets both tools
   honour `.gitignore` (`util/tools_manager.py`). A copy already on `PATH` is
-  preferred, and `--offline` (or `PI_OFFLINE=1`) skips the download entirely.
+  preferred, and `--offline` (or `PI_OFFLINE=1` / `AELIX_OFFLINE=1`) skips the
+  download entirely.
   These archives are **not** checksum-pinned by Aelix; they are fetched over HTTPS
   from the upstream project's release assets.
 - **One request is made about Aelix itself: the update check.** At most once a
@@ -184,8 +185,9 @@ consent very much is:
   IP address and nothing else. It creates no telemetry sink and must never
   acquire one. Redirects off HTTPS are refused, the response is size-capped, and
   every failure is silent. Turn it off in `/settings` ("Check for updates") or
-  skip it with `--offline` / `PI_OFFLINE=1`. Nothing is downloaded or executed
-  by the check — installing the update is a command you run yourself.
+  skip it with `--offline` / `PI_OFFLINE=1` / `AELIX_OFFLINE=1`. Nothing is
+  downloaded or executed by the check — installing the update is a command you
+  run yourself.
 
 Reports we do want, among others: a way to escape or bypass the permission gate in
 an interactive session, path-traversal out of the workspace, credential or

@@ -837,6 +837,33 @@ unwritten. Add them with the next release.
   Upgrade by re-running the install line. Closing that path needs a runtime guard
   in aelix, which is filed separately. (#263)
 
+### Security
+
+- **`AELIX_OFFLINE=1` now stops the `rg`/`fd` download (#288).** The offline
+  switch had two names and three readers, and the one that guards the download
+  of an executable read only `PI_OFFLINE`: with `AELIX_OFFLINE=1` and no `fd`
+  on `PATH`, the first `find` printed nothing and resolved `api.github.com`
+  (measured through a real `aelix -p` run with a socket recorder), while the
+  update check and the extension catalog were already off. Every place aelix
+  reaches the network on its own — the `rg`/`fd` download, the update check, the
+  extension catalog refresh and an index-less `extension install` — now asks one
+  predicate, and `aelix` exports `PI_OFFLINE=1` for `AELIX_OFFLINE` too, so
+  delegated agents and other child processes inherit it — including the
+  installer an `aelix extension …` command starts, which the export now
+  precedes (it used to run only after those subcommands had returned), and
+  including that subcommand's own `--offline`. Both names now read a
+  value the same way: `1`, `true`, `yes` (any case) turn offline mode on; `0`,
+  `false`, `no`, `off` or an empty value leave it off; **any other value turns
+  it on**, so a typo fails closed rather than open. Two readings change:
+  `PI_OFFLINE=0` (or `false`/`no`/`off`) is no longer rewritten to `1` by the
+  CLI — it used to switch everything offline, as if it said `1` — and under
+  `aelix extension …`, which never went through that rewrite, a value such as
+  `PI_OFFLINE=enabled` now skips network catalogs and refuses an index-less
+  install the way `aelix` itself already did. Unchanged, and now stated in the
+  offline guide: MCP servers you configured, remote `http`/`sse` ones included,
+  still connect under `--offline`, and a project `.env` cannot set either name
+  unless you list it in `AELIX_DOTENV_ALLOW`.
+
 ## [0.1.0-beta.2] - 2026-09-09
 
 ### Changed

@@ -1915,6 +1915,11 @@ async def _finish_refused_turns(harness: AgentHarness) -> None:
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
+    # Offline export before every verb (pi main.ts:576-580,597 @ b223082bb; #288).
+    from aelix_coding_agent.util.offline import export_if_offline
+
+    export_if_offline(bool(argv) and argv[0] == "extension" and "--offline" in argv)
+
     # Issue #19 (ADR-0185) / #32-A (ADR-0186) — ``aelix extension <subcommand>``
     # verb dispatch, BEFORE parse_args: the hand-rolled flat flag parser would
     # swallow ``extension``/``install`` as chat-prompt positionals. A
@@ -1962,12 +1967,7 @@ async def _async_main(argv: list[str]) -> int:
     if any(d["type"] == "error" for d in parsed.diagnostics):
         return 1
 
-    # === --offline (Pi main.ts:425-427) ======================================
-    # Mirror Pi: ``--offline`` or a pre-set ``PI_OFFLINE`` engages offline mode.
-    # NOT inert — that claim was false on BOTH halves (#101 L6): the exported env
-    # gates rg/fd download, index-less pypi install and catalog fetch; ADR-0218.
-    if parsed.offline or os.environ.get("PI_OFFLINE"):
-        os.environ["PI_OFFLINE"] = "1"
+    export_if_offline(parsed.offline)  # --offline; the env names: see above
 
     # === Help / version short-circuit ========================================
     if parsed.help:

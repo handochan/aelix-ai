@@ -20,8 +20,12 @@ Aelix-additive divergences (documented):
 - Network download uses :mod:`urllib.request` instead of ``fetch``.
 - Android/Termux detection is best-effort (Python cannot read Node's
   ``os.platform() === "android"`` directly).
-- Offline mode reads ``PI_OFFLINE`` (the env name Aelix keeps — see
-  ``cli/entry.py``).
+- Offline mode is :func:`aelix_coding_agent.util.offline.is_offline` —
+  ``PI_OFFLINE`` *or* ``AELIX_OFFLINE`` (#288; pi reads ``PI_OFFLINE`` only,
+  and this module used to as well, so ``AELIX_OFFLINE=1`` still downloaded),
+  read the same way as every other self-initiated network path. Pi's
+  documented values (``1``/``true``/``yes`` on, ``0`` off) read as pi reads
+  them; an unrecognised value fails closed.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from aelix_coding_agent.util.offline import is_offline
 
 _NETWORK_TIMEOUT_S = 10
 _DOWNLOAD_TIMEOUT_S = 120
@@ -143,16 +149,14 @@ def _is_android() -> bool:
 
 
 def _is_offline() -> bool:
-    """Pi parity ``isOfflineModeEnabled`` (``tools-manager.ts:14-18``).
+    """Pi ``isOfflineModeEnabled`` (``tools-manager.ts:14-18``), widened (#288).
 
-    Reads ``PI_OFFLINE`` (the env name Aelix keeps); truthy when ``1`` /
-    ``true`` / ``yes`` (case-insensitive).
+    Delegates to the one offline predicate, so the download that fetches an
+    executable honours ``AELIX_OFFLINE`` exactly as the update check and the
+    extension catalog do. See :mod:`aelix_coding_agent.util.offline`.
     """
 
-    value = os.environ.get("PI_OFFLINE")
-    if not value:
-        return False
-    return value == "1" or value.lower() in ("true", "yes")
+    return is_offline()
 
 
 def _bin_dir() -> str:
