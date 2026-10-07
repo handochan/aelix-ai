@@ -1199,11 +1199,83 @@ unwritten. Add them with the next release.
   would read from there. Configuration the installer discovers by itself is
   outside it: with the uv backend, a `uv.toml` or `pyproject.toml` `[tool.uv]`
   in that directory or a parent is uv's own, which aelix honours on purpose
-  (ADR-0200), and in a cloned repository it can make a package-name entry
-  install a wheel from there — a known limit, left to a follow-up. A hostile
+  (ADR-0200), and in a cloned repository it could make a package-name entry
+  install a wheel from there — closed by the next entry (#392). A hostile
   catalog can already name any package or URL; odd spellings in one are
   refused where cheap, and the forms left open are listed as known limits in
   the private-catalog guide.
+- **A cloned repository's `uv.toml` or `[tool.uv]` can no longer choose what a
+  catalog installs (#392, ADR-0255 §15, ADR-0200 §12).** With the uv backend,
+  `aelix extension discover install` ran `uv pip install` in your current
+  directory, and uv reads a `uv.toml` or a `pyproject.toml` `[tool.uv]` table
+  from that directory and every parent: in a cloned repository whose
+  `[tool.uv]` said `find-links = ["./w"]`, a trusted catalog's `"source":
+  "local-ext"` installed the repository's own `local-ext` 9.9, exit 0
+  (measured; `aelix extension update` of that record did the same). Now
+  `discover install` and every `update` run the installer — uv or pip — in
+  `~/.aelix/agent/installer-cwd` (under your agent dir; on macOS and Linux
+  only you can read it). It holds a `pyproject.toml` and a `uv.toml` that
+  aelix writes and that set nothing: uv looks for a project (the nearest
+  `pyproject.toml`) before it looks for configuration, and these two files
+  make it find no project there and stop at the empty `uv.toml`, so no
+  project configuration is read at all — none from your current directory,
+  its parents or the directories above the agent dir, even a `pyproject.toml`
+  with a `[project]` table (measured on uv 0.11.14, 0.11.19 and 0.12.23).
+  With pip, a `pip/` package in your current directory no longer runs as the
+  installer for these installs.
+  Your user-level `uv.toml` (`~/.config/uv/uv.toml`, `%APPDATA%\uv\uv.toml`),
+  the system one, your `pip.conf` and your environment variables (`UV_*`,
+  `PIP_*`) still apply, so an organisation's index pin there keeps working; a
+  `uv.toml` or `pyproject.toml` in your home directory is project
+  configuration to uv and no longer applies to these installs. What this
+  protects against is the current directory: your own environment and your
+  user- and system-level installer configuration are yours (a repository
+  cannot set them — a project `.env` is admission-controlled, ADR-0203), so
+  aelix passes them on exactly as set. The consequence, a known limit: a
+  RELATIVE path in them (`PIP_FIND_LINKS=./wheels` or `file:wheels`,
+  `UV_FIND_LINKS`, `UV_INDEX_URL=./simple`, `PIP_TARGET`, `UV_PROJECT`,
+  `UV_WORKING_DIRECTORY`, `PIP_CONFIG_FILE=pip.conf`, a relative `find-links`
+  in `pip.conf`) is read from the installer directory for these installs — on
+  uv too, where aelix reads your `pip.conf` to pass its index on: a relative
+  `PIP_CONFIG_FILE` is opened in the installer directory, as pip would open it,
+  not in your current directory — use absolute paths. The one
+  variable aelix checks is `UV_CONFIG_FILE`, which uv reads instead of every
+  other configuration file: for these installs on uv it must be an absolute path
+  exactly as uv reads it (no leading or trailing space, no `~`, no `file:`
+  URL, not empty), or the install is refused with "Set UV_CONFIG_FILE to an
+  absolute path." — a relative one would quietly read aelix's own empty
+  `uv.toml` there (measured on uv 0.11.19 and 0.12.23). The consent block
+  says where the installer runs; if aelix cannot create the directory — or
+  finds a link there, or a link in place of either file, when it prepares it
+  — the install is refused rather than run anywhere else (a link swapped in
+  later, while the consent prompt waits, is not caught). Several aelix
+  processes preparing the directory at once do not refuse one another:
+  each file is written to a new file and renamed into place. A relative
+  `--index-url ./simple` typed on `discover install` is read from where you
+  typed it (a `file:/…` URL is a URL and passes as written). A project you
+  choose with an absolute `UV_PROJECT` or
+  `UV_WORKING_DIR` is read as uv reads it, and its index pin still keeps pip's
+  index from being passed on to uv. From the Python API, `install_extension`
+  runs what the catalog resolver returns (`resolve_entry_target`: an
+  `extension_catalog.ResolvedPath`, or the new `extension_catalog.CatalogSpec`
+  for a name or URL) in the installer directory, whatever the caller passes —
+  there is no flag for it; `resolve_entry_source` returns a `CatalogSpec` too;
+  a plain string is a source you typed and runs where you are;
+  `verify_and_pin` follows the same rule for its `pip download`.
+  A runner passed to `run_extension_command_async(..., runner=)` is handed the
+  installer directory (`runner(argv, cwd=…)`); one that cannot take it is
+  refused for these installs. `update` runs
+  every record there, ones you installed by typing included: none was chosen
+  in the directory `update` happens to run in. Whether aelix passes pip's
+  index configuration on to uv is decided from the directory uv runs in, by
+  the files uv really reads there: the project file uv finds (from the
+  project's workspace root, as uv searches), your user-level file
+  (`%APPDATA%\uv\uv.toml` on Windows) and the system one — before, a
+  `[tool.uv]` index in any parent directory switched it off, even one uv
+  never read. Unchanged, and a stated limit: a typed `aelix extension install
+  <spec>` still runs in your current directory and reads its uv configuration
+  there, and on pip a typed install or `aelix extension remove` still imports
+  a `pip/` package from your current directory first (issue #394).
 
 ## [0.1.0-beta.2] - 2026-09-09
 

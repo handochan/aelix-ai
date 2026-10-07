@@ -105,7 +105,9 @@ class _FakeRunner:
         self.returncode = returncode
         self.calls: list[list[str]] = []
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         return subprocess.CompletedProcess(args=argv, returncode=self.returncode)
 
@@ -1044,7 +1046,9 @@ class _DownloadRunner:
         # The `pip install --no-index` returncode (defaults to `returncode`).
         self.install_returncode = install_returncode
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         if "download" in argv and "--dest" in argv:
             dest = Path(argv[argv.index("--dest") + 1])
@@ -2351,17 +2355,22 @@ def test_a_broken_uv_config_is_ignored(
 
 
 def test_uv_config_search_path_is_uvs_own(tmp_path: Path) -> None:
-    # UV_CONFIG_FILE wins outright; otherwise the nearest project config walking UP
-    # from cwd, then the user-level $XDG_CONFIG_HOME/uv/uv.toml.
+    # UV_CONFIG_FILE wins outright; otherwise the project config uv reads from cwd
+    # (#392: project-root discovery, then the first file walking UP), then the
+    # user-level uv.toml ($XDG_CONFIG_HOME on POSIX, %APPDATA% on Windows).
     assert _REAL_UV_CONFIG_FILES({"UV_CONFIG_FILE": "/x/uv.toml"}) == ["/x/uv.toml"]
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     (tmp_path / "uv.toml").write_text("", "utf-8")
-    paths = _REAL_UV_CONFIG_FILES(
-        {"XDG_CONFIG_HOME": "/home/u/.config"}, cwd=str(nested)
-    )
-    assert str(tmp_path / "uv.toml") in paths
-    assert paths[-1] == os.path.join("/home/u/.config", "uv", "uv.toml")
+    env = {
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+        "APPDATA": str(tmp_path / "appdata"),
+        "XDG_CONFIG_DIRS": str(tmp_path / "no-system-config"),
+    }
+    paths = _REAL_UV_CONFIG_FILES(env, cwd=str(nested))
+    assert paths[0] == str((tmp_path / "uv.toml").resolve())
+    user = tmp_path / ("appdata" if sys.platform == "win32" else "xdg")
+    assert paths[1] == os.path.join(str(user), "uv", "uv.toml")
 
 
 def test_pip_backend_argv_is_never_index_translated(
@@ -2394,7 +2403,9 @@ class _EnvCapturingRunner(_FakeRunner):
         super().__init__(returncode)
         self.envs: list[dict[str, str]] = []
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.envs.append(dict(os.environ))
         return super().__call__(argv)
 

@@ -72,6 +72,7 @@ __all__ = [
     "Catalog",
     "CatalogEntry",
     "CatalogError",
+    "CatalogSpec",
     "DocumentVerifier",
     "GitRunner",
     "IndexedArtifact",
@@ -1414,6 +1415,23 @@ def _is_plain_requirement(source: str) -> bool:
     return req.url is None and req.marker is None
 
 
+class CatalogSpec(str):
+    """A source string the catalog resolver (or an install record) chose — a package
+    requirement or an absolute URL — as :func:`resolve_entry_target` returns it.
+
+    It is the string itself (a ``str`` subclass: every string use is unchanged) and
+    it carries its ORIGIN: the installer runs a :class:`CatalogSpec` or a
+    :class:`ResolvedPath` in aelix's installer directory, never the caller's cwd,
+    whatever the caller passes (#392 review round 4 — ``install_extension(
+    resolve_entry_target(entry))`` from the Python API ran in the caller's cwd,
+    where a cloned repository's ``uv.toml`` chose a dependency). A plain ``str`` is a
+    source the user typed, and its installer runs where it was typed. Any string
+    operation (``strip``, slicing, ``+``) returns a plain ``str``: the origin is read
+    where the install starts, from the object the resolver returned."""
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True)
 class ResolvedPath:
     """A path source as the resolver placed it: the file or directory, and pip's
@@ -1537,17 +1555,28 @@ def local_project_name(path: Path) -> str | None:
     return name if name and _PROJECT_NAME_RE.match(name) else None
 
 
-def resolve_entry_source(entry: CatalogEntry) -> tuple[str, bool]:
+def resolve_entry_source(entry: CatalogEntry) -> tuple[CatalogSpec, bool]:
     """:func:`resolve_entry_target` as ``(spec, is_path)`` — ``spec`` as shown (a path
     with its extras joined; the installer gets :meth:`ResolvedPath.installer_arg`) —
-    for callers that only show it."""
+    for callers that only show it.
+
+    ``spec`` is a :class:`CatalogSpec` either way, so it keeps its catalog ORIGIN:
+    handed to ``install_extension`` it runs in aelix's installer directory, never the
+    caller's cwd (#392 review round 5 — it was a plain ``str``, which the installer
+    takes for a typed source and ran where the caller stood, where a cloned
+    repository's ``uv.toml`` chose the package). A path comes back absolute, as the
+    resolver placed it; to install one, :func:`resolve_entry_target` is still the
+    call to make — its :class:`ResolvedPath` reaches the installer as a ``file://``
+    URI, which no backend parses again (#131)."""
 
     target = resolve_entry_target(entry)
-    return str(target), isinstance(target, ResolvedPath)
+    spec = target if isinstance(target, CatalogSpec) else CatalogSpec(str(target))
+    return spec, isinstance(target, ResolvedPath)
 
 
-def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
-    """What an entry installs from — a spec string, or a :class:`ResolvedPath`;
+def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
+    """What an entry installs from — a :class:`CatalogSpec` (a spec string that
+    carries its catalog origin, #392 review round 4), or a :class:`ResolvedPath`;
     :class:`CatalogError` refuses.
 
     #131 (ADR-0255). The installer reads anything relative from the PROCESS working
@@ -1609,8 +1638,9 @@ def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
     what is true of its spelling (:func:`_url_problem`).
 
     The guarantee (ADR-0255 §12): a TRUSTED catalog's source is never resolved
-    against the cwd, nor handed over as a string the installer reads from there
-    (uv's own cwd config is a stated limit); a hostile catalog is outside it, so
+    against the cwd, nor handed over as a string the installer reads from there,
+    and its installer runs in aelix's installer directory, where uv reads no project
+    configuration (#392); a hostile catalog is outside it, so
     adversarial spellings are refused only where a simple rule does it.
     """
 
@@ -1648,7 +1678,7 @@ def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
             "segment 'FILE:' under the current directory to it)"
         )
     if _is_absolute_source_url(raw):
-        return source
+        return CatalogSpec(source)
     if direct is not None:
         if _is_absolute_reference_url(url):
             if url.lower().startswith(("https://", "http://")) and _url_path_is_git(url):
@@ -1658,7 +1688,7 @@ def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
                     "'git+' — uv clones it while pip downloads it as an archive and "
                     f"fails; write '{name} @ git+{url}'"
                 )
-            return source
+            return CatalogSpec(source)
         raise refuse(
             f"is a direct reference to '{url}', which {_url_problem(url, after_name=True)}"
         )
@@ -1686,7 +1716,7 @@ def resolve_entry_target(entry: CatalogEntry) -> str | ResolvedPath:
                 "'.git' for a git URL (it would run 'git+" + raw + "', which no "
                 "backend can fetch) — write the repository's absolute git URL"
             )
-        return source
+        return CatalogSpec(source)
     raise refuse(
         "is neither a package name, an absolute URL nor a path in an accepted form "
         "(absolute, ~, or starting with ./ or ../)"

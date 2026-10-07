@@ -1,6 +1,6 @@
 # 0255. A catalog entry's source is placed by its catalog, not by the working directory
 
-Status: Accepted (2026-10-06; revised 2026-10-07 after review rounds 1, 2, 3, 4, 5 and 6 and verify round 7, §7, §8, §9, §10, §11, §13, §14; threat model §12)
+Status: Accepted (2026-10-06; revised 2026-10-07 after review rounds 1, 2, 3, 4, 5 and 6 and verify round 7, §7, §8, §9, §10, §11, §13, §14; threat model §12) — §12 amended 2026-10-07 by #392 (§15) and corrected 2026-10-08 by its review rounds 2, 3, 4 and 5: `discover install` and every `update` run the installer in aelix's installer directory, whose `pyproject.toml` (no `[project]`) and empty `uv.toml` make uv read no project configuration — none from the cwd, its parents, or the agent dir's ancestors; that directory and its two files are refused when they are links at preparation time, every runner is handed the directory, the user's own environment and user/system installer configuration reach the installer as set (inside the trust boundary, §12), and the one variable checked is `UV_CONFIG_FILE`, refused for those installs unless it is a bare absolute path; the directory follows the target's origin (a `ResolvedPath` or `CatalogSpec` from the resolver), not a caller flag; a typed `extension install` keeps running in the cwd (a stated limit)
 Date: 2026-10-06
 Amends: **ADR-0188** §2 (`discover install` no longer hands `entry.source` to the
 installer unchanged; a dated note there points here) and the #68 `extension index
@@ -600,15 +600,35 @@ absolute `file://` URI (a relative one placed beside the catalog). That closes t
 shape the issue names: an entry its author meant benignly installed whatever sat in
 the directory `aelix` runs in (a cloned repository, a download folder).
 
-What it does not cover (verify round 7, §14): installer CONFIGURATION the backend
-discovers by itself. uv reads a `uv.toml` or a `pyproject.toml` `[tool.uv]` from the
-cwd or a parent (and the user's `uv.toml`), and aelix honours that on purpose
-(ADR-0200, `_uv_config_files`). In a cloned repository its `find-links` or index
-settings can satisfy a trusted catalog's benign PACKAGE entry from that repository —
-measured: `local-ext` installed `CWD-DECOY` 9.9 from `./w` on uv, pip read neither
-file and installed nothing (`.omc/probes/131-live/verify7/uvconfig-head.txt`). That
-is a known limit of #131, left to a follow-up issue (uv configuration from the cwd
-can redirect a catalog package install), not part of this guarantee.
+Installer CONFIGURATION the backend discovers by itself (verify round 7, §14; closed
+for catalog installs by #392, §15). uv reads a `uv.toml` or a `pyproject.toml`
+`[tool.uv]` from its working directory or a parent (and the user's `uv.toml`), and
+aelix honours uv's own configuration on purpose (ADR-0200, `_uv_config_files`). Run in
+the cwd, a cloned repository's `find-links` or index settings satisfied a trusted
+catalog's benign PACKAGE entry from that repository — measured: `local-ext` installed
+`CWD-DECOY` 9.9 from `./w` on uv, pip read neither file and installed nothing
+(`.omc/probes/131-live/verify7/uvconfig-head.txt`). Since #392 `discover install` and
+every `update` run the installer in `<agent dir>/installer-cwd`. uv first discovers a
+PROJECT (the nearest `pyproject.toml`, up to its workspace root) and reads configuration
+from there, so that directory holds two aelix files: a `pyproject.toml` with no
+`[project]` (uv finds no project, and does not go on to one above) and a `uv.toml` that
+sets nothing (the first configuration file uv then finds). No project configuration in
+the cwd, a parent of it, or above the agent dir is read — measured for every ancestor
+shape on uv 0.11.14, 0.11.19 and 0.12.23 (§15, review round 2); the user-level and
+system `uv.toml`, `UV_CONFIG_FILE` and `UV_*` still are.
+
+#392's threat model (review round 5, owner decision 2026-10-08): the protection is
+against the **current directory** — a cloned repository's project configuration
+(`uv.toml`, `[tool.uv]`, a workspace above it). The user's own environment variables
+and user- or system-level installer configuration (uv's user and system `uv.toml`,
+pip's `pip.conf`) are inside the trust boundary: a repository cannot set them (a
+project `.env` is admitted default-deny, ADR-0203), and they keep applying exactly as
+uv and pip read them. One variable is checked: for these installs on uv, a set
+`UV_CONFIG_FILE` must be a bare absolute path exactly as uv reads it (no spaces
+stripped, no `~` expanded, no `file:` URL, not empty), else the install is refused
+before anything runs ("Set UV_CONFIG_FILE to an absolute path.") — a relative one
+silently reads aelix's own empty `uv.toml` in the installer directory instead of the
+org's file.
 
 What it does not guarantee: safety against a catalog whose own content is hostile. A
 catalog can already name any package or URL to install, so it needs no trick spelling
@@ -629,8 +649,30 @@ rounds found and leave open:
 - a typed `aelix extension install <target>` keeps its meaning from the cwd (8), and a
   typed path still reaches the backend as the user's string (on `update` too, when
   the `file://` URI cannot carry it, §14);
-- uv's own project configuration in the cwd or a parent (`uv.toml`, `[tool.uv]`) is
-  read by uv, as ADR-0200 intends — see above;
+- a typed `aelix extension install <spec>` runs its installer in the cwd, where the
+  user typed it (a relative path in it means that directory): there uv still reads the
+  cwd's and its parents' `uv.toml` / `[tool.uv]`, as ADR-0200 intends, so a cloned
+  repository's `find-links` can still answer a package name the user types in it, and
+  `python -m pip` still imports a `pip/` package from it first — for a typed install
+  and for `extension remove` (issue #394, §15);
+- a RELATIVE path in the user's own installer configuration resolves against the
+  installer directory for a catalog install and `update` (#392): an environment value
+  such as `PIP_FIND_LINKS=./w` or `file:w`, `UV_FIND_LINKS`, `UV_INDEX_URL=./simple`,
+  `PIP_TARGET`, `UV_PROJECT` or `UV_WORKING_DIRECTORY`, `PIP_CONFIG_FILE=pip.conf`
+  (on uv too: the pip.conf translation opens a relative value in the installer
+  directory, where pip would — review round 5b, §15), or a relative `find-links` in
+  `pip.conf`. Some fail loudly there (uv: "Project directory `./proj` does not
+  exist"); pip drops a missing find-links location with a WARNING and installs from
+  the default index. Use absolute paths (only `UV_CONFIG_FILE` is refused, above);
+- the installer directory and its two files are checked when aelix prepares them; a
+  link swapped in between that check and the installer's start — the consent prompt
+  sits between — by someone who can already write the agent dir is followed (§15);
+- `_uv_project_config` models one way uv rejects a `pyproject.toml` (a `[project]`
+  name that is not a valid package name), not others: when `UV_PROJECT` /
+  `UV_WORKING_DIR(ECTORY)` names a project whose file uv rejects for another reason (an
+  invalid `requires-python`, say), the model still counts its `[tool.uv]` index, so the
+  pip.conf translation is skipped while uv reads no index there and fails loudly ("No
+  solution found"; 61f03b67, which ignored `UV_PROJECT`, translated — §15);
 - on Windows the URI hand-off (`file:///C:/…`) and the `\` separator rules are not
   measured on a Windows host.
 
@@ -717,3 +759,642 @@ Owner decision (2026-10-07): finish #131 in this round — exactly these four.
   `.` from `_SCP_RE`'s user class passed. Rows for `first.last@git.corp…:team/ext.git`
   (with and without `.git`) and `a_b~c@…`: a typed install, `source add` and a catalog
   source.
+
+## 15. #392 (2026-10-07) — a catalog install's installer runs in aelix's directory
+
+**Measured before the change** (402a8013, uv 0.11.19, a real `aelix` CLI in a throwaway
+venv, offline; `.omc/probes/392-live/impl/repro-head.txt`): a trusted local catalog
+lists `probe` → `local-ext`; `discover install probe` from a cloned repository whose
+`pyproject.toml` `[tool.uv]` says `find-links = ["./w"]` installed `local-ext` 9.9
+(CWD-DECOY) from `./w`, exit 0. Same with a `uv.toml` `find-links`, a `uv.toml`
+`[[index]]` (`format = "flat"`), and a `uv.toml` one directory ABOVE the cwd. pip read
+none of them. `update` of that record from the same directory did the same
+(`forms-head.txt`).
+
+**Owner decision (2026-10-07, option a of the issue).** An install that comes from a
+catalog runs its installer child in a neutral directory aelix owns, so project uv
+configuration in the cwd and its ancestors is never read; the user-level uv
+configuration and `UV_*` stay honoured (ADR-0200's org index pin keeps working).
+`_uv_has_own_index_config` decides from the same directory. A typed
+`aelix extension install <spec>` keeps running in the cwd (a known limit, §12).
+
+**The directory.** `<agent dir>/installer-cwd` (`~/.aelix/agent/installer-cwd` by
+default; `catalog_installer_cwd`), created `0700` on POSIX (an existing one is
+`chmod`ed back; Windows has no such mode — `os.chmod` there only toggles the read-only
+bit, and the directory inherits the agent dir's ACL), holding two files aelix writes —
+comments only, so they set nothing — and replaces atomically (a new file created
+`O_EXCL` under a temporary name, renamed over the old one — review round 5) whenever
+their text is not exactly aelix's: `pyproject.toml`, with no
+`[project]` and no `[tool.uv]`, and `uv.toml`. The directory must be a real directory
+and each file a regular file: a link there (a symlink; on Windows a name-surrogate
+reparse point — a symlink or a junction; other reparse points, such as cloud-file
+placeholders, are followed by `lstat` and are not links) or an entry of another kind,
+found there when aelix prepares the directory, is refused — never followed, repaired
+or replaced (review round 3, below; a link swapped in later is the limit in §12). Round 1 wrote only the `uv.toml`, on
+the measurement below; review round 2 found uv's project discovery past it (see
+"Review round 2" at the end of this section, which holds the full matrix). Round 1's
+measurement from `<home>/.aelix/agent/installer-cwd/run` (`uv-discovery.txt`), each
+config source pointing `find-links` at its own wheel — every ancestor here a bare
+directory or one holding only a `uv.toml` / `[tool.uv]`, never a `[project]`:
+
+| present | without aelix's `uv.toml` | with it |
+| --- | --- | --- |
+| `uv.toml` in an ancestor (`~/.aelix`) | read | not read |
+| `[tool.uv]` in an ancestor `pyproject.toml` | — | not read |
+| `~/pyproject.toml` `[tool.uv]` | read | not read |
+| `~/uv.toml` | read | not read |
+| user `$XDG_CONFIG_HOME/uv/uv.toml` | read | read |
+| system `$XDG_CONFIG_DIRS/uv/uv.toml` | — | read |
+| `UV_CONFIG_FILE` | — | read |
+
+So the system temp dir was not the only wrong place: with no aelix files, `~/uv.toml`
+and `~/pyproject.toml` — and, for an agent dir moved under `/tmp`, a world-writable
+ancestor — would still be read. With both files none is, whatever the ancestors hold:
+a `uv.toml` or `pyproject.toml` in the home directory is PROJECT configuration to uv
+and no longer applies to a catalog install (an org pin belongs in the user-level file,
+the system file, `UV_*` or `UV_CONFIG_FILE`). The directory cannot be prepared → the
+install is refused (exit 2) — never a fallback to the cwd.
+
+**What uv reads, and `_uv_has_own_index_config`.** `_uv_config_files` listed every
+ancestor file (ADR-0200 §9 item 3), so from the installer directory a
+`~/pyproject.toml` `[tool.uv]` index — which that uv never reads — would have switched
+the pip.conf translation off, and the catalog name would have gone to uv's default
+index instead of the org's mirror. It now returns what uv reads, asked from the
+directory the uv child runs in (`cwd=`, threaded through `uv_ambient_index_env` →
+`uv_ambient_index_config` → `_uv_has_own_index_config`; for a typed install still the
+process cwd): `UV_CONFIG_FILE` alone if set (a relative value joined to the child's
+cwd, where uv opens it — review round 3); nothing under `UV_NO_CONFIG`; else the
+project file (`_uv_project_config`), the user file (`_uv_user_config_file`) and the
+system file when it exists (`_uv_system_config_file`). The project file follows uv's
+own code (`crates/uv/src/lib.rs` settings load, `Workspace::discover`,
+`FilesystemOptions::find`; identical in 0.11.14 and 0.12.23 apart from logging):
+`_uv_settings_root` finds the nearest `pyproject.toml` — an explicit
+`[tool.uv.workspace]` root starts the search there; a `[project]` starts it at the
+first ancestor `pyproject.toml` when that is a workspace whose `members` include it
+and `exclude` does not, else at the project (the first `pyproject.toml` above ends
+that search whatever it holds — measured, review round 3); no `[project]`, `managed =
+false`, a file that is not TOML or a `[project]` whose `name` is not a valid package
+name (uv's `PackageName` rejects it; review round 3) starts it at the cwd — and from
+there the first `uv.toml` (any) or
+`[tool.uv]` pyproject wins (a `uv.toml` beats the pyproject beside it; a pyproject
+without `[tool.uv]` or one uv cannot parse is passed over). Round 1's nearest-file walk
+started at the cwd and named `proj/sub/uv.toml` where uv read `proj/pyproject.toml`
+(`.omc/probes/392-live/verify/uv-subdir.txt`). The user file is uv's `etcetera` base
+strategy: `%APPDATA%\uv\uv.toml` on Windows, else `$XDG_CONFIG_HOME/uv/uv.toml` (an
+absolute value only) or `~/.config/uv/uv.toml` — macOS included. The system file is
+the first existing `$XDG_CONFIG_DIRS/uv/uv.toml` (default `/etc/xdg`), else
+`/etc/uv/uv.toml`; `%SYSTEMDRIVE%\ProgramData\uv\uv.toml` on Windows. An empty
+`XDG_CONFIG_DIRS` entry is skipped, as uv 0.12 (CI's pin) does; uv 0.11 stopped at the
+first empty entry (measured: `none::sys` — 0.12.23 read `sys`'s pin, 0.11.19 read no
+system file, `.omc/probes/392-live/r3/xdg-config-dirs-empty-entry.txt`).
+
+**Which installs.** Every install of a target whose ORIGIN is a catalog or a record —
+the installer cwd follows the target's type, not a caller flag (review round 4): what
+`extension_catalog.resolve_entry_target` returns (a `ResolvedPath`, or a `CatalogSpec`
+— a `str` subclass — for a name or URL) runs there whoever calls `install_extension`;
+so does `discover install` (every entry form; `_cmd_install(..., resolved_target=)`
+hands the resolver's object on, not the argv string), and EVERY `update`
+(`_upgrade_and_report` wraps each record as a `CatalogSpec` unless it is already a
+`ResolvedPath`), including `update <name>` for a name never recorded. Install
+records do not say whether a catalog chose their source (`ExtensionSourceObject` is
+`spec`/`kind`/`name`), and none was chosen in the directory `update` happens to run in;
+every recorded spec reaches the installer absolute (a path record as its `file://` URI
+or absolute path, §14; a git URL — a relative `git+file:./x` installs on neither backend,
+measured, `relative-git.txt`; a package name), so the typed-install reason does not
+apply to `update`. Adding an origin field was rejected: records written before it would
+stay exposed.
+
+**pip.** pip reads no project configuration, but `python -m pip` puts its working
+directory first on `sys.path`: measured (`pipshadow.txt`), a cwd holding
+`pip/__main__.py` ran that file as the installer (rc 0, nothing installed) for a
+catalog install on 402a8013 and for a typed install still. The pip backend therefore
+runs in the same directory — every child of the call, the install and the verify gate's
+`pip download` alike — and the catalog install now installs the catalog's directory.
+
+**What still works.** Every source reaching the installer was already absolute after
+#131 (§2, §11), so the cwd change breaks no catalog form. Measured on both backends from
+the hostile cwd (`forms-fixed.txt`): a package name (with an org pin in the USER-level
+`uv.toml` for uv, `PIP_FIND_LINKS` for pip — ORG-PIN 1.0 installed, and kept by
+`update`), `./local-ext`, `./local-ext[feature]` (the extra's dependency installed), a
+`./….whl`, `name @ git+file:///…`, and an `http://127.0.0.1:23110/….whl` URL. The one
+value a user TYPES that may be relative, `--index-url` on `discover install`, is anchored
+at the cwd before the installer sees it (`_anchor_typed_index_url`): uv reads
+`--index-url ./simple` against its own cwd (measured), pip refuses a relative one
+(`ValueError: Can't mix absolute and relative paths`). A value with a URL scheme
+(RFC 3986 `scheme ":"`, two characters or more — `file:/abs`, `file:///abs`,
+`file://localhost/abs`, `https://…`) is a URL and is never anchored; `C:\x` is a
+Windows drive path, not a one-letter scheme (review round 3). The consent block names
+the directory the installer runs in.
+
+**What pi does.** pi runs `npm install <spec> --prefix <installRoot>` with no `cwd`
+(`packages/coding-agent/src/core/package-manager.ts`, `getNpmInstallArgs`,
+`installNpm`, snapshot 27c7b6ff4); `installRoot` is `<agentDir>/npm` for a user-scope
+install and `<cwd>/.pi/npm` for a project-scope one (which needs project trust). npm
+takes its project `.npmrc` from the `--prefix` root, not the cwd — measured with npm
+11.19.0: `npm config get registry` in a directory whose `.npmrc` names a decoy
+registry printed the decoy, and with `--prefix <a root holding another .npmrc>` that
+root's, and with `--prefix <an empty dir>` the default
+(`.omc/probes/392-live/impl/npm-prefix.txt`). So a project `.npmrc` cannot redirect a
+pi user-scope package install; aelix's installer directory is the same move.
+
+**Sweep — every site that reaches "where does the installer child run, and whose uv
+config counts"** (as of review round 5; every installer child goes through
+`install_extension`'s `run` or `verify_and_pin`'s download — the runner, default or
+injected through `run_extension_command[_async](..., runner=)`,
+`install_extension(runner=)` or `verify_and_pin(runner=)`, called
+`runner(argv, cwd=<installer-cwd>)` for the rows marked "installer directory"; a runner
+that takes no `cwd` keyword is refused there, exit 2 / `VerifyRefusal`, before anything
+runs). The public and semi-public entry points (`__all__`) and their cwd:
+`install_extension(target)` — installer directory when `target` is a `ResolvedPath` or
+`CatalogSpec`, the caller's cwd for a plain `str` (round 3's `neutral_cwd=False`
+default ran a resolver's `ResolvedPath` in the caller's cwd — Codex); `verify_and_pin`
+— the same rule for its `pip download`; `run_extension_command` /
+`run_extension_command_async` — `discover install` and `update` in the installer
+directory, `install` and `remove` in the cwd, every other verb starts no installer;
+`build_pip_args` / `build_download_args` / `display_argv` / `classify_*` /
+`resolve_install_backend` (no child: `find_spec("pip")` and `shutil.which("uv")`) — no
+child; `uv_ambient_index_config` / `uv_ambient_index_env` (`cwd=`, default the process
+cwd) — a model, no child; `read_pip_index_config` — reads pip's files, no child. What
+the catalog module hands out (review round 5, Codex r4: `resolve_entry_source` returned
+a plain `str`, so `install_extension(resolve_entry_source(entry)[0])` ran in the
+caller's cwd and installed the repository's CWD-DECOY):
+`extension_catalog.resolve_entry_target` — a `CatalogSpec` or a `ResolvedPath`, both
+run in the installer directory; `resolve_entry_source` — `(CatalogSpec, is_path)` for
+every form (a path as its absolute string), so its spec runs there too;
+`resolved_path_from_installer_arg` (an install record's string) — a `ResolvedPath` or
+`None`; `resolve_entry` / `search_entries` / `select_catalogs` return
+`CatalogEntry` objects, not sources; `split_path_extras`, `source_looks_like_path`
+and `anchor_catalog_location` return plain strings or a flag and start nothing. A
+`CatalogEntry.source` read raw is the catalog's unresolved text — a plain `str`, which
+`install_extension` treats as typed (the #131 contract: resolve it first).
+
+1. `discover install` → `_cmd_install` → `install_extension` → the runner (CLI
+   `aelix extension discover install` and the async/sync API alike):
+   cwd → installer directory.
+2. the verify gate's `pip download` (`verify_and_pin`, pip, `--verify-pypi` / `--strict`
+   / `--require-signature` on a package): cwd → installer directory (same `run`).
+3. `update` of a git / path / pypi record (`_upgrade_source` → `_upgrade_and_report`):
+   cwd → installer directory.
+4. `update <unrecorded name>` (`_upgrade_pypi_name`): cwd → installer directory.
+5. `uv_ambient_index_env` → `_uv_has_own_index_config` → `_uv_config_files`: every
+   ancestor of the process cwd → the file uv reads from the child's cwd (project-root
+   discovery first, round 2), the user file per platform and the system file.
+6. typed `extension install`: cwd, unchanged (§12 limit); the translation decision is
+   now uv's own rule there too.
+7. `extension remove` (`_cmd_remove` → `uninstall_args` → `runner(argv)`): cwd,
+   unchanged — `uv pip uninstall` resolves
+   nothing from an index; on pip, `python -m pip uninstall` imports a cwd `pip/` first
+   (the typed class; issue #394).
+8. git catalog fetch (`extension_catalog._git_clone_bytes`): cwd, unaffected — git
+   clone did not read the cwd repository's `.git/config` (`url.….insteadOf` mapping a
+   decoy: cloned the real repository; the same mapping via `-c` cloned the decoy; git
+   2.54.0, `gitcfg.txt`).
+9. aelix's own `classify_target` existence test in `discover install` (a package spec
+   naming a cwd file is refused, §2 (5)): unchanged — a refusal, not a redirect.
+
+**Known limits.**
+
+- a typed `extension install` still runs in the cwd: uv reads that directory's project
+  configuration there, and on pip a cwd `pip/` package runs as the installer — for a
+  typed install and for `extension remove` (issue #394; §12);
+- the user's own installer environment and user/system configuration are not policed
+  (review round 5, owner decision): they reach uv and pip exactly as set, and a
+  RELATIVE path among them resolves against the installer directory for these
+  installs (the limit in §12) — set it absolute. The one exception is
+  `UV_CONFIG_FILE`, which must be a bare absolute path. What a relative value does
+  there, measured: uv fails loudly for `UV_PROJECT` / `UV_WORKING_DIRECTORY`
+  ("Project directory `./proj` does not exist", "No such file or directory"),
+  `UV_FIND_LINKS` ("Failed to read `--find-links` directory") and the
+  constraint/override files ("File not found"); uv skips a missing local index
+  (`UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX`, `UV_EXTRA_INDEX_URL`) and pip a
+  missing find-links or index location (a WARNING), both then using the default
+  index; a relative `PIP_TARGET` / `PIP_PREFIX` / `PIP_ROOT` installs under the
+  installer directory; `PIP_CONFIG_FILE=pip.conf` names no file there — for pip, and
+  on uv for aelix's pip.conf translation since review round 5b (rounds 3 and 4,
+  `before-env-*.txt`; `r5b/pipconf-*.txt`). `UV_CACHE_DIR` / `PIP_CACHE_DIR` / `PIP_LOG` / `PIP_REPORT`
+  only move a cache or a log; `UV_PYTHON` loses to the explicit `--python` aelix
+  passes (`r4/pippy.txt`). An ABSOLUTE `UV_PROJECT` / `UV_WORKING_DIR` is the user's
+  own choice: uv reads that project's configuration from the installer directory
+  too, and the model follows it (round 4);
+- `_uv_project_config` models one way uv's `pyproject.toml` schema rejects a file (a
+  `[project]` whose `name` is not a valid package name); others (an invalid
+  `requires-python`, say) are not modeled — for a typed install they change only the
+  translation decision; for a catalog install they matter only when `UV_PROJECT` /
+  `UV_WORKING_DIR(ECTORY)` names such a project: the model counts its `[tool.uv]`
+  index, uv reads none, the translation is skipped and uv fails loudly ("No solution
+  found"; Codex r4 `invalid-schema`, where 61f03b67 translated — §12);
+- `_uv_config_files` does not model uv 0.12's `UV_NO_SYSTEM_CONFIG` (uv 0.11 ignores
+  it), nor uv's fallback when a discovered workspace's member collection fails (a
+  member directory without a `pyproject.toml`: uv then searches from the cwd); neither
+  changes what is read from the installer directory, where no project is found;
+- the directory's other entries are not policed: uv reads none of them (`--python` is
+  explicit, so no `.venv` / `.python-version` there either), but pip imports a `pip/`
+  package from its cwd — only the user (or an agent dir placed inside someone else's
+  checkout, which already hands that checkout aelix's settings and extensions) can
+  write there;
+- `0700` is POSIX-only; on Windows the directory has the agent dir's ACL. On POSIX the
+  directory is opened `O_NOFOLLOW` and each file step runs relative to that handle (a
+  file is read `O_NOFOLLOW` and must be the one `lstat` saw); on Windows (no
+  `O_NOFOLLOW`, no `dir_fd`) the checks are `lstat`s before use. On both, a new file
+  is created `O_EXCL` under a temporary name and renamed over the old one (a rename
+  replaces a link there, never writes through it), and the child is started by path,
+  so a link swapped in between the check and the installer's start — the consent
+  prompt sits between — by someone who can already write the agent dir is followed
+  (Codex r4 `consent_swap.py`: rc 0, the cwd's decoy) — a documented limit (§12);
+- another aelix preparing the directory at the same moment is not a refusal (review
+  round 5): each write is atomic and a write that fails is followed by another look,
+  so the other process's identical file is success. On Windows, replacing a file
+  another process holds open fails; aelix tries ten times (about a quarter of a
+  second) before refusing. A temporary file left by a killed process
+  (`.uv.toml.<pid>-<hex>.tmp`) stays in the directory; uv reads none of them;
+- the system-file model follows uv 0.12: with uv 0.11 and an empty `XDG_CONFIG_DIRS`
+  entry before the system pin, the model counts a file uv 0.11 does not read (the
+  translation is then off while uv 0.11 reads no pin);
+- the Windows legs are not measured on a Windows host. The real-uv rows run there
+  under CI's pinned uv (0.12.23 since issue #393; 0.11.14 before it): they
+  write the user pin to both `$XDG_CONFIG_HOME/uv` and `%APPDATA%\uv` (sandbox_home
+  points `APPDATA` into the sandbox) and skip the system-file row, whose Windows path
+  (`%SYSTEMDRIVE%\ProgramData\uv\uv.toml`) is machine-wide.
+
+**Review round 2 (2026-10-08): uv discovers a project first.** The independent verify
+of round 1 (`.omc/probes/392-live/verify/`) measured the `uv.toml` sentinel passed over:
+with the agent dir under a directory whose `pyproject.toml` has `[project]` +
+`[tool.uv]`, `discover install` installed that file's `find-links` wheel (9.7) over the
+user pin; the same for `~/pyproject.toml` `[project]` + `[tool.uv]`, for
+`~/pyproject.toml` `[project]` beside `~/uv.toml`, and for a RELATIVE
+`AELIX_CODING_AGENT_DIR` inside a cloned repository with `[project]` + `[tool.uv]`
+(CWD-DECOY). Reproduced on round 1 (b9314a0a) with the real CLI on all three uv
+versions before the fix (`.omc/probes/392-live/r2/defect-r1.txt`,
+`defect-other-uv.txt`: `[project]` + `[tool.uv]` above, `[project]` + `uv.toml`
+above, a virtual workspace root above, a `[project]` in the agent dir itself, and the
+relative agent dir under a `[project]` repository → the hostile wheel, for
+`discover install` and `update`).
+
+Cause, in uv's source (`crates/uv/src/lib.rs`, 0.11.14 and 0.12.23): for `uv pip`,
+settings come from `FilesystemOptions::find(workspace.install_path())` when
+`Workspace::discover(cwd)` succeeds — the nearest `pyproject.toml` with a `[project]`
+(or an explicit workspace root) — and from `FilesystemOptions::find(cwd)` only when it
+fails. A pyproject with neither a `[project]` nor `[tool.uv.workspace]` fails it at
+once (`MissingProject`), without looking further up.
+
+Mechanisms considered, by measurement — uv run as `uv pip install --dry-run --offline
+local-ext` from `<home>/.aelix/agent/installer-cwd` prepared per candidate, the hostile
+ancestor offering 9.1, the org pin 1.0 in the USER `uv.toml` (and, separately, in the
+SYSTEM `uv.toml` — identical results); PIN = only user/system config read, HOSTILE = the
+ancestor read, none = nothing read (`.omc/probes/392-live/r2/matrix_probe.py`,
+`matrix-0.11.14.txt`, `matrix-0.11.19.txt`, `matrix-0.12.23.txt` — byte-identical
+results on all three versions, no `warning:` line in any run):
+
+| ancestor shape (in `~`, the agent dir at `~/.aelix/agent`) | bare dir | R1 `uv.toml` (round 1) | S2 `pyproject.toml` only | S1 `uv.toml` + `pyproject.toml` (chosen) | S3 `--no-config` |
+| --- | --- | --- | --- | --- | --- |
+| a. nothing (control) | PIN | PIN | PIN | PIN | none |
+| b. `pyproject.toml` `[project]` + `[tool.uv]` | HOSTILE | HOSTILE | HOSTILE | PIN | none |
+| c. `pyproject.toml` `[tool.uv]` only | HOSTILE | PIN | HOSTILE | PIN | none |
+| d. `uv.toml` | HOSTILE | PIN | HOSTILE | PIN | none |
+| e. `pyproject.toml` `[project]` + `uv.toml` | HOSTILE | HOSTILE | HOSTILE | PIN | none |
+| f. workspace root `[project]`, `members` globs matching the agent dir path (`.aelix/*`, `.aelix/agent/*`), `[tool.uv]` | HOSTILE | PIN¹ | HOSTILE | PIN | none |
+| g. virtual workspace root (`members = ["*"]`, no `[project]`) + `[tool.uv]` | HOSTILE | HOSTILE | HOSTILE | PIN | none |
+| h. `~/.aelix/agent/pyproject.toml` `[project]` + `[tool.uv]` (the agent dir itself) | HOSTILE | HOSTILE | HOSTILE | PIN | none |
+| i. `[project]` + `[tool.uv] managed = false` | HOSTILE | PIN | HOSTILE | PIN | none |
+| j. unparsable `pyproject.toml` + `uv.toml` | HOSTILE | PIN | HOSTILE | PIN | none |
+
+¹ uv's member collection failed on a matched directory without a `pyproject.toml` and
+fell back to searching from the cwd — luck, not a property of R1.
+
+Chosen: S1. It is the only candidate that reads no ancestor in any shape and keeps the
+user and system pins. `--no-config` drops the user and system files with the project
+ones (and `--config-file` takes one file, which uv then reads ALONE — it cannot carry
+both the user and the system file); `--project <dir>` only names the directory
+discovery starts from, which is already the installer directory. Through the real CLI
+(`defect-r2.txt`, `defect-other-uv.txt`, uv 0.11.14 / 0.11.19 / 0.12.23): all twelve
+round-1 shapes — the seven above the agent dir and five under a relative agent dir —
+install ORG-PIN on `discover install` and on `update`.
+
+The matrix is in `tests/cli/test_catalog_install_neutral_cwd_392.py` where CI runs it
+with its pinned uv (rows skip when no absolute `uv` is on PATH):
+`test_real_uv_no_ancestor_shape_reaches_a_catalog_install` — ten ancestor shapes
+(`uv.toml`; `[tool.uv]` only; `[project]` + `[tool.uv]`; `[project]` + `uv.toml`; a
+workspace root with `members = ["packages/*"]`; the virtual one; a workspace root
+whose `members` globs match only the installer directory (`.aelix/agent/installer-*`,
+`agentrel/installer-*` — the row that catches a sentinel declaring a `[project]`); a
+`[project]` in the agent dir; `managed = false`; an unparsable
+pyproject + `uv.toml`) × two placements (above the agent dir; a relative
+`AELIX_CODING_AGENT_DIR` in the cloned repository that is the cwd), each through the
+real CLI, `discover install` then `update`, user pin required; plus the system-file pin
+(POSIX) and the `UV_CONFIG_FILE` pin past a `[project]` ancestor; and
+`test_real_uv_reads_the_project_file_the_model_names` — twelve layouts where uv's
+`--dry-run` pick must be the file `_uv_project_config` names (a project subdir, a
+`[project]` without `[tool.uv]` under a `[tool.uv]` pyproject, a workspace member, an
+excluded member, a non-member, `managed = false` and its managed twin, a virtual root,
+a no-project pyproject, an unparsable pyproject above a `uv.toml`, a `[project]` with
+no `name`, the installer directory under a `[project]`). The file has 87 rows, green on
+uv 0.11.14, 0.11.19 and 0.12.23 (`green-r2-three-uv.txt`); on round 1 (b9314a0a) 41 of
+them fail, the same 41 on each of the three (`red-on-r1.txt`) — among them the ten
+`[project]` / workspace-root / agent-dir real-CLI rows and the system-pin row; on
+402a8013 (before #392) 82 fail and 5 pass (`red-on-parent.txt`: the three typed-install
+and user-pin control rows, the `UV_CONFIG_FILE` row — uv reads that file alone from any
+directory — and the relative-agent-dir row whose `[project]` sits in the agent dir, which
+uv run in the cwd never reaches). Fifteen mutants in a throwaway worktree — round 1's
+`uv.toml` alone, the `pyproject.toml` alone, a sentinel that declares a `[project]`, no
+rewrite, a write through a link, `--no-config` on the neutral child, round 1's consent
+text, and eight model regressions (round 1's walk, no workspace join, no `exclude`, no
+`managed = false`, a relative `XDG_CONFIG_HOME`, no system file, no `UV_NO_CONFIG`, an
+unparsable pyproject taken as the root) — each turn at least one row red
+(`sabotage.txt`).
+
+**Review round 3 (2026-10-08).** The independent verify of round 2 failed on one
+blocking item; Codex's round-2 cross-review reported five. Each was reproduced on the
+round-2 code before the fix (`.omc/probes/392-live/r3/`), and every real-uv measurement
+below ran on uv 0.12.23 (CI's pin since issue #393) and 0.11.19 with identical results
+(0.11.14's earlier rows stay as history).
+
+1. *A relative `UV_CONFIG_FILE`.* uv opens it in its own working directory — in the
+   installer directory, `UV_CONFIG_FILE=uv.toml` (or `./uv.toml`, `pyproject.toml`) is
+   aelix's empty file, and uv said nothing. Any `UV_CONFIG_FILE` value turns the pip.conf
+   translation off (`_UV_INDEX_ENV`, ADR-0200 §5), so neither the uv pin nor the pip
+   pin applied; round 2's text said "uv fails on the missing file". The sweep of the
+   other path-valued variables, real CLI, a trusted catalog naming `local-ext`, the
+   user's cwd holding the org's files (`before-env-uv-0.12.23.txt`,
+   `before-env-uv-0.11.19.txt`, `before-env-pip.txt`), each for `discover install` and
+   `update`:
+
+   | variable (relative) | backend | before (round 2) |
+   | --- | --- | --- |
+   | `UV_CONFIG_FILE=uv.toml` / `./uv.toml` / `pyproject.toml` | uv | silent: default index ("not found in the cache"), rc 1 |
+   | `UV_CONFIG_FILE=pinned.toml` (absent there) | uv | loud: "failed to open file" |
+   | `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_INDEX` (`./x`, `org=./x`), `UV_EXTRA_INDEX_URL` | uv | silent: the missing local index skipped, default index |
+   | `UV_FIND_LINKS=./w` | uv | loud: "Failed to read `--find-links` directory" |
+   | `UV_CONSTRAINT`, `UV_OVERRIDE`, `UV_BUILD_CONSTRAINT` | uv | loud: "File not found" |
+   | `PIP_CONFIG_FILE=pip.conf` | uv | read by aelix in the USER's cwd and translated — the cwd's `pip.conf` chose the index (rc 0) |
+   | `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL` (`./simple`) | uv | silent: not a URL, dropped by the translation |
+   | `PIP_FIND_LINKS`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL` | pip | a WARNING ("Location './w' is ignored"), then the default index |
+   | `PIP_CONFIG_FILE=pip.conf` | pip | silent: no file there, nothing read |
+   | `PIP_CONSTRAINT`, `PIP_REQUIREMENT` | pip | loud: the installer fails |
+
+   Decision (main loop; withdrawn in review round 5 except for `UV_CONFIG_FILE`,
+   below): for a catalog install and `update`, a relative value in any of
+   these — plus `SSL_CERT_FILE` / `SSL_CLIENT_CERT` (uv) and `PIP_CERT` /
+   `PIP_CLIENT_CERT` (pip), which choose whom the installer trusts — is REFUSED before
+   anything runs (exit 2; "Error: UV_CONFIG_FILE holds a relative path ('uv.toml') —
+   refusing to install 'local-ext'. … Set UV_CONFIG_FILE to an absolute path (or a
+   URL)."), loud ones included, so the rule is one rule (`_INSTALLER_PATH_ENV`,
+   `_relative_installer_env`; lists split as uv/pip split them — `UV_FIND_LINKS` on
+   commas, measured, `uv-env-delimiters.txt`; `name=` stripped from a `UV_INDEX` entry;
+   `PIP_CONFIG_FILE=os.devnull` passes). After: 32 of 48 uv rows and 12 of 48 pip rows
+   are refused with that message; on uv the four absolute / URL controls
+   (`UV_CONFIG_FILE`, `UV_FIND_LINKS`, `UV_INDEX_URL=file:…`, `PIP_CONFIG_FILE`) install
+   the org's wheel (8 rows, rc 0), on pip the absolute `PIP_FIND_LINKS` does (2 rows; the
+   probe's own dead `PIP_INDEX_URL` outranks an absolute `PIP_CONFIG_FILE` there, env
+   over file); the rest are variables the other backend does not read
+   (`after-env-*.txt`; 0.11.19 identical to 0.12.23). A typed install keeps the value — its child runs in the cwd,
+   where the value means what it says. `_uv_config_files` now joins a relative
+   `UV_CONFIG_FILE` to the CHILD's cwd (round 2 returned the bare name, which this
+   process opened in the user's cwd).
+2. *A linked installer directory.* `installer-cwd` as a symlink to the user's cwd was
+   accepted: the installer ran there (a cwd `pip/` ran) and the cwd's `pyproject.toml`
+   / `uv.toml` were overwritten with sentinels (Codex, reproduced:
+   `before-codex-items.txt`). Now `catalog_installer_cwd` `lstat`s: a link (or, on
+   Windows, a name-surrogate reparse point — a symlink or a junction) or a non-directory there, and a link or non-regular
+   file in place of either sentinel, raise `InstallerDirRefused` → exit 2. A sentinel
+   link whose target already holds the exact sentinel text is refused too (Codex's
+   content-only mutant: the target, rewritten during consent, pointed uv at a decoy).
+   After: rc 2, the cwd's `pyproject.toml` unchanged; the sentinel-link probe rc 2
+   (`after-codex-items.txt`).
+3. *An injected runner.* `run_extension_command_async([... discover install ...],
+   runner=…)` and `update` with one handed the runner argv only — its child ran in
+   the cwd. `PipRunner` is now a protocol with a `cwd` keyword; `install_extension`
+   calls the runner — default or injected — as `runner(argv, cwd=<installer-cwd>)`
+   for every child of a catalog install or update (the verify gate's `pip download`
+   too), and refuses a runner that takes no `cwd` before anything runs. A typed install
+   and `extension remove` still call `runner(argv)`. Every entry point is in the sweep
+   above.
+4. *The consent line* said "not the current directory" while the installer ran in it.
+   It now reads "the installer runs in <dir> (aelix's installer directory)" — the
+   directory the child is started in.
+5. *`--index-url file:/abs`* (one slash) was anchored under the cwd and the catalog
+   install found nothing (rc 1; 402a8013 installed it). Any RFC 3986 scheme is now a
+   URL; after: the catalog install installs from that index (rc 0,
+   `after-codex-items.txt`), and real-uv rows install the org's wheel through
+   `file:/`, `file:///` and `file://localhost/` indexes.
+6. *Model rows* for the mutants that survived round 2, each checked against the real
+   uv's pick: a `uv.toml` beside a `[tool.uv]` pyproject (bare, and with a `[project]`)
+   — `uv.toml` wins (uv warns that it ignores the `[tool.uv]` fields); a project
+   inside a non-member project inside a workspace, and a project under a no-`[project]`
+   `[tool.uv]` pyproject inside a workspace — the first `pyproject.toml` above ends the
+   search, whatever it holds; a `[project]` whose name is not a valid package name — no
+   project (the model was wrong here and is fixed; that file's `[tool.uv]` is still
+   read when the search reaches it), and a workspace member under such a file; a
+   system `uv.toml` index suppresses the translation; an empty `XDG_CONFIG_DIRS` entry
+   (0.12's reading, a real-uv row that skips on uv < 0.12). The layout count is
+   nineteen (ADR-0200 §12 said ten; round 2 had twelve).
+
+Rows: `tests/cli/test_catalog_install_neutral_cwd_392.py` has 187 (+100): green on uv
+0.12.23 (187 passed) and 0.11.19 (186 passed, the XDG row skipped)
+(`green-392-two-uv.txt`); on the round-2 code 68 fail on each version
+(`red-on-round2.txt`). Twenty mutants in a throwaway worktree — no refusal, comma vs.
+whitespace for `UV_FIND_LINKS`, `name=` kept, the `os.devnull` exemption dropped, no
+runner check, the bound runner dropping `cwd`, the verify download unbound, round 2's
+link replacement, Codex's content-only check, a linked directory accepted, a
+non-regular sentinel accepted, round 2's consent text, round 2's `://` test, a
+one-letter scheme, round 2's bare `UV_CONFIG_FILE`, an invalid name taken as a
+project, `[tool.uv]` before `uv.toml`, the workspace search continuing past a
+non-workspace ancestor, the system file dropped, uv 0.11's `XDG_CONFIG_DIRS` reading —
+each turn at least one row red; the `dir_fd`-less (Windows) path forced on POSIX stays
+green (`sabotage.txt`).
+
+**Review round 4 (2026-10-08).** The independent verify of round 3 passed (four
+non-blocking items); Codex's round-3 cross-review found five. Each was reproduced on the
+round-3 code first, on uv 0.12.23 and 0.11.19 (`.omc/probes/392-live/r4/`,
+`before-head-*.txt`, `before-env-*.txt`).
+
+1. *A path-only variable that looks like a URL* (the list withdrawn in review round 5;
+   the `UV_CONFIG_FILE` half stays). `UV_CONFIG_FILE=file:pin.toml` passed
+   the relative guard (any RFC 3986 scheme passed), but uv reads the variable as a
+   PATH: it opened `file:pin.toml` in the installer directory — a decoy there was
+   installed (INSTALLER-CONFIG-DECOY, rc 0, `discover install` and `update`), and
+   without one the install failed "failed to open file"; `UV_CONFIG_FILE=file:///abs`
+   fails the same way, so round 3's "(or a URL)" advice was false. uv does not expand
+   `~` either (`UV_CONFIG_FILE=~/pin.toml` opened `<cwd>/~/pin.toml`, both versions,
+   `uv-tilde.txt`); pip's `path` option type does, for `--cert`, `--client-cert` and
+   `--src` only (pip 26.2.1's own parser, `pip-env-tilde.txt`). Now the variables read
+   only as a file path (`_INSTALLER_PATH_ONLY_ENV`: `UV_CONFIG_FILE`, `UV_PROJECT`,
+   `UV_WORKING_DIR`, `UV_WORKING_DIRECTORY`, `SSL_CERT_FILE`, `SSL_CLIENT_CERT`,
+   `PIP_CONFIG_FILE`, `PIP_TARGET`, `PIP_PREFIX`, `PIP_ROOT`, `PIP_SRC`, `PIP_CERT`,
+   `PIP_CLIENT_CERT`) pass only as an absolute path (`_is_absolute_path`: on Windows
+   one with a drive or a UNC share — a rooted `\x` is the current drive's), `~/x` only
+   where pip expands it (`_TILDE_EXPANDED_ENV`), and the refusal says "Set <VAR> to an
+   absolute path." — "or a URL" only for a variable that takes one. After, real CLI:
+   `file:pinned.toml`, `~/pinned.toml`, `file:///abs` and `PIP_CONFIG_FILE=file:pip.conf`
+   rc 2 on both uv versions and pip, the absolute control rc 0 (`after-env-*.txt`,
+   `after-codex-scripts.txt`).
+2. *The Python API.* `install_extension(resolve_entry_target(entry))` ran in the
+   caller's cwd: round 3's `neutral_cwd` keyword defaulted to False, so a cwd `uv.toml`
+   `find-links` chose a catalog wheel's dependency (CWD-DECOY). Owner decision: the
+   installer cwd follows the TARGET'S ORIGIN, not a caller flag. The resolver returns
+   a `ResolvedPath` for a path and, new, a `CatalogSpec` (a `str` subclass) for a name
+   or URL; `install_extension` runs either in the installer directory and a plain `str`
+   in the caller's cwd; `neutral_cwd` is gone (a caller passing it gets a `TypeError`);
+   `discover install` hands the resolver's object on; `update` wraps each record as a
+   `CatalogSpec`; `verify_and_pin` follows the same rule for its `pip download`. Every
+   public entry point and its cwd is in the sweep above. After: the API row installs
+   the dependency from the user's org pin (ORG-PIN); Codex's script, which has no pin,
+   now finds no `local-ext` (rc 1) instead of the cwd's decoy.
+3. *A regression against 61f03b67: `UV_PROJECT`.* uv starts project discovery at
+   `UV_PROJECT` (and first moves to `UV_WORKING_DIR`, else `UV_WORKING_DIRECTORY` —
+   `crates/uv/src/lib.rs`, both versions), so from the installer directory too it read
+   the chosen project's `[tool.uv] index-url`; the model did not, translated a stale
+   `PIP_INDEX_URL` over it, and round 3 installed STALE-PIP-PIN (or failed, rc 1, with
+   an empty stale index) where 61f03b67 installed UV-PROJECT-ORG (Codex's
+   `project_env_pin_regression.py`, both uv versions). The model now does what uv does
+   (`_uv_working_dir`, `_uv_project_dir`: joined to the working directory, normalised
+   lexically — `x/link/..` is `x`, measured — and a `pyproject.toml` path is its
+   directory); a relative `UV_CONFIG_FILE` joins the directory uv WORKS in. Sixteen
+   env shapes against the real uv, model and uv agree on every one uv accepts
+   (`uv-project-env-after.txt`; before, the model named the installer directory's
+   `uv.toml` for every row where uv read the chosen project, `uv-project-env-before.txt`);
+   an empty value is refused by both versions ("a value is required"), and a
+   `UV_PROJECT` that does not exist is refused by uv 0.12.23 and only warned about by
+   0.11.19, which then reads the user pin — relative values are refused by aelix for
+   these installs (item 5). After: Codex's script installs UV-PROJECT-ORG on both uv
+   versions for the stale and the empty pip index.
+4. *Rows for surviving mutants.* A named index with `-` (`UV_INDEX=team-a=file:///…`
+   passes; `team-a=./simple` is refused); a hard-linked sentinel is replaced and its
+   other name left unchanged (verify M11, `O_TRUNC` in place); a sentinel holding
+   aelix's text plus a `find-links` line is replaced (M12); `UV_CONFIG_FILE=~/uv.toml`
+   is refused (M17); a `runner(argv, *, cwd=None)` is accepted and given the directory
+   (M33).
+5. *Text and the rest of the sweep* (the refusals withdrawn in review round 5).
+   "on Windows any reparse point" (twice above) said
+   more than the code checks — a name-surrogate reparse point (a symlink or a
+   junction); corrected. The variables the round-3 sweep left out are refused when
+   relative too: `UV_PROJECT`, `UV_WORKING_DIR`, `UV_WORKING_DIRECTORY`, `UV_EXCLUDE`,
+   `PIP_BUILD_CONSTRAINT`, `PIP_REQUIREMENTS_FROM_SCRIPT`, `PIP_TARGET`, `PIP_PREFIX`,
+   `PIP_ROOT`, `PIP_SRC`. Measured on the round-3 code, real CLI: a relative
+   `PIP_TARGET` / `PIP_PREFIX` / `PIP_ROOT` installed into `installer-cwd/tgt` (`pfx`,
+   `root`), rc 0, silently; `UV_PROJECT=.` and `UV_WORKING_DIR=..` resolved in the
+   installer directory, so the cwd's configuration they meant was not read (rc 1, "not
+   found in the cache"); `UV_EXCLUDE`,
+   `PIP_BUILD_CONSTRAINT` and `PIP_REQUIREMENTS_FROM_SCRIPT` failed loudly
+   (`before-env-*.txt`). After: each rc 2 naming the variable; an absolute
+   `UV_PROJECT` / `UV_WORKING_DIR` installs the org's wheel (rc 0); an absolute
+   `PIP_TARGET` installs there (rc 0); `PIP_CERT=~/ca.pem` passes (round 3 refused it)
+   (`after-env-*.txt`). What stays unpoliced is in the limits above.
+
+Rows: `tests/cli/test_catalog_install_neutral_cwd_392.py` has 284 (+97). On the round-3
+code 133 of them fail on each uv version (`red-on-round3.txt`; the 86 relative-env rows
+among them include round 3's own rows, whose message no longer says "(or a URL)").
+Twenty-three mutants in a throwaway worktree (`sabotage.txt`): twenty-two turn rows
+red — the path-only exemption dropped, `~` expanded everywhere or nowhere, a rooted
+Windows path taken as absolute, round 3's refusal text, `CatalogSpec` ignored, the
+resolver returning a plain `str`, discover passing the argv string, update not
+wrapping a record, the verify download unbound, `UV_PROJECT` ignored, the working
+directory ignored, `UV_WORKING_DIRECTORY` before `UV_WORKING_DIR`, `UV_PROJECT`
+resolved physically, a relative `UV_CONFIG_FILE` joined to the start directory, the
+four new pip variables or `UV_PROJECT` / `UV_WORKING_DIR` / `UV_EXCLUDE` not refused,
+the named-index regex without `-`, M11, M12 and M33; one is equivalent (a
+`UV_PROJECT` naming a `pyproject.toml` file not reduced to its directory — discovery
+from that path reaches the same directory first).
+
+**Review round 5 (2026-10-08) — the final round, owner decision "narrow and finish".**
+The independent verify of round 4 failed on two blocking items, both regressions
+against 61f03b67 that round 3's and round 4's relative-path refusals had made: a named
+`UV_DEFAULT_INDEX=corp=<url>` (the form uv's `UV_INDEX_CORP_USERNAME` / `_PASSWORD`
+need) was refused as a relative path, and `PIP_FIND_LINKS=~/wheels` was refused though
+pip expands `~` there. Codex r4 (filtered mid-run; its probe outputs re-measured here)
+added a third (a relative `UV_WORKING_DIRECTORY` that uv ignores beside an absolute
+`UV_WORKING_DIR` was refused), a leading-space `UV_CONFIG_FILE` that passed the guard
+(it stripped the value; uv does not, and read a decoy at `installer-cwd/' /abs…'`), the
+Python API's `resolve_entry_source` returning a plain `str` (its install ran in the
+caller's cwd and installed the repository's CWD-DECOY), and an `_ensure_sentinel`
+mutant without `O_NOFOLLOW` that no row caught; Claude's cross-review found
+concurrent preparation refusing at random (unlink, then `O_EXCL` create; measured
+here: 46 and 101 refusals in 120 process starts, first use and an older text) and a
+`find-links` relative in pip's configuration silently re-pointed (now a stated limit,
+§12). The owner narrowed
+the issue to its threat model (§12): the current directory, not the user's own
+environment. Each item was reproduced on the round-4 code first, on uv 0.12.23 and
+0.11.19 (`.omc/probes/392-live/r5/`, `i1-r4-*`, `i2-r4-*`, `i3-r4-*`, `i4-r4.txt`).
+
+1. *Dropped.* The relative-path refusals of rounds 3 and 4 for every installer
+   variable but `UV_CONFIG_FILE` (`_INSTALLER_PATH_ENV`, `_INSTALLER_PATH_ONLY_ENV`,
+   `_TILDE_EXPANDED_ENV`, the `UV_INDEX` name strip, `_relative_installer_env`):
+   the user's environment and user/system configuration are inside the trust boundary
+   — a repository cannot set them — and policing them broke legitimate shapes faster
+   than it closed anything a repository controls. A relative path in them now resolves
+   against the installer directory (the known limit in §12). After, real CLI: the named
+   `UV_DEFAULT_INDEX` installs ORG-CORP-INDEX, `PIP_FIND_LINKS=~/wheels` ORG-VIA-TILDE,
+   an absolute `UV_PROJECT` / `UV_WORKING_DIRECTORY` ORG-PROJECT, rc 0 on `discover
+   install` and `update`; a relative `UV_PROJECT=./proj` / `UV_WORKING_DIRECTORY=./proj`
+   fails loudly in uv (rc 1, "Project directory `./proj` does not exist" / "No such file
+   or directory") — on both uv versions (`i1-r5-*.txt`). The model that honours
+   `UV_PROJECT` / `UV_WORKING_DIR(ECTORY)` (round 4) stays.
+2. *`UV_CONFIG_FILE`, the one rule kept* (`_uv_config_file_refusal`): set, it must be
+   a bare absolute path exactly as uv reads it — nothing stripped. After, real CLI, both
+   uv versions: `' /abs'` (round 4: CWD-DECOY from the decoy), `'/abs '`, `''`,
+   `'   '`, `org.toml`, `~/org.toml` and `file:///abs` are refused (rc 2, "Set
+   UV_CONFIG_FILE to an absolute path."); the absolute control installs ORG-PIN
+   (`i2-r5-*.txt`). On the pip backend the variable is not read and not checked.
+3. *The Python API.* `resolve_entry_source` returns `(CatalogSpec, is_path)` for every
+   form (a path as its absolute string). After: `install_extension` given its spec runs
+   uv in the installer directory and installs ORG-PIN where round 4 installed
+   CWD-DECOY (`i3-*.txt`). The sweep above lists every public resolver and installer
+   function and its cwd.
+4. *Concurrency.* A sentinel is written to a new file (`O_EXCL`, `O_NOFOLLOW`, a name
+   no other process uses) and renamed over the old one (`_write_sentinel`); a failed
+   write is followed by another look, and the file holding aelix's text by then is
+   success (`_ensure_sentinel`; on Windows, where replacing a file another process
+   holds open fails, ten tries). A link or a non-regular entry found while preparing
+   is still refused, and a file is read `O_NOFOLLOW` (a link swapped in after the
+   `lstat` is refused, `ELOOP`). After: 8 processes at once, 15 rounds each, first use
+   and an older text — 120 of 120 succeed both ways (round 4: 74 and 19,
+   `i4-*.txt`); a reader polling `uv.toml` while it is rewritten 400 times sees only
+   the old text or aelix's, never a missing or partial file.
+5. *Text.* "never followed through a link" became what is true — refused when a link
+   at preparation time; a link swapped in during the consent window is followed (§12).
+
+Rows: `tests/cli/test_catalog_install_neutral_cwd_392.py` has 279 (round 4's
+relative-env rows replaced by 44 `UV_CONFIG_FILE` refusal rows over both source forms,
+30 pass-through rows and 17 rule rows; new rows for the resolver, the `verify_and_pin`
+seam, the link swap, the junction branch, threads, processes, a reader and the named
+default index on real uv). Green on uv 0.12.23 (279 passed) and 0.11.19 (278 passed,
+the XDG row skipped); on the round-4 code 94 fail on each version (`red-on-r4-*.txt`; the 17 rule rows
+because `_uv_config_file_refusal` is new, the 44 refusal rows on the message text
+and the space and empty values round 4 let through).
+Mutants (`sabotage.txt`, the 392 file and the #131 file, 737 rows): 21, 17 red —
+the read without `O_NOFOLLOW`, `ELOOP` read past, round 4's unlink-then-`O_EXCL`
+writer (with and without retries: only the reader row sees it — the re-check makes
+the concurrency rows pass, while a reader still finds `uv.toml` missing), an in-place
+`O_TRUNC` write, a prefix compare, `resolve_entry_source` returning `str`,
+`verify_and_pin` without its anchor, the junction branch dropped (in `_is_link_like`
+and in the directory check), `UV_CONFIG_FILE` stripped, unchecked, checked on pip
+instead of uv, empty passing, `~` expanded, a trailing space passing, and round 4's
+`UV_DEFAULT_INDEX` refusal put back; four equivalent on POSIX — no retry and no
+re-check after a failed write (a rename does not fail there when another writer
+races; they are the Windows path), no inode compare (`O_NOFOLLOW` already refuses the
+swap it guards), a temporary file without `O_EXCL` (its name is unique).
+
+**Review round 5b (2026-10-08) — three items from the round-5 verify, nothing else.**
+
+1. *Windows rows.* `test_the_uv_config_file_rule_reads_the_value_exactly_as_uv_does`
+   expected the POSIX literal `/srv/pin.toml` to pass the rule, which on win32 needs a
+   drive or a share; its absolute rows now use a native path (`tmp_path`), and
+   `test_uv_no_config_and_uv_config_file_are_modeled` no longer leans on
+   `ntpath.isabs('/x')` (true only on Python <= 3.12). Every row of the rule tables,
+   the 11 CLI refusal values and the absolute control, run with `sys.platform` set to
+   `win32` and Windows-shaped paths: 23 of 23 as expected (`r5b/win-sim-r5b-py312.txt`).
+2. *Text.* `verify_and_pin`'s docstring said it refused a relative installer variable;
+   it refuses only a runner that takes no `cwd`. Its child is always pip, and the one
+   variable check (`UV_CONFIG_FILE`, uv backend) runs in the install path.
+3. *A relative `PIP_CONFIG_FILE` on uv.* The pip.conf -> uv translation opened it in
+   aelix's own cwd — the user's repository — while the uv child ran in the installer
+   directory, so a repository's `pip.conf` chose the index a catalog install was
+   handed (verify r5: CWD-DECOY on both uv versions; the parent did the same).
+   `read_pip_index_config(env, cwd)` now joins a relative value to the child's cwd,
+   where pip would open it, as round 3 did for `UV_CONFIG_FILE`; a typed install
+   (child in the user's cwd) is unchanged. Real CLI, uv 0.12.23 and 0.11.19
+   (`r5b/pipconf-rel-r5b.txt`, `r5b/pipconf-child-r5b.txt`): before, catalog install
+   and `update` CWD-DECOY with `UV_INDEX_URL=<decoy>` shown; after, no `UV_INDEX_URL`
+   from the repository (no file in the installer directory; uv offline then finds
+   nothing, rc 1), and with a `pip.conf` placed in the installer directory its index
+   is the one passed (ORG-PIN); the typed install still reads the cwd's file
+   (CWD-DECOY, as designed). Two rows, red on 1e51422a (`r5b/red-on-1e51422a.txt`).

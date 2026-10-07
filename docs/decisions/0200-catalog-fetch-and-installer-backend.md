@@ -2,7 +2,14 @@
 
 Status: Accepted (2026-07-31) — owner-ratified lane selection and owner-ratified
 merge. Design record that lands with the W1-A implementation (same pattern as
-ADR-0196/0197/0198/0199).
+ADR-0196/0197/0198/0199). §5's uv-config suppression and §9 item 3 amended
+2026-10-07 by #392 (§12 here, ADR-0255 §15; corrected 2026-10-08 by its review
+rounds 2, 3, 4 and 5): a catalog install and `update` run the installer in aelix's installer
+directory, where uv reads no project configuration, and the translation decision
+counts only the files uv really reads — a project the user chose with `UV_PROJECT` /
+`UV_WORKING_DIR` included; the user's own environment and user/system configuration
+reach the installer as set (inside the trust boundary), and the one variable checked
+is `UV_CONFIG_FILE`, which must be a bare absolute path for those installs.
 Date: 2026-07-31
 Closes: **#111 A-1** (default marketplace catalog 100% unfetchable) and **#113**
 (no extension install can succeed on the official install path). Both were
@@ -266,7 +273,11 @@ at a genuine `git+…` catalog is not collapsed into an https GET.
 3. `_uv_config_files` collects every `uv.toml` / `pyproject.toml` walking up from
    cwd, not just the nearest, so an ancestor `[tool.uv]` index key suppresses the
    translation. Conservative direction (suppression = aelix does not override the
-   user) but broader than uv's own nearest-project rule.
+   user) but broader than uv's own nearest-project rule. **Closed 2026-10-07 by
+   #392 (§12):** it was not conservative once a catalog install's uv ran elsewhere —
+   a file that uv never read switched the org pin's translation off. (Nor is uv's
+   rule "nearest": uv discovers a project first and searches from its workspace
+   root — §12, review round 2.)
 4. A user who already accumulated **both** catalog rows keeps a dead
    `git+<default>` row in `extensionSources`. `discover` no longer fetches it,
    but `source list` still shows it and `source remove <default>` will not clear
@@ -325,3 +336,73 @@ Two of the three most serious defects — the PATH hijack and the credential
 disclosure — were **introduced by this sprint** and would have shipped had the
 review passes been skipped. That is the case for keeping authoring and review in
 separate contexts, and it is why the delta round exists.
+
+## 12. Amendment (2026-10-07, #392) — where uv runs, and which of its config counts
+
+§5 honours uv's own configuration — `uv.toml`, `pyproject.toml [tool.uv]`,
+`UV_CONFIG_FILE` — and aelix ran `uv pip install` in the user's cwd. For an install
+whose SOURCE came from a trusted catalog that let a cloned repository's `[tool.uv]`
+`find-links` answer the catalog's package name with the repository's own wheel
+(measured, ADR-0255 §15). Owner decision (2026-10-07, option a):
+
+- `discover install` and every `update` run the installer child — uv or pip — in
+  `<agent dir>/installer-cwd`, created `0700` on POSIX (Windows has no such mode),
+  holding two aelix-written files that set nothing: a `pyproject.toml` with no
+  `[project]` and a `uv.toml`. uv first discovers a project — the nearest
+  `pyproject.toml`, up to its workspace root — and reads configuration from there, so
+  round 1's `uv.toml` alone was passed over by an ancestor `pyproject.toml` with a
+  `[project]` table (review round 2, measured); with both files uv finds no project
+  there and the `uv.toml` is the first config file, so no project configuration is read
+  from that directory or any ancestor (measured on uv 0.11.14, 0.11.19 and 0.12.23 for
+  every ancestor shape, ADR-0255 §15). The user-level `uv.toml`, the system one,
+  `UV_CONFIG_FILE` and `UV_*` still apply, so the org index pin this ADR protects keeps
+  working; a `uv.toml` / `pyproject.toml` in the home directory is project
+  configuration to uv and no longer applies to these installs.
+- `_uv_has_own_index_config` asks from the directory the uv child runs in, and
+  `_uv_config_files` returns what uv reads from there — §9 item 3 closed: uv first
+  moves to `UV_WORKING_DIR` (else `UV_WORKING_DIRECTORY`) and starts project
+  discovery at `UV_PROJECT` (lexically normalised; a `pyproject.toml` path means its
+  directory), and the model does the same (review round 4: a project chosen with
+  `UV_PROJECT` whose `[tool.uv]` pinned the index lost to a translated
+  `PIP_INDEX_URL` in round 3, a regression against 61f03b67; measured on uv 0.11.19
+  and 0.12.23, ADR-0255 §15); then `UV_CONFIG_FILE` alone if set (a relative value
+  joined to the directory uv works in, where uv opens it — review round 3), nothing
+  under `UV_NO_CONFIG`, else the ONE project
+  file uv reads (`_uv_project_config`: project-root discovery, then the first
+  `uv.toml` or `[tool.uv]` pyproject from that root up), the user file
+  (`%APPDATA%\uv\uv.toml` on Windows, else `$XDG_CONFIG_HOME/uv/uv.toml` or
+  `~/.config/uv/uv.toml`) and the system file when one exists. Test rows check the
+  model against the real uv's pick for nineteen layouts (twelve from review round 2,
+  seven from round 3) and ten `UV_PROJECT` / `UV_WORKING_DIR` layouts (review round 4). The rule above it is unchanged: ANY `UV_CONFIG_FILE` value — like
+  every variable in `_UV_INDEX_ENV` — counts as uv's own index configuration and turns
+  the translation off, whatever the file holds.
+- Threat model (review round 5, owner decision 2026-10-08): the protection is against
+  the CURRENT DIRECTORY — a cloned repository's project configuration. The user's own
+  environment variables and user/system-level installer configuration (uv's user and
+  system `uv.toml`, pip's `pip.conf`) are inside the trust boundary: a repository cannot
+  set them (a project `.env` is admitted default-deny, ADR-0203), and they keep applying
+  exactly as uv and pip read them. The consequence, a known limit: a RELATIVE path in
+  that configuration — `PIP_FIND_LINKS=./w` or `file:w`, `UV_FIND_LINKS`,
+  `UV_INDEX_URL=./simple`, `PIP_TARGET`, `UV_PROJECT`, `UV_WORKING_DIRECTORY`,
+  `PIP_CONFIG_FILE=pip.conf`, a relative `find-links` in `pip.conf` — now resolves
+  against the installer directory for a catalog install and `update` (on uv the
+  pip.conf translation opens a relative `PIP_CONFIG_FILE` there too, where pip would —
+  review round 5b; before, aelix opened it in the user's cwd, ADR-0255 §15); some fail
+  loudly there (uv: "Project directory
+  `./proj` does not exist"), some are dropped (pip ignores a missing find-links location
+  with a WARNING and uses the default index). Use absolute paths. Rounds 3 and 4
+  refused a relative value in a list of variables; that list broke a named
+  `UV_DEFAULT_INDEX=corp=<url>` (the form uv's per-index credential variables need) and
+  `PIP_FIND_LINKS=~/wheels` (pip expands `~` there), and is gone.
+- The one rule kept: for a catalog install and `update` on uv, a set `UV_CONFIG_FILE`
+  must be a bare absolute path exactly as uv reads it — no spaces stripped (`' /abs'` is
+  relative to uv; a trailing space names another file), no `~` expanded, no `file:`
+  URL, not empty — else the install is refused before anything runs (exit 2, "Set
+  UV_CONFIG_FILE to an absolute path."). A relative one opens a file in the installer
+  directory — `uv.toml` there is aelix's empty sentinel — and, since any
+  `UV_CONFIG_FILE` turns the translation off (above), neither the uv pin nor the pip
+  pin would apply, without a word (measured, uv 0.11.19 and 0.12.23, ADR-0255 §15).
+- A typed `aelix extension install <spec>` still runs in the cwd and reads its uv
+  configuration there, as this ADR intended — a stated limit (ADR-0255 §12).
+
+Design, measurements, sweep and limits: ADR-0255 §15.

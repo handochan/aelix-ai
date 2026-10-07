@@ -74,7 +74,9 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         return subprocess.CompletedProcess(args=argv, returncode=0)
 
@@ -2516,7 +2518,9 @@ class _RealBackend:
         self.calls: list[list[str]] = []
         self.output = ""
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         tail = argv[argv.index("install") + 1 :]
         target = self.scratch / f"target-{len(self.calls)}"

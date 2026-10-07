@@ -67,28 +67,48 @@ the ``uv`` executable is only ever accepted as an ABSOLUTE path (a relative
 ambient index configuration — which uv does not read — is translated into explicit
 ``--index-url`` / ``--extra-index-url`` flags so an org's mirror pin survives the
 switch instead of silently falling back to public PyPI.
+
+Issue #392 (ADR-0255 §15) moves WHERE the installer runs for an install whose source
+the user did not type in the cwd: ``discover install`` and every ``update`` start the
+installer child in :func:`catalog_installer_cwd` (``<agent dir>/installer-cwd``), so a
+cloned repository's ``uv.toml`` / ``[tool.uv]`` — read by uv from the project it
+discovers from its working directory, or from that directory and every parent — can no
+longer answer a trusted catalog's package name with its own wheel; that directory's
+``pyproject.toml`` and ``uv.toml`` make uv read no project configuration at all there.
+Which installs run there follows the TARGET's origin (review round 4): what the catalog
+resolver returns — a :class:`extension_catalog.ResolvedPath` or
+:class:`extension_catalog.CatalogSpec` — and every record ``update`` reinstalls, from the
+CLI and the Python API alike. A typed ``extension install`` (a plain ``str``) still runs
+in the cwd.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
+import fnmatch
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from aelix_ai.utils.terminal_text import safe_for_terminal
@@ -248,12 +268,30 @@ TargetKind = Literal["path", "git", "pypi"]
 #: never installed or upgraded directly; ``update``'s installable filter skips it).
 SourceKind = Literal["index", "git", "path", "pypi", "catalog"]
 
-# A subprocess runner injectable for tests (default = the real pip call).
-PipRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
-#: What the install path accepts: a target string (typed, or a catalog spec that is
-#: not a path), or a catalog path the resolver already split from its ``[extras]``
-#: (:class:`extension_catalog.ResolvedPath` — #131 round 3: never re-split here).
+class PipRunner(Protocol):
+    """The installer runner — injectable for tests (default: :func:`_default_runner`).
+
+    Called ``runner(argv)`` when the child inherits the process cwd (a typed
+    ``extension install``, ``extension remove``), and ``runner(argv, cwd=<dir>)``
+    when it must start in aelix's installer directory (a catalog or record target —
+    ``discover install``, ``update``, or :func:`install_extension` /
+    :func:`verify_and_pin` given what the catalog resolver returns; #392 —
+    :func:`catalog_installer_cwd`). A runner run that way must take
+    a ``cwd`` keyword and start its child there; one that cannot is refused before
+    anything runs (exit 2), never called with the directory dropped.
+    """
+
+    def __call__(
+        self, pip_args: list[str], /, *, cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]: ...
+
+
+#: What the install path accepts: a target string (typed — a plain ``str`` — or a
+#: catalog/record spec, :class:`extension_catalog.CatalogSpec`, which carries its origin,
+#: #392 review round 4), or a catalog path the resolver already split from its
+#: ``[extras]`` (:class:`extension_catalog.ResolvedPath` — #131 round 3: never re-split
+#: here).
 InstallTarget = str | extension_catalog.ResolvedPath
 
 __all__ = [
@@ -831,6 +869,9 @@ def _pip_config_candidates(env: Mapping[str, str] | None = None) -> list[str]:
       ``~/.config/pip/pip.conf`` win the index for a CI job that had deliberately
       pinned one explicit config — an index the operator had taken out of the picture.
       GLOBAL and SITE are unaffected; they load either way.
+
+    A relative ``PIP_CONFIG_FILE`` is opened from this process's cwd here;
+    :func:`read_pip_index_config` places it in the installer child's cwd first.
     """
 
     env = os.environ if env is None else env
@@ -900,7 +941,9 @@ def _read_pip_config_items(path: str) -> dict[str, str]:
     return items
 
 
-def read_pip_index_config(env: Mapping[str, str] | None = None) -> AmbientIndexConfig:
+def read_pip_index_config(
+    env: Mapping[str, str] | None = None, cwd: str | None = None
+) -> AmbientIndexConfig:
     """The index configuration **pip** would honor, resolved in pip's precedence.
 
     Two stages, exactly as pip does it:
@@ -922,9 +965,20 @@ def read_pip_index_config(env: Mapping[str, str] | None = None) -> AmbientIndexC
     silently inverting the org-pin-survives-the-switch guarantee this exists for.
 
     Values that are not printable http(s)/file URLs are dropped (:func:`_is_index_url`).
+
+    ``cwd`` is the directory the installer CHILD starts in (``None`` = this process's,
+    a typed install). pip opens a RELATIVE ``PIP_CONFIG_FILE`` from its own working
+    directory, so for a catalog install (child in aelix's installer directory, #392)
+    a relative value is joined to that directory before the files are read — reading
+    it from this process's cwd let a repository's ``pip.conf`` choose the index a
+    catalog install on uv was handed (review round 5b), the mistake round 3 fixed for
+    a relative ``UV_CONFIG_FILE`` (:func:`_uv_config_files`).
     """
 
     env = os.environ if env is None else env
+    explicit = env.get("PIP_CONFIG_FILE")
+    if explicit and explicit != os.devnull and cwd is not None and not os.path.isabs(explicit):
+        env = {**env, "PIP_CONFIG_FILE": os.path.join(cwd, explicit)}
     # Stage 1 — cross-file merge, later file replaces the key.
     merged: dict[str, tuple[str, str]] = {}
     for path in _pip_config_candidates(env):
@@ -975,38 +1029,297 @@ def _read_uv_config_table(path: str) -> dict[str, object]:
     return data
 
 
+def _load_toml_file(path: Path) -> dict[str, object] | None:
+    """A TOML file's table, or ``None`` when it cannot be read or parsed."""
+
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+
+
+def _tool_uv(data: Mapping[str, object]) -> dict[str, object]:
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    return uv if isinstance(uv, dict) else {}
+
+
+def _glob_parts_match(pattern: list[str], parts: list[str]) -> bool:
+    """Component-wise glob match (``*`` never crosses a separator; ``**`` spans any)."""
+
+    if not pattern:
+        return not parts
+    head = pattern[0]
+    if head == "**":
+        return any(_glob_parts_match(pattern[1:], parts[i:]) for i in range(len(parts) + 1))
+    return (
+        bool(parts)
+        and fnmatch.fnmatchcase(parts[0], head)
+        and _glob_parts_match(pattern[1:], parts[1:])
+    )
+
+
+def _uv_workspace_includes(root: Path, workspace: Mapping[str, object], project: Path) -> bool:
+    """uv's ``is_included_in_workspace`` and not ``is_excluded_from_workspace``.
+
+    A ``members`` glob is joined to the workspace root and matched with a literal
+    separator; an ``exclude`` glob is matched against the project's path relative to
+    the root. Both are read with ``./`` and ``..`` folded, as uv normalizes them.
+    """
+
+    try:
+        relative = project.relative_to(root).parts
+    except ValueError:
+        return False
+
+    def matches(glob: object, *, literal_separator: bool) -> bool:
+        if not isinstance(glob, str):
+            return False
+        norm = os.path.normpath(glob)
+        if os.path.isabs(norm):
+            pattern, parts = Path(norm).parts, project.parts
+        else:
+            pattern, parts = Path(norm).parts, relative
+        if norm == ".":
+            pattern = ()
+        if _glob_parts_match(list(pattern), list(parts)):
+            return True
+        return not literal_separator and fnmatch.fnmatchcase("/".join(parts), "/".join(pattern))
+
+    members = workspace.get("members")
+    exclude = workspace.get("exclude")
+    included = isinstance(members, list) and any(
+        matches(g, literal_separator=True) for g in members
+    )
+    excluded = isinstance(exclude, list) and any(
+        matches(g, literal_separator=False) for g in exclude
+    )
+    return included and not excluded
+
+
+#: A valid package name (PEP 508 / uv's ``PackageName``): ASCII letters and digits,
+#: with ``-``, ``_`` or ``.`` inside, never first or last.
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
+
+def _uv_pyproject(path: Path) -> dict[str, object] | None:
+    """A ``pyproject.toml`` as uv's project discovery parses it; ``None`` when uv
+    cannot: not TOML, or a ``[project]`` table whose ``name`` is missing or not a
+    valid package name (uv's ``PackageName`` rejects it, so the file is no project —
+    review round 3, measured on uv 0.11.19 and 0.12.23). Other ways uv's schema can
+    reject a file (an invalid ``requires-python``, say) are not modeled."""
+
+    data = _load_toml_file(path)
+    if data is None:
+        return None
+    table = data.get("project")
+    if table is not None:
+        name = table.get("name") if isinstance(table, dict) else None
+        if not isinstance(name, str) or not _PACKAGE_NAME_RE.match(name):
+            return None
+    return data
+
+
+def _uv_settings_root(here: Path) -> Path:
+    """The directory uv starts its search for project configuration from (#392).
+
+    uv does not search from its working directory first: it DISCOVERS A PROJECT
+    (``Workspace::discover``) and searches from the project's workspace root. The
+    nearest ``pyproject.toml`` from ``here`` up decides:
+
+    * an explicit workspace root (``[tool.uv.workspace]``) — the search starts there;
+    * a ``[project]`` table — the project; the search starts at the first ancestor
+      ``pyproject.toml`` above it when that one is a workspace whose ``members``
+      include it (and ``exclude`` does not), else at the project itself;
+    * no ``[project]`` and no workspace, ``[tool.uv] managed = false``, or a file
+      uv cannot parse (:func:`_uv_pyproject`: not TOML, or a ``[project]`` whose
+      ``name`` is not a valid package name) — no project; the search starts at
+      ``here``.
+
+    The first ``pyproject.toml`` above the project ends the workspace search whatever
+    it holds — with or without a ``[project]`` (measured, review round 3); only a
+    workspace there that includes the project moves the root up.
+
+    So a ``[project]`` ancestor took the search PAST a nearer ``uv.toml`` — the
+    round-1 #392 sentinel was passed over that way (measured, uv 0.11.14 / 0.11.19
+    / 0.12.23). Not modeled: a workspace whose member collection fails (a member
+    directory without a ``pyproject.toml``) — uv then falls back to ``here``.
+    """
+
+    project = next((p for p in (here, *here.parents) if (p / "pyproject.toml").is_file()), None)
+    if project is None:
+        return here
+    data = _uv_pyproject(project / "pyproject.toml")
+    if data is None:
+        return here
+    uv = _tool_uv(data)
+    if uv.get("managed") is False:
+        return here
+    if isinstance(uv.get("workspace"), dict):
+        return project
+    if not isinstance(data.get("project"), dict):
+        return here
+    for root in project.parents:
+        candidate = root / "pyproject.toml"
+        if not candidate.is_file():
+            continue
+        above = _uv_pyproject(candidate)
+        if above is None:
+            return here  # uv's workspace discovery fails on it; no project
+        workspace = _tool_uv(above).get("workspace")
+        if isinstance(workspace, dict) and _uv_workspace_includes(root, workspace, project):
+            return root
+        return project
+    return project
+
+
+def _uv_project_config(here: Path) -> str | None:
+    """The ONE project config file uv reads when it runs in ``here`` (#392).
+
+    From :func:`_uv_settings_root` up, the first directory holding a ``uv.toml`` (any
+    — an empty one counts; it wins over a ``pyproject.toml`` beside it) or a
+    ``pyproject.toml`` with a ``[tool.uv]`` table; a ``pyproject.toml`` without one,
+    or one uv cannot parse, is passed over. Every farther file is ignored. Listing
+    every ancestor instead (the pre-#392 walk) let a ``[tool.uv]`` index in a file uv
+    never reads switch the pip.conf translation off — the very silent index switch
+    :func:`_uv_has_own_index_config` exists to prevent; starting at ``here`` instead
+    of the project root (#392 round 1) named a file uv passed over.
+    """
+
+    root = _uv_settings_root(here)
+    for parent in (root, *root.parents):
+        candidate = parent / "uv.toml"
+        if candidate.is_file():
+            return str(candidate)
+        candidate = parent / "pyproject.toml"
+        if candidate.is_file():
+            data = _load_toml_file(candidate)
+            tool = data.get("tool") if data is not None else None
+            if isinstance(tool, dict) and isinstance(tool.get("uv"), dict):
+                return str(candidate)
+    return None
+
+
+def _uv_user_config_file(env: Mapping[str, str]) -> str:
+    """uv's user-level ``uv.toml``: ``%APPDATA%\\uv\\uv.toml`` on Windows, else
+    ``$XDG_CONFIG_HOME/uv/uv.toml`` (an absolute value only) or ``~/.config/uv/uv.toml``
+    (uv's ``etcetera`` base strategy — the XDG one on macOS too)."""
+
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        base = env.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+    else:
+        xdg = env.get("XDG_CONFIG_HOME")
+        base = xdg if xdg and os.path.isabs(xdg) else os.path.join(home, ".config")
+    return os.path.join(base, "uv", "uv.toml")
+
+
+def _uv_system_config_file(env: Mapping[str, str]) -> str | None:
+    """uv's system-level ``uv.toml`` when one exists: the first
+    ``$XDG_CONFIG_DIRS/uv/uv.toml`` (default ``/etc/xdg``), else ``/etc/uv/uv.toml``;
+    ``%SYSTEMDRIVE%\\ProgramData\\uv\\uv.toml`` on Windows. (uv 0.12's
+    ``UV_NO_SYSTEM_CONFIG`` is not modeled: uv 0.11 ignores it.)"""
+
+    if sys.platform == "win32":
+        drive = env.get("SYSTEMDRIVE") or env.get("SystemDrive")
+        if not drive:
+            return None
+        candidate = os.path.join(drive + "\\", "ProgramData", "uv", "uv.toml")
+        return candidate if os.path.isfile(candidate) else None
+    for directory in (env.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":"):
+        if directory:
+            candidate = os.path.join(directory, "uv", "uv.toml")
+            if os.path.isfile(candidate):
+                return candidate
+    return "/etc/uv/uv.toml" if os.path.isfile("/etc/uv/uv.toml") else None
+
+
+#: clap's ``BoolishValueParser`` truthy spellings (``UV_NO_CONFIG``).
+_BOOLISH_TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
+def _uv_working_dir(env: Mapping[str, str], cwd: str | None) -> str:
+    """The directory uv WORKS in: ``cwd`` (the child's start directory; ``None`` = this
+    process's), moved to ``UV_WORKING_DIR`` — else ``UV_WORKING_DIRECTORY`` — joined
+    to it when set: uv's ``--directory`` (``set_current_dir`` before anything else,
+    crates/uv/src/lib.rs, 0.11.19 and 0.12.23; measured, review round 4). An empty
+    value is not modeled: uv refuses it ("a value is required")."""
+
+    base = cwd if cwd is not None else os.getcwd()
+    directory = env.get("UV_WORKING_DIR")
+    if directory is None:
+        directory = env.get("UV_WORKING_DIRECTORY")
+    return os.path.join(base, directory) if directory else base
+
+
+def _uv_project_dir(env: Mapping[str, str], here: Path) -> Path:
+    """Where uv starts project discovery from ``here`` (its working directory):
+    ``UV_PROJECT`` (``--project``) when set — joined to ``here`` and normalized
+    LEXICALLY (``std::path::absolute`` + ``normalize_path``: ``x/link/..`` is ``x``,
+    measured), and a path naming a ``pyproject.toml`` file means its directory —
+    else ``here`` itself (review round 4: a project chosen with ``UV_PROJECT`` was
+    left out of the model, so its ``[tool.uv]`` index lost to a translated
+    ``PIP_INDEX_URL``)."""
+
+    project = env.get("UV_PROJECT")
+    if not project:
+        return here
+    path = Path(os.path.normpath(os.path.join(here, project)))
+    if path.name == "pyproject.toml" and path.is_file():
+        return path.parent
+    return path
+
+
 def _uv_config_files(env: Mapping[str, str] | None = None, cwd: str | None = None) -> list[str]:
     """uv's own config files, in the order uv consults them.
 
-    ``UV_CONFIG_FILE`` if set; otherwise the nearest project ``uv.toml`` /
-    ``pyproject.toml`` walking up from ``cwd``, then the user-level
-    ``$XDG_CONFIG_HOME/uv/uv.toml``.
+    ``cwd`` is the directory the uv CHILD starts in: the process working directory
+    for a typed install, aelix's installer directory for a catalog install
+    (:func:`catalog_installer_cwd`, #392), whose own ``pyproject.toml`` (no
+    ``[project]``) and empty ``uv.toml`` make that ``uv.toml`` the project file, as
+    they do for uv. uv first moves to ``UV_WORKING_DIR`` / ``UV_WORKING_DIRECTORY``
+    (:func:`_uv_working_dir`) and starts project discovery from ``UV_PROJECT``
+    (:func:`_uv_project_dir`) — both the user's own explicit choice, honoured as uv
+    honours them (review round 4).
+
+    ``UV_CONFIG_FILE`` if set (uv then reads that file alone — a RELATIVE value is
+    joined to the directory uv works in, because that is where uv opens it; joining
+    it to this process's cwd read a file the child never reads, review round 3);
+    nothing when ``UV_NO_CONFIG`` is set; otherwise the project file uv reads from
+    the project directory (:func:`_uv_project_config` — found from the discovered
+    project root, only the first, as uv reads it), the user-level ``uv.toml``
+    (:func:`_uv_user_config_file`) and the system-level one when it exists
+    (:func:`_uv_system_config_file`).
     """
 
     env = os.environ if env is None else env
+    workdir = _uv_working_dir(env, cwd)
     explicit = env.get("UV_CONFIG_FILE")
     if explicit:
-        return [explicit]
+        if os.path.isabs(explicit):
+            return [explicit]
+        return [os.path.join(workdir, explicit)]
+    if (env.get("UV_NO_CONFIG") or "").strip().lower() in _BOOLISH_TRUE:
+        return []
     out: list[str] = []
+    here: Path | None
     try:
-        here = Path(cwd) if cwd is not None else Path.cwd()
-        here = here.resolve()
+        here = _uv_project_dir(env, Path(workdir).resolve())
     except (OSError, RuntimeError, ValueError):
-        here = None  # type: ignore[assignment]
+        here = None
     if here is not None:
-        for parent in (here, *here.parents):
-            for name in ("uv.toml", "pyproject.toml"):
-                candidate = parent / name
-                if candidate.is_file():
-                    out.append(str(candidate))
-    xdg_home = env.get("XDG_CONFIG_HOME") or os.path.join(
-        os.path.expanduser("~"), ".config"
-    )
-    out.append(os.path.join(xdg_home, "uv", "uv.toml"))
+        project = _uv_project_config(here)
+        if project is not None:
+            out.append(project)
+    out.append(_uv_user_config_file(env))
+    system = _uv_system_config_file(env)
+    if system is not None:
+        out.append(system)
     return out
 
 
-def _uv_has_own_index_config(env: Mapping[str, str] | None = None) -> bool:
+def _uv_has_own_index_config(env: Mapping[str, str] | None = None, cwd: str | None = None) -> bool:
     """True when uv already has index configuration of its own (env OR a config file).
 
     An env-var-only test missed uv's PRIMARY configuration mechanism: a ``uv.toml`` /
@@ -1014,6 +1327,11 @@ def _uv_has_own_index_config(env: Mapping[str, str] | None = None) -> bool:
     stale ``pip.conf`` was translated on top of it — and since uv's precedence is
     CLI > env > file, the translation WON. That is the exact silent index switch this
     machinery exists to prevent, just in the other direction.
+
+    ``cwd`` is where the uv child will run (#392): the files consulted are the ones
+    uv reads FROM THERE. A catalog install runs uv in aelix's installer directory, so
+    a ``[tool.uv]`` index in the user's cwd — which that uv never reads — must not
+    switch the translation off either.
     """
 
     env = os.environ if env is None else env
@@ -1021,11 +1339,13 @@ def _uv_has_own_index_config(env: Mapping[str, str] | None = None) -> bool:
         return True
     return any(
         any(key in _read_uv_config_table(path) for key in _UV_CONFIG_INDEX_KEYS)
-        for path in _uv_config_files(env)
+        for path in _uv_config_files(env, cwd)
     )
 
 
-def uv_ambient_index_config(env: Mapping[str, str] | None = None) -> AmbientIndexConfig:
+def uv_ambient_index_config(
+    env: Mapping[str, str] | None = None, cwd: str | None = None
+) -> AmbientIndexConfig:
     """The pip index configuration the **uv** backend must be told about explicitly.
 
     pip reads ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` and ``pip.conf``; uv reads
@@ -1038,17 +1358,22 @@ def uv_ambient_index_config(env: Mapping[str, str] | None = None) -> AmbientInde
     dependency-confusion target whose build code runs at install time.
 
     Returns an empty config when uv is already configured itself
-    (:func:`_uv_has_own_index_config`): explicit uv configuration is theirs to own.
+    (:func:`_uv_has_own_index_config`, asked from ``cwd`` — the directory the uv child
+    runs in): explicit uv configuration is theirs to own.
     """
 
     env = os.environ if env is None else env
-    if _uv_has_own_index_config(env):
+    if _uv_has_own_index_config(env, cwd):
         return AmbientIndexConfig()
-    return read_pip_index_config(env)
+    return read_pip_index_config(env, cwd)
 
 
 def uv_ambient_index_env(
-    backend: InstallBackend | None, kind: TargetKind, *, index_url: str | None = None
+    backend: InstallBackend | None,
+    kind: TargetKind,
+    *,
+    index_url: str | None = None,
+    cwd: str | None = None,
 ) -> dict[str, str]:
     """The env the uv child needs so a translated pip index NEVER touches argv.
 
@@ -1063,11 +1388,14 @@ def uv_ambient_index_env(
     Only the AMBIENT (pip.conf / ``PIP_*``) values move. An aelix ``index_url`` from a
     registered index source is a command-line value the user typed and keeps its flag
     (unchanged from pre-#113), and uv's CLI > env precedence keeps it winning.
+
+    ``cwd`` is the directory the uv child runs in (``None`` = this process's); see
+    :func:`_uv_has_own_index_config`.
     """
 
     if backend is None or backend.name != "uv" or kind != "pypi":
         return {}
-    ambient = uv_ambient_index_config()
+    ambient = uv_ambient_index_config(cwd=cwd)
     out: dict[str, str] = {}
     # An explicit aelix --index-url outranks the ambient default index entirely.
     if ambient.index_url and not index_url:
@@ -1234,6 +1562,438 @@ def _uv_volatility_notice() -> str:
     )
 
 
+# ---------------------------------------------------------------------
+# --- #392: the directory a catalog install's installer runs in -------
+# ---------------------------------------------------------------------
+
+#: The installer directory's name under the agent dir (``~/.aelix/agent`` by default).
+INSTALLER_CWD_DIRNAME = "installer-cwd"
+
+#: The two files aelix keeps in that directory. Together they make uv read NO project
+#: configuration when it runs there. uv first discovers a project — the nearest
+#: ``pyproject.toml`` — and searches for configuration from that project's workspace
+#: root, so a ``uv.toml`` alone did not do it: an ancestor ``pyproject.toml`` with a
+#: ``[project]`` table (a ``~/pyproject.toml``, a workspace root, the repository a
+#: relative agent dir sits in) took the search past it (#392 round 2). This
+#: ``pyproject.toml`` has no ``[project]`` and no ``[tool.uv]``: as the nearest one it
+#: ends project discovery here (uv: no project), and uv then searches from this
+#: directory, where :data:`INSTALLER_CWD_UV_TOML` — which sets nothing — is the first
+#: config file it finds, so no file above is read. The user-level and system
+#: ``uv.toml``, ``UV_CONFIG_FILE`` and ``UV_*`` still apply. Measured on uv 0.11.14,
+#: 0.11.19 and 0.12.23 (ADR-0255 §15, review round 2): every ancestor shape —
+#: ``uv.toml``, ``[tool.uv]``, ``[project]`` + ``[tool.uv]``, ``[project]`` +
+#: ``uv.toml``, a workspace root, a ``[project]`` in the agent dir, ``managed =
+#: false``, an unparsable ``pyproject.toml`` — was not read; the user and system org
+#: pins applied; uv printed no warning.
+INSTALLER_CWD_PYPROJECT_TOML = (
+    "# Written by aelix (issue 392). Catalog installs and `aelix extension update`\n"
+    "# run the package installer in this directory. This file declares nothing - no\n"
+    "# [project], no [tool.uv] - so uv finds no project here and does not go on to a\n"
+    "# pyproject.toml above this directory. With the uv.toml beside it, uv reads no\n"
+    "# project configuration at all when it runs here.\n"
+    "# aelix rewrites this file before each such install.\n"
+)
+INSTALLER_CWD_UV_TOML = (
+    "# Written by aelix (issue 392). Catalog installs and `aelix extension update`\n"
+    "# run the package installer in this directory. This file sets nothing: it is the\n"
+    "# first configuration file uv finds from here (the pyproject.toml beside it ends\n"
+    "# uv's project discovery here), so no uv.toml or pyproject.toml in a directory\n"
+    "# above this one is read. Your user-level uv.toml (~/.config/uv/uv.toml, or\n"
+    "# %APPDATA%\\uv\\uv.toml on Windows), the system uv.toml, UV_CONFIG_FILE and UV_*\n"
+    "# variables still apply.\n"
+    "# aelix rewrites this file before each such install.\n"
+)
+
+#: File name -> the exact text aelix keeps there.
+_INSTALLER_CWD_FILES = {
+    "pyproject.toml": INSTALLER_CWD_PYPROJECT_TOML,
+    "uv.toml": INSTALLER_CWD_UV_TOML,
+}
+
+
+class InstallerDirRefused(OSError):
+    """aelix's installer directory, or a file in it, is not what aelix made (#392).
+
+    A link (a symlink, or on Windows a name-surrogate reparse point — a junction too)
+    or the wrong kind of entry where :func:`catalog_installer_cwd` keeps a real
+    directory or a regular file, found there while the directory is prepared: the
+    installer would run, or uv would read configuration, somewhere else. Refused,
+    never repaired by following it."""
+
+
+#: Windows: a reparse tag with this bit set is a NAME SURROGATE — it names another
+#: file or directory (a symlink, a junction). ``os.lstat`` does not follow those, so
+#: their tag is what it reports; other reparse points (cloud-file placeholders, say)
+#: are followed by ``lstat`` and are not links.
+_REPARSE_TAG_NAME_SURROGATE = 0x20000000
+
+
+def _is_link_like(st: os.stat_result) -> bool:
+    """A symlink — or, on Windows, a name-surrogate reparse point (a junction too)."""
+
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_reparse_tag", 0) & _REPARSE_TAG_NAME_SURROGATE)
+
+
+#: POSIX: everything below is done relative to an ``O_NOFOLLOW`` handle on the
+#: directory, so no name is resolved through a link once the directory is open.
+#: ``os.rename`` replaces its destination atomically there (``renameat``).
+_INSTALLER_DIR_FD = (
+    hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+)
+
+#: How many times :func:`_ensure_sentinel` tries to write a sentinel before giving up
+#: — another aelix process preparing the directory at the same moment (Windows
+#: refuses to replace a file another process holds open) is a reason to look again,
+#: not to refuse the install (#392 review round 5).
+_SENTINEL_ATTEMPTS = 10
+
+
+def _sentinel_holds(directory: Path, name: str, want: bytes, dir_fd: int | None) -> bool:
+    """True when ``directory/name`` is a regular file holding exactly ``want``; False
+    when it is missing, a regular file with other text, or being replaced right now
+    by another process. A link or a non-regular entry is refused
+    (:class:`InstallerDirRefused`) — even one whose target holds ``want``: the
+    target can change after this check. The file is opened ``O_NOFOLLOW`` (where the
+    platform has it) and must be the very file ``lstat`` saw, so a link swapped in
+    between the two is refused too (``ELOOP``), never read through."""
+
+    path = name if dir_fd is not None else str(directory / name)
+    refused = InstallerDirRefused(
+        f"{directory / name} is a link or not a regular file — aelix keeps its own "
+        "file there and does not follow or replace a link"
+    )
+    try:
+        st = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if _is_link_like(st) or not stat.S_ISREG(st.st_mode):
+        raise refused
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags, dir_fd=dir_fd)
+    except (FileNotFoundError, PermissionError):
+        return False  # replaced (or, on Windows, being replaced) by another process
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise refused from exc  # O_NOFOLLOW met a link swapped in after lstat
+        raise
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+            return False
+        return os.read(fd, len(want) + 1) == want
+    finally:
+        os.close(fd)
+
+
+def _write_sentinel(directory: Path, name: str, want: bytes, dir_fd: int | None) -> None:
+    """Put ``want`` at ``directory/name`` ATOMICALLY: write a new temporary file in the
+    same directory (created ``O_CREAT | O_EXCL`` — plus ``O_NOFOLLOW`` where the
+    platform has it — under a name no other process uses, so nothing is ever written
+    through a link), then rename it over ``name``. A rename replaces the directory
+    entry, never what a link there points to, and a reader — uv, or another aelix
+    preparing the directory at the same time — sees the old file or the new one,
+    never a missing or half-written one (#392 review round 5: unlink-then-create
+    made a concurrent first use fail with ``FileExistsError``)."""
+
+    tmp = f".{name}.{os.getpid()}-{secrets.token_hex(6)}.tmp"
+    tmp_path = tmp if dir_fd is not None else str(directory / tmp)
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    fd = os.open(tmp_path, flags, 0o600, dir_fd=dir_fd)
+    try:
+        try:
+            view = memoryview(want)
+            while view:
+                view = view[os.write(fd, view) :]
+        finally:
+            os.close(fd)
+        if dir_fd is not None:
+            os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        else:
+            os.replace(tmp_path, str(directory / name))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path, dir_fd=dir_fd)
+        raise
+
+
+def _ensure_sentinel(directory: Path, name: str, text: str, dir_fd: int | None) -> None:
+    """Make ``directory/name`` a regular file holding exactly ``text`` (#392).
+
+    Already so → nothing is written. A link or a non-regular entry is refused
+    (:func:`_sentinel_holds`). Otherwise the file is (re)written atomically
+    (:func:`_write_sentinel`). Another aelix process may be preparing the same
+    directory at the same moment — on first use, or after an upgrade changed the
+    text — and writes the same bytes: a write that fails is followed by another look,
+    and the file holding ``text`` by then is success, whoever wrote it (review round
+    5). With ``dir_fd`` (POSIX) every step is relative to the open directory."""
+
+    want = text.encode("utf-8")
+    last: OSError | None = None
+    for attempt in range(_SENTINEL_ATTEMPTS):
+        if _sentinel_holds(directory, name, want, dir_fd):
+            return
+        try:
+            _write_sentinel(directory, name, want, dir_fd)
+        except InstallerDirRefused:
+            raise
+        except OSError as exc:
+            last = exc
+            time.sleep(0.005 * (attempt + 1))
+            continue
+        return
+    if _sentinel_holds(directory, name, want, dir_fd):
+        return
+    assert last is not None
+    raise last
+
+
+def catalog_installer_cwd(agent_dir: str | None = None) -> str:
+    """Prepare and return the directory a catalog install's installer runs in (#392).
+
+    uv reads project configuration — ``uv.toml`` and ``pyproject.toml`` ``[tool.uv]``
+    — from the project it discovers from its working directory (the nearest
+    ``pyproject.toml``, up to a workspace root) or, failing a project, from its
+    working directory and every ancestor. A cloned repository's ``find-links`` /
+    index there turned a trusted catalog's package NAME into the repository's own
+    wheel (#392 — the #131 dependency-confusion result by another door). ``python -m
+    pip`` puts its working directory first on ``sys.path``. So an install whose
+    source came from a catalog never runs in the cwd: it runs here,
+    ``<agent dir>/installer-cwd``, created ``0700`` on POSIX (user-only; Windows has
+    no such mode — the directory inherits the agent dir's ACL), holding
+    :data:`INSTALLER_CWD_PYPROJECT_TOML` and :data:`INSTALLER_CWD_UV_TOML`, which
+    together make uv read no project configuration at all there — none from this
+    directory's ancestors either, wherever the agent dir lives. The user-level and
+    system ``uv.toml``, ``UV_CONFIG_FILE`` and ``UV_*`` still apply (ADR-0200's org
+    index pin keeps working).
+
+    A link is refused when it is there at preparation time (review rounds 3 and 5):
+    ``installer-cwd`` must be a real directory and each file a regular file — a
+    symlink there (a junction or any name-surrogate reparse point on Windows), or an
+    entry of another kind, raises :class:`InstallerDirRefused` and the install is
+    refused; aelix never reads or writes through such a link, nor repairs or replaces
+    it. On POSIX the directory is opened ``O_NOFOLLOW`` and checked against what was
+    ``lstat``-ed, every file step runs relative to that handle, and a file is read
+    ``O_NOFOLLOW`` and must be the one ``lstat`` saw. Windows has no ``O_NOFOLLOW``
+    or ``dir_fd``: there the checks are ``lstat``s before use (a symlink or junction
+    counts as a link). On both, the installer itself starts later, by path — a link
+    swapped in between this check and its start (the consent prompt is in between)
+    by someone who can already write the agent dir is not caught (the limit ADR-0255
+    §12 states). A file whose text is not exactly aelix's is replaced atomically
+    (:func:`_write_sentinel`: a new file, renamed over the name), so another aelix
+    preparing the directory at the same moment never sees it missing, and its
+    identical write is success (:func:`_ensure_sentinel`). Other entries are left
+    alone: uv reads neither them nor (``--python`` is explicit) a ``.venv`` or
+    ``.python-version`` there. Raises :class:`OSError` when the directory cannot be
+    prepared; the caller refuses the install then — it never falls back to the cwd.
+    """
+
+    base = Path(agent_dir if agent_dir is not None else get_agent_dir()).expanduser()
+    target = Path(os.path.abspath(base / INSTALLER_CWD_DIRNAME))
+    # The agent dir itself is the user's choice (a symlinked ~/.aelix is theirs);
+    # only the directory aelix owns inside it must be what aelix made.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(target, 0o700)
+    st = os.lstat(target)
+    if _is_link_like(st) or not stat.S_ISDIR(st.st_mode):
+        raise InstallerDirRefused(
+            f"{target} is a link or not a directory — aelix keeps its own directory "
+            "there and does not run an installer through a link"
+        )
+    if _INSTALLER_DIR_FD and sys.platform != "win32":  # pyright narrows the POSIX names
+        fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino):
+                raise InstallerDirRefused(f"{target} changed while it was being prepared")
+            os.fchmod(fd, 0o700)  # an existing directory keeps whatever mode it had
+            for name, text in _INSTALLER_CWD_FILES.items():
+                _ensure_sentinel(target, name, text, fd)
+        finally:
+            os.close(fd)
+    else:
+        os.chmod(target, 0o700)
+        for name, text in _INSTALLER_CWD_FILES.items():
+            _ensure_sentinel(target, name, text, None)
+    return str(target)
+
+
+#: RFC 3986 ``scheme ":"`` — two or more characters, so ``C:\x`` / ``C:/x`` (a Windows
+#: drive) is a path, never a one-letter scheme.
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+:")
+
+
+def _has_url_scheme(value: str) -> bool:
+    """True when ``value`` starts with an RFC 3986 scheme (``file:``, ``https:`` …)."""
+
+    return _URL_SCHEME_RE.match(value) is not None
+
+
+def _anchor_typed_index_url(index_url: str | None) -> str | None:
+    """A typed ``--index-url`` naming a RELATIVE local directory → its absolute path.
+
+    uv reads a relative ``--index-url ./simple`` against its working directory
+    (measured, uv 0.11.19), so once a catalog install runs in the installer directory
+    the user's ``./simple`` would name a directory there instead. The user typed it in
+    the cwd; it is anchored there, before the installer sees it. Anything with a URL
+    scheme — ``scheme ":"`` per RFC 3986, so ``file:/abs``, ``file:///abs`` and
+    ``file://localhost/abs`` as well as ``https://`` (review round 3: ``file:/abs``
+    was anchored as a path) — and an absolute path are unchanged; a Windows drive path
+    (``C:\\x``) is a path, not a one-letter scheme. (pip refuses a relative index path
+    outright — ``ValueError: Can't mix absolute and relative paths`` — and accepts the
+    absolute one.)
+    """
+
+    if not index_url or _has_url_scheme(index_url) or os.path.isabs(index_url):
+        return index_url
+    return os.path.abspath(index_url)
+
+
+def _is_absolute_path(value: str) -> bool:
+    """True when ``value`` names the same file from any working directory: an absolute
+    POSIX path, or on Windows a path with a drive or a UNC share (``C:\\x``,
+    ``\\\\host\\share\\x``) — a rooted ``\\x`` without a drive is relative to the
+    current DRIVE, which the installer directory may not share. Nothing is stripped
+    or expanded: ``value`` is judged exactly as the installer will read it."""
+
+    if sys.platform == "win32":
+        import ntpath
+
+        return ntpath.isabs(value) and bool(ntpath.splitdrive(value)[0])
+    return os.path.isabs(value)
+
+
+def _uv_config_file_refusal(
+    backend: InstallBackend, env: Mapping[str, str] | None = None
+) -> str | None:
+    """Why ``UV_CONFIG_FILE`` cannot be used for a catalog install, or ``None``.
+
+    The one installer variable aelix checks (#392 review round 5, owner decision —
+    the user's own environment is inside the trust boundary and every other variable
+    reaches uv or pip exactly as set). uv reads ``UV_CONFIG_FILE`` INSTEAD of any
+    other config file, opens it from the directory it runs in, and reads it exactly
+    as written: no spaces stripped, no ``~`` expanded, no ``file:`` URL (measured, uv
+    0.11.19 and 0.12.23). A relative value therefore opens a file in aelix's
+    installer directory — ``uv.toml`` there is aelix's own empty sentinel, so the
+    org's pin would be dropped without a word — and ``' /abs'`` is relative too.
+    So, for the uv backend, a set ``UV_CONFIG_FILE`` must be an absolute path as uv
+    reads it (:func:`_is_absolute_path`), with no surrounding whitespace (a trailing
+    space names another file, which uv fails to open). An empty value — uv refuses
+    it, "a value is required" — is refused here too, before anything runs."""
+
+    if backend.name != "uv":
+        return None
+    env = os.environ if env is None else env
+    value = env.get("UV_CONFIG_FILE")
+    if value is None:
+        return None
+    if value == value.strip() and _is_absolute_path(value):
+        return None
+    return (
+        f"UV_CONFIG_FILE ('{safe_for_terminal(value)}') is not a bare absolute path — "
+        "uv opens it exactly as written (no spaces stripped, no ~ expanded, no file: "
+        "URL), from the directory it runs in"
+    )
+
+
+def _runner_takes_cwd(runner: Callable[..., object]) -> bool:
+    """True when ``runner`` can be called ``runner(argv, cwd=<dir>)`` (#392 round 3)."""
+
+    try:
+        params = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            p.name == "cwd"
+            and p.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
+        for p in params
+    )
+
+
+def _from_catalog(target: InstallTarget) -> bool:
+    """True when ``target`` came from a catalog or an install record, not typed (#392
+    review round 4): a :class:`extension_catalog.ResolvedPath` or an
+    :class:`extension_catalog.CatalogSpec`. Its installer runs in
+    :func:`catalog_installer_cwd`, whoever calls the installer."""
+
+    return isinstance(target, (extension_catalog.ResolvedPath, extension_catalog.CatalogSpec))
+
+
+class _InstallerCwdRefusal(Exception):
+    """:func:`_prepare_installer_cwd` refused: ``lines`` are the error lines."""
+
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__("\n".join(lines))
+        self.lines = lines
+
+
+def _prepare_installer_cwd(
+    backend: InstallBackend,
+    runner: Callable[..., object],
+    agent_dir: str | None,
+    verb: str,
+    shown: str,
+) -> str:
+    """aelix's installer directory, ready for a catalog/record install (#392).
+
+    Refuses (:class:`_InstallerCwdRefusal`), before anything runs, when ``runner``
+    cannot be told the directory (review round 3 — an injected runner received argv
+    only and ran in the cwd), when ``UV_CONFIG_FILE`` is set but not an absolute path
+    as uv reads it (:func:`_uv_config_file_refusal` — the only installer variable
+    checked; every other one reaches the installer exactly as the user set it, and a
+    relative path in one is read from the installer directory: the known limit
+    ADR-0255 §12 records), and when the directory cannot be prepared or is a link at
+    preparation time (:func:`catalog_installer_cwd`) — never a fallback to the cwd.
+    """
+
+    if not _runner_takes_cwd(runner):
+        raise _InstallerCwdRefusal(
+            [
+                f"Error: the installer runner takes no cwd= argument — refusing to "
+                f"{verb} '{shown}': an install from a catalog runs only in aelix's "
+                "installer directory, and this runner cannot be told it."
+            ]
+        )
+    config_problem = _uv_config_file_refusal(backend)
+    if config_problem is not None:
+        raise _InstallerCwdRefusal(
+            [
+                f"Error: {config_problem} — refusing to {verb} '{shown}'. An install "
+                "from a catalog and `aelix extension update` run the installer in "
+                "aelix's installer directory, where a relative UV_CONFIG_FILE names "
+                "a file of aelix's, not yours. Set UV_CONFIG_FILE to an absolute path."
+            ]
+        )
+    try:
+        return catalog_installer_cwd(agent_dir)
+    except OSError as exc:
+        raise _InstallerCwdRefusal(
+            [
+                f"Error: cannot prepare aelix's installer directory "
+                f"({safe_for_terminal(str(exc))}) — refusing to {verb} '{shown}': an "
+                "install from a catalog never runs in the current directory."
+            ]
+        ) from exc
+
+
 def install_extension(
     target: InstallTarget,
     *,
@@ -1273,6 +2033,21 @@ def install_extension(
     never load. It stays defaulted :data:`True` for the PUBLIC seam, whose callers
     have no verdict of their own to print; the CLI reaches it through
     :func:`_cmd_install` and :func:`_upgrade_and_report`, which do.
+
+    Where the installer runs follows the TARGET'S ORIGIN, never a caller flag (#392,
+    review round 4): a :class:`extension_catalog.ResolvedPath` or
+    :class:`extension_catalog.CatalogSpec` — what the catalog resolver returns, and
+    what ``update`` reinstalls from a record — runs every installer child of this
+    call (the install and, on pip, the verify gate's ``pip download``) in
+    :func:`catalog_installer_cwd`, and asks which uv config applies from there; a
+    plain ``str`` — a source the user typed — runs in the process cwd (a relative
+    path in it means that directory: the known limit ADR-0255 §12 records). The
+    directory cannot be prepared (or is a link, :class:`InstallerDirRefused`) →
+    nothing runs (``2``); there is no fallback to the cwd. The runner — default or
+    injected — is called ``runner(argv, cwd=<dir>)``; one that takes no ``cwd``
+    keyword is refused (``2``), and so is a ``UV_CONFIG_FILE`` that is not an
+    absolute path as uv reads it (:func:`_uv_config_file_refusal`), both before
+    consent (review rounds 3 and 5).
     """
 
     shown = safe_for_terminal(str(target))
@@ -1332,6 +2107,22 @@ def install_extension(
         print(_uv_verify_refusal_message(shown, backend), file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
+    # #392: an install whose source came from a catalog or a record runs its
+    # installer in aelix's own directory, never the cwd — a cloned repository's
+    # uv.toml / [tool.uv] there redirected a catalog package name to its own wheel.
+    # Every source reaching the installer is already absolute (#131); the one value
+    # the user TYPED that may be relative, --index-url, is anchored at the cwd first.
+    child_cwd: str | None = None
+    base_runner = runner if runner is not None else _default_runner
+    if _from_catalog(target):
+        try:
+            child_cwd = _prepare_installer_cwd(backend, base_runner, agent_dir, verb.lower(), shown)
+        except _InstallerCwdRefusal as exc:
+            for line in exc.lines:
+                print(line, file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        index_url = _anchor_typed_index_url(index_url)
+
     pip_args = build_pip_args(
         target,
         kind,
@@ -1344,8 +2135,9 @@ def install_extension(
     # #113: pip's ambient index config translated for uv. It travels in the ENV, never
     # on argv (a credentialed mirror URL would otherwise be published to every user on
     # the host via /proc/<pid>/cmdline) — and it is still SHOWN, redacted, so the
-    # resolved index is visible before the y/N.
-    ambient_env = uv_ambient_index_env(backend, kind, index_url=index_url)
+    # resolved index is visible before the y/N. Whether uv has its own index config is
+    # asked from the directory the uv child runs in (#392).
+    ambient_env = uv_ambient_index_env(backend, kind, index_url=index_url, cwd=child_cwd)
 
     # Consent — pip runs the package's build/setup code (arbitrary at install
     # time), so the manifest capability gate cannot protect this path; the
@@ -1359,6 +2151,17 @@ def install_extension(
         if name in ambient_env:
             shown = " ".join(_redact_auth(v) for v in ambient_env[name].split())
             print(f"  → {name}={shown}  (from pip's ambient configuration)")
+    if child_cwd is not None:
+        print(
+            f"  the installer runs in {safe_for_terminal(child_cwd)} (aelix's installer "
+            "directory): uv reads no project configuration (uv.toml, pyproject.toml) "
+            "from there or from any directory above it; your user-level and system "
+            "uv.toml and your environment (UV_CONFIG_FILE, UV_PROJECT and every other "
+            "UV_* variable) still apply."
+            if backend.name == "uv"
+            else f"  the installer runs in {safe_for_terminal(child_cwd)} (aelix's "
+            "installer directory)."
+        )
     print(
         "  pip will run the package's build/setup code. Only install sources you trust."
     )
@@ -1373,7 +2176,13 @@ def install_extension(
             print("Aborted.")
             return _EXIT_DIDNT_RUN  # distinct from pip's own failure code
 
-    run = runner if runner is not None else _default_runner
+    # Every installer child of this call — the install and the verify gate's
+    # `pip download` — goes through ``run``: started in aelix's installer directory
+    # when there is one (the default runner and an injected one alike), else in the
+    # inherited cwd (a typed install).
+    run: Callable[[list[str]], subprocess.CompletedProcess[bytes]] = (
+        base_runner if child_cwd is None else _runner_in(base_runner, child_cwd)
+    )
 
     # #64 (ADR-0187): pre-pip integrity gate — runs AFTER consent, BEFORE pip.
     # A refusal returns _EXIT_DIDNT_RUN (pip never ran); a rewritten argv (verified
@@ -1400,7 +2209,7 @@ def install_extension(
                 signature_path=signature_path,
                 index_url=index_url,
                 extra_index_urls=extra_index_urls,
-                runner=run,
+                runner=base_runner,
                 agent_dir=agent_dir,
             )
             pip_args = verified.pip_args
@@ -1461,9 +2270,23 @@ def install_extension(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
-def _default_runner(pip_args: list[str]) -> subprocess.CompletedProcess[bytes]:
-    # Inherit stdio so the user sees pip's live progress; never shell=True.
-    return subprocess.run(pip_args, check=False)  # noqa: S603 — argv list, no shell
+def _default_runner(
+    pip_args: list[str], cwd: str | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    # Inherit stdio so the user sees pip's live progress; never shell=True. ``cwd``:
+    # aelix's installer directory for a catalog/record install (#392), else inherited.
+    return subprocess.run(pip_args, check=False, cwd=cwd)  # noqa: S603 — argv list, no shell
+
+
+def _runner_in(
+    runner: Callable[..., subprocess.CompletedProcess[bytes]], cwd: str
+) -> Callable[[list[str]], subprocess.CompletedProcess[bytes]]:
+    """``runner`` with its child started in ``cwd`` (#392's installer directory)."""
+
+    def run(pip_args: list[str]) -> subprocess.CompletedProcess[bytes]:
+        return runner(pip_args, cwd=cwd)
+
+    return run
 
 
 # =====================================================================
@@ -1580,7 +2403,7 @@ def verify_and_pin(
     signature_path: str | None = None,
     index_url: str | None,
     extra_index_urls: Iterable[str] | None,
-    runner: PipRunner,
+    runner: PipRunner | Callable[[list[str]], subprocess.CompletedProcess[bytes]],
     agent_dir: str | None,
 ) -> _VerifyResult:
     """The pre-pip integrity gate (ADR-0187) + Ed25519 provenance (#67/ADR-0189).
@@ -1603,6 +2426,20 @@ def verify_and_pin(
     from a trusted key refuses ALWAYS; ``require_signature`` refuses anything lacking a
     valid trusted signature. Git provenance is not wired in v1 (path + pypi only) —
     ``require_signature`` on a git target refuses.
+
+    The one child this gate starts — pypi's ``pip download`` — runs where the
+    target's origin says (#392 review round 4, as :func:`install_extension`): a
+    catalog or record target (:func:`_from_catalog`) in :func:`catalog_installer_cwd`
+    as ``runner(argv, cwd=<dir>)``, refused (:class:`~extension_pins.VerifyRefusal`)
+    when the runner takes no ``cwd`` or the directory cannot be prepared; a typed
+    one as ``runner(argv)`` in the process cwd. No installer variable is checked
+    here: the download child is always pip, so this gate prepares the directory
+    with the pip backend, and
+    :func:`_uv_config_file_refusal` — the one variable check, a ``UV_CONFIG_FILE``
+    that is not an absolute path — refuses only on the uv backend, i.e. in the
+    install path (:func:`install_extension`). A relative ``PIP_CONFIG_FILE``,
+    ``PIP_FIND_LINKS`` or ``UV_CONFIG_FILE`` reaches this pip child as set, and pip
+    reads a relative path from the installer directory.
     """
 
     mode = "strict" if strict else "tofi"
@@ -1742,13 +2579,26 @@ def verify_and_pin(
     spec = str(target)  # a pypi target is always a string
     bare = _bare_package_name(spec)
     canonical = extension_pins.canonicalize_name(bare)
+    download: Callable[[list[str]], subprocess.CompletedProcess[bytes]] = runner
+    if _from_catalog(target):
+        # The download is pip's (build_download_args), whatever the install backend.
+        try:
+            dl_cwd = _prepare_installer_cwd(
+                PIP_BACKEND, runner, agent_dir, "verify", safe_for_terminal(spec)
+            )
+        except _InstallerCwdRefusal as exc:
+            raise extension_pins.VerifyRefusal(
+                " ".join(line.removeprefix("Error: ") for line in exc.lines)
+            ) from exc
+        download = _runner_in(runner, dl_cwd)
+        index_url = _anchor_typed_index_url(index_url)
     dest = tempfile.mkdtemp(prefix="aelix-verify-")
     try:
         dl_args = build_download_args(
             spec, index_url=index_url, extra_index_urls=extra_index_urls, dest=dest
         )
         print(f"  → verify (download): {safe_for_terminal(' '.join(dl_args))}")
-        dl_result = runner(dl_args)
+        dl_result = download(dl_args)
         if int(getattr(dl_result, "returncode", 1)) != 0:
             raise extension_pins.VerifyRefusal(
                 "pip download failed during verification — not installing"
@@ -3142,7 +3992,7 @@ async def _cmd_install(
     settings: SettingsManager,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
-    resolved_path: extension_catalog.ResolvedPath | None = None,
+    resolved_target: extension_catalog.ResolvedPath | extension_catalog.CatalogSpec | None = None,
 ) -> int:
     """``extension install <target>`` — #19 install + resolve + record + VERDICT.
 
@@ -3163,16 +4013,20 @@ async def _cmd_install(
     disk and this command cannot name it. That is not a success claim and does not
     print one: see :data:`_INSTALLED_NO_VERDICT`.
 
-    ``resolved_path`` is ``discover install``'s catalog path, split from its
-    ``[extras]`` by the resolver; it is installed, verified, pinned and recorded as
-    those two values, and ``args`` carries only its flags and its display form
-    (#131 round 3).
+    ``resolved_target`` is what ``discover install``'s resolver returned: a catalog
+    path (:class:`extension_catalog.ResolvedPath`), split from its ``[extras]`` by the
+    resolver and installed, verified, pinned and recorded as those two values (#131
+    round 3), or a spec (:class:`extension_catalog.CatalogSpec`); ``args`` carries
+    only its flags and its display form. Either type runs the installer in aelix's
+    installer directory, not the cwd (#392, :func:`catalog_installer_cwd`) — the
+    origin travels with the target object (review round 4), so it is the object, not
+    the argv string, that reaches :func:`install_extension`.
     """
 
     parsed = _parse_install_flags(args)
     if isinstance(parsed, int):
         return parsed
-    target: InstallTarget = parsed.target if resolved_path is None else resolved_path
+    target: InstallTarget = parsed.target if resolved_target is None else resolved_target
     index_url = parsed.index_url
 
     kind = classify_target(target)
@@ -3599,6 +4453,14 @@ def _upgrade_and_report(
     "bound", and the non-zero codes speak for themselves.
     """
 
+    # #392: every update runs in aelix's installer directory. A record does not say
+    # whether a catalog chose its source, and none of them was chosen in the
+    # directory `update` happens to run in; every recorded spec reaches the installer
+    # absolute (a path record is resolved first, _recorded_path_target). The origin
+    # rides on the target's type (review round 4): a record is a CatalogSpec unless
+    # it is already a ResolvedPath.
+    if not isinstance(target, extension_catalog.ResolvedPath):
+        target = extension_catalog.CatalogSpec(target)
     before = _installed_ext_dists()
     code = install_extension(
         target,
@@ -4311,7 +5173,11 @@ async def _cmd_discover_install(
         settings=settings,
         input_fn=input_fn,
         runner=runner,
-        resolved_path=target if isinstance(target, extension_catalog.ResolvedPath) else None,
+        # #392: the resolver's object itself (a ResolvedPath or a CatalogSpec) — its
+        # type is what runs the installer in aelix's installer directory, not the
+        # cwd, so a cloned repo's uv.toml / [tool.uv] there cannot decide what a
+        # trusted catalog's package name installs.
+        resolved_target=target,
     )
 
 

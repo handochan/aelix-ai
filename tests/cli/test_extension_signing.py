@@ -47,7 +47,9 @@ class _FakeRunner:
         self.returncode = returncode
         self.calls: list[list[str]] = []
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         return subprocess.CompletedProcess(args=argv, returncode=self.returncode)
 
@@ -536,7 +538,9 @@ class _DownloadRunner:
         self.wheel_bytes = wheel_bytes
         self.calls: list[list[str]] = []
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    def __call__(
+        self, argv: list[str], cwd: str | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
         self.calls.append(argv)
         if "download" in argv and "--dest" in argv:
             dest = Path(argv[argv.index("--dest") + 1])

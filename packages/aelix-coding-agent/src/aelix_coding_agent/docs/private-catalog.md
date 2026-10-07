@@ -283,15 +283,58 @@ goes on as a name, a URL as an absolute URL, a path beside the catalog as an
 absolute `file://` URI. That is the shape of #131: a `./acme-notes` or
 `acme-notes` entry installed a same-named directory from wherever you stood.
 
-What the installer finds there by itself is outside that guarantee. With the uv
-backend, a `uv.toml` or a `pyproject.toml` `[tool.uv]` table in your current
-directory or a parent of it is uv's own project configuration, which aelix
-honours on purpose (as it does your user `uv.toml`,
-[ADR-0200](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0200-catalog-fetch-and-installer-backend.md)):
-in a cloned repository, its `find-links` or index settings can make a trusted
-catalog's package name install a wheel from that repository. pip reads neither
-file. Until that is closed, run `discover install` for a package-name entry from
-a directory you trust.
+The installer does not run there either. With the uv backend, a `uv.toml` or a
+`pyproject.toml` `[tool.uv]` table in the directory uv runs in, or in a parent of
+it, is uv's own project configuration — in a cloned repository, its `find-links`
+or index settings made a trusted catalog's package name install a wheel from that
+repository (#392). So `discover install` and `aelix extension update` run the
+installer, uv or pip, in aelix's own installer directory,
+`~/.aelix/agent/installer-cwd` (under your agent dir; on macOS and Linux only you
+can read it). It holds a `pyproject.toml` and a `uv.toml` that aelix writes and
+that set nothing. uv looks for a project first — the nearest `pyproject.toml` —
+and reads configuration from there; the `pyproject.toml` in the installer
+directory declares no project, so uv does not go on to one above it, and the
+`uv.toml` is then the first configuration file it finds. So no project
+configuration is read at all: none from your current directory, its parents, or
+the directories above the agent dir, even a `pyproject.toml` with a `[project]`
+table. The install's consent block says where it runs. What still applies, as
+[ADR-0200](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0200-catalog-fetch-and-installer-backend.md)
+intends: your user-level `uv.toml` (`~/.config/uv/uv.toml`, or
+`%APPDATA%\uv\uv.toml` on Windows), the system one, your `pip.conf`, and your
+environment variables (`UV_*`, `PIP_*`) — put an organisation's index pin there. A
+project you choose yourself with `UV_PROJECT` or `UV_WORKING_DIR` is read as uv
+reads it. A `uv.toml` or `pyproject.toml` in your home directory is project
+configuration to uv and does not apply to these installs.
+
+What this protects against is your current directory — a repository you cloned.
+Your own environment and your user- and system-level installer configuration are
+yours: a repository cannot set them (from a project `.env` aelix admits only
+provider credentials and a short checked list), so aelix passes them to uv and pip exactly as you set them. One
+consequence: a RELATIVE path in them — `PIP_FIND_LINKS=./wheels` or `file:wheels`,
+`UV_FIND_LINKS`, `UV_INDEX_URL=./simple`, `PIP_TARGET`, `UV_PROJECT`,
+`UV_WORKING_DIRECTORY`, `PIP_CONFIG_FILE=pip.conf`, or a relative `find-links` in
+`pip.conf` — is read from the installer directory for these installs, not from where
+you are. That holds on uv too, where aelix reads your `pip.conf` to pass its index on
+to uv: a relative `PIP_CONFIG_FILE` is opened in the installer directory, where pip
+itself would open it. Some of those fail
+loudly; pip skips a find-links location it cannot find with a warning and installs
+from the default index. Use absolute paths. aelix checks one variable:
+`UV_CONFIG_FILE`, which uv reads instead of every other configuration file, must be
+an absolute path exactly as uv reads it — no leading or trailing space, no `~` (uv
+does not expand it), no `file:` URL — or these installs are refused with "Set
+UV_CONFIG_FILE to an absolute path.", because a relative one would quietly read
+aelix's own empty `uv.toml` there. A relative `--index-url ./simple` you type on
+`discover install` is read from where you typed it; a `file:/…` URL passes as
+written. If the installer directory or either file in it is a link when aelix
+prepares it, the install is refused. (A link someone swaps in after that check, while
+the consent prompt waits, is not caught — only someone who can already write your
+agent dir can do that.)
+
+A typed `aelix extension install <spec>` is different: you typed it in your
+current directory, so its installer runs there, where uv reads that directory's
+`uv.toml` / `[tool.uv]` (and `python -m pip` imports a `pip/` package from it
+first — for `aelix extension remove` too; tracked as issue #394). Install from a
+directory you trust, or install through a catalog.
 
 It does not make a hostile catalog safe. A catalog can already name any package
 or URL to install, so a catalog whose own content is hostile does not need a
