@@ -52,6 +52,15 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **Windows: a `git+file:` extension source needs uv 0.11.27 or newer, and the
+  private-catalog guide now says so (#393).** When aelix installs with uv (after
+  `install.sh` / `install.ps1`, whose environment has no pip), uv before 0.11.27
+  crashes on `git+file:///C:/…` and `name @ git+file:///C:/…` — `error: The
+  channel closed unexpectedly`, exit 2 (astral-sh/uv#19887). aelix does not check
+  your uv's version; `uv --version` shows it and `uv self update` upgrades the
+  uv the installers bootstrap. CI and the release build now run uv 0.12.23
+  (was 0.11.14), with each runner's archive checksum pinned, so the Windows test
+  leg installs such a source for real.
 - **Packaging: the `aelix` sdist no longer carries the demo recording, and the
   README's demo image now shows on PyPI (#387).** `docs/assets/demo.gif`
   (2.3 MB, about 40% of the tarball) and the three files that produce it

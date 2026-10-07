@@ -100,7 +100,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
-          version: "0.11.14"
+          # Same uv as ci.yml, and the same reason for the checksum (#393):
+          # this action verifies nothing past 0.11.18 by itself. ubuntu-latest
+          # only - the linux x86_64 archive's sha256; a runner change fails
+          # this step loudly instead of installing an unchecked uv.
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
           python-version: "3.12"
           enable-cache: true
 

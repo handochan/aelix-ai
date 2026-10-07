@@ -242,6 +242,22 @@ and never looked for in your current directory. Refused outright:
   with an environment marker (`acme-notes; python_version >= "3.11"`) — neither
   is one of the forms above.
 
+**On Windows, a `git+file:` source needs uv 0.11.27 or newer** when aelix
+installs with uv — which it does after `install.sh` or `install.ps1`, whose
+environment has no pip. A local repository there is `git+file:///C:/…` (any
+drive letter), and uv before 0.11.27 crashes on that URL, `name @
+git+file:///C:/…` included, whether it comes from a catalog or from `aelix
+extension install`: it prints
+`Git URL is invalid: AmbiguousAuthority` and `error: The channel closed
+unexpectedly`, and exits 2 — the `:` of the drive letter followed by the
+`@<commit>` uv adds trips its URL parser
+([astral-sh/uv#19887](https://github.com/astral-sh/uv/issues/19887), fixed in
+0.11.27; #393). aelix hands the source on as written and does not check your uv's
+version. `uv --version` shows yours; `uv self update` upgrades the standalone uv
+that the installers bootstrap (installed another way, upgrade it that way). The
+installers bootstrap uv only when none is on `PATH` (the newest by default, or the
+version `UV_VERSION` names); one already there is kept.
+
 This closes a trap (#131). The installer used to receive a hand-written
 `"source": "./acme-notes"` as written, so pip read `./acme-notes` from wherever
 you ran `aelix`: the directory beside the catalog only when you stood in it, and

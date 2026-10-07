@@ -59,7 +59,28 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           # Pin uv itself for reproducible CI; bump deliberately.
-          version: "0.11.14"
+          #
+          # 0.11.14 -> 0.12.23 (#393): uv before 0.11.27 panics on a
+          # `name @ git+file:///C:/...` source - the `:` of the drive letter
+          # followed by the `@<sha>` uv appends trips its AmbiguousAuthority
+          # check, exit 2, "The channel closed unexpectedly"
+          # (astral-sh/uv#19887, fixed by #20086 in 0.11.27). So the windows
+          # leg could not install a git+file source on the uv backend at all,
+          # and issue 131's real-backend test skipped that part there. Every
+          # leg running the newest uv is also what a fresh install.sh /
+          # install.ps1 hands users (they bootstrap the latest uv).
+          #
+          # The checksum line is not optional with this pin. This action
+          # (v8.2.0) verifies a download only against its own KNOWN_CHECKSUMS
+          # table, which ends at 0.11.18; for any newer version it logs "No
+          # checksum found" at debug level and installs the archive unchecked
+          # (src/download/checksum/checksum.ts) - and it downloads from
+          # Astral's mirror by default. Bumping the version means replacing
+          # both hashes: the archive's sha256 for that version, from
+          # https://github.com/astral-sh/uv/releases/download/<v>/<archive>.sha256
+          # (uv-x86_64-unknown-linux-gnu.tar.gz, uv-x86_64-pc-windows-msvc.zip).
+          version: "0.12.23"
+          checksum: ${{ runner.os == 'Windows' && '75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90' || '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6' }}
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 

@@ -53,6 +53,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2698,16 +2699,29 @@ async def test_a_resolved_path_holding_a_hash_is_refused(
 
 
 def test_uv_cuts_a_hash_in_every_spelling(layout: dict[str, Path], tmp_path: Path) -> None:
-    """WHY a ``#`` is refused rather than encoded: uv 0.11 opens ``<dir>/trusted``
-    for ``trusted#release`` as a bare path, as ``file://…/trusted%23release`` and as
-    ``name @ file://…%23…`` alike."""
+    """WHY a ``#`` is refused rather than encoded: every uv opens ``<dir>/trusted``
+    for ``trusted#release`` as a bare path and as ``file://…/trusted%23release`` —
+    the URI aelix hands over for a path without extras. ``name @ file://…%23…`` was
+    cut the same way before uv 0.11.27, which reads it whole ("Encode hashes in file
+    paths", astral-sh/uv#19807; #393 measured 0.11.14/0.11.26 decoy, 0.11.27/0.11.33/
+    0.12.23 catalog, .omc/probes/393-live/impl/probe-hash-spellings.txt)."""
     _need("uv")
+    uv = shutil.which("uv")
+    assert uv is not None
+    version = _uv_version(uv)
     real = _real_project(layout["catdir"] / "trusted#release", "catalog")
     _real_project(layout["catdir"] / "trusted", "decoy")
-    for spec in (str(real), real.as_uri(), f"local-ext @ {real.as_uri()}"):
+    named = f"local-ext @ {real.as_uri()}"
+    for spec in (str(real), real.as_uri(), named):
+        expected = "decoy"
+        if spec == named:
+            if version is None:
+                continue
+            if version >= _UV_READS_A_NAMED_HASH_PATH_WHOLE:
+                expected = "catalog"
         runner = _RealBackend("uv", tmp_path / f"s{len(spec)}")
         runner([sys.executable, "-m", "pip", "install", spec])
-        assert runner.origin() == "decoy", (spec, runner.output)
+        assert runner.origin() == expected, (spec, version, runner.output)
 
 
 def test_the_installer_arg_is_a_uri_and_names_the_project_for_extras(
@@ -2842,6 +2856,35 @@ _UV_WIN32_GIT_FILE_PANIC = (
     "'The channel closed unexpectedly'); the argv aelix hands over is asserted above"
 )
 
+#: #393: the first uv release with astral-sh/uv#20086. CI runs a newer one, so the
+#: windows leg installs for real; only an older ``uv`` on PATH skips.
+_UV_GIT_FILE_DRIVE_FIXED = (0, 11, 27)
+#: #393: the same release stopped cutting ``name @ file://…%23…`` at the ``%23``.
+_UV_READS_A_NAMED_HASH_PATH_WHOLE = (0, 11, 27)
+
+
+def _uv_version(uv: str) -> tuple[int, int, int] | None:
+    """The version of the ``uv`` the real backend would run, from ``uv --version``
+    (``uv 0.11.14 (3fdfdc7d4 2026-05-12 ...)``, ``uv 0.11.19 (Homebrew ...)``);
+    ``None`` when it does not say one."""
+
+    proc = subprocess.run([uv, "--version"], capture_output=True, timeout=60)
+    match = re.match(rb"uv (\d+)\.(\d+)\.(\d+)", proc.stdout.strip())
+    if proc.returncode != 0 or match is None:
+        return None
+    return (int(match[1]), int(match[2]), int(match[3]))
+
+
+def _uv_panics_on_a_drive_letter() -> bool:
+    """True only for a uv KNOWN to predate the fix: one that does not say its
+    version runs the install, so the measurement never goes quiet by itself."""
+
+    uv = shutil.which("uv")
+    if uv is None:
+        return False
+    version = _uv_version(uv)
+    return version is not None and version < _UV_GIT_FILE_DRIVE_FIXED
+
 
 def _git_repo(directory: Path) -> Path | None:
     git = shutil.which("git")
@@ -2876,7 +2919,7 @@ async def test_a_named_git_reference_installs_on_the_real_backend(
     )
     assert handed_code == 0, capsys.readouterr().err
     assert handed.calls[0][-1] == source
-    if backend == "uv" and sys.platform == "win32":
+    if backend == "uv" and sys.platform == "win32" and _uv_panics_on_a_drive_letter():
         pytest.skip(_UV_WIN32_GIT_FILE_PANIC)
     mem = _seed(layout["root"], _HTTPS_LOCATION, [("g", source)])
     runner = _RealBackend(backend, tmp_path / "scratch")
