@@ -1,0 +1,390 @@
+[
+ {
+  "group": "A security and records",
+  "rows": [
+   {
+    "issue": "#188",
+    "title": "MCP/extension tools bypass the approval prompt and PLAN mode (bare-name _MUTATING)",
+    "still_valid": "yes. builtin/permission.py:77 _MUTATING=_BASH_TOOLS|_WRITE_TOOLS (guardrail.py:46-47 bare names); :543 is_mutating = event.tool_name in _MUTATING; :550 PLAN block and :556 'if not is_mutating: return None' both key on it. Probe on 1544d1d1 (.venv python, isolated dirs): 'fs__write_file' in _MUTATING -> False, 'filesystem__edit_file' -> False, 'shell__execute_command' -> False. mcp/adapter.py:85/95 names tools '<server>__<tool>' (manager.py:79 always prefixes).",
+    "size": "M (owner's flip-the-default design, 3-5 rounds + Codex + live MCP server check)",
+    "beta3": "must - exit (1) security, P0, owner pulled it into beta.3 on 2026-09-19 and said it must close before #253",
+    "depends_on": "none (owner design comment fixes the direction: unknown tool = mutating; MCP readOnlyHint never lowers the gate)",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py, builtin/guardrail.py (sets), tests for permission, an ADR, docs",
+    "notes": "Design points the lane must settle: (a) the read-only allowlist must be keyed by provenance, not bare name, or an extension tool named 'read'/'grep' passes; (b) 'agent' must stay out of the prompt path (ADR-0197: args-blind rule key) - allowlist it or route elsewhere; (c) AUTO_ACCEPT/AUTO non-bash branch calls _is_auto_allowable_write(_path_from_args(args)) - an MCP tool with no path arg needs a defined answer; (d) headless (-p/rpc) default ALLOW and the delegated-child headless 'block' change behaviour for every MCP tool in children. Live check per CLAUDE.md 10: real MCP server, default-mode prompt and PLAN block."
+   },
+   {
+    "issue": "#131",
+    "title": "classify_target resolves a catalog entry's relative source against process cwd (dependency-confusion shape)",
+    "still_valid": "yes (read, not run). cli/extension_install.py:284-306 classify_target: 'path' only if Path(target).exists() relative to process cwd, else falls to 'pypi'. Install-by-name passes resolved.source raw (:3863-3870 '--', resolved.source). The caveat is documented, not fixed: extension_catalog.py:1131-1137 and extension_install.py:2876-2878 ('relative source resolves against the PROCESS working directory').",
+    "size": "S (1-2 rounds: resolve against the catalog's location or refuse a relative source; plus remote-catalog case)",
+    "beta3": "must - exit (1) security, P0 in milestone; cheap",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/extension_catalog.py (resolve_entry/Catalog location), cli/extension_install.py (install-by-name path ~:3840-3870), docs/guides/private-catalog.md",
+    "notes": "Decide the remote-catalog (https) case: a relative source in a fetched catalog has no local base and should be refused rather than become a pypi lookup."
+   },
+   {
+    "issue": "#168",
+    "title": "Persisted toolResult loses details, so /resume cannot render diffs, exit codes, descriptor cards",
+    "still_valid": "yes. packages/aelix-ai/src/aelix_ai/messages.py:143-159 ToolResultMessage has tool_call_id, content, is_error, timestamp, tool_name - no details. tui/render.py:1240 live path reads result.details.diff; :1331 replay docstring states toolResult carries no details. pi carries it: /Users/handochan/dev/pi packages/ai/src/types.ts:457 'details?: TDetails' (pi checkout 6671c6047).",
+    "size": "L (kernel wire field + session serialization of non-JSON details + replay renderer; band question; 5-9 rounds)",
+    "beta3": "should - in the milestone's records bundle and exit (1) names missing-record issues, but the child-run record promise is already met by #199/ADR-0243; if not done it must be explicitly deferred by the owner and listed in CHANGELOG known limitations",
+    "depends_on": "owner/design decision on what crosses the wire (details: Any is not serializable as-is)",
+    "files": "packages/aelix-ai/src/aelix_ai/messages.py, packages/aelix-agent-core/src/aelix_agent_core/session/entries.py + harness/core.py (toolResult construction/persist), packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py (replay), tool details dataclasses in tools/",
+    "notes": "Shares tui/render.py with #177 - do not batch together. TUI live check required (uv run aelix, /resume)."
+   },
+   {
+    "issue": "#186",
+    "title": "Untrusted text reaches the terminal raw (OAuth error bodies) - remaining sites",
+    "still_valid": "partly. Copilot sites and login_wizard shipped in 080a1ec (safe_for_terminal used in oauth/github_copilot.py:154, tui/login_wizard.py x5). Still raw on main: aelix_ai/oauth/openai_codex.py:206-211 and :437-441 ('token exchange/refresh failed ({status}): {body_text}') and oauth/anthropic.py:135-139 ('body={response_body}'), unbounded.",
+    "size": "S (1-2 rounds; helper aelix_ai/utils/terminal_text.py exists)",
+    "beta3": "must - exit (1) security; the OpenAI Codex refresh path runs for the owner's main provider and a 55KB body wipes the transcript (measured in the issue comment)",
+    "depends_on": "none",
+    "files": "packages/aelix-ai/src/aelix_ai/oauth/openai_codex.py, packages/aelix-ai/src/aelix_ai/oauth/anthropic.py, tests/oauth",
+    "notes": "Close #186 only with #177-#179 judged; the issue comment says not to close #179 on this helper (width regex). #379 (OAuth refresh retry like pi) touches openai_codex.py too - do not run them in the same batch."
+   },
+   {
+    "issue": "#177",
+    "title": "Tool-call headers and tool results pass control characters to the terminal",
+    "still_valid": "yes, worse than filed. Probe on 1544d1d1: render._tool_header('read', {'path': 'x\\r\\x1b]0;PWNED\\x07\\nNEXT'}) returns it unchanged; through the real render.render_tool_call_line + rich Console(force_terminal=True), an ST-terminated OSC 52 ('\\x1b]52;c;...\\x1b\\\\') and ESC[2J are both present in the output bytes. A model-authored tool argument can therefore write the user's clipboard and clear the screen.",
+    "size": "S (1-2 rounds; reuse aelix_ai.utils.terminal_text.safe_for_terminal or panel._flatten)",
+    "beta3": "must - exit (1) security; the input is model-authored (prompt-injectable), and the probe shows clipboard write",
+    "depends_on": "none (helper already shipped by #186 part 1)",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py (_tool_header, render_tool_call_line, _truncate_lines for results)",
+    "notes": "Shares render.py with #168; TUI live check required. Render tests must assert on the Console byte stream, not Text.plain (per #186 comment)."
+   },
+   {
+    "issue": "#178",
+    "title": "format_card / format_status_row do not sanitise child-authored strings",
+    "still_valid": "yes (read, not run - SubagentProgress moved to aelix_coding_agent/subagent_contract.py:192). aelix_agents/panel.py:607-609 interpolates progress.profile, progress.state, progress.current_tool raw; aelix_agents/progress.py:193-194 appends progress.current_tool raw (model is _flatten-ed at :192). stream.py:736 assigns current_tool from child JSON unvalidated.",
+    "size": "S (1-2 rounds) plus a contract note on _child_line byte-identity",
+    "beta3": "should - exit (1) security judgement; source is the child process (our own binary relaying model output), lower reach than #177",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_agents/panel.py, packages/aelix-coding-agent/src/aelix_agents/progress.py, maybe aelix_agents/stream.py (validate at ingest)",
+    "notes": "Cheap to batch with #177 only if a different lane/worktree (no file overlap)."
+   },
+   {
+    "issue": "#179",
+    "title": "Picker sanitises only its title; option/tab/detail strings go into the frame raw",
+    "still_valid": "yes (read, not run). tui/context.py:243 _ANSI_RE = r'\\x1b\\[[0-9;]*m' (SGR only) used by _visible_len :260; select() body :479 f'{_PICK_SEL}▸ {text}{_PICK_RST}'; tabbed() :810 same shape. Issue itself records no OSC reached a terminal from the picker (pyte measured), so impact is frame mis-sizing plus CSI reach.",
+    "size": "M (2-3 rounds; width regex + body sanitising or FormattedText refactor; TUI live check)",
+    "beta3": "should - exit (1) judgement; extension/session-derived strings, lower than #177",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py",
+    "notes": "Needs uv run aelix live check (CLAUDE.md 9)."
+   },
+   {
+    "issue": "#138",
+    "title": "Session JSONL stores every prompt and tool result verbatim (no redaction)",
+    "still_valid": "yes. grep -rniE 'redact|scrub' packages/aelix-agent-core/src/aelix_agent_core/session/ -> only entries.py:321 (thinking 'redacted' flag). Mitigation in place: session/fs.py:30-31 SESSION_FILE_MODE=0o600, SESSION_DIR_MODE=0o700. pi has none either: grep -rliE redact /Users/handochan/dev/pi/packages/coding-agent/src/core -> 0 files.",
+    "size": "L (design fork write-time vs export-time, pattern set, policy; owner decision first)",
+    "beta3": "defer - exit (1) is met by judging it: state in CHANGELOG known limitations (exit 4) that sessions store prompts/tool output verbatim with 0600/0700; same as pi",
+    "depends_on": "owner decision on the design fork",
+    "files": "packages/aelix-agent-core/src/aelix_agent_core/session/ (writer), export path, CHANGELOG.md",
+    "notes": "CHANGELOG [Unreleased] has no 'Known limitations' section yet (grep -ni 'known limitation' CHANGELOG.md -> nothing); exit (4) needs one."
+   },
+   {
+    "issue": "#374",
+    "title": "Keyless custom anthropic-messages provider: Anthropic SDK reads ANTHROPIC_API_KEY and sends it to the custom gateway",
+    "still_valid": "yes. providers/_anthropic_client.py:41-43 adds api_key only 'if api_key is not None'; providers/anthropic.py:589 api-key branch passes api_key=opts.api_key. Probe on 1544d1d1 with ANTHROPIC_API_KEY=vendor-key-fake: create_async_client(base_url='http://custom-gw.invalid').api_key -> 'vendor-key-fake'. No 'No API key for provider' guard in anthropic.py (exists in openai_completions.py:1485, openai_responses.py:219, google_generative_ai.py:151).",
+    "size": "S (2 rounds: explicit key/None-proof sentinel, pre-request 'No API key' error, env fallback only for provider anthropic via ADR-0251 order; plus sweep of other SDK adapters and the x-api-key EMPTY note)",
+    "beta3": "must - exit (1) security: a vendor credential goes to a user-named third-party host without the user choosing it; cheap and the #363 context is fresh",
+    "depends_on": "none (follows #363/ADR-0251 key order)",
+    "files": "packages/aelix-ai/src/aelix_ai/providers/_anthropic_client.py, packages/aelix-ai/src/aelix_ai/providers/anthropic.py, tests/providers",
+    "notes": "Live check with a real anthropic key (CLAUDE.md 10) that plain anthropic still works and OAuth branch (api_key='') is unchanged."
+   },
+   {
+    "issue": "#365",
+    "title": "Extension registering a built-in provider name with models: catalogue ids go to the vendor host with the extension's key",
+    "still_valid": "partly (read, not run). Launch path fixed: cli/runtime_bootstrap.py:1575-1600 _route_universe replaces a taken-over provider's rows with _registration_models. Still open: model_registry.py:1044-1060 Step 3b MERGES registered models into the catalogue (no replacement), so get_all()/get_available() keep catalogue rows; core/model_argument.py:331/358-372 /model pool comes from registry.get_all() and the owned-provider branch filters by provider only, so '/model openai/gpt-4o-mini' still resolves the catalogue row to api.openai.com (issue comment 2026-10-02, probe_hijack.py).",
+    "size": "M (3-4 rounds: replace-on-register in the registry, narrow /model pool, then move extension api_key to step 3 per the #363 comment; ADR-0249 + extension-authoring guide)",
+    "beta3": "should - exit (1) security judgement; needs an installed extension that takes a built-in name (in-process code already trusted), so lower than #374",
+    "depends_on": "none; the extension-key reorder from the #363 comment must come after the replacement",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/model_registry.py, core/model_argument.py, cli/runtime_bootstrap.py, docs ADR-0249, extension-authoring guide",
+    "notes": "Overlaps model routing files touched by #376's fix (runtime_bootstrap/model_resolver) - batch separately."
+   },
+   {
+    "issue": "#354",
+    "title": "Delegated child does not inherit the parent's thinking level -> 400 on reasoning-mandatory models",
+    "still_valid": "yes (read, not run). The only --thinking emitted for a child is from the profile: agents/resolver.py:374-375 'if profile.thinking is not None: flags += [\"--thinking\", profile.thinking]' and :512-513. No 'thinking' in aelix_agents/extension.py or aelix_agents/tool.py (grep: none), while the model is inherited via the late-bound getter (extension.py:288-309, #304).",
+    "size": "M (2-4 rounds: pass harness.state.thinking_level through the same getter, profile/CLI explicit wins; optional off-clamp in openai_completions is a separate judgement)",
+    "beta3": "must - the beta.3 promise is 'multi-agent runs'; on the owner's default model (glm-5.3-flash, thinking high) every delegation dies in 1 turn (measured 2026-09-25 on 0.1.0b2)",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_agents/extension.py, aelix_agents/tool.py or runtime.py (child argv), agents/resolver.py, cli/entry.py (getter wiring); optional aelix-ai providers/openai_completions.py",
+    "notes": "Live check with a reasoning-mandatory model via openrouter (CLAUDE.md 10) and a TUI delegation. Shares cli/entry.py with #376 - separate batches."
+   },
+   {
+    "issue": "#376",
+    "title": "--continue without model flags: compaction/branch summary fail with 'No provider registered for api=unknown'",
+    "still_valid": "yes, and broader than filed. Probe on 1544d1d1 (isolated AELIX_CODING_AGENT_DIR/SETTINGS_PATH, fake ANTHROPIC_API_KEY, proxy to 127.0.0.1:9, handcrafted session with model_change anthropic/claude-haiku-4-5 + 3 turns): 'aelix --mode rpc --continue' -> get_state model provider='' api='unknown' with messageCount 6; a prompt then fails 'No provider registered for api=unknown' and the user message is still appended (messageCount 6->7). With settings defaultModel=claude-sonnet-4-5 the session resumes on sonnet, not the session's haiku. Cause: core/model_resolver.py:912 restore_model_from_session has zero callers in packages/*/src; session/context.py:241 computes the session model but nothing applies it. pi restores it: /Users/handochan/dev/pi packages/coding-agent/src/core/sdk.ts:200-206.",
+    "size": "M (3-5 rounds: wire session-model restore for startup --continue/--resume/--session and in-session /resume, with pi's fallback message; then re-run compaction/branch-summary probes)",
+    "beta3": "must - exit (1) data-loss/records and the 'keep working' promise: a resumed session silently switches model or cannot run/compact at all",
+    "depends_on": "none; interacts with #367/#369 launch-route gating (launch_pending placeholder in cli/entry.py:3260-3307)",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py, core/model_resolver.py, packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py (/resume path), tui/shell.py (startup model pick)",
+    "notes": "Probe kit: /tmp/beta3-assess/A/p376/drive.py, drive2.py (copy to .omc before /tmp cleanup). Live check: real model --continue, TUI /compact."
+   }
+  ],
+  "exit_condition_status": "Exit (1) for this group is NOT met on main 1544d1d1. Of 12 issues, all 12 still hold in full or in part; none is judged closed. Must before beta.3 (7): #188 M, #131 S, #186 remainder S, #177 S, #374 S, #354 M, #376 M. Should (4): #168 L, #178 S, #179 M, #365 M. Defer with a CHANGELOG known-limitations line (1): #138 L. The CHANGELOG [Unreleased] section has no known-limitations section yet, so exit (4) is also open. Two findings go beyond what the issues say. First, the #177 probe shows a model-authored read path pushing an ST-terminated OSC 52 (clipboard write) and ESC[2J through render_tool_call_line to the terminal. Second, #376 is a general gap in restoring the session model, not only a compaction problem: restore_model_from_session has no caller, and a headless --continue with no default model cannot run a prompt at all.",
+  "summary": "Group A (security and records), read-only on main 1544d1d1. All 12 issues still hold, 2 of them only partly (#186: the copilot half shipped in 080a1ec; #365: the launch path was fixed by _route_universe, but /model and the registry still merge catalogue rows). Probes ran under /tmp/beta3-assess/A with fake keys and isolated agent and settings dirs. They confirmed: #188 (qualified MCP names are not in _MUTATING); #177 (OSC 52 clipboard write and ESC[2J pass through the real tool-call line render); #374 (the SDK client picks up ANTHROPIC_API_KEY for a custom base_url); and #376. For #376, rpc --continue leaves the model at api=unknown even though the session holds 6 messages and a model_change, and a prompt then fails while the user message is still persisted. The cause is that restore_model_from_session (core/model_resolver.py:912) has no caller, while pi restores the model at sdk.ts:200. The rest were read, not run. Estimate: 7 must lanes, about 2 S x3 + S x1 + M x3. At this batch's pace (S about 2 rounds, M 3-5, plus Codex), that is roughly 20-25 implement/verify rounds. With current file overlaps it fits in two parallel batches. Pairs that must not share a batch: #354 and #376 (cli/entry.py); #177 and #168 (tui/render.py); #186 and #379 (oauth/openai_codex.py); #365 and #376 (model routing). The 4 should items add about 12-18 rounds, mostly #168 (L, needs a wire-format decision first). #138 should be deferred with a known-limitations line, which pi also lacks. Each must item needs a live check: an MCP server for #188; the TUI for #177 and #179; real models for #354, #374 and #376."
+ },
+ {
+  "group": "B default-experience regressions",
+  "rows": [
+   {
+    "issue": "#289",
+    "title": "--offline (or any flag) before a subcommand turns the subcommand name into a prompt sent to the provider",
+    "still_valid": "yes. cli/entry.py:1926/1942/1951 still route on argv[0] only. Probe on main 1544d1d1 (/tmp/beta3-assess/B/p_misc.py): parse_args(['--offline','status']) -> offline=True messages=['status']; parse_args(['-e','x.py','docs']) -> messages=['docs']. The network leg (api.anthropic.com:443) comes from the issue's own measurement at 026bd15, not re-run here.",
+    "size": "M (an owner/design choice first: skip leading flags or refuse a subcommand name as the first positional; then entry.py routing, README:242 wording, tests; 2-3 rounds)",
+    "beta3": "must. Exit condition 1 (security): the offline switch fails open, a subcommand name goes to a cloud provider, and a --print session auto-approves mutating tools. Listed in 05 §10 as a release-blocker judgement item.",
+    "depends_on": "Decide the routing rule (refuse vs skip-flags) first. It shares cli/entry.py with #288, #286, #371 and #372, so run them one after another, not in one batch.",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py (:1926-1956 verb chain), cli/args.py, cli/status.py, cli/docs.py, README.md:242",
+    "notes": "Same seam the refactor appendix calls try_early_exit (05 appendix A). Pi has the same argv[0] shape, but it sets offline before routing."
+   },
+   {
+    "issue": "#288",
+    "title": "AELIX_OFFLINE=1 does not stop rg/fd downloads (tools_manager reads only PI_OFFLINE)",
+    "still_valid": "yes. util/tools_manager.py:152 reads only PI_OFFLINE. entry.py:1969 propagates only parsed.offline or PI_OFFLINE. Probe on main: with AELIX_OFFLINE=1, tools_manager._is_offline()=False and update_check.is_offline()=True.",
+    "size": "S (one function made canonical, entry.py:1969 propagation, a tools_manager test parametrized on both names; 1-2 rounds)",
+    "beta3": "must. Exit condition 1 (security): the offline switch fails open into an unchecksummed binary download (the SECURITY.md disclosure). Release-blocker judgement list in 05 §10.",
+    "depends_on": "None. #276 (env doc) should say AELIX_OFFLINE is a full alias once this lands. It touches entry.py, so it runs before or after #289, not alongside.",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/util/tools_manager.py:145-156, cli/entry.py:1969, update_check.py:345, cli/extension_install.py:468, tests/util (tools_manager)",
+    "notes": "Smallest must in the group; a good first lane. Also propagate to child processes (delegation, MCP stdio) through the PI_OFFLINE export."
+   },
+   {
+    "issue": "#286",
+    "title": "print/json/rpc modes ignore settings defaultThinkingLevel (thinking off)",
+    "still_valid": "yes, read, not run. The settings seed exists only in run_tui (tui/shell.py:875). _seed_startup_state (cli/entry.py:450) restores only a session-recorded level. Harness built with thinking_level=parsed.thinking (entry.py:1636).",
+    "size": "M (move the seed before the mode split, keep the #198 thinking_level_restored guard, decide delegated-child inheritance per ADR-0196/0197, live check with a real model; 2-3 rounds)",
+    "beta3": "should, high. Not literally an exit-condition class, but it hits the milestone promise: delegated children (--mode json -p) run thinking off unless the profile sets thinking. Exit condition 3's real-model check would expose it. If deferred, it must go in CHANGELOG known limitations (exit condition 4).",
+    "depends_on": "Owner/ADR call on whether a child gets the settings default or the parent's live level. It shares entry.py with #289, #288 and #371.",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py (_seed_startup_state :450, harness build :1636), tui/shell.py:860-900, agents/resolver.py, aelix_agents print_channel build_child_argv",
+    "notes": "Pi seeds in createAgentSession for every mode, in this order: explicit, session, per-model, settings, default."
+   },
+   {
+    "issue": "#285",
+    "title": "text block that arrives only as text_end (no deltas) is never shown live in the TUI",
+    "still_valid": "yes. tui/render.py:810-813 sets _text_accum and then _finalize_text(), which is a no-op while _text_stream is None (:925-929). Issue's repro run on main: events ['text_start','text_end','toolcall_start','toolcall_end'] -> commits ['● read(a.py)'] (text missing).",
+    "size": "S code, M overall (render.py fix + 4 regression shapes; the CLAUDE.md rule 9 TUI live check needs a local fake Responses server or an extension provider; 2 rounds)",
+    "beta3": "should. The text is in the session (replay shows it), so nothing is lost. The openai-codex backend sent deltas in all 7 live measurements, so no shipped default path shows it. Fits exit condition 3 (TUI live check).",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py (:802-813, :925-929), tests/tui",
+    "notes": "Only the Responses shared engine (providers/_openai_responses_shared.py) can emit a non-empty text_end with no deltas. Also reset _text_accum at block boundaries (the AAAABBBB residue)."
+   },
+   {
+    "issue": "#259",
+    "title": "reasoning='off' literal string does not disable thinking",
+    "still_valid": "partly. Fixed for Anthropic by #258 (2310329c): _anthropic_transforms.py resolve_anthropic_thinking maps the literal 'off' to disabled, and the pinning test was inverted (tests/providers/test_adr0135_reasoning_wiring.py:610 test_off_passed_as_a_string_turns_thinking_off). Still open for both Google adapters: google_generative_ai.py:308 and google_vertex.py:433. Probe: gemini-2.5-pro with reasoning='off' -> thinkingConfig {'includeThoughts': True, 'thinkingBudget': 32768}.",
+    "size": "S (2 lines + tests; 1-2 rounds)",
+    "beta3": "defer. Embedder-only: harness/core.py:4865-4870 collapses 'off' to None, so the CLI and TUI never reach it. No exit-condition class applies. Name it in CHANGELOG known limitations (exit condition 4), or take it if a lane is idle.",
+    "depends_on": "none; fold #256's dead-state cleanup into the same lane",
+    "files": "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:293-320, google_vertex.py:419-440, tests/providers",
+    "notes": "Retitle to Google-only."
+   },
+   {
+    "issue": "#256",
+    "title": "google adapter turns thinking ON for non-reasoning rows",
+    "still_valid": "no (on the wire). _thinking_for_simple does return enabled=True for non-reasoning rows, but build_google_params gates thinkingConfig on 'thinking.enabled and model.reasoning' (providers/_google_shared.py:860, present since d5f020d9), and both adapters build through it. Probe: google gemini-2.0-flash and google-vertex meta/llama-3.3-70b-instruct-maas, reasoning off/high -> thinkingConfig None.",
+    "size": "S (close with evidence; optionally clear the dead enabled=True state inside #259)",
+    "beta3": "defer / close. No request ever carries thinking for these 13 rows. #251's '(off)' display is accurate, not an understatement.",
+    "depends_on": "none",
+    "files": "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:860, google_generative_ai.py:308, google_vertex.py:433",
+    "notes": "The issue's wire claim ('becomes a thinkingLevel / thinkingBudget=-1') was not checked against the request builder."
+   },
+   {
+    "issue": "#157",
+    "title": "CLI --model silently masks a profile's model (notice names fields, not values)",
+    "still_valid": "yes, read, not run. agents/resolver.py:477-482 _fill still appends field names only; the notices at cli/entry.py:2587 and agents/service.py:322 are unchanged. #368 only added the '--provider requires --model' check right after the overlay (entry.py ~2592), and #362 changed --model resolution order; neither touched skipped.",
+    "size": "S/M if option 2 (ProfileApplication.skipped tuple[str] -> record, two notice sites, tests; 1-2 rounds)",
+    "beta3": "defer. Owner decision, not a defect. 05 line 646 already lists it as a known gap, so carry it into CHANGELOG known limitations (exit condition 4).",
+    "depends_on": "Owner picks option 1 or 2.",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/agents/resolver.py:149-155,474-482, cli/entry.py:2575-2590, agents/service.py:315-325",
+    "notes": "Adjacent and unmeasured: a profile 'provider:' plus a CLI '--model other/x' fills provider from the profile (provider is not explicit) and pairs it with the CLI model. Worth one probe if option 2 is taken."
+   },
+   {
+    "issue": "#371",
+    "title": "--mode rpc has no model registry (held RPC session cannot set_model; unresolved launch starts silently, fails on first prompt)",
+    "still_valid": "yes. cli/entry.py:3608-3612 calls run_rpc_mode(harness, runtime_host, harness_factory) without model_registry, although rpc/rpc_mode.py:1987 accepts one. No code changed since filing (986f5916..1544d1d1 is docs only).",
+    "size": "M (pass the registry, align the #367 RPC warning, and exit 1 or warn on an unresolved launch as pi does; 2-3 rounds)",
+    "beta3": "should. RPC is the web/embedder surface, and a silent start followed by a failed first prompt breaks 'keep working'. Not a data-loss or security class. If deferred, state it in CHANGELOG.",
+    "depends_on": "#367/#370 closed. Pairs with #378 (same placeholder root).",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3605-3613, rpc/rpc_mode.py, cli/runtime_bootstrap.py",
+    "notes": "Touches entry.py, so serialize it with #289, #288 and #286."
+   },
+   {
+    "issue": "#379",
+    "title": "OAuth refresh failing on 502/network does not retry the turn (owner: retry like pi)",
+    "still_valid": "yes, read, not run. OAuthRefreshError is raised at aelix_ai/oauth/auth_storage.py:818 and wrapped as AgentHarnessError('auth') (harness/core.py:4722/4733) before any assistant message exists, so the retry loop has nothing to see. The owner decision is recorded in ADR-0251 §4/§7 (1544d1d1).",
+    "size": "M (turn the refresh failure into a retryable error message or teach the classifier the cause; 5xx/network only; keep 401/403 and every StoredCredentialError non-retryable; no env fallback during retry; 2-3 rounds plus a Codex pass)",
+    "beta3": "should, high. Durability promise: an openai-codex OAuth user (the default live path) loses a turn, or a child run, to a transient token-endpoint 502. The decision is made, so nothing blocks it.",
+    "depends_on": "none (decided)",
+    "files": "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py (auth wrap ~4690-4735, retry loop ~1398-1426), packages/aelix-ai/src/aelix_ai/oauth/auth_storage.py, packages/aelix-coding-agent/src/aelix_coding_agent/model_registry.py:524",
+    "notes": "Live check (CLAUDE.md rule 10) needs a fault-injected token endpoint. Do not rewrite the real auth.json (memory: an agent-dir run can refresh OAuth)."
+   },
+   {
+    "issue": "#375",
+    "title": "OPENROUTER_BASE_URL applied at launch but not to /model OpenRouter selections; guide says all paths",
+    "still_valid": "yes. OPENROUTER_BASE_URL appears only in cli/runtime_bootstrap.py (launch _openrouter_base); the guide claim is at docs/providers-and-models.md:158. No code change since filing.",
+    "size": "S (doc fix to 'launch only') or M (apply to registry copies + the openrouter/auto carry-over after /agents use + /new)",
+    "beta3": "must judge (exit condition 1, routing class of #362/#363): a user who redirected OpenRouter to a gateway sends the prompt to openrouter.ai after /model. The minimum resolution is the doc correction plus a CHANGELOG line.",
+    "depends_on": "none; check pi's handling first",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/runtime_bootstrap.py, model_registry.py, docs/providers-and-models.md:158",
+    "notes": "The openrouter/auto carry-over sub-finding has no narrowed reproduction yet."
+   },
+   {
+    "issue": "#380",
+    "title": "trust prompt: startup selector breaks mid-word at 120 cols; /trust selector shows only the first body line",
+    "still_valid": "yes, read, not run (measured at 547099f3; only docs changed since).",
+    "size": "S/M (word-boundary wrap + full body in /trust; TUI live check required; 2 rounds)",
+    "beta3": "should. The trust consent screen hides the settings/skills wording #369 added, which weakens a security prompt. Exit condition 3's TUI live check will show it.",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui (trust selector in shell.py / commands.py)",
+    "notes": "Compare pi trust-selector.ts."
+   },
+   {
+    "issue": "#381",
+    "title": "windows py3.12 flake: test_every_byte_is_delivered_under_a_loaded_loop timed out once",
+    "still_valid": "partly. Seen once (run 37398119003 attempt 1). Attempt 2 passed, and later main runs are green (37401982717 d0a49d2c success a1).",
+    "size": "M (instrument elapsed time and drain exit reason with warnings.warn, then repeat on Windows 3.12 runners; then decide)",
+    "beta3": "should. Exit condition 3 (Windows) relies on a trustworthy Windows CI leg, and a flaky gate would mask a real #260-class regression. Not a blocker unless it recurs.",
+    "depends_on": "possibly #340 (drain park on windows)",
+    "files": "tests/tools/test_bash_tool_containment.py, packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py (drain)",
+    "notes": "Do not just raise the timeout (#348 pattern)."
+   },
+   {
+    "issue": "#378",
+    "title": "held not-found placeholder rejects a turn with the generic #98 message instead of the not-found reason",
+    "still_valid": "yes. The generic text comes from core/runnable_models.py:674. A hold reason exists only for the late hold (LateRouteHold, agents/service.py:49/407). No code change since filing.",
+    "size": "S/M (attach the hold reason to the placeholder as LateRouteHold.turn_reason does; TUI + RPC; 2 rounds)",
+    "beta3": "defer (wording; the startup Warning already gives the correct reason). Better done with #371.",
+    "depends_on": "#371 (same placeholder, RPC side)",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/core/runnable_models.py:660-680, cli/runtime_bootstrap.py, agents/service.py",
+    "notes": ""
+   },
+   {
+    "issue": "#373",
+    "title": "new session shows '↻ Resumed session (N messages)' when session_start triggered a turn",
+    "still_valid": "yes, read, not run. tui/shell.py:3209-3231 decides on non-empty _startup_messages, not on --continue/--resume/--session.",
+    "size": "S (gate on the actual resume flag; TUI live check)",
+    "beta3": "defer. Misleading banner only; reachable only when an extension's session_start triggers a turn.",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3200-3235",
+    "notes": ""
+   },
+   {
+    "issue": "#372",
+    "title": "fire-and-forget trigger rejection says 'while session_start handlers run'",
+    "still_valid": "yes. _SESSION_START_GATE text unchanged at cli/entry.py:1898.",
+    "size": "S (string + pinned tests; 1 round)",
+    "beta3": "defer (wording only).",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1898, tests",
+    "notes": "Could ride along in any entry.py lane only if one-issue-one-commit is relaxed; otherwise it stays separate."
+   },
+   {
+    "issue": "#377",
+    "title": "/model picker detail shows the env var name instead of the real key source",
+    "still_valid": "yes. tui/model_picker.py:86 renders _api_key_env(provider).",
+    "size": "S (show get_provider_auth_status source, never the value; TUI check)",
+    "beta3": "defer (display only, no key value is shown).",
+    "depends_on": "none",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/tui/model_picker.py:80-105",
+    "notes": ""
+   }
+  ],
+  "exit_condition_status": "",
+  "summary": "Group B, read-only on main 1544d1d1. Probes ran under /tmp/beta3-assess/B (p285.py, p_misc.py, p_google.py, p_google2.py) with an isolated agent dir. Since the follow-ups were filed (986f5916..HEAD) only docs have changed. MUST (3): #288 (S; AELIX_OFFLINE fails open into the rg/fd download, tools_manager._is_offline()=False measured), #289 (M; argv[0]-only routing, parse_args(['--offline','status']) -> messages=['status']; needs the refuse-vs-skip decision first), #375 (must judge, routing class; at minimum the doc fix 'launch only', S; full fix M). SHOULD (7): #286 (M; delegated children run thinking off; needs the child-inheritance call), #379 (M; owner already decided to retry like pi), #285 (S code + TUI live check; text is in the session, so nothing is lost), #371 (M), #380 (S/M; trust prompt hides the #369 wording), #381 (M; measure first; seen once, reran green). DEFER (6): #259 is partly fixed (Anthropic done by #258/2310329c; both Google adapters still buy 32768 for 'off'; embedder-only, S); #157 (owner wording call; #362/#368 did not touch skipped; goes in CHANGELOG known limitations); #378 (do with #371); #373; #372; #377. CLOSE: #256 is not valid on the wire, since _google_shared.py:860 gates thinkingConfig on model.reasoning; probe sent None for non-reasoning rows. Rough cost for must+should: 10 lanes, about 20-25 implement/verify rounds plus Codex passes. Serialize the entry.py lanes #288 -> #289 -> #286 -> #371 (they touch the same file); the rest (#285 render.py, #379 harness/oauth, #375 bootstrap/docs, #380 tui trust, #381 tests) can run in parallel. TUI live checks are required for #285, #380 (and #373/#377 if taken); real-model live checks for #286 and #379."
+ },
+ {
+  "group": "C install, CI and structure gates",
+  "rows": [
+   {
+    "issue": "#279",
+    "title": "install.sh is never executed in CI (install.ps1 has an e2e, install.sh has none)",
+    "still_valid": "yes. .github/workflows/ci.yml has two jobs only: test (ubuntu/windows x 3.11/3.12, ci.yml:31-44) and install-ps1-e2e (ci.yml:118). No job runs install.sh; .github/scripts holds only assert-install-ps1.ps1. macOS is in no CI job at all. Read, not run.",
+    "size": "M (new job: ubuntu + macos, uv-absent bootstrap arm + uv-present rerun, AELIX_EXTRAS= bare CLI, AELIX_PYTHON unset/empty/set, a POSIX port of assert-install-ps1.ps1. The ps1 job's first run found 2 defects, so expect 2-3 rounds)",
+    "beta3": "must. Exit condition (2) names 'install.sh e2e included' explicitly, and install.sh is the README's lead install path.",
+    "depends_on": "#192 should decide the interpreter range the asserts check (3.11-3.13 today, install.sh:52). Both edit ci.yml, so run them one after the other, not in the same batch.",
+    "files": ".github/workflows/ci.yml, new .github/scripts/assert-install-sh.sh, install.sh (if the first run finds defects), tests/packaging_gate/test_install_ps1_parity.py",
+    "notes": "Like the ps1 job, it installs the newest PUBLISHED release (beta.2 wheels), so it covers the script but not the candidate wheels. Exit (2) also needs a separate candidate-artifact job (see exit_condition_status). Consider AELIX_VERSION or find-links against a locally built dist so the job can test the candidate."
+   },
+   {
+    "issue": "#192",
+    "title": "CI tests 3.11/3.12; installers ship users 3.13 that CI never runs",
+    "still_valid": "yes. ci.yml:44 python-version [\"3.11\",\"3.12\"]; release.yml builds on 3.12; requires-python = \">=3.11\" with no ceiling in all 5 pyproject.toml (pyproject.toml:10, packages/*/pyproject.toml:10). install.sh:52 defaults to '>=3.11,<3.14', so uv picks 3.13 when it is present. install.sh:26-28 and getting-started.md:40-42 still say 'CI runs 3.11 and 3.12 ... (#192 adds 3.13)'. The 3.13 suite was last measured green in the issue body (8920 passed); not re-run here.",
+    "size": "S (one matrix line, giving 2 more legs of ~20 min; optionally a <3.14 ceiling in 5 pyprojects plus a uv.lock regen). M if the windows 3.13 leg is red the first time.",
+    "beta3": "must. Exit (2)/(3): 3.13 is the interpreter the installers actually produce, and no CI run has ever executed it. It already caused a real user failure (TLS strict, 12a5c88).",
+    "depends_on": "none. #278 sits next to it but is not closed by it (a ceiling does not steer uv tool install).",
+    "files": ".github/workflows/ci.yml, pyproject.toml + packages/*/pyproject.toml (ceiling), uv.lock, install.sh/install.ps1 comment lines, packages/aelix-coding-agent/src/aelix_coding_agent/docs/getting-started.md, ADR-0241",
+    "notes": "Run it apart from #279 and #293 (CI step), because all three edit ci.yml. The ceiling is an owner call: it makes pip refuse cleanly on 3.14, but measured in #278 it does not bind uv tool install."
+   },
+   {
+    "issue": "#278",
+    "title": "uv tool install aelix@latest rebuilds on 3.14 and overwrites a good 3.13 install",
+    "still_valid": "yes. No startup guard: grep for '(3, 14)' / __discriminator__ / an openai version check in packages/*/src finds only comments and docs. openai is still pinned >=1.66,<2.0 (packages/aelix-ai/pyproject.toml:42, locked 1.109.1); #262's fix needs openai>=2.7.2. The 3.14 behaviour is not re-measured here (read, not run). It is documented as a limitation in getting-started.md:55-58. update_check.py:305 tells uv-tool installs 'uv tool upgrade aelix', and per the issue uv's own hint then leads to aelix@latest and 3.14.",
+    "size": "S for a warn/refuse guard keyed off the installed openai version and sys.version_info (1-2 rounds). L if the openai>=2.7.2 bump is taken instead (provider runtime change, live checks on every openai-family adapter).",
+    "beta3": "should. The upgrade half of exit (2) leads uv/pip users straight into it. If no guard ships, it must at least appear in CHANGELOG known limitations (exit 4).",
+    "depends_on": "An owner decision first: warn or refuse, and guard or openai 2.x. If the pin moves past 2.7.2, the guard and the #192 ceiling both become unnecessary.",
+    "files": "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py (console-script start), packages/aelix-ai/pyproject.toml (if the pin moves), update_check.py (upgrade hint), CHANGELOG.md",
+    "notes": "Anthropic/Gemini-only users are unaffected (source-level claim in the issue), which argues for warn over refuse. Not a data-loss or security issue; it is a broken-install trap."
+   },
+   {
+    "issue": "#292",
+    "title": "agent-core imports coding-agent (13 sites); add a shrink-only gate first",
+    "still_valid": "yes, count unchanged. grep 'from aelix_coding_agent|import aelix_coding_agent' packages/aelix-agent-core/src gives 13 (core.py 11, hooks.py:69, _extension_runner.py:43); aelix-ai gives 0. The only guard is tests/test_agent_regression.py:349-357, which checks that importing aelix_agent_core.harness does not load coding-agent at import time. It does not catch new lazy in-function imports.",
+    "size": "S (AST test with an allowlist of the 13 sites, shrink-only; 1-2 rounds)",
+    "beta3": "should. Cheap and keeps the count from growing, but none of exit conditions 1-4 needs it. Inverting the 10 runtime sites is a follow-up: defer.",
+    "depends_on": "none",
+    "files": "new tests/... layering gate (pytest, so no ci.yml edit needed); reads packages/aelix-agent-core/src/aelix_agent_core/harness/{core,hooks,_extension_runner}.py",
+    "notes": "Write it as a pytest test rather than a ci.yml step, so it can share a batch with #192/#279. It must classify TYPE_CHECKING-only imports separately (3 per the issue)."
+   },
+   {
+    "issue": "#293",
+    "title": "Complexity ratchet: Ruff C901 cap 20 + per-function baseline file",
+    "still_valid": "yes, and getting worse. No C901 in [tool.ruff.lint] select (pyproject.toml:235) and no complexity-baseline.json. Measured now: 'uv run --no-sync ruff check --select C901 --config lint.mccabe.max-complexity=N packages src' gives 33 functions over 20 (issue: 30) and 7 over 40 (issue: 6). New: resolve_route 45 (runtime_bootstrap.py:1857, from 5dee21d1). Grew: _async_main 82->112, run_tui 248->254.",
+    "size": "M (generator script + baseline JSON + comparison gate + docs; ratchet rewrite semantics; 2-3 rounds)",
+    "beta3": "should, not a blocker. No exit condition requires it, but the counts measured above show complexity growing while no gate exists. The >40 decompositions under #284: defer.",
+    "depends_on": "none. Its ci.yml step collides with #192/#279, so make it a pytest/script gate or batch it after them.",
+    "files": "pyproject.toml ([tool.ruff.lint]), new complexity-baseline.json, new scripts/check_complexity.py, .github/workflows/ci.yml or a tests/ gate, AGENTS.md conventions",
+    "notes": "Ruff merges nested functions into the parent's score and Radon does not; the baseline must be built from Ruff only. No '# noqa: C901' (owner decision)."
+   }
+  ],
+  "exit_condition_status": "Exit (2) NOT met: nothing verifies the candidate before the irreversible step. release.yml: build, then publish (PyPI, waits for pypi env approval; reviewer set 09-24 per #142) in parallel with github-release (needs only build). No job installs the built dist. CI install-ps1-e2e installs the newest PUBLISHED release (beta.2), never the candidate. install.sh is never run (#279) and macOS is in no CI job. RELEASING.md 'Cutting a beta' step 6 checks the installers AFTER publish, so a defect found there burns 0.1.0b3 on PyPI. An undocumented window exists: after the tag push the Release exists while publish waits for approval, so one can run install.sh/install.ps1 with AELIX_VERSION=v0.1.0-beta.3, clean and over beta.2, and then approve. Missing: (a) a pre-publish job (uv tool install --find-links dist --python '>=3.11,<3.14' + aelix --version/smoke) that publish needs; (b) a beta.2->beta.3 upgrade check that sessions/settings survive, including child-run records (child_session.py RECORD_VERSION=1, new since beta.2), plus a rollback/migration scope (doc 05 section 9); (c) #279; (d) the #192 3.13 leg. Release chores not started: still 0.1.0b2 (5 versions + 5 pins), CHANGELOG [Unreleased] has no Known limitations (exit 4), SBOM b3, site/latest-version.json. Unfiled: update_check.py:304 prints 'AELIX_VERSION=<tag> curl ... | sh'; probe shows sh sees it unset; test_update_check.py:271 pins that shape.",
+  "summary": "Read-only check at main 1544d1d1. Main CI was green at 986f5916 (run 37398119003) and d0a49d2c (run 37401982717); the 1544d1d1 run was still in progress.\n\nAll five issues still hold on main.\n\n- #279 (install.sh e2e, M) and #192 (3.13 CI leg, S) are must: exit condition 2 names the install.sh e2e, and 3.13 is the interpreter the installers ship.\n- #278 (3.14 trap, S as a guard, L via openai 2.x) is should. It needs an owner decision (warn or refuse, guard or openai bump) and must at least go into CHANGELOG known limitations if it does not ship.\n- #292 (S) and #293 (M) are should; no exit condition requires them. Complexity is growing without the ratchet: 33 functions over 20 (was 30), 7 over 40 (was 6), with new resolve_route 45 and _async_main 82 to 112.\n\nBatching: #192, #279 and a CI-step #293 all edit ci.yml, so run them one after another. #292 and #293 can be pytest gates to avoid that.\n\nGroup total is about 5 lanes and 10-14 rounds.\n\nExit condition 2 also needs release-process work no issue covers yet: a job that installs the candidate before PyPI publish, and a beta.2 to beta.3 upgrade check (each about M).\n\nOne new unfiled bug: update_check prints an AELIX_VERSION prefix shape that never reaches sh (probe printed AELIX_VERSION=unset).\n\nProbe scratch dir: /tmp/beta3-assess/C. Key files: /Users/handochan/dev/aelix-ai/.github/workflows/ci.yml, /Users/handochan/dev/aelix-ai/.github/workflows/release.yml, /Users/handochan/dev/aelix-ai/install.sh, /Users/handochan/dev/aelix-ai/RELEASING.md, /Users/handochan/dev/aelix-ai/packages/aelix-coding-agent/src/aelix_coding_agent/update_check.py."
+ },
+ {
+  "group": "D - docs (#266 #265 #267) and exit conditions (3)(4)",
+  "rows": [
+   {
+    "issue": "#266",
+    "title": "[docs] 0-B honesty pass: README says 3 packages (4 exist), phantom term AgentRuntime, vision doc contradicts ADR-0235",
+    "still_valid": "yes, all 3 points. ls packages/ = aelix-agent-core aelix-ai aelix-coding-agent aelix-server; README.md:307 'Three packages' and README.ko.md:302 '세 패키지' list only 3 (aelix-server missing). docs/00-conventions.md:62 '`AgentRuntime`: 코드상의 런타임 kernel 객체'; grep AgentRuntime packages/*/src = 0 hits. docs/01-product-vision.md Status: Draft, line 13 '거의 완벽에 가깝게 재구현' (ADR-0235 dropped full parity); docs/00-03 last touched 2026-05-17. 0 comments on the issue.",
+    "size": "S-M: README x2 plus the conventions line is S. The vision rewrite (ADR-0235 + #86 security/self-host positioning, Draft->Accepted) needs an owner call on wording/status. Add a test that README package list == ls packages/ (or leave it to #267).",
+    "beta3": "should - no exit condition names it, but it is the same README honesty work as exit (4) (see the stale Known limitations in exit_condition_status). Cheap, one lane, 1-2 rounds.",
+    "depends_on": "Owner read on 01-product-vision positioning/Status. Not in the same batch as #265 (both touch README.md and README.ko.md). Leave 02/03 alone per the issue.",
+    "files": "README.md, README.ko.md, docs/00-conventions.md, docs/01-product-vision.md, new tests/docs/test_readme_packages.py",
+    "notes": "Read, not run (grep/ls only). Natural place to also fix README Known limitations drift (#137/#260 entries), though that belongs to exit (4)."
+   },
+   {
+    "issue": "#265",
+    "title": "[docs] 0-A generate guide index (docs/guides/README.md + README Docs line) from files",
+    "still_valid": "yes, and drift is already real. docs/guides has 8 guides (incl. tls-and-corporate-ca.md). docs/guides/README.md lists all 8 by hand, but the README.md:316-325 Docs line lists 7, and grep -c tls-and-corporate README.md README.ko.md = 0/0. No generator in scripts/ (only sync_bundled_docs.py), no index drift test in tests/ (test_docs_bundle_sync.py only checks the bundled copy). 0 comments.",
+    "size": "S-M: scripts/generate_guide_index.py in the sync_bundled_docs.py style, a drift test with a _RESYNC-style fix command, and a one-line summary convention per guide. One lane, about 2 rounds.",
+    "beta3": "defer (or should if Phase 1 guide issues of #264 enter beta.3). No exit condition requires it; it unblocks parallel guide work. The missing tls guide link in both READMEs can be patched by hand in #266.",
+    "depends_on": "Nothing upstream. Conflicts with #266 on README.md/README.ko.md, so run it serially. Precedes Phase 1 of #264.",
+    "files": "scripts/generate_guide_index.py (new), docs/guides/README.md, README.md, README.ko.md, docs/guides/*.md (summary line), tests/docs/test_guide_index_sync.py (new)",
+    "notes": "Read, not run. registry.py already derives topics from files; this only aligns the index."
+   },
+   {
+    "issue": "#267",
+    "title": "[docs][test] doc drift gate: flags/slash commands/keybindings/settings/hooks/RPC/env missing from docs fails CI",
+    "still_valid": "yes. Rough re-measure on 1544d1d1 (uv run python, re.S parse of tui/commands.py, regex over README.md + docs/guides/*.md): 36 BuiltinCommands, 18 not mentioned (hotkeys logout session name skills hooks mcp context mode permissions scoped-models statusline export copy import clone tree quit). typing.get_args(HookEventName) = 36, while harness/hooks.py:154 still says '31 names total'. Bonus 2 is already fixed: session/entries.py:5 says 10 entry types. No surface-drift gate in tests/docs (only test_settings_rows_readme.py, test_readme_known_limitations.py).",
+    "size": "L: 10 surfaces, each with its own extractor (AST/re.S), a key-and-label matcher, substring false-positive filters, an allowlist file with reasons, a regression test per trap, and fix-the-doc failure messages. Several rounds; the first allowlist will be large.",
+    "beta3": "defer. No exit condition requires a gate; the long-term leverage is real but the release does not hinge on it. If the owner wants it, the smallest slice (slash commands + hooks + CLI flags) is M.",
+    "depends_on": "Best after #265 and #266 (the doc shape settles first; #264 Phase 0 is serial). Phase 1 guide issues then empty the allowlist.",
+    "files": "tests/docs/test_surface_drift.py (new), tests/docs/surface_allowlist.(py|toml) (new), harness/hooks.py:154 comment; reads cli/args.py, tui/commands.py, tui/chrome.py, tui/settings_rows.py, rpc/rpc_mode.py, extensions/api.py, session/entries.py",
+    "notes": "The 18 is my rough probe (the issue's 20 used a different matcher); treat it as an order of magnitude only."
+   }
+  ],
+  "exit_condition_status": "BASELINE: main 1544d1d1. 61 commits on v0.1.0-beta.2..main (beta.2 tagged 2026-09-09). 53 issues closed repo-wide since 2026-09-09. Milestone v0.1.0-beta.3: 7 closed (#137 #194 #199 #260 #261 #294 #344), 18 open (#131 #157 #168 #188 #192 #256 #259 #265 #266 #267 #278 #279 #285 #286 #288 #289 #292 #293). The latest batch (#362 #350 #367 #370 #369 #363 #368) and its follow-ups (#371 #374 #375 #376 #379 #381 ...) are NOT in the milestone. Main CI: d0a49d2c green (run 37401982717). The 1544d1d1 run 37471654263 (docs only) was still running.\n\n(3) LIVE CHECKS: NOT MET. There is no recorded Windows desktop live result for any release. .omc/specs/windows-live-check-beta2.md is a 6-item checklist at main 2b576eb with no results. docs/05-post-beta-direction.md:184 says 'Windows 데스크톱 라이브 결과는 저장소에 기록이 없다'. Nothing exists for beta.3. Per-issue live scripts exist (.omc/specs/299-live-tui.py, 304, 311, 321, 334, 194-live.py; #258 live on 2026-09-19), but there is no release-candidate pass.\n\nA beta.3 pass should cover:\n- TUI (uv run aelix): #137 second-terminal prompt; #199 child session file plus /cost and /stats; #194 failed turn shown once on /resume; #369 trust prompt for a repo .aelix/settings.json; #260/#261 bash tail and the incomplete-output notice.\n- Real model: one turn each via openrouter, openai-codex OAuth and anthropic; a delegation whose child run is recorded; the #362/#363/#367/#370/#368 routing (.env vs models.json key, --provider without --model).\n- Windows (owner): install.ps1 upgrade from beta.2 (possible now, impossible at beta.2); CP949 output; shell awareness; the trust prompt.\n\n(4) KNOWN LIMITATIONS: NOT MET.\n- CHANGELOG.md [Unreleased] (lines 22-825) has only Added/Changed/Fixed. CHANGELOG has no 'Known limitations' heading anywhere.\n- README.md:259 'Known limitations (beta)' exists but is stale. The #137 entry ('nothing locks it') is fixed by e8cc1c5c (closed 09-20). The #260 entry (silent tail loss) is fixed by b13c546c (closed 09-24). Neither commit touched README.md. #14 is cited but closed COMPLETED.\n- Still to state: #188 (headless/MCP bypass, open), #138, #110 (macOS grandchild), #6/#52 (no spend ceiling), #192/#278 (py3.13/3.14 install path), #279 (unless fixed), #168, #285, #286, #288/#289, #371, #376, #379 (unless fixed), #381.\n- #374 (P1 credential leak) should be fixed, not just stated.\n- tests/docs/test_readme_known_limitations.py pins the #188 wording; check it when editing.",
+  "summary": "Group D, read-only, main 1544d1d1. All three doc issues still hold on main:\n- #266: README says three packages, but there are four (aelix-server is missing). AgentRuntime appears 0 times in the code. The vision doc is still a Draft built on the full pi parity that ADR-0235 dropped.\n- #265: the README Docs line already leaves out tls-and-corporate-ca.md in both languages, and there is no generator.\n- #267: there is no surface gate. My rough count found 18 of 36 slash commands undocumented, and the hooks.py comment says 31 events where there are 36. The 10-entry-type docstring is already fixed.\n\nProposed calls: #266 should (S-M, needs the owner on the vision wording), #265 defer (S-M), #267 defer (L). #265 and #266 both touch README.md, so they cannot share a batch.\n\nThe real remaining release work in this group is exit conditions (3) and (4), and neither is met:\n- (3): no Windows desktop live result is recorded for beta.2 or beta.3 (docs/05:184 says so), and there is no release-candidate TUI or real-model pass yet.\n- (4): CHANGELOG [Unreleased] has no Known limitations section. The README limitations list still describes #137 and #260 as open defects after both were fixed.\n\nSince beta.2: 61 commits, 53 issues closed repo-wide, and 7 of 25 milestone issues closed (18 open). The newest batch's follow-ups, including #374 (P1 credential leak), are not in the milestone. Key files: /Users/handochan/dev/aelix-ai/README.md, /Users/handochan/dev/aelix-ai/CHANGELOG.md, /Users/handochan/dev/aelix-ai/.omc/specs/windows-live-check-beta2.md, /Users/handochan/dev/aelix-ai/docs/05-post-beta-direction.md."
+ }
+]
