@@ -14,6 +14,9 @@ the parent's context**.
 Issue: #199. Follow-up: #296 (a TUI viewer for child sessions), #304 (the same
 late-binding rule, applied to the four host getters A.3a and §9 left behind —
 recorded in §9).
+**Amended 2026-10-07 (#354): the parent's thinking level now reaches a child
+that inherits the parent's model, by the same late-bound rule — see
+`## Amendment (2026-10-07, #354)`.**
 Design spec: `.omc/specs/199-design-2026-09-19.md` (rev 1), with its critique
 (`199-design-critique-2026-09-19.md`) and research map
 (`199-surface-map-2026-09-19.md`) beside it.
@@ -520,3 +523,118 @@ Read from pi `origin/main` `36b60d2`'s source, not measured by running pi.
   instead of being marked a floor — a change to the cancel path
   (`PrintChannel._stream_and_reap`, ADR-0199 §(j)).
 - A real child on the windows leg (see *Measured on the branch*).
+
+## Amendment (2026-10-07, #354) — the thinking level follows the model's rule
+
+**What was broken.** §9's rule — *ask the live harness; the last hook's
+context is the fallback* — was applied to the model (#304) and not to the
+thinking level, which reached the child on no path at all. A child's level came
+only from its profile's `thinking:`; no argv builder emitted `--thinking` for
+any parent state, and a headless child (`--mode json -p`, `--mode rpc`) does
+not seed `defaultThinkingLevel` (#286). The bundled profiles declare no
+`thinking:`, so every child started at `off`. On a reasoning-mandatory model
+that is fatal: the owner's `openrouter/z-ai/glm-5.3-flash` at `high` ran the
+parent fine and killed every delegation in one turn with `400 Reasoning is
+mandatory for this endpoint and cannot be disabled` (measured on `0.1.0b2`,
+2026-09-25, three profiles). Reproduced on `402a8013` against a local mock of
+such an endpoint (`.omc/probes/354-live/impl/`): parent `"reasoning":
+{"effort": "high"}`, child `{"effort": "none"}` → 400, in a `-p --thinking
+high` parent and in a TUI parent whose level came from `defaultThinkingLevel`.
+
+**Decision.** A child that inherits the parent's model inherits the parent's
+**effective** thinking level with it — the level the parent's live harness
+holds, i.e. what its own next request asks for — read once per spawn through
+the same late-bound path as the model:
+
+- `cli/entry.py` wires `AgentsExtension(thinking=lambda:
+  _live_thinking_of(session_host))`, which reads
+  `AgentSessionRuntime.harness.state.thinking_level` — the harness that
+  `/new`, `/resume`, `/fork` and `/reload` replace and that `/thinking`, the
+  TUI's `defaultThinkingLevel` seed and `/agents use` write, none of which
+  fires a hook the extension sees.
+- The fallback is the live `ExtensionAPI.get_thinking_level` (replaced on every
+  rebuild, the rung `active_tools` uses), not `_ctx`: an `ExtensionContext`
+  carries no thinking level.
+- `SubagentHost.thinking` → `SpawnPlan.parent_thinking`, validated against
+  `VALID_THINKING_LEVELS` and guarded — a raising getter or a value the child's
+  `--thinking` would drop is "no evidence", and the child keeps the argv it had
+  before (no `--thinking`). Guarded where `context_files` is not, because here
+  the failure direction is a lost inheritance, not a lost protection.
+- Both channels fold it into the profile with `inherit_thinking`, beside
+  `narrow_context_files`, so `resolver.profile_to_flags` stays the one place a
+  profile becomes `--thinking` (ADR-0196 D3's single emission table is
+  unchanged; the flag never appears twice).
+
+**Precedence:** the profile's own `thinking:` wins; then the parent's level,
+**only when the profile names neither `model` nor `provider`** — the same gate
+as the model (`resolver.inherits_parent_model`, which `child_model_flags` and
+`inherit_thinking` both read); then nothing. A profile that names its own model
+or provider and no `thinking:` gets no inherited level and runs as it did
+before #354 (reasoning `off`): a level is chosen for a model, and the parent's
+says nothing about a profile's own. Such a profile on a model that cannot
+switch reasoning off states `thinking:`.
+
+*Review round 2 changed this.* Round 1 inherited the level whatever model the
+profile named (the child's adapter clamps an unsupported level). The owner's
+principle — decide in pi's direction where pi has decided — moved it to pi's
+rule below.
+
+**What "effective" means.** The level the parent's live harness holds, from
+whatever last set it: `--thinking`; an `--agent` profile's `thinking:`; a
+resumed session's recorded level (`--continue` / `--resume` / `--session` /
+`--fork` — #198's `_seed_startup_state` runs before the mode dispatch, so in
+every mode); `/thinking`; `/agents use`; an rpc client's `set_thinking_level` /
+`cycle_thinking_level`; and in the TUI the `defaultThinkingLevel` seed when none
+of those set one. Only a fresh, otherwise-unset headless parent (`-p` /
+`--mode json` / `--mode rpc`) is at `off`, because #286 (open, not fixed here)
+keeps `defaultThinkingLevel` out of those modes; it hands its child
+`--thinking off`. That is what the parent itself runs at, and the wire is
+identical to the pre-fix child's (both send `"reasoning": {"effort": "none"}`
+on an OpenRouter-format model, measured). The level is the harness state, not
+clamped (`set_thinking_level` does not clamp); the child's adapter clamps it to
+its model, as the parent's does — and since the child is on the parent's model,
+both clamp alike.
+
+**`off` is forwarded, and #286 would change who is at it.** `off` is a level,
+not "unset": a parent at `off` passes `--thinking off` (pi does too — its
+`"off"` is a truthy string). Today that is wire-identical to passing nothing. If
+#286 makes headless runs apply `defaultThinkingLevel`, two things move: a fresh
+headless parent will be at the seeded level, not `off`, and its child inherits
+that; and a child that *does* receive `--thinking off` (its parent set `off`
+explicitly) will not apply its own `defaultThinkingLevel` seed, because an
+explicit flag outranks the seed. That second effect is intended — the child
+follows the parent's explicit choice — and needs no change here.
+
+**Divergence from pi (ADR-0235: recorded, not argued).** pi's subagent example
+(`examples/extensions/subagent/index.ts`, since `e3798ca91`, pi #7897) forwards
+`--thinking <ctx.thinkingLevel>` only when the agent file names no model
+(`inheritsDispatchConfig = !agent.model`), i.e. together with the inherited
+model — the rule adopted here. What remains different is shape, not direction:
+an Aelix profile has a `thinking:` field (pi's agent files have none), and it
+wins over the parent's level; and an Aelix profile can name a `provider`
+without a `model` (pi's `model` string carries the provider), which counts as
+naming a route, so it inherits neither model nor level.
+
+**Measured** (mock endpoint, wire bodies; `.omc/probes/354-live/impl/`,
+`verify/`, `r2/`): after the fix the child sends the parent's effort in a
+`-p --thinking high` and a `--thinking medium` parent, in a TUI parent seeded
+`high`, in a TUI parent moved to `low` by `/thinking low` with no turn in
+between, in a `--continue -p` parent with no `--thinking` whose session
+recorded `high`, in an `--agent` parent whose profile says `thinking: medium`,
+and in an rpc parent with no `--thinking` after `set_thinking_level low` /
+`medium`; a `thinking: low` profile under a `high` parent sends `low`. After
+review round 2, a profile naming its own model and no `thinking:` under a
+`high` parent gets no `--thinking` (sends `none`, as before #354), and
+`--thinking minimal` reaches the child. A real-model run on the owner's
+glm-5.3-flash is the main loop's, with the driver in the same directory.
+
+**Not done here.** #286; and what the request builder sends for `off` on a
+model that cannot switch reasoning off (`{"effort": "none"}`, the same as pi —
+a separate follow-up). Two limits found in review round 3, both present
+before #354 and filed rather than fixed here:
+
+- #400 — an unquoted `thinking: off` is YAML 1.1's `False`, so the profile is
+  rejected (`got False`); only `thinking: "off"` works today.
+- #401 — a provider-only profile cannot run at all (the child CLI refuses
+  `--provider` without `--model`), so the "provider without a model names a
+  route" rule above has no live effect yet.

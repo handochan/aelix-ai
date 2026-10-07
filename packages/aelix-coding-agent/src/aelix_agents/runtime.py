@@ -52,6 +52,7 @@ from aelix_coding_agent.agents.discovery import ProfileError
 from aelix_coding_agent.agents.discovery import resolve_profile as discover_profile
 from aelix_coding_agent.agents.resolver import child_model_id
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.cli.args import VALID_THINKING_LEVELS
 from aelix_coding_agent.subagent_contract import (
     CONTRACT_VERSION,
     ProjectScopeRefused,
@@ -335,6 +336,34 @@ class SubagentHost:
     ``AgentsExtension`` now answers this from a getter ``cli/entry.py`` binds to
     the runtime host's current harness, with the last hook's context behind it —
     the shape :attr:`session` has had since #199."""
+    thinking: Callable[[], str | None] = lambda: None
+    """The parent's EFFECTIVE thinking level, inherited by a child that also
+    inherits the parent's model (its profile names neither ``model`` nor
+    ``provider``) and declares no ``thinking:`` (#354).
+
+    The model's sibling, and late-bound for the same reason: ``/thinking`` (and
+    the TUI's ``defaultThinkingLevel`` seed, and ``/agents use``) move it
+    mid-session without firing any hook the delegation extension sees. The
+    bundled host answers it from the runtime host's CURRENT harness
+    (``state.thinking_level``) through a getter ``cli/entry.py`` wires, exactly
+    like :attr:`model`.
+
+    "Effective" means the level the parent's live harness holds — what its own
+    next request asks for — whatever last set it: ``--thinking``, an ``--agent``
+    profile's ``thinking:``, a resumed session's recorded level
+    (``--continue``/``--resume``/``--session``/``--fork``, #198, seeded before
+    the mode dispatch, so in every mode), ``/thinking``, ``/agents use``, an rpc
+    client's ``set_thinking_level``/``cycle_thinking_level``, and in the TUI the
+    ``defaultThinkingLevel`` seed when none of those set one. Only a fresh,
+    otherwise-unset headless parent (``-p`` / ``--mode json`` / ``--mode rpc``)
+    is at the kernel's ``"off"``, because those modes do not apply
+    ``defaultThinkingLevel`` (#286, open); it hands its child ``off``, which is
+    also what that child ran with before this field existed.
+
+    Read ONCE per spawn, into :attr:`~aelix_agents.print_channel.SpawnPlan
+    .parent_thinking`, and guarded there: an unreadable level is "no evidence",
+    and the child then runs without a ``--thinking`` flag — the pre-#354
+    behaviour. ``None`` (the default) means the same thing."""
     on_progress: Callable[[SubagentProgress], None] | None = None
     """Host-wide progress tap (the extension's event-bus + statusline bridge).
     Called in ADDITION to any per-spawn ``on_event``, never instead of it."""
@@ -399,7 +428,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:661``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:731``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -960,6 +989,11 @@ class _SubagentRuntimeImpl:
             # "the parent loads context files" — which for THIS flag is the
             # silent un-protection that #121 found in the first place.
             parent_context_files=self.host.context_files(),
+            # #354 — GUARDED, unlike the two above, because the failure
+            # direction is the opposite one: an unreadable level is "no
+            # evidence" and costs the child only its inheritance (no
+            # ``--thinking``, the pre-#354 argv), never its spawn.
+            parent_thinking=self._parent_thinking(),
             timeout_ms=timeout_ms,
         )
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)
@@ -1023,7 +1057,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1026-1027``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1099-1100``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -1140,6 +1174,22 @@ class _SubagentRuntimeImpl:
             return child_model_id(resolved.profile, self.host.model(), self.host.model_registry())
         except Exception:  # noqa: BLE001 — a display term is never worth a spawn
             return None
+
+    def _parent_thinking(self) -> str | None:
+        """The parent's thinking level for THIS spawn's plan, or ``None`` (#354).
+
+        Only a level the child's ``--thinking`` accepts counts
+        (``VALID_THINKING_LEVELS``); anything else — a raising getter, a P4 host
+        handing back a non-string, a spelling the CLI would warn about and drop —
+        is "no evidence", and the child runs without the flag exactly as it did
+        before this seam existed.
+        """
+
+        try:
+            level = self.host.thinking()
+        except Exception:  # noqa: BLE001 — no evidence, never a failed spawn
+            return None
+        return level if isinstance(level, str) and level in VALID_THINKING_LEVELS else None
 
     def _publish(
         self,

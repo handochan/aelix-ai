@@ -311,6 +311,22 @@ class AgentsExtension:
     ``None`` is the unwired default: the most recent hook's context answers, as
     it always did."""
 
+    thinking: Callable[[], str | None] | None = None
+    """The parent's EFFECTIVE thinking level, for a child that inherits the
+    parent's model and whose profile names no level (#354).
+
+    :attr:`model`'s sibling, wired in ``cli/entry.py`` the same way and through
+    the same holder (``AgentSessionRuntime.harness.state.thinking_level``). #304
+    late-bound the model and left the level on no path at all: no argv builder
+    emitted ``--thinking`` for any parent state, so a child of a profile with no
+    ``thinking:`` started at ``off`` — and on a reasoning-mandatory model
+    (``openrouter/z-ai/glm-5.3-flash``) every delegation died on its first
+    request with ``400 Reasoning is mandatory for this endpoint``.
+
+    ``None`` is the unwired default: the live ``ExtensionAPI`` answers instead
+    (:meth:`_host_thinking`). There is no hook-context rung — an
+    ``ExtensionContext`` carries no thinking level."""
+
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
@@ -438,6 +454,7 @@ class AgentsExtension:
             agent_dir=lambda: self.agent_dir,
             model_registry=self._host_model_registry,
             model=self._host_model,
+            thinking=self._host_thinking,
             on_progress=self._publish_progress,
             on_disclosure=self._publish_disclosure,
             session=self._host_session,
@@ -696,6 +713,40 @@ class AgentsExtension:
         except Exception:  # noqa: BLE001 — a stale ctx must not brick a spawn
             return None
 
+    def _host_thinking(self) -> str | None:
+        """The parent's thinking level RIGHT NOW, for a child that inherits the
+        parent's model and whose profile names no level (#354, ADR-0243 §9 as
+        amended).
+
+        The ADR-0243 rule — ask the live harness first — with the rung that
+        exists for this value: the wired getter (:attr:`thinking`), then the
+        live ``ExtensionAPI.get_thinking_level`` (``self._api`` is replaced on
+        every harness rebuild, as :meth:`_host_active_tools` relies on; an
+        unbound runtime raises ``ExtensionError``). No ``_ctx`` rung, because an
+        ``ExtensionContext`` carries no thinking level to fall back on.
+
+        ``None`` means "no evidence": the runtime then gives the child no
+        ``--thinking`` and it runs as it did before #354. Validation against
+        ``VALID_THINKING_LEVELS`` is the runtime's (``_parent_thinking``), so
+        every host that fills :attr:`SubagentHost.thinking` gets it.
+        """
+
+        getter = self.thinking
+        if getter is not None:
+            try:
+                live = getter()
+            except Exception:  # noqa: BLE001 — a broken getter is "not yet"
+                live = None
+            if live is not None:
+                return live
+        api = self._api
+        if api is None:
+            return None
+        try:
+            return api.get_thinking_level()
+        except Exception:  # noqa: BLE001 — no harness bound; no evidence
+            return None
+
     def _host_session(self) -> Any | None:
         """The session a spawn records into — asked ONCE per spawn (#199, A.3a).
 
@@ -876,7 +927,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:915-923``),
+        # inside ``runtime._run``'s admission block (``runtime.py:944-952``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1051,7 +1102,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1069-1078``).
+        seam is released on teardown, ``extension.py:1120-1129``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1201,7 +1252,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:924``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:953``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1233,7 +1284,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1191-1195``) with no ``await`` between them, so THIS
+            # (``runtime.py:1241-1245``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a

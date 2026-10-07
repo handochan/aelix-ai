@@ -283,6 +283,24 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A delegated agent now thinks at the level you are thinking at, so a model
+  that cannot switch reasoning off no longer kills every delegation (#354).**
+  A child ran at the thinking level its profile set and nothing else — and none
+  of the bundled profiles sets one — so it started with reasoning off. On a
+  model whose provider refuses that (`openrouter/z-ai/glm-5.3-flash`, for
+  one), every `agent` call and `/agents run` failed on its first request with
+  `400 Reasoning is mandatory for this endpoint and cannot be disabled`, while
+  your own turns on the same model worked. A child that runs on your model —
+  its profile sets neither `model` nor `provider` — and whose profile sets no
+  `thinking:` now also runs at your current level, whatever set it:
+  `--thinking`, an `--agent` profile, a resumed session, `/thinking`, an RPC
+  `set_thinking_level`, or `defaultThinkingLevel` in the interactive TUI. `-p`,
+  `--mode json` and `--mode rpc` do not apply `defaultThinkingLevel` yet
+  (#286), so a fresh parent there with none of those set still hands its child
+  `off`, as before. A profile's own `thinking:` still wins. A profile that
+  names its own model or provider gets no level from you, as in pi: it runs at
+  its own `thinking:`, or with reasoning off as before — give it a `thinking:`
+  if its model cannot switch reasoning off.
 - **A cloned repository's `.aelix/settings.json` no longer chooses where your
   prompt goes when you have not trusted it (#369, ADR-0252).** Its
   `defaultProvider`/`defaultModel` pair, with an `OPENAI_API_KEY` in its

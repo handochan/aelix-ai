@@ -80,7 +80,7 @@ from aelix_ai.utils._process_tree import (
     _retained_handle,
     containment_spawn_kwargs,
 )
-from aelix_coding_agent.agents.resolver import profile_to_argv
+from aelix_coding_agent.agents.resolver import inherits_parent_model, profile_to_argv
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
     MAX_SUBAGENT_DEPTH,
@@ -267,6 +267,19 @@ class SpawnPlan:
     files unconditionally, measured: ``build_child_argv`` and
     ``build_rpc_child_argv`` emitted no ``--no-context-files`` for any parent
     state, and ``no_context_files`` appeared nowhere in this package."""
+    parent_thinking: str | None = None
+    """The parent's EFFECTIVE thinking level when the spawn was admitted (#354).
+
+    Read off :attr:`~aelix_agents.runtime.SubagentHost.thinking` — the runtime
+    host's live harness, not a hook snapshot — and already validated against
+    ``VALID_THINKING_LEVELS`` by ``runtime._parent_thinking``. Consumed by
+    :func:`inherit_thinking`, which is where the precedence lives.
+
+    ``None`` means "no evidence" and keeps the child's argv exactly as it was
+    before this field existed: no ``--thinking`` unless the profile declares
+    one. That was every child before #354 — on a reasoning-mandatory model it
+    started at ``off`` and its first request died with ``400 Reasoning is
+    mandatory for this endpoint and cannot be disabled``."""
     timeout_ms: int | None = None
     output_cap: int | None = None
     session_path: str | None = None
@@ -425,7 +438,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:372-373``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:397-398``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -449,6 +462,63 @@ def narrow_context_files(
     if parent_context_files:
         return profile
     return dataclasses.replace(profile, context_files=False)
+
+
+def inherit_thinking(profile: AgentProfile, parent_thinking: str | None) -> AgentProfile:
+    """Give a child that inherits the parent's model the parent's level too (#354).
+
+    THE BUG THIS CLOSES. A child's thinking level came from its profile's
+    ``thinking:`` and nowhere else: neither argv builder emitted ``--thinking``
+    for any parent state, and a headless child (``--mode json -p`` / ``--mode
+    rpc``) does not seed ``defaultThinkingLevel`` either (#286). So every child
+    of a bundled profile — none of which declares ``thinking:`` — started at
+    ``off``. On a model whose endpoint refuses to switch reasoning off
+    (``openrouter/z-ai/glm-5.3-flash``, measured 2026-09-25) every delegation
+    then died on its first request with ``400 Reasoning is mandatory for this
+    endpoint and cannot be disabled``, while the parent, on the same model at
+    ``high``, ran fine. The MODEL had been inherited since #304; the level had
+    not.
+
+    PRECEDENCE, top wins:
+
+    1. the profile's own ``thinking:`` — an explicit statement about this child,
+       and the only ``--thinking`` a child argv ever carried before;
+    2. the parent's effective level (``parent_thinking``) — ONLY when the child
+       also inherits the parent's model, i.e. the profile names neither
+       ``model`` nor ``provider`` (:func:`~aelix_coding_agent.agents.resolver
+       .inherits_parent_model`, the gate ``child_model_flags`` reads);
+    3. nothing — ``None`` keeps the pre-#354 argv, so the child's own default
+       (``off`` today) applies.
+
+    The level travels WITH the model, as in pi's subagent example
+    (``examples/extensions/subagent/index.ts``: ``inheritsDispatchConfig =
+    !agent.model``, then ``--thinking ctx.thinkingLevel``). A level is a
+    statement about a model — ``high`` on the parent's reasoning model says
+    nothing about a profile's own non-reasoning or differently-priced one — so
+    a profile that names its own model or provider and wants a level states
+    ``thinking:`` itself; without one it runs as before #354.
+
+    ``off`` is a level, not "unset": a parent at ``off`` hands its child
+    ``--thinking off``, which pi does too (its ``"off"`` is a truthy string).
+
+    WHY HERE, THE SAME WAY AS :func:`narrow_context_files`:
+    ``resolver.profile_to_flags`` stays the ONE place a profile becomes
+    ``--thinking``, so the argv channel and the in-process overlay keep one
+    emission table and the flag can never appear twice. Both channels call this
+    on the plan's value, so they cannot drift either.
+
+    NOT reflected in the ``/agents show`` dry run, which renders the profile
+    without a live parent — the same limit as ``narrow_tools`` and the
+    inherited model.
+    """
+
+    if (
+        profile.thinking is not None
+        or parent_thinking is None
+        or not inherits_parent_model(profile)
+    ):
+        return profile
+    return dataclasses.replace(profile, thinking=parent_thinking)
 
 
 def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
@@ -976,9 +1046,12 @@ class PrintChannel:
         narrowing = narrow_tools(profile, plan.parent_tools)
         # Both narrowings, then the argv. ``narrow_tools`` owns ``dropped``
         # (the envelope reports it); this one has nothing to report because a
-        # parent's ``-nc`` is not a request the child made and lost.
-        child_profile = narrow_context_files(
-            narrowing.profile, plan.parent_context_files
+        # parent's ``-nc`` is not a request the child made and lost. Then the
+        # parent's thinking level, for a child on the parent's model whose
+        # profile states none (#354).
+        child_profile = inherit_thinking(
+            narrow_context_files(narrowing.profile, plan.parent_context_files),
+            plan.parent_thinking,
         )
         state = row.stream
         assembler = LineAssembler()

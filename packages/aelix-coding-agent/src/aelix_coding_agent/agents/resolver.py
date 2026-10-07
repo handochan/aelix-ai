@@ -62,6 +62,17 @@ intent about the child's identity, and pairing the parent's model id with the
 profile's provider (or vice versa) would ship a combination neither side asked
 for. See :func:`parent_model_flags`.
 
+**The parent's THINKING LEVEL has no row, and needs none (#354).** A delegated
+child that inherits the parent's model (the ``NEITHER`` row) and whose profile
+has no ``thinking:`` inherits the parent's effective level too — the same gate,
+:func:`inherits_parent_model`, so a profile that names its own model or provider
+gets no inherited level, as in pi's subagent example. The delegation channels
+fold it INTO the profile before calling this module
+(``aelix_agents.print_channel.inherit_thinking``, beside
+``narrow_context_files``), so it leaves through the ``thinking`` row above — one
+emission site, never two ``--thinking`` on one argv. The ``/agents show`` dry run
+has no live parent and so renders only the profile's own level.
+
 **The two channels agree on CONTENT unconditionally, and on ORDER for the argv
 each is actually used with.** Two things had to be true for that, and both were
 one-line divergences before the ADR-0196 review:
@@ -265,6 +276,20 @@ def _pin_route(flags: list[str], model_registry: object | None) -> list[str]:
     ]
 
 
+def inherits_parent_model(profile: AgentProfile) -> bool:
+    """Whether a delegated child of ``profile`` takes the PARENT's model.
+
+    True when the profile names neither ``model`` nor ``provider`` — the table's
+    ``NEITHER, parent_model`` row. Named, rather than written inline, because a
+    second decision reads it: the parent's thinking level travels to the child
+    only together with the parent's model (#354,
+    ``aelix_agents.print_channel.inherit_thinking``), as in pi's subagent
+    example, so the two gates cannot drift apart.
+    """
+
+    return profile.model is None and profile.provider is None
+
+
 def child_model_flags(
     profile: AgentProfile,
     parent_model: Model | None = None,
@@ -286,7 +311,7 @@ def child_model_flags(
     the flags are exactly the profile's.
     """
 
-    if profile.model is None and profile.provider is None:
+    if inherits_parent_model(profile):
         # The profile says nothing about the child's model, so the child would
         # run its own cascade and find whatever the PARENT's cascade would have
         # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
@@ -452,7 +477,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2927-2931``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2933-2937``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).
@@ -561,6 +586,7 @@ __all__ = [
     "apply_profile_to_args",
     "child_model_flags",
     "child_model_id",
+    "inherits_parent_model",
     "parent_model_flags",
     "profile_to_argv",
     "profile_to_flags",

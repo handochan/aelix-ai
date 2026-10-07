@@ -2492,6 +2492,12 @@ async def _async_main(argv: list[str]) -> int:
                 # its OWN cascade, which for the reporter was a global default
                 # that refuses the request outright.
                 model=lambda: _live_model_of(session_host),
+                # #354 — and the parent's EFFECTIVE thinking level, the same
+                # way. #304 forwarded the model and left the level behind, so
+                # a child of a profile with no ``thinking:`` started at ``off``
+                # and, on a reasoning-mandatory model, died on its first
+                # request (``400 Reasoning is mandatory``).
+                thinking=lambda: _live_thinking_of(session_host),
             )
 
     # === Agent profile identity (ADR-0196) ===================================
@@ -3880,6 +3886,34 @@ def _live_model_of(host: dict[str, Any]) -> Model | None:
     if runtime is None:
         return None
     return runtime.harness.current_model
+
+
+def _live_thinking_of(host: dict[str, Any]) -> str | None:
+    """#354 — the runtime host's CURRENT thinking level, or ``None`` before it exists.
+
+    The thinking sibling of :func:`_live_model_of`, reading the same holder and
+    for the same reason: ``/thinking`` and the TUI's ``defaultThinkingLevel``
+    seed write ``_state.thinking_level`` on the live harness
+    (``set_thinking_level``) and fire no hook the delegation extension sees.
+
+    What it answers is the level the parent's own next request asks for,
+    whatever last set it: ``--thinking``, an ``--agent`` profile's
+    ``thinking:``, a resumed session's recorded level (#198,
+    ``_seed_startup_state``, before the mode dispatch), ``/thinking``,
+    ``/agents use``, an rpc ``set_thinking_level``/``cycle_thinking_level``, and
+    in the TUI the ``defaultThinkingLevel`` seed when nothing else set one. A
+    fresh, otherwise-unset ``-p`` / ``--mode json`` / ``--mode rpc`` parent is
+    at ``"off"`` — those modes do not apply ``defaultThinkingLevel`` (#286,
+    open) — and ``"off"`` is then genuinely what it runs at.
+
+    ``None`` before the runtime exists, which leaves the extension on its live
+    ``ExtensionAPI`` fallback.
+    """
+
+    runtime = host.get("runtime")
+    if runtime is None:
+        return None
+    return runtime.harness.state.thinking_level
 
 
 _CHILD_ORIGIN_TYPE = "aelix.child_origin"

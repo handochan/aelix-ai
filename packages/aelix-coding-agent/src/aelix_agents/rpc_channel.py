@@ -97,6 +97,7 @@ from aelix_agents.print_channel import (
     abort_child,
     apply_cost_fallback,
     build_child_env,
+    inherit_thinking,
     narrow_context_files,
     narrow_tools,
 )
@@ -122,7 +123,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:153``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:154``) and
 ``progress._TERMINAL_STATES`` (``progress.py:97``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -297,8 +298,10 @@ class RpcChannel:
         narrowing = narrow_tools(profile, plan.parent_tools)
         # The parent's ``-nc``, clamped onto the child exactly as the print
         # channel clamps it — same function, so the two channels cannot drift.
-        child_profile = narrow_context_files(
-            narrowing.profile, plan.parent_context_files
+        # The parent's thinking level likewise (#354).
+        child_profile = inherit_thinking(
+            narrow_context_files(narrowing.profile, plan.parent_context_files),
+            plan.parent_thinking,
         )
         state = row.stream
         output_cap = (
@@ -404,7 +407,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1292-1299``); this channel
+            # ``_eager_abort`` (``print_channel.py:1365-1372``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

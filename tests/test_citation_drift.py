@@ -681,7 +681,7 @@ def test_a_continuation_does_not_steal_a_file_named_after_it() -> None:
 
     Measured on ``aelix_agents/reaper.py`` (line 278 at the time), which read
 
-        ``(:189-193). Since ``agents/resolver.py:431-432`` makes …``
+        ``(:189-193). Since ``agents/resolver.py:456-457`` makes …``
 
     where the bare number continues ``modes/print_mode.py`` from four lines up.
     Attributing it to "the last full citation on the line" pointed it at

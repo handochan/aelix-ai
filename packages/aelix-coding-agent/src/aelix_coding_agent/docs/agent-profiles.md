@@ -94,7 +94,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `inherit_extensions` | bool | `false` | Whether the parent's extensions come along. |
 | `system_prompt` | `append` \| `replace` | `append` | `append` adds the body to the standard prompt; `replace` uses the body alone. |
 | `context_files` | bool | `true` | Whether `AGENTS.md` and friends are loaded. |
-| `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. A bad value here **rejects the profile**. |
+| `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Absent → the parent's level if the profile also names no `model` or `provider` (see below). A bad value here **rejects the profile**. |
 | `role` | `leaf` \| `orchestrator` | `leaf` | A `leaf` child cannot delegate further. See the note below. |
 | `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. A parallel or chain call also shares one 64 KiB budget, split evenly across its tasks (8 192 bytes each for eight) and covering each task's summary and error note together, so a member can be cut shorter than its own cap. A single delegation gets this cap alone. When the child has a session file, the full text is kept there. |
 | `timeout_ms` | int | none | Wall clock for the whole delegation. The `agent` tool bounds a caller-supplied value to 1 000 … 1 800 000 ms. |
@@ -113,6 +113,23 @@ parent's model stops being forwarded entirely. Pairing your `provider` with the
 parent's model id would produce a combination neither of you asked for, so a
 profile that names half a model is treated as naming a model. If you set one,
 set both.
+
+**A profile that inherits the parent's model inherits its thinking level
+too.** Leave `model`, `provider` and `thinking` out and the child runs at the
+level the parent is using when it delegates, whatever set it: `--thinking`, the
+`thinking` of the profile the parent runs as (`--agent`, `/agents use`), the
+level a resumed session recorded (`--continue`, `--resume`, `--session`,
+`--fork`), `/thinking` or an RPC client's `set_thinking_level`, and in the
+interactive TUI `defaultThinkingLevel` when nothing else set one. `-p`,
+`--mode json` and `--mode rpc` do not apply `defaultThinkingLevel` yet, so a
+fresh parent in those modes with none of the above runs at `off` and hands its
+child `off`. A profile's own `thinking: <level>` always wins. A profile that
+names its own `model` or `provider` gets no level from the parent — a level is
+chosen for a model, and the parent's says nothing about yours — so it runs at
+its own `thinking`, or with reasoning off if it sets none. Give such a profile
+a `thinking` when its model will not switch reasoning off. This matters most on
+such a model: before the parent's level was passed on, every delegation on it
+failed on its first request with `Reasoning is mandatory for this endpoint`.
 
 **`tools: []` is not `tools: ""`.** An empty list means *no tools*. It is not the
 same as the `--tools ''` command-line form, which inverts to *every* tool.
