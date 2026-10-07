@@ -1,6 +1,6 @@
 # 0251. A provider's own `apiKey` comes before its environment variable, and the launch model is the one `/model` composes
 
-Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379; step 4 stated for the anthropic adapter by ADR-0254 (2026-10-06, #374, note in §2.1)
+Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379; step 4 stated for the anthropic adapter by ADR-0254 (2026-10-06, #374, note in §2.1); 🔴 **amended 2026-10-07 (#375, §11): `OPENROUTER_BASE_URL` now applies to every OpenRouter model the registry hands out, not only the launch's — §2.7's exception is gone, the launch and `/model` are equal field for field**; #375 review round 2 the same day (§11): the docs no longer name Ctrl+P, `--models` or a resumed session as broken surfaces, pi's per-model `baseUrl` is stated, and rows pin that only the provider named exactly `openrouter` moves and that nothing but `base_url` changes; #375 review round 3 (2026-10-08, §11): "M6 is equivalent" withdrawn — the launch's own call is what moves a duck-typed registry's hit, `headers` included, and a row now pins it
 Date: 2026-10-06
 Supersedes: **ADR-0249 §2.4**'s two closing paragraphs ("The bearer is the auth cascade's,
 unchanged" and "At launch only the host moves"). ADR-0249's S (a re-pointed built-in's
@@ -15,6 +15,7 @@ Issue: #363. Owner decision: 2026-10-02 (issue comment, "pi 방향"); the choice
 left open were made under it on 2026-10-06 (§7).
 Tests: `tests/model_registry/test_key_order_363.py`, `tests/cli/test_launch_compose_363.py`,
 `tests/cli/test_refresh_failure_sends_nothing_363.py` (review rounds 1-2),
+`tests/cli/test_openrouter_base_url_375.py` (§11),
 `tests/cli/test_provider_prefix_rung.py::test_re_pointed_built_in_bearer_is_the_models_json_api_key`
 (rewritten from `..._follows_the_auth_cascade`).
 
@@ -303,10 +304,11 @@ every other caller of `resolve_route` get the model `/model`'s copy is, field fo
 (pi's launch reads its composed models, `model-resolver.ts:420`).
 
 Field for field holds because `compose_built_in` answers with the registry's own copy when
-that copy has the same `provider`, `id` and `api` (review round 1, R4, §8) — with one
-exception: an exported `OPENROUTER_BASE_URL` rewrites the launch's OpenRouter `base_url`
-after composition (below), and `/model`'s OpenRouter pick does not apply it, so there the
-two differ in `base_url` and nothing else (Codex pass 2 C3; a known follow-up, §6). The rows
+that copy has the same `provider`, `id` and `api` (review round 1, R4, §8). Until #375 there
+was one exception: an exported `OPENROUTER_BASE_URL` rewrote the launch's OpenRouter
+`base_url` after composition and `/model`'s OpenRouter pick did not apply it, so there the
+two differed in `base_url` (Codex pass 2 C3). Since 2026-10-07 every registry copy carries
+it too (§11), and there is no exception. The rows
 assert dataclass equality, not a field list (review round 2, §9). The registry
 applies more than the `models.json` composition after `load_built_in_models`: an OAuth
 provider's `modify_models` (name, window, compat, headers - Codex measured the launch
@@ -323,8 +325,10 @@ What stays:
   uses — the catalog entry is, composed (§4). One on the same `api` is `/model`'s copy, so
   the launch uses it (since round 1).
 - **`OPENROUTER_BASE_URL`** still beats `providers.openrouter.baseUrl` at launch:
-  `_openrouter_base` runs after composition. `/model`'s registry copy keeps
-  `providers.openrouter.baseUrl` (`test_openrouter_base_url_is_the_one_field_the_launch_changes`).
+  `_openrouter_base` runs after composition. ~~`/model`'s registry copy keeps
+  `providers.openrouter.baseUrl`~~ — amended 2026-10-07 (§11, #375): the registry applies
+  the same function to every copy it hands out, so `/model`'s copy carries the variable too
+  (`test_openrouter_base_url_reaches_the_launch_and_the_model_copy_alike`).
   `enrich_copilot_base_url` runs after it too.
 - **Fail-safe.** A registry whose `compose_built_in` raises or answers another
   provider/id/api, and a duck-typed registry without it, get #344's host-only adoption
@@ -439,8 +443,8 @@ here (`2 failed, 11668 passed`); the full suite on this change is in the commit 
 - #365 (an extension's take-over of a built-in name; then §2.3's key can move to step 3).
 - The config-value syntax (§4), proposed as its own issue.
 - A failed OAuth refresh is not retried, where pi retries a `502` or a network failure (§4).
-- `/model`'s OpenRouter pick does not apply `OPENROUTER_BASE_URL`, which the launch applies
-  (§2.7, Codex pass 2 C3).
+- ~~`/model`'s OpenRouter pick does not apply `OPENROUTER_BASE_URL`, which the launch applies
+  (§2.7, Codex pass 2 C3).~~ Closed 2026-10-07 by #375 (§11).
 - The `/model` picker's detail line names the provider's environment variable
   (`API Key: OPENAI_API_KEY`) whatever source supplies the key (`tui/model_picker.py`);
   pre-existing, a follow-up.
@@ -663,3 +667,233 @@ a timeout, the output cap or no shell say it did not finish). Row:
 `test_a_stored_helper_that_fails_names_the_entry_and_sends_nothing`; red with the wrap
 removed (the raw text). The real CLI row L28 (`.omc/probes/363-live/rebase/`): no request on
 either commit; the message now names the entry.
+
+
+## 11. `OPENROUTER_BASE_URL` on every OpenRouter model (2026-10-07, #375)
+
+**What was wrong.** The providers guide said the variable "applies to every route that lands
+on OpenRouter". Only the launch applied it (`_openrouter_base`, §2.7). Every copy the
+registry handed out kept `providers.openrouter.baseUrl` from `models.json`, or the catalog's
+`https://openrouter.ai/api/v1`. So a user who pointed OpenRouter at a gateway with the
+variable sent the prompt, and their OpenRouter key, to openrouter.ai (or to the `models.json`
+host) as soon as they picked an OpenRouter model in `/model`. Measured on `402a8013`:
+
+- in-process (`.omc/probes/375-live/impl/probe/repro.402a8013.out`): the launch answered the
+  variable's host, and `find`, `get_all`, `get_available` and both `/model` arguments
+  (`openrouter/openai/gpt-4o-mini`, `openrouter/newlab/model-x`) answered the `models.json`
+  host;
+- the real TUI in a pty (`wire/pty-rpc.out`), launched with `--model
+  openrouter/openai/gpt-4o-mini`: the first `hi` reached the variable's listener; after
+  `/model openrouter/newlab/model-x` the next `hi` went to the HTTPS_PROXY CONNECT recorder as
+  `openrouter.ai:443` (the #370 verify r1 observation); with `providers.openrouter.baseUrl`
+  set, both `/model` picks went to that host instead.
+
+**Decision.** Make the guide true. One function owns the variable,
+`model_registry.with_openrouter_base_url(model)`: when `model.provider` is exactly
+`"openrouter"` and the variable is set and not empty, `base_url` becomes its value and no
+other field moves. Two callers:
+
+- the registry, for every model it hands out: `get_all`, `get_available` and `find` read
+  through `ModelRegistry._served_models`, and `compose_built_in`'s composition branch applies
+  it too. The variable is read when a model is handed out, not when `models.json` is loaded,
+  so a registry built before a hatched `.env` value arrived still agrees with the launch.
+  The copies are cached per (load, value), so a model's identity is stable between reads;
+- the launch, `cli.runtime_bootstrap._openrouter_base`, which now calls the same function.
+  It covers what the launch builds without a registry copy: a static catalog hit with no
+  registry, a duck-typed registry, a backfill.
+
+Precedence is unchanged from the launch's since #344. The variable beats a `models.json`
+provider `baseUrl`, a `baseUrl` on one of that provider's `models` entries, and the catalog
+host. It never applies to another provider: a custom provider with its own `baseUrl`, or an
+OpenRouter-compatible gateway the user named something else, is left alone even when it
+serves OpenRouter ids. Admission is unchanged as well. The variable reaches `os.environ`
+from the shell, or from a project `.env` only when `AELIX_DOTENV_ALLOW` names it
+(`_DOTENV_LOCKED`, ADR-0203). #375 changes where an admitted value applies, never what is
+admitted.
+
+pi has no `OPENROUTER_BASE_URL` (`grep` over `/tmp/pi-27c7b6ff4` @ `27c7b6ff4`: none). Its
+`models.json` re-points OpenRouter two ways: `providers.openrouter.baseUrl`, which pi applies
+to every built-in model it composes (`provider-composer.ts:326-329`), and a `baseUrl` on one
+of that provider's `models` entries, which wins over the provider's for that model
+(`modelFromJson`, `provider-composer.ts:222`: `definition.baseUrl ?? providerConfig.baseUrl ??
+defaults?.baseUrl`; Codex round 1 ran that body: provider `.../provider/v1`, the model
+`.../per-model/v1`). The variable is aelix's own addition and beats both — the launch's
+precedence since #344, kept. Applying it the way pi applies its provider override (to every
+composed copy) is the closest analogue. (Round 1 called `providers.openrouter.baseUrl` pi's
+"only override"; corrected in review round 2.)
+
+**Sweep: every place an OpenRouter `Model` is created or copied.** Before means on
+`402a8013`:
+
+| site | before | after |
+| --- | --- | --- |
+| launch `resolve_route` (`--model`, `--provider`, settings default, `/new` / `/fork` / `/resume` / `/reload` rebuilds, the late re-resolve, `-p` / json / rpc launch) | applied (`_openrouter_base`) | applied (same function) |
+| `/agents use` profile route (`agents/service.py`, `resolve_route`) and `tui/commands.py` `resolve_model(profile…)` | applied (launch path) | applied |
+| a delegated child (its own CLI process; launch path) | applied | applied |
+| `ModelRegistry.find` / `get_all` / `get_available` | not applied | applied |
+| `ModelRegistry.compose_built_in` (copy, or the composition branch) | not applied | applied |
+| `/model <arg>` (`core.model_argument.resolve_model_argument`, a registry hit) | not applied | applied |
+| `/model openrouter/<unknown id>` (`_gateway_backfill`, from `get_all` siblings) | not applied | applied |
+| `/model` with no usable registry (`cli/model_switch.py` falls back to `resolve_route`) | applied | applied |
+| the `/model` picker, also as `/scoped-models` narrows it (`scoped_available` over `get_available`) | not applied | applied |
+| a session continued with `-c` (TUI and `-p`): rebuilt through `resolve_route` (review round 2: measured on `402a8013`, both reached the variable's listener) | applied | applied |
+| the first model after `/login` (`find_initial_model`, `_RouteAuthView`) | not applied | applied |
+| `resolve_model_scope` and `restore_model_from_session` (exported; no product caller: `--models` is not implemented, `-c` uses `resolve_route`) | not applied | applied (`find` / `get_available`) |
+| `--models` (prints "Warning: --models (scoped models) is not yet implemented; the patterns were ignored.") and Ctrl+P model cycling (none: ADR-0154 lists the hotkey as deferred; in the TUI Ctrl+P recalls the previous prompt) | n/a | n/a |
+| a provider other than `openrouter` at `https://openrouter.ai/api/v1` — a `models.json` custom provider, an extension registration, a user provider spelled `OpenRouter` (review round 2) | its own host | its own host (the match is on the name, exactly) |
+| rpc `set_model` / `cycle_model` / `get_available_models` with an embedder's registry | not applied | applied |
+| `aelix --mode rpc` `set_model` / `cycle_model` (passes no registry: refused, both commits) | n/a | n/a |
+| `--list-models` (`get_available`; prints no host) | no routing | no routing |
+| `ModelRegistry.get_base_url_override("openrouter")` (#344's host-only fallback; the launch runs `_openrouter_base` after it) | `models.json` host | unchanged by design |
+| compaction and branch summary (use the session's model) | as the session's model | as the session's model |
+| print-channel and session-stats cost lookups (`find` / `get_model`, price only) | no routing | no routing |
+| `aelix-server` `rpc_ws` (`Model(id, provider)`, `api` unknown, no registry) | no OpenRouter route | unchanged |
+| an extension that builds its own `Model` from `aelix_ai.models.get_model` | catalog host | unchanged (the extension's own model, as in pi) |
+
+**Rows** (`tests/cli/test_openrouter_base_url_375.py`, 16 in round 1, 22 after review round 2
+and 23 after review round 3 below; the rewritten
+`test_openrouter_base_url_reaches_the_launch_and_the_model_copy_alike` in
+`test_launch_compose_363.py`). On `402a8013`, 11 of the 16 fail, and so does the rewritten
+row (`impl/red_on_402a8013.out`). The five that pass pin behaviour that was already right:
+nothing moves without the variable, an empty value counts as unset, a refused `.env` value
+moves nothing, and the launch without a registry. Sabotage (`impl/sabkit/sabotage.py` / `.out`),
+one piece at a time in a throwaway worktree against these rows plus
+`test_launch_compose_363.py`, `test_route_follows_pi_362.py` and `tests/model_registry`
+(365 rows): every piece is red.
+
+| piece | failing rows |
+| --- | --- |
+| P1 no accessor applies it | 11 |
+| P2 / P3 / P4 `get_available` / `find` / `get_all` read the raw list | 6 / 5 / 3 |
+| P5 `compose_built_in`'s composition branch skips it | 1 |
+| P6 the launch's own call does nothing | 2 |
+| W1 every provider re-pointed | 1 |
+| W2 the provider matched by prefix (`openrouter-proxy`) | 1 |
+| W3 only the catalog host moves (a `models.json` host wins) | 12 |
+| W4 the cache ignores the value / W5 applied once at load | 2 / 3 |
+| W6 a per-model `baseUrl` wins | 3 |
+
+**On the wire** (`impl/wire/`: real CLI, fake key, scratch cwd, isolated agent dir; the
+variable at a listener on 23311, `providers.openrouter.baseUrl` at one on 23312, HTTPS_PROXY
+a CONNECT recorder on 23310). `-p` and `--mode json` at launch reach the variable's
+listener on both commits. In the TUI (pty), `402a8013` sent the `hi` after
+`/model openrouter/newlab/model-x` to `openrouter.ai:443` (no `models.json`; six CONNECTs,
+and the turn was still retrying when the next `/model` ran). With
+`providers.openrouter.baseUrl` set, it sent the `hi` after each of the two picks
+(`openrouter/newlab/model-x`, `openrouter/openai/gpt-4o`) to that host. This change sends
+each of them to the variable's listener. `aelix --mode rpc` refuses `set_model` on both commits (it passes no registry), and
+its prompts go to the launch model at the variable's listener. The embedder path is the
+in-process row.
+
+**Seen alongside, not this seam.** `--model openrouter/auto`, then `/agents use <profile>`,
+then `/new` moves the session from OpenRouter's `auto` to `openrouter/auto` (#370 verify r1).
+The cause is not the base URL. `agents/service.py` completes the launch pair as
+`parsed.provider = model.provider` and leaves `parsed.model = "openrouter/auto"`. The next
+rebuild resolves `("openrouter/auto", "openrouter")`, and the explicit-provider route finds
+the literal catalog id `openrouter/auto`; the launch had stripped the prefix to `auto`.
+`openrouter/auto` is the only catalog id where `<provider>/<id>` is itself an id of that
+provider (`impl/probe/auto_carry.402a8013.out`). Filed as a follow-up.
+
+**Review round 2 (2026-10-07).** The round-1 verify and Codex found no routing defect left,
+and three things wrong around it. Kit `.omc/probes/375-live/r2/`.
+
+1. *Surfaces that do not exist, and one that was never broken.* Round 1's guide, CHANGELOG,
+   this section's sweep table, the README row, the `_served_models` docstring and the commit
+   title named `--models` scopes, Ctrl+P cycling and a resumed session. Measured on the
+   round-1 commit `914ce4cc`: `aelix --models openrouter/openai/gpt-4o-mini,openrouter/openai/gpt-4o -p …`
+   prints `Warning: --models (scoped models) is not yet implemented; the patterns were
+   ignored.`; in the TUI, Ctrl+P recalls the previous prompt and the next turn stays on
+   `openai/gpt-4o-mini` (no model-cycling binding exists; ADR-0154 defers the hotkey). On
+   `402a8013`, after `/model openrouter/openai/gpt-4o-mini` (whose own turn went to the
+   `models.json` host — the defect), `aelix -c -p` and `aelix -c` in the TUI both reached the
+   variable's listener: `-c` rebuilds through `resolve_route`, which applied the variable
+   before #375. Corrected everywhere: the surfaces named are `/model`, its picker (also as
+   `/scoped-models` narrows it, which exists), `-c`, `/agents use`, a delegated agent and an
+   embedder's rpc. `resolve_model_scope` / `restore_model_from_session` are listed as what
+   they are, exported functions no product path calls.
+2. *pi's per-model `baseUrl`.* Round 1 said pi's only override is
+   `providers.openrouter.baseUrl`; a `baseUrl` on a `models` entry beats it in pi (above).
+   Corrected in the guide, its bundled copy, the CHANGELOG, this section and the helper's
+   docstring.
+3. *Two missing rows.* (a) The verifier's sabotage V1 — re-point every model whose host is
+   `openrouter.ai` — and V7 — match the provider up to case — passed all 365 rows, though V1
+   would send a `models.json` provider `myor`'s own key, an extension provider's, and a user
+   `OpenRouter`'s to the variable's host. New rows put each of the three at
+   `https://openrouter.ai/api/v1` with its own key and assert, with the variable set, that
+   `find`, `get_all`, `get_available`, the launch and `/model` keep that host (the built-in
+   `openrouter` in the same registry moves, as the control), and that with a user `OpenRouter`
+   the string `openrouter/<id>` and `--provider OpenRouter` land on that provider and its
+   host (ADR-0250's case rule). (b) Codex's mutant — the helper returns `headers=None` —
+   passed all 36 rows of the two touched files, because the rows compare the launch with
+   `/model` and a field both lose is invisible. New rows compare each path with itself: the
+   helper on a model whose every field differs from `Model()`'s default (the row fails if a
+   field is added to `Model` and not set there), the registry's `find` / `get_all` and the
+   launch over a `models.json` entry and an extension model under `openrouter`, and the
+   no-registry launch, each read without and then with the variable: the only differing field
+   is `base_url`.
+
+Sabotage, in a throwaway worktree of the round-1 commit, over the same 365-row set
+(`r2/out/sabotage.r1rows.out`, round 1's rows) and then with round 2's file
+(`sabotage.r2final.out`, 371 rows; baseline `371 passed`):
+
+| piece | round 1's rows | round 2's rows |
+| --- | --- | --- |
+| V1 host-based re-point | 365 passed | 4 failed |
+| V7 provider matched up to case | 365 passed | 2 failed |
+| M1 helper drops `headers` (Codex) | 365 passed | 2 failed |
+| M2 / M3 helper drops `thinking_level_map` / `compat` | 365 passed each | 2 failed each |
+| M4 helper resets `cost` | 365 passed | 4 failed |
+| V2 copy rebuilt from id, name, provider, api | 1 failed | 5 failed |
+| M5 the registry's served copies drop `headers` (helper intact) | — | 1 failed |
+| M7 the launch's own call resets `cost` (helper intact) | — | 2 failed |
+| M6 the launch's own call drops `headers` | — | 371 passed — not equivalent (corrected in review round 3 below): a duck-typed registry's hit for an id the catalog does not know is that registry's own model, `headers` included, and the launch's call is what re-points it; round 3's row: 1 failed |
+
+On the wire (`r2/kit/drive.py`, the real CLI, fake keys; the variable's listener on 23301, a
+user provider's on 23303, an HTTPS_PROXY CONNECT recorder on 23300): with the variable set,
+`--model myor/…` and `--model orext/…` (an `-e` extension registering `orext` at
+`https://openrouter.ai/api/v1`) went to `CONNECT openrouter.ai:443`, `/model myor/…` and
+`/model orext/…` in the TUI too, while `openrouter/…` reached 23301; with a user `OpenRouter`
+at 23303, `--model OpenRouter/…`, `--model openrouter/…` and `/model OpenRouter/…` reached
+23303 with that provider's key. The same on `914ce4cc` and on this commit: the code was right,
+the rows were missing.
+
+**Review round 3 (2026-10-08).** The round-2 verify found one false claim and three
+text nits; no routing defect. Kit `.omc/probes/375-live/r3/` (the verifier's:
+`r2verify/`).
+
+1. *M6 is not equivalent.* Round 2 called "the launch's own call drops `headers`"
+   equivalent because that call would only move a model carrying no `headers`. False:
+   `resolve_route` over a duck-typed registry (no `compose_built_in`) finds an id the
+   catalog does not know, such as `openrouter/duck/only`, in that registry and takes the
+   registry's own model, `headers` included; nothing re-pointed it, so `_openrouter_base`
+   does, and under M6 the `headers` are gone. Measured on the round-2 code, rebased onto
+   `61f03b67` (`r3/out/repro.m6.round2.out`): the verifier's row `1 passed` as is and
+   `1 failed` under M6, while round 2's 371 rows stay `371 passed` under M6. New row
+   `test_the_launch_over_a_duck_typed_registry_hit_changes_base_url_and_no_other_field`
+   (a duck registry holding a model with every `Model` field set, read without and then
+   with the variable: only `base_url` differs). Green on this commit. Sabotage in a
+   throwaway worktree over the same row set plus this row (`r3/out/sabotage.r3.out`,
+   baseline `372 passed`; the round-2 verifier's harness, 25 pieces): every piece is red,
+   and the launch-side ones now include the new row:
+
+   | piece | failing rows (of 372) |
+   | --- | --- |
+   | M6 the launch's own call drops `headers` | 1 (the new row; round 2's 371: 0) |
+   | M7 the launch's own call resets `cost` | 3 |
+   | P6 the launch's own call does nothing | 3 |
+   | M1 / M2 / M3 helper drops `headers` / `thinking_level_map` / `compat` | 3 each |
+   | M4 / V2 helper resets `cost` / rebuilds from four fields | 5 / 6 |
+   | V1 / V7 host-based / case-insensitive match | 4 / 2 |
+   | M5 / P5 / W2 / E1 / G1 | 1 each |
+   | X1 / X2 / X3 (name / window / input+reasoning), C1 / C2 / L1 (cache and read time), F1 / A1 / H1 / PM (`find` / `get_available` raw, catalog host only, per-model wins) | 5 / 6 / 5, 3 / 3 / 3, 6 / 9 / 11 / 3 |
+2. *Nits.* The test module docstring cited an ephemeral `/tmp` path; it now cites the
+   kit copy `.omc/probes/375-live/impl/probe/repro.py`. The providers guide (and its
+   bundled copy) said the variable applies "wherever" an OpenRouter model is picked; it now
+   names the exception in the sweep table above — a model an extension builds itself with
+   `aelix_ai.models.get_model()` is the catalog entry and keeps
+   `https://openrouter.ai/api/v1`, while `ctx.model_registry`'s copies carry the variable
+   (`r3/out/ext_probe.out`: the real CLI with an `-e` extension, fake key, the variable at
+   a closed local port — in `session_start`, `ctx.model_registry.find` gave the variable's
+   host and `get_model` the catalog's). ADR-0203's chain table named only
+   `runtime_bootstrap.resolve_model` as the reader; it now names
+   `model_registry.with_openrouter_base_url` as well, with a pointer here.

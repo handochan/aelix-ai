@@ -76,7 +76,7 @@ from aelix_ai.streaming import Model
 #                          ``agent_dir=`` -> ``SettingsStore`` global path — the
 #                          same hijack by a different door, which is why this is
 #                          a POLICY and not a fix for three key names.
-#   OPENROUTER_BASE_URL    :func:`resolve_model` below -> ``Model.base_url``,
+#   OPENROUTER_BASE_URL    launch + every registry copy (#375) -> ``Model.base_url``,
 #                          which carries the Authorization header and the full
 #                          prompt to an attacker-chosen host.
 #
@@ -1654,12 +1654,19 @@ def _custom_warning(provider: str, model_id: str, model: Model) -> str | None:
 
 
 def _openrouter_base(model: Model) -> Model:
-    """``OPENROUTER_BASE_URL`` (shell, or hatched) on every route that lands on OpenRouter."""
+    """``OPENROUTER_BASE_URL`` (shell, or hatched) on every launch route that lands on OpenRouter.
 
-    base_url = os.environ.get("OPENROUTER_BASE_URL")
-    if model.provider == "openrouter" and base_url:
-        return replace(model, base_url=base_url)
-    return model
+    The launch's call of the one function that owns the variable,
+    :func:`aelix_coding_agent.model_registry.with_openrouter_base_url` (#375).
+    The registry applies the same function to every copy it hands out, so a
+    registry hit is already re-pointed; this call covers what the launch builds
+    without one - a static catalog hit with no registry, a duck-typed registry,
+    a backfill.
+    """
+
+    from aelix_coding_agent.model_registry import with_openrouter_base_url
+
+    return with_openrouter_base_url(model)
 
 
 def _matches(

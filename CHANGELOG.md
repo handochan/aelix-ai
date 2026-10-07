@@ -143,8 +143,8 @@ unwritten. Add them with the next release.
   `name`, `reasoning`, the thinking map). The launch model is the one `/model`
   shows, including what an OAuth login changes on it. The model's protocol (`api`) is still
   the catalog's, and an exported `OPENROUTER_BASE_URL` still wins over
-  `providers.openrouter.baseUrl` at launch (only there: picking the same
-  OpenRouter model in `/model` keeps `providers.openrouter.baseUrl`).
+  `providers.openrouter.baseUrl` — at launch, and since #375 in `/model` too
+  (see Security).
 - **`--model` is resolved the way pi resolves it, and an OpenRouter key no
   longer turns every model string into an OpenRouter id (#362, ADR-0250).** The
   prefix names the provider and the id must match exactly inside it; a bare id
@@ -848,6 +848,24 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`OPENROUTER_BASE_URL` now applies to OpenRouter models picked inside a
+  session, not only at launch (#375, ADR-0251 §11).** If you point OpenRouter at
+  a gateway with `OPENROUTER_BASE_URL`, then picking an OpenRouter model with
+  `/model` (or from its picker, or through an embedder's rpc `set_model` /
+  `cycle_model`) used to send the next prompt and your OpenRouter key to
+  `openrouter.ai`, or to `providers.openrouter.baseUrl` from `models.json`.
+  Measured in the TUI: after `/model openrouter/newlab/model-x`, `hi` went to
+  `openrouter.ai:443`. Every OpenRouter model aelix hands out now uses the
+  variable, whichever way it was picked; a model an extension builds itself with
+  `aelix_ai.models.get_model()` is the catalog entry and keeps `openrouter.ai`
+  (take it from `ctx.model_registry` instead). A session continued with `-c` was not affected: it rebuilds
+  its model the way the launch does. The variable still beats a `models.json`
+  `baseUrl` (provider or per model), changes nothing but the host, and still
+  moves only the provider named exactly `openrouter`. A provider you defined
+  under another name, or spelled `OpenRouter`, keeps its own `baseUrl` and key,
+  even at `https://openrouter.ai/api/v1`. Where the value can come from is
+  unchanged: your shell, or a project `.env` only when you list the name in
+  `AELIX_DOTENV_ALLOW`.
 - **`AELIX_OFFLINE=1` now stops the `rg`/`fd` download (#288).** The offline
   switch had two names and three readers, and the one that guards the download
   of an executable read only `PI_OFFLINE`: with `AELIX_OFFLINE=1` and no `fd`

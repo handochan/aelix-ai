@@ -156,8 +156,21 @@ only, is the id used when no `--model` is given, as
 with it, where pi, which has no such variable, refuses) — "shell only" unless you hatch it yourself:
 with `AELIX_DOTENV_ALLOW=OPENROUTER_DEFAULT_MODEL` in your shell, a project
 `.env`'s value is admitted and picks that model. `OPENROUTER_BASE_URL` (your shell, or a
-`.env` name you listed in `AELIX_DOTENV_ALLOW`) applies to every route that lands
-on OpenRouter.
+`.env` name you listed in `AELIX_DOTENV_ALLOW`) applies to every model whose provider
+is `openrouter`, wherever it is picked: `--model` / `--provider` at launch, `/model`
+and its picker (also when `/scoped-models` narrows it), a session you continue with
+`-c`, `/agents use`, a delegated agent, and an embedder's rpc `set_model` /
+`cycle_model`. It wins over `providers.openrouter.baseUrl` in `models.json` and over a
+`baseUrl` on one of that provider's `models` entries, and it changes nothing but the
+host. It moves the provider named exactly `openrouter` and no other: a provider you
+defined under another name keeps its own `baseUrl` and key, even when it serves the
+same ids or points at `https://openrouter.ai/api/v1`, and so does one you spelled
+`OpenRouter`. One model does not get it: one an extension builds itself with
+`aelix_ai.models.get_model()` (to pass to `set_model`, say) is the catalog entry and
+keeps `https://openrouter.ai/api/v1`; the copies `ctx.model_registry` hands an
+extension carry the variable. (pi has no such variable. In pi's `models.json`,
+`providers.openrouter.baseUrl` re-points OpenRouter, and a `baseUrl` on one of that
+provider's `models` entries wins over it for that model.)
 
 ```bash
 aelix --model openrouter/openai/gpt-4o-mini "..."              # OpenRouter, whatever keys you hold

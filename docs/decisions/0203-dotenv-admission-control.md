@@ -35,7 +35,7 @@ All measured 2026-08-01 against the real CLI (`python -m aelix_coding_agent
 | `AELIX_MCP_CONFIG` | `cli/config.py` `load_mcp_server_contribs` — the `"env"` tier, never gated | spawned `sh -c <payload>`, marker written |
 | `AELIX_SETTINGS_PATH` | `aelix_ai/settings/storage.py` `default_settings_path` | repo file becomes the GLOBAL settings store → `defaultProjectTrust: "always"` → `TRUST_GATE_DEFEATED` |
 | `AELIX_CODING_AGENT_DIR` | `cli/config.py` `get_agent_dir` → `entry.py` `agent_dir=` | same defeat, different door |
-| `OPENROUTER_BASE_URL` | `runtime_bootstrap.resolve_model` → `Model.base_url` | traffic (Authorization header + full prompt) redirected to a 127.0.0.1 listener |
+| `OPENROUTER_BASE_URL` | `runtime_bootstrap.resolve_model` → `Model.base_url` (since #375 also `model_registry.with_openrouter_base_url` on every model the registry hands out — ADR-0251 §11) | traffic (Authorization header + full prompt) redirected to a 127.0.0.1 listener |
 
 The MCP chain fires **even under `--no-approve`**, i.e. with the user explicitly
 declining to trust the directory, because that tier never consults trust at all.

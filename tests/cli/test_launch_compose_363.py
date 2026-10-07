@@ -460,13 +460,13 @@ async def test_an_oauth_hook_header_is_part_of_the_equality(
         unregister_oauth_provider("openai")
 
 
-async def test_openrouter_base_url_is_the_one_field_the_launch_changes(
+async def test_openrouter_base_url_reaches_the_launch_and_the_model_copy_alike(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The documented exception (ADR-0251 §2.7): an exported ``OPENROUTER_BASE_URL``
-    rewrites the launch's OpenRouter ``base_url`` after composition - that one field,
-    nothing else. ``/model``'s OpenRouter pick does not apply it (its copy keeps
-    ``providers.openrouter.baseUrl``; Codex pass 2 C3, a known follow-up).
+    """ADR-0251 §2.7 as amended by §11 (#375): an exported ``OPENROUTER_BASE_URL``
+    beats ``providers.openrouter.baseUrl`` on the launch AND on ``/model``'s registry
+    copy, so the two are equal, field for field. Before #375 the copy kept the
+    ``models.json`` host (Codex pass 2 C3) and this row pinned that difference.
     """
 
     from aelix_ai.models import get_model
@@ -480,9 +480,13 @@ async def test_openrouter_base_url_is_the_one_field_the_launch_changes(
     }
     registry = await _registry(scrubbed, {"openrouter": entry})
     copy = registry.find("openrouter", "openai/gpt-4o-mini")
-    assert copy is not None and copy.base_url == "http://127.0.0.1:9/or-gw/v1"
+    assert copy is not None and copy.base_url == "http://127.0.0.1:9/or-env/v1"
     model = resolve_model("openrouter/openai/gpt-4o-mini", None, registry)
-    assert model == replace(copy, base_url="http://127.0.0.1:9/or-env/v1")
+    assert model == copy
+    monkeypatch.delenv("OPENROUTER_BASE_URL")
+    unset = registry.find("openrouter", "openai/gpt-4o-mini")
+    assert unset is not None and unset.base_url == "http://127.0.0.1:9/or-gw/v1"
+    assert resolve_model("openrouter/openai/gpt-4o-mini", None, registry) == unset
 
 
 async def test_the_composition_moves_no_late_or_not_found_decision_and_keeps_the_typed_key(

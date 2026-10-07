@@ -183,6 +183,10 @@ class ModelRegistry:
         # composed (:meth:`compose_built_in`).
         self._built_in_overrides: dict[str, ProviderOverride] = {}
         self._built_in_model_overrides: dict[str, dict[str, dict[str, Any]]] = {}
+        # #375 — (the ``self._models`` list, the ``OPENROUTER_BASE_URL`` value,
+        # the models handed out) of the last :meth:`_served_models` call. Keyed
+        # on the list's identity: every load assigns a new one.
+        self._served_cache: tuple[list[Model], str | None, list[Model]] | None = None
         self._load_models()
 
     # ── Factories ──────────────────────────────────────────────────
@@ -217,10 +221,43 @@ class ModelRegistry:
         return cls(auth_storage, None)
 
     # ── Model access ───────────────────────────────────────────────
-    def get_all(self) -> list[Model]:
-        """Pi parity: ``model-registry.ts::getAll``."""
+    def _served_models(self) -> list[Model]:
+        """``self._models`` as every accessor hands them out (#375).
 
-        return list(self._models)
+        The one place a registry model gets :func:`with_openrouter_base_url`:
+        :meth:`get_all`, :meth:`get_available`, :meth:`find` and
+        :meth:`compose_built_in` all read through here, so ``/model``, its
+        picker (also as ``/scoped-models`` narrows it), the first model after
+        ``/login`` (``find_initial_model``), ``--list-models`` and an
+        embedder's rpc ``set_model`` / ``cycle_model`` get the same OpenRouter
+        ``base_url`` the launch does. Applied when READ, not
+        when loaded: the variable is read at the moment a model is handed out
+        (the launch reads it the same way), so a registry built before
+        ``load_dotenv`` admitted a hatched value still agrees with the launch.
+        The copies are cached per (load, value), so a model's identity is
+        stable between two reads while neither changes.
+        """
+
+        base_url = openrouter_base_url()
+        cached = self._served_cache
+        if cached is not None and cached[0] is self._models and cached[1] == base_url:
+            return cached[2]
+        served = (
+            [with_openrouter_base_url(m, base_url) for m in self._models]
+            if base_url
+            else self._models
+        )
+        self._served_cache = (self._models, base_url, served)
+        return served
+
+    def get_all(self) -> list[Model]:
+        """Pi parity: ``model-registry.ts::getAll``.
+
+        OpenRouter models carry ``OPENROUTER_BASE_URL`` when it is set (#375,
+        :meth:`_served_models`).
+        """
+
+        return list(self._served_models())
 
     def get_available(self) -> list[Model]:
         """Pi parity: ``model-registry.ts::getAvailable``.
@@ -231,12 +268,12 @@ class ModelRegistry:
         defines the canonical order for ``cycle_model`` rotation).
         """
 
-        return [m for m in self._models if self.has_configured_auth(m)]
+        return [m for m in self._served_models() if self.has_configured_auth(m)]
 
     def find(self, provider: str, model_id: str) -> Model | None:
-        """Pi parity: ``model-registry.ts::find``."""
+        """Pi parity: ``model-registry.ts::find`` (OpenRouter base as :meth:`get_all`)."""
 
-        for m in self._models:
+        for m in self._served_models():
             if m.provider == provider and m.id == model_id:
                 return m
         return None
@@ -825,16 +862,21 @@ class ModelRegistry:
            entry (:func:`~aelix_coding_agent.models_json.compose_built_in_model`).
            A provider the user did not configure comes back unchanged.
 
-        Neither step can change ``provider``, ``id`` or ``api``.
+        Neither step can change ``provider``, ``id`` or ``api``. Both answers carry
+        ``OPENROUTER_BASE_URL`` for an OpenRouter model (#375,
+        :func:`with_openrouter_base_url`), as every other copy the registry hands
+        out does.
         """
 
         copy = self.find(model.provider, model.id)
         if copy is not None and copy.api == model.api:
             return copy
-        return compose_built_in_model(
-            model,
-            self._built_in_overrides.get(model.provider),
-            (self._built_in_model_overrides.get(model.provider) or {}).get(model.id),
+        return with_openrouter_base_url(
+            compose_built_in_model(
+                model,
+                self._built_in_overrides.get(model.provider),
+                (self._built_in_model_overrides.get(model.provider) or {}).get(model.id),
+            )
         )
 
     # ── Display ────────────────────────────────────────────────────
@@ -1169,6 +1211,52 @@ class ModelRegistry:
             return None
 
 
+def openrouter_base_url() -> str | None:
+    """The ``OPENROUTER_BASE_URL`` in force now, or ``None`` when unset or empty (#375).
+
+    Read from ``os.environ`` at call time. It gets there from the shell, or from
+    a project ``.env`` only when the user listed the name in
+    ``AELIX_DOTENV_ALLOW`` (``cli.runtime_bootstrap.load_dotenv``,
+    ``_DOTENV_LOCKED``, ADR-0203); this function admits nothing itself.
+    """
+
+    return os.environ.get("OPENROUTER_BASE_URL") or None
+
+
+def with_openrouter_base_url(model: Model, base_url: str | None = None) -> Model:
+    """``model`` with ``OPENROUTER_BASE_URL`` as its ``base_url`` when it is an OpenRouter model.
+
+    #375 / ADR-0251 §11. The one function that applies the variable. It is an
+    aelix addition: pi has no such variable. pi's ``models.json`` re-points
+    OpenRouter with ``providers.openrouter.baseUrl``, and a ``baseUrl`` on one
+    of that provider's ``models`` entries wins over the provider's for that
+    model. The variable applies to every
+    model whose ``provider`` is exactly ``"openrouter"``, wherever that model
+    was produced: the launch (``cli.runtime_bootstrap._openrouter_base``) and
+    every copy the registry hands out (:meth:`ModelRegistry._served_models`,
+    :meth:`ModelRegistry.compose_built_in`). Precedence, the launch's since
+    #344: the variable beats a ``models.json`` provider ``baseUrl``, a per-model
+    ``baseUrl`` (a ``models`` entry under ``providers.openrouter``) and the
+    catalog's host. Any other provider is returned unchanged - a custom provider
+    with its own ``baseUrl``, or an OpenRouter-compatible gateway the user named
+    something else, even one serving the same ids or sitting at
+    ``https://openrouter.ai/api/v1``, and a provider spelled in another case
+    (``OpenRouter``): the match is on the name, exactly, never on the host.
+    ``provider``, ``id``, ``api`` and every other field stay - ``headers``,
+    ``compat``, ``cost`` and the rest are the input's own.
+
+    ``base_url`` is the value to apply; omitted, :func:`openrouter_base_url`
+    reads it.
+    """
+
+    if model.provider != "openrouter":
+        return model
+    value = base_url if base_url is not None else openrouter_base_url()
+    if not value or model.base_url == value:
+        return model
+    return replace(model, base_url=value)
+
+
 # A fallback answer is matched by containment only when both strings are at
 # least this long: a short common run inside a long key is chance, not derivation.
 _DERIVED_MIN = 8
@@ -1235,4 +1323,6 @@ __all__ = [
     "ProviderRequestConfig",
     "ResolvedRequestAuth",
     "clear_command_value_cache",
+    "openrouter_base_url",
+    "with_openrouter_base_url",
 ]
