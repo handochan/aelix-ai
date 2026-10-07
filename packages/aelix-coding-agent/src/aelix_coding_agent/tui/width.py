@@ -42,6 +42,7 @@ wastes columns, too large clips.
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -52,9 +53,9 @@ if TYPE_CHECKING:
 # 1. It is the settled convention for TUI geometry: every one of its siblings is
 #    private (``shell._RENDER_WIDTH``, ``context._PICK_MIN_WIDTH`` /
 #    ``_PICK_MAX_WIDTH``, ``overlay._MODAL_MIN_HEIGHT`` / ``_MODAL_FALLBACK_CAP``,
-#    ``chrome._INPUT_MAX_ROWS``, ``approval_dialog._MAX_BODY_LINES``). The only
-#    public constants under ``tui/`` are data — the logo, the theme table.
-# 2. This module's public surface is one FUNCTION. A caller with its own budget
+#    ``chrome._INPUT_MAX_ROWS``). The only public constants under ``tui/`` are
+#    data — the logo, the theme table.
+# 2. This module's public surface is FUNCTIONS. A caller with its own budget
 #    passes ``max_width=``; nobody needs to import a number. That is what keeps
 #    the ceiling overridable without making it a second source of truth.
 # 3. ``tests/agents/test_p2_band_boundaries.py`` reads public UPPER_SNAKE names
@@ -153,4 +154,40 @@ def _clamp(columns: int, max_width: int) -> int:
     return max(1, min(columns, max_width))
 
 
-__all__ = ["terminal_columns"]
+@functools.lru_cache(maxsize=4096)
+def _char_cells(ch: str) -> int:
+    if " " <= ch <= "~":
+        return 1
+    from prompt_toolkit.utils import get_cwidth  # noqa: PLC0415
+    from rich.cells import cell_len  # noqa: PLC0415
+
+    return max(get_cwidth(ch), cell_len(ch), 1)
+
+
+def cells_at_most(text: str) -> int:
+    """The most terminal cells *text* can take, counted so it is never too few.
+
+    #389 review round 2. The approval prompt lays its body out with Rich and
+    paints it with prompt-toolkit, and the two disagree about some code points:
+    Rich gives a regional indicator (U+1F1E6) one cell and a skin-tone modifier
+    (U+1F3FB) none, prompt-toolkit (wcwidth, which pyte uses too) gives both
+    two. Measured: ``"echo " + 30 x U+1F1E6 + " ; echo TAIL"`` fitted one
+    80-cell row by Rich's count, painted 30 cells wider, and the window cut the
+    row at the border, so the tail was "shown" without being on screen. The
+    other direction exists as well: ``U+263A U+FE0F`` is one cell to
+    prompt-toolkit and two to Rich (and to most terminals).
+
+    So each character counts the LARGER of the two, and a character either
+    calls zero-width (a combining mark, a variation selector, a joiner, a tag)
+    counts one, because a terminal may draw it on its own. Printable ASCII is
+    one cell everywhere. A line measured this way is never wider on screen than
+    the number says, whichever of the three draws it; the cost is that text
+    full of combining marks wraps earlier than it has to. Terminals set to draw
+    East Asian "ambiguous" characters two cells wide are not modelled: every
+    TUI surface already assumes the wcwidth answer for those.
+    """
+
+    return sum(_char_cells(ch) for ch in text)
+
+
+__all__ = ["cells_at_most", "terminal_columns"]

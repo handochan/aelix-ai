@@ -77,7 +77,7 @@ or `grep` does not make it read-only. Posture by posture:
 
 | posture | your tool |
 | --- | --- |
-| `default` | asks first. The dialog shows the tool name and every argument, one per row; a long value is cut with a note saying how much. If the arguments do not fit, a line under them says how many lines are hidden and that PgUp/PgDn scroll to them, and Yes is held until every line has been on screen. "Yes, for this session" approves this one tool, by its exact name, for any arguments, until exit. |
+| `default` | asks first. The dialog shows the tool name and every argument, one per row, each value whole (a long one wraps). If the arguments do not fit, a line under them says how many lines are hidden and that PgUp/PgDn scroll to them, and Yes is held until every line has been on screen (Aelix's own `bash`, `write` and `edit` prompts hold Yes the same way). "Yes, for this session" approves this one tool, by its exact name, for any arguments, until exit. |
 | `plan` | blocked, headless included. The model is told why. |
 | `auto-accept-edits`, `auto` | asks. These postures auto-accept only Aelix's own file edits, and only inside the project. |
 | `yolo` | runs, no prompt. |
@@ -112,6 +112,13 @@ Registered commands are merged into both slash-command **autocomplete** and
 - `ctx` is an `ExtensionCommandContext` — drive interactive UI through
   `ctx.ui.select` / `confirm` / `input` / `notify`, and session control through
   `ctx.fork` / `new_session` / `switch_session` / `reload`.
+
+`select` draws each line of its title as one row and `confirm` its message the
+same way. Neither wraps: a line wider than the terminal is cut at its edge with
+no marker, and Enter (or `y`) answers at once. pi wraps the title, and its
+`permission-gate.ts` example puts the whole command there, so a port of it can
+approve a command whose end was never on screen. Until issue #399 changes this,
+keep each line of a question short, or show long text some other way first.
 
 A non-empty **string** return is shown in the transcript (a convenience for
 simple commands); richer output should go through `ctx.ui`. Built-in commands

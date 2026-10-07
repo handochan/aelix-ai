@@ -579,3 +579,28 @@ def test_the_streamed_text_path_is_unaffected_either_way(
     joined = "".join(markdown_lines("| a | b |\n| - | - |\n| 1 | 2 |\n", 40))
     assert "a" in joined and "1" in joined  # it rendered
     assert not (set(joined) & set("╭╮╰╯┌┐└┘┏┓"))  # ...with no box either way
+
+
+# === #389 review round 2: cells_at_most ======================================
+
+
+@pytest.mark.parametrize(
+    ("text", "cells"),
+    [
+        ("echo", 4),
+        ("가나", 4),
+        ("\U0001f1e6", 2),  # Rich 1, wcwidth 2
+        ("\U0001f3fb", 2),  # Rich 0, wcwidth 2
+        ("\u263a\ufe0f", 2),  # wcwidth 1, Rich 2: the selector counts one
+        ("e\u0301", 2),  # a combining mark counts one: a terminal may draw it alone
+        ("\u200d", 1),
+    ],
+)
+def test_cells_at_most_is_never_below_either_count(text: str, cells: int) -> None:
+    from aelix_coding_agent.tui.width import cells_at_most
+    from prompt_toolkit.utils import get_cwidth
+    from rich.cells import cell_len
+
+    assert cells_at_most(text) == cells
+    assert cells_at_most(text) >= get_cwidth(text)
+    assert cells_at_most(text) >= cell_len(text)

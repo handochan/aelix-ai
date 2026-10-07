@@ -994,11 +994,11 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
-# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:739-762``
-# already solves this shape — ``HSplit([scrollable_body, spacer, options])`` with
+# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:979-995``
+# already solves this shape — ``HSplit([body, footer, options])`` with
 # the options at ``Dimension.exact(n)`` so "the security-critical deny option is
 # ALWAYS visible even when the diff body is far taller than the cap"
-# (``tui/approval_dialog.py:596-597``) — and ADR-0197 residual R3 named it as
+# (``tui/approval_dialog.py:868-869``) — and ADR-0197 residual R3 named it as
 # the mitigation for this dialog. It is not taken because ``ctx.ui.select`` is
 # product-core and P3 decision S2 sets the product-core delta for this phase at
 # ZERO. R3 stays OPEN and is restated in ADR-0199; it is the natural companion

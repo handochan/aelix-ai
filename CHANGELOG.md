@@ -939,6 +939,51 @@ unwritten. Add them with the next release.
     copied with `dataclasses.replace`, now counts as an unknown tool and asks.
     A host with a UI but no approval dialog is asked through `ctx.ui.select`,
     and for these tools the title now lists every argument too.
+- **Aelix's approval prompt no longer takes Yes before you have seen the whole
+  command, file or argument (#389, ADR-0253 §11 to §11.2).** This is the prompt
+  for `bash`, `write`, `edit` and every MCP or extension tool. It has a
+  height limit, and what did not fit was below it with nothing saying so. At
+  80x24 a 400-word command showed about its first third, and 1 ran it, end
+  included. The `write` and `edit` prompts stopped their preview at 40 lines
+  and cut each line at the edge of the box, so the end of a file, or of one
+  long line, was never on screen. Now:
+  - Nothing in an approval prompt's body is cut short. Every line of a write
+    or an edit is there, and a line wider than the box wraps. The prompt's
+    title and its option labels are still cut at the edge of the screen; the
+    body has the whole path. An argument of an MCP
+    or extension tool is shown whole too: it used to be cut at 200 characters
+    (60 for its name), and a prompt that then fit the screen took Yes at once.
+  - The `edit` prompt shows every edit the tool will make. A call carrying an
+    `edits` list and also a top-level `oldText`/`newText` showed only the list,
+    and Yes applied the other one as well.
+  - When the tool rewrites the path (`@` dropped, `~` expanded), the `write`
+    and `edit` prompts say where the file actually lands.
+  - When the command or the preview is taller than the prompt, a line under it
+    says how many lines are hidden and that PgUp/PgDn scroll to them. Yes and
+    "Yes, for this session" do nothing until every line has been on screen,
+    as #188 made them for MCP and extension tools. No and Esc always answer.
+    A long file now takes several PgDn presses before you can approve it.
+  - PgUp/PgDn move a page at a time (a screenful less one line) in every
+    approval prompt, MCP and extension tools included. They moved five lines.
+  - A control character in a command, a path, a file or an option the model
+    wrote is shown by name in reverse video (`^[`, `^M`, `<U+202E>`) instead of
+    being obeyed or dropped. `ESC [8m` used to hide the rest of the command while
+    the prompt counted it as shown, and a dropped ESC showed a command that was
+    not the one that ran. Whitespace is the exception: a tab is drawn as spaces,
+    and a file that ends in a newline looks the same as one that does not.
+  - A path or tool name with `[/]` in it no longer turns the prompt into
+    `<rich.console.Group object at 0x…>` that Yes answered at once.
+  - A line of characters that the box and the terminal measure differently
+    (flag letters, skin-tone modifiers) is no longer counted as shown while its
+    end is past the edge of the screen.
+  - A host with a UI but no approval dialog gets the whole command or path in
+    the `ctx.ui.select` title. It used to stop at 120 characters. Aelix's own
+    `select` still cuts a row wider than the screen at its edge (#399).
+  - Not covered: an extension's own `ctx.ui.select` and `ctx.ui.confirm`. Their
+    title or message is still cut at the edge of the terminal, and Enter or `y`
+    answers at once, so an extension that asks for approval this way (pi's
+    `permission-gate.ts` example does) can still approve a command whose end
+    was never on screen. That is #399.
 - **Your Anthropic key no longer goes to another provider's host (#374,
   ADR-0254).** Any provider on the Anthropic Messages API that had no key of
   its own (a `models.json` custom provider with `"api": "anthropic-messages"`,

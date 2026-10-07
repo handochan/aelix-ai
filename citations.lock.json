@@ -2895,19 +2895,19 @@
    "data = content.encode(\"utf-8\")",
    "await operations.write_file(absolute_path, data)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/approval_dialog.py:596-597": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/approval_dialog.py:868-869": [
    "full height, so the security-critical deny option is ALWAYS visible even when",
-   "the diff body is far taller than the cap. The body scrolls (PageUp/PageDown,"
+   "the diff body is far taller than the cap."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/approval_dialog.py:739-762": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/approval_dialog.py:979-995": [
+   "# The body is FLEXIBLE (shrinks under the cap → scrolls); the options",
+   "# window is FIXED at exactly its row count (it is the cursor/focus owner",
+   "# so the dialog navigates), pinned below the body OUTSIDE the cap's",
+   "# squeeze so Yes/No can never be clipped. The footer separates them: it",
+   "# draws its own slice of the body, so it knows exactly which lines",
+   "# reached the screen.",
    "n_option_rows = len(rows_spec) + 1 # rows + the hint line",
-   "if gated:",
-   "# #188 review round 2: the argument body draws its own slice of",
-   "# the rows, so it knows exactly which ones reached the screen, and",
-   "# the line under it (where the blank spacer was) is the footer.",
-   "body_window = Window(arguments.body_control(), wrap_lines=False)",
-   "spacer = Window(arguments.footer_control(), height=Dimension.exact(1))",
-   "else:"
+   "body_window = Window(viewport.body_control(), wrap_lines=False)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1097-1099": [
    "def _render_status(self) -> str:",

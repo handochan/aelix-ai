@@ -7,21 +7,28 @@ module is a dedicated, purpose-built dialog mirroring the
 ``model_picker`` / ``thinking_picker`` shape:
 
 - pure, side-effect-free :func:`build_approval_view` renders the dialog body to
-  ANSI lines (a bordered Rich Panel with the FULL untruncated command + a diff
-  preview), unit-testable without prompt-toolkit;
+  ANSI lines (a bordered Rich Panel with the FULL untruncated command, or the
+  whole diff of a write / edit — nothing elided, #389), unit-testable without
+  prompt-toolkit;
 - a dependency-injected :func:`run_approval_dialog` drives the 3 STATIC options
   (Yes / Yes, for this session / No) with ↑/↓ + Enter + digit + mnemonic key
   bindings, NO type-to-filter, NO truncation, and NO space-confirm (so a stray
   space can't auto-approve the default "Yes"). The modal runner (``show_modal``)
   is injected so the whole flow is testable headlessly. ``NO_REASON`` is a
-  fallback-only decision (the generic ``ctx.ui`` path), not a dialog row.
+  fallback-only decision (the generic ``ctx.ui`` path), not a dialog row. Yes
+  waits until every line of the body has been on screen (:class:`_BodyViewport`,
+  ADR-0253 §9 and §11).
 
-The generic ``AelixTUIContext.select`` is deliberately left untouched so
-``/settings`` / ``/resume`` / ``/model`` / ``/thinking`` keep their behaviour.
+The generic ``AelixTUIContext.select`` keeps its own shape so ``/settings`` /
+``/resume`` / ``/model`` / ``/thinking`` keep their behaviour. It does NOT wrap
+or hold a long title: an extension's ``select`` / ``confirm`` question is cut at
+the screen edge as before, and that surface is issue #399 (ADR-0253 §11).
 """
 
 from __future__ import annotations
 
+import re
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import IO, TYPE_CHECKING, Any, cast
@@ -35,8 +42,6 @@ if TYPE_CHECKING:
 # Bounded render width — matches the ``custom()`` overlay precedent
 # (``_RENDER_WIDTH = 80``) so the Panel border never wraps/clips the Float.
 _RENDER_WIDTH = 80
-# Max diff/body lines shown inline before eliding (parity with _render_diff's cap).
-_MAX_BODY_LINES = 40
 
 
 class ApprovalDecision(StrEnum):
@@ -136,65 +141,188 @@ def _content(args: dict[str, Any]) -> str:
     return ""
 
 
-def _synth_write_diff(path: str, content: str) -> str:
-    """An empty→content unified-ish diff for a create/overwrite (no file read)."""
-
-    lines = [f"--- {path}", f"+++ {path}"]
-    body = content.splitlines() or [""]
-    for line in body:
-        lines.append(f"+{line}")
-    return "\n".join(lines)
+#: How a character :func:`safe_for_terminal` would remove is drawn instead.
+_NAMED_STYLE = "reverse"
 
 
-def _synth_edit_diff(args: dict[str, Any]) -> str:
-    """An old→new block per edit (``edits[].oldText/newText``); never crashes.
+def _control_name(ch: str) -> str:
+    """The visible name of a removed character: ``^[`` for ESC, ``<U+202E>``."""
 
-    The gate runs PRE-execution and we must NOT read the file, so this is a
-    simple per-edit old→new block. Any malformed edit falls back to a verbatim
-    dump of its raw text rather than raising.
+    cp = ord(ch)
+    if cp < 0x20:
+        return "^" + chr(cp + 0x40)
+    if cp == 0x7F:
+        return "^?"
+    return f"<U+{cp:04X}>"
+
+
+#: A run of plain text and the spans of it that are names of removed characters.
+_Shown = tuple[str, list[tuple[int, int]]]
+
+
+def _shown(text: str, *, one_row: bool = False) -> _Shown:
+    """*text* with every steering character replaced by its visible name.
+
+    #389 review round 2. Round 1 deleted these characters
+    (:func:`safe_for_terminal`), so a command with ``ESC [ 8 m`` in it was shown
+    as ``[8m`` while the shell ran the ESC: what the user approved was not what
+    ran. Now each one is drawn as its caret name (``^[``, ``^M``, ``^?``) or, past
+    the C0 range, as ``<U+202E>``, and :func:`_named_text` draws the name in
+    reverse video, so it cannot be mistaken for the same letters typed. The
+    set is exactly what :func:`safe_for_terminal` removes, so nothing that could
+    steer the terminal reaches it, and nothing is dropped.
+
+    In a body (*one_row* false) a newline is a line break and a tab is kept;
+    in one row (a path, a tool name, an option label) both are named too, so
+    ``a\nb`` and ``a b`` do not look alike. The returned spans index the
+    returned string.
     """
 
-    edits = args.get("edits")
-    blocks: list[str] = []
-    if isinstance(edits, (list, tuple)) and edits:
-        for edit in edits:
-            old = _edit_field(edit, ("oldText", "old_text", "old"))
-            new = _edit_field(edit, ("newText", "new_text", "new"))
-            blocks.append(_old_new_block(old, new))
-    else:
-        # Single-edit shape (oldText/newText directly on args).
-        old = _edit_field(args, ("oldText", "old_text", "old", "old_string"))
-        new = _edit_field(args, ("newText", "new_text", "new", "new_string"))
-        blocks.append(_old_new_block(old, new))
-    return "\n".join(b for b in blocks if b)
+    from aelix_ai.utils.terminal_text import contains_steering_chars  # noqa: PLC0415
+
+    keep = "" if one_row else "\n\t"
+    out: list[str] = []
+    spans: list[tuple[int, int]] = []
+    length = 0
+    run = 0
+    for i, ch in enumerate(text):
+        if ch.isprintable() or ch in keep:
+            continue
+        if not contains_steering_chars(ch, keep_newline=not one_row, keep_tab=not one_row):
+            continue
+        out.append(text[run:i])
+        length += i - run
+        name = _control_name(ch)
+        out.append(name)
+        spans.append((length, length + len(name)))
+        length += len(name)
+        run = i + 1
+    out.append(text[run:])
+    return "".join(out), spans
 
 
-def _edit_field(obj: Any, keys: tuple[str, ...]) -> str:
-    for key in keys:
-        try:
-            value = obj.get(key) if hasattr(obj, "get") else getattr(obj, key, None)
-        except Exception:  # noqa: BLE001 — malformed edit → fall through
-            value = None
-        if isinstance(value, str):
-            return value
-    return ""
+def _shifted(shown: _Shown, prefix: str) -> _Shown:
+    text, spans = shown
+    return prefix + text, [(a + len(prefix), b + len(prefix)) for a, b in spans]
 
 
-def _old_new_block(old: str, new: str) -> str:
-    lines: list[str] = []
-    for line in (old.splitlines() or ([old] if old else [])):
-        lines.append(f"-{line}")
-    for line in (new.splitlines() or ([new] if new else [])):
-        lines.append(f"+{line}")
-    return "\n".join(lines)
+def _named_text(shown: _Shown, style: str = "") -> Any:
+    """A Rich ``Text`` of *shown* — never parsed as markup — names in reverse."""
+
+    from rich.text import Text  # noqa: PLC0415
+
+    text, spans = shown
+    out = Text(text, style=style)
+    for a, b in spans:
+        out.stylize(_NAMED_STYLE, a, b)
+    return out
 
 
-def _panel_to_ansi(title: str, body: Any, width: int) -> list[str]:
+def _body_lines_of(text: str) -> list[str]:
+    """*text* split at its newlines only, like the file it becomes.
+
+    ``str.splitlines`` also breaks at CR, VT, FF, FS-RS, NEL and U+2028/9, so
+    a CR in a file (or a command) used to read as a line break; here it stays
+    on its line and is named (``^M``). A final newline ends the last line
+    rather than opening an empty one, as ``splitlines`` had it.
+    """
+
+    lines = text.split("\n")
+    if len(lines) > 1 and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _write_diff(path: _Shown, content: str) -> list[_Shown]:
+    """An empty→content diff for a create/overwrite (no file read), every line."""
+
+    rows = [_shifted(path, "--- "), _shifted(path, "+++ ")]
+    for line in _body_lines_of(content):
+        rows.append(_shifted(_shown(line), "+"))
+    return rows
+
+
+def _edit_diff(args: dict[str, Any]) -> list[_Shown]:
+    """An old→new block for EVERY edit the edit tool will apply; never crashes.
+
+    #389 review round 2. The tool does not apply ``args["edits"]``: it applies
+    :func:`~aelix_coding_agent.tools._edit_diff.prepare_edit_arguments` of the
+    arguments (pi's ``prepareArguments``), which parses ``edits`` sent as a JSON
+    string and APPENDS a top-level ``oldText``/``newText`` pair to the list.
+    Round 1 drew only ``edits`` when it was a non-empty list, so a call carrying
+    both shapes showed one short edit while the tool applied two (measured: the
+    dialog showed ``-hello``/``+HELLO``, ``1`` answered, and the hidden second
+    replacement landed). The body is built from that same function's output,
+    so it is the list the tool runs, in its order, and nothing else.
+
+    The gate runs PRE-execution and must NOT read the file, so each edit is a
+    plain old→new block, headed ``@@ edit i of n @@`` when there is more than
+    one. An entry the tool will refuse is shown as what it is; arguments the
+    tool cannot read as edits at all are shown raw (:func:`argument_rows`).
+    """
+
+    from aelix_coding_agent.tools._edit_diff import prepare_edit_arguments  # noqa: PLC0415
+
+    try:
+        edits = prepare_edit_arguments(args).get("edits")
+    except Exception:  # noqa: BLE001 — a malformed call is shown raw below
+        edits = None
+    if not isinstance(edits, list) or not edits:
+        rows: list[_Shown] = [("The edit tool will refuse these arguments:", [])]
+        rows.extend((row, []) for row in argument_rows(args))
+        return rows
+    rows = []
+    for i, edit in enumerate(edits):
+        if len(edits) > 1:
+            rows.append((f"@@ edit {i + 1} of {len(edits)} @@", []))
+        old = edit.get("oldText") if isinstance(edit, dict) else None
+        new = edit.get("newText") if isinstance(edit, dict) else None
+        if not isinstance(old, str) or not isinstance(new, str):
+            rows.append((f"edits[{i}] is not an edit the tool accepts: {edit!r}", []))
+            continue
+        for line in _body_lines_of(old) if old else []:
+            rows.append(_shifted(_shown(line), "-"))
+        for line in _body_lines_of(new) if new else []:
+            rows.append(_shifted(_shown(line), "+"))
+    return rows
+
+
+def _path_rows(raw: str) -> list[Any]:
+    """The path line(s) of a write or edit: as sent, and as the tool reads it.
+
+    #389 review round 2 (sweep of fix item 1). The write and edit tools pass the
+    path through ``expand_path`` (pi's ``expandPath``): NFC, unusual spaces made
+    ASCII, ONE leading ``@`` dropped and a leading ``~`` expanded. ``@~/.bashrc``
+    is therefore a write to the home directory's ``.bashrc``. When that changes
+    the path, the second row says where the write lands.
+    """
+
+    from aelix_coding_agent.tools._path_utils import expand_path  # noqa: PLC0415
+
+    rows: list[Any] = []
+    try:
+        expanded = expand_path(raw)
+    except Exception:  # noqa: BLE001 — the tool will fail the same way
+        expanded = raw
+    if expanded != raw:
+        rows.append(
+            _named_text(_shifted(_shown(expanded, one_row=True), "The tool writes to: "), "bold")
+        )
+    return rows
+
+
+def _panel_to_ansi(title: Any, body: Any, width: int, plain: list[str]) -> list[str]:
     """Render a bordered Rich Panel containing ``body`` to ANSI lines.
 
-    A recording :class:`rich.console.Console` captures the styled output;
-    failure (e.g. Rich missing in a degraded env) falls back to plain text so
-    the dialog never crashes.
+    A recording :class:`rich.console.Console` captures the styled output.
+    *title* is a ``Text``, never a ``str``: Rich parses a ``str`` panel title as
+    markup, so a path or tool name holding ``[/]`` raised ``MarkupError``
+    (#389 review round 2, measured on 402a8013 and round 1 alike).
+
+    If rendering fails anyway, the fallback is *plain*: the same rows as text,
+    every one of them. It used to be ``str(body)``, and for a ``Group`` that is
+    ``<rich.console.Group object at 0x…>`` — one short line, so the dialog saw
+    nothing to hold and took Yes on a body that was never drawn.
     """
 
     try:
@@ -226,8 +354,8 @@ def _panel_to_ansi(title: str, body: Any, width: int) -> list[str]:
         console.print(Panel(body, title=title, expand=False, width=width))
         text = console.export_text(styles=True)
         return text.splitlines()
-    except Exception:  # noqa: BLE001 — headless / no-rich fallback
-        return [title, *(str(body).splitlines())]
+    except Exception:  # noqa: BLE001 — never let the prompt fail to draw its rows
+        return list(plain)
 
 
 class _NullFile:
@@ -244,18 +372,30 @@ def build_approval_view(
     request: ApprovalRequest,
     *,
     render_diff: Callable[..., Any] | None = None,
-    max_lines: int = _MAX_BODY_LINES,
     width: int = _RENDER_WIDTH,
 ) -> list[str]:
     """Build the dialog body as ANSI lines (PURE — no prompt-toolkit / I/O).
 
     - bash → "Run command:" + the FULL untruncated command.
-    - write → "Create/overwrite {path}" + an empty→content diff (capped).
-    - edit → "Edit {path}" + an old→new block per edit (verbatim fallback).
-    - other → the tool name, the argument count and EVERY argument, one row
-      each, with each value bounded (:func:`argument_rows`, #188). Bounding
-      the values does not bound the number of rows: the runner holds Yes
-      until all of them have been on screen (:class:`_ArgumentViewport`).
+    - write → "Create/overwrite {path}" + an empty→content diff, every line.
+    - edit → "Edit {path}" + an old→new block for every edit the tool will
+      apply (:func:`_edit_diff`), every line.
+    - other → the tool name, the argument count and EVERY argument, whole, one
+      row each (:func:`argument_rows`).
+
+    Nothing in the body is elided (#389). The write/edit diff used to stop at
+    40 lines and cut every row at the Panel width with an ``…``, so a file's
+    last line, or the end of one long line, was approved without ever being
+    drawn; a long row now wraps inside the Panel instead. The body can be far
+    taller than the screen; the runner holds Yes until every line of it has
+    been on screen (:class:`_BodyViewport`).
+
+    Every string the model or a tool author chose is shown with its steering
+    characters NAMED (:func:`_shown`): an escape sequence in the command could
+    otherwise conceal its own tail (SGR 8) or write to the terminal while the
+    dialog counts the row as shown, and deleting it (round 1) showed a command
+    that is not the one that runs. Nothing is parsed as Rich markup: every
+    string goes in as a ``Text``.
 
     ``render_diff`` (default :func:`render._render_diff`) colours the diff so it
     matches the transcript; a ``None`` / raising callback degrades to plain
@@ -267,57 +407,46 @@ def build_approval_view(
 
     rd = render_diff if render_diff is not None else _default_render_diff()
 
+    rows: list[_Shown]
     if request.kind == "bash":
         command = _bash_command(request.args)
-        title = "Run shell command?"
+        title = ("Run shell command?", [])
+        rows = [("Run command:", [])]
+        rows.extend(_shown(line) for line in _body_lines_of(command or "(empty)"))
         body: Any = Group(
             Text("Run command:", style="bold"),
-            Text(command or "(empty)", style="yellow"),
+            _named_text(_shown(command), "yellow") if command else Text("(empty)", style="yellow"),
         )
-    elif request.kind == "write":
-        path = _path(request.args)
-        diff_text = _synth_write_diff(path, _content(request.args))
-        title = f"Create/overwrite {path or '(unknown path)'}?"
-        body = Group(
-            Text(f"Create/overwrite {path}", style="bold"),
-            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
+    elif request.kind in ("write", "edit"):
+        raw = _path(request.args)
+        path = _shown(raw, one_row=True)
+        verb = "Create/overwrite" if request.kind == "write" else "Edit"
+        title = _shifted(path if path[0] else ("(unknown path)", []), f"{verb} ")
+        title = (f"{title[0]}?", title[1])
+        diff = (
+            _write_diff(path, _content(request.args))
+            if request.kind == "write"
+            else _edit_diff(request.args)
         )
-    elif request.kind == "edit":
-        path = _path(request.args)
-        diff_text = _synth_edit_diff(request.args)
-        title = f"Edit {path or '(unknown path)'}?"
-        body = Group(
-            Text(f"Edit {path}", style="bold"),
-            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
-        )
+        head = _shifted(path, f"{verb} ")
+        extra = _path_rows(raw)
+        rows = [head, *((t.plain, []) for t in extra), *diff]
+        body = Group(_named_text(head, "bold"), *extra, _safe_diff(rd, diff))
     else:
-        title = f"Allow {request.tool_name}?"
-        rows = argument_rows(request.args)
+        tool = _shown(request.tool_name, one_row=True)
+        title = _shifted(tool, "Allow ")
+        title = (f"{title[0]}?", title[1])
+        arg_rows = argument_rows(request.args)
+        rows = [_shifted(tool, "Tool: "), (_argument_count(len(arg_rows)), [])]
+        rows.extend((row, []) for row in arg_rows)
         body = Group(
-            Text(f"Tool: {request.tool_name}", style="bold"),
-            Text(_argument_count(len(rows)), style="bold"),
-            *(Text(row) for row in rows),
+            _named_text(rows[0], "bold"),
+            Text(rows[1][0], style="bold"),
+            *(Text(row) for row in arg_rows),
         )
 
-    return _panel_to_ansi(title, body, width)
-
-
-#: How much of one argument's VALUE (its ``repr``) the approval prompt prints
-#: before cutting it with a visible marker, so one long value is a few lines,
-#: not dozens. It does not keep the body inside the screen: six values of this
-#: length already overflow an 80x24 terminal, which is why Yes waits for the
-#: whole body to have been shown (:class:`_ArgumentViewport`).
-_ARG_VALUE_CHARS = 200
-#: The same for an argument's NAME — a key is chosen by whoever sent the call.
-_ARG_KEY_CHARS = 60
-
-
-def _bounded(text: str, limit: int) -> str:
-    """*text*, or its first *limit* characters and how many were cut."""
-
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}… (+{len(text) - limit} more chars)"
+    plain = [title[0], *(text for text, _spans in rows)]
+    return _panel_to_ansi(_named_text(title), body, width, plain)
 
 
 def _argument_count(n: int) -> str:
@@ -327,7 +456,7 @@ def _argument_count(n: int) -> str:
 
 
 def argument_rows(args: dict[str, Any]) -> list[str]:
-    """One ``key=value`` row for EVERY argument, in the order they were sent.
+    """One ``key=value`` row for EVERY argument, whole, in the order sent.
 
     #188 round 1. This is the consent surface for every tool aelix did not
     build (``kind="other"``), and it used to print only the first six
@@ -338,20 +467,21 @@ def argument_rows(args: dict[str, Any]) -> list[str]:
     loop hands to ``execute`` (unknown keys are kept), so nothing short of every
     key describes the call.
 
-    No row is dropped and none is capped by count. Each VALUE is cut at
-    :data:`_ARG_VALUE_CHARS` and each key at :data:`_ARG_KEY_CHARS`, with a
-    marker that says how much was cut, so one huge value cannot run on for
-    dozens of lines. Many arguments still make a body taller than the screen;
-    the dialog does not let Yes through until every row has been shown
-    (:class:`_ArgumentViewport`, #188 review round 2). Values are ``repr``'d and a
-    key that is not printable is too: a newline or an escape sequence in either
-    cannot draw a fake row.
+    No row is dropped, none is capped by count, and since #389 review round 2
+    no value or key is cut either. ADR-0253 §8 cut each value at 200 characters
+    and each key at 60, with a marker saying how much was cut, so that one huge
+    value could not run on for dozens of rows; but a body that fits the screen
+    is answerable at once, so the rest of a 417-character ``content`` was
+    approved unseen. The dialog now holds Yes until every row has been on
+    screen (:class:`_BodyViewport`), which makes a long value cost paging,
+    never consent. Values are ``repr``'d and a key that is not printable is
+    too: a newline or an escape sequence in either cannot draw a fake row.
     """
 
     rows: list[str] = []
     for key, value in args.items():
         name = key if isinstance(key, str) and key.isprintable() else repr(key)
-        rows.append(f"{_bounded(name, _ARG_KEY_CHARS)}={_bounded(repr(value), _ARG_VALUE_CHARS)}")
+        rows.append(f"{name}={value!r}")
     return rows
 
 
@@ -368,47 +498,40 @@ def argument_summary(args: dict[str, Any]) -> str:
     return f"{_argument_count(len(rows))} {', '.join(rows)}"
 
 
-#: A Rich ``Panel`` costs 4 cells per row: two border columns and two of default
-#: padding. MEASURED, not assumed — a Panel of width 60/80/120 yields 56/76/116
-#: content cells. Note ``80 - 4 == 76``, which is where ``_render_diff``'s
-#: historical default came from; deriving it reproduces the old value exactly at
-#: the old width and only widens beyond it.
-_PANEL_CHROME_CELLS = 4
+def _safe_diff(render_diff: Callable[..., Any], rows: list[_Shown]) -> Any:
+    """Render the diff *rows* into the dialog body: every line, none cut short.
 
+    #389. ``max_lines`` is the diff's own line count and ``max_line_width`` is
+    unbounded, so ``_render_diff`` drops no line and puts no ``…`` on one; the
+    Panel wraps a row wider than itself onto the next. Before this the write
+    and edit prompts stopped at 40 lines and cut every row at the Panel's
+    width (#166 had only moved that cut from 76 cells to the terminal's), so the
+    end of a file, or of one long line, could be approved without being drawn.
 
-def _panel_content_cells(width: int) -> int:
-    """Cells a diff row may occupy inside the dialog's Panel at *width*."""
-
-    return max(8, width - _PANEL_CHROME_CELLS)
-
-
-def _safe_diff(
-    render_diff: Callable[..., Any],
-    diff_text: str,
-    max_lines: int,
-    max_line_width: int,
-) -> Any:
-    """Render *diff_text* into the dialog body, capped to *max_line_width* cells.
-
-    Issue #166 — ``max_line_width`` is threaded here for the same reason it is
-    threaded at ``render.py``'s three call sites: without it ``_render_diff``
-    falls back to its 76-cell module default, so on a 120-column terminal the
-    write/edit approval body was still cut at 76 with an ellipsis while the bash
-    approval showed its command in full. The prompt asking permission to MUTATE
-    A FILE was the one still hiding what it was asking about.
-
-    The fallback path deliberately caps too: a ``render_diff`` that raises used
-    to return the diff verbatim, which is unbounded.
+    The names of removed characters (:func:`_shown`) are put in reverse video
+    on the rows ``render_diff`` returns, where a row's text is the line it was
+    given. The fallback for a ``render_diff`` that raises shows the same rows,
+    styled the same way. The rows hold no steering character, so neither path
+    can steer the terminal.
     """
 
+    from rich.console import Group  # noqa: PLC0415
     from rich.text import Text  # noqa: PLC0415
 
-    if not diff_text:
+    if not rows:
         return Text("(no changes to preview)", style="dim")
+    diff_text = "\n".join(text for text, _spans in rows)
     try:
-        return render_diff(diff_text, max_lines=max_lines, max_line_width=max_line_width)
+        rendered = render_diff(diff_text, max_lines=len(rows), max_line_width=sys.maxsize)
     except Exception:  # noqa: BLE001 — never let a diff render break the prompt
-        return Text(diff_text)
+        return Group(*(_named_text(row) for row in rows))
+    drawn = getattr(rendered, "renderables", None)
+    if isinstance(drawn, list) and len(drawn) == len(rows):
+        for row, (text, spans) in zip(drawn, rows, strict=True):
+            if isinstance(row, Text) and row.plain == text:
+                for a, b in spans:
+                    row.stylize(_NAMED_STYLE, a, b)
+    return rendered
 
 
 def _default_render_diff() -> Callable[..., Any]:
@@ -430,12 +553,17 @@ def build_options_view(
     The hint line is DERIVED from the rows rather than written out: the first
     revision of #161 left it saying "1-3 / y·s·n" while the dialog showed four
     rows, which is the class of stale-prose defect this batch exists to remove.
+
+    A label goes through the same :func:`_shown` as the body (#389 review
+    round 2): the redirect row carries the file name the model chose, and these
+    rows reach prompt-toolkit's ANSI parser, so an ``ESC [ 8 m`` in that name
+    hid the rest of the row the user was approving.
     """
 
     view: list[str] = []
     for i, (_decision, mnemonic, label) in enumerate(rows_spec):
         marker = "→ " if i == selected else "  "
-        view.append(f"{marker}{i + 1}. [{mnemonic}] {label}")
+        view.append(f"{marker}{i + 1}. [{mnemonic}] {_ansi_named(_shown(label, one_row=True))}")
     digits = f"1-{len(rows_spec)}"
     mnemonics = "·".join(mnemonic for _d, mnemonic, _l in rows_spec)
     view.append(f"  ↑/↓ to move · {digits} / {mnemonics} · Enter to confirm · Esc to deny")
@@ -443,17 +571,133 @@ def build_options_view(
 
 
 #: Answers the dialog takes whatever is on screen. Every other row approves
-#: something, so it is held while the arguments are not all shown (#188).
+#: something, so it is held while the body is not all shown (#188, #389).
 _ALWAYS_ANSWERABLE = frozenset({ApprovalDecision.NO, ApprovalDecision.CANCEL})
 
 
-class _ArgumentViewport:
-    """The scrolled argument body of a ``kind="other"`` prompt and its footer.
+def _ansi_named(shown: _Shown) -> str:
+    """*shown* as ANSI text, each name in reverse video (SGR 7 … 27)."""
 
-    #188 review round 2. Every argument row is in the body, but the body sits
-    in a height-capped modal: at 80x24 six 198-character values filled it and
-    ``path`` and ``content`` were below the fold, with nothing saying so, and
-    Yes wrote the file. Bounding each value does not bound the row COUNT.
+    text, spans = shown
+    out: list[str] = []
+    run = 0
+    for a, b in spans:
+        out += [text[run:a], "\x1b[7m", text[a:b], "\x1b[27m"]
+        run = b
+    out.append(text[run:])
+    return "".join(out)
+
+
+#: The footer when the modal had no row left for the body at all.
+_NO_ROOM = "The details do not fit on screen. Yes is held. Enlarge the terminal."
+
+
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+#: One row of the body as drawn: an ANSI line, or prompt-toolkit fragments.
+_Row = Any
+
+
+def _display_rows(lines: list[str], width: int) -> list[_Row]:
+    """The body lines as rows no wider on screen than *width*, however counted.
+
+    #389 review round 2 (Codex candidate B, measured). Rich wraps the Panel by
+    its own cell widths and prompt-toolkit paints by wcwidth's; they disagree
+    about regional indicators and skin-tone modifiers (Rich 1 and 0 cells,
+    wcwidth 2), so ``echo`` + 30 x U+1F1E6 + ``; echo TAIL`` fitted one row for
+    Rich, painted 30 cells wider, and the body window (``wrap_lines=False``)
+    cut it at the border: the viewport counted the row drawn while ``TAIL`` was
+    never on screen, and Yes was taken at once.
+
+    Each line is measured with :func:`~aelix_coding_agent.tui.width.cells_at_most`
+    (the larger of the two counts per character, zero-width counted as one).
+    A line that fits is kept as it is; the common, all-ASCII line costs one
+    check. One that does not first gives back the Panel's padding (the spaces
+    before its right border, which Rich added by its own smaller count); if it
+    still does not fit it is cut into rows that each do, so every character
+    lands on a row the viewport counts and the screen shows. The cost is a
+    broken right border on such a row.
+    """
+
+    from prompt_toolkit.formatted_text import ANSI, to_formatted_text  # noqa: PLC0415
+
+    from aelix_coding_agent.tui.width import cells_at_most  # noqa: PLC0415
+
+    rows: list[_Row] = []
+    for line in lines:
+        plain = _SGR.sub("", line)
+        if plain.isascii() and len(plain) <= width:
+            rows.append(line)
+            continue
+        if cells_at_most(plain) <= width:
+            rows.append(line)
+            continue
+        chars = [
+            (style, ch) for style, text, *_ in to_formatted_text(ANSI(line)) for ch in text
+        ]
+        excess = sum(cells_at_most(ch) for _style, ch in chars) - width
+        last = len(chars) - 1
+        while last >= 0 and chars[last][1] == " ":
+            last -= 1
+        if last > 0 and chars[0][1] == "│" and chars[last][1] == "│":
+            # Trailing spaces are invisible, so giving them back moves only the
+            # border; one is kept as the Panel's own margin.
+            first_pad = last
+            while first_pad > 1 and chars[first_pad - 1][1] == " ":
+                first_pad -= 1
+            take = min(excess, max(0, last - first_pad - 1))
+            del chars[last - take : last]
+            excess -= take
+        if excess <= 0:
+            rows.append(cast("StyleAndTextTuples", chars))
+            continue
+        rows.extend(_cut(cast("StyleAndTextTuples", chars), width))
+    return rows
+
+
+def _cut(chars: StyleAndTextTuples, width: int) -> list[StyleAndTextTuples]:
+    """One-character fragments cut into rows of at most *width* cells.
+
+    A row breaks after its last space when it has one, as Rich wraps, so a word
+    stays whole on the row that shows it; a run with no space is cut where the
+    row is full. Every character is kept, the spaces included.
+
+    The split repeats while the next character still does not fit (#389 review
+    round 3): a row can open with the space carried over from the last split,
+    and when it then fills to *width* and a two-cell character follows, one
+    split after that leading space left ``width - 1`` cells plus two, a row one
+    cell wider than the screen (measured: rows of 80, 1 and 81 cells at 80
+    columns for 30 skin-tone modifiers, 17 letters, two spaces, 30 modifiers,
+    19 letters and a Hangul syllable).
+    """
+
+    from aelix_coding_agent.tui.width import cells_at_most  # noqa: PLC0415
+
+    rows: list[StyleAndTextTuples] = []
+    row: StyleAndTextTuples = []
+    used = 0
+    for fragment in chars:
+        cells = cells_at_most(fragment[1])
+        while row and used + cells > width:
+            spaces = [i for i, f in enumerate(row) if f[1] == " "]
+            split = spaces[-1] + 1 if spaces and spaces[-1] + 1 < len(row) else len(row)
+            rows.append(row[:split])
+            row = row[split:]
+            used = sum(cells_at_most(f[1]) for f in row)
+        row.append(fragment)
+        used += cells
+    rows.append(row)
+    return rows
+
+
+class _BodyViewport:
+    """The scrolled body of every approval prompt and the footer under it.
+
+    #188 review round 2 built this for ``kind="other"``; #389 put every kind
+    behind it. The body sits in a height-capped modal: at 80x24 six
+    198-character argument values filled it and ``path`` and ``content`` were
+    below the fold, and a 400-word ``bash`` command showed up to ``arg130`` of
+    it, with nothing saying more was hidden, and Yes ran it.
 
     So the body control draws its own slice of the lines (the height it is
     given by the window it renders into, never a guess), and records every line
@@ -468,10 +712,11 @@ class _ArgumentViewport:
     "Shown" means drawn by a real render: scrolling without a repaint in
     between does not count, so keys typed ahead of the screen cannot approve.
     A width change re-wraps the body into different lines, so it forgets what
-    was shown.
+    was shown. The lines are display rows (:func:`_display_rows`), so a line is
+    counted only once it fits the screen by every measure of its width.
     """
 
-    def __init__(self, lines: Callable[[], list[str]], width_key: Callable[[], Any]) -> None:
+    def __init__(self, lines: Callable[[], list[_Row]], width_key: Callable[[], Any]) -> None:
         self._lines = lines
         self._width_key = width_key
         self.top = 0
@@ -495,7 +740,18 @@ class _ArgumentViewport:
             self.top = min(self.top, max(0, total - shown))
         chrome.invalidate()
 
-    def _draw(self, height: int | None) -> list[str]:
+    def page(self, direction: int, chrome: Any) -> None:
+        """PgUp / PgDn: one screenful less one line, so a page keeps one row of
+        context and no line is skipped (a skipped line would keep Yes held).
+
+        #389. #188 scrolled five lines a press, which was enough for an
+        argument list; a 121-line file then took 23 presses at 80x24 (9 now).
+        """
+
+        shown = self._frame[2] if self._frame is not None else 0
+        self.scroll(direction * max(1, shown - 1), chrome)
+
+    def _draw(self, height: int | None) -> list[_Row]:
         lines = self._lines()
         total = len(lines)
         shown = total if height is None else max(0, min(total, height))
@@ -507,21 +763,34 @@ class _ArgumentViewport:
         self._frame = (_render_stamp(), self.top, shown, total)
         return lines[self.top : self.top + shown]
 
-    def footer_text(self) -> str:
-        """The footer row for the frame being drawn (blank when all fits)."""
+    def footer_text(self, width: int | None = None) -> str:
+        """The footer row for the frame being drawn (blank when all fits).
+
+        When the full sentence is wider than *width* a shorter one is used, and
+        it STARTS with "Yes held", so the footer's own ``…`` (which cuts the
+        end) reaches it only below ``len("Yes held") + 1`` = 9 columns (#389: a
+        three-digit line count at 80 columns made the full one 81 cells; review
+        round 2 measured round 1's short form, which ended in "Yes held",
+        drawn as ``… · Ye…`` at 40 columns).
+        """
 
         frame = self._frame
         if frame is None or frame[0] != _render_stamp():
             # The body was not drawn this frame (no room for it at all).
-            return "The arguments do not fit on screen. Yes is held. Enlarge the terminal."
+            return _NO_ROOM
         _stamp, top, shown, total = frame
         hidden = total - shown
         if hidden <= 0:
             return ""
         above, below = top, total - top - shown
+        held = not self.all_shown()
         text = f"{hidden} of {total} lines hidden (↑{above} ↓{below}) · PgUp/PgDn to scroll"
-        if not self.all_shown():
+        if held:
             text += " · Yes held until all seen"
+        if width is not None and len(text) > width:
+            text = f"{hidden}/{total} hidden ↑{above} ↓{below} · PgUp/PgDn"
+            if held:
+                text = f"Yes held · {text}"
         return text
 
     def body_control(self) -> Any:
@@ -541,7 +810,10 @@ class _ArgumentViewport:
                 return len(viewport._lines())
 
             def create_content(self, width: int, height: int) -> UIContent:
-                fragments = [to_formatted_text(ANSI(line)) for line in viewport._draw(height)]
+                fragments = [
+                    to_formatted_text(ANSI(row)) if isinstance(row, str) else row
+                    for row in viewport._draw(height)
+                ]
                 return UIContent(
                     get_line=lambda i: fragments[i],
                     line_count=len(fragments),
@@ -557,7 +829,7 @@ class _ArgumentViewport:
 
         class _Footer(UIControl):
             def create_content(self, width: int, height: int) -> UIContent:
-                text = viewport.footer_text()
+                text = viewport.footer_text(width)
                 if len(text) > width:
                     text = text[: max(0, width - 1)] + "…"
                 fragments: StyleAndTextTuples = [("bold" if text else "", text)]
@@ -594,21 +866,18 @@ async def run_approval_dialog(
     height-caps the whole modal to the terminal; an HSplit shrinks its flexible
     child (the body) first and keeps the fixed child (the Yes/No option rows) at
     full height, so the security-critical deny option is ALWAYS visible even when
-    the diff body is far taller than the cap. The body scrolls (PageUp/PageDown,
-    a cursor-tracking control so prompt-toolkit's scroll-to-cursor reaches the
-    bottom) instead of clipping its overflow off the terminal.
+    the diff body is far taller than the cap.
 
-    #188 review round 2 — for ``kind="other"`` (a tool aelix did not build) the
-    body is an :class:`_ArgumentViewport` and the spacer row is its footer. Yes,
-    "Yes, for this session" (and any other approving row) is not taken until
-    every line of the body has been drawn; No, Esc and Ctrl+C always are. The
-    ``bash`` / ``write`` / ``edit`` bodies keep the scrolling above unchanged.
+    #188 review round 2, extended to every kind by #389 — the body is a
+    :class:`_BodyViewport` and the row between it and the options is its footer.
+    Yes, "Yes, for this session" (and any other approving row) is not taken
+    until every line of the body has been drawn; No, Esc and Ctrl+C always are.
+    PgUp/PgDn scroll a page, Ctrl+↑/↓ one line.
     """
 
-    from prompt_toolkit.data_structures import Point  # noqa: PLC0415
     from prompt_toolkit.formatted_text import ANSI  # noqa: PLC0415
     from prompt_toolkit.key_binding import KeyBindings  # noqa: PLC0415
-    from prompt_toolkit.layout import HSplit, ScrollOffsets, Window  # noqa: PLC0415
+    from prompt_toolkit.layout import HSplit, Window  # noqa: PLC0415
     from prompt_toolkit.layout.controls import FormattedTextControl  # noqa: PLC0415
     from prompt_toolkit.layout.dimension import Dimension  # noqa: PLC0415
 
@@ -627,45 +896,31 @@ async def run_approval_dialog(
     # Keyed on the resolved width, so an ordinary repaint costs one comparison
     # and only a real resize pays for a re-render.
     _width_of = width if callable(width) else (lambda: width)
-    _body: dict[str, Any] = {"width": None, "lines": [], "last": 0}
+    _body: dict[str, Any] = {"width": None, "lines": []}
 
-    def _body_lines() -> list[str]:
+    def _body_lines() -> list[_Row]:
         current = _width_of()
         if current != _body["width"]:
-            lines = build_approval_view(request, render_diff=render_diff, width=current)
+            _body["lines"] = _display_rows(
+                build_approval_view(request, render_diff=render_diff, width=current), current
+            )
             _body["width"] = current
-            _body["lines"] = lines
-            # The scroll bound moves with the line count: a narrower terminal
-            # wraps the command onto more rows, and a stale bound would strand
-            # the cursor short of the end of the body it exists to reveal.
-            _body["last"] = max(0, len(lines) - 1)
-        return cast("list[str]", _body["lines"])
+        return cast("list[_Row]", _body["lines"])
 
-    _body_lines()  # prime, so the scroll bound exists before the first paint
+    _body_lines()  # prime, so the first paint does not pay for the render
 
-    # ``scroll`` is the body line the cursor sits on — moving it lets ptk's
-    # scroll-to-cursor reveal the rest of an over-tall body. ``idx`` is the
-    # highlighted option row.
-    state = {"idx": 0, "scroll": 0}
-
-    def _render_body() -> str:
-        return "\n".join(_body_lines())
-
-    def _body_cursor() -> Point:
-        # Track the cursor on the active scroll line so scroll_offsets keep it
-        # (and therefore the surrounding lines) within the windowed body region.
-        return Point(x=0, y=max(0, min(state["scroll"], int(_body["last"]))))
+    # ``idx`` is the highlighted option row.
+    state = {"idx": 0}
 
     # Issue #161 — the rows this request shows, computed ONCE so the view,
     # the key bindings and the wrap-around arithmetic cannot disagree about
     # how many there are.
     rows_spec = rows_for(request)
 
-    # #188 review round 2: the body of a tool aelix did not build is all the
-    # user has to judge the call by, so Yes waits until every line of it has
-    # been on screen (:class:`_ArgumentViewport`).
-    gated = request.kind == "other"
-    arguments = _ArgumentViewport(_body_lines, lambda: _body["width"])
+    # #188 review round 2, every kind since #389: the body is all the user has
+    # to judge the call by, so Yes waits until every line of it has been on
+    # screen (:class:`_BodyViewport`).
+    viewport = _BodyViewport(_body_lines, lambda: _body["width"])
 
     def _render_options() -> str:
         return "\n".join(build_options_view(state["idx"], rows_spec))
@@ -674,10 +929,10 @@ async def run_approval_dialog(
         kb = KeyBindings()
 
         def _resolve(value: ApprovalDecision) -> None:
-            if gated and value not in _ALWAYS_ANSWERABLE and not arguments.all_shown():
-                # #188 review round 2: an approval while part of the
-                # arguments has never been on screen is not taken. The footer
-                # says how many lines are hidden and how to reach them.
+            if value not in _ALWAYS_ANSWERABLE and not viewport.all_shown():
+                # An approval while part of the body has never been on screen
+                # is not taken. The footer says how many lines are hidden and
+                # how to reach them.
                 chrome.invalidate()
                 return
             if not result.done():
@@ -696,25 +951,14 @@ async def run_approval_dialog(
             state["idx"] = (state["idx"] + 1) % len(rows_spec)
             chrome.invalidate()
 
-        # PageUp/PageDown (and Ctrl+Up/Ctrl+Down) scroll the body so a diff taller
-        # than the height cap stays fully reachable; option nav keeps ↑/↓.
-        def _scroll(delta: int) -> None:
-            state["scroll"] = max(0, min(state["scroll"] + delta, int(_body["last"])))
-            chrome.invalidate()
-
-        if not gated:
-            kb.add("pageup")(lambda _e: _scroll(-5))
-            kb.add("pagedown")(lambda _e: _scroll(5))
-            kb.add("c-up")(lambda _e: _scroll(-1))
-            kb.add("c-down")(lambda _e: _scroll(1))
-
-        if gated:
-            # #188 review round 2. Bound to ``arguments`` (not the generic
-            # ``_scroll``) so the clamp follows what the body ACTUALLY draws.
-            kb.add("pageup")(lambda _e: arguments.scroll(-5, chrome))
-            kb.add("pagedown")(lambda _e: arguments.scroll(5, chrome))
-            kb.add("c-up")(lambda _e: arguments.scroll(-1, chrome))
-            kb.add("c-down")(lambda _e: arguments.scroll(1, chrome))
+        # PageUp/PageDown (and Ctrl+Up/Ctrl+Down) scroll the body so a body
+        # taller than the height cap stays fully reachable; option nav keeps
+        # ↑/↓. Bound to the viewport so the clamp follows what the body
+        # ACTUALLY draws.
+        kb.add("pageup")(lambda _e: viewport.page(-1, chrome))
+        kb.add("pagedown")(lambda _e: viewport.page(1, chrome))
+        kb.add("c-up")(lambda _e: viewport.scroll(-1, chrome))
+        kb.add("c-down")(lambda _e: viewport.scroll(1, chrome))
 
         kb.add("enter")(_confirm)
         kb.add("c-j")(_confirm)
@@ -735,23 +979,12 @@ async def run_approval_dialog(
         # The body is FLEXIBLE (shrinks under the cap → scrolls); the options
         # window is FIXED at exactly its row count (it is the cursor/focus owner
         # so the dialog navigates), pinned below the body OUTSIDE the cap's
-        # squeeze so Yes/No can never be clipped. A blank spacer separates them.
+        # squeeze so Yes/No can never be clipped. The footer separates them: it
+        # draws its own slice of the body, so it knows exactly which lines
+        # reached the screen.
         n_option_rows = len(rows_spec) + 1  # rows + the hint line
-        if gated:
-            # #188 review round 2: the argument body draws its own slice of
-            # the rows, so it knows exactly which ones reached the screen, and
-            # the line under it (where the blank spacer was) is the footer.
-            body_window = Window(arguments.body_control(), wrap_lines=False)
-            spacer = Window(arguments.footer_control(), height=Dimension.exact(1))
-        else:
-            body_window = Window(
-                FormattedTextControl(
-                    lambda: ANSI(_render_body()), get_cursor_position=_body_cursor
-                ),
-                scroll_offsets=ScrollOffsets(top=1, bottom=1),
-                wrap_lines=False,
-            )
-            spacer = Window(height=Dimension.exact(1))
+        body_window = Window(viewport.body_control(), wrap_lines=False)
+        footer = Window(viewport.footer_control(), height=Dimension.exact(1))
         options_window = Window(
             FormattedTextControl(
                 lambda: ANSI(_render_options()), focusable=True, key_bindings=kb
@@ -759,7 +992,7 @@ async def run_approval_dialog(
             height=Dimension.exact(n_option_rows),
             dont_extend_height=True,
         )
-        return HSplit([body_window, spacer, options_window])
+        return HSplit([body_window, footer, options_window])
 
     decision = await show_modal(chrome, build)
     return decision if isinstance(decision, ApprovalDecision) else ApprovalDecision.CANCEL

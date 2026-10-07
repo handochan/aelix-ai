@@ -417,12 +417,12 @@ def _request_kind(tool_name: str) -> str:
 
 
 def _summary(tool_name: str, args: dict[str, Any]) -> str:
-    """A short one-line summary of the call for the dialog title."""
+    """The whole command or path for the ``ctx.ui.select`` title (#389)."""
 
     if tool_name in _BASH_TOOLS:
-        return _command_from_args(args).strip()[:120]
+        return _command_from_args(args).strip()
     if tool_name in _WRITE_TOOLS:
-        return _path_from_args(args).strip()[:120]
+        return _path_from_args(args).strip()
     return ""
 
 
@@ -868,11 +868,20 @@ class PermissionExtension:
         if self.approval_runner is not None:
             return await self._prompt_via_dialog(event, redirect, provenance)
 
-        # aelix's own bash / write / edit keep their one-line command or path.
-        # Every other tool shows EVERY argument, each value bounded (#188 round
-        # 1): this title is all a generic ``ctx.ui.select`` host shows, and a
-        # bare "Allow fs__write_file?" asks the user to approve a call they
-        # cannot see. The same rows the approval dialog prints.
+        # aelix's own bash / write / edit show their whole command or path.
+        # #389: it stopped at 120 characters, so a host that binds a UI but no
+        # approval dialog (an embedding that calls ``bind_ui``; the TUI always
+        # wires the dialog, and -p / json / rpc have no UI) was asked about the
+        # start of a command whose end is what it does. A write's or an edit's
+        # CONTENT is not in this title, a residual of this path (ADR-0253
+        # §11). Every other tool shows EVERY argument, each value whole (#188
+        # round 1; the 200-character cut went in #389 review round 2): this
+        # title is all a generic ``ctx.ui.select`` host shows, and a bare
+        # "Allow fs__write_file?" asks the user to approve a call they cannot
+        # see. The same rows the approval dialog prints. The title is sent
+        # whole; how much of it the host draws is the host's. aelix's own
+        # ``ctx.ui.select`` (unchanged here) cuts a title row at the screen
+        # edge and takes Enter at once: that surface is issue #399.
         if provenance in ("bash", "write"):
             summary = _summary(event.tool_name, event.args)
         else:

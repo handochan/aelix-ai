@@ -1,6 +1,6 @@
 # 0253. The permission gate treats any tool it does not know as mutating
 
-Status: Accepted (2026-10-06)
+Status: Accepted (2026-10-06); amended 2026-10-07 (#389, §11: every approval prompt holds Yes); amended 2026-10-08 (#389 review rounds 2 and 3, §11.1 and §11.2: nothing in aelix's approval prompt is cut, §8's value bound included; an extension's `select` / `confirm` is not covered and is #399)
 Date: 2026-10-06
 Amends: **ADR-0157** ("mutating" is no longer a name set, so PLAN's guarantee and the
 AUTO_ACCEPT / AUTO auto-allow now reach every tool), **ADR-0197** §(e) (the child's
@@ -25,7 +25,10 @@ wording),
 `tests/builtin/test_sensitive_aelix_dir.py`, `tests/cli/test_extending_aelix_skill.py`
 (premises moved), `tests/tui/test_approval_dialog.py` (the held Yes, §9). Probes:
 `.omc/probes/188-live/impl/`, for review round 1 `.omc/probes/188-live/fix2/`, and for
-review round 2 `.omc/probes/188-live/fix3/`.
+review round 2 `.omc/probes/188-live/fix3/`. #389 (§11): `tests/tui/test_approval_dialog.py`
+(the `#389` section) and `tests/builtin/test_permission_unknown_tools_188.py`
+(`test_the_generic_fallback_title_carries_the_whole_command_and_path`); probes
+`.omc/probes/389-live/impl/`.
 
 ## 1. What was measured
 
@@ -260,7 +263,11 @@ wrong, and each is now fixed and pinned (`.omc/probes/188-live/fix2/`):
   line was the other option. It was not taken, because a "+N more" line would still need a
   way to see the rest before Yes. (This round also claimed that bounding each value keeps
   the body short. It does not keep it on screen, and review round 2 measured Yes going
-  through with `path` below the fold. §9 corrects it.)
+  through with `path` below the fold. §9 corrects it.) **Superseded by §11.1
+  (2026-10-08):** each value was cut at 200 characters and each key at 60, with a marker.
+  Once the hold existed the cut only did harm: a body that fit the screen took Yes at
+  once, so the rest of a 417-character `content` was approved without ever being drawn.
+  Values and keys are now shown whole.
 - **The generic `ctx.ui.select` fallback showed only "Allow <name>?"** for these tools. On
   `aab1f210` it showed the command or path of a tool named `shell` or `write_file`, by
   name. The title now carries every argument, as the dialog does.
@@ -325,12 +332,14 @@ rows were reachable with PageDown, but nothing said so.
   up to `arg130`, nothing said more was hidden, and 1 ran it and wrote `out.txt`.
   `aab1f210` and `1efb91d1` behave the same way
   (`.omc/probes/188-live/verify3/runs_tui/d4o-*`, `d4r-*`). It is the #166 class in aelix's
-  own dialog, and it is left to a follow-up issue.
+  own dialog, and it is left to a follow-up issue. **Superseded by §11 (#389, 2026-10-07):**
+  every kind is held now.
 - **Tests that could not see a cap.** Every "every argument" row used exactly eight
   arguments, so a renderer that stopped at eight, or one whose count line said nine and
   printed eight, passed. Rows with 9, 20 and 60 arguments, the decisive one last, now
   cover the dialog body and the `ctx.ui.select` title. The 60-character key bound and the
-  one-row-per-argument layout that the docs describe are pinned too.
+  one-row-per-argument layout that the docs describe are pinned too. (The key bound is
+  gone since §11.1.)
 
 Measured live in a pty (real CLI, local stdio MCP server, scripted mock model,
 `.omc/probes/188-live/fix3/tui_fix3.summary.txt`): with `path` off screen, 1, y, 2, s and
@@ -354,3 +363,194 @@ noted that §9 overstated two things. It said a prompt that fits answers "exactl
 before", but a key typed before the first paint is now held. It also gave a reason for
 leaving `bash`, `write` and `edit` out of the hold that does not hold for a long command.
 §9 is corrected above. Nothing else in the dialog's behaviour changed.
+
+## 11. Every approval prompt holds Yes (#389, 2026-10-07)
+
+§9 held Yes for `kind="other"` only. aelix's own `bash`, `write` and `edit` prompts still
+drew their body in ADR-0159's scrolling window with no footer and took Yes at once. The
+defect was reproduced on `402a8013` before any change (real CLI, pty 80x24, scripted mock
+model, `.omc/probes/389-live/impl/runs_before/`):
+
+- `bash`: `true arg000 … arg399 ; echo TAIL_MARKER_389 >> out.txt` showed up to `arg130`,
+  and 1 ran it once.
+- `write`: 121 lines whose last is the decisive one. The preview stopped at 40 lines, and 1
+  wrote the file.
+- `edit`: the same, and 1 applied the edit.
+- `write` of one 265-character line: the body fit the screen, but `_render_diff` cut the
+  row at the Panel width with `…`, so the end of the line was never drawn, and 1 wrote it.
+
+Decision:
+
+- **One viewport for every kind.** `_ArgumentViewport` is renamed `_BodyViewport` and is
+  the body of every approval prompt. The scrolling body ADR-0159 introduced, which
+  followed a cursor, is gone. The hold rule is §9's, unchanged: Yes, "Yes, for this
+  session" and any other approving row wait until every line of the current body has
+  been drawn by a real paint. No, Esc and Ctrl+C always answer. A key typed before the
+  first paint is dropped.
+- **Nothing in an approval body is elided.** The write and edit diffs are rendered with
+  `max_lines` set to their own line count and no width cap, so a row wider than the
+  Panel wraps instead of ending in `…`. `_MAX_BODY_LINES` is removed. (This bullet kept
+  §8's bound on one argument value of a tool aelix did not build, 200 characters with a
+  marker. §11.1 removed it.)
+- **The body cannot steer the terminal.** Every model- or author-chosen string in the
+  body and title (the command, the path, the file text, the edit text, the tool name)
+  goes through `safe_for_terminal` first, with newlines and tabs kept in multi-line text
+  and a space for a control in a one-line row. On `402a8013`, `ESC [8m` in a command
+  reached prompt-toolkit's `ANSI` parser and hid the rest of the line. That text was
+  drawn, so the hold would have counted it as shown. `\x01 … \x02` was passed to the
+  terminal raw. The escape is now dropped and its literal (`[8m`) stays visible.
+  Argument values of other tools were already `repr`'d. (§11.1 replaced the dropping:
+  each removed character is now drawn as its name. Whitespace is the stated exception,
+  §11.2.)
+- **PgUp/PgDn move a page.** A press scrolls one screenful less one line, so a page keeps
+  one line of context and skips none. #188's five lines took 23 presses for a 121-line
+  write at 80x24 (ceil(112 / 5); this said 25 until review round 2 measured it).
+  Ctrl+↑/↓ still move one line.
+- **The footer keeps "Yes held" on screen.** When the full sentence is wider than the
+  modal, a shorter form is used. A three-digit count at 80 columns made the full sentence
+  81 cells, and the footer's own `…` cut "Yes held". (Round 1's short form ended in
+  "Yes held" and was itself cut at 40 columns; §11.1 moved it to the front.)
+- **The `ctx.ui.select` fallback title carries the whole command or path.** It stopped at
+  120 characters. Only a host that binds a UI without the approval dialog reaches it. The
+  TUI always wires the dialog, and `-p`, json and rpc have no UI.
+
+pi (`27c7b6ff4`) has no permission gate. Its `examples/extensions/permission-gate.ts`
+puts the whole command in the title of `ctx.ui.select`, and `ExtensionSelectorComponent`
+draws that title as a wrapped `Text` with no height limit. pi's TUI writes into the
+terminal's own scrollback, so a long title can be scrolled back to, but pi does not
+check that it was. aelix draws its prompts as a height-capped modal (ADR-0159), so it
+needs this viewport and the hold.
+
+Costs and residuals:
+
+- **A long write needs paging.** At 80x24 the body shows 14 rows, so a page is 13. The
+  121-line write took nine PgDn presses before Yes answered (measured live), and a
+  10,000-line file of short lines takes about 770. A 10,000-line body of 80-character
+  lines (20,005 rows) renders in 0.34 s, and only a width change renders it again.
+  Whether a very large write should be refused outright is left open.
+- **The fallback still shows no content.** On the `ctx.ui.select` path, `write` and
+  `edit` show only the path. That path has no viewport to hold.
+- A resize while the prompt is open still forgets what was drawn (§9), so a resized
+  prompt holds Yes until it is scrolled through again.
+
+Evidence (`.omc/probes/389-live/impl/`): `runs_before/` and `runs_after/` (pty screens on
+`402a8013` and on the fix), `red_on_402a8013.out` (the new rows against the old code: 39
+fail), `sabotage.out` (each fix piece reverted separately, each red).
+
+### 11.1 Review round 2 (2026-10-08)
+
+The verification pass of the first #389 commit failed with five blocking items, and a
+Codex cross-review, stopped by a content filter, left two unconfirmed candidates
+(`.omc/specs/batch-beta3-r1-results.json`, keys "#389 verify" and "#389 codex"). Each was
+reproduced before it was fixed, in-process on `402a8013` and on round 1's `1c8eb79a`, and
+live in a pty (`.omc/probes/389-live/r2/`).
+
+- **The edit body is the list the edit tool applies.** The tool does not apply
+  `args["edits"]`; it applies `prepare_edit_arguments(args)` (pi's `prepareArguments`),
+  which parses `edits` sent as a JSON string and appends a top-level `oldText`/`newText`
+  pair. The dialog drew `edits` only, so a call with both shapes showed `-hello`/`+HELLO`,
+  and 1 also applied the hidden pair (live on both commits). The body is now built from
+  that function's output, each edit headed `@@ edit i of n @@` when there are several; an
+  entry the tool refuses is shown as it is, and arguments it cannot read as edits are
+  shown raw. The JSON-string shape is rejected by schema validation before the gate
+  today; the body follows the tool's function rather than that ordering.
+- **The path the write lands on.** The same sweep found the write and edit tools pass the
+  path through `expand_path` (one leading `@` dropped, `~` expanded, NFC, unusual spaces
+  made ASCII), so `@~/.bashrc` writes the home directory's `.bashrc`. When that changes the
+  path, a row under it says `The tool writes to: …`. `bash` runs `command` as sent; a
+  user's `shellCommandPrefix` and an extension's spawn hook are the user's and the
+  extension's own configuration and are not shown. Arguments of other tools are shown as
+  the loop hands them to `execute`.
+- **Nothing is cut, for any kind.** §8's 200-character value bound and 60-character key
+  bound are removed. The no-exception rule is: aelix's approval prompt (every kind) takes
+  no approving answer on content that has not been drawn. A long value now costs PgDn, not consent; the
+  `ctx.ui.select` fallback title carries every value whole as well.
+- **Removed characters are named, not deleted.** `safe_for_terminal` deleted ESC, CR, VT
+  and the rest, so `echo a;ESC[8m echo b` was shown as `echo a;[8m echo b` while the shell
+  ran the ESC. Each character it would remove is now drawn as its caret name (`^[`, `^M`,
+  `^?`) or, past C0, as `<U+202E>`, in reverse video, so it does not read as the same
+  letters typed. A newline and a tab stay as they are in a body and are named in a
+  one-row field (a path, a tool name, an option label); a file's lines split at `\n` only,
+  so a CR stays on its line. The hold counts the rows after this: 400 CRs are 800 cells.
+  The option rows go through the same function, since the #161 redirect label carries the
+  model's file name. Whitespace kinds are not shown (a tab is drawn as spaces, a final
+  newline as none): §11.2.
+- **Model text is never Rich markup.** A `str` Panel title is parsed as markup, so a path
+  or tool name with `[/]` raised `MarkupError`; the fallback then drew
+  `<rich.console.Group object at 0x…>`, one row, nothing was held, and 1 answered (Codex's
+  candidate A, confirmed in-process and live on `402a8013` and `1c8eb79a`). The title is a
+  `Text`, and the fallback for a Panel that cannot render is the same rows as plain text.
+- **The viewport counts what the painter draws.** Rich wraps by its own cell widths and
+  prompt-toolkit paints by wcwidth's (pyte agrees with wcwidth). For a regional indicator
+  Rich says 1 cell and wcwidth 2, for a skin-tone modifier 0 and 2, so
+  `echo` + 30 x U+1F1E6 + `; echo TAIL` was one row to the viewport, painted 30 cells wider,
+  and was cut at the border: counted as drawn, tail never on screen, Yes taken (Codex's
+  candidate B, confirmed in-process, in pyte and live). Each body line is now measured by
+  `cells_at_most` (the larger of the two counts, a zero-width character counted as one);
+  a line that does not fit first gives back the Panel's padding and is then cut into rows
+  that each fit, breaking after a space where it can. Terminals set to draw East Asian
+  ambiguous characters two cells wide are not modelled, as nowhere else in the TUI.
+- **An extension's `select` and `confirm`: reverted, now #399 (§11.2).** pi's
+  `permission-gate.ts`, ported verbatim, calls `ctx.ui.select` with the whole command in
+  the title; aelix draws the title as one row cut at column 80 with no marker, and Enter
+  runs the command (pi's `ExtensionSelectorComponent` wraps it,
+  `extension-selector.ts:48`). Round 2 wrapped and held that title; round 3 took the
+  change out because it broke ordinary pickers.
+- **The text.** The footer's short form starts with "Yes held"
+  (`Yes held · 112/126 hidden ↑0 ↓112 · PgUp/PgDn`), so the footer's own `…` reaches it only
+  below 9 columns; round 1's form was drawn `… · Ye…` at 40. #188's step took 23 presses,
+  not 25.
+- **A test for the redirect row.** The #161 redirect row approves a write and was held
+  correctly, but a hold that checked only Yes and "Yes, for this session", or one that put
+  REDIRECT among the always-answerable rows, left every test green. Rows now press 3, p,
+  P and Enter on it while held (no answer), page to the end, and press it again.
+
+Residuals kept as follow-ups: the `ctx.ui.select` fallback shows no write or edit
+content; a very large approval needs many PgDn; a resize forgets what was drawn.
+
+### 11.2 Review round 3 (2026-10-08)
+
+The verification of round 2 failed on one blocking regression, and a full Codex
+cross-review added four findings (`.omc/specs/batch-beta3-r2-results.json`, keys
+"#389 verify r2" and "#389 codex r2"; probes `.omc/probes/389-live/r2verify/`,
+`r2cross/` and `r3/`).
+
+- **Scope: aelix's own approval prompt only. An extension's `select` / `confirm` is
+  not covered and is issue #399.** Round 2's held `select` withheld its title whenever
+  the option, detail and hint rows left it no row, and then held Enter for good, even for
+  a one-row title. `/model` (30 models) at 80x22, `/settings` at 80x16 and an 8-option
+  `select` at 80x16 could be left only with Esc; on `61f03b67` Enter answers in each.
+  Codex also found that `select` and `confirm` took Enter before any paint when the title
+  was predicted to fit, that a CR in a title was drawn as a space, and that a mutant
+  holding only the first option passed every test. All of that, and the spawn-consent
+  dialog's own cuts (a task at 300 characters, a directory at 68, ADR-0199 S4), move to
+  #399. `tui/context.py` is as on `61f03b67`, and `aelix_agents/consent.py` differs only
+  in three comment lines (two re-derived `approval_dialog.py` citations and the layout
+  they describe), so an
+  extension's `select` title and `confirm` message are drawn as before: one row per line,
+  cut at the screen edge with no marker, Enter or `y` taken at once. A permission-gate
+  extension can therefore still have a command run whose tail was never drawn. The
+  permission gate's own `ctx.ui.select` fallback keeps sending the whole command or path
+  (it does not depend on `select`); when aelix's own `select` draws it, a row wider than
+  the screen is cut there, which is #399 too.
+- **Whitespace is not shown (decision).** Rich expands a tab into spaces, so a command
+  with a tab and the same command with spaces draw the same screen, and a `write` whose
+  content ends in a newline draws the same as one without (Codex, measured). Accepted
+  and documented rather than fixed: whitespace kinds are not distinguished; every other
+  character `safe_for_terminal` removes is drawn by name in reverse video.
+- **A cut row could end one cell past the edge.** After a split, the next row can open
+  with the carried space; when it fills to the width and a two-cell character follows,
+  one split after the space left `width - 1` cells plus two (rows of 80, 1 and 81 cells
+  at 80 columns, the verifier's probe). `_cut` now keeps splitting while the next
+  character does not fit.
+- **A name in an option label is pinned in reverse video.** Dropping SGR 7 from the
+  option rows left every test green; a row now checks the style. Review round 4 pinned
+  the rest: the write and edit diff rows, the Panel title and the head row
+  (`Create/overwrite`, `Edit`, `Tool:`, `The tool writes to:`) draw a name in reverse
+  video, and a newline or tab in an option label is named on its one row, never obeyed.
+- **Residual: the Panel title and the option labels are cut at the screen edge.** Only
+  the body is whole. A path longer than the title row loses its tail there, and the
+  #161 redirect label (`Only this project (<cwd>/.aelix/extensions/<name>)`) is cut at
+  the edge of the option row in an ordinary project at 80 columns, so `3` approves a
+  target whose tail is drawn in neither. The body holds the full path the model chose,
+  and the directory in the label comes from aelix, not the model.

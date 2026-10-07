@@ -462,17 +462,19 @@ async def test_the_dialog_is_handed_and_shows_every_argument() -> None:
         assert f"{key}={value!r}" in body, f"{key} is not on the approval prompt"
 
 
-def test_one_long_value_is_cut_visibly_and_does_not_bury_the_next_key() -> None:
-    """Each value is bounded with a marker, so a 5000-character first argument
-    can neither run on for dozens of rows nor push ``path`` off the body."""
+def test_one_long_value_is_shown_whole_and_the_next_key_after_it() -> None:
+    """#389 review round 2 removed ADR-0253 §8's 200-character cut: the rest of
+    a long value was approved unseen whenever the cut body fit the screen. The
+    whole value is drawn and the hold (``_BodyViewport``) makes it cost paging,
+    so ``path`` after a 5000-character value is still on the body, last."""
 
     from aelix_coding_agent.tui.approval_dialog import ApprovalRequest
 
     body = _rendered(ApprovalRequest(tool_name="t", args={"a": "x" * 5000, "path": "evil.txt"}))
 
     assert "path='evil.txt'" in body
-    assert "more chars)" in body
-    assert len(body.splitlines()) < 15
+    assert "more chars" not in body
+    assert "a='" + "x" * 5000 + "'" in re.sub(r"[│\s]", "", body)
 
 
 def test_an_argument_name_cannot_draw_a_row_of_its_own() -> None:
@@ -527,6 +529,21 @@ async def test_no_row_cap_in_the_generic_fallback_title(n: int) -> None:
     assert title.count("='routine'") == n - 1
 
 
+async def test_the_generic_fallback_title_carries_a_long_value_whole() -> None:
+    """#389 review round 2: the same rows as the dialog, so no value cut here
+    either. The title is sent whole; aelix's own ``select`` still cuts a long
+    title row at the screen edge, which is issue #399."""
+
+    ui = _UI(answer="No")
+    value = "safe " * 100 + "DECISIVE_TAIL"
+    await _gate(
+        _perm(PermissionMode.DEFAULT),
+        _event(_mcp_tool("write_file"), {"content": value, "path": "p.txt"}),
+        _Ctx(has_ui=True, ui=ui),
+    )
+    assert f"content={value!r}" in ui.titles[0]
+
+
 def _body_rows(request: Any) -> list[str]:
     """The text between the Panel's side borders, one entry per body line."""
 
@@ -555,16 +572,16 @@ def test_each_argument_is_a_row_of_its_own() -> None:
     ]
 
 
-def test_an_argument_name_is_cut_at_sixty_characters_with_a_marker() -> None:
+def test_an_argument_name_is_shown_whole() -> None:
+    """The 60-character key cut went with the value cut (#389 review round 2)."""
+
     from aelix_coding_agent.tui.approval_dialog import ApprovalRequest, argument_rows
 
     key = "k" * 100
-    assert argument_rows({key: 1}) == ["k" * 60 + "… (+40 more chars)=1"]
-    assert argument_rows({"k" * 60: 1}) == ["k" * 60 + "=1"]
+    assert argument_rows({key: 1}) == ["k" * 100 + "=1"]
     body = _rendered(ApprovalRequest(tool_name="t", args={key: 1, "path": "evil.txt"}))
-    assert "k" * 61 not in body
-    # The cut row wraps inside the Panel at width 80; compare without layout.
-    assert "…(+40morechars)=1" in re.sub(r"[│\s]", "", body)
+    # The row wraps inside the Panel at width 80; compare without layout.
+    assert "k" * 100 + "=1" in re.sub(r"[│\s]", "", body)
     assert "path='evil.txt'" in body
 
 
@@ -601,6 +618,26 @@ async def test_the_generic_fallback_keeps_aelix_own_one_line_summary() -> None:
     for name, args, title in [
         ("bash", {"command": "git status"}, "Allow bash? git status"),
         ("write", {"path": "src/a.py", "content": "x"}, "Allow write? src/a.py"),
+    ]:
+        ui = _UI(answer="No")
+        await _gate(
+            _perm(PermissionMode.DEFAULT),
+            _event(BUILTIN_TOOLS[name], args),
+            _Ctx(has_ui=True, ui=ui),
+        )
+        assert ui.titles == [title]
+
+
+async def test_the_generic_fallback_title_carries_the_whole_command_and_path() -> None:
+    """#389: the title stopped at 120 characters, so a host with a UI and no
+    approval dialog was asked about the start of a command whose end is what
+    it does."""
+
+    command = "true " + " ".join(f"arg{i:03d}" for i in range(400)) + " ; echo TAIL_MARKER_389"
+    path = "d/" * 80 + "TAIL_389.txt"
+    for name, args, title in [
+        ("bash", {"command": command}, f"Allow bash? {command}"),
+        ("write", {"path": path, "content": "x"}, f"Allow write? {path}"),
     ]:
         ui = _UI(answer="No")
         await _gate(
