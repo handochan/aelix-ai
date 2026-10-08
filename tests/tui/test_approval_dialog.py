@@ -1317,11 +1317,20 @@ def test_the_dialog_reaches_the_carried_space_case_and_fits() -> None:
 
 
 def test_cut_rows_fit_and_keep_every_character_for_mixed_widths() -> None:
-    """A seeded sweep over one- and two-cell characters and spaces."""
+    """A seeded sweep over one- and two-cell characters and spaces.
+
+    #399 review round 3: rows are cut between grapheme clusters, never inside
+    one (``e`` + U+0301 kept its accent on the next row), and a cluster is
+    measured whole: the mark on a letter is no cell of its own, so a row is
+    measured by ``cells_by_cluster`` (which also keeps a final mark off the
+    last column) and by prompt-toolkit's own count, not by ``cells_at_most``.
+    The one split allowed inside a cluster is of a cluster wider than a row
+    (a run of skin-tone modifiers on one letter)."""
 
     import random
 
-    from aelix_coding_agent.tui.width import cells_at_most
+    from aelix_coding_agent.tui.width import cells_by_cluster, cluster_cells, graphemes
+    from prompt_toolkit.utils import get_cwidth
 
     rng = random.Random(389)
     alphabet = ["a", " ", "\uac00", "\U0001f3fb", "\U0001f1e6", "e\u0301"]
@@ -1330,8 +1339,36 @@ def test_cut_rows_fit_and_keep_every_character_for_mixed_widths() -> None:
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 90)))
         rows = _cut_texts(text, width)
         assert "".join(rows) == text
-        assert all(cells_at_most(row) <= width for row in rows), (width, text)
+        assert all(cells_by_cluster(row) <= width for row in rows), (width, text)
+        assert all(get_cwidth(row) <= width for row in rows), (width, text)
+        bounds, at = set(), 0
+        for cluster in graphemes(text):
+            at += len(cluster)
+            bounds.add(at)
+            if cluster_cells(cluster, ends_row=True) > width:
+                bounds.update(range(at - len(cluster), at))
+        at = 0
+        for row in rows[:-1]:
+            at += len(row)
+            assert at in bounds, (width, text, rows)
 
+
+
+def test_a_combining_mark_stays_on_its_letter_s_row() -> None:
+    """#399 review round 3 (Codex on the select title, the same ``_cut``): cut
+    by code point, a letter on the last column kept its row and its accent
+    went to the next, so the body drew ``e`` and a bare U+0301. The cluster
+    moves whole."""
+
+    from aelix_coding_agent.tui.approval_dialog import _display_rows
+
+    accented = "e\u0301"
+    line = "│" + "a" * 78 + accented + "bbb│"
+    rows = _display_rows([line], 80)
+    texts = ["".join(f[1] for f in r) if not isinstance(r, str) else r for r in rows]
+    assert "".join(texts) == line
+    assert sum(t.count(accented) for t in texts) == 1, texts
+    assert not any(t.startswith("\u0301") for t in texts)
 
 
 def test_a_line_one_cell_too_wide_is_still_cut() -> None:

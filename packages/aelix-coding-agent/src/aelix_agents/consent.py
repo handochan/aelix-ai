@@ -65,11 +65,16 @@ the hook already validated and every member's task is on screen, whereas the mem
 covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
-(``tui/context.py:140-218``, ``:476-479``) and ``tui/overlay.py``'s
+(``tui/context.py:148-226``, ``:797-800``) and ``tui/overlay.py``'s
 ``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
+#399 (2026-10-08): the select now wraps its title and, for a dialog whose title
+is not aelix's own (this one), draws a title that fits with its highlighted
+option whole while the option rows scroll, and scrolls only a taller title,
+holding every option but ``Cancel`` until the title has been drawn, so the task
+and the directory are no longer cut before they reach it.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
 mode. ``extensions/api.py:1216-1217`` returns ``runtime.ui is not
@@ -105,7 +110,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:749``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:750``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -132,28 +137,36 @@ def _consent_lock() -> asyncio.Lock:
 
 
 TASK_PREVIEW_CHARS = 300
-"""Budget for the model-authored task text in the dialog title (residual R2).
+"""Budget for the task preview a spawn receipt records (``runtime.py``).
 
-Two jobs. Prompt-injection: a long task can bury the real instruction below the
-fold, so the human approves something they never read. And rendering: our
-dialog is already taller than the shipped approval dialog, and
-``tui/overlay.py``'s ``_CappedContainer`` clips rather than scrolls, so an
-unbounded title can push the OPTIONS off screen — which would make Cancel
-unreachable."""
+NOT A DIALOG BUDGET ANY MORE (#399, 2026-10-08). It bounded the model-authored
+task in the consent title (ADR-0197 residual R2) for two reasons: a long task
+could bury the real instruction below the fold, and ``ctx.ui.select`` neither
+wrapped nor scrolled its title, so an unbounded one pushed the options off
+screen. Both are now the select's job: it wraps the title and, when the title is
+taller than the room the modal gives it, scrolls it with the options kept in
+place and holds every option until all of it has been drawn
+(``tui/context.py``'s ``_TitleHeldControl``, ADR-0253 §11.3). The cut became the
+defect: the human approved a task whose end they were never shown. The
+single-task dialog therefore shows the WHOLE task (ADR-0199 §(c), amended)."""
 
 BATCH_TASK_PREVIEW_CHARS = 72
 """Per-member task budget in a MULTI-task dialog (P3 §3.7).
 
 Deliberately NOT :data:`TASK_PREVIEW_CHARS`, and deliberately smaller. The modal
-does not wrap (``tui/context.py:476-479`` builds its ``Window`` with
-``wrap_lines`` left at its default ``False``), so on an 80-column terminal a
-300-character preview would render as ONE row of which about 72 characters are
-visible and the remainder is INVISIBLY clipped — the silent drop S4 forbids, and
-it would also make the row count no longer equal the member count. 72 is one
+did not wrap when this was written, so on an 80-column terminal a 300-character
+preview would have rendered as ONE row of which about 72 characters were
+visible and the remainder INVISIBLY clipped — the silent drop S4 forbids — and it
+would also make the row count no longer equal the member count. 72 is one
 visible row at 80 columns once the ``[k/N] `` prefix is paid for, so what is on
 screen and what was budgeted are the same thing. This is a deliberate amendment
 to ADR-0197 residual R2's "truncate the task to 300 characters" for multi-task
-dialogs; single-task dialogs keep 300 unchanged."""
+dialogs.
+
+#399 (2026-10-08) removed the single-task cut and the ``Directory:`` elision —
+the select wraps and holds now — and left this one: a member's row ends in a
+visible ``…``, and one row per member is what :func:`batch_dialog_fits` counts.
+Whether a member's whole task should be shown too is a follow-up to #399."""
 
 BATCH_HEADER_ROWS = 6
 """Rows a batch title spends before the first task row (P3 §3.7).
@@ -364,7 +377,7 @@ def contains_control_chars(value: str) -> bool:
     return any(char in _CONTROL_CHARS for char in value)
 
 
-def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
+def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) -> str:
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
@@ -373,7 +386,7 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
     things with the composed title: it SPLITS IT ON ``\\n`` into rows and it
-    ANSI-PARSES it (``tui/context.py:140-218``). A single directory of 150 bytes
+    ANSI-PARSES it (``tui/context.py:148-226``). A single directory of 150 bytes
     was demonstrated end-to-end to render a coherent, benign dialog — right
     ``Directory:``, right ``Permission: plan``, two innocuous task rows — while
     hiding the REAL permission row and the REAL tasks behind ``\\x1b[8m`` (SGR 8,
@@ -390,13 +403,14 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     2. control characters DELETED (:data:`_CONTROL_KILL`) — no ESC means no SGR,
        no hidden text and no cursor movement;
     3. bounded to :data:`DIALOG_FIELD_CHARS` — one VISIBLE row, so the row that
-       was counted is the row that is read. The modal does not wrap
-       (``tui/context.py:476-479``), so without this an over-long field is
-       clipped invisibly.
+       was counted is the row that is read. The modal did not wrap, so without
+       this an over-long field was clipped invisibly. ``limit=None`` keeps the
+       whole value, for the ``Directory:`` row and the task since #399: the
+       select wraps them and holds its options until they have been drawn.
     """
 
     flat = " ".join(str(value).split()).translate(_CONTROL_KILL)
-    if len(flat) <= limit:
+    if limit is None or len(flat) <= limit:
         return flat
     return flat[: limit - 1] + "…"
 
@@ -404,8 +418,16 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
 def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     """:func:`_sanitize_field` for a PATH — elides the MIDDLE, and that is security.
 
+    Since #399 this serves ``Source:`` only. The ``Directory:`` row shows the
+    whole directory (:func:`_sanitize_field` with ``limit=None``): the select
+    wraps it now, and holds its options until every row has been drawn, so the
+    elision below stopped being the safe option and became a cut — the human
+    approved a directory whose middle was never on screen. ``Source:`` is the
+    path the model cannot influence, and its elision is kept. What follows is
+    the reasoning as it stood for both rows.
+
     Same three properties; only the truncation differs, and the difference is not
-    cosmetic. The modal does not wrap (``tui/context.py:476-479``), so an
+    cosmetic. The modal does not wrap (``tui/context.py:797-800``), so an
     over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO
     MARKER — the human sees a plausible prefix and cannot tell there is more.
     Containment (``print_channel.resolve_child_cwd``) only guarantees the child
@@ -433,13 +455,16 @@ def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     return full[:head] + "…" + full[-tail:]
 
 
-def _truncate_task(task: str, limit: int = TASK_PREVIEW_CHARS) -> str:
-    """Flatten and bound the model-authored task text.
+def _truncate_task(task: str, limit: int | None = None) -> str:
+    """Flatten the model-authored task text, and bound it when *limit* is given.
+
+    #399: the single-task dialog passes no limit and shows the whole task (it
+    was cut at :data:`TASK_PREVIEW_CHARS`); the batch rows pass
+    :data:`BATCH_TASK_PREVIEW_CHARS`.
 
     Whitespace is collapsed before truncating: the character budget alone does
     not bound the dialog's HEIGHT, and a task consisting of 300 newlines would
-    otherwise render as a 300-row modal. Both properties matter — see
-    :data:`TASK_PREVIEW_CHARS`.
+    otherwise render as a 300-row modal.
 
     Control characters are deleted for the reason :func:`_sanitize_field` states
     at length: ``str.split`` treats ``\\n`` as whitespace but NOT ``\\x1b``, so
@@ -701,7 +726,7 @@ def build_consent_title(
     model-chosen and the profile fields come from a filename, so all four are
     strings an attacker can put ``\\n`` and ``\\x1b`` into; the composed title is
     newline-split into rows AND ANSI-parsed by ``ctx.ui.select``
-    (``tui/context.py:140-218``). :func:`_sanitize_field` is what makes this a
+    (``tui/context.py:148-226``). :func:`_sanitize_field` is what makes this a
     nine-row body for every input rather than for well-behaved ones — see its
     docstring for the demonstrated forgery.
 
@@ -717,7 +742,7 @@ def build_consent_title(
         f"Profile:    {_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)} "
         f"({_sanitize_field(resolved.scope, limit=_SCOPE_FIELD_CHARS)} scope)",
         f"Source:     {_sanitize_path(resolved.source_path)}",
-        f"Directory:  {_sanitize_path(cwd)}",
+        f"Directory:  {_sanitize_field(cwd, limit=None)}",
         # ``clamped`` is a ``PermissionMode`` and its ``.value`` is a
         # product-core literal, so it is the one field here no attacker
         # reaches. Sanitised anyway: this row is the one the F1 forgery
@@ -903,7 +928,7 @@ def build_batch_consent_title(
         f"Profile:    {_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)} "
         f"({_sanitize_field(resolved.scope, limit=_SCOPE_FIELD_CHARS)} scope)",
         f"Source:     {_sanitize_path(resolved.source_path)}",
-        f"Directory:  {_sanitize_path(cwd)}",
+        f"Directory:  {_sanitize_field(cwd, limit=None)}",
         f"Permission: {_sanitize_field(clamped.value)}",
     ]
     # The two conditional header rows, each emitted by the function
@@ -972,13 +997,13 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #     own shape — the label rides the top rule, one row shorter — precisely
 #     because this budget must not move: nine rows of title cannot ride a rule,
 #     so that arm was left byte-shaped as it was
-#     (``tui/context.py:140-218``). ``build()`` returns a single
+#     (``tui/context.py:148-226``). ``build()`` returns a single
 #     ``Window(FormattedTextControl(...), dont_extend_height=True)``
 #     (``:419-422``). ``wrap_lines`` is left False and the control supplies no
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
 #     overflow is BOTTOM TRUNCATION. ``select``'s own ``viewport = 8`` (``:303``)
 #     scrolls the OPTIONS list and does nothing for a tall title.
-#   * ``body`` is the option rows plus one counter row (``tui/context.py:420``).
+#   * ``body`` is the option rows plus one counter row (``tui/context.py:741``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
 #     (``tui/overlay.py:221-231``).
 #
@@ -990,21 +1015,31 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # which is why this has never bitten. A naive 8-task batch is 16 + 3 + 4 = 23:
 # the bottom four rows — the hint, the closing divider, the counter, and the LAST
 # OPTION, which ``build_options`` guarantees is ``Cancel`` — are simply not
-# drawn. It bites from N >= 5. Esc still works (``tui/context.py:454-455``), but a
+# drawn. It bites from N >= 5. Esc still works (``tui/context.py:940-942``), but a
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
-# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:979-995``
+# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:1023-1039``
 # already solves this shape — ``HSplit([body, footer, options])`` with
 # the options at ``Dimension.exact(n)`` so "the security-critical deny option is
 # ALWAYS visible even when the diff body is far taller than the cap"
-# (``tui/approval_dialog.py:868-869``) — and ADR-0197 residual R3 named it as
+# (``tui/approval_dialog.py:912-913``) — and ADR-0197 residual R3 named it as
 # the mitigation for this dialog. It is not taken because ``ctx.ui.select`` is
 # product-core and P3 decision S2 sets the product-core delta for this phase at
 # ZERO. R3 stays OPEN and is restated in ADR-0199; it is the natural companion
 # to the P4 work that will touch these surfaces anyway.
 #
 # SO: compose short, measure the composition, and REFUSE what will not fit.
+#
+# #399 (2026-10-08) TOOK THAT STRUCTURAL FIX for the select itself: a title
+# that fits with its highlighted option is drawn whole and the option rows
+# scroll under it; a taller title scrolls through the approval prompt's
+# ``_BodyViewport`` and every option but ``Cancel`` waits until the whole title
+# has been drawn; the highlighted option is always on screen
+# (``tui/context.py``'s ``_TitleHeldControl``). The refusal below is kept: it still decides that a
+# batch fits WITHOUT scrolling, and one row per member is what it counts. A
+# ``Directory:`` longer than a row now wraps and so can make an admitted batch
+# scroll; that is held, never cut.
 
 
 def _ioctl_rows() -> int | None:
@@ -1162,11 +1197,19 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     """
 
     try:
-        answer = await ui.select(title, options)
+        # No ``own=True`` (#399), and never one: the title carries the model's
+        # task and directory, so aelix's select drops an Enter typed before its
+        # first paint and, when the title is taller than the modal, holds every
+        # option until all of it has been drawn. ``own`` is not on the
+        # ``ExtensionUIContext`` protocol either. ``Cancel`` is named as the
+        # dialog's own cancel row, which answers at once.
+        from aelix_coding_agent.extensions.ext_ui import select_with_cancel  # noqa: PLC0415
+
+        answer = await select_with_cancel(ui, title, options, (CANCEL_OPTION,))
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:376-383``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:668-677``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer
@@ -1398,7 +1441,7 @@ async def request_spawn_consent_batch(
 
     * ``len(tasks) == 1`` is delegated to the single-task door verbatim, so a
       one-member batch is indistinguishable from a P2 dialog — same body, same
-      options, same 300-character preview. A one-step chain has no step 2, so
+      options, the same whole task. A one-step chain has no step 2, so
       §3.1.1's unshown-text problem does not exist for it and the widening rung
       is offered exactly as it would be for ``mode="single"``.
     * ``len(tasks) >= 2`` measures the composed modal height against the live

@@ -774,12 +774,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:683-684``) BEFORE the write check, and a headless run
+    # (``permission.py:684-685``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
-    # branch (d) at ``permission.py:741-744`` allows (or, for a delegated
+    # branch (d) at ``permission.py:742-745`` allows (or, for a delegated
     # child, blocks). The prompt is reached only via branch (h) at
-    # ``permission.py:746-754``, because ``.aelix`` is in
-    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:473-475``) so
+    # ``permission.py:747-755``, because ``.aelix`` is in
+    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:474-476``) so
     # ``_is_auto_allowable_write`` refuses to short-circuit (f)/(g).
     #
     # So the bullet asserts only the conditional ("may ask"), and spends its
@@ -794,10 +794,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:660-663``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:661-664``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
-    # (``permission.py:741-744``, ``headless_default == "block"``). Those are
+    # (``permission.py:742-745``, ``headless_default == "block"``). Those are
     # policy, not a human saying no, and retrying cannot change them — so the
     # clause names "blocked" alongside "declines" and routes both to the same
     # stop.
@@ -819,10 +819,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3569``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3574``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
-    # (0/false/no/off, ``shell.py:137-153``) /reload routes to
+    # (0/false/no/off, ``shell.py:138-154``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
     # (``harness/core.py:3848-3855``) and never re-scans the extension dirs.
     # Measured:

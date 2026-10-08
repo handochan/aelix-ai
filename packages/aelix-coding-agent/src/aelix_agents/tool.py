@@ -261,10 +261,10 @@ class AgentCall:
     task — are P4 ``aelix-team`` work, and the reason is not conservatism: with
     one profile every member shares the same clamp
     (``posture.child_permission_mode``), the same ``consent_is_required``
-    (``consent.py:533-573``) and the same ``_may_widen``
-    (``consent.py:449-530``), which is what makes ONE consent decision for the
+    (``consent.py:558-598``) and the same ``_may_widen``
+    (``consent.py:474-555``), which is what makes ONE consent decision for the
     whole batch coherent. :class:`~aelix_agents.consent.SpawnGrant` is singular
-    by construction (``consent.py:251-258``: one ``profile``, one
+    by construction (``consent.py:264-271``: one ``profile``, one
     ``source_path``, one ``mode``).
     """
 

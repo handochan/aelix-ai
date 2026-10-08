@@ -63,6 +63,7 @@ from aelix_coding_agent.builtin.permission_mode import (
     PermissionPosture,
 )
 from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
+from aelix_coding_agent.extensions.ext_ui import select_with_cancel
 from aelix_coding_agent.tools.provenance import ToolProvenance, builtin_provenance
 
 # Shell metacharacters that introduce a NEW command / sub-command. A
@@ -880,8 +881,12 @@ class PermissionExtension:
         # "Allow fs__write_file?" asks the user to approve a call they cannot
         # see. The same rows the approval dialog prints. The title is sent
         # whole; how much of it the host draws is the host's. aelix's own
-        # ``ctx.ui.select`` (unchanged here) cuts a title row at the screen
-        # edge and takes Enter at once: that surface is issue #399.
+        # ``ctx.ui.select`` wraps it and, when it is taller than the modal,
+        # holds every option until all of it has been drawn, and drops an
+        # Enter typed before its first paint (#399): this call does NOT pass
+        # ``own=True``, because the title is the model's command, and that is
+        # what marks it. It names its two refusals (``No`` and ``No, provide
+        # reason``) as the dialog's own cancel rows, which answer at once.
         if provenance in ("bash", "write"):
             summary = _summary(event.tool_name, event.args)
         else:
@@ -896,7 +901,7 @@ class PermissionExtension:
             # for the same reason: it is a second way to say yes.
             options.insert(2, other_label)
         try:
-            choice = await ctx.ui.select(title, options)
+            choice = await select_with_cancel(ctx.ui, title, options, (_NO, _NO_REASON))
         except Exception as exc:  # noqa: BLE001 — deny-on-error is fail-safe
             return ToolCallResult(
                 block=True,

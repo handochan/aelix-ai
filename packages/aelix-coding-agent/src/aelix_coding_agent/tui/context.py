@@ -18,15 +18,21 @@ import asyncio
 import contextlib
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.controls import (
+    BufferControl,
+    FormattedTextControl,
+    UIContent,
+    UIControl,
+)
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import PasswordProcessor, Processor
 from prompt_toolkit.utils import get_cwidth
@@ -51,6 +57,8 @@ from aelix_coding_agent.tui import themes as theme_registry
 from aelix_coding_agent.tui.overlay import show_modal
 
 if TYPE_CHECKING:
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
+
     from aelix_coding_agent.extensions.ext_ui import AutocompleteProviderFactory
     from aelix_coding_agent.tui.chrome import AelixChrome
     from aelix_coding_agent.tui.footer_data import AelixFooterData
@@ -158,9 +166,14 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     hint, the closing rule, the counter and the last option — which
     ``consent.build_options`` guarantees is ``Cancel`` — are simply not drawn.
 
+    #399: this is the frame of aelix's OWN pickers (``select(..., own=True)``),
+    ``tabbed`` and ``multiselect``, unchanged. An extension's or the model's
+    ``select`` (spawn consent among them) no longer comes here: it wraps and,
+    when it must, scrolls (:class:`_TitleHeldControl`, :func:`_picker_head`).
+
     A MULTI-ROW TITLE KEEPS THE OLD SHAPE, and that is load-bearing rather than
     tidy. The spawn-consent dialog passes a NINE-row title
-    (``tests/agents_ext/test_spawn_consent.py:1348`` pins ``title.count("\\n")
+    (``tests/agents_ext/test_spawn_consent.py:1351`` pins ``title.count("\\n")
     == 8``) and ``aelix_agents/consent.py`` writes its height budget down as
     ``title_rows + option_rows + 4``, gated by
     ``tests/agents_ext/test_batch_consent.py:344``. Nine rows cannot ride a rule,
@@ -240,6 +253,33 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     return ANSI("\n".join(lines))
 
 
+def _picker_head(title_rows: list[str], content_width: int, screen_width: int) -> tuple[list[str], str]:
+    """The rows above the body of an extension's or the model's ``select`` (#399), and its rule.
+
+    :func:`_picker_frame`'s head for ``title_rows`` that :func:`_title_rows`
+    already named and wrapped to ``screen_width``: one row when a single-row
+    title rides the top rule (``── title ────``), else the title rows and the
+    rule under them. The rule is no wider than the screen. A title rides the
+    rule only when the whole rule row fits the screen, so a title drawn there
+    is on screen whole. aelix's own pickers never come here: they keep
+    :func:`_picker_frame` byte for byte.
+    """
+
+    from aelix_coding_agent.tui.width import cells_by_cluster  # noqa: PLC0415
+
+    width = min(max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH)), max(1, screen_width))
+    rule = f"{_PICK_RULE}{_PICK_RULE_CHAR * width}{_PICK_RST}"
+    title = title_rows[0] if len(title_rows) == 1 else ""
+    if title and cells_by_cluster(_ANSI_RE.sub("", title)) + 6 <= width:
+        tail = _PICK_RULE_CHAR * max(0, width - 4 - _visible_len(title))
+        return [
+            f"{_PICK_RULE}{_PICK_RULE_CHAR * 2} {_PICK_RST}"
+            f"{_PICK_BOLD}{title}{_PICK_RST}"
+            f"{_PICK_RULE} {tail}{_PICK_RST}"
+        ], rule
+    return [*(f"{_PICK_BOLD}{row}{_PICK_RST}" for row in title_rows), rule], rule
+
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -258,6 +298,258 @@ def _visible_len(text: str) -> int:
     """
 
     return get_cwidth(_ANSI_RE.sub("", text))
+
+
+def _title_rows(title: str, width: int) -> list[str]:
+    """An extension's or the model's *title* as rows no wider than *width* (#399).
+
+    Two things happen to every line of it, and both are the approval prompt's
+    own functions (``tui/approval_dialog.py``), reused rather than copied:
+
+    * each character :func:`~aelix_ai.utils.terminal_text.safe_for_terminal`
+      would remove is drawn as its NAME (``^[``, ``^M``, ``^I``, ``<U+202E>``)
+      in reverse video (:func:`~aelix_coding_agent.tui.approval_dialog._shown`
+      with ``one_row``, then ``_ansi_named``). :data:`_TITLE_CONTROL_MAP`
+      blanked them, so a CR in a command read as a space and ``ESC [8m`` as
+      ``[8m``: what was shown was not what was asked about. A newline still
+      starts a row (the spawn-consent title is nine of them);
+    * a line wider than *width* is cut into rows that fit, breaking after a
+      space where it can and never inside a grapheme cluster narrower than
+      the row (:func:`~aelix_coding_agent.tui.approval_dialog._cut`, whose
+      known limit is a cluster wider than a whole row; each cluster
+      measured with ``cluster_cells`` so no row is wider on screen than
+      *width*, and a combining mark stays on its letter's row: review round 3). pi's ``ExtensionSelectorComponent`` draws the title as a
+      wrapping ``Text`` (``extension-selector.ts`` line 48); aelix cut it at
+      the screen's edge with no marker, so pi's ``permission-gate.ts`` example,
+      ported, ran a command whose tail was never on screen.
+
+    A line that fits and names nothing is returned as it was, so every title
+    aelix's own pickers pass renders byte for byte as before. No character is
+    dropped. The rows are ANSI text holding only SGR 7 and 27.
+    """
+
+    from aelix_coding_agent.tui.approval_dialog import _ansi_named, _cut, _shown  # noqa: PLC0415
+    from aelix_coding_agent.tui.width import cells_by_cluster  # noqa: PLC0415
+
+    limit = max(1, width)
+    rows: list[str] = []
+    for line in title.split("\n"):
+        text, spans = _shown(line, one_row=True)
+        if cells_by_cluster(text) <= limit:
+            rows.append(_ansi_named((text, spans)))
+            continue
+        named = {i for a, b in spans for i in range(a, b)}
+        chars: list[tuple[str, str]] = [
+            ("name" if i in named else "", ch) for i, ch in enumerate(text)
+        ]
+        for row in _cut(cast("StyleAndTextTuples", chars), limit):
+            row_text = "".join(fragment[1] for fragment in row)
+            row_spans: list[tuple[int, int]] = []
+            for i, fragment in enumerate(row):
+                if fragment[0] != "name":
+                    continue
+                if row_spans and row_spans[-1][1] == i:
+                    row_spans[-1] = (row_spans[-1][0], i + 1)
+                else:
+                    row_spans.append((i, i + 1))
+            rows.append(_ansi_named((row_text, row_spans)))
+    return rows
+
+
+class _TitleHeldControl(UIControl):
+    """An extension's or the model's ``select`` / ``confirm`` (#399): the dialog
+    whose title the approving keys wait for.
+
+    aelix's own pickers (``own=True``) never use this: they keep main's plain
+    ``Window(FormattedTextControl(...))``, byte for byte, at every size.
+
+    ``frame(width)`` returns the title's rows (named and wrapped by
+    :func:`_title_rows`), then two lists of the rows that can go under it,
+    each ordered from the fullest to the smallest: the rows used when the
+    title is drawn whole, and the rows used when it scrolls. For ``select``
+    both are its rule, option rows, counter, detail, rule and hint, and the
+    smaller ones scroll the OPTION rows in fewer rows (the highlighted one
+    always among them, with the counter while there is room for it).
+
+    * A title drawn whole is never held. It is drawn whole whenever it fits
+      the modal with at least the FIRST row of the highlighted option under
+      it (the option area shrinks first: the hint, the closing rule, the
+      detail, the rule under the title, then fewer option rows, the counter,
+      and last the rows of a multi-line highlighted label past the first,
+      cut from the bottom as main cuts them: review round 4).
+    * Only a title taller than that scrolls, through the approval prompt's
+      :class:`~aelix_coding_agent.tui.approval_dialog._BodyViewport` (same
+      footer, PgUp/PgDn a page, Ctrl+Up/Down a row), above its footer and the
+      fullest rows that still leave it four rows (else the smallest: the
+      highlighted option alone, a multi-line label cut to the rows that
+      leave the title four, and never to fewer than its first). Every
+      approving key waits until every title row has been drawn by a real
+      paint.
+    * When not even one title row, the footer and the highlighted option's
+      first row fit, the dialog says the terminal is too small, and only Esc
+      and Ctrl+C (and ``n`` in ``confirm``, and a ``cancel_options`` row)
+      answer. Each paint lays the dialog out afresh, so when the terminal
+      grows the title is drawn whole (and answers) or scrolls (and answers
+      once all of it is drawn). Review rounds 3 and 5 pin all three resets of
+      ``_too_small``: drawn whole, scrolled, and over a tall option's first row.
+
+    :meth:`holds` is what Enter, Space and Ctrl+J (``select``) and ``y``
+    (``confirm``) ask before they answer; an Enter typed before the first
+    paint is held too (nothing has been drawn), and dropped. ``select`` lets
+    a caller name its own cancel row (``cancel_options``), which answers while
+    the title is held.
+    """
+
+    def __init__(
+        self,
+        frame: Callable[
+            [int],
+            tuple[
+                list[StyleAndTextTuples],
+                list[list[StyleAndTextTuples]],
+                list[list[StyleAndTextTuples]],
+            ],
+        ],
+        key_bindings: KeyBindings,
+        *,
+        held: str,
+    ) -> None:
+        from aelix_coding_agent.tui.approval_dialog import _BodyViewport  # noqa: PLC0415
+
+        self.key_bindings = key_bindings
+        self._frame = frame
+        self._held = held
+        self._width: int | None = None
+        self._too_small = False
+        self._title: list[StyleAndTextTuples] = []
+        self.title = _BodyViewport(lambda: self._title, lambda: self._width, held=held)
+
+    def holds(self) -> bool:
+        """Must an approving key wait? (See the class docstring.)"""
+
+        return self._too_small or not self.title.all_shown()
+
+    def is_focusable(self) -> bool:
+        return True
+
+    def get_key_bindings(self) -> KeyBindings:
+        return self.key_bindings
+
+    def preferred_height(
+        self,
+        width: int,
+        max_available_height: int,
+        wrap_lines: bool,
+        get_line_prefix: Any,
+    ) -> int | None:
+        title, whole, _scrolled = self._frame(width)
+        return len(title) + len(whole[0])
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        title, whole, scrolled = self._frame(width)
+        self._width = width
+        self._title = title
+        drawn = self._layout(title, whole, scrolled, width, height)
+        return UIContent(get_line=lambda i: drawn[i], line_count=len(drawn))
+
+    def _layout(
+        self,
+        title: list[StyleAndTextTuples],
+        whole: list[list[StyleAndTextTuples]],
+        scrolled: list[list[StyleAndTextTuples]],
+        width: int,
+        height: int,
+    ) -> list[StyleAndTextTuples]:
+        for under in whole:
+            if len(title) + len(under) <= height:
+                # The title fits with (at least) the highlighted option: drawn
+                # whole, so seen, so never held.
+                self._too_small = False
+                self.title._draw(None)
+                return [*title, *under]
+        if whole[-1] and len(title) + 1 <= height:
+            # Review round 4 (Codex round 3, cat 3): the smallest set is the
+            # highlighted option alone, and a label of several lines is cut
+            # from the bottom as main cuts it, so only its FIRST row must fit.
+            # ``Deploy?`` over an eight-line option in an eight-row modal said
+            # "too small" and held Enter, where main drew it and Enter selected.
+            self._too_small = False
+            self.title._draw(None)
+            return [*title, *whole[-1]][:height]
+        under = next(
+            (rows for rows in scrolled if height - 1 - len(rows) >= _TITLE_PAGE_ROWS),
+            None,
+        )
+        if under is None:
+            # The same cut under a scrolling title: the highlighted option's
+            # first rows, leaving the title a page where there is room for one.
+            under = scrolled[-1][: max(1, height - 1 - _TITLE_PAGE_ROWS)]
+        room = height - 1 - len(under)
+        if room < 1:
+            # Not even one title row, the footer and the highlighted option:
+            # nothing is answerable but a refusal.
+            self._too_small = True
+            return [[("bold", _cut_cells(_TOO_SMALL.format(held=self._held), width))]]
+        self._too_small = False
+        out = list(self.title._draw(room))
+        out.append([("bold", _cut_cells(self.title.footer_text(width), width))])
+        out.extend(under)
+        return out
+
+
+#: The fewest title rows a scrolling title is given while there is a fuller set
+#: of rows to cut under it: a page of PgDn is then at least three rows.
+_TITLE_PAGE_ROWS = 4
+
+_TOO_SMALL = "The terminal is too small for this question. {held} is held; Esc cancels."
+
+
+def _cut_cells(text: str, width: int) -> str:
+    """*text* cut to *width* cells, ending in ``…`` when cut."""
+
+    if get_cwidth(text) <= width:
+        return text
+    out, used = "", 0
+    for ch in text:
+        w = get_cwidth(ch)
+        if used + w > max(0, width - 1):
+            break
+        out += ch
+        used += w
+    return out + "…" if width >= 1 else ""
+
+
+def _row(text: str) -> StyleAndTextTuples:
+    """One title row of ANSI text as prompt-toolkit fragments.
+
+    A row that ends in a zero-width character gets a space after it: review
+    round 4 (verify round 3) measured prompt-toolkit writing such a mark into
+    the NEXT cell as well as merging it into its base's, so a wrapped row
+    ending in ``e`` + U+0301 drew the accent twice. The space takes that cell
+    (``cells_by_cluster`` keeps it free, ``ends_row``).
+    """
+
+    row = to_formatted_text(ANSI(text))
+    return [*row, ("", " ")] if row and row[-1][1] and not get_cwidth(row[-1][1][-1]) else row
+
+
+def _rows(lines: list[str]) -> list[StyleAndTextTuples]:
+    """The rows under a ``select`` title as screen rows, parsed as main parses them.
+
+    :func:`_picker_frame` joins its rows with newlines into ONE ANSI text and a
+    ``FormattedTextControl`` splits that into screen rows, so on main an option
+    label with a newline in it is two rows and a style a label leaves open runs
+    on into the rows under it. #399 review round 3 (Codex): parsed a row at a
+    time, the newline reached the screen as a character and was drawn as
+    ``^J``. Joined, parsed once and split the same way, the option rows are
+    main's (#179 owns them).
+    """
+
+    from prompt_toolkit.formatted_text.utils import split_lines  # noqa: PLC0415
+
+    if not lines:
+        return []
+    return list(split_lines(to_formatted_text(ANSI("\n".join(lines)))))
 
 
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
@@ -380,6 +672,9 @@ class AelixTUIContext:
         opts: ExtensionUIDialogOptions | None = None,
         detail: Callable[[int], list[str]] | None = None,
         initial_index: int = 0,
+        *,
+        own: bool = False,
+        cancel_options: Collection[str] = (),
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -402,6 +697,32 @@ class AelixTUIContext:
         deliberately NOT part of the ``ExtensionUIContext`` protocol (extensions
         calling ``ctx.ui.select`` have no need for it). Callers that pass it must
         be typed against the concrete ``AelixTUIContext``, not the protocol.
+
+        #399 — whose question this is decides how it is drawn:
+
+        * ``own=True`` marks one of aelix's own pickers (``/model``,
+          ``/settings``, ``/resume``, ``/trust``, the theme picker,
+          ``/thinking``, ``/login``, ``/logout``, the session-in-use prompt,
+          and, through ``runtime.ui.select`` and ``select_declared``,
+          ``/extension new``'s placement question and ``/agents run``'s
+          project-agent confirm).
+          aelix wrote the question, and the picker is main's, byte for byte:
+          the same frame (:func:`_picker_frame`), the same window, the same keys,
+          a key typed before the first paint taken, at every terminal size.
+        * The default is an extension's or the model's question: this is the
+          method an extension's ``ctx.ui.select`` reaches (the bound UI is this
+          object), and so do the permission gate's fallback and the
+          spawn-consent dialog. Its title wraps like pi's and names its control
+          characters (:func:`_title_rows`). A title that fits the modal with its
+          highlighted option is drawn whole and never held; the option rows
+          scroll in what room is left. Only a title taller than that scrolls,
+          and then EVERY option waits until all of it has been drawn
+          (:class:`_TitleHeldControl`), except a row named in
+          ``cancel_options`` (the dialog's own Cancel, which aelix passes for
+          spawn consent and the permission fallback's No rows). An Enter typed
+          before the first paint is dropped. Esc and Ctrl+C always answer.
+
+        ``own`` and ``cancel_options`` are deliberately NOT on the protocol.
 
         Empty ``options`` resolves to ``None`` immediately (no dialog).
         """
@@ -486,14 +807,116 @@ class AelixTUIContext:
                 body.append(f"{_PICK_DIM}{d}{_PICK_RST}")
             return _picker_frame(title, body, hint, width)
 
+        def option_rows(items: list[tuple[int, str]], idx: int, room: int | None) -> list[str]:
+            # #399: the option rows in at most ``room`` rows (``None``: as many
+            # as ``render`` shows), the highlighted one always among them, with
+            # ⋮ markers while they fit. Each row is drawn exactly as ``render``
+            # draws it (#179 owns option rows), so a label with a newline in it
+            # takes as many screen rows as it has lines (review round 3).
+            n = len(items)
+            for shown in range(min(viewport, n), 0, -1):
+                start = max(0, min(idx - shown // 2, n - shown))
+                end = min(n, start + shown)
+                above, below = start > 0, end < n
+                lines = sum(1 + items[i][1].count("\n") for i in range(start, end))
+                if room is not None and lines + above + below > room:
+                    continue
+                rows = [f"{_PICK_DIM}  ⋮{_PICK_RST}"] if above else []
+                for i in range(start, end):
+                    text = items[i][1]
+                    rows.append(f"{_PICK_SEL}▸ {text}{_PICK_RST}" if i == idx else f"  {text}")
+                if below:
+                    rows.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
+                return rows
+            return [f"{_PICK_SEL}▸ {items[idx][1]}{_PICK_RST}"]
+
+        def parts(screen_width: int) -> tuple[list[str], list[list[str]]]:
+            # #399, an extension's or the model's question: the title rows, and
+            # the rows that can go under them from the fullest to the smallest.
+            title_rows = _title_rows(title, screen_width)
+            items = filtered()
+            if not items:
+                head, rule = _picker_head(title_rows, max(_visible_len(title), 40), screen_width)
+                body = [f"{_PICK_DIM}(no matches){_PICK_RST}", _filter_line(state["filter"])]
+                hint = f"{_PICK_DIM}Backspace to clear · Esc to cancel{_PICK_RST}"
+                lead = [rule] if len(head) > 1 else []
+                return head[: len(head) - len(lead)], [
+                    [*lead, *body, rule, hint],
+                    [*lead, *body],
+                    body,
+                    body[:1],
+                ]
+            idx = max(0, min(state["idx"], len(items) - 1))
+            state["idx"] = idx
+            detail_lines: list[str] = []
+            if detail is not None:
+                with contextlib.suppress(Exception):
+                    detail_lines = list(detail(items[idx][0]))
+            counter = f"({idx + 1}/{len(items)})"
+            if state["filter"]:
+                counter += _filter_counter_suffix(state["filter"])
+            hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
+            full = option_rows(items, idx, None)
+            width = max(
+                [_visible_len(title), _visible_len(counter), _visible_len(hint)]
+                + [_visible_len(row) for row in full]
+                + [_visible_len(d) for d in detail_lines]
+            )
+            head, rule = _picker_head(title_rows, width, screen_width)
+            lead = [rule] if len(head) > 1 else []
+            count = f"{_PICK_DIM}  {counter}{_PICK_RST}"
+            details = [f"{_PICK_DIM}{d}{_PICK_RST}" for d in detail_lines]
+            unders = [
+                [*lead, *full, count, *details, rule, f"{_PICK_DIM}{hint}{_PICK_RST}"],
+                [*lead, *full, count, *details, rule],
+                [*lead, *full, count, *details],
+                [*lead, *full, count],
+                [*full, count],
+            ]
+            # Rooms in screen rows: a label with a newline is a row per line.
+            full_rows = sum(1 + row.count("\n") for row in full)
+            unders += [[*option_rows(items, idx, room), count] for room in range(full_rows - 1, 0, -1)]
+            unders.append(option_rows(items, idx, 1))
+            return head[: len(head) - len(lead)], unders
+
+        # The rows of one paint, parsed once: prompt-toolkit asks for the height
+        # and then for the content, and ``detail`` ran once a paint before, as
+        # ``FormattedTextControl`` caches by ``render_counter``.
+        drawn: dict[str, Any] = {"key": None, "frame": None}
+
+        def frame(
+            screen_width: int,
+        ) -> tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]:
+            key = (get_app().render_counter, screen_width, state["idx"], state["filter"])
+            if drawn["key"] != key:
+                title_rows, unders = parts(screen_width)
+                rows = [_rows(under) for under in unders]
+                drawn["frame"] = ([_row(r) for r in title_rows], rows, rows)
+                drawn["key"] = key
+            return cast(
+                "tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]",
+                drawn["frame"],
+            )
+
+        refusals = frozenset(cancel_options)
+
         def build(result: asyncio.Future[Any]) -> Window:
             kb = KeyBindings()
+            control = None if own else _TitleHeldControl(frame, kb, held="Enter")
 
             def _confirm(_e: object) -> None:
                 items = filtered()
                 if not items:
                     return
                 idx = max(0, min(state["idx"], len(items) - 1))
+                if control is not None and control.holds() and items[idx][1] not in refusals:
+                    # #399: no option is taken while part of an extension's or
+                    # the model's question has not been on screen (pi's
+                    # permission-gate example puts the whole command there).
+                    # Every option but the dialog's own cancel row. Esc and
+                    # Ctrl+C always answer.
+                    self.chrome.invalidate()
+                    return
                 _resolve(result, items[idx][1])
 
             @kb.add("up")
@@ -517,6 +940,15 @@ class AelixTUIContext:
             kb.add("space")(_confirm)
             kb.add("escape")(lambda _e: _resolve(result, None))
             kb.add("c-c")(lambda _e: _resolve(result, None))
+            if control is not None:
+                # #399: a title taller than its room scrolls a page (one
+                # screenful less one row) or a row, as the approval prompt's
+                # body does.
+                title_view = control.title
+                kb.add("pageup")(lambda _e: title_view.page(-1, self.chrome))
+                kb.add("pagedown")(lambda _e: title_view.page(1, self.chrome))
+                kb.add("c-up")(lambda _e: title_view.scroll(-1, self.chrome))
+                kb.add("c-down")(lambda _e: title_view.scroll(1, self.chrome))
 
             @kb.add("backspace")
             def _backspace(_e: object) -> None:
@@ -537,10 +969,12 @@ class AelixTUIContext:
                     state["idx"] = 0
                     self.chrome.invalidate()
 
-            return Window(
-                FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=True,
-            )
+            if control is None:
+                return Window(
+                    FormattedTextControl(render, focusable=True, key_bindings=kb),
+                    dont_extend_height=True,
+                )
+            return Window(control, dont_extend_height=True)
 
         return await show_modal(self.chrome, build)
 
@@ -911,12 +1345,65 @@ class AelixTUIContext:
         return await show_modal(self.chrome, build)
 
     async def confirm(
-        self, title: str, message: str, opts: ExtensionUIDialogOptions | None = None
+        self,
+        title: str,
+        message: str,
+        opts: ExtensionUIDialogOptions | None = None,
+        *,
+        own: bool = False,
     ) -> bool:
+        """A yes/no question: ``y`` answers yes; ``n``, Esc and Ctrl+C answer no.
+
+        #399, as :meth:`select`: ``own=True`` (aelix's own question, ``/login``
+        and ``/logout``) is main's dialog byte for byte, a ``y`` typed before
+        the first paint taken. Without it (an extension's ``ctx.ui.confirm``, a
+        descriptor's confirm text) the title and the message wrap and name
+        their control characters (:func:`_title_rows`); main drew them as one
+        row per line cut at the screen's edge. When they are taller than the
+        modal they scroll (PgUp/PgDn) and ``y`` waits until every row has been
+        drawn (:class:`_TitleHeldControl`); a ``y`` typed before the first paint
+        is dropped.
+        """
+
+        drawn: dict[str, Any] = {"key": None, "frame": None}
+        answer: list[StyleAndTextTuples] = [[("bold", "[y/n]")]]
+
+        def frame(
+            screen_width: int,
+        ) -> tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]:
+            key = (get_app().render_counter, screen_width)
+            if drawn["key"] != key:
+                rows = [_row(r) for r in _title_rows(f"{title}\n{message} [y/n]", screen_width)]
+                # Drawn whole, the ``[y/n]`` is on its last row. Scrolled, it
+                # gets a row of its own under the footer.
+                drawn["frame"] = (rows, [[]], [answer])
+                drawn["key"] = key
+            return cast(
+                "tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]",
+                drawn["frame"],
+            )
+
         def build(result: asyncio.Future[Any]) -> Window:
             kb = KeyBindings()
+            control = None if own else _TitleHeldControl(frame, kb, held="y")
+
+            def _yes(_e: object) -> None:
+                # #399: like ``select``, a yes is not taken while part of an
+                # extension's question has not been on screen; n, Esc and
+                # Ctrl+C always answer.
+                if control is not None and control.holds():
+                    self.chrome.invalidate()
+                    return
+                _resolve(result, True)
+
             for key in ("y", "Y"):
-                kb.add(key)(lambda _e: _resolve(result, True))
+                kb.add(key)(_yes)
+            if control is not None:
+                title_view = control.title
+                kb.add("pageup")(lambda _e: title_view.page(-1, self.chrome))
+                kb.add("pagedown")(lambda _e: title_view.page(1, self.chrome))
+                kb.add("c-up")(lambda _e: title_view.scroll(-1, self.chrome))
+                kb.add("c-down")(lambda _e: title_view.scroll(1, self.chrome))
             for key in ("n", "N", "escape"):
                 kb.add(key)(lambda _e: _resolve(result, False))
             # W-review 6h₂₄ LOW-4: Ctrl+C cancels (matches ``select`` + ``editor``).
@@ -929,12 +1416,14 @@ class AelixTUIContext:
             # a stray Enter never auto-approves a destructive action.
             kb.add("enter")(lambda _e: None)
             kb.add("c-j")(lambda _e: None)
-            return Window(
-                FormattedTextControl(
-                    f"{title}\n{message} [y/n]", focusable=True, key_bindings=kb
-                ),
-                dont_extend_height=True,
-            )
+            if control is None:
+                return Window(
+                    FormattedTextControl(
+                        f"{title}\n{message} [y/n]", focusable=True, key_bindings=kb
+                    ),
+                    dont_extend_height=True,
+                )
+            return Window(control, dont_extend_height=True)
 
         return bool(await show_modal(self.chrome, build))
 

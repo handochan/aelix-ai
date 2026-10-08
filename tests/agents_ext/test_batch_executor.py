@@ -1395,7 +1395,7 @@ async def test_a_steady_posture_gives_every_member_the_consented_mode(
     INCLUDING A WIDENED GRANT, and that is the whole reason the §3.9 floor is a
     GATE rather than an unconditional ``min(grant.mode, live)``.
     ``consent._may_widen`` offers the rung only when ``AUTO_ACCEPT`` is strictly
-    looser than the clamp (``consent.py:530``), so in the widened case
+    looser than the clamp (``consent.py:555``), so in the widened case
     ``grant.mode`` is strictly above the live clamp BY CONSTRUCTION — an
     unconditional rank-min would revoke every widening a human explicitly
     granted, on every batch, with no posture change at all.
@@ -1433,7 +1433,7 @@ async def test_tightening_the_parent_mid_batch_revokes_a_widening(
 
     Why it was inert. The gate compared the live CHILD CLAMP against
     ``clamp_at_start``, and that reference point SATURATES: ``_may_widen``
-    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:530``),
+    requires ``AUTO_ACCEPT`` strictly looser than the clamp (``consent.py:555``),
     the clamp's reachable set is ``{PLAN, AUTO_ACCEPT, YOLO}``
     (``posture.py:231`` folds ``DEFAULT`` into ``PLAN``), so a widened batch
     always began at ``PLAN`` — rank 0, with nothing strictly below it.

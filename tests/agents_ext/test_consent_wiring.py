@@ -207,7 +207,7 @@ async def test_a_declined_dialog_blocks_and_starts_nothing(
 ) -> None:
     """Esc, Cancel and a nonsense answer are all the same decision: no.
 
-    A ``None`` answer is Esc (``tui/context.py:454-455``). Anything that is not
+    A ``None`` answer is Esc (``tui/context.py:940-942``). Anything that is not
     a rendered option is treated identically, because the alternative is
     inferring consent from a string nobody was shown.
 
@@ -628,14 +628,12 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
     otherwise the modal would be teaching the user to approve a path that was
     about to be silently changed.
 
-    ASSERTED ON THE TAIL, and that is the contract rather than a weakening. The
-    ``Directory:`` row elides its MIDDLE at ``DIALOG_FIELD_CHARS`` and
-    guarantees the tail (``consent.py:389-402``: "WHERE inside is the question
-    this row exists to answer, and it is answered by the TAIL"). Asserting the
-    whole absolute path made this test pass or fail on how long
-    ``/tmp/pytest-of-<user>/pytest-<N>/...`` happened to be on the day — it goes
-    red once the counter reaches three digits, which is a property of the
-    machine and not of the code.
+    ASSERTED ON THE WHOLE PATH since #399. The ``Directory:`` row elided its
+    MIDDLE at ``DIALOG_FIELD_CHARS`` and guaranteed only the tail, so this test
+    asserted the tail (a whole-path assertion went red once the pytest counter
+    reached three digits). The row shows the whole directory now - the select
+    wraps it and holds its options until every row has been drawn - so the
+    whole contained path is on screen whatever its length.
     """
 
     _ask_profile(tmp_path)
@@ -653,9 +651,9 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
     # the relative ``"sub"`` and the human is shown where that landed.
     assert contained.endswith(shown)
     assert shown in title
-    # Nothing was dropped SILENTLY: either the whole path is there, or the
-    # elision marker says out loud that it is not.
-    assert contained in title or "…" in title
+    # Nothing was dropped (#399): the whole contained path is the row (with
+    # its whitespace collapsed, as every field of this dialog is).
+    assert f"Directory:  {' '.join(contained.split())}" in title.splitlines()
 
 
 # === P3: the batch travels the same wire ======================================
@@ -799,7 +797,7 @@ async def test_a_batch_refused_for_height_reads_as_split_it_not_as_declined(
     """``SpawnGrant.reason`` must survive the hook, and it must WIN over ``_DECLINED``.
 
     ``_DECLINED`` says "do not retry it", which is true of a human answer and
-    false of a dialog that was never shown (``consent.py:264-273``). A model told
+    false of a dialog that was never shown (``consent.py:277-286``). A model told
     "the user declined" when the user was never asked stops delegating for the
     rest of the prompt; a model told the terminal is too short splits the call
     and gets its work done.

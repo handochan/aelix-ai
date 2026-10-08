@@ -961,7 +961,7 @@ class AgentsExtension:
         )
         if not grant.consented:
             # ``reason`` is set by exactly ONE branch — a batch whose dialog would
-            # not fit the terminal (``consent.py:207-211``, ``:264-273``) — where no
+            # not fit the terminal (``consent.py:220-224``, ``:277-286``) — where no
             # human was asked at all and the model CAN act on the refusal by
             # splitting the call. ``_DECLINED``'s "do not retry it" is only true
             # of a human answer, so it must not be pasted over a refusal no human
@@ -990,7 +990,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1290-1296``). The
+        EVERY member or refuses the call outright (``consent.py:1333-1339``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -1084,7 +1084,7 @@ class AgentsExtension:
         # chose the profile, the tasks and the directory. A batch is ONE dialog
         # for tasks that are all inside the one call this hook has already
         # validated, which is a different thing from a memo that would outlive it
-        # (``consent.py:241-248``): ``_pending.clear()`` still runs per prompt.
+        # (``consent.py:254-261``): ``_pending.clear()`` still runs per prompt.
         return await request_spawn_consent_batch(
             ctx,
             resolved,

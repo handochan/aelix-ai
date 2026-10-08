@@ -1,6 +1,6 @@
 # 0253. The permission gate treats any tool it does not know as mutating
 
-Status: Accepted (2026-10-06); amended 2026-10-07 (#389, §11: every approval prompt holds Yes); amended 2026-10-08 (#389 review rounds 2 and 3, §11.1 and §11.2: nothing in aelix's approval prompt is cut, §8's value bound included; an extension's `select` / `confirm` is not covered and is #399)
+Status: Accepted (2026-10-06); amended 2026-10-07 (#389, §11: every approval prompt holds Yes); amended 2026-10-08 (#389 review rounds 2 and 3, §11.1 and §11.2: nothing in aelix's approval prompt is cut, §8's value bound included; an extension's `select` / `confirm` is not covered and is #399); amended 2026-10-08 (#399, §11.3: an extension's `select` / `confirm`, the spawn-consent dialog and the permission gate's `ctx.ui.select` fallback wrap, and hold a title taller than the modal; aelix's own pickers stay as they were)
 Date: 2026-10-06
 Amends: **ADR-0157** ("mutating" is no longer a name set, so PLAN's guarantee and the
 AUTO_ACCEPT / AUTO auto-allow now reach every tool), **ADR-0197** §(e) (the child's
@@ -516,7 +516,8 @@ cross-review added four findings (`.omc/specs/batch-beta3-r2-results.json`, keys
 `r2cross/` and `r3/`).
 
 - **Scope: aelix's own approval prompt only. An extension's `select` / `confirm` is
-  not covered and is issue #399.** Round 2's held `select` withheld its title whenever
+  not covered and is issue #399.** (Superseded by §11.3, 2026-10-08: #399 covers
+  them now.) Round 2's held `select` withheld its title whenever
   the option, detail and hint rows left it no row, and then held Enter for good, even for
   a one-row title. `/model` (30 models) at 80x22, `/settings` at 80x16 and an 8-option
   `select` at 80x16 could be left only with Esc; on `61f03b67` Enter answers in each.
@@ -554,3 +555,126 @@ cross-review added four findings (`.omc/specs/batch-beta3-r2-results.json`, keys
   the edge of the option row in an ordinary project at 80 columns, so `3` approves a
   target whose tail is drawn in neither. The body holds the full path the model chose,
   and the directory in the label comes from aelix, not the model.
+
+### 11.3 An extension's `select` and `confirm` (#399, 2026-10-08)
+
+§11.2 left an extension's `ctx.ui.select` / `ctx.ui.confirm` out. Reproduced on `8f7d98aa`
+before any change (real CLI, pty, scripted mock model, pi's `permission-gate.ts` ported,
+`.omc/probes/399-live/impl/runs_before/`): the title stopped at `arg009 arg` at 80x24 with
+no marker, and Enter ran the 400-word command, end included; `confirm` took `y` the same
+way; a CR in a title was drawn as a space and `ESC [8m` as `[8m`.
+
+Decision (2026-10-08). The four points the issue left open, as review round 2 settled
+them; round 1's text called its own layout an owner decision, and it was not one (the
+owner did not decide round 1's layout, which round 2 reverses):
+
+- **aelix's own pickers are main's, byte for byte, at every size.** `/model`, `/settings`
+  (with #404's extension toggles), `/resume`, `/trust`, the theme picker, `/thinking`,
+  `/login`, `/logout`, the session-in-use prompt, `/extension new`'s placement question
+  and `/agents run`'s project-agent confirm pass `own=True` (the last two reach
+  `runtime.ui.select`, through `extensions/ext_ui.py`'s `select_declared`, which passes
+  the keyword only to a `select` that declares it), and `own=True` is
+  main's code path itself: `_picker_frame` in a plain `FormattedTextControl`, no wrapping
+  of the title, no hold, no PgUp/PgDn binding, a key typed before the first paint taken.
+  Round 1 wrapped their titles too, so at 80x16 `/trust`'s question took 8 rows and
+  `Do not trust` (the only answer that saves a revocation) and its counter fell off the
+  modal; at 12x8 `/settings` held Enter after a paint and at 20x8 lost its choices.
+  `/trust`'s own wrapping is #380, not this issue. `tests/tui/test_own_pickers_marked.py`
+  pins `own=True` at each call site, read from every product source file (review round
+  3: it read `tui/shell.py` only and missed the two in `tui/commands.py`).
+- **An extension's or the model's title wraps, like pi's.** `select` wraps its title and
+  `confirm` its title and message to the window's width (`tui/context.py`'s `_title_rows`,
+  built on the approval prompt's `_shown` and `_cut`, reused, not copied). It wraps by
+  grapheme cluster, as pi's `Intl.Segmenter` does (`tui/width.py`'s `graphemes`, from
+  `wcwidth.iter_graphemes`, now a declared `[tui]` dependency): a cluster is measured
+  whole and not split across rows, so a combining mark stays on its letter's row; a
+  cluster ending in a zero-width character is not put on the window's last column, where
+  prompt-toolkit drops the mark, and a row ending in one gets a space after it, since
+  prompt-toolkit also writes the mark into the next cell (review round 4: the accent was
+  drawn twice). The shared `_cut` does the same for the approval prompt's body. Known
+  limit: a single cluster wider than a whole row (an accented letter in a one-column
+  row, a ZWJ family emoji in a six-column row) is cut by code point, `_cut`'s fallback,
+  since a row wider than the screen would be clipped at its edge and counted as drawn. Each character
+  `safe_for_terminal` would remove is drawn by name in reverse video (`^M`, `^[`, `^I`,
+  `<U+202E>`); a newline starts a row. Before, `select` drew a CR as a space and
+  `ESC [8m` as `[8m`; `confirm` already showed `^M` and `^[` through prompt-toolkit's
+  control-character mapping (not in reverse video) and passed `U+202E` raw.
+- **A title that fits is drawn whole and never held; the option rows scroll.** "Fits"
+  means the title and at least the FIRST row of the highlighted option fit the modal (the lane's
+  reading of "fits the modal": a title that fills it leaves nothing to answer). The
+  rows under it shrink first: the hint, the closing rule, the detail, the rule under the
+  title, then fewer option rows in the options window (the highlighted one always on
+  screen, with `⋮` markers while they fit), the counter last: in the smallest layout
+  the highlighted option is drawn without its `(n/N)` counter, and a label of several
+  lines is cut from the bottom, as main cuts it (review round 4, Codex round 3: `Deploy?`
+  over an eight-line option in an eight-row modal said "too small" and held Enter, where
+  main drew it and Enter selected). Option rows are drawn as
+  main draws them (#179): one ANSI text split into screen rows, so a label with a
+  newline is one row per line (review round 3: it was drawn as `^J`). Round 1 scrolled a title
+  that fit to keep every option row on screen: a 5-row question over 8 options in the
+  11-row modal of an 80x16 terminal showed 1 of its 5 rows, held Enter and wanted 4 PgDn.
+- **Only a title taller than that scrolls and holds.** It scrolls in the approval
+  prompt's own `_BodyViewport` (its footer, PgUp/PgDn a page, Ctrl+Up/Down a row) above
+  the fullest set of rows under it that still leaves it four rows (else the highlighted
+  option alone, a multi-line label cut to the rows that leave the title four and never to
+  fewer than its first). Every option (Enter, Space and Ctrl+J in `select`, `y` and `Y` in
+  `confirm`) waits until every title row has been drawn by a real paint, and an approving
+  key typed before the first paint is dropped. Esc and Ctrl+C (and `n` in `confirm`)
+  always answer. A held `confirm` draws `[y/n]` on a row of its own under the footer.
+- **The smallest held dialog** is one title row, the footer and the highlighted option's
+  first row.
+  When even that does not fit, the dialog says `The terminal is too small for this
+  question. Enter is held; Esc cancels.` and only Esc and Ctrl+C (and `n` in `confirm`,
+  and a row in `cancel_options`) answer, however much was drawn at a larger size before (Codex round
+  1: spawn consent in an 80x8 terminal drew no option at all). When the terminal grows
+  again the dialog is laid out afresh: a title then drawn whole answers at once, and a
+  scrolled one once every row has been drawn.
+- **The dialog's own cancel row is not held.** `select` takes `cancel_options` (not on the
+  `ExtensionUIContext` protocol): rows the caller names as its own refusal answer while
+  the title is held. Spawn consent names its `Cancel` and the permission gate's
+  `ctx.ui.select` fallback its `No` and `No, provide reason`; they reach it through
+  `extensions/ext_ui.py`'s `select_with_cancel`, which passes the keyword only to a
+  `select` that declares it, so every other host is called as before. An extension's own
+  `No` row is held like any other: aelix cannot know what an extension's label does.
+- **Which calls are an extension's or the model's.** The default: an extension's
+  `ctx.ui.select` reaches `AelixTUIContext.select` itself (the bound UI is that object),
+  so the method's default is the mark that can reach it, and aelix's own pickers are the
+  calls marked. The permission fallback, spawn consent and the descriptor confirm pass
+  no `own`. `own` is not on the protocol.
+- **The spawn-consent cuts go** (ADR-0199 §(c), amended): the single-task dialog shows the
+  whole task (it was cut at `TASK_PREVIEW_CHARS`, 300) and both dialogs the whole
+  directory (it was elided to `DIALOG_FIELD_CHARS`, 68, in the middle). Whitespace is still
+  collapsed and control characters still deleted.
+- **Out of scope**: option, tab and detail rows are not sanitised or wrapped (#179); a
+  batch member is still one row of up to 72 characters (`BATCH_TASK_PREVIEW_CHARS`), the
+  row `batch_dialog_fits` counts.
+
+Residuals:
+
+- A directory or a task now wraps, so a model can lay text out to look like a row of its
+  own at a known width (a flattened `… Permission: plan …` inside the `Directory:` row
+  breaking at column 80). It cannot hide the real rows (no escape survives, the real
+  `Permission:` row is always drawn after it), and the `Directory:` row cannot be broken
+  into rows of the title string. Before, the 68-character elision bounded it to one row.
+- The login wizard hands an extension's login provider aelix's own (`own=True`) `select`
+  and `confirm` (`login_registry.LoginContext`): main's dialog, unwrapped and never held.
+- `confirm` from an extension's descriptor (`DescriptorRenderer`'s confirm) is the
+  default: its text is the extension's.
+- A resize forgets what was drawn, narrow to wide as well as wide to narrow (as §9); the
+  view keeps its place, so the re-wrapped rows above it are reached with PgUp.
+- `tabbed` and `multiselect` keep `_picker_frame`'s bottom truncation.
+
+Evidence (`.omc/probes/399-live/impl/`): `runs_before/` and `runs_after/` (pty screens on
+`8f7d98aa` and on the fix, pickers at 80x16, 80x22, 80x24 and 120x40), `red_on_8f7d98aa.out`,
+`sabotage.out`, `probes/` (in-process paints).
+Review round 2 (`.omc/probes/399-live/r2/`): the pickers live in a pty at 12x8, 20x8,
+80x16, 80x22, 80x24 and 120x40 against `dfb4ddcc`, cell for cell (`kit/pickers.py`,
+`cell-dumps.tar.gz`), and the sabotage rows that stayed green in round 1
+(`out/sabotage.txt`).
+Review round 3 (`.omc/probes/399-live/r3/`): `/extension new` and the project-agent
+confirm live against `8428e16c` at the same six sizes, cell for cell (`out/own2-*.log`),
+the in-process probe of every round-2 finding before and after (`out/r3probe.txt`), and
+the mutants that stayed green in round 2 (`out/sabotage*.txt`).
+Review round 4 (`.omc/probes/399-live/r4/`): the rows red before the fix
+(`out/red_on_ab7d.txt`), the mutants of verify round 3 and Codex round 3
+(`out/sabotage.txt`), and the live kit with the multi-line option scenario (`kit/`).

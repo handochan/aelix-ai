@@ -190,4 +190,68 @@ def cells_at_most(text: str) -> int:
     return sum(_char_cells(ch) for ch in text)
 
 
-__all__ = ["cells_at_most", "terminal_columns"]
+def graphemes(text: str) -> list[str]:
+    """*text* as its grapheme clusters, the characters a reader sees (#399).
+
+    A base letter and the combining marks on it, an emoji joined by U+200D, a
+    pair of regional indicators (a flag) and a Hangul syllable spelled in jamo
+    are each ONE cluster: cut between them, the accent lands on its own row
+    and the question on screen is not the one asked. pi segments with
+    ``Intl.Segmenter`` (``packages/tui/src/utils.ts``, ``breakLongWord``);
+    this is the same Unicode rule (UAX #29) from ``wcwidth.iter_graphemes``.
+    """
+
+    from wcwidth import iter_graphemes  # noqa: PLC0415
+
+    return list(iter_graphemes(text))
+
+
+def cluster_cells(cluster: str, *, ends_row: bool = False) -> int:
+    """The most terminal cells one grapheme *cluster* can take (#399).
+
+    :func:`cells_at_most` counts every zero-width character as a cell of its
+    own, because one with nothing to sit on may be drawn alone. Inside a
+    cluster it has a base: prompt-toolkit merges it into the base's cell, and
+    so does every terminal. So a cluster counts the LARGEST of prompt-toolkit's
+    width (the sum over its characters, which is what the painter reserves),
+    Rich's width of the whole cluster, and its first character's
+    :func:`cells_at_most`: ``e`` + U+0301 is one cell, ``U+263A U+FE0F`` two
+    (Rich), a woman + ZWJ + laptop four (prompt-toolkit reserves both
+    pictographs), and a mark with no base before it one.
+
+    *ends_row*: the cluster is the last on its row, and one more cell is
+    counted when it ends in a zero-width character. prompt-toolkit writes a
+    zero-width character only while its column is inside the window, then
+    merges it back into the base's cell, so on the LAST column the base is
+    drawn and its mark dropped (measured: ``"x" * 79 + "e\u0301"`` in an
+    80-column window paints a bare ``e``). The cell is not drawn; it keeps the
+    mark's column on screen.
+    """
+
+    if len(cluster) == 1:
+        return _char_cells(cluster)
+    from prompt_toolkit.utils import get_cwidth  # noqa: PLC0415
+    from rich.cells import cell_len  # noqa: PLC0415
+
+    cells = max(get_cwidth(cluster), cell_len(cluster), _char_cells(cluster[0]))
+    if ends_row and get_cwidth(cluster[-1]) == 0:
+        cells += 1
+    return cells
+
+
+def cells_by_cluster(text: str) -> int:
+    """*text* as one row: :func:`cluster_cells` over its grapheme clusters (#399).
+
+    Never more than :func:`cells_at_most`, and less only where a zero-width
+    character sits on a base: ``"x" + "e\u0301" * 80`` is 82 cells here (81
+    and the last mark's column) and 161 there, so a title that fits two
+    80-column rows is drawn in two.
+    """
+
+    if text.isascii():
+        return sum(_char_cells(ch) for ch in text)
+    clusters = graphemes(text)
+    return sum(cluster_cells(c) for c in clusters[:-1]) + cluster_cells(clusters[-1], ends_row=True)
+
+
+__all__ = ["cells_at_most", "cells_by_cluster", "cluster_cells", "graphemes", "terminal_columns"]

@@ -1233,12 +1233,59 @@ unwritten. Add them with the next release.
     end is past the edge of the screen.
   - A host with a UI but no approval dialog gets the whole command or path in
     the `ctx.ui.select` title. It used to stop at 120 characters. Aelix's own
-    `select` still cuts a row wider than the screen at its edge (#399).
-  - Not covered: an extension's own `ctx.ui.select` and `ctx.ui.confirm`. Their
-    title or message is still cut at the edge of the terminal, and Enter or `y`
-    answers at once, so an extension that asks for approval this way (pi's
-    `permission-gate.ts` example does) can still approve a command whose end
-    was never on screen. That is #399.
+    `select` wraps and holds that title now (#399, next entry).
+  - Not covered by #389: an extension's own `ctx.ui.select` and
+    `ctx.ui.confirm`. The next entry (#399) covers them.
+- **An extension's `select` or `confirm` no longer takes an answer before you
+  have seen the whole question (#399, ADR-0253 §11.3, ADR-0199 §(c)).** An
+  extension that asks for approval through `ctx.ui.select` or `ctx.ui.confirm`
+  (pi's `permission-gate.ts` example puts the whole command in the `select`
+  title) had its question cut at the edge of the terminal with nothing saying
+  so, and Enter or `y` answered at once. Measured at 80x24 with that example
+  ported: the title stopped at `arg009 arg`, and Enter ran the 400-word command,
+  end included. Now:
+  - The title (and `confirm`'s message) wraps, as pi's does, by grapheme
+    cluster: a letter keeps its accents, and an emoji sequence or a flag is
+    not split across rows. A single cluster wider than a whole row (an
+    accented letter in a one-column row, a family emoji in a six-column row)
+    is still cut by character.
+  - A question that fits the dialog with the first row of its highlighted
+    option is drawn whole and answers at once, as before; when the options do
+    not all fit under it, the options scroll (the highlighted one always on
+    screen, its `(n/N)` counter while there is a row for it, and a label of
+    several lines cut from the bottom, as before, when there is no room for
+    all of it).
+  - Only a question taller than that scrolls; a line under it says how many
+    lines are hidden and that PgUp/PgDn reach them, and **no option** is taken
+    — Enter, Space or Ctrl+J in `select`, `y` in `confirm` — until every line
+    has been on screen. Esc and Ctrl+C always answer, `n` does in `confirm`
+    (in `select` it types into the filter), and so does the
+    dialog's own `Cancel` (spawn consent) or `No` (the permission gate's
+    fallback). In a terminal too small to show one line of the question, its
+    footer and the highlighted option's first line, the dialog says so and
+    only Esc, Ctrl+C, `n` in `confirm` and that `Cancel` or `No` answer; once the terminal is large
+    enough again, the question is shown and answered as above.
+  - An Enter or `y` typed before the dialog is first drawn is dropped, not
+    queued.
+  - A control character in the question is shown by name in reverse video
+    (`^M`, `^[`, `<U+202E>`). `select` used to draw a CR as a space and
+    `ESC [8m` as `[8m`; `confirm` showed `^M` and `^[` (not in reverse video)
+    and passed `<U+202E>` through as it was.
+  - The same applies where aelix asks with the model's words through this
+    dialog: the spawn-consent dialog of a delegation (`agent` tool,
+    `/agents run`), which now shows the whole task (it was cut at 300
+    characters) and the whole directory (it was cut to 68 characters in the
+    middle), and the permission gate's `ctx.ui.select` fallback. A long task
+    now needs PgDn before you can approve it.
+  - aelix's own pickers (`/model`, `/settings`, `/resume`, `/trust`, the theme
+    picker, `/thinking`, `/login`, `/logout`, the session-in-use prompt,
+    `/extension new`'s placement question and `/agents run`'s project-agent
+    confirm) are unchanged at every terminal size: same layout, same keys, a
+    key typed before the first paint still taken. `/trust`'s question is still
+    cut at the edge of the screen (#380).
+  - Not changed: option labels are drawn as before, one row per line of the
+    label, cut at the edge of the screen (#179), and a member of a parallel or
+    chain delegation is still shown as one row of up to 72 characters.
 - **Your Anthropic key no longer goes to another provider's host (#374,
   ADR-0254).** Any provider on the Anthropic Messages API that had no key of
   its own (a `models.json` custom provider with `"api": "anthropic-messages"`,

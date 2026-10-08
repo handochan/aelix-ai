@@ -151,7 +151,7 @@ async def test_headless_default_block_blocks_write_and_bash(
 async def test_headless_block_still_allows_read_only() -> None:
     """The floor gates MUTATING tools only — a child must still be able to investigate.
 
-    Branch (a) (``permission.py:665-669``) returns before branch (d) is reached,
+    Branch (a) (``permission.py:666-670``) returns before branch (d) is reached,
     so ``read`` is unaffected. A floor that also blocked reads would make a
     read-only delegated agent useless, which is P2's entire default posture.
     """
@@ -182,7 +182,7 @@ async def test_headless_block_applies_under_yolo() -> None:
 
 @pytest.mark.parametrize("headless_default", ["allow", "block"])
 async def test_plan_mode_blocks_above_headless_branch(headless_default: str) -> None:
-    """PLAN blocks at branch (b) (``permission.py:655-663``), above branch (d).
+    """PLAN blocks at branch (b) (``permission.py:656-664``), above branch (d).
 
     This is why ``child_permission_mode`` tightens a clamped DEFAULT to PLAN
     rather than relying on ``headless_default``: the PLAN denial holds no matter

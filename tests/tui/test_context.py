@@ -194,7 +194,7 @@ async def test_theme_methods() -> None:
 async def test_confirm_yes() -> None:
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.confirm("Quit?", "Are you sure?"))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("y")
         assert await asyncio.wait_for(fut, timeout=5) is True
 
@@ -202,7 +202,7 @@ async def test_confirm_yes() -> None:
 async def test_confirm_no_via_escape() -> None:
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.confirm("Quit?", "Sure?"))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x1b")  # Escape
         assert await asyncio.wait_for(fut, timeout=5) is False
 
@@ -212,7 +212,7 @@ async def test_confirm_ctrl_c_cancels() -> None:
     # with select/editor); previously leaked to the chrome global handler.
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.confirm("Quit?", "Sure?"))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x03")  # Ctrl+C
         assert await asyncio.wait_for(fut, timeout=5) is False
 
@@ -240,7 +240,7 @@ async def test_select_arrow_down_then_enter() -> None:
     # for "gpt-4" needed "4" to be a filter char, not a select-row-4 shortcut).
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x1b[B")  # Down — moves cursor to "green"
         pipe.send_text("\r")  # Enter — confirm
         assert await asyncio.wait_for(fut, timeout=5) == "green"
@@ -250,7 +250,7 @@ async def test_select_arrow_up_wraps() -> None:
     # Sprint 6h₂₄: ↑ at the top wraps to the last item (pi parity).
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x1b[A")  # Up — wraps from idx 0 to last ("blue")
         pipe.send_text("\r")
         assert await asyncio.wait_for(fut, timeout=5) == "blue"
@@ -262,7 +262,7 @@ async def test_select_space_confirms() -> None:
     # caller must accept that constraint — single-word options only).
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text(" ")
         assert await asyncio.wait_for(fut, timeout=5) == "red"
 
@@ -270,7 +270,7 @@ async def test_select_space_confirms() -> None:
 async def test_select_escape_cancels() -> None:
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x1b")  # Escape
         assert await asyncio.wait_for(fut, timeout=5) is None
 
@@ -281,7 +281,7 @@ async def test_select_type_to_filter_then_enter() -> None:
     # "green", so the only-remaining row is what Enter resolves.
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("g")
         pipe.send_text("\r")
         assert await asyncio.wait_for(fut, timeout=5) == "green"
@@ -299,7 +299,7 @@ async def test_select_with_detail_resolves_normally() -> None:
         fut = asyncio.ensure_future(
             ctx.select("Pick", ["red", "green", "blue"], detail=detail)
         )
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\x1b[B")  # Down → highlight "green"
         pipe.send_text("\r")  # Enter → confirm
         assert await asyncio.wait_for(fut, timeout=5) == "green"
@@ -312,7 +312,7 @@ async def test_select_detail_exception_does_not_break_modal() -> None:
 
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"], detail=detail))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\r")  # Enter still resolves the highlighted row
         assert await asyncio.wait_for(fut, timeout=5) == "red"
 
@@ -325,7 +325,7 @@ async def test_select_initial_index_starts_at_given_row() -> None:
         fut = asyncio.ensure_future(
             ctx.select("Pick", ["red", "green", "blue"], initial_index=2)
         )
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\r")  # Enter — confirm the initially-highlighted row
         assert await asyncio.wait_for(fut, timeout=5) == "blue"
 
@@ -336,7 +336,7 @@ async def test_select_initial_index_out_of_range_is_clamped() -> None:
         fut = asyncio.ensure_future(
             ctx.select("Pick", ["red", "green"], initial_index=99)
         )
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("\r")
         assert await asyncio.wait_for(fut, timeout=5) == "green"
 
@@ -353,7 +353,7 @@ async def test_select_no_match_enter_stays_open() -> None:
     # a stale cursor + a "no matches" view could silently confirm a hidden row.
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
-        await asyncio.sleep(0.05)
+        await _wait_painted(ctx.chrome)
         pipe.send_text("zzz")  # filter matches nothing
         await asyncio.sleep(0.05)
         pipe.send_text("\r")  # Enter → must not resolve
@@ -364,6 +364,25 @@ async def test_select_no_match_enter_stays_open() -> None:
 
 
 # === review-fix coverage (ADR-0105 W4) =================================
+
+
+async def _wait_painted(chrome: AelixChrome) -> None:
+    """Wait until the open ``select`` / ``confirm`` has been painted once.
+
+    #399: an extension's ``select`` / ``confirm`` (no ``own=True``) drops an
+    approving key typed before its first paint, as the approval prompt does.
+    These rows drive the dialog's keys, not that hold, so they wait for the
+    paint rather than bet on a fixed sleep (the modal can take longer than
+    50 ms to paint, measured).
+    """
+
+    await _wait_float(chrome)
+
+    def painted() -> bool:
+        control = chrome.app.layout.current_control
+        return getattr(control, "_width", None) is not None
+
+    await wait_until(painted, what="the dialog's first paint")
 
 
 async def _wait_float(chrome: AelixChrome) -> None:
@@ -402,7 +421,7 @@ async def test_select_supports_more_than_nine_options() -> None:
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         options = [f"o{i}" for i in range(12)]
         fut = asyncio.ensure_future(ctx.select("Pick", options))
-        await _wait_float(chrome)
+        await _wait_painted(chrome)
         pipe.send_text("o11")
         pipe.send_text("\r")
         assert await asyncio.wait_for(fut, timeout=5) == "o11"
@@ -600,7 +619,7 @@ async def test_select_enter_confirms_cursor_row() -> None:
     # still bound at the modal layer, just to a confirm rather than a no-op.
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"]))
-        await _wait_float(chrome)
+        await _wait_painted(chrome)
         pipe.send_text("\n")
         assert await asyncio.wait_for(fut, timeout=5) == "red"
 
@@ -609,7 +628,7 @@ async def test_confirm_enter_is_noop_then_y_resolves() -> None:
     # ADR-0121 M1: Enter on a confirm must NOT auto-answer — explicit y/n only.
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         fut = asyncio.ensure_future(ctx.confirm("Sure?", "really?"))
-        await _wait_float(chrome)
+        await _wait_painted(chrome)
         pipe.send_text("\n")  # Enter → no-op (never auto-approves)
         await asyncio.sleep(0.1)
         assert not fut.done()

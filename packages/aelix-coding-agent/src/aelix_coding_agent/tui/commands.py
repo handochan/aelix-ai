@@ -24,6 +24,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from aelix_coding_agent.extensions.ext_ui import select_declared
 from aelix_coding_agent.tui.stats_dashboard import format_session_cost, format_tool_usage
 
 if TYPE_CHECKING:
@@ -770,7 +771,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3612-3629`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3617-3634`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -901,7 +902,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2820`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2825`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -933,7 +934,9 @@ async def _confirm_project_agent_for_run(
 
     body = project_agent_confirm_body(name, source_path or "(path unavailable)")
     try:
-        answer = await select(body, list(PROJECT_AGENT_CONFIRM_OPTIONS))
+        # #399 review round 3: aelix's own question, so main's picker byte for
+        # byte (``own=True``), not an extension's held, wrapped one.
+        answer = await select_declared(select, body, list(PROJECT_AGENT_CONFIRM_OPTIONS), own=True)
     except Exception:  # noqa: BLE001 — a broken dialog is a decline, never a yes
         return False
     # Matched by IDENTITY against the rendered affirmative, never by substring:
@@ -1747,7 +1750,11 @@ async def _extension_new(ctx: CommandContext, name: str) -> None:
         "This project only — ships to everyone who clones it, trust-gated",
     ]
     try:
-        chosen = await select(f"Where should the {name!r} extension go?", options)
+        # #399 review round 3: aelix's own question, so main's picker byte for
+        # byte (``own=True``), not an extension's held, wrapped one.
+        chosen = await select_declared(
+            select, f"Where should the {name!r} extension go?", options, own=True
+        )
     except Exception as exc:  # noqa: BLE001 — a broken dialog writes nothing
         ctx.commit(Text(f"✖ could not ask where to put it: {exc}", style="bold red"))
         return

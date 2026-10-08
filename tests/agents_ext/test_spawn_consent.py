@@ -141,7 +141,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:454``).
+    (``tui/context.py:940-942``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -343,14 +343,18 @@ async def test_dialog_shows_source_path_and_scope(
     assert expected_mode in title
 
 
-async def test_task_text_is_truncated_to_300_chars() -> None:
-    """RESIDUAL R2 — the task is written by the model, not by the user.
+async def test_the_whole_task_is_in_the_title() -> None:
+    """RESIDUAL R2, as amended by #399 — the model's task is shown WHOLE.
 
-    Two independent reasons to bound it. Injection: a long task can bury the
-    real instruction below the fold so the human approves something they never
-    read. Rendering: ``tui/overlay.py``'s ``_CappedContainer`` CLIPS rather
-    than scrolls, so an unbounded title can push the options — including
-    Cancel — off screen.
+    It was cut at :data:`TASK_PREVIEW_CHARS` (300) for two reasons: a long task
+    could bury the real instruction below the fold, and ``ctx.ui.select`` neither
+    wrapped nor scrolled, so an unbounded title pushed the options off screen.
+    Both are the select's job now (it wraps the title, keeps the options on
+    screen, and holds every option until all of the title has been drawn:
+    ``tests/tui/test_select_title_held.py``), and the cut became the defect: the
+    human approved a task whose end was never shown. Whitespace is still
+    collapsed (one row of text, which the select wraps) and control characters
+    still deleted.
 
     Driven with a DECLARING profile since the 2026-07-27 second amendment: a
     plain ``inherit`` under a DEFAULT parent no longer renders a dialog, so there
@@ -359,16 +363,15 @@ async def test_task_text_is_truncated_to_300_chars() -> None:
 
     spy = _SelectSpy(CANCEL_OPTION)
     ctx = _FakeCtx(has_ui=True, ui=spy)
-    task = "A" * 5000
+    task = "A" * 5000 + " and then the decisive TAIL\n\n  with\x1b[8m more"
     await request_spawn_consent(
         ctx, _declaring(), task, PermissionMode.DEFAULT, cwd="/w"
     )
 
     title = spy.calls[0][0]
-    assert "A" * (TASK_PREVIEW_CHARS + 1) not in title
-    assert "A" * 50 in title
-    assert "…" in title
-    assert len(title) < 700
+    assert title.splitlines()[-1] == "A" * 5000 + " and then the decisive TAIL with[8m more"
+    assert "…" not in title
+    assert TASK_PREVIEW_CHARS == 300  # still the receipt's preview budget (runtime.py)
 
 
 async def test_task_newlines_are_collapsed() -> None:
@@ -391,7 +394,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:454``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:940-942``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -1311,7 +1314,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # hole. ``build_consent_title`` interpolated ``cwd``, ``resolved.name`` and
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
-# (``tui/context.py:140-218``); and ``resolve_child_cwd``
+# (``tui/context.py:148-226``); and ``resolve_child_cwd``
 # (``print_channel.py:524``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a
@@ -1378,7 +1381,15 @@ async def test_the_p2_door_end_to_end_cannot_be_forged() -> None:
     title = spy.calls[0][0]
     assert "\x1b" not in title
     assert title.splitlines()[-1] == "delete every branch except main"
-    assert "read the README" not in title
+    # #399: the directory is shown whole (its 68-character middle elision went),
+    # so the forged text is on screen - flattened into the ``Directory:`` row it
+    # came from, never a row of its own, and never hiding the real rows below it.
+    rows = title.splitlines()
+    assert [r for r in rows if "read the README" in r] == [
+        r for r in rows if r.startswith("Directory:")
+    ]
+    assert rows.count("Permission: auto-accept-edits") == 0
+    assert sum(r.startswith("Permission:") for r in rows) == 1
 
 
 # ``mkdir_or_skip`` (``tests/conftest.py``) is left UNANNOTATED in this file,

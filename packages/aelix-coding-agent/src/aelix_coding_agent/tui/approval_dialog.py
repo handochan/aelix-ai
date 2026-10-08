@@ -20,9 +20,12 @@ module is a dedicated, purpose-built dialog mirroring the
   ADR-0253 §9 and §11).
 
 The generic ``AelixTUIContext.select`` keeps its own shape so ``/settings`` /
-``/resume`` / ``/model`` / ``/thinking`` keep their behaviour. It does NOT wrap
-or hold a long title: an extension's ``select`` / ``confirm`` question is cut at
-the screen edge as before, and that surface is issue #399 (ADR-0253 §11).
+``/resume`` / ``/model`` / ``/thinking`` keep their behaviour (``own=True``:
+main's picker, byte for byte). For an extension's or the model's question it
+wraps its title (and ``confirm`` its message) since #399 and, when the title is
+taller than the modal can give it, scrolls it through this module's
+:class:`_BodyViewport` and holds every option until all of it has been drawn
+(ADR-0253 §11.3).
 """
 
 from __future__ import annotations
@@ -669,24 +672,56 @@ def _cut(chars: StyleAndTextTuples, width: int) -> list[StyleAndTextTuples]:
     cell wider than the screen (measured: rows of 80, 1 and 81 cells at 80
     columns for 30 skin-tone modifiers, 17 letters, two spaces, 30 modifiers,
     19 letters and a Hangul syllable).
+
+    The unit is the GRAPHEME CLUSTER, never the code point (#399 review round 3,
+    Codex): cut by code point, ``"x" + "e\u0301" * 40`` lost the accent off its
+    last letter onto the next row, so the question on screen was not the one
+    asked, and with each mark counted as a cell of its own an 81-cell title
+    took three rows at 80 columns. A cluster (:func:`~aelix_coding_agent.tui.
+    width.graphemes`, the rule pi's ``Intl.Segmenter`` applies) is measured
+    whole (:func:`~aelix_coding_agent.tui.width.cluster_cells`) and lands on one
+    row; the last cluster of a row that ends in a zero-width character keeps
+    one more column (``ends_row``), since prompt-toolkit drops a mark that
+    falls on the window's last column. The one exception is a cluster wider
+    than the whole row: it is cut by code point as before, because a row wider
+    than the screen is clipped at its edge and what was clipped would count as
+    drawn. That is a KNOWN LIMIT, not only degenerate text (review round 4,
+    Codex round 3): a run of skin-tone modifiers with no emoji under them is
+    one cluster of two cells each, but so is ``e`` + U+0301 in a one-column
+    row (the kept last column makes it two) and a ZWJ family emoji in a
+    six-column row, and those come out with the mark or the joined emoji on
+    a row of their own. The extension-authoring guide and ADR-0253 §11.3 say so.
     """
 
-    from aelix_coding_agent.tui.width import cells_at_most  # noqa: PLC0415
+    from aelix_coding_agent.tui.width import cluster_cells, graphemes  # noqa: PLC0415
 
+    # (fragments, cells, cells when it ends the row, is a space) per unit: a
+    # cluster, or one character of a cluster too wide for any row.
+    units: list[tuple[StyleAndTextTuples, int, int, bool]] = []
+    at = 0
+    for cluster in graphemes("".join(fragment[1] for fragment in chars)):
+        fragments = chars[at : at + len(cluster)]
+        at += len(cluster)
+        last = cluster_cells(cluster, ends_row=True)
+        if last > width and len(fragments) > 1:
+            units.extend(
+                ([f], cluster_cells(f[1]), cluster_cells(f[1]), f[1] == " ") for f in fragments
+            )
+        else:
+            units.append((fragments, cluster_cells(cluster), last, cluster == " "))
     rows: list[StyleAndTextTuples] = []
-    row: StyleAndTextTuples = []
+    row: list[tuple[StyleAndTextTuples, int, int, bool]] = []
     used = 0
-    for fragment in chars:
-        cells = cells_at_most(fragment[1])
-        while row and used + cells > width:
-            spaces = [i for i, f in enumerate(row) if f[1] == " "]
+    for unit in units:
+        while row and used + unit[2] > width:
+            spaces = [i for i, u in enumerate(row) if u[3]]
             split = spaces[-1] + 1 if spaces and spaces[-1] + 1 < len(row) else len(row)
-            rows.append(row[:split])
+            rows.append([fragment for u in row[:split] for fragment in u[0]])
             row = row[split:]
-            used = sum(cells_at_most(f[1]) for f in row)
-        row.append(fragment)
-        used += cells
-    rows.append(row)
+            used = sum(u[1] for u in row)
+        row.append(unit)
+        used += unit[1]
+    rows.append([fragment for u in row for fragment in u[0]])
     return rows
 
 
@@ -716,9 +751,18 @@ class _BodyViewport:
     counted only once it fits the screen by every measure of its width.
     """
 
-    def __init__(self, lines: Callable[[], list[_Row]], width_key: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        lines: Callable[[], list[_Row]],
+        width_key: Callable[[], Any],
+        *,
+        held: str = "Yes",
+    ) -> None:
         self._lines = lines
         self._width_key = width_key
+        # What the footer says is held: "Yes" here, "Enter" for the extension
+        # ``select`` and "y" for its ``confirm`` (#399, ``tui/context.py``).
+        self._held = held
         self.top = 0
         # What the last render drew: the first line, how many, out of how many.
         self._frame: tuple[Any, int, int, int] | None = None
@@ -777,7 +821,7 @@ class _BodyViewport:
         frame = self._frame
         if frame is None or frame[0] != _render_stamp():
             # The body was not drawn this frame (no room for it at all).
-            return _NO_ROOM
+            return _NO_ROOM.replace("Yes", self._held)
         _stamp, top, shown, total = frame
         hidden = total - shown
         if hidden <= 0:
@@ -786,11 +830,11 @@ class _BodyViewport:
         held = not self.all_shown()
         text = f"{hidden} of {total} lines hidden (↑{above} ↓{below}) · PgUp/PgDn to scroll"
         if held:
-            text += " · Yes held until all seen"
+            text += f" · {self._held} held until all seen"
         if width is not None and len(text) > width:
             text = f"{hidden}/{total} hidden ↑{above} ↓{below} · PgUp/PgDn"
             if held:
-                text = f"Yes held · {text}"
+                text = f"{self._held} held · {text}"
         return text
 
     def body_control(self) -> Any:

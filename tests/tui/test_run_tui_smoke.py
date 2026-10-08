@@ -936,10 +936,11 @@ async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
     seen: dict[str, object] = {}
     real_select = AelixTUIContext.select
 
-    async def _spy_select(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+    async def _spy_select(self, title, options, opts=None, detail=None, initial_index=0, own=False):  # type: ignore[no-untyped-def]
         seen["title"] = title
         seen["options"] = list(options)
         seen["detail"] = [detail(i) if detail else None for i in range(len(options))]
+        seen["own"] = own
         return options[0]
 
     monkeypatch.setattr(AelixTUIContext, "select", _spy_select)
@@ -969,6 +970,9 @@ async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
     assert any("ship it" in line for line in details[0])  # type: ignore[union-attr]
     assert any("looks good" in line for line in details[1])  # type: ignore[union-attr]
     assert runtime.switch_calls == [newer_path]
+    # #399: /resume is aelix's own picker, so it says so - a key typed before its
+    # first paint is taken, as it always was. An extension's select drops it.
+    assert seen["own"] is True
 
 
 async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
@@ -1018,7 +1022,7 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
     seen: dict[str, object] = {}
     real_select = AelixTUIContext.select
 
-    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0, own=False):  # type: ignore[no-untyped-def]
         seen["options"] = list(options)
         seen["detail"] = detail(0) if detail else []
         return options[0]
@@ -1116,7 +1120,7 @@ async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_byte
     seen: dict[str, object] = {}
     real_select = AelixTUIContext.select
 
-    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0, own=False):  # type: ignore[no-untyped-def]
         seen["options"] = list(options)
         return options[0]
 
@@ -1212,7 +1216,7 @@ async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
         real_select = AelixTUIContext.select
 
         async def _spy(  # type: ignore[no-untyped-def]
-            self, title, options, opts=None, detail=None, initial_index=0, _seen=seen
+            self, title, options, opts=None, detail=None, initial_index=0, own=False, _seen=seen
         ):
             _seen["options"] = list(options)
             return options[0]

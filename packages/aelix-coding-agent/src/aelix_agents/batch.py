@@ -118,7 +118,7 @@ _BATCH_BUDGET_EXHAUSTED = (
     "was created. Run the remaining tasks in a new call, or make them smaller."
 )
 
-# ONE SEMAPHORE PER RUNNING LOOP, and the precedent is ``consent.py:112-131``.
+# ONE SEMAPHORE PER RUNNING LOOP, and the precedent is ``consent.py:117-136``.
 # ``asyncio.Semaphore`` binds itself to the first loop that CONTENDS on it (the
 # ``_LoopBoundMixin`` fast path never touches ``_get_loop``) and raises "bound to
 # a different event loop" forever after. A process has exactly one loop, so in
@@ -213,7 +213,7 @@ class _Batch:
     ``AUTO_ACCEPT`` at ``posture.py:54-60``), and in the WIDENED case it is
     always ``PLAN`` — the bottom of the lattice — so no comparison against it can
     ever detect a tightening. The raw posture does not saturate: widening is only
-    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:530``
+    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:555``
     requires ``AUTO_ACCEPT`` strictly looser than the clamp), and a ``DEFAULT``
     parent still has ``PLAN`` below it to shift+tab into. See
     :func:`_live_floor`."""
@@ -555,7 +555,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     key=posture_rank)`` evaluated with an UNCHANGED posture returns ``live``
     whenever the human WIDENED at the dialog — ``consent._may_widen`` only offers
     the rung when ``AUTO_ACCEPT`` is strictly looser than the clamp
-    (``consent.py:530``), so ``grant.mode`` is strictly above ``live`` in exactly
+    (``consent.py:555``), so ``grant.mode`` is strictly above ``live`` in exactly
     the widened case. The literal form would therefore revoke every widening the
     human explicitly granted, on every batch, with no posture change at all — and
     it would break §7 invariant 1's own stated proof that "with a steady posture,
@@ -567,7 +567,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     precisely the case the bullets below advertise. ``child_permission_mode``
     reaches only three of the five ranks and, whenever ``_may_widen`` returns
     True, is provably ``PLAN``: the rung requires ``AUTO_ACCEPT`` strictly looser
-    than the clamp (``consent.py:530``) and the clamp's reachable set is
+    than the clamp (``consent.py:555``) and the clamp's reachable set is
     ``{PLAN, AUTO_ACCEPT, YOLO}`` (``DEFAULT`` is folded into ``PLAN`` at
     ``posture.py:231``), so the only value strictly below ``AUTO_ACCEPT`` is
     ``PLAN``. ``PLAN`` is rank 0. Nothing is strictly below rank 0, so

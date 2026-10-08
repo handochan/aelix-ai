@@ -238,7 +238,7 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             # test_thinking_level_description_names_the_tier_suffix states it).
             # NOT ON SCREEN TODAY: ``statusline_picker.py:96`` is the only
             # reader of this field, and the multiselect body it feeds
-            # (``context.py:816``) destructures the triple and draws the label
+            # (``context.py:1250``) destructures the triple and draws the label
             # alone — so every segment description here is unreachable text.
             # Fixed because it is wrong, not because a user can see it (#257).
             "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "

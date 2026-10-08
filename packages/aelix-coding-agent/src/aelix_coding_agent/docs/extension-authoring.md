@@ -113,12 +113,25 @@ Registered commands are merged into both slash-command **autocomplete** and
   `ctx.ui.select` / `confirm` / `input` / `notify`, and session control through
   `ctx.fork` / `new_session` / `switch_session` / `reload`.
 
-`select` draws each line of its title as one row and `confirm` its message the
-same way. Neither wraps: a line wider than the terminal is cut at its edge with
-no marker, and Enter (or `y`) answers at once. pi wraps the title, and its
-`permission-gate.ts` example puts the whole command there, so a port of it can
-approve a command whose end was never on screen. Until issue #399 changes this,
-keep each line of a question short, or show long text some other way first.
+`select` wraps its title, as pi's does, and `confirm` its title and message
+(#399), by grapheme cluster: a letter keeps its accents and an emoji sequence
+or a flag is not split across rows. Known limit: a single cluster wider than a
+whole row of the dialog (an accented letter in a one-column row, a ZWJ family
+emoji in a six-column row) is cut by character. A control character in them is drawn by name in
+reverse video (`^M`, `^[`, `<U+202E>`), never obeyed and never dropped. A question that fits the
+dialog with the first row of its highlighted option is drawn whole and answers at once; the
+options scroll under it when they do not all fit (the highlighted one is
+always on screen, a label of several lines cut from the bottom when there is
+no room for all of it). A question taller than that scrolls (PgUp/PgDn), and **no
+option is taken** (Enter, Space or Ctrl+J in `select`, `y` in `confirm`) until
+every row of it has been drawn; Esc and Ctrl+C always answer, and so does `n`
+in `confirm` (in `select`, `n` types into the filter). An Enter or
+`y` typed before the dialog is first drawn is dropped, not queued. So pi's
+`permission-gate.ts` example, ported, shows the whole command and runs it only
+once its end has been on screen. Your own `No` or `Cancel` option is held like
+any other while the question is held (aelix cannot know what a label does):
+Esc is the answer that is always taken. Option labels are drawn as given, one
+row per line of the label (issue #179).
 
 A non-empty **string** return is shown in the transcript (a convenience for
 simple commands); richer output should go through `ctx.ui`. Built-in commands

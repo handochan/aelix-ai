@@ -86,6 +86,10 @@ dependencies = [
 tui = [
   "prompt-toolkit>=3.0,<4",
   "rich>=13.7,<15",
+  # #399 review round 3: an extension's select/confirm title wraps by grapheme
+  # cluster, as pi's does with Intl.Segmenter (tui/width.py `graphemes`).
+  # prompt-toolkit already pulls wcwidth in; `iter_graphemes` is 0.3.0's.
+  "wcwidth>=0.3.0",
 ]
 
 # There is no `[images]` extra. ADR-0106 §D added one for `tui/images.py`, and

@@ -1,6 +1,7 @@
 # 0197. Subagent-runtime seam & the bundled `aelix-agents` extension (P2)
 
 Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
+**Amended 2026-10-08 (#399): R2's 300-character task cut is removed — see R2.**
 **Amended 2026-07-27 (owner): §(i)'s consent dialog fires only when write
 authority is at stake, and the widening option is offered only to a profile that
 DECLARED it needs write authority — see `#### Amendment (2026-07-27, owner)` in
@@ -691,7 +692,8 @@ only `signal` + `timeout`, and the extension-facing `select`
 (`ext_ui.py:186-193`) takes `(title, options, opts)` — **there is no body/detail
 field on the extension-facing protocol**, so all context rides the `title` string
 as a multi-line block: profile name · **`resolved.source_path`** · scope · the
-child's cwd · the task truncated to 300 characters. Options, in order:
+child's cwd · the task truncated to 300 characters (cut removed 2026-10-08, #399:
+the whole task, see R2). Options, in order:
 `"Run read-only (<clamped>)"`; `"Allow file edits for this run
 (auto-accept-edits)"` **only when widening is permitted**; `"Cancel"`. `select`
 returns `None` on Esc (`tui/context.py:255-262`) and `"Cancel"` is explicit — both
@@ -1312,6 +1314,11 @@ behaviour, cap, registry or consent policy in product-core.
   injection can produce a benign-looking task. Mitigations, all mandatory and all
   shipped: always display `resolved.source_path` (a human-owned file path),
   truncate the task to 300 characters, and never widen a project-scoped profile.
+  *Amended 2026-10-08 (#399, ADR-0199's note closing §(c)'s R2/R3 subsection,
+  ADR-0253 §11.3): the 300-character cut is no longer a mitigation and is gone.
+  It hid the end of the task the human approved; the dialog now shows the whole
+  task, and `ctx.ui.select` holds every option but `Cancel` while a title taller
+  than the modal has not all been drawn. The other two mitigations stand.*
 - **R3 — modal rendering is not unit-testable.** Our dialog is *taller* than the
   shipped approval dialog (path + 300-char task), so it can hit
   `_CappedContainer` / `_modal_cap` clipping (`tui/overlay.py:136`, `:198`,

@@ -383,6 +383,51 @@ class ExtensionUIContext(Protocol):
         ...
 
 
+async def select_declared(
+    select: Callable[..., Awaitable[str | None]],
+    title: str,
+    options: list[str],
+    **aelix_only: object,
+) -> str | None:
+    """``select(title, options)``, passing each of *aelix_only* only when that ``select`` declares it.
+
+    #399: aelix's TUI ``select`` takes two keywords no other host knows, and
+    they are deliberately NOT on the :class:`ExtensionUIContext` protocol:
+    ``own=True`` (aelix wrote this question, so the picker is main's, byte for
+    byte: ``/extension new``'s placement question, ``/agents run``'s
+    project-agent confirm) and ``cancel_options`` (the rows that are the
+    dialog's own refusal, see :func:`select_with_cancel`). A host whose
+    ``select`` does not declare one is called without it, exactly as before.
+    """
+
+    import inspect  # noqa: PLC0415
+
+    try:
+        declared = set(inspect.signature(select).parameters)
+    except (TypeError, ValueError):
+        declared = set()
+    passed = {name: value for name, value in aelix_only.items() if name in declared}
+    return await select(title, options, **passed)
+
+
+async def select_with_cancel(
+    ui: ExtensionUIContext, title: str, options: list[str], cancel: tuple[str, ...]
+) -> str | None:
+    """``ui.select(title, options)``, naming *cancel* as the dialog's own refusal rows.
+
+    #399: aelix's TUI ``select`` holds every option of a question whose title
+    has not all been on screen, except rows the caller says are its own
+    cancel. That keyword (``cancel_options``) is aelix's TUI's alone, NOT on
+    the :class:`ExtensionUIContext` protocol, so it is passed only to a
+    ``select`` that declares it (:func:`select_declared`); any other host is
+    called exactly as before. For aelix's own callers whose title is the
+    model's text (spawn consent's ``Cancel``, the permission fallback's ``No``
+    rows), never an extension's.
+    """
+
+    return await select_declared(ui.select, title, options, cancel_options=cancel)
+
+
 __all__ = [
     "AutocompleteProviderFactory",
     "CustomComponentFactory",

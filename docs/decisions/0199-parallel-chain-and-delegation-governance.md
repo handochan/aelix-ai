@@ -8,6 +8,12 @@ ADR-0196/0197/0198).
 call shares one 64 KiB summary budget — see the note closing §(i).**
 **Amended 2026-10-08 (#178): the tool card's "byte for byte with P2" holds for
 clean input only; child-authored fields are sanitised — see the note in §(l).**
+**Amended 2026-10-08 (#399, ADR-0253 §11.3): S4's cuts go — the single-task dialog
+shows the whole task (no 300-character cut) and both dialogs the whole directory
+(no 68-character middle elision); `ctx.ui.select` wraps the title, draws a title
+that fits whole while the option rows scroll, and holds every option but `Cancel`
+only while a taller title has not all been drawn — see the note closing §(c)'s
+R2/R3 subsection.**
 Date: 2026-07-28
 Builds on: ADR-0196 (the agent-profile identity every child runs under),
 ADR-0197 (the subagent-runtime seam, the clamp, the consent gate, the caps this
@@ -311,7 +317,8 @@ clipped** — a preview that *looks* complete while dropping the rest, which is
 the silent drop this section forbids. It would also break the invariant that the
 row count equals the member count, which is what the height budget measures.
 
-**ADR-0197 residual R3 stays OPEN.** `tui/approval_dialog.py:363-380` already
+**ADR-0197 residual R3 stays OPEN** (closed for this dialog's shape on 2026-10-08 by
+#399 — see the note closing this subsection). `tui/approval_dialog.py:363-380` already
 solves this shape structurally — `HSplit([scrollable_body, spacer,
 options_window])` with the options at `Dimension.exact(n)` so "the
 security-critical deny option is ALWAYS visible even when the diff body is far
@@ -322,6 +329,27 @@ delta forbids. R3 is therefore restated with the pressure on it now **higher**,
 not lower: the batch dialog is taller than the single-task one, and only the
 refusal rule stands between it and a clipped `Cancel`. It is the natural
 companion to the P4 dashboard work that will touch these surfaces anyway.
+
+> **Amended 2026-10-08 (#399, ADR-0253 §11.3; review round 2).** The product-core
+> change this phase could not make has been made for the select itself:
+> `AelixTUIContext.select` now wraps its title, and for a dialog whose text is not
+> aelix's own — this one — a title that fits the modal with its highlighted option
+> is drawn whole and never held, the option rows scrolling in the room left (the
+> highlighted one, `Cancel` when it is highlighted, always on screen). A title
+> taller than that scrolls in the approval prompt's `_BodyViewport` and every
+> option but `Cancel` is held until every title row has been drawn; Esc and
+> `Cancel` always answer, and an Enter typed before the first paint is dropped.
+> R3's shape is therefore closed for this dialog. With that, S4's two
+> cuts became the defect they were meant to prevent — the human approved a task
+> or a directory part of which was never on screen — and they are removed: the
+> single-task title carries the whole task (flattened, control characters
+> deleted; `TASK_PREVIEW_CHARS` survives only as the spawn receipt's preview
+> length), and both titles the whole `Directory:` (`_sanitize_field(cwd,
+> limit=None)`; `Source:` keeps its middle elision). Unchanged: the 72-character
+> member rows of a multi-task dialog and the refusal of a batch that does not fit
+> without scrolling (`batch_dialog_fits`, one row per member). A `Directory:`
+> longer than a row now wraps, so an admitted batch can scroll; it is held,
+> never cut.
 
 #### A guard the annotation does not give you
 
@@ -1324,7 +1352,8 @@ product-core. §(n) is now the machine gate for that clause.
   disclosed in the dialog (`consent.py:536-547`), and never widenable
   (`consent.py:371`) — **but not solved.** The complete answer is the per-tool
   child→parent approval back-channel, which is its own sprint.
-* **R-B — ADR-0197 residual R3 remains OPEN, with more pressure on it.** The
+* **R-B — ADR-0197 residual R3 remains OPEN, with more pressure on it** (closed for
+  this dialog's shape on 2026-10-08 by #399, §(c)'s note). The
   batch dialog is taller than the single-task one, and the structural fix —
   `approval_dialog`'s `HSplit` with the options window at `Dimension.exact(n)` —
   is a product-core change this phase's zero delta forbids. Mitigated by the

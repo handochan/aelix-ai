@@ -10,7 +10,7 @@ byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
 THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
-``tui/commands.py:1226-1227`` → ``_render_subagent_result``, the human-facing
+``tui/commands.py:1229-1230`` → ``_render_subagent_result``, the human-facing
 ``/agents run`` door. That door stays single-task under decision S2, so it needs
 no batch rendering and gets none.
 

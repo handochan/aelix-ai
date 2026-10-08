@@ -102,7 +102,7 @@ async def test_thinking_level_description_names_the_tier_suffix() -> None:
     # This states the sentence itself. Be honest about what that is: a
     # literal-vs-literal pin, NOT a behavioural test, because nothing renders a
     # segment description today — ``statusline_picker.py:96`` is the field's only
-    # reader and the multiselect body (``context.py:816``) drops it (#257). Reverting
+    # reader and the multiselect body (``context.py:1250``) drops it (#257). Reverting
     # both copies to the pre-#251 sentence fails exactly this test and nothing
     # else (measured: 1 failed, 1589 passed on tests/tui). It earns its place by
     # keeping the two copies from drifting back to a claim the tier suffix

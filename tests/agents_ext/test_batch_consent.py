@@ -10,7 +10,7 @@ this module removed covered LATER calls, whose tasks nobody had seen).
 WHAT MAKES THIS FILE DIFFERENT FROM ``test_spawn_consent.py``: a batch dialog can
 be TOO TALL, and the failure is silent. ``ctx.ui.select`` composes title and
 options into ONE non-wrapping, non-scrolling ``Window``
-(``tui/context.py:140-218``, ``:476-479``) and ``tui/overlay.py``'s
+(``tui/context.py:148-226``, ``:797-800``) and ``tui/overlay.py``'s
 ``_CappedContainer`` clamps its height (``overlay.py:221-231``), so the overflow
 is BOTTOM TRUNCATION — and ``build_options`` appends ``Cancel`` LAST. A naive
 8-task dialog at 80x24 composes to 23 rows against a cap of 19: the hint, the
@@ -76,7 +76,7 @@ _SHIPPED_RESERVE_ROWS = 5
 _MODAL_MIN_HEIGHT = 3  # ``overlay.py:60``
 
 # Rows ``ctx.ui.select`` adds around a picker body: one divider under the title,
-# one counter row, one closing divider, one hint row (``tui/context.py:140-218``,
+# one counter row, one closing divider, one hint row (``tui/context.py:148-226``,
 # ``:365``).
 _FRAME_ROWS = 4
 
@@ -112,7 +112,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:376-383``).
+    (``tui/context.py:668-677``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -646,7 +646,7 @@ async def test_a_declined_batch_starts_nothing() -> None:
 
 
 async def test_esc_is_a_decline() -> None:
-    """``None`` is what ``tui/context.py:376-383`` returns for Esc."""
+    """``None`` is what ``tui/context.py:668-677`` returns for Esc."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -762,7 +762,7 @@ async def test_two_batches_ask_twice() -> None:
 
 
 async def test_a_default_parent_fans_out_with_no_dialog_at_all() -> None:
-    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:460-481``).
+    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:485-506``).
 
     A ``default`` parent clamps a non-declaring profile to ``plan``:
     ``grants_write_authority`` is False and nothing may be widened, so eight
@@ -1097,7 +1097,7 @@ async def test_a_one_member_batch_is_never_refused_for_height(
 def test_the_module_still_exports_no_session_memo() -> None:
     """The batch is not the rung the removed memo was.
 
-    ``consent.py:221-248`` forbids a memo; P3 adds a batch. If a future edit
+    ``consent.py:234-261`` forbids a memo; P3 adds a batch. If a future edit
     smuggles the memo back in beside the batch, this fails first.
     """
 
@@ -1140,7 +1140,7 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title
-# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:140-218``), and
+# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:148-226``), and
 # prompt_toolkit honours SGR 8 (hidden).
 #
 # Measured before the fix, with a 150-byte directory created by plain
@@ -1261,11 +1261,14 @@ def test_no_interpolated_field_can_carry_a_control_character(payload: str) -> No
 
 @pytest.mark.parametrize("payload", _HOSTILE_FIELDS)
 def test_every_header_row_stays_within_one_visible_row(payload: str) -> None:
-    """Width, not just height. The modal does NOT wrap.
+    """Width, not just height. The modal did NOT wrap when this was written.
 
-    ``tui/context.py:476-479`` builds its ``Window`` with ``wrap_lines`` left at
-    ``False``, so an over-long row is clipped at the terminal edge WITH NO MARKER
-    — the human sees a plausible prefix and cannot tell there is more.
+    An over-long row was clipped at the terminal edge WITH NO MARKER — the human
+    saw a plausible prefix and could not tell there was more. #399 made the
+    select wrap and hold, and took the ``Directory:`` row out of this budget: it
+    shows the whole directory now (:func:`test_the_directory_row_shows_the_whole_directory`).
+    The other header rows keep their one-row budget; one row per field is still
+    what :func:`batch_dialog_fits` counts.
 
     THE ROW IS THE UNIT, NOT THE FIELD, and that is the whole point of asserting
     it here: ``Profile:`` carries the name AND the scope plus fixed text, so
@@ -1286,29 +1289,35 @@ def test_every_header_row_stays_within_one_visible_row(payload: str) -> None:
         # Every row EXCEPT the chain warning, which §3.1.1 accepts as 81 columns
         # with its last character clipped, and the task previews, which
         # ``BATCH_TASK_PREVIEW_CHARS`` bounds on its own budget.
-        if row.startswith(("Delegate", "Profile:", "Source:", "Directory:", "Permission:")):
+        if row.startswith(("Delegate", "Profile:", "Source:", "Permission:")):
             assert len(row) <= DIALOG_ROW_CHARS, row
 
 
-def test_a_truncated_directory_row_still_shows_the_LAST_component() -> None:
-    """Elide the MIDDLE of a path, never the tail — and say so on screen.
+@pytest.mark.parametrize("batch", [False, True])
+def test_the_directory_row_shows_the_whole_directory(batch: bool) -> None:
+    """#399: the ``Directory:`` row is the whole directory, on both doors.
 
-    Containment only promises the child runs somewhere inside the parent tree;
-    WHERE inside is the question this row answers, and the answer is the last
-    component. A model asking for ``<50 innocuous characters>/.aelix`` would, under
-    plain clipping or tail truncation, render as the innocuous part alone.
+    It elided the MIDDLE at :data:`DIALOG_FIELD_CHARS` so that, in a modal that
+    neither wrapped nor scrolled, the LAST component — the one being consented
+    to — stayed on screen. The select wraps the row now and holds every option
+    until all of it has been drawn, so the elision stopped protecting the tail
+    and started hiding the middle: the human approved a directory part of which
+    was never on screen. ``Source:`` (the path the model cannot influence) keeps
+    its elision.
     """
 
     cwd = "/home/alice/work/" + "long-and-boring-directory-name/" * 4 + ".aelix"
-    title = build_consent_title(
-        _declaring(), "go", PermissionMode.PLAN, cwd=cwd
-    )
+    if batch:
+        title = build_batch_consent_title(
+            _declaring(), ("go", "go again"), PermissionMode.PLAN, cwd=cwd, mode="parallel"
+        )
+    else:
+        title = build_consent_title(_declaring(), "go", PermissionMode.PLAN, cwd=cwd)
 
     row = next(r for r in title.splitlines() if r.startswith("Directory:"))
-    assert row.endswith(".aelix")
-    assert "/home/alice/work/" in row
-    assert "…" in row  # the truncation is DECLARED, not silent
-    assert len(row) <= 12 + DIALOG_FIELD_CHARS
+    assert row == f"Directory:  {cwd}"
+    assert "…" not in row
+    assert len(row) > 12 + DIALOG_FIELD_CHARS
 
 
 async def test_the_forged_dialog_shows_the_tasks_that_will_actually_run() -> None:
@@ -1343,7 +1352,12 @@ async def test_the_forged_dialog_shows_the_tasks_that_will_actually_run() -> Non
     rows = title.splitlines()
     assert rows.count("Permission: plan") == 1  # not the forged second one
     assert _preview_rows(title) == [f"[1/2] {real[0]}", f"[2/2] {real[1]}"]
-    assert "read README.md" not in title
+    # #399: the directory is shown whole, so the forged text is on screen - but
+    # flattened into the one ``Directory:`` row it came from, never a row of its
+    # own and never above or instead of the real rows.
+    assert [r for r in rows if "read README.md" in r] == [
+        r for r in rows if r.startswith("Directory:")
+    ]
     assert "\x1b" not in title
     # And the composition the fit check approved is the one that will be drawn.
     assert _composed_rows(title, spy.calls[0][1]) <= _cap(_TALL)

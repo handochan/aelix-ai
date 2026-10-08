@@ -440,7 +440,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:3569-3572`` gates the factory rebuild on
+    ``tui/shell.py:3574-3577`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
@@ -817,7 +817,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:683-684``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:684-685``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -908,9 +908,9 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     - PLAN mode blocks every mutating tool on EVERY surface — the check sits
       above the read-only short-circuit precisely so it binds headless too
-      (``permission.py:655-663``).
+      (``permission.py:656-664``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:741-744``, ``headless_default == "block"``).
+      (``permission.py:742-745``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most

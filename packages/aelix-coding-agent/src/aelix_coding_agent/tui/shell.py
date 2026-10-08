@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import signal
@@ -1077,6 +1078,7 @@ async def run_tui(
             detail=lambda index: session_detail_lines(
                 choices[index], width=max(20, label_width)
             ),
+            own=True,  # aelix's own picker: #399's pre-paint hold is not for it
         )
         if not chosen:
             return  # Esc / cancelled
@@ -1303,7 +1305,7 @@ async def run_tui(
             return
         current = settings_manager.get_theme() or "default"
         labels = [f"✱ {n}" if n == current else f"  {n}" for n in names]
-        chosen = await context.select("Theme", labels)
+        chosen = await context.select("Theme", labels, own=True)
         if not chosen:
             return
         try:
@@ -1497,6 +1499,7 @@ async def run_tui(
                 labels,
                 detail=lambda i, _rows=rows: [_rows[i].help] if _rows[i].help else [],
                 initial_index=cursor_idx,
+                own=True,
             )
             if not choice:
                 return  # Esc closes the menu
@@ -1583,7 +1586,7 @@ async def run_tui(
         await run_model_picker(
             registry=model_registry,
             harness=runtime_host.harness,
-            select=context.select,
+            select=functools.partial(context.select, own=True),
             commit=_commit,
             refresh_footer=context._refresh_footer,
             settings_manager=settings_manager,
@@ -1600,7 +1603,7 @@ async def run_tui(
         # picker.
         await run_thinking_picker(
             harness=runtime_host.harness,
-            select=context.select,
+            select=functools.partial(context.select, own=True),
             commit=_commit,
         )
         # Repaint so the OPTIONAL 🧠 thinking-level footer segment reflects the
@@ -1673,6 +1676,7 @@ async def run_tui(
                 # No "this session only" options (pi ``trust-selector.ts:44``):
                 # nothing decided here applies to this session.
                 project_trust_options(cwd_path, include_session_only=False),
+                own=True,
             )
         except Exception as exc:  # noqa: BLE001 — never kill the REPL
             _commit(Text(f"✖ trust: {exc}", style="bold red"))
@@ -1709,9 +1713,9 @@ async def run_tui(
 
         await run_login(
             auth_storage=auth_storage,
-            select=context.select,
+            select=functools.partial(context.select, own=True),
             prompt_input=context.input,
-            confirm=context.confirm,
+            confirm=functools.partial(context.confirm, own=True),
             notify=context.notify,
             commit=_commit,
             # WP-8 follow-up — wire the checkbox picker + the live registry so a
@@ -1997,8 +2001,8 @@ async def run_tui(
 
         await run_logout(
             auth_storage=auth_storage,
-            select=context.select,
-            confirm=context.confirm,
+            select=functools.partial(context.select, own=True),
+            confirm=functools.partial(context.confirm, own=True),
             commit=_commit,
             # S1 — thread the live registry + settings so /logout cascades the
             # de-authorization to models.json (stored apiKey) + settings.json
@@ -2779,6 +2783,7 @@ async def run_tui(
         choice = await context.select(
             f"That session is already open in another terminal:\n  {path}",
             [fork_label, "Cancel"],
+            own=True,
         )
         if choice != fork_label:
             return "cancel"

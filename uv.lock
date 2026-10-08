@@ -126,6 +126,7 @@ dependencies = [
 tui = [
     { name = "prompt-toolkit" },
     { name = "rich" },
+    { name = "wcwidth" },
 ]
 
 [package.metadata]
@@ -144,6 +145,7 @@ requires-dist = [
     { name = "tree-sitter-bash", specifier = ">=0.25,<0.26" },
     { name = "tree-sitter-powershell", specifier = ">=0.26,<0.27" },
     { name = "truststore", specifier = ">=0.9" },
+    { name = "wcwidth", marker = "extra == 'tui'", specifier = ">=0.3.0" },
 ]
 provides-extras = ["tui"]
 
