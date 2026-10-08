@@ -1514,6 +1514,26 @@ unwritten. Add them with the next release.
   there, and on pip a typed install or `aelix extension remove` still imports
   a `pip/` package from your current directory first (issue #394).
 
+## [0.1.0-beta.2.post1] - 2026-10-09
+
+### Added
+
+- Extensions can contribute persisted global boolean settings through
+  `register_setting`. With Aelix Memory 0.2.0 installed, `/settings` now exposes
+  **Memory** ON/OFF. One opt-in enables automatic learning across sessions and
+  projects while each project's knowledge stays isolated.
+- The settings menu preserves the choice shown to the user if another process
+  changes the global value, and refuses contributions from a reloaded runtime.
+
+### Fixed
+
+- Plan mode blocks optional memory and other unknown tools, including tools
+  borrowing a built-in read/delegation name. It allows actual Aelix read-only and
+  delegation objects. Other beta.2 permission postures retain their existing policy.
+
+This maintenance release is based on beta.2 plus the settings contribution and
+required PLAN compatibility backports. The beta.3 milestone remains separate.
+
 ## [0.1.0-beta.2] - 2026-09-09
 
 ### Changed

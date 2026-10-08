@@ -1360,10 +1360,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/aelix-ai@0.1.0b2",
+      "bom-ref": "pkg:pypi/aelix-ai@0.1.0b2.post1",
       "name": "aelix-ai",
-      "version": "0.1.0b2",
-      "purl": "pkg:pypi/aelix-ai@0.1.0b2",
+      "version": "0.1.0b2.post1",
+      "purl": "pkg:pypi/aelix-ai@0.1.0b2.post1",
       "licenses": [
         {
           "license": {
@@ -1374,10 +1374,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/aelix-agent-core@0.1.0b2",
+      "bom-ref": "pkg:pypi/aelix-agent-core@0.1.0b2.post1",
       "name": "aelix-agent-core",
-      "version": "0.1.0b2",
-      "purl": "pkg:pypi/aelix-agent-core@0.1.0b2",
+      "version": "0.1.0b2.post1",
+      "purl": "pkg:pypi/aelix-agent-core@0.1.0b2.post1",
       "licenses": [
         {
           "license": {
@@ -1388,10 +1388,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/aelix-coding-agent@0.1.0b2",
+      "bom-ref": "pkg:pypi/aelix-coding-agent@0.1.0b2.post1",
       "name": "aelix-coding-agent",
-      "version": "0.1.0b2",
-      "purl": "pkg:pypi/aelix-coding-agent@0.1.0b2",
+      "version": "0.1.0b2.post1",
+      "purl": "pkg:pypi/aelix-coding-agent@0.1.0b2.post1",
       "licenses": [
         {
           "license": {
@@ -1402,10 +1402,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:pypi/aelix-server@0.1.0b2",
+      "bom-ref": "pkg:pypi/aelix-server@0.1.0b2.post1",
       "name": "aelix-server",
-      "version": "0.1.0b2",
-      "purl": "pkg:pypi/aelix-server@0.1.0b2",
+      "version": "0.1.0b2.post1",
+      "purl": "pkg:pypi/aelix-server@0.1.0b2.post1",
       "licenses": [
         {
           "license": {
@@ -1646,7 +1646,7 @@
     }
   ],
   "metadata": {
-    "timestamp": "2026-09-20T09:19:43+00:00",
+    "timestamp": "2026-10-08T15:33:07+00:00",
     "tools": {
       "components": [
         {
@@ -1696,7 +1696,7 @@
           ],
           "name": "cyclonedx-py",
           "type": "application",
-          "version": "7.4.0"
+          "version": "7.5.0"
         },
         {
           "description": "Python library for CycloneDX",
@@ -1751,10 +1751,10 @@
     },
     "component": {
       "type": "application",
-      "bom-ref": "pkg:pypi/aelix@0.1.0b2",
+      "bom-ref": "pkg:pypi/aelix@0.1.0b2.post1",
       "name": "aelix",
-      "version": "0.1.0b2",
-      "purl": "pkg:pypi/aelix@0.1.0b2",
+      "version": "0.1.0b2.post1",
+      "purl": "pkg:pypi/aelix@0.1.0b2.post1",
       "licenses": [
         {
           "license": {
@@ -1764,7 +1764,7 @@
       ]
     }
   },
-  "serialNumber": "urn:uuid:ff482bb4-2aa5-45c7-97f7-3c4b0b483306",
+  "serialNumber": "urn:uuid:5bfd4850-5559-4141-91ff-ed40c4cc1836",
   "version": 1,
   "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
   "bomFormat": "CycloneDX",
