@@ -19,6 +19,7 @@ from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_LINES,
     TruncationInfo,
     format_size,
+    split_lines_for_counting,
     truncate_head,
 )
 from aelix_coding_agent.tools.provenance import mark_builtin
@@ -193,11 +194,13 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
         # Pi parity: split on "\n" ONLY (a trailing newline yields a final empty
         # element) — NOT splitlines().
         all_lines = text.split("\n")
-        total_lines = len(all_lines)
+        # Count like truncation details: a final LF ends the last line; it
+        # does not create a new one. Keep the raw list for byte-faithful slices.
+        total_lines = len(split_lines_for_counting(text))
 
         offset_arg = args.get("offset")
         start_line = max(0, int(offset_arg) - 1) if offset_arg else 0
-        if start_line >= total_lines:
+        if start_line >= total_lines and (text or offset_arg):
             return ToolResult(
                 content=[
                     TextContent(
@@ -213,7 +216,7 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
         limit_arg = args.get("limit")
         limit = int(limit_arg) if limit_arg is not None else None
         if limit is not None:
-            end_line = min(start_line + limit, total_lines)
+            end_line = min(start_line + limit, len(all_lines))
             selected = "\n".join(all_lines[start_line:end_line])
         else:
             end_line = total_lines

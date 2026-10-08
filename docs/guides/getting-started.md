@@ -299,6 +299,12 @@ Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to
 edit the current input in `$VISUAL` / `$EDITOR`.
 
+The `read` tool uses 1-based line offsets. Its totals count a final newline as
+the end of a line, and include an unterminated last line. For a three-line file,
+`offset=3` reads the last line and `offset=4` reports end of file. For a full-file
+read, continuation totals agree with the tool's truncation details. Reading an empty
+file without an offset returns empty content.
+
 ## Develop against the repo
 
 Aelix uses [uv](https://docs.astral.sh/uv/) for environment and dependency

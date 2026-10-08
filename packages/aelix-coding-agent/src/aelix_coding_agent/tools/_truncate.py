@@ -191,13 +191,9 @@ def truncate_head(
     file that ends in a newline no longer reports one line more than it has —
     which is what made ``read`` call a file of exactly ``max_lines`` lines
     truncated and answer "[Showing lines 1-2000 of 2001. Use offset=2001 to
-    continue.]" about an offset with nothing behind it (#309). Only the
-    truncated/not verdict in that sentence was this function's: the ``2001``
-    printed inside the notice is ``read``'s own ``total_lines``
-    (``tools/read.py:196``, still a raw ``split("\\n")``, pi parity
-    ``read.ts:130``), so every file ``read`` DOES still truncate is still
-    announced as one line longer than it is, disagreeing by one with the
-    ``original_lines`` this returns in the same ``ToolResult``.
+    continue.]" about an offset with nothing behind it (#309). Since #318,
+    ``read`` also uses this counting rule for its notices and EOF guard, so
+    the total it announces agrees with ``original_lines`` for a full-file read.
 
     What is deliberately NOT mirrored from the tail is its "the budget bought
     no content" fallback. A leading blank line above an over-long one starves

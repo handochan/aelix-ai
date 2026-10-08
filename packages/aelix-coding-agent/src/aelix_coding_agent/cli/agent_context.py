@@ -388,7 +388,7 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED AGAINST BOTH CAPS,
     and it is the claim most likely to rot. ``read`` truncates when EITHER
     binds — ``truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
-    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:222-224`` — so both are
+    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:225-227`` — so both are
     pinned by ``tests/cli/test_docs_signpost.py``. Widest guide on this tree::
 
         extension-authoring.md   33620 bytes   (DEFAULT_MAX_BYTES = 51200)
@@ -748,7 +748,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # 50KB cap, so a session that can read but not search would otherwise
         # lose the API surface entirely — a worse outcome than a slower route.
         # ``read``'s own truncation notice already reports the next ``offset``
-        # (``tools/read.py:253-260``), so windowing is a real instruction and
+        # (``tools/read.py:256-263``), so windowing is a real instruction and
         # not a suggestion to guess.
         how = (
             "grep -nE 'def (register_|on\\()' it, then read at the line it reports"

@@ -88,7 +88,7 @@ _FULL_OUTPUT_IS_ON_SCREEN = (
 def _recorded_command(command: str) -> str:
     """The command as the RECORD carries it — bounded, like the output.
 
-    ``truncate_line`` (``tools/_truncate.py:254``) keeps the HEAD and marks the
+    ``truncate_line`` (``tools/_truncate.py:250``) keeps the HEAD and marks the
     cut in place, which is the right half here: the head of a command line is
     what identifies it.
     """
