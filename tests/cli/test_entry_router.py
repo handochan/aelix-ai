@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,7 @@ class _FakeTTYStdin:
 
 async def test_interactive_mode_dispatches_to_run_tui(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A TTY stdin invocation with no --print flag picks "interactive" and
     dispatches to :func:`run_tui` with the constructed runtime + cwd
@@ -196,6 +198,12 @@ async def test_interactive_mode_dispatches_to_run_tui(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.chdir(tmp_path)
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    system_file = agent_dir / "SYSTEM.md"
+    system_file.write_text("ROUTER_SYSTEM_PROMPT", encoding="utf-8")
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
 
     calls: list[tuple[object, str, object, object]] = []
     tui_permission: dict[str, object] = {}
@@ -204,6 +212,9 @@ async def test_interactive_mode_dispatches_to_run_tui(
         runtime: object,
         *,
         cwd: str,
+        # #287: the explicit callback keeps banner provenance tied to the
+        # live build without making the TUI rediscover prompt files.
+        prompt_file_paths: Callable[[], list[str]] | None = None,
         model_registry: object = None,
         mcp_manager: object = None,
         permission_ext: object = None,
@@ -262,6 +273,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
         tui_permission["first_run_login"] = first_run_login
         tui_permission["thinking_level_restored"] = thinking_level_restored
         tui_permission["late_route"] = late_route
+        assert callable(prompt_file_paths)
+        tui_permission["prompt_file_paths"] = prompt_file_paths()
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can
@@ -326,6 +339,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
     # #198: same contract. ``--no-session`` restores nothing, so it is False and
     # the settings-default seed still gets to run.
     assert tui_permission["thinking_level_restored"] is False
+    assert tui_permission["prompt_file_paths"] == [str(system_file)]
     # #367: the rule is always threaded; this launch refused nothing.
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
 

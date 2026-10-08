@@ -823,7 +823,7 @@ forward-compat field). **B 단계 stays open**; Pi pin held at
 | Plain stderr `--list-models` load-error warning (NO `chalk.yellow` / NO ANSI — Aelix-additive divergence) | shipped | ADR-0090 |
 | Inline no-models-available fallback (NO `formatNoModelsAvailableMessage` auth-guidance import — Aelix-additive divergence) | shipped | ADR-0090 |
 | `--append-system-prompt @file` resolution (requires ResourceLoader port) | deferred | ADR-0090 |
-| `--append-system-prompt` auto-discovery of `cwd/.pi/APPEND_SYSTEM.md` + `agentDir/APPEND_SYSTEM.md` (requires ResourceLoader port) | deferred | ADR-0090 |
+| `SYSTEM.md` / `APPEND_SYSTEM.md` trusted project and global discovery, including reload-time re-reading | shipped (#287); Superseded by: ADR-0257 for the former deferred item | ADR-0257 |
 | Pi `_rebuildSystemPrompt` reload-time re-assembly (Aelix 6h₇a has no reload trigger for append-system-prompt in scope; init-time assembly is semantically equivalent for supported lifecycle) | deferred (semantically equivalent) | ADR-0090 |
 | `SettingsManager` full standalone port (~1400-1600 LOC; proper-lockfile / 4 migrations / dual-scope / async write queue / `reload()` deep-merge / ~80 getters-setters) | deferred to Sprint 6h₇b | ADR-0090 |
 

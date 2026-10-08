@@ -3,7 +3,7 @@
 The two rules under test that are SECURITY rules, not ergonomics:
 
 * the project tier is inert until ``project_trusted`` (which only became a real
-  gate once ``project_trust.py:206-231`` learned about ``.aelix/agents/``);
+  gate once ``project_trust.py:218-243`` learned about ``.aelix/agents/``);
 * scope is decided by resolved-path CONTAINMENT, so ``--agent-file`` cannot
   launder a project profile into the ungated ``explicit`` bucket.
 """

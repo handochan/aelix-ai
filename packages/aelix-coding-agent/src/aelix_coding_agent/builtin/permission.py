@@ -456,11 +456,11 @@ _SENSITIVE_BASENAMES = frozenset(
 #
 # ``.aelix`` (ADR-0197 §(i), P2): ``.aelix/extensions/*.py``, ``.aelix/mcp.json``
 # and ``.aelix/agents/*.md`` are EXACTLY the three resources the Project Trust
-# gate exists to guard (``cli/project_trust.py:130-275``), and
+# gate exists to guard (``cli/project_trust.py:132-277``), and
 # ``.aelix/settings.json`` is the user's own configuration. Before this entry an
 # auto-accepting agent could WRITE the project identity / project extension that
 # a LATER run then EXECUTES under an ancestor ``trust.json: true``
-# (``project_trust.py:750-757``, transitivity documented at ``:77-78``) — a
+# (``project_trust.py:762-769``, transitivity documented at ``:79-80``) — a
 # write-to-exec escalation that ``--no-approve`` cannot touch, because
 # ``--no-approve`` only stops LOADING such a file, never writing one. Delegation
 # (ADR-0197) makes this reachable by a process nobody is watching and is a HARD

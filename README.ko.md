@@ -253,6 +253,15 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 프로바이더로 전송됩니다. `--no-context-files`로 끕니다. [SECURITY.md](SECURITY.md)와
 [프로젝트 신뢰 가이드](docs/guides/project-trust.md)를 참고하세요.
 
+## 시스템 프롬프트 파일
+
+`~/.aelix/agent/APPEND_SYSTEM.md`로 모든 실행에 지침을 추가하거나, 신뢰한 프로젝트의
+`.aelix/APPEND_SYSTEM.md`로 프로젝트별 지침을 추가할 수 있습니다. 같은 위치의
+`SYSTEM.md`는 생성되는 기본 프롬프트 전체를 교체합니다. CLI 프롬프트 플래그가 우선하며
+시작 화면 `[Context]`에 실제로 읽은 파일 경로가 표시됩니다. `/reload`와 세션 재구성 때
+파일을 다시 읽습니다. 우선순위·에이전트 프로필·프로젝트 신뢰는
+[시스템 프롬프트 가이드](docs/guides/getting-started.md#system-prompt-files)를 참고하세요.
+
 ## 알려진 한계 (베타)
 
 중요한 일에 Aelix를 붙이기 전에 알아둘 것이 여섯 가지입니다.

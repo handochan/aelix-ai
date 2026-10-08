@@ -24,6 +24,11 @@ on-disk persistence) with **deny-by-default** headless.
 > settings-only repository is no longer trusted at step 2 without a prompt. The set is now
 > six — extensions, `mcp.json`, agents, skills, prompt templates, settings.
 
+> **2026-10-09 amendment (#287).** Superseded by:
+> [ADR-0257](0257-system-prompt-file-discovery.md) for the deferred SYSTEM.md /
+> APPEND_SYSTEM.md loaders. Both files now engage the Project Trust gate; the
+> historical loader count below describes the original sprint, not today's set.
+
 ## Decision (A+)
 
 All in `packages/aelix-coding-agent` — **zero protected `aelix-agent-core` change**.

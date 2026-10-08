@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **System prompt files load automatically (#287).** `SYSTEM.md` replaces the
+  generated base and `APPEND_SYSTEM.md` adds instructions, from a trusted
+  project's `.aelix/` directory or the global agent directory. CLI flags retain
+  precedence, session rebuilds re-read edits, and the startup banner shows
+  loaded paths. See the getting-started guide for profile composition and trust.
+
 - **A delegated agent's session is now recorded.** Every delegation — the
   `agent` tool (single, parallel or chain) and `/agents run` — now runs its
   child with a session file of its own, created beside the parent session in a

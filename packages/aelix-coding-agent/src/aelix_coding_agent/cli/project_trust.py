@@ -14,6 +14,8 @@ Gates the arbitrary-code-execution and identity surfaces aelix exposes from an
   ``AGENTS.md`` is not.
 - ``cwd/.aelix/skills/`` and ``cwd/.aelix/prompt-templates/`` (#115) — text
   placed into the agent's instructions.
+- ``cwd/.aelix/SYSTEM.md`` / ``APPEND_SYSTEM.md`` (#287) — replace or
+  append system instructions (ADR-0257).
 - ``cwd/.aelix/settings.json`` (#369, pi ``trust-manager.ts:30-39``) — the
   project settings scope, which can choose the default model and provider the
   prompts go to. ``SettingsManager`` neither reads nor writes it until the CLI
@@ -41,9 +43,9 @@ This is a since-pin pi feature (pi added Project Trust after aelix's pin
 - ``cli/project-trust.ts`` — the UI bridge (TUI vs non-interactive).
 
 Aelix narrows the resource set to the surfaces listed above (pi's
-``themes``/``SYSTEM.md``/``APPEND_SYSTEM.md`` loaders do not exist in aelix
-yet — Sprint spec §2.2; ``skills`` and ``prompts`` joined with #115 and
-``settings.json`` with #369) and widens it by one aelix-original family,
+``themes`` loader does not exist in aelix yet — Sprint spec §2.2;
+``skills`` and ``prompts`` joined with #115, ``settings.json`` with #369,
+and system prompt files with #287) and widens it by one aelix-original family,
 ``agents/``, which pi has no analogue for.
 
 Issue #5 (Lane C) closed ONE of the originally-deferred protected-core items
@@ -137,6 +139,7 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
 
     Returns ``True`` iff ANY of:
 
+    - ``cwd/.aelix/SYSTEM.md`` or ``APPEND_SYSTEM.md`` exists, OR
     - ``cwd/.aelix/settings.json`` exists, whatever its kind (#369 — see the
       clause comment below), OR
     - ``cwd/.aelix/extensions/`` exists as a directory with at least one
@@ -187,6 +190,15 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
             return True
     except OSError:
         pass
+
+    # Like settings, existence gates directories/devices too. The loader never
+    # opens a non-regular file, and an untrusted file never reaches discovery.
+    for name in ("SYSTEM.md", "APPEND_SYSTEM.md"):
+        try:
+            if (aelix_dir / name).exists():
+                return True
+        except OSError:
+            pass
 
     extensions_dir = aelix_dir / "extensions"
     try:

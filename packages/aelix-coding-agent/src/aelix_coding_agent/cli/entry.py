@@ -138,6 +138,7 @@ from .runtime_bootstrap import (
     restore_session_route,
 )
 from .skills_prompt import format_skills_for_prompt, skills_catalog_visible
+from .system_prompt_files import MAX_PROMPT_FILE_BYTES
 
 if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
@@ -814,7 +815,7 @@ def _agents_delegation_enabled(
     return settings_manager.get_features_agents()
 
 
-_MAX_PROMPT_FILE_BYTES = 1 << 20
+_MAX_PROMPT_FILE_BYTES = MAX_PROMPT_FILE_BYTES
 """1 MiB ceiling for ``--system-prompt-file`` / ``--append-system-prompt-file``.
 
 A system prompt past this size exceeds every shipping model's context window, so
@@ -1248,7 +1249,7 @@ def _visible_tools(
 
 
 def _resolve_system_prompt(
-    parsed: Args, cwd: str, *, tools: Sequence[AgentTool]
+    parsed: Args, cwd: str, *, tools: Sequence[AgentTool], project_trusted: bool = False
 ) -> str:
     """The BASE system prompt for one harness build (ADR-0196).
 
@@ -1276,11 +1277,15 @@ def _resolve_system_prompt(
     is not asking us to edit it.
     """
 
-    return (
-        parsed.system_prompt
-        if parsed.system_prompt is not None
-        else build_system_prompt(cwd, tools=tools)
+    from .system_prompt_files import discover_system_prompt_file
+
+    parsed.system_prompt_source_path = None
+    if parsed.system_prompt is not None:
+        return parsed.system_prompt
+    content, parsed.system_prompt_source_path = discover_system_prompt_file(
+        cwd, "SYSTEM.md", project_trusted=project_trusted
     )
+    return content if content is not None else build_system_prompt(cwd, tools=tools)
 
 
 def _resolve_append_chunks(
@@ -1289,13 +1294,14 @@ def _resolve_append_chunks(
     *,
     skills: list[Any] | None = None,
     live_tool_names: Sequence[str] | None = None,
+    project_trusted: bool = False,
 ) -> list[str]:
     """The APPEND chunks for one harness build (ADR-0196).
 
     ORDER, which is part of the contract and pinned by tests:
-    ``--append-system-prompt`` chunks (profile body first, per
-    ``apply_profile_to_args``) → ``AGENTS.md`` project context → skills
-    catalog. That is pi's order (``system-prompt.ts``, both branches) and it
+    profile append → explicit ``--append-system-prompt`` chunks OR discovered
+    ``APPEND_SYSTEM.md`` → ``AGENTS.md`` project context → skills catalog
+    (ADR-0257). That is pi's order (``system-prompt.ts``, both branches) and it
     was corrected to match in #121 / ADR-0217 — see the comment on the
     assembly below for the line numbers and for why the old
     context-outranks-the-user order was a real defect and not a style choice.
@@ -1355,7 +1361,24 @@ def _resolve_append_chunks(
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
     # at ``__init__`` time (``harness/core.py:674-675``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
+    from .system_prompt_files import discover_system_prompt_file
+
     append: list[str] = list(parsed.append_system_prompt)
+    parsed.append_system_prompt_source_path = None
+    # A profile body is an identity chunk, not a user-supplied append flag.
+    # Explicit appends (including an empty flag) suppress file discovery.
+    profile_chunks = 1 if parsed.profile_append_system_prompt is not None else 0
+    explicit_append = bool(
+        {"append_system_prompt", "append_system_prompt_files"} & parsed.provided
+        or parsed.append_system_prompt_files
+        or len(append) > profile_chunks
+    )
+    if not explicit_append:
+        content, parsed.append_system_prompt_source_path = discover_system_prompt_file(
+            cwd, "APPEND_SYSTEM.md", project_trusted=project_trusted
+        )
+        if content is not None:
+            append.append(content)
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate).
     if not parsed.no_context_files:
         context = discover_context_files(cwd)
@@ -1484,7 +1507,10 @@ async def _build_harness_options(
     # exact; the ``you may have access to other custom tools`` sentence in the
     # prompt is what makes it honest in the window before that runs.
     system_prompt = _resolve_system_prompt(
-        parsed, cwd, tools=_visible_tools(tools, active_tool_names)
+        parsed,
+        cwd,
+        tools=_visible_tools(tools, active_tool_names),
+        project_trusted=project_trusted,
     )
     # Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like
     # ``rm -rf`` short-circuit via first-block-wins BEFORE the permission
@@ -1702,7 +1728,9 @@ async def _build_harness_options(
         settings_manager=settings_manager,
     )
 
-    options.append_system_prompt = _resolve_append_chunks(parsed, cwd, skills=skills)
+    options.append_system_prompt = _resolve_append_chunks(
+        parsed, cwd, skills=skills, project_trusted=project_trusted
+    )
 
     # Issue #120 — the callback that keeps the prompt's tool list true for the
     # rest of the session. It returns the COMPLETE prompt (see the kernel field
@@ -1723,11 +1751,12 @@ async def _build_harness_options(
     def _rebuild(active: list[AgentTool]) -> str:
         live_skills = skills_provider() if skills_provider is not None else skills
         return compose_system_prompt(
-            _resolve_system_prompt(parsed, cwd, tools=active),
+            _resolve_system_prompt(parsed, cwd, tools=active, project_trusted=project_trusted),
             _resolve_append_chunks(
                 parsed,
                 cwd,
                 skills=live_skills,
+                project_trusted=project_trusted,
                 # The rebuild KNOWS the active set, so the skills catalog's
                 # read-tool gate must consult it rather than re-deriving from
                 # the flags — otherwise the catalog and the tool block, both in
@@ -3730,6 +3759,14 @@ async def _async_main(argv: list[str]) -> int:
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
+                prompt_file_paths=lambda: [
+                    path
+                    for path in (
+                        parsed.system_prompt_source_path,
+                        parsed.append_system_prompt_source_path,
+                    )
+                    if path is not None
+                ],
                 model_registry=model_registry,
                 mcp_manager=mcp_manager,
                 permission_ext=permission_ext,

@@ -249,6 +249,40 @@ aelix @path/to/file.py "explain this"   # inline a file into the first message
 
 Run `aelix --help` for the complete, authoritative list.
 
+## System prompt files
+
+Place `SYSTEM.md` or `APPEND_SYSTEM.md` in `~/.aelix/agent/` to customize every
+launch, or in `<cwd>/.aelix/` for one project. `AELIX_CODING_AGENT_DIR` changes
+that global directory. Project files load only after Project Trust approves
+that directory; headless runs deny by default unless a saved trust decision
+or `--approve` allows it.
+
+```bash
+mkdir -p ~/.aelix/agent
+printf '%s\n' 'Answer in Korean. Give short progress updates during long tasks.' > ~/.aelix/agent/APPEND_SYSTEM.md
+aelix
+```
+
+`APPEND_SYSTEM.md` adds instructions after the base prompt and before AGENTS.md
+context. `SYSTEM.md` replaces the complete generated base, including tool
+instructions and extension/documentation signposts. Use APPEND_SYSTEM.md when
+you want to retain those. The startup `[Context]` row shows loaded file paths.
+
+Base precedence is CLI prompt flags → a replace agent profile → trusted project
+SYSTEM.md → global SYSTEM.md → built-in prompt. An append profile adds its
+body to the selected base. Explicit append flags suppress APPEND_SYSTEM.md
+discovery; otherwise the trusted project file wins over the global one, and
+only one append file is used. Blank selected files mask global files and restore
+the default base or add nothing. Read failures warn and continue; files must be
+regular UTF-8 files no larger than 1 MiB. A UTF-8 BOM is accepted.
+
+Files are read again on `/reload`, `/new`, `/fork`, `/resume`, `/agents use` and
+other live prompt rebuilds. `--no-context-files` only skips AGENTS.md; it does
+not disable SYSTEM.md or APPEND_SYSTEM.md. Use uppercase names as shown: lookup
+is case-sensitive on Linux and follows the filesystem's case rules elsewhere.
+For delegated child profile behavior, see [ADR-0257](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0257-system-prompt-file-discovery.md).
+
+
 ## Two terminals on one session
 
 `aelix --continue` picks the same session file for every terminal you run it in

@@ -542,19 +542,19 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:1535`` passes
+    exists to kill. ``cli/entry.py:1561`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:791-793``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:1542``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:1568``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
     ``resolve_project_trusted`` short-circuits to ``True`` when the project has
-    no trust-requiring resources (``project_trust.py:726-727``), so in a FRESH
+    no trust-requiring resources (``project_trust.py:738-739``), so in a FRESH
     project the local path does work for the session that creates it; it is the
     next run (which now sees a non-empty ``.aelix/extensions/``) that must
     answer the trust prompt. Both cases are covered by "loaded only if this
@@ -819,7 +819,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3569``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3584``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:138-154``) /reload routes to

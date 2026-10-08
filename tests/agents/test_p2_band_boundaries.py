@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1201``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1208``,
 # ``rpc/rpc_mode.py:1580``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -106,6 +106,10 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         # below rejects both the leading underscore and the euphemism, and the
         # escape it chose instead (make it the extension's number) has no
         # meaning for a constant no extension participates in.
+        "MAX_PROMPT_FILE_BYTES",  # cli/system_prompt_files.py — #287's regular
+        # local prompt-file read bound, shared with explicit prompt-file flags.
+        # It cannot limit delegated tasks or spawn behavior; it prevents a
+        # directory/device/oversized file from wedging discovery at startup.
         "DEFAULT_MAX_BYTES",  # tools/_truncate.py — pre-P2, tool output
         "DEFAULT_MAX_LINES",  # tools/_truncate.py — pre-P2, tool output
         "GREP_MAX_LINE_LENGTH",  # tools/_truncate.py — pre-P2, tool output

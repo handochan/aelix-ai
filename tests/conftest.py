@@ -18,11 +18,33 @@ function-scoped ``monkeypatch``, last write wins).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from aelix_coding_agent.util import tools_manager as _tm
+
+
+@pytest.fixture(autouse=True)
+def _no_user_system_prompt_files(tmp_path_factory, monkeypatch):
+    """Keep #287 discovery out of the developer's default global directory.
+
+    Explicit AELIX_CODING_AGENT_DIR fixtures still exercise real discovery;
+    only the default global prompt-file lookup is redirected. Other resources
+    retain their existing test setup rather than sharing this new override.
+    """
+    from aelix_coding_agent.cli import system_prompt_files
+
+    configured_agent_dir = system_prompt_files.get_agent_dir
+    isolated = tmp_path_factory.getbasetemp() / "empty_system_prompt_agent"
+
+    def agent_dir():
+        if os.environ.get("AELIX_CODING_AGENT_DIR"):
+            return configured_agent_dir()
+        return str(isolated)
+
+    monkeypatch.setattr(system_prompt_files, "get_agent_dir", agent_dir)
 
 
 @pytest.fixture(autouse=True)

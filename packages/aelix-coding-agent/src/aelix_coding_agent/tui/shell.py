@@ -498,6 +498,7 @@ async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
     cwd: str,
+    prompt_file_paths: Callable[[], list[str]] | None = None,
     model_registry: ModelRegistry | None = None,
     mcp_manager: McpClientManager | None = None,
     permission_ext: PermissionExtension | None = None,
@@ -1121,7 +1122,13 @@ async def run_tui(
             _commit(Text("New session cancelled by an extension.", style="yellow"))
             return
         out_chrome.clear()
-        _commit(_build_banner(runtime_host.harness, cwd))
+        _commit(
+            _build_banner(
+                runtime_host.harness,
+                cwd,
+                prompt_file_paths=prompt_file_paths() if prompt_file_paths is not None else None,
+            )
+        )
         context._refresh_footer()
 
     async def _replay_after_swap(banner: str) -> None:
@@ -1796,7 +1803,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3721``) always passes one, so this is
+            # production caller (``entry.py:3750``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3199,7 +3206,13 @@ async def run_tui(
         # synchronous hold here paints NOTHING — not even the banner — which is
         # the same trap the replay chunking below exists for.
         update_task = _start_update_check(settings_manager)
-        _commit(_build_banner(runtime_host.harness, cwd))
+        _commit(
+            _build_banner(
+                runtime_host.harness,
+                cwd,
+                prompt_file_paths=prompt_file_paths() if prompt_file_paths is not None else None,
+            )
+        )
         # #137 / ADR-0244 — said ONCE, straight under the banner, before the
         # transcript replay paints a conversation this terminal cannot add to.
         # The input loop repeats it per refused line; this is the one that
@@ -3513,7 +3526,9 @@ def _match_management_modal(
     return None
 
 
-def _build_banner(harness: AgentHarness, cwd: str) -> object:
+def _build_banner(
+    harness: AgentHarness, cwd: str, *, prompt_file_paths: list[str] | None = None
+) -> object:
     """Build the startup banner: the Aelix terminal-logo header + a panel with
     the runtime summary (model / base url / cwd / version) followed by compact
     [Context] / [Tools] / [Skills] / [Hooks] / [Extensions] sections and a hint.
@@ -3569,11 +3584,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1357``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1383``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1358`` already printed at startup, and one that
+    #       what ``entry.py:1366`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3600,6 +3615,14 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
             context_label = "AGENTS.md"
     except Exception:  # noqa: BLE001
         context_label = "none"
+
+    # Prompt-file paths are provenance from the build, never rediscovered here.
+    # A superseded, denied or failed candidate must not be announced as loaded.
+    if prompt_file_paths:
+        labels = [sanitize_for_terminal(path) for path in prompt_file_paths]
+        if context_label != "none":
+            labels.append(context_label)
+        context_label = ", ".join(labels)
 
     # [Tools] — SAME source the /tools command uses (``active_tool_views``): the
     # tools a turn actually sends, NOT every registered tool. Under ``--no-tools``
@@ -4064,7 +4087,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3652-3668 and
+            # Two audiences, discriminated exactly as entry.py:3681-3697 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

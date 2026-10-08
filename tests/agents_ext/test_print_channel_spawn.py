@@ -24,7 +24,7 @@ forks a session-leader grandchild. A real aelix child cannot be made to produce
 any of those on demand. The four tests that DO launch ``-m aelix_coding_agent``
 are the ones whose subject is aelix's own behaviour (project trust, skills).
 
-HERMETICITY (finding I10): ``tests/conftest.py:28-37``'s download guard is an
+HERMETICITY (finding I10): ``tests/conftest.py:50-59``'s download guard is an
 in-process ``monkeypatch.setattr`` and does NOT reach a child interpreter. Every
 real-aelix child below therefore gets an EXPLICIT environment — ``HOME``,
 ``XDG_CONFIG_HOME`` and ``AELIX_CODING_AGENT_DIR`` under ``tmp_path``,
@@ -599,7 +599,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:267-377``), which blocks for the whole
+    (``cli/entry.py:268-378``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -622,7 +622,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2009-2026``) nor child (``modes/print_mode.py:160-219``)
+    (``tui/shell.py:2016-2033``) nor child (``modes/print_mode.py:160-219``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -2625,7 +2625,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:322-330``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:323-331``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"
@@ -2814,7 +2814,7 @@ async def test_nested_project_extension_not_executed_in_relocated_child(
     """§(g) clause 2, against a REAL child.
 
     ``inherit_extensions: true`` on purpose: with the shipped default
-    (``False``, ``agents/profile.py:199-203``) ``profile_to_flags`` already
+    (``False``, ``agents/profile.py:199``) ``profile_to_flags`` already
     emits ``--no-extensions`` and NO project extension is discovered at all, so
     the trust flag would be untestable. This is the one profile shape where
     clause 2 is the thing standing between the child and the vendored code —

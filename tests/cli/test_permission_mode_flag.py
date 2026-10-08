@@ -5,7 +5,7 @@ spawner computes a CLAMPED posture with ``aelix_agents.posture.
 child_permission_mode`` and hands it to the child on the command line. Every
 security assertion downstream is therefore argv-shaped, and ``parse_args``
 swallows an unrecognised ``--`` flag into :attr:`Args.unknown_flags` with **no
-diagnostic** (``args.py:643-663``; contrast the ``Unknown short flag`` error at
+diagnostic** (``args.py:649-669``; contrast the ``Unknown short flag`` error at
 ``:514-518``). A rename or a typo would consequently ship a child that silently
 runs at the DEFAULT posture — i.e. auto-approving, since ``ctx.has_ui`` is
 :data:`False` there — behind a fully green test suite.
@@ -61,7 +61,7 @@ def test_absent_flag_leaves_permission_mode_none() -> None:
 
 
 def test_invalid_value_warns_and_drops() -> None:
-    """A bogus value mirrors ``--thinking`` (``args.py:504-521``): warn, drop, continue.
+    """A bogus value mirrors ``--thinking`` (``args.py:510-527``): warn, drop, continue.
 
     It must NOT abort a session already launching, and it must NOT record as
     "provided" — a rejected value leaves the field at its default, so claiming

@@ -106,6 +106,11 @@ if options.append_system_prompt:
 `parsed.append_system_prompt` (a defensive copy via `list(...)`) into
 the options dataclass.
 
+> **2026-10-09 amendment (#287).** Superseded by:
+> [ADR-0257](0257-system-prompt-file-discovery.md) for automatic SYSTEM.md /
+> APPEND_SYSTEM.md discovery and rebuild-time re-reading. Explicit prompt-file
+> flags remain ADR-0196; literal `@file` interpretation remains deferred.
+
 ## Aelix-additive divergences from Pi (BINDING)
 
 1. **List-models load-error warning** — Pi uses

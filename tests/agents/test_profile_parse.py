@@ -205,7 +205,7 @@ def test_csv_and_list_forms_equivalent() -> None:
 def test_skill_paths_resolve_against_profile_dir(tmp_path: Path) -> None:
     """Relative entries anchor to the PROFILE's directory, never cwd.
 
-    aelix's ``--skill`` takes a PATH (``entry.py:1076-1117``), so a profile must
+    aelix's ``--skill`` takes a PATH (``entry.py:1077-1118``), so a profile must
     mean the same thing from any working directory. The decoy below is what a
     cwd-relative implementation would have picked.
     """
@@ -280,7 +280,7 @@ def test_user_scope_extensions_allowed() -> None:
 
 
 def test_invalid_thinking_is_error() -> None:
-    """Deliberate asymmetry with ``args.py:504-521``, which warns and drops.
+    """Deliberate asymmetry with ``args.py:510-527``, which warns and drops.
 
     A typo on the command line must not abort a session already launching; a
     checked-in profile is read before anything starts, so it is fatal.

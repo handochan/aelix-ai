@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2520-2527``).
+  (``cli/entry.py:2549-2556``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -38,8 +38,8 @@ two sides can agree on a field that nothing reads, and both can collapse
 Two flag choices are not cosmetic:
 
 * ``--tools`` takes ONE comma-separated token and is NOT repeatable
-  (``args.py:494-503`` overwrites), so the list is joined, never repeated.
-* ``--system-prompt`` takes a LITERAL string (``args.py:434-438``); a profile
+  (``args.py:500-509`` overwrites), so the list is joined, never repeated.
+* ``--system-prompt`` takes a LITERAL string (``args.py:440-444``); a profile
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 
@@ -150,7 +150,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the rest of the resolver's order (#98,
-``cli/entry.py:1602-1607``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1628-1633``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -379,7 +379,7 @@ def profile_to_flags(
         if not profile.tools:
             # ``()`` means NO tools. ``--tools ''`` would mean the OPPOSITE:
             # ``parse_args`` yields ``[]``, which ``_resolve_active_tools``
-            # (``entry.py:760-782``) reads as falsy → ``None`` → every tool active.
+            # (``entry.py:761-783``) reads as falsy → ``None`` → every tool active.
             flags.append("--no-tools")
         else:
             flags += ["--tools", ",".join(profile.tools)]
@@ -477,7 +477,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2980-2984``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:3009-3013``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).
@@ -560,10 +560,11 @@ def apply_profile_to_args(
         # split the channels apart for every non-empty ``provided``.
         #
         # FIRST among the appends: the identity precedes the user's own
-        # ``--append-system-prompt`` chunks (the context files stay ahead of
-        # both — ``_resolve_append_chunks`` prepends them at build time).
+        # ``--append-system-prompt`` chunks. Discovered APPEND_SYSTEM.md follows
+        # the profile, and AGENTS.md context follows all append chunks.
         applied.append("append_system_prompt")
         parsed.append_system_prompt.insert(0, profile.body)
+        parsed.profile_append_system_prompt = profile.body
 
     # #98 split-pair guard. A profile that names a model but not a provider must
     # not inherit a persisted ``defaultProvider`` as if it were ``--provider``.

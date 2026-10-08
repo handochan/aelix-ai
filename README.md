@@ -256,6 +256,15 @@ and the filesystem root is read into the system prompt whether or not you truste
 and its text then goes to your configured provider. `--no-context-files` turns that off. See
 [SECURITY.md](SECURITY.md) and the [project trust guide](docs/guides/project-trust.md).
 
+## System prompt files
+
+Customize every launch with `~/.aelix/agent/APPEND_SYSTEM.md`, or one trusted
+project with `.aelix/APPEND_SYSTEM.md`. `SYSTEM.md` in the same locations
+replaces the entire generated base prompt. CLI prompt flags take precedence,
+and the startup `[Context]` row shows loaded paths. Files are read again on
+`/reload` and session rebuilds. See the [system prompt guide](docs/guides/getting-started.md#system-prompt-files)
+for precedence, agent profiles and Project Trust.
+
 ## Known limitations (beta)
 
 Six things worth knowing before you point Aelix at something that matters.

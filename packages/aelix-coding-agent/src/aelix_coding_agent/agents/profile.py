@@ -88,7 +88,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:3639-3656``."""
+``cli/entry.py:3668-3685``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -181,7 +181,7 @@ class AgentProfile:
 
     skills: tuple[str, ...] = ()
     """ABSOLUTE paths after parse. aelix's ``--skill`` takes a PATH, not a name
-    (``cli/entry.py:1076-1117``) — unlike pi. Relative entries resolve against the
+    (``cli/entry.py:1077-1118``) — unlike pi. Relative entries resolve against the
     PROFILE's own directory, never cwd, so a profile is portable across cwds."""
 
     inherit_skills: bool = True
@@ -200,7 +200,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:1489-1491``)."""
+    paths still load (``cli/entry.py:1515-1517``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's
@@ -213,7 +213,7 @@ class AgentProfile:
     """Validated against ``cli.args.VALID_THINKING_LEVELS``.
 
     DELIBERATE ASYMMETRY with the CLI flag: ``--thinking bogus`` warns and drops
-    the value (``args.py:504-521``) because a typo must not abort a session
+    the value (``args.py:510-527``) because a typo must not abort a session
     already being launched; a profile is a checked-in file read before anything
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 
@@ -514,11 +514,11 @@ def _parse_path_list(
     """Resolve ``skills:`` / ``extensions:`` entries to ABSOLUTE paths.
 
     aelix's ``--skill`` and ``--extension``/``-e`` take PATHS, not names
-    (``cli/entry.py:1076-1117``, ``args.py``) — a divergence from pi that the spec
+    (``cli/entry.py:1077-1118``, ``args.py``) — a divergence from pi that the spec
     originally got wrong. Relative entries resolve against ``profile_dir``, NOT
     cwd: a profile must mean the same thing from any working directory, and an
     absolute result round-trips unchanged through ``_resolve_skill_dirs``'
-    cwd-relative logic (``entry.py:1105-1111``).
+    cwd-relative logic (``entry.py:1106-1112``).
 
     A non-existent path is a WARNING here — ``/agents list`` must never break —
     and ``discovery.resolve_profile`` escalates it to fatal, because running

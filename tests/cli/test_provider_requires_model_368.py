@@ -615,7 +615,15 @@ async def test_a_settings_only_cwd_asks_for_trust_on_the_pair(
     assert _marks(marker)[:1] == ["setup"]
     told, opened = project_reads
     assert told == [trusted]
-    assert [Path(o).name for o in opened] == (["settings.json"] if trusted else [])
+    names = [Path(o).name for o in opened]
+    # Descriptor-based prompt discovery also attempts the two absent candidates
+    # after trust is granted (#287). The settings read remains the positive
+    # control; no resource, including a missing prompt, is inspected on denial.
+    if trusted:
+        assert names.count("settings.json") == 1
+        assert set(names) <= {"settings.json", "SYSTEM.md", "APPEND_SYSTEM.md"}
+    else:
+        assert names == []
 
 
 @pytest.mark.parametrize("kind", ["mcp", "settings"])

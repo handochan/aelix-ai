@@ -149,6 +149,12 @@ class Args:
     (repeatable). Normalized into :attr:`append_system_prompt` by
     ``entry._apply_prompt_files``, landing AFTER the string-appends."""
 
+    # Discovery provenance, refreshed by the prompt resolvers (ADR-0257).
+    system_prompt_source_path: str | None = None
+    append_system_prompt_source_path: str | None = None
+    profile_append_system_prompt: str | None = None
+    """The profile-only chunk, distinguished from explicit CLI appends."""
+
     # Agent profile (aelix-original, ADR-0196)
     agent: str | None = None
     """Aelix-original (ADR-0196): ``--agent <name>`` — whole-session identity.
@@ -201,7 +207,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:504-521``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:510-527``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -258,7 +264,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:1076-1117``) resolves
+    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:1077-1118``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -530,7 +536,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:504-520): warn + drop, never
+                    # Mirrors --thinking (args.py:510-526): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
