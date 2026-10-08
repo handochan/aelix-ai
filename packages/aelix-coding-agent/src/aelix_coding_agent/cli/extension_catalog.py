@@ -52,10 +52,14 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import run_contained
+
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
 __all__ = [
     "ACCEPTED_SOURCE_FORMS",
@@ -1402,6 +1406,109 @@ def _is_path_form(source: str) -> bool:
     return _is_bare_archive_name(body)
 
 
+def spelled_as_path(source: str) -> bool:
+    """True when a catalog or install-record spec (:class:`CatalogSpec`) is SPELLED as
+    a local path: ADR-0255's path form (C) — an absolute path, a ``~`` path, a ``./``
+    ``../`` (``.\\`` ``..\\``) path or a bare archive file name, extras aside —,
+    anything else that starts like one (``.``, ``..``, a rooted ``\\x``, a drive
+    ``C:x``), and a string with a path separator (``/`` or ``\\``, on every platform)
+    that is no URL, ``name @ <url>`` reference, git remote or PEP 508 requirement
+    (``a/b``, ``local-ext/``, ``sub\\ext``).
+
+    A string that parses as a PEP 508 requirement with no URL is a package, whatever
+    ``/`` its marker holds (``x; platform_version == "…/RELEASE_ARM64"`` — review round
+    2: the separator test refused it as a relative path). One with a version
+    specifier, a marker or a URL is asked BEFORE the bare-archive test (review round 3,
+    Codex: ``path-probe==1.0+vendor.whl``, a local version ending in ``.whl``, was
+    refused as a relative path): ``x==1.0+v.whl`` and ``x.whl; python_version>"3"``
+    are packages. A bare token — a name, optionally with ``[extras]`` — ending in an
+    archive suffix stays a path spelling (``x.whl``, ``x.tar.gz``,
+    ``pkg-1.0-py3-none-any.whl``, ``x.whl[feature]``: pip and uv open those as files,
+    §2 (C) "extras aside"), and so stays refused as relative.
+
+    The SHAPE is read from the string without its surrounding whitespace (review
+    round 3); whether a path is absolute is never decided here — the installer's
+    ``_names_no_cwd`` reads the exact string (``' /abs/x.whl'`` is spelled as a path
+    and is relative as written). :class:`CatalogSpec` keeps a path spelling exactly
+    as given and strips every other one, so a check and the installation read one
+    string.
+
+    Decided from the string alone, never from what exists in the current directory
+    (#405): the installer's ``classify_target`` asks it instead of the cwd for a
+    :class:`CatalogSpec`, so a cwd entry named like a recorded package no longer turns
+    that package into a local path. A git remote (``git@h:o/r``, scp-style
+    ``<user>@host:path`` with any user), a URL and a ``name @ <url>`` reference are not
+    paths here, whatever ``/`` they hold. Whatever this calls a path must be absolute
+    to be installed — the resolver refuses a relative one with no local catalog to
+    place it beside, and so does the installer for a :class:`CatalogSpec`.
+    """
+
+    # The shape only (review round 3): the absolute-or-relative test that follows a
+    # path spelling reads the exact string (round 2: a stripped absolute test passed
+    # ``' /abs/x.whl'`` and the installer resolved ``<cwd>/' /abs/x.whl'``).
+    s = source.strip()
+    if not s:
+        return False
+    if _starts_like_a_path(s):
+        return True
+    if _is_qualified_requirement(s):
+        return False
+    if _is_path_form(s):
+        return True
+    if _is_url_spec(s) or is_scp_git(s):
+        return False
+    if _is_requirement_without_url(s):
+        return False
+    return "/" in s or "\\" in s
+
+
+def _parsed_requirement(source: str) -> Requirement | None:
+    """``packaging``'s :class:`~packaging.requirements.Requirement`, or ``None``."""
+
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        return Requirement(source)
+    except InvalidRequirement:
+        return None
+
+
+def _is_requirement_without_url(source: str) -> bool:
+    """A PEP 508 requirement with no direct reference — markers and all."""
+
+    req = _parsed_requirement(source)
+    return req is not None and req.url is None
+
+
+def _is_qualified_requirement(source: str) -> bool:
+    """A PEP 508 requirement with a version specifier, a marker or a URL — more than a
+    bare name (``[extras]`` alone does not count: ``x.whl[feature]`` is a file to pip
+    and uv). Asked before :func:`spelled_as_path`'s bare-archive test (#405 review
+    round 3)."""
+
+    req = _parsed_requirement(source)
+    return req is not None and (
+        bool(req.specifier) or req.marker is not None or req.url is not None
+    )
+
+
+def is_qualified_package_requirement(source: str) -> bool:
+    """A PEP 508 requirement with NO URL and a version specifier or a marker
+    (``probe405==1.0+vendor.git``, ``x; python_version>"3"``) — a package, whatever its
+    spelling ends in. The installer's ``classify_target`` asks it for a
+    :class:`CatalogSpec` BEFORE the git-URL shapes (#405 review round 4, Codex: a local
+    version ending in ``.git`` was taken for a git URL by the ``.git``-suffix test and
+    refused when passed as the package it is). A bare name (``foo.git``) is not
+    qualified and keeps the ``.git`` reading (``foo.git[x]`` never had it)."""
+
+    req = _parsed_requirement(source.strip())
+    return (
+        req is not None
+        and req.url is None
+        and (bool(req.specifier) or req.marker is not None)
+    )
+
+
 def _is_plain_requirement(source: str) -> bool:
     """ADR-0255 (A): a PEP 508 requirement with NO direct reference and no marker —
     a name, optionally with ``[extras]`` and a version specifier."""
@@ -1427,9 +1534,33 @@ class CatalogSpec(str):
     where a cloned repository's ``uv.toml`` chose a dependency). A plain ``str`` is a
     source the user typed, and its installer runs where it was typed. Any string
     operation (``strip``, slicing, ``+``) returns a plain ``str``: the origin is read
-    where the install starts, from the object the resolver returned."""
+    where the install starts, from the object the resolver returned.
+
+    Its KIND is read from its spelling alone, never from the cwd (#405): the
+    installer's ``classify_target`` used to ask the process cwd whether the string
+    existed there, so ``update`` of the package ``local-ext`` installed a cwd
+    directory or symlink of that name. A package requirement is a package, an absolute
+    path a path, a URL the URL it is; one spelled as a relative path is refused, and
+    so is a ``kind`` a caller passes for it that its spelling does not give
+    (``verify_and_pin``, ``build_pip_args`` — review round 2).
+
+    Surrounding whitespace is normalised ONCE, here, where a source is wrapped (#405
+    review round 3): a package requirement, URL or git remote is stripped, so every
+    check and the installation read the same stripped string — a typed ``aelix
+    extension install 'git+file:///repo '`` records the space, and ``update`` wraps
+    that record here. A source SPELLED AS A PATH keeps its exact string: a file name
+    may end in a space (``<dir>/trusted `` is a real directory an older record holds,
+    §14), and a leading space makes it relative, which the installer refuses rather
+    than resolve against the cwd."""
 
     __slots__ = ()
+
+    def __new__(cls, value: object = "") -> CatalogSpec:
+        text = str(value)
+        stripped = text.strip()
+        if stripped != text and not spelled_as_path(stripped):
+            text = stripped
+        return super().__new__(cls, text)
 
 
 @dataclass(frozen=True)
@@ -1580,9 +1711,10 @@ def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
     :class:`CatalogError` refuses.
 
     #131 (ADR-0255). The installer reads anything relative from the PROCESS working
-    directory: ``classify_target`` calls a target a path only if it exists there,
-    and pip / uv open ``./x``, ``file:x``, ``x.whl`` there — uv also
-    ``name @ ./x`` and ``name @ x`` (measured). Handing it an entry's raw
+    directory: ``classify_target`` calls a TYPED target a path only if it exists
+    there (a :class:`CatalogSpec` by its spelling alone since #405), and pip / uv
+    open ``./x``, ``file:x``, ``x.whl`` there — uv also ``name @ ./x`` and
+    ``name @ x`` (measured). Handing it an entry's raw
     ``source`` therefore installed whatever the cwd held. So a source is accepted
     in exactly these forms, and every other one is REFUSED, never rewritten:
 
@@ -1617,9 +1749,13 @@ def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
     ``./`` or ``../``, and anything else not listed. Every refusal names the entry
     and the catalog; a shape refusal also lists the accepted forms
     (:data:`ACCEPTED_SOURCE_FORMS`). Paths are quoted by hand, not with ``!r``,
-    which doubles a Windows path's backslashes (#208). ``is_path`` tells the
-    caller which branch decided, so it can refuse a package spec its installer
-    would itself read as a path from the cwd.
+    which doubles a Windows path's backslashes (#208). The returned type tells the
+    caller which branch decided; a :class:`CatalogSpec` is never re-read as a path
+    from the cwd (#405 — before it, ``discover install`` had to refuse a package
+    spec that named a cwd entry, and ``update`` installed that entry). A
+    :class:`CatalogSpec` is the source with its surrounding whitespace dropped — the
+    string every check above read (#405 review round 2; since round 3
+    :class:`CatalogSpec` itself strips a source that is not spelled as a path).
 
     Round 3 adds a refusal of a package name ending in ``.git`` (the installer routes
     it as a git URL, ``git+acme.git``, which no backend can fetch). Review round 5
@@ -1678,7 +1814,7 @@ def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
             "segment 'FILE:' under the current directory to it)"
         )
     if _is_absolute_source_url(raw):
-        return CatalogSpec(source)
+        return CatalogSpec(raw)
     if direct is not None:
         if _is_absolute_reference_url(url):
             if url.lower().startswith(("https://", "http://")) and _url_path_is_git(url):
@@ -1688,7 +1824,7 @@ def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
                     "'git+' — uv clones it while pip downloads it as an archive and "
                     f"fails; write '{name} @ git+{url}'"
                 )
-            return CatalogSpec(source)
+            return CatalogSpec(raw)
         raise refuse(
             f"is a direct reference to '{url}', which {_url_problem(url, after_name=True)}"
         )
@@ -1710,13 +1846,15 @@ def resolve_entry_target(entry: CatalogEntry) -> CatalogSpec | ResolvedPath:
                 "the entry means that local copy. Refusing rather than guessing which "
                 "one to install."
             )
-        if raw.lower().endswith(".git"):
+        # Only a bare name: one with a version specifier (``x==1.0+vendor.git``) is a
+        # package to the installer too (#405 review round 4).
+        if raw.lower().endswith(".git") and not is_qualified_package_requirement(raw):
             raise refuse(
                 "reads as a package name, but the installer takes a name ending in "
                 "'.git' for a git URL (it would run 'git+" + raw + "', which no "
                 "backend can fetch) — write the repository's absolute git URL"
             )
-        return CatalogSpec(source)
+        return CatalogSpec(raw)
     raise refuse(
         "is neither a package name, an absolute URL nor a path in an accepted form "
         "(absolute, ~, or starting with ./ or ../)"

@@ -30,8 +30,9 @@ Decisions pinned here (round 3: an ALLOWLIST — refuse, never rewrite):
 * REFUSED, with the accepted forms listed: ``name @ <relative path or bare
   word>``, every non-absolute ``file:`` URL, a source starting with ``-``, a
   relative path without ``./`` / ``../``, and a bare name that also sits beside
-  a local catalog; a package spec that names a file in the cwd (which the
-  installer would install instead) is refused too;
+  a local catalog; a package spec that names a file in the cwd installs the
+  package (#405: a catalog spec is classified by its spelling, never against the
+  cwd — #131 refused it, because the installer installed the cwd entry);
 * a path and its ``[extras]`` reach the installer, the verify-and-stage copy and
   the pin as two values (``ResolvedPath``) — a sibling literally named
   ``x.whl[feature]`` changes nothing, as for pip and uv (round-3 review, P1);
@@ -1731,17 +1732,22 @@ async def test_a_version_pinned_name_beside_the_catalog_is_a_package(
     assert runner.calls[0][-1] == "local-ext==0.1.0"
 
 
-async def test_a_package_spec_shadowed_by_the_cwd_is_refused(
+async def test_a_package_spec_named_like_a_cwd_entry_installs_the_package(
     layout: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """#405: a catalog package spec is classified by its spelling, never against the
+    cwd, so a cwd entry named like it changes nothing — the package goes to the
+    index. (#131 refused this case, because the installer then installed the cwd
+    entry instead.)"""
     (layout["elsewhere"] / "foo-pkg").mkdir()
     mem = _seed(layout["root"], "https://catalog.example.invalid/c.json", [("pkg", "foo-pkg")])
 
     code, runner = await _install(mem, "pkg")
 
-    assert code == 2
-    assert runner.calls == []
-    assert "exists in the current directory" in capsys.readouterr().err
+    assert code == 0
+    assert runner.calls[0][-1] == "foo-pkg"
+    _no_decoy(layout, runner.calls[0])
+    assert "exists in the current directory" not in capsys.readouterr().err
 
 
 async def test_a_git_source_is_handed_on_unchanged(layout: dict[str, Path]) -> None:
@@ -3664,27 +3670,25 @@ def test_uv_reads_an_upper_case_localhost_and_a_percent_escape_elsewhere(
 # --- Codex 6 cat 2: messages true of what happens ---------------------------
 
 
-async def test_the_cwd_collision_message_names_aelix_s_own_reading(
+async def test_a_cwd_directory_named_like_a_spec_with_extras_changes_nothing(
     layout: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Codex 6: for ``review-ext[feature]`` beside a cwd directory literally named so,
-    the refusal said the package "would be installed from there" — pip and uv ignore
-    that directory. It is aelix's own ``classify_target`` that reads a target existing
-    on disk as a path; the message says so (and the install still never reaches it)."""
+    """Codex 6 found that only aelix's own ``classify_target`` read a cwd directory
+    literally named ``review-ext[feature]`` as a path (pip and uv ignore it), and
+    #131 refused the install for it. Since #405 a catalog spec is never classified
+    against the cwd: the typed string still reads that directory, the catalog's
+    spec installs the package with its extras."""
     (layout["elsewhere"] / "review-ext[feature]").mkdir()
-    assert ei.classify_target("review-ext[feature]") == "path"
+    assert ei.classify_target("review-ext[feature]") == "path"  # typed: the cwd's reading
+    assert ei.classify_target(ec.CatalogSpec("review-ext[feature]")) == "pypi"
     mem = _seed(layout["root"], _HTTPS_LOCATION, [("probe", "review-ext[feature]")])
 
     code, runner = await _install(mem, "probe")
 
-    assert code == 2
-    assert runner.calls == []
-    err = capsys.readouterr().err
-    assert (
-        "a file or directory named 'review-ext[feature]' exists in the current "
-        "directory, and aelix's installer takes a target that exists on disk for a "
-        "local path — it would install that instead of the package" in err
-    )
+    assert code == 0
+    assert runner.calls[0][-1] == "review-ext[feature]"
+    _no_decoy(layout, runner.calls[0])
+    assert "exists in the current directory" not in capsys.readouterr().err
 
 
 def test_the_extras_refusal_says_why_aelix_needs_the_name(layout: dict[str, Path]) -> None:

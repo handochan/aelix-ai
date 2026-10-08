@@ -189,7 +189,7 @@ something else:
 
 | `source` | What happens |
 | --- | --- |
-| a **package name**, optionally with `[extras]` and a version specifier (`acme-notes`, `acme-notes==1.4.0`, `acme-notes[extra]>=1,<2`) | Handed on unchanged and resolved through your index — unless it has no version specifier and a file or directory named like the package (the name alone: for `acme-notes[extra]`, `acme-notes`) sits beside a local catalog file (refused: write `./acme-notes` or `./acme-notes[extra]` if that is what you meant; `acme-notes==1.4.0` says "package" and is not checked), or the whole spec names a file or directory in the directory you run `aelix` from (refused: aelix's installer takes a target that exists on disk for a local path and would install that instead — run it from a directory without one to get the package). A name ending in `.git` (`acme.git`) is refused: the installer would take it for a git URL (`git+acme.git`) and no installer can fetch that — write the repository's full git URL. |
+| a **package name**, optionally with `[extras]` and a version specifier (`acme-notes`, `acme-notes==1.4.0`, `acme-notes[extra]>=1,<2`) | Handed on unchanged and resolved through your index — unless it has no version specifier and a file or directory named like the package (the name alone: for `acme-notes[extra]`, `acme-notes`) sits beside a local catalog file (refused: write `./acme-notes` or `./acme-notes[extra]` if that is what you meant; `acme-notes==1.4.0` says "package" and is not checked). A file or directory with the same name in the directory you run `aelix` from changes nothing: the name still goes to your index (#405; it used to be refused, because aelix's installer took a target that existed there for a local path). A name ending in `.git` (`acme.git`) is refused: the installer would take it for a git URL (`git+acme.git`) and no installer can fetch that — write the repository's full git URL. |
 | an **absolute URL**, its scheme written in lowercase: `https://…`, `http://…`, `git+https://…` (or `git+ssh://`, `git+http://`, `git+git://`, `git+file:///…`), `git://…`, `ssh://…`, scp-style `user@host:owner/repo.git` (any user: `git@…`, `deploy@…`), `file:///…`, `file://localhost/…` (the host empty or `localhost` in lowercase, and no `%`-escape in the path); or `name @ <an https, http, git+ or file:/// URL>` — a git repository there as `name @ git+https://…` | Handed on **exactly as written** — `#sha256=…`, `#subdirectory=…`, `#egg=…` and `[extras]` included. Plain `http://` is fine here (only the catalog's own location must be HTTPS). The installer then adds the `git+` that pip and uv need to a bare URL, as it does for a URL you type: `user@host:path` becomes `git+ssh://user@host/path`, `git://…` becomes `git+git://…`, `ssh://…` becomes `git+ssh://…`, and an `https://…` URL whose path ends in `.git` becomes `git+https://…`. A `name @ git+…` reference is never touched. A scheme with a capital letter (`FILE:///…`, `Https://…`, `GIT+https://…`) is refused — write it in lowercase: aelix passes a URL on as written, and uv does not read `FILE:` as a scheme (it opened `FILE:/…` as a directory under your current one). So is `name @ https://host/o/r.git` without `git+` — uv clones it, pip downloads it as an archive and fails — with the `name @ git+https://…` spelling to use instead. |
 | a **path starting with `./` or `../`** (or `.\` / `..\`), optionally followed by `[extras]` (a space before them is dropped, as pip drops it); or a bare archive file name (`acme_notes-1.4.0-py3-none-any.whl`, `acme_notes-1.4.0-py3-none-any.whl[feature]`) | Resolved against the directory of the **local** catalog file (the file a symlink points to), never your current directory, and installed as that absolute path, `[extras]` kept. The path is checked, hashed and pinned without the extras — a file literally named `x.whl[feature]` beside `x.whl` changes nothing, as for pip and uv. Refused, naming the entry and the catalog, when the catalog is served over HTTPS or git — there is no local directory to resolve it against. |
 | an **absolute path** or a **`~` path** | Taken from any catalog, local or served: it names neither your current directory nor the catalog's, and `~` is the home directory of whoever runs the install. Installed as the resolved absolute path. |
@@ -213,6 +213,57 @@ URI cannot carry it: `aelix extension install ./legacy[feature]` on a directory
 with no `[project] name` is updated as the absolute path with `[feature]`, as it
 was installed. If one recorded extension cannot be updated, `update` says why and
 goes on with the others, and exits non-zero.
+
+`update` reads a record the way `discover install` reads a catalog entry: by its
+spelling, never by what your current directory holds (#405). A recorded package
+name is upgraded from your index even when you run `update` in a directory that
+holds a file, a directory or a symlink named like it — it used to install that
+instead (`--upgrade <your directory>/local-ext`). A recorded path is the absolute
+path aelix recorded; one that is relative — aelix has always recorded paths
+absolute, so only a hand-edited settings file holds one (a leading space makes a
+path relative too) — names no fixed file and is refused for that extension, with
+the commands to record it again (`aelix extension source remove -- '<path>'`, then
+`aelix extension install /absolute/path`; the `--` lets a path starting with `-`
+through). `source remove` matches a source by its spec, its name or its path, so
+that command also drops any other record whose spec or name is the same string — a
+package record of that name included, which you install again after — and any path
+record whose path is that string read from the directory you run the command in (an
+absolute `<that directory>/local-ext` record, for `-- local-ext`); the message says so
+and names that path. Run it from another directory to keep such a record.
+A package, URL or git record is read without its surrounding whitespace: a git
+record `aelix extension install 'git+https://…/r.git '` wrote with a trailing space
+is updated as `git+https://…/r.git`.
+
+What you TYPE after `update` keeps its meaning. A name you type that matches no
+record is upgraded as that package from your index — never a same-named file or
+directory here. A path you type that matches no record (`aelix extension update
+./local-ext`, anything spelled as a path: `./`, `../`, `/`, `~`, a separator, a
+bare archive file name) is that path, resolved from your current directory exactly as
+you typed it — never stripped, `~` expanded and `[extras]` kept, as `aelix extension
+install` resolves a path — and upgraded as its absolute path, as before #405.
+
+The same goes for the Python API: `install_extension()`, `verify_and_pin()` and
+`build_pip_args()` given what the catalog resolver returns
+(`resolve_entry_target()`, `resolve_entry_source()`) — a `CatalogSpec` or a
+`ResolvedPath` — read it by its spelling. They refuse one spelled as a relative
+path (a `ResolvedPath` must be absolute exactly as written: `ResolvedPath("~/pack")`
+is refused, since the resolver expands `~` before it builds one) and — for `verify_and_pin()` and `build_pip_args()`, which take the kind from
+their caller — a kind the spelling does not give (`CatalogSpec("local-ext")` passed
+as `"path"`); the relative-path check runs whatever kind the caller passes. A
+`CatalogSpec` strips the surrounding whitespace of a package, URL or git spelling
+when it is built (`CatalogSpec(" local-ext ") == "local-ext"`), so what is checked
+is what is installed; a path spelling keeps its exact string (`" /abs/x.whl"` is
+relative and refused, `"/abs/x.whl "` is that exact name). A PEP 508 requirement is a
+package whatever its marker holds (`x; platform_version == "…/RELEASE_ARM64"`), and
+one with a version specifier, a marker or a URL is a package even when it ends like
+an archive (`x==1.0+v.whl`) or like a git URL (`probe405==1.0+vendor.git`); a bare
+token ending in an archive suffix (`x.whl`, `x.tar.gz`, `pkg-1.0-py3-none-any.whl`,
+`x.whl[feature]` — `[extras]` alone do not make it a package) is a relative path,
+and a bare `acme.git` is a git URL. One exception to "a relative path is refused": a
+relative URL or direct reference — `file:x`, `name @ ./x` — is not spelled as a path,
+so in a hand-edited record or a `CatalogSpec` you build it is not refused; it reaches
+the installer as written and is read from aelix's installer directory, never yours
+(a catalog cannot list one: those spellings are refused below).
 
 Any path must exist: a missing one is refused, never retried as a package name
 and never looked for in your current directory. Refused outright:
@@ -277,10 +328,11 @@ The decision is recorded in
 ### What this protects against
 
 The guarantee is about the **directory you run `aelix` in**, for a catalog you
-trust: aelix never resolves an entry's `source` against your current directory,
-and never hands the installer a string it would read from there — a package name
-goes on as a name, a URL as an absolute URL, a path beside the catalog as an
-absolute `file://` URI. That is the shape of #131: a `./acme-notes` or
+trust: aelix never resolves an entry's `source` — nor, for `aelix extension
+update`, an install record — against your current directory, and never hands the
+installer a string it would read from there — a package name goes on as a name
+whatever your directory holds, a URL as an absolute URL, a path beside the catalog
+as an absolute `file://` URI. That is the shape of #131: a `./acme-notes` or
 `acme-notes` entry installed a same-named directory from wherever you stood.
 
 The installer does not run there either. With the uv backend, a `uv.toml` or a
@@ -331,7 +383,9 @@ the consent prompt waits, is not caught — only someone who can already write y
 agent dir can do that.)
 
 A typed `aelix extension install <spec>` is different: you typed it in your
-current directory, so its installer runs there, where uv reads that directory's
+current directory, so it means what it means from there — `aelix extension
+install acme-notes` beside a directory named `acme-notes` installs that
+directory — and its installer runs there, where uv reads that directory's
 `uv.toml` / `[tool.uv]` (and `python -m pip` imports a `pip/` package from it
 first — for `aelix extension remove` too; tracked as issue #394). Install from a
 directory you trust, or install through a catalog.
@@ -348,8 +402,14 @@ any catalog; a `name @ <URL>` or a git URL is fetched as written, so a
 the catalog can swap a path between the check and the install (default
 verification installs the copy it hashed; `--no-verify` does not); a relative
 catalog location left in a hand-edited settings file is read from where you run
-`discover --refresh` (it says so); and a typed `aelix extension install <target>`
-still means what it means from where you are.
+`discover --refresh` (it says so); a typed `aelix extension install <target>`
+still means what it means from where you are; a `file:<relative>` URL or `name @
+./x` in a hand-edited install record or a Python `CatalogSpec` reaches the installer
+as written, read from aelix's installer directory; a catalog source spelled
+`x==1.0+v.whl` is read as an archive file name — a relative path — and refused
+(from an https catalog) or looked for beside a local catalog; pip reads a
+requirement `x==1.0+v.whl` as a file name and fails (uv installs it); and `[extras]`
+alone do not make an archive spelling a package (`x.whl[feature]` is a path).
 
 The contract is defined by [ADR-0188](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0188-issue65-discover-catalog.md);
 [ADR-0207](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0207-a-catalog-listed-pack-must-bind-a-manifest.md) covers what

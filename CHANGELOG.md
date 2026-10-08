@@ -886,6 +886,51 @@ unwritten. Add them with the next release.
   only spaces are single ordinary ones between words, and that fits - at most 78
   columns, and at most 312 characters, which only a run of combining accents
   reaches - is shown exactly as before.
+- **`aelix extension update` no longer installs a file or directory in your
+  current directory that is named like a recorded package (#405, ADR-0255
+  §16).** aelix decided whether an install target was a local path by asking
+  your current directory whether it existed there. `discover install` refused
+  that case, but `update` re-installs records the same way and did not: run in
+  a cloned repository holding a `local-ext` directory, or a `local-ext` symlink
+  to a wheel, `aelix extension update` (or `update local-ext`) upgraded that
+  instead of the recorded package `local-ext` — exit 0, `--upgrade
+  <repository>/local-ext` (measured). The Python API did the same for
+  `install_extension()` given what the catalog resolver returns. A source that
+  comes from a catalog or an install record is now read by its spelling alone:
+  a package name goes to your index whatever your directory holds, an absolute
+  path is that path, a URL the URL it is. One spelled as a relative path
+  (`./x`, a bare `x.whl`) is refused, and so is a relative path record (aelix
+  has always recorded paths absolute, so only a hand-edited settings file holds
+  one): `update` names it, prints the command that drops the record (`aelix
+  extension source remove -- '<path>'` — `source remove` now takes `--`; it
+  matches a source by its spec, its name or its path, so it also drops a
+  package record of the same name and an absolute path record that the same
+  string names from the directory you run it in; the message says so and
+  names that path) and goes on with the others. A
+  package, URL or git source from a catalog, a record or the API has its
+  surrounding whitespace stripped once, and that stripped string is both what
+  aelix checks and what it installs, so a git record that a typed `install
+  'git+file:///repo '` wrote with its trailing space still updates. A source
+  spelled as a path keeps its exact string: one with a leading space is
+  relative and refused. A requirement with a version specifier, a marker or a
+  URL is a package even when it ends like an archive (`x==1.0+v.whl`) or like
+  a git URL (`x==1.0+vendor.git`; a catalog may now list one), while a bare
+  `x.whl` or `x.tar.gz` is a relative path and refused, and a bare `x.git` is
+  still a git URL. The Python API's `verify_and_pin()` and `build_pip_args()`
+  refuse a kind their caller passes that the source's spelling does not give,
+  and all three functions refuse a `ResolvedPath` that is not absolute as
+  written (`ResolvedPath("~/pack")` raised a `ValueError` instead). A relative
+  URL or direct reference in a hand-edited record or a Python `CatalogSpec`
+  (`file:x`, `name @ ./x`) is not spelled as a path and is not refused: it
+  reaches the installer as written, in aelix's installer directory (a known
+  limit). `discover install` now installs the
+  package beside a same-named entry instead of refusing. What you type is
+  unchanged: `aelix extension install local-ext` beside a `local-ext` directory
+  still installs that directory, and `aelix extension update ./local-ext` (a
+  path you type that matches no record) upgrades that path exactly as typed,
+  resolved the way `extension install` resolves a path (`~` expanded,
+  `[extras]` kept), while a name you type that matches no record is the
+  package.
 - **`OPENROUTER_BASE_URL` now applies to OpenRouter models picked inside a
   session, not only at launch (#375, ADR-0251 §11).** If you point OpenRouter at
   a gateway with `OPENROUTER_BASE_URL`, then picking an OpenRouter model with

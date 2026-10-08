@@ -1,6 +1,6 @@
 # 0255. A catalog entry's source is placed by its catalog, not by the working directory
 
-Status: Accepted (2026-10-06; revised 2026-10-07 after review rounds 1, 2, 3, 4, 5 and 6 and verify round 7, §7, §8, §9, §10, §11, §13, §14; threat model §12) — §12 amended 2026-10-07 by #392 (§15) and corrected 2026-10-08 by its review rounds 2, 3, 4 and 5: `discover install` and every `update` run the installer in aelix's installer directory, whose `pyproject.toml` (no `[project]`) and empty `uv.toml` make uv read no project configuration — none from the cwd, its parents, or the agent dir's ancestors; that directory and its two files are refused when they are links at preparation time, every runner is handed the directory, the user's own environment and user/system installer configuration reach the installer as set (inside the trust boundary, §12), and the one variable checked is `UV_CONFIG_FILE`, refused for those installs unless it is a bare absolute path; the directory follows the target's origin (a `ResolvedPath` or `CatalogSpec` from the resolver), not a caller flag; a typed `extension install` keeps running in the cwd (a stated limit)
+Status: Accepted (2026-10-06; revised 2026-10-07 after review rounds 1, 2, 3, 4, 5 and 6 and verify round 7, §7, §8, §9, §10, §11, §13, §14; threat model §12) — §12 amended 2026-10-07 by #392 (§15) and corrected 2026-10-08 by its review rounds 2, 3, 4 and 5: `discover install` and every `update` run the installer in aelix's installer directory, whose `pyproject.toml` (no `[project]`) and empty `uv.toml` make uv read no project configuration — none from the cwd, its parents, or the agent dir's ancestors; that directory and its two files are refused when they are links at preparation time, every runner is handed the directory, the user's own environment and user/system installer configuration reach the installer as set (inside the trust boundary, §12), and the one variable checked is `UV_CONFIG_FILE`, refused for those installs unless it is a bare absolute path; the directory follows the target's origin (a `ResolvedPath` or `CatalogSpec` from the resolver), not a caller flag; a typed `extension install` keeps running in the cwd (a stated limit) — amended 2026-10-08 by #405 (§16): a catalog or record spec (`CatalogSpec`) is classified by its spelling, never by what the cwd holds, so `update` and `install_extension()` no longer install a cwd entry named like a recorded package; one spelled as a relative path, and a relative path record, are refused; `discover install`'s cwd-collision refusal (§2 (5)) is gone — the package is installed; corrected 2026-10-08 by #405 review round 2 (§16): a caller-supplied kind that disagrees with a `CatalogSpec`'s or `ResolvedPath`'s spelling is refused (`verify_and_pin`, `build_pip_args`), so is a relative `ResolvedPath`, a PEP 508 requirement is a package whatever its marker holds, and a path the user TYPES as `update`'s filter is that path, resolved as typed; corrected 2026-10-08 by #405 review round 3 (§16): round 2's whitespace refusal is replaced by one normalisation — a `CatalogSpec` that is not spelled as a path (package, URL, git) is stripped once where it is built and every check and the installation read that string, while a path spelling keeps its exact string and is judged absolute or relative on it; a requirement with a version specifier, marker or URL is a package before the bare-archive test (`x==1.0+v.whl`); the relative-path check runs whatever kind a caller passes; a typed `update` filter is never stripped and is resolved by the typed install's own function; the printed `source remove` advice says it matches by name too; corrected 2026-10-08 by #405 review round 4 (§16): a requirement with a version specifier or a marker is a package before the `.git`-suffix git reading (`probe405==1.0+vendor.git`; a bare `acme.git` stays git, and the resolver now refuses only that bare form), a `ResolvedPath` must be absolute exactly as written (`~` is not expanded) and is refused, never raised, by all three Python entry points, the `source remove` advice says it matches by path too, and the relative-path refusal is stated with its exception (`file:x`, `name @ ./x` in a record or a Python `CatalogSpec`)
 Date: 2026-10-06
 Amends: **ADR-0188** §2 (`discover install` no longer hands `entry.source` to the
 installer unchanged; a dated note there points here) and the #68 `extension index
@@ -20,7 +20,8 @@ the installer as a `file://` URI; a scheme not in lowercase is refused; `name @ 
 never re-prefixed; 2026-10-07), §2 and §11.
 pi: `b223082bb`, §4.
 Tests: `tests/cli/test_catalog_relative_source_131.py`, `tests/cli/test_extension_index.py`
-(the `--relative` rows), `tests/cli/test_extension_discover.py` (the `-`-leading row).
+(the `--relative` rows), `tests/cli/test_extension_discover.py` (the `-`-leading row),
+`tests/cli/test_record_spec_never_read_from_cwd_405.py` (#405, §16).
 
 ## 1. What was measured
 
@@ -107,7 +108,9 @@ and missed shapes):
   `acme-notes[x]>=1,<2`; parsed with `packaging.requirements.Requirement`, `url` and
   `marker` both absent) — is handed on unchanged, to the index. A name ending in `.git`
   is refused (round 3): the installer routes such a target as git (`git+acme.git`, which
-  no backend can fetch), so "to the index" would be false for it.
+  no backend can fetch), so "to the index" would be false for it. Since #405 review
+  round 4 (§16) only a bare name: one with a version specifier (`x==1.0+vendor.git`) is
+  a package to the installer too, and goes to the index.
 - **(B) An absolute URL, its scheme written in lowercase,** is handed on UNCHANGED,
   fragments (`#sha256=`, `#subdirectory=`, `#egg=`) and extras byte-for-byte as written:
   `https://host/…`,
@@ -195,7 +198,7 @@ forms (`ACCEPTED_SOURCE_FORMS`):
    read `-e ./x` or `--index-url=…` as an OPTION (no PEP 508 name starts with `-`;
    #11's `--` guard only keeps `discover install`'s own parser from misreading it);
 4. a relative path without the `./` prefix (`wheels/x.whl`, `.`), a requirement with
-   an environment marker, a package name ending in `.git`, a URL scheme not written in
+   an environment marker, a package name ending in `.git` (a bare name — #405 r4), a URL scheme not written in
    lowercase and `name @ <an http(s) URL ending in .git>` (B), a resolved path holding
    `#` and extras on a path with no readable project name (C), and anything else not in
    (A)-(C);
@@ -212,6 +215,9 @@ forms (`ACCEPTED_SOURCE_FORMS`):
    says so) — ("Run the command from another directory", true because only a package
    spec reaches it), or a resolved path that vanished before the installer looked
    (asked of the `ResolvedPath` directly since round 3: it is not re-classified).
+   *Amended 2026-10-08 by #405 (§16):* the cwd-collision refusal is gone —
+   `classify_target` reads a `CatalogSpec` by its spelling, so a package spec that
+   names a cwd entry is installed as the package; the vanished-path refusal stays.
 
 Also part of the decision:
 
@@ -285,7 +291,7 @@ The resolved spec is what consent shows (ADR-0188 §4(b)), and the `Resolved` li
 | `_cmd_discover_install` → `_cmd_install([… "--", resolved.source])` | cwd-classified | target from `resolve_entry_target`; a path passed as `resolved_path=ResolvedPath(...)`, the argv carrying only its display form; refusals before consent; shown terminal-safe |
 | `_cmd_install` announcement (`Install extension from <kind>: …`) and the no-backend message | the target raw | through `safe_for_terminal` (typed targets too) |
 | `_print_verify` and the gate's refusal / error / warning lines | raw (a symlink target's basename reached the first-acquisition line) | through `safe_for_terminal` (6) |
-| `classify_target` (`extension install`, `update`, `_normalize_catalog_spec`, `install_extension`, `_attributed_dists`) | cwd-relative for typed targets | unchanged for typed targets except (8); a catalog source no longer reaches it raw |
+| `classify_target` (`extension install`, `update`, `_normalize_catalog_spec`, `install_extension`, `_attributed_dists`) | cwd-relative for typed targets | unchanged for typed targets except (8); a catalog source no longer reaches it raw; since #405 (§16) a `CatalogSpec` is classified by its spelling, never against the cwd |
 | `_install_spec` / `build_pip_args` / `_pin_identity` / `verify_and_pin` path branch / `_target_dist_hint` / `_target_source_key` | `Path(target)` with any `[extras]` inside the file name | a `ResolvedPath`'s two values as given; a typed string split the backend's way (8); since round 5 `build_pip_args` and the staged copy hand a `ResolvedPath` over as `ResolvedPath.installer_arg()` (a `file://` URI, `name[extras] @ uri` with extras) — a typed path keeps its path string |
 | `classify_target` / `_normalize_git_spec` / `_pin_identity` / `_target_source_key` (git) | `name @ <url>.git` → git, prefixed `git+name @ …`; `name @ git+…@<sha>` → pypi | `name @ git+…` → git, never re-prefixed, pin and source key read from the URL (round 5) |
 | `_record_install` → `_install_spec` | records `str(Path(target).resolve())` — the cwd's reading | records the already-absolute spec; since round 6 a catalog path as its installer URI (`_path_record_spec`) |
@@ -336,6 +342,9 @@ the relative path `x` from the cwd).
   standing in a directory holding `./foo` installed that directory. Refusing is stricter
   than the brief's decisions; the alternative is threading a forced kind through
   `_cmd_install` → `install_extension` → `verify_and_pin`, which all re-classify.
+  *Amended 2026-10-08 by #405 (§16):* that alternative is what #405 did, by the
+  target's type rather than a forced kind — a `CatalogSpec` is classified by its
+  spelling everywhere — so the refusal is gone and the package is installed.
 - **Beside-the-catalog ambiguity (5, first half) — kept.** A hand-written `"source":
   "local-ext"` meant as the neighbouring directory is the issue's literal
   dependency-confusion shape; a bare name that is ALSO a neighbouring file is refused
@@ -594,9 +603,13 @@ measurement that motivates them and the `#` measurement that motivates its refus
 
 What #131 guarantees: for a **trusted** catalog, aelix never resolves an entry's
 SOURCE against the **current directory**, and never hands the installer a string the
-installer would read from there — a package name goes on as a name (one that also
-names something in the cwd is refused, (5)), a URL as an absolute URL, a path as an
-absolute `file://` URI (a relative one placed beside the catalog). That closes the cwd-substitution
+installer would read from there — a package name goes on as a name (whatever the cwd
+holds since #405, §16; before, one that also named something in the cwd was refused,
+(5)), a URL as an absolute URL, a path as an absolute `file://` URI (a relative one
+placed beside the catalog). Since #405 the same holds for an install RECORD that
+`update` re-installs and for whatever the resolver hands the Python API: a
+`CatalogSpec` is classified by its own spelling, never by asking the cwd, and a
+relative path in one (or in a `path` record) is refused (§16). That closes the cwd-substitution
 shape the issue names: an entry its author meant benignly installed whatever sat in
 the directory `aelix` runs in (a cloned repository, a download folder).
 
@@ -708,7 +721,8 @@ lands (`.omc/probes/131-live/fix7/repro-before-1fcd4704.txt`). Owner decision
 - **Codex — untrue texts.** The cwd-collision refusal said the package "would be
   installed from there" for `review-ext[feature]` beside a literal directory of that
   name; pip and uv ignore it — aelix's own `classify_target` would not, and the message
-  now says that (the refusal stays: (5)). The extras refusal said pip takes extras on a
+  now says that (the refusal stays: (5); *removed 2026-10-08 by #405, §16* — the
+  installer no longer reads a `CatalogSpec` from the cwd). The extras refusal said pip takes extras on a
   local path only as `name[extras] @ file:///…` (both take `<abs>[feature]`); it now
   says aelix hands paths over as URIs and needs the name for that. The guide's
   transcript showed a bare path in the installer argv; it shows the URI. verify's
@@ -859,9 +873,10 @@ hands the resolver's object on, not the argv string), and EVERY `update`
 records do not say whether a catalog chose their source (`ExtensionSourceObject` is
 `spec`/`kind`/`name`), and none was chosen in the directory `update` happens to run in;
 every recorded spec reaches the installer absolute (a path record as its `file://` URI
-or absolute path, §14; a git URL — a relative `git+file:./x` installs on neither backend,
-measured, `relative-git.txt`; a package name), so the typed-install reason does not
-apply to `update`. Adding an origin field was rejected: records written before it would
+or absolute path, §14 — a relative one is refused since #405, §16; a git URL — a
+relative `git+file:./x` installs on neither backend, measured, `relative-git.txt`; a
+package name — classified by its spelling since #405, never against the cwd), so the
+typed-install reason does not apply to `update`. Adding an origin field was rejected: records written before it would
 stay exposed.
 
 **pip.** pip reads no project configuration, but `python -m pip` puts its working
@@ -950,7 +965,10 @@ and `anchor_catalog_location` return plain strings or a flag and start nothing. 
    decoy: cloned the real repository; the same mapping via `-c` cloned the decoy; git
    2.54.0, `gitcfg.txt`).
 9. aelix's own `classify_target` existence test in `discover install` (a package spec
-   naming a cwd file is refused, §2 (5)): unchanged — a refusal, not a redirect.
+   naming a cwd file is refused, §2 (5)): unchanged — a refusal, not a redirect. *Not
+   true of `update` or the Python API (#405): there the same test turned a recorded
+   package name into the cwd entry's path. Since #405 (§16) no `CatalogSpec` reaches
+   that test, and this refusal is gone.*
 
 **Known limits.**
 
@@ -1398,3 +1416,342 @@ swap it guards), a temporary file without `O_EXCL` (its name is unique).
    nothing, rc 1), and with a `pip.conf` placed in the installer directory its index
    is the one passed (ORG-PIN); the typed install still reads the cwd's file
    (CWD-DECOY, as designed). Two rows, red on 1e51422a (`r5b/red-on-1e51422a.txt`).
+
+## 16. #405 (2026-10-08) — a catalog or record spec is classified by its spelling
+
+**Measured before the change** (8f7d98aa; the defect was already on 61f03b67, where #392
+verify r4 found it — `.omc/probes/392-live/r4verify/side-classify-cwd-entry.txt`).
+`classify_target` decided "is this a path?" by asking the PROCESS cwd whether the string
+existed there — the right reading for a target the user types (§2 (8)), the wrong one
+for a source a catalog or a record chose. `discover install` refused that case (§2 (5)),
+but `update` (every record is re-installed as a `CatalogSpec` since #392) and the Python
+API `install_extension(CatalogSpec)` did not. The real `aelix` CLI in a throwaway venv,
+uv 0.11.19 and pip, offline, run from a "cloned repository" holding `local-ext` (a
+symlink to its own 9.9 wheel, or a directory) with a pypi record `local-ext` and an org
+pin offering 1.0 (`.omc/probes/405-live/impl/live-uv.txt`, `live-pip.txt`): `update` and
+`update local-ext` — rc 0, `Upgrade extension from path: local-ext`, `uv pip install
+--upgrade <repo>/w/local_ext-9.9-py3-none-any.whl`, CWD-NAMED-ENTRY installed (pip: the
+same argv for the directory); a relative `path` record `local-ext` — the cwd's entry as a
+`file://` URI; `discover install` — rc 2, the §2 (5) refusal. In process, with a recorder
+(`repro-red-8f7d98aa.txt`): `install_extension` given `CatalogSpec("local-ext")`,
+`resolve_entry_target(entry)` or `resolve_entry_source(entry)[0]` for an https catalog's
+`local-ext`, and `update <a name never recorded>`, all got the cwd entry's absolute path.
+
+**Decision (owner, 2026-10-08, the issue's first direction).** A source that carries a
+catalog or record ORIGIN — `CatalogSpec` (what the resolver returns for a name or a URL,
+`resolve_entry_source`'s spec, and every record `update` wraps) and `ResolvedPath` — is
+classified from its own spelling and never by looking at the cwd: §2's allowlist applied
+to records. `classify_target(CatalogSpec)`: spelled as a path
+(`extension_catalog.spelled_as_path` — §2 (C)'s path form, i.e. an absolute or `~` path,
+`./` / `../`, a bare archive file name, extras aside; anything else that starts like a
+path, `.` / `..` / a rooted `\x` / a drive `C:x`; and a string with a separator that is no
+URL, `name @ <url>`, git remote or — since review round 2 — PEP 508 requirement without
+a URL, `a/b`, `sub\ext` on every platform) → `path`; otherwise git by its URL shape, else a
+package spec — a `file:///` URL included, which goes on as the URL it is (§2 (B)). A
+`CatalogSpec` spelled as a RELATIVE path has no reading that does not consult the cwd:
+`install_extension` refuses it (exit 2) and `verify_and_pin` raises `VerifyRefusal`
+before reading anything (`_origin_spec_problem`; absolute = `Path(p).expanduser()
+.is_absolute()`, so `~/x` passes and, on Windows, needs a drive or a share; a
+`ResolvedPath` is judged as written, `~` not expanded — review round 4). The one
+exception (known limits below): a relative URL or direct reference — `file:x`,
+`name @ ./x` — is not spelled as a path, so a record or a Python `CatalogSpec` holding
+one is not refused; it reaches the installer as written, in the installer directory. A `path`
+record that is not absolute — aelix records paths absolute (`_install_spec` resolves,
+and so did the commit that introduced records, 5817d1ac, 2026-07-05, for the install
+record and `source add` alike), so only a hand-edited settings file holds one — is the
+case §12/§15 left to "older records": it names no fixed file, so `_recorded_path_target`
+refuses it, never resolving it against the cwd; `update` reports it for that record
+("Drop the record (aelix extension source remove -- '<spec>') and install it again by
+its absolute path"), goes on with the others and exits 2 (§14's isolation). `discover install`'s
+cwd-collision refusal is dead and removed: a package name is installed as the package
+beside a same-named cwd entry. A TYPED `aelix extension install <spec>` keeps the cwd
+reading (§2 (8)): `local-ext` beside a `./local-ext` is that directory.
+
+**After** (same probes, the fix): `update` and `update local-ext` — rc 0, `Upgrade
+extension from pypi: local-ext`, `--upgrade local-ext`, ORG-PIN 1.0 installed on uv and
+pip; the relative path record — rc 2, refused, nothing installed; `discover install` —
+rc 0, ORG-PIN; the typed `install local-ext` — still the cwd entry (CWD-NAMED-ENTRY on
+uv), as designed (`repro-green.txt`).
+
+**Sweep — every site that decides "is this install target a path?" or looks the target
+up on disk** (`cli/extension_install.py`, `extension_catalog.py`, `extension_pins.py`):
+
+| Site | Before | After |
+| --- | --- | --- |
+| `classify_target` | cwd existence test for every `str`, a `CatalogSpec` included | a `CatalogSpec` by spelling (`spelled_as_path`, then — review round 4 — a requirement with a version specifier or a marker is a package, then the git/package shapes); a typed `str` unchanged; a `ResolvedPath` is a path, as before |
+| `_path_extras` (via `classify_target`, `_split_path_target`) | `Path(base).exists()` from the cwd | unchanged; reached for a `CatalogSpec` only once it is known to be absolute (no cwd lookup) |
+| `install_extension` (CLI `discover install` / `update`, Python API) | classified a `CatalogSpec` from the cwd | refuses a relative-path `CatalogSpec` (2), then classifies by spelling |
+| `verify_and_pin` (Python API; the gate inside `install_extension`) | the path branch `Path(path).resolve()` read a relative one from the cwd | `VerifyRefusal` before the pin store or a file is read for a relative-path `CatalogSpec` or `ResolvedPath` (review round 3: whatever `kind` the caller passes) and (review round 2) a caller's `kind` the spelling does not give |
+| `build_pip_args` (Python API; takes `kind` from its caller) | `CatalogSpec("local-ext")` as `path` → `pip install <cwd>/…` | review round 2: `ValueError` for the same cases as `verify_and_pin` |
+| `_pin_identity`, `_install_spec`, `_target_dist_hint`, `_target_source_key` | followed the cwd-derived kind (a package's pin keyed by the cwd path) | follow the spelling-derived kind; a path branch only sees absolute paths for an origin target |
+| `_cmd_update` → `_upgrade_source` → `_recorded_path_target` | a plain path record: `Path(spec).exists()` / `.resolve()` from the cwd | a relative one refused (`CatalogError`, reported per record); an absolute one unchanged (§14); review round 4: a `~` record whose `resolve()` fails (a symlink loop) goes over expanded — it was `ResolvedPath('~/loop')`, whose hand-off failed with a `ValueError` (update reported it per record, exit 2) |
+| `_cmd_update` → `_upgrade_pypi_name` (recorded and unrecorded names) → `_upgrade_and_report` | `CatalogSpec(name)` classified from the cwd | by spelling: a name is a package |
+| `_cmd_update`'s unrecorded filter TYPED as a path (`update ./local-ext`) | a `CatalogSpec` classified from the cwd: the typed path, absolute | review round 2: the user's typed path, resolved from the cwd as typed (`_install_spec(…, "path")`) and handed over absolute — the 8f7d98aa result; the first round refused it as "from a catalog or an install record"; review round 3: never stripped (round 2 stripped it) |
+| `_cmd_source remove` | dropped every argument starting with `-` | review round 2: `--` ends the options, so the printed `source remove -- <spec>` drops a record starting with `-`; it still matches by spec, name OR path (unchanged), which the printed advice now says (review round 3: spec and name; review round 4: the path too, naming it) |
+| `CatalogSpec.__new__` (every wrap: the resolver, `resolve_entry_source`, `_upgrade_and_report`, a Python caller) | the string as given | review round 3: a package, URL or git spelling is stripped once; a path spelling is kept exact |
+| `_upgrade_and_report` → `_attributed_dists(target, classify_target(target))` | cwd kind | spelling kind |
+| `_cmd_discover_install` | `classify_target(target) != "path"` refusal (rc 2) | removed (dead: a `CatalogSpec` never reads as a cwd path); the vanished-`ResolvedPath` check stays |
+| `_cmd_install` (`extension install`, typed; `discover install` via `resolved_target=`) | typed: cwd; resolver object: cwd-classified | typed: unchanged (§2 (8)); resolver object: spelling |
+| `classify_source` / `_cmd_source add` / `_normalize_catalog_spec` (`source add`, `--catalog`) | cwd existence test | unchanged — a TYPED registration, stored absolute |
+| `_source_identity` (record dedupe, `update <filter>` match, a row's label) | resolves a relative path record from the cwd | unchanged — a key and a label, never what is installed; the record is then refused |
+| `_cmd_remove` | no target classification (uninstalls a distribution by name) | unchanged |
+| `extension_catalog.resolve_entry_target` / `resolve_entry_source` / `_place_path` / `_exists` | relative paths placed beside the LOCAL catalog file only (§2 (C)); no cwd | unchanged, except (review round 2) a `CatalogSpec` is the stripped source the checks read; the resolver's own `_is_path_form` still reads `x==1.0+v.whl` as a bare archive name (review round 3 changed `spelled_as_path` only — a known limit below); review round 4: the refusal of a requirement ending in `.git` ("the installer takes it for a git URL") applies to a bare name only, since the installer now reads `x==1.0+vendor.git` as the package |
+| `extension_catalog.resolved_path_from_installer_arg` | a recorded `file:///` URI → `ResolvedPath`; no lookup | unchanged |
+| `extension_catalog` `_catalog_base_dir`, `anchor_catalog_location`, `_local_file` | the catalog's LOCATION (§2 (9)), not a source | unchanged |
+| `extension_pins.py` (`find_top_level_artifact`'s `is_dir` / `is_file`) | the verify gate's own download directory (a temp dir), never the target string | unchanged |
+| `extensions/loader.py` `_is_module_ref` (`-e` / configured paths) | cwd existence test | unchanged — a typed load path, not an install target |
+
+**What pi does** (snapshot 1cedd3272, `packages/coding-agent/src/core/package-manager.ts`):
+a source's kind is its spelling alone — `parseSource` reads `npm:` as a package, a git
+URL as git, and everything else as a LOCAL path (`isLocalPath` in `utils/paths.ts` is a
+prefix test, `npm:` / `git:` / `github:` / `http(s):` / `ssh:` / `builtin:`); nothing is
+classified by whether it exists. A recorded package is `npm:<name>` and is updated as
+that (`updateConfiguredSources` takes only npm and git sources; a local one is never
+re-installed), so pi never resolves a recorded package name against the cwd. A local
+path is resolved against the cwd only when TYPED (`install` → `resolvePath(…, this.cwd)`),
+then stored relative to the settings scope's directory
+(`normalizePackageSourceForSettings`) and read back against that directory
+(`getBaseDirForScope`: the agent dir for user scope, `<cwd>/.pi` for a trusted project).
+aelix's equivalent: a record is absolute, and one that is not is refused rather than
+re-based — an aelix record has no scope directory to re-base it on (`extensionSources`
+lives in the one user settings file). Divergence, knowingly: pi has no bare-name package
+form, so it never needs the spelling rule for one; aelix's catalog format has (§2 (A)).
+
+**Known limits (still).** A typed `aelix extension install <spec>` keeps the cwd reading
+and runs in the cwd (§12). A `CatalogSpec` spelled `name @ ./x` or `file:x` is not a
+path by its spelling (a direct reference, a URL): it goes to the installer as written, in the installer directory (#392), where it names nothing of the
+cwd — the resolver refuses those forms from a catalog (§2), and a record holds one only
+by a hand edit. `_source_identity` still resolves a relative path record from the cwd to
+match it (the install itself is refused); `update` labels such a record as written
+(review round 2). A path record with a TRAILING space is kept: `<dir>/trusted ` is an
+absolute path to a real name an older record holds (§14, verify6), and a path
+spelling with a leading space is relative and refused. Every other record, and every
+non-path `CatalogSpec`, is stripped where it is wrapped (review round 3 — round 2
+refused it, which broke the git record a typed `extension install
+'git+https://…/r.git '` writes). The resolver's `_is_path_form` (§2 (C), #131) still
+reads a catalog source `x==1.0+v.whl` as a bare archive name, placed beside a local
+catalog or refused from an https one; only `spelled_as_path` (records and the API)
+asks the requirement first. pip itself reads `probe405==1.0+vendor.whl` as a file name
+(`WARNING: Requirement … looks like a filename, but the file does not exist`, exit 1),
+in aelix's installer directory — never the cwd — exactly as on 8f7d98aa; uv installs it
+(measured, `.omc/probes/405-live/r3/live-after-pip.txt`, `pip-local-version-after.txt`).
+`source remove` has no way to drop one record exactly: it matches by spec, name or
+path (a path record whose path is the spec read from the directory it runs in), and
+the advice `update` prints says so and names that path (review round 4). `[extras]`
+alone do not make an archive spelling a package: `x.whl[feature]` is a path spelling,
+refused as relative (pip and uv open it as a file, §2 (C) "extras aside"). These are
+known limits by the owner's decision (2026-10-08, "narrow and finish"): documented,
+not chased.
+
+**Tests and mutants.** `tests/cli/test_record_spec_never_read_from_cwd_405.py` (24
+rows; one Windows-only) and two rewritten #131 rows
+(`test_a_package_spec_named_like_a_cwd_entry_installs_the_package`,
+`test_a_cwd_directory_named_like_a_spec_with_extras_changes_nothing`): 23 red on
+8f7d98aa (`red-on-8f7d98aa.txt`; the typed-install control passes there, as it must).
+Mutants (`sabotage.txt`, the 405, #131 and #392 files, 741 rows) — 11 of 11 red: the
+`CatalogSpec` branch dropped from `classify_target`; no refusal in `install_extension`;
+none in `verify_and_pin`; a relative path record resolved again; §2 (5)'s cwd refusal
+put back; a `CatalogSpec` never a path; `spelled_as_path` replaced by the typed-target
+`source_looks_like_path` (an scp remote `a_b~c@host:team/ext` read as a relative path);
+its separator clause dropped; the absolute test without `expanduser`; the absolute test
+as an existence test; the refusal only for `./` / `../`.
+
+**Review round 2 (2026-10-08; verify and Codex on 709982a3).** Each item was reproduced
+on 709982a3 first (`.omc/probes/405-live/r2/repro-red-709982a3.txt`).
+
+1. *verify, blocking — a caller's kind.* `verify_and_pin(target, kind, …)` takes `kind`
+   from its caller: `verify_and_pin(CatalogSpec("local-ext"), "path", …)` — exactly
+   what a relative `path` record holds — hashed and staged the cwd's `local-ext` (a
+   symlink to its own 9.9 wheel), returned `pip install <staged copy>` and a TOFI pin
+   on `<cwd>/w/local_ext-9.9-…whl`; `build_pip_args(CatalogSpec("local-ext"), "path")`
+   returned `pip install <cwd>/w/local_ext-9.9-…whl`, and a `ResolvedPath` built from a
+   relative string raised `ValueError` out of `install_extension`. Now
+   `_origin_spec_problem(target, kind)` derives the kind of a `CatalogSpec` (by
+   spelling) or a `ResolvedPath` (`path`) and refuses a caller's kind that disagrees,
+   and a relative `ResolvedPath` — `VerifyRefusal` before the pin store or a file is
+   read, `ValueError` from `build_pip_args`, exit 2 from `install_extension`. The sweep:
+   every function taking a `(target, kind)` pair — `verify_and_pin`, `build_pip_args`
+   (public), and `_install_spec`, `_pin_identity`, `_attributed_dists`,
+   `_target_dist_hint`, `_target_source_key`, `_record_install` (private, every caller passes
+   `classify_target(target)`); `install_extension` derives its own.
+2. *verify, blocking — a typed update filter.* Since #392 `update`'s unrecorded filter
+   is wrapped as a `CatalogSpec`, so `aelix extension update ./local-ext` typed by the
+   user was refused as "it came from a catalog or an install record"; 8f7d98aa
+   upgraded `./local-ext` (rc 0). A filter spelled as a path is the user's typed path:
+   resolved from the cwd as typed (`_install_spec(…, "path")`, the 8f7d98aa result) and
+   handed over absolute, in aelix's installer directory as every update; a filter
+   spelled as a name is the package. The guide and CHANGELOG say so.
+3. *Codex — whitespace.* `CatalogSpec(" /abs/x.whl")`: `spelled_as_path` and the
+   absolute test stripped it, the installer resolved the unstripped string, and
+   `<cwd>/" /abs/x.whl"` (a decoy) was installed; a `path` record `" /abs/x.whl"` did the
+   same through `update`. Every check now reads the string as given; a `CatalogSpec` with
+   leading or trailing whitespace is refused, and the resolver returns the stripped
+   source (`CatalogSpec(raw)`), so no catalog entry trips the rule. A path record is not a
+   `CatalogSpec`: a leading space makes it relative and it is refused (the message says
+   why); a trailing space is kept — `<dir>/trusted ` is a real absolute name an older
+   record holds (§14). A git record a typed `extension install 'git+https://…/r.git '`
+   wrote keeps the space and is now refused by `update` (measured, `git-trailing-space.txt`).
+4. *Codex — the printed advice.* `aelix extension source remove '-local-ext'` failed as
+   printed (`source remove` drops arguments starting with `-`). `source remove` now takes
+   `--`, and the advice is `aelix extension source remove -- <spec>` quoted for a POSIX
+   shell (`shlex.quote`); a row runs the printed command. `update` labels a relative path
+   record as written, not as its cwd path.
+5. *Codex — a marker holding `/`.* `CatalogSpec('probe405; platform_version == "…/RELEASE_ARM64_T6050"')`
+   was refused as a relative path by the separator test (8f7d98aa installed it). A
+   string that parses as a PEP 508 requirement with no URL (`packaging`) is a package;
+   asked after the path forms (a bare `x.whl` parses as a requirement) and before the
+   separator.
+6. *Rows for surviving mutants:* `sub\ext` is a path on every platform (Codex: the
+   backslash clause could be dropped), and an absolute path ending in `.git` is a path
+   (verify M17: git asked first).
+7. *Text:* "a much older build wrote a relative record" was unsupported — 5817d1ac,
+   which introduced records, already resolved paths absolute; it now says a hand edit.
+   The stale #131 refusal text in the ADR index row, §2's rationale bullet and §13's
+   Codex note carry the #405 amendment.
+
+Real CLI, throwaway venvs editable to the round-2 tree, uv 0.11.19 and pip, offline,
+every proxy at a CONNECT recorder that logged nothing (`live-r2-uv.txt`,
+`live-r2-pip.txt`): `update ./local-ext` typed — rc 0, `--upgrade <cwd>/w/local_ext-9.9-…whl`
+for the symlink and `<cwd>/local-ext` for the directory, CWD-NAMED-ENTRY installed (pip
+cannot build the directory offline — hatchling, as on 8f7d98aa); `update local-ext` typed
+and a recorded package — ORG-PIN 1.0; a `-local-ext` record — rc 2, then the printed
+`source remove -- -local-ext` rc 0 and no record left; `verify_and_pin(CatalogSpec("local-ext"),
+"path")` — `VerifyRefusal`, no pin file; `CatalogSpec(" <abs wheel>")` with the decoy — rc 2,
+nothing installed; the marker requirement — rc 0, ORG-PIN; a catalog source
+`"  local-ext  "` through `discover install` — rc 0, ORG-PIN. Rows: 30 new, 28 red on
+709982a3 (the two controls pass there). Mutants (`sabotage.txt`, the 405, #131 and #392
+files): 14 of 15 red; the survivor (`spelled_as_path` strips again) is equivalent — every
+entry point refuses a whitespace `CatalogSpec` before classifying it, and `update`
+strips the typed filter.
+
+**Review round 3 (2026-10-08; verify and Codex on e55a9fc8).** Each blocking item was
+reproduced on e55a9fc8 first (`.omc/probes/405-live/r3/repro-red-e55a9fc8.txt`).
+
+1. *verify — whitespace, a regression.* Round 2's refusal of any surrounding
+   whitespace refused a git record aelix's own typed install writes: `aelix extension
+   install 'git+file:///<repo> '` records the trailing space; 8f7d98aa upgraded it, and
+   e55a9fc8 exited 2 with "Fix the catalog or the record" and no command to run. The
+   refusal is replaced by one normalisation: `CatalogSpec.__new__` strips a source
+   whose stripped form is not spelled as a path (package, URL, git), so the resolver,
+   `resolve_entry_source`, `update`'s wrap and a Python caller all produce the one
+   stripped string that every check and the installer read (this also closes round 1's
+   "the check strips, the resolution does not" by construction); a path spelling keeps
+   its exact string and `_names_no_cwd` judges that string — `" /abs/x.whl"` is relative
+   and refused (the message says a leading space makes it relative), `"/abs/x.whl "` is
+   that exact absolute name. `spelled_as_path` reads the SHAPE from the stripped string
+   (`"x.whl "` is a path spelling, not the requirement `x.whl`). No whitespace refusal
+   remains. The CHANGELOG's round-2 claim ("a record … with leading whitespace is
+   refused") was false for pypi records anyway (`_upgrade_source` upgrades the name).
+2. *Codex and verify — the typed update filter.* e55a9fc8 stripped it: with a
+   directory named `" ."` here, `update " ./local-ext"` installed `./local-ext` (9.9)
+   where 8f7d98aa installed `" ./local-ext"` (1.0). Never stripped now; resolved by
+   `_install_spec(…, "path")`, the function a typed `extension install` uses. Rows kill
+   verify's surviving mutants S14 (stripped filter) and S28 (`Path.resolve()` — no `~`
+   expansion, no extras split off a symlink).
+3. *Codex — a regression.* `CatalogSpec("path-probe==1.0+vendor.whl")`, a valid PEP 508
+   requirement whose local version ends in `.whl`, was a bare archive name to
+   `_is_path_form`, so a relative path, refused with a false message; 8f7d98aa
+   installed it. `spelled_as_path` now asks, after "starts like a path" and before the
+   path forms, whether the string parses as a requirement with a version specifier, a
+   marker or a URL — then it is a package or URL. A bare token (a name, `[extras]`
+   allowed: pip and uv open `x.whl[feature]` as a file, §2 (C) "extras aside") ending
+   in an archive suffix stays a path spelling. Rows: `x==1.0+v.whl`, `x==1.0+v.tar.gz`,
+   `x[e]`, `x; python_version>"3"`, `x.whl; python_version>"3"` → package; `x.whl`,
+   `x.tar.gz`, `pkg-1.0-py3-none-any.whl`, `x.whl[feature]` → path, refused.
+4. *Codex — the builder guard.* A `build_pip_args` that ran `_origin_spec_problem` only
+   for a `ResolvedPath` or a kind mismatch passed both changed test files and built
+   `pip install <cwd>/local-ext` for `build_pip_args(CatalogSpec("./local-ext"),
+   "path")`. The code already runs it for every origin target; rows now pin it for both
+   public functions (`./local-ext`, `local-ext/`, a bare wheel name, a leading-space
+   absolute path, each passed as `path`).
+5. *verify — the printed advice.* `source remove` matches a source by spec OR name
+   (as before #405), so `aelix extension source remove -- local-ext` for a relative path
+   record also drops a package record `local-ext`. `source remove` has no way to target
+   one record exactly, so the message says so plainly ("That source remove matches a
+   source by its spec OR its name, so it also drops any other source or record whose
+   spec or name is 'local-ext' — a package record of that name included; install that
+   one again afterwards"); a row runs the printed command and finds both gone.
+
+Real CLI and Python API, throwaway venvs editable to e55a9fc8 and to this tree, uv
+0.11.19 and pip, offline (find-links only), every proxy at a CONNECT recorder that
+logged nothing (`live-{before,after}-{uv,pip}.txt`): the typed `install 'git+file:///<repo> '`
+then `update` — e55a9fc8 rc 2 (the whitespace refusal), now rc 0, `--upgrade
+git+file:///<repo>`, GIT-REPO 5.0 (uv; pip cannot build the repository offline — no
+hatchling — on either build); typed `update ' ./local-ext'` beside `' ./local-ext'` (1.0)
+and `./local-ext` (9.9) — e55a9fc8 installed 9.9, now 1.0 on uv and pip; typed `update
+~/pack` — `$HOME/pack` on both; `install_extension(CatalogSpec("probe405==1.0+vendor.whl"))`
+— e55a9fc8 rc 2 "is a relative path", now `KIND pypi`, uv rc 0 with 1.0+vendor.whl
+installed (pip: the limit above); `update rel-ext` — the advice now carries the by-name
+caveat, and the printed command removed 2 sources, as it says; the #405 core (`update`
+beside a `local-ext` symlink) — ORG-PIN 1.0 on both builds and backends;
+`CatalogSpec(" <abs wheel>")` with a cwd decoy — rc 2 on both, the message now says the
+leading space makes it relative.
+
+Rows: 28 new, replacing round 2's 5 whitespace-refusal rows (the 405 file has 77); 17
+red on e55a9fc8 (`red-on-e55a9fc8.txt`) — the 11 that pass there are 7 spellings
+e55a9fc8 already classified right (controls) and 4 that need a mutant (S28, three
+builder-guard rows). Two new rows skip on Windows (a trailing space or `' .'` cannot
+be a file name there). Mutants (`sabotage-r3.txt`, the 405, #131 and #392 files): 14 of 14 red —
+S14, S28, Codex's builder guard and the same for `verify_and_pin`, `CatalogSpec`
+never stripping, stripping a path spelling too, `spelled_as_path` on the exact
+string, round 2's refusal put back, the absolute test on a stripped string, no
+requirement test, extras counted as qualifying, the requirement test after the path
+form, the advice without its caveat, no leading-space note.
+
+**Review round 4 (2026-10-08; verify and Codex on d49f51f0, rebased onto dfb4ddcc —
+#404's ADR is 0256).** Each item was reproduced first on the rebased commit, whose code
+is d49f51f0's (`.omc/probes/405-live/r4/repro-red-ef0df230.txt`).
+
+1. *Codex — a regression.* `CatalogSpec("probe405==1.0+vendor.git")`, a PEP 508
+   requirement whose local version ends in `.git`, was `git` by `classify_target`'s
+   `.git`-suffix test, so `build_pip_args(target, "pypi")` and `verify_and_pin(target,
+   "pypi", …)` refused it ("is spelled as a git source", false) and
+   `install_extension` built `pip install git+probe405==1.0+vendor.git`; 8f7d98aa
+   installed it with kind `pypi` (Codex r3, `INSTALLED VERSION 1.0+vendor.git`). For a
+   `CatalogSpec`, a requirement with no URL and a version specifier or a marker
+   (`extension_catalog.is_qualified_package_requirement`) is now a package, asked after
+   the path spelling and before every git shape; a bare `acme.git` keeps the git
+   reading, and a typed string keeps today's. The false refusal text no longer occurs
+   for it (it now reads "spelled as a package requirement or URL" when the caller passes
+   `git`). The resolver refused any requirement ending in `.git` because the installer
+   took it for git; that is now true of a bare name only, so a catalog may list
+   `x==1.0+vendor.git`.
+2. *Codex — raised, not refused.* `ResolvedPath("~/pack")` passed the origin check (it
+   expanded `~`) and then raised `ValueError: relative path can't be expressed as a
+   file URI` out of `build_pip_args` and `install_extension`; `verify_and_pin` returned
+   `~/pack` unpinned. A `ResolvedPath` must now be absolute exactly as written
+   (`_absolute_as_written`, no `~` expansion — its `file://` hand-off takes nothing
+   else; the resolver expands `~` before it builds one): `install_extension` 2,
+   `verify_and_pin` `VerifyRefusal`, `build_pip_args` `ValueError` saying "is a relative
+   path (a '~' is not expanded in a path handed over as resolved)". Sweep: the other
+   place a `ResolvedPath` is built from a `~` string, `_recorded_path_target`'s
+   fallback when `resolve()` fails, failed the same way for a `~/loop` record (update's
+   per-record handler printed the `ValueError` and exited 2 - measured); it now hands the expanded path over.
+3. *Codex — a surviving mutant.* A `verify_and_pin` that ran the origin check only for
+   a `CatalogSpec` or a kind mismatch passed both changed files. Rows now pin
+   `ResolvedPath("probe-1.0-py3-none-any.whl")` with kind `path` (a cwd wheel of that
+   name) → `VerifyRefusal`, nothing staged or pinned.
+4. *verify — the advice understated.* Run where a relative path record `local-ext`
+   failed, the printed `source remove -- local-ext` also dropped an ABSOLUTE path record
+   `<cwd>/local-ext` (`_remove_source` matches the target's path read from the cwd) —
+   verify r3 measured "Removed 3 source(s)". The advice now says it matches by spec,
+   name OR path, names the path (`run here: '<cwd>/local-ext'`), and says to run it from
+   another directory to keep such a record; a row runs it here (3 removed) and from
+   another directory (the absolute record kept).
+5. *Known limits written down (owner: not fixed).* The relative-path refusal is now
+   stated with its exception (`file:x`, `name @ ./x` in a record or an API source,
+   above); the resolver's `x==1.0+v.whl`, pip's filename reading and extras-alone are
+   in the known limits.
+
+Rows: 13 new or rewritten (12 new, the advice row rewritten; the 405 file has 89, one
+of them Windows-only), 10 red on the rebased d49f51f0 code (`red-on-ef0df230.txt`; two
+of them only because the helper is new — the marker row and the bare-name control); the
+3 that pass there are controls (the ` /abs` and `pack` `ResolvedPath`s, already
+refused) or need a mutant (the cat-4 row). Mutants
+(`sabotage-r4.txt`, the 405, #131 and #392 files): 9 of 9 red — no requirement-first
+branch, the old `~`-expanding `ResolvedPath` test, Codex's cat-4 `verify_and_pin` guard,
+the unexpanded recorded-path fallback, the resolver's `.git` refusal for every
+requirement, the advice without its path clause, URL requirements counted as
+qualified, the marker dropped from the qualifier (killed only by the helper's own
+assertion: a marker spelling never ends in `.git`, so its classification is equivalent),
+and a `build_pip_args` guard for `CatalogSpec` only.

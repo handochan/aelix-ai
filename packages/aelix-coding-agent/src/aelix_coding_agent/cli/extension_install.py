@@ -136,7 +136,7 @@ _USAGE = (
     "  source add <path | git-url | index-url>        [--yes]\n"
     "  source add --catalog <url | file | git>\n"
     "  source list\n"
-    "  source remove <path | git-url | index-url>\n"
+    "  source remove [--] <path | git-url | index-url>\n"
     "  list\n"
     "  verify [<name>]                                [--trust-extension-path DIST]\n"
     "  index <dir>                                    [--out FILE] [--name NAME] "
@@ -358,12 +358,39 @@ def classify_target(target: InstallTarget) -> TargetKind:
     with extras (``foo[bar]``) stays a package spec even beside a ``./foo``, as it
     does for pip. A :class:`extension_catalog.ResolvedPath` is a path by
     construction: the catalog resolver decided it, and it is not re-read here.
+
+    A :class:`extension_catalog.CatalogSpec` — a source a catalog or an install
+    record chose, never one typed here — is classified from its own SPELLING and
+    never by asking the cwd (#405): spelled as a path
+    (:func:`extension_catalog.spelled_as_path` — ``/abs``, ``~/x``, ``./x``,
+    ``x.whl``) it is a path, and :func:`_origin_spec_problem` refuses it unless it
+    is absolute; a requirement with a version specifier or a marker
+    (:func:`extension_catalog.is_qualified_package_requirement`) is a package, asked
+    before the git shapes above (review round 4: ``probe405==1.0+vendor.git``, a local
+    version ending in ``.git``, was git by the ``.git`` suffix); otherwise git or a
+    package spec exactly as above. Before
+    #405 a cwd entry named like a recorded package — ``./local-ext``, a directory or
+    a symlink to a wheel — turned ``update``'s package name into that entry's
+    absolute path.
     """
 
     if isinstance(target, extension_catalog.ResolvedPath):
         return "path"
+    if isinstance(target, extension_catalog.CatalogSpec):
+        if extension_catalog.spelled_as_path(target):
+            return "path"
+        if extension_catalog.is_qualified_package_requirement(target):
+            return "pypi"
+        return _classify_spelling(target)
     if target.strip() and (Path(target).expanduser().exists() or _path_extras(target)[1]):
         return "path"
+    return _classify_spelling(target)
+
+
+def _classify_spelling(target: str) -> TargetKind:
+    """:func:`classify_target` once the existence test is past (or, for a catalog or
+    record spec, skipped): git by its URL shape, else a package spec."""
+
     low = target.lower()
     direct = extension_catalog.direct_reference_url(target)
     if direct is not None:
@@ -564,8 +591,20 @@ def build_pip_args(
     instead (:func:`uv_ambient_index_env`). This builder's output therefore contains
     only values the user typed — and is byte-identical to the pre-#113 pip argv for
     the pip backend.
+
+    A catalog or record target (:class:`extension_catalog.CatalogSpec`,
+    :class:`extension_catalog.ResolvedPath`) whose ``kind`` is not the one its
+    spelling gives, or that is spelled as a relative path, raises :class:`ValueError`
+    (:func:`_origin_spec_problem`, #405 review round 2) — never an argv that names a
+    file of the cwd.
     """
 
+    # #405 review round 2: a catalog or record source's kind is its spelling's; a
+    # caller's kind that disagrees (``CatalogSpec('local-ext')`` as ``path``) would
+    # resolve the string against the cwd below.
+    origin_problem = _origin_spec_problem(target, kind)
+    if origin_problem is not None:
+        raise ValueError(origin_problem)
     base = (backend or PIP_BACKEND).install_prefix()
     if upgrade:
         base.append("--upgrade")
@@ -1937,6 +1976,127 @@ def _from_catalog(target: InstallTarget) -> bool:
     return isinstance(target, (extension_catalog.ResolvedPath, extension_catalog.CatalogSpec))
 
 
+def _names_no_cwd(path: str) -> bool:
+    """True when the path string names the same file from any working directory: it
+    is absolute once ``~`` is expanded (on Windows with a drive or a UNC share —
+    ``Path.is_absolute``). ``~user`` with no such user stays relative.
+
+    The string as given, never a stripped copy (#405 review round 2, Codex): this
+    check stripped ``' /abs/x.whl'`` and passed it, and the installer resolved the
+    unstripped string — ``<cwd>/' /abs/x.whl'`` — against the cwd."""
+
+    try:
+        return Path(path).expanduser().is_absolute()
+    except (RuntimeError, ValueError):
+        return False
+
+
+def _origin_spec_problem(target: InstallTarget, kind: TargetKind | None = None) -> str | None:
+    """Why a catalog or record source cannot be installed, or ``None`` (#405).
+
+    A :class:`extension_catalog.CatalogSpec` spelled as a path
+    (:func:`extension_catalog.spelled_as_path`; :func:`classify_target` calls it one
+    by its spelling alone) must be absolute: a relative one (``./x``, ``x.whl``) would
+    be read from the current directory — by aelix's path helpers and by the installer
+    alike — which no catalog or record source is (ADR-0255 §2 (C): the resolver places
+    a relative path beside its local catalog and refuses it when there is none; an
+    install record keeps an absolute path or URL). So must a
+    :class:`extension_catalog.ResolvedPath`'s ``path``, exactly as written (the
+    resolver's always is; one a Python caller builds from a relative string was hashed
+    from the cwd, or raised). A ``~`` is NOT expanded there (review round 4, Codex:
+    ``ResolvedPath('~/pack')`` passed and then raised ``ValueError`` out of
+    :func:`build_pip_args` and :func:`install_extension` — its ``file://`` hand-off
+    takes an absolute path only): the resolver expands it before it builds one.
+
+    Review round 2: ``kind`` — what a caller of :func:`verify_and_pin` or
+    :func:`build_pip_args` passes with the target — must be the kind the spelling
+    gives (:func:`classify_target`): ``CatalogSpec('local-ext')`` with
+    ``kind="path"`` (what a relative ``path`` record holds) hashed, staged and pinned
+    the cwd's ``local-ext``. It runs for EVERY origin target, whatever ``kind`` says
+    (review round 3: a guard skipped when the kinds agree let
+    ``build_pip_args(CatalogSpec('./local-ext'), 'path')`` resolve the cwd's
+    directory).
+
+    Whitespace (review round 3): :class:`extension_catalog.CatalogSpec` strips a
+    package, URL or git spelling where it is built and keeps a path spelling exact,
+    so the absolute test below reads the very string the installer resolves — the
+    round-2 refusal of any surrounding whitespace is gone (it refused the git record a
+    typed ``install 'git+file:///repo '`` writes). A path spelling with a leading
+    space is relative as written and refused here; one with a trailing space is
+    whatever its exact absolute path names.
+
+    A typed ``str`` is never refused here: it keeps the cwd reading."""
+
+    shown = safe_for_terminal(str(target))
+    if isinstance(target, extension_catalog.ResolvedPath):
+        if not _absolute_as_written(target.path):
+            return (
+                f"'{shown}' is a relative path{_tilde_note(target.path)}, and it was "
+                "handed over as a path a catalog resolved — aelix never reads such a "
+                "source from the current directory. Refusing it. Pass the absolute path."
+            )
+        derived: TargetKind = "path"
+    elif isinstance(target, extension_catalog.CatalogSpec):
+        if extension_catalog.spelled_as_path(target) and not _names_no_cwd(
+            extension_catalog.split_path_extras(target)[0]
+        ):
+            return (
+                f"'{shown}' is a relative path{_leading_space_note(target)}, and it "
+                "came from a catalog or an "
+                "install record, not from a command typed here — aelix never reads "
+                "such a source from the current directory. Refusing it. Install it by "
+                "its absolute path (aelix extension install /absolute/path), or fix "
+                "the catalog or the record."
+            )
+        derived = classify_target(target)
+    else:
+        return None
+    if kind is not None and kind != derived:
+        return (
+            f"'{shown}' came from a catalog or an install record and is spelled as a "
+            f"{_KIND_WORDS[derived]}, but it was passed as a {_KIND_WORDS[kind]} "
+            "(kind '" + kind + "') — aelix reads such a source's kind from its "
+            "spelling, never from the current directory. Refusing it."
+        )
+    return None
+
+
+def _absolute_as_written(path: str) -> bool:
+    """True when ``path`` is absolute exactly as written — no ``~`` expanded, nothing
+    stripped (on Windows with a drive or a UNC share, ``Path.is_absolute``): what a
+    :class:`extension_catalog.ResolvedPath` must hold, since its ``file://`` hand-off
+    (``Path.as_uri``) takes nothing else (#405 review round 4)."""
+
+    try:
+        return Path(path).is_absolute()
+    except ValueError:  # pragma: no cover — a NUL in the string
+        return False
+
+
+def _tilde_note(path: str) -> str:
+    """Why a resolved path that starts with ``~`` counts as relative, or ``""``."""
+
+    if path.startswith("~"):
+        return " (a '~' is not expanded in a path handed over as resolved)"
+    return _leading_space_note(path)
+
+
+def _leading_space_note(spec: str) -> str:
+    """Why a path spelling that begins with whitespace counts as relative, or ``""``."""
+
+    return (
+        " (it begins with whitespace, which makes it relative)" if spec != spec.lstrip() else ""
+    )
+
+
+#: How :func:`_origin_spec_problem` names a :data:`TargetKind`.
+_KIND_WORDS: dict[str, str] = {
+    "path": "local path",
+    "git": "git source",
+    "pypi": "package requirement or URL",
+}
+
+
 class _InstallerCwdRefusal(Exception):
     """:func:`_prepare_installer_cwd` refused: ``lines`` are the error lines."""
 
@@ -2048,11 +2208,24 @@ def install_extension(
     keyword is refused (``2``), and so is a ``UV_CONFIG_FILE`` that is not an
     absolute path as uv reads it (:func:`_uv_config_file_refusal`), both before
     consent (review rounds 3 and 5).
+
+    What KIND of source the target is follows its origin too (#405): a
+    :class:`extension_catalog.CatalogSpec` is classified by its spelling alone — a
+    package requirement goes to the index whatever the cwd holds, an absolute path is
+    a path, a URL the URL it is — and one spelled as a relative path is refused
+    (``2``, :func:`_origin_spec_problem`); a typed ``str`` keeps the cwd reading (a
+    path that exists there wins, :func:`classify_target`).
     """
 
     shown = safe_for_terminal(str(target))
     if not str(target).strip():
         print("Error: install target is empty.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    # #405: a catalog or record spec is classified by its spelling, never the cwd —
+    # one spelled as a RELATIVE path has no reading that does not consult it.
+    origin_problem = _origin_spec_problem(target)
+    if origin_problem is not None:
+        print(f"Error: {origin_problem}", file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
     kind = classify_target(target)
@@ -2440,8 +2613,19 @@ def verify_and_pin(
     install path (:func:`install_extension`). A relative ``PIP_CONFIG_FILE``,
     ``PIP_FIND_LINKS`` or ``UV_CONFIG_FILE`` reaches this pip child as set, and pip
     reads a relative path from the installer directory.
+
+    A catalog or record spec spelled as a RELATIVE path is refused
+    (:class:`~extension_pins.VerifyRefusal`) before anything is read: its path branch
+    would hash and stage a file of the cwd (#405, :func:`_origin_spec_problem`). So
+    is one whose ``kind`` — this function's caller supplies it — is not the kind its
+    spelling gives (review round 2: ``CatalogSpec('local-ext')`` with ``"path"``,
+    exactly what a relative ``path`` record holds, hashed, staged and pinned the
+    cwd's ``local-ext``).
     """
 
+    origin_problem = _origin_spec_problem(target, kind)
+    if origin_problem is not None:
+        raise extension_pins.VerifyRefusal(origin_problem)
     mode = "strict" if strict else "tofi"
     identity = _pin_identity(target, kind)
     resolved_dir = agent_dir or get_agent_dir()
@@ -3216,7 +3400,17 @@ async def _cmd_source(
         return 0
 
     if action == "remove":
-        positional = [a for a in args if not a.startswith("-")]
+        # ``--`` ends the options: what follows is the target even when it starts
+        # with ``-`` (a record ``-local-ext`` — #405 review round 2 prints
+        # ``source remove -- <spec>`` and it must work as printed).
+        if "--" in args:
+            cut = args.index("--")
+            positional = [
+                *(a for a in args[:cut] if not a.startswith("-")),
+                *args[cut + 1 :],
+            ]
+        else:
+            positional = [a for a in args if not a.startswith("-")]
         if len(positional) != 1:
             print(
                 f"Error: source remove requires exactly one target.\n{_USAGE}",
@@ -4164,11 +4358,39 @@ def _recorded_path_target(spec: str) -> InstallTarget:
     the hand-off the typed install used and round 6 gave it: the plain absolute
     path with its extras, as a typed target (verify7 item 1: the URI attempt raised,
     and the traceback stopped every later extension).
+
+    A plain record that is not absolute as written (``local-ext``, ``./x``, ``' /abs'``
+    with a leading space — aelix records a path absolute, and every version has, so a
+    hand-edited settings file wrote it) names no fixed file: it is refused
+    (:class:`extension_catalog.CatalogError`, which ``update`` reports for that record
+    and goes on), never resolved against the current directory (#405 — it used to be,
+    so a cwd ``local-ext`` was installed). The test reads the string as written
+    (review round 2: a stripped copy passed ``' /abs/x.whl'`` and ``<cwd>/' /abs/…'``
+    was installed). A TRAILING space is kept: ``<dir>/trusted `` is an absolute path
+    to a real name an older record holds (verify6). The refusal prints the command
+    that drops the record, quoted for a POSIX shell and after ``--``, so a record
+    starting with ``-`` is not read as an option (review round 2, Codex).
     """
 
     recorded = extension_catalog.resolved_path_from_installer_arg(spec)
     if recorded is not None:
         return recorded
+    if not _names_no_cwd(spec):
+        raise extension_catalog.CatalogError(
+            f"the recorded path '{safe_for_terminal(spec)}' is relative"
+            f"{_leading_space_note(spec)}, so it names no fixed file — aelix never reads "
+            "an install record from the current directory. Refusing it. Drop the record "
+            f"({_source_remove_command(spec)}) and install it again by its absolute path "
+            "(aelix extension install /absolute/path), which records it absolute. That "
+            "source remove matches a source by its spec, its name OR its path, so it also "
+            "drops any other source or record whose spec or name is "
+            f"'{safe_for_terminal(spec.strip())}' — a package record of that name "
+            "included; install that one again afterwards — and any path record whose "
+            f"path resolves to '{safe_for_terminal(spec.strip())}' read from the "
+            "directory you run it in (run here: "
+            f"'{safe_for_terminal(_source_identity(spec, 'path'))}'); to keep such a path "
+            "record, run it from another directory"
+        )
     try:
         whole = Path(spec).expanduser()
         if whole.exists():
@@ -4182,12 +4404,28 @@ def _recorded_path_target(spec: str) -> InstallTarget:
             else:
                 placed = extension_catalog.ResolvedPath(str(whole.resolve()))
     except (OSError, RuntimeError, ValueError):
-        placed = extension_catalog.ResolvedPath(spec)
+        # Expanded, as the branches above (review round 4: ``~/loop``, a symlink loop,
+        # failed ``resolve()`` and became ``ResolvedPath('~/loop')``, whose hand-off
+        # raised ``ValueError`` out of ``update``).
+        try:
+            placed = extension_catalog.ResolvedPath(str(Path(spec).expanduser()))
+        except RuntimeError:  # pragma: no cover — _names_no_cwd expanded it already
+            placed = extension_catalog.ResolvedPath(spec)
     try:
         placed.installer_arg()
     except extension_catalog.CatalogError:
         return str(placed)
     return placed
+
+
+def _source_remove_command(spec: str) -> str:
+    """The ``source remove`` command that drops the record ``spec``, as printed advice:
+    the spec after ``--`` (so one starting with ``-`` is not read as an option) and
+    quoted for a POSIX shell (:func:`shlex.quote`; a control character is shown
+    escaped, :func:`safe_for_terminal`, and cannot be typed back). #405 review round
+    2 (Codex): ``source remove '-local-ext'`` dropped the argument as a flag."""
+
+    return f"aelix extension source remove -- {safe_for_terminal(shlex.quote(spec))}"
 
 
 async def _cmd_update(
@@ -4289,9 +4527,22 @@ async def _cmd_update(
         if not matched:
             # Not recorded — treat <name> as a pypi package and upgrade it
             # against the registered index sources (covers a name install that
-            # was never recorded, e.g. installed before this feature).
+            # was never recorded, e.g. installed before this feature). The filter
+            # is TYPED here (#405 review round 2): spelled as a path it is the
+            # user's own path and keeps its meaning — resolved as typed, as it was
+            # before #405, then handed over absolute; spelled as a name it is the
+            # package, whatever the cwd holds (it used to be a cwd entry of that
+            # name, #405).
+            # Exactly as typed (review round 3, Codex): never stripped — with a
+            # directory named ' .' here, ``update ' ./local-ext'`` names
+            # ``<cwd>/' .'/local-ext`` — and resolved by the function a typed
+            # ``extension install`` uses (``~`` expanded, ``[extras]`` split off an
+            # existing path, symlinks followed).
+            typed = name_filter
+            if extension_catalog.spelled_as_path(typed):
+                typed = _install_spec(typed, "path")
             code, _dists = _upgrade_pypi_name(
-                name_filter,
+                typed,
                 index_urls,
                 yes=yes,
                 offline=offline,
@@ -4310,7 +4561,14 @@ async def _cmd_update(
     worst = 0
     results: list[tuple[str, int, frozenset[str]]] = []
     for s in targets:
-        label = s.name or _source_identity(s.spec, s.kind)
+        # A relative path record is labelled as written: its identity would be the
+        # cwd's path of that name, which it does not name (#405 review round 2).
+        relative_path = (
+            s.kind == "path"
+            and extension_catalog.resolved_path_from_installer_arg(s.spec) is None
+            and not _names_no_cwd(s.spec)
+        )
+        label = s.name or (s.spec if relative_path else _source_identity(s.spec, s.kind))
         # One extension's error never stops the others (verify7 item 1: a
         # CatalogError from one record's hand-off escaped as a traceback, rc 1, and
         # every later record was skipped). It is reported, counted as not run, and
@@ -4456,9 +4714,10 @@ def _upgrade_and_report(
     # #392: every update runs in aelix's installer directory. A record does not say
     # whether a catalog chose its source, and none of them was chosen in the
     # directory `update` happens to run in; every recorded spec reaches the installer
-    # absolute (a path record is resolved first, _recorded_path_target). The origin
-    # rides on the target's type (review round 4): a record is a CatalogSpec unless
-    # it is already a ResolvedPath.
+    # absolute (a path record is resolved first, _recorded_path_target, and a relative
+    # one is refused there — #405). The origin rides on the target's type (review
+    # round 4): a record is a CatalogSpec unless it is already a ResolvedPath — and a
+    # CatalogSpec is classified by its spelling, never by what the cwd holds (#405).
     if not isinstance(target, extension_catalog.ResolvedPath):
         target = extension_catalog.CatalogSpec(target)
     before = _installed_ext_dists()
@@ -5118,40 +5377,25 @@ async def _cmd_discover_install(
         return _EXIT_DIDNT_RUN
     spec = str(target)
     shown_spec = safe_for_terminal(spec)
-    is_path = isinstance(target, extension_catalog.ResolvedPath)
-    # The installer must agree with the catalog. A path travels as the resolver
-    # split it (path, extras — never re-split from the joined string: a sibling
-    # literally named ``x.whl[feature]`` once won that way, #131 round 3), so here
-    # it only has to still exist. A package spec is re-classified by the installer,
-    # which asks what exists relative to the cwd: one that names a file or
-    # directory HERE would be installed from that instead.
+    # A path travels as the resolver split it (path, extras — never re-split from
+    # the joined string: a sibling literally named ``x.whl[feature]`` once won that
+    # way, #131 round 3), so here it only has to still exist. A package spec or URL
+    # (a CatalogSpec) is classified by its spelling, never against the cwd (#405):
+    # a cwd entry named like the package changes nothing, so there is nothing to
+    # check here (#131 refused that case, because the installer used to install the
+    # cwd entry instead).
     if isinstance(target, extension_catalog.ResolvedPath):
         try:
             still_there = Path(target.path).exists()
         except (OSError, ValueError):
             still_there = False
-    else:
-        still_there = classify_target(target) != "path"
-    if not still_there:
-        if is_path:
+        if not still_there:
             print(
                 f"Error: catalog entry {resolved.name!r}: source path '{shown_spec}' "
                 "disappeared before the install started — refusing.",
                 file=sys.stderr,
             )
-        else:
-            # True of aelix, not of pip or uv (Codex pass 6: both ignore a literal
-            # 'review-ext[feature]' directory): it is aelix's own classify_target
-            # that takes a target existing on disk for a local path.
-            print(
-                f"Error: catalog entry {resolved.name!r} names the package "
-                f"'{shown_spec}', but a file or directory named '{shown_spec}' exists "
-                "in the current directory, and aelix's installer takes a target that "
-                "exists on disk for a local path — it would install that instead of "
-                "the package. Run the command from another directory.",
-                file=sys.stderr,
-            )
-        return _EXIT_DIDNT_RUN
+            return _EXIT_DIDNT_RUN
 
     via = (
         ""
