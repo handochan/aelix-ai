@@ -1,0 +1,91 @@
+{
+ "#405 fix r3": {
+  "commit_sha": "d49f51f02e0b25b4de902923a87e858ae62db111",
+  "summary": "I amended the #405 commit. It is still one commit on 8f7d98aa: it was e55a9fc8 and is now d49f51f0. I did not push it. Before fixing anything I reproduced each item on e55a9fc8 (r3/repro-red-e55a9fc8.txt).\\n(1) Whitespace. I removed the refusal. In its place, CatalogSpec.__new__ strips a package, URL or git spelling once, so the resolver, resolve_entry_source, update's wrap and a Python caller all produce the same stripped string, and every check and the installer read that string. A path spelling keeps its exact string, and _names_no_cwd judges that exact string. So ' /abs/x.whl' counts as relative and is refused, and the message says the leading space makes it relative; '/abs/x.whl ' is that exact name. spelled_as_path reads the shape from the stripped string. No whitespace refusal remains, and no case needed one. A git record written with a trailing space now updates.\\n(2) The typed update filter is no longer stripped, and _install_spec(..., 'path') resolves it, the same function a typed install uses. New rows kill mutants S14 and S28.\\n(3) Order of checks: after the 'starts like a path' test, a string that parses as a requirement with a version specifier, a marker or a URL is a package or URL. A bare token ending in an archive suffix stays a path spelling, including one with [extras]. I pinned rows for all six listed spellings and four more.\\n(4) The origin check already ran for every CatalogSpec. New rows pin it for build_pip_args and verify_and_pin when the caller's kind agrees, and they kill Codex's mutant.\\n(5) source remove has no way to target one record exactly, so the message now says plainly that it matches by spec or name and will also drop a package record of the same name. A row and a live run confirm what the message says.\\nCHANGELOG, ADR-0255 (Status line, sweep table, known limits, a new 'Review round 3' part), the ADR index row and both guide copies changed with the code. The commit message has a REVIEW ROUND 3 section. Kit: /Users/handochan/dev/aelix-ai/.omc/probes/405-live/r3/",
+  "evidence": "All files are in /Users/handochan/dev/aelix-ai/.omc/probes/405-live/r3/.\\n- Before and after (repro-red-e55a9fc8.txt, repro-green.txt):\\n  - (1) git record 'git+file:///... ': rc 2, now rc 0 with argv 'git+file:///...'.\\n  - (2) update ' ./local-ext': argv was <w>/repo/local-ext, now <w>/repo/ ./local-ext.\\n  - (3) 'path-probe==1.0+vendor.whl': was kind=path rc=2, now kind=pypi rc=0.\\n  - (5) the message now carries the by-name caveat; the printed command gives 'Removed 2 source(s)'.\\n- Rows: 28 new rows replace round 2's 5 whitespace-refusal rows; the 405 file now has 77. On e55a9fc8 code: '17 failed, 59 passed, 1 skipped' (red-on-e55a9fc8.txt). Of the 11 new rows that pass there, 7 are controls and 4 need a mutant to fail.\\n- Sabotage on the 405, 131 and 392 files (sabotage-r3.txt): '14 of 14 mutants red', including S14, S28, Codex's build_pip_args guard and the same guard for verify_and_pin. The throwaway worktree is removed.\\n- Live, real CLI and the Python API, throwaway venvs, uv and pip, offline (find-links only), scratch cwd per run (live-{before,after}-{uv,pip}.txt). connect.log is 0 bytes.\\n  - Git trailing space on uv: e55a9fc8 rc 2; now rc 0, GIT-REPO 5.0 installed. pip cannot build the repo offline on either build.\\n  - Typed ' ./local-ext': e55a9fc8 installed 9.9; now 1.0, on uv and pip.\\n  - probe405==1.0+vendor.whl on uv: e55a9fc8 rc 2; now rc 0, installed. On pip it fails with rc 1: pip reads the string as a filename in aelix's installer directory, as on 8f7d98aa (pip-local-version-after.txt).\\n  - #405 core (recorded package beside a same-named cwd entry): ORG-PIN 1.0 on both builds and backends.\\n  - Leading-space path with a cwd decoy: rc 2 on both builds.\\n- Gates (gates.txt, gates2.txt):\\n  - ruff check: 'All checks passed!'\\n  - check_types: 'OK gate: 0 errors across 286 files'\\n  - pyright 1.1.409 --pythonplatform Windows on both product files and the 405 test file: '0 errors, 0 warnings, 0 informations'\\n  - check_citations: 'citations OK — 955 gated, none drifted.'\\n  - Gate tests: '137 passed'; with tests/docs added: 149 passed.\\n  - tests/cli plus tests/docs: '3134 passed, 22 skipped'.\\n  - py3.11.15 on the 405, 131 and 392 files: '794 passed, 22 skipped' (py311.txt).\\n- Whole suite, run last with AELIX_CODING_AGENT_DIR, AELIX_SETTINGS_PATH and VIRTUAL_ENV unset: '13743 passed, 45 skipped, 104 warnings in 564.55s', EXIT=0 (full-suite.txt).\\n- Commit message: grep -c '^#' prints 0; it ends with a single newline after the Claude-Session line. The tree is clean and HEAD is d49f51f0.",
+  "sweep": [
+   "Every CatalogSpec construction site is normalised by __new__: resolve_entry_target (3 sites), resolve_entry_source, _upgrade_and_report, and Python callers. Path spellings are kept exact.",
+   "_origin_spec_problem: the whitespace branch is removed. The relative-path test reads the exact string, and the message adds a note when a leading space is what makes a path relative.",
+   "_recorded_path_target: path records keep their exact string; only the advice text changed.",
+   "update typed filter: name_filter is used unstripped and goes through _install_spec. The record-match comparison still strips; that predates this change and does not decide what is installed.",
+   "The resolver's _is_path_form is unchanged: a catalog source 'x==1.0+v.whl' is still read as a bare archive name there. This is recorded as a known limit in the ADR."
+  ],
+  "owner_decisions": [
+   "I deviated from the rule as written: [extras] alone does not make a string a package. 'x.whl[feature]' stays a path spelling, because pip and uv open it as a file and ADR-0255 (C) says 'extras aside'. Only a version specifier, a marker or a URL does. All six listed rows behave as asked.",
+   "With the pip backend, 'x==1.0+v.whl' fails: pip reads it as a filename in aelix's installer directory, as on 8f7d98aa. uv installs it. Should aelix rewrite that spelling for pip, or leave it as a documented limit?"
+  ],
+  "follow_ups": [
+   "Codex has not cross-reviewed round 3; this lane did not run it.",
+   "Should resolve_entry_target's _is_path_form get the same requirement-first rule for catalog sources (a #131 surface)?",
+   "source remove could get an exact-target option (for example --kind path), so the advice could drop only the bad record."
+  ]
+ },
+ "#405 codex r3": {
+  "ran": true,
+  "filtered": false,
+  "reviewed_sha": "d49f51f02e0b25b4de902923a87e858ae62db111",
+  "report_path": "/Users/handochan/dev/aelix-ai/.omc/probes/405-live/r3cross/review.out",
+  "findings": [
+   {
+    "title": "Requirement with local version ending in .git is refused as git (regression vs parent)",
+    "detail": "CatalogSpec('probe405==1.0+vendor.git') parses as a PEP 508 requirement with no URL, but classify_target's pre-existing .git suffix heuristic (extension_install.py:401) calls it git. The new origin guard then refuses build_pip_args(target,'pypi') and verify_and_pin(target,'pypi',...) with ValueError/VerifyRefusal. At parent 8f7d98aa the same calls produced target probe405==1.0+vendor.git and a real offline install succeeded (INSTALLED VERSION 1.0+vendor.git). Categories 1 and 3. Also contradicts docs/guides/private-catalog.md:252 package-requirement claim.",
+    "evidence": "Script .omc/probes/405-live/r3cross/probes/git_suffix.py; cmd: UV_CACHE_DIR=/tmp/405-work/r3cross/uv-cache uv run --no-sync python git_suffix.py [--parent]. Head: 'CLASSIFIED git' / 'BUILD REFUSED ValueError ... is spelled as a git source, but it was passed as a package requirement or URL (kind pypi) ... Refusing it.' Parent: 'INSTALL EXIT 0 / + probe405==1.0+vendor.git'."
+   },
+   {
+    "title": "Refusal text falsely calls an index requirement 'spelled as a git source'",
+    "detail": "Category 2: the new refusal message for the input above states the source is spelled as a git source, yet it is a parsed index requirement with no URL.",
+    "evidence": "Same git_suffix.py run; message text quoted in review.out final report item 1."
+   },
+   {
+    "title": "Relative references 'file:local-ext' and 'probe405 @ ./local-ext' pass the guard and reach the installer",
+    "detail": "Classified pypi, ORIGIN PROBLEM None, forwarded unchanged to build/verify/install runner (runner cwd = agent/installer-cwd). Proves acceptance/forwarding, not real install. Codex notes the ADR (0255) already acknowledges these exceptions, so it is a stated-behaviour gap ('relative-path spelling is refused') rather than a new regression.",
+    "evidence": "Script probes/origin_edges.py; output 'INPUT file:local-ext / KIND pypi ORIGIN PROBLEM None / INSTALL 0 RUNNER TARGET file:local-ext'; same for 'probe405 @ ./local-ext'."
+   },
+   {
+    "title": "ResolvedPath('~/pack') passes the guard then install_extension raises instead of returning a refusal code",
+    "detail": "Origin guard returns None for '~/pack'; build_pip_args and install_extension raise ValueError 'relative path can't be expressed as a file URI' (uncaught exception rather than the promised refusal return).",
+    "evidence": "probes/origin_edges.py output: 'INPUT ResolvedPath ~/pack / ORIGIN PROBLEM None / BUILD EXCEPTION ValueError ... / INSTALL EXCEPTION ValueError ...'."
+   },
+   {
+    "title": "Catalog local-version requirement 'probe405==1.0+vendor.whl' resolved as a missing path",
+    "detail": "CatalogEntry resolver refuses it as a nonexistent source path. Codex labels this an explicitly documented inherited limit (ADR 0255), not a new regression.",
+    "evidence": "probes/origin_edges.py: 'RESOLVER REFUSED CatalogError ... source path .../probe405==1.0+vendor.whl does not exist'."
+   },
+   {
+    "title": "Surviving mutant: verify_and_pin can skip the origin check for ResolvedPath when kind agrees",
+    "detail": "Category 4: mutating verify_and_pin's guard to run _origin_spec_problem only for CatalogSpec or kind mismatch lets ResolvedPath('probe-1.0-py3-none-any.whl') (relative, cwd file) be staged and pinned, yet both changed test files pass in full (514 passed, 21 skipped). Tests lack a verify_and_pin case for a relative ResolvedPath with matching kind 'path'.",
+    "evidence": "probes/mutant.py; output 'MUTANT PIN /private/tmp/.../mutant/head/probe-1.0-py3-none-any.whl 89c8...' and '514 passed, 21 skipped in 8.89s / MUTANT TEST EXIT 0'; baseline also 514 passed, 21 skipped."
+   }
+  ],
+  "verdicts": "Cat1: counterexamples found (requirement with +...git local version misclassified as git; relative file:/@ ./ refs accepted; ~/pack raises instead of refusing). Cat2: false text found (refusal calls an index requirement a git source). Cat3: regression found (pypi build_pip_args/verify_and_pin for probe405==1.0+vendor.git worked at parent, now refused). Cat4: surviving mutant found (relative ResolvedPath with matching kind unchecked in verify_and_pin passes all changed tests).",
+  "notes": "Codex exec ran to completion (about 140k tokens, under 20 min), no content filter. Artifacts copied to /Users/handochan/dev/aelix-ai/.omc/probes/405-live/r3cross/ (prompt.txt, review.out, probes/common.py, git_suffix.py, mutant.py, origin_edges.py, spellings.py). Tree had no tracked-file modifications; worktree /tmp/405-work/r3cross/tree removed. I did not independently re-run Codex's scripts; findings are Codex's reported outputs."
+ },
+ "#405 verify r3": {
+  "pass": true,
+  "head_sha": "d49f51f02e0b25b4de902923a87e858ae62db111",
+  "blocking": [],
+  "nonblocking": [
+   {
+    "title": "source remove advice understates what it drops: it also matches by cwd-resolved path",
+    "detail": "_remove_source also resolves the target against the CURRENT directory (_source_identity(target,'path')). The printed `aelix extension source remove -- local-ext` therefore also drops an ABSOLUTE path record <cwd>/local-ext, whose spec and name are both something other than 'local-ext'. The message says it drops any other source or record whose spec or name is 'local-ext'. The guide says 'whose spec or name is the same string'. Both are true but incomplete, and the behaviour is pre-existing. Suggested fix: add 'or whose path, read from this directory, is <cwd>/<spec>', or advise running the command from another directory.",
+    "evidence": "Live L5 on uv and pip (.omc/probes/405-live/r3verify/live-head-uv.txt and live-head-pip.txt). Records: relative path local-ext (rel-ext), pypi local-ext, absolute <cwd>/local-ext (my-local), git other. update rel-ext rc 2, then the printed command printed 'Removed 3 source(s)' and only the git record was left."
+   },
+   {
+    "title": "Windows legs have no row that kills mutant S14",
+    "detail": "The only row that kills S14 (a stripped typed update filter) is test_a_typed_update_filter_is_not_stripped, which is skipif win32 because ' .' cannot be a directory name there. Nothing fails because of this; it is a coverage gap on Windows only. W5's killer is POSIX-only too, which is harmless: a leading-space absolute path cannot name a cwd file on Windows.",
+    "evidence": "sabotage-r3v.txt: S14 red through that one row only. Its skip marker is in the test file."
+   },
+   {
+    "title": "Extras alone do not make a string a package (deviates from the brief's wording, documented)",
+    "detail": "The brief listed extras among the qualifiers that make a string a package. The lane makes x.whl[feature] a path (refused as relative) because pip and uv open it as a file (ADR-0255 (C) 'extras aside'). This matches the brief's other rule, that a bare token ending in an archive suffix stays a path, and it is pinned and documented. All six spellings the brief pinned behave as asked.",
+    "evidence": "matrix-tree.jsonl, the row test_a_requirement_with_a_version_or_marker_is_a_package_a_bare_archive_a_path[x.whl[feature]-path], and mutant R2 is red."
+   },
+   {
+    "title": "Pre-existing pyright Windows errors in the 131 test file",
+    "detail": "pyright --pythonplatform Windows reports 2 errors in tests/cli/test_catalog_relative_source_131.py (pytest.CaptureResult, and a Path passed to uv_path). They are on lines this commit does not touch, and 8f7d98aa has the same 2. Both product files and the 405 file have 0 errors, and check_types (the CI gate) is clean.",
+    "evidence": ".omc/probes/405-live/r3verify/gates.txt"
+   }
+  ],
+  "evidence": "Kit: /Users/handochan/dev/aelix-ai/.omc/probes/405-live/r3verify/ (verdict.txt, gates.txt, live-*.txt, pty-consent-*.txt, sabotage-r3v.txt, matrix-*.jsonl, scripts/). I used throwaway worktrees of d49f51f0, 8f7d98aa and e55a9fc8 and removed them afterwards. Live runs used four venvs (head and base, each with uv and pip), offline, with a scratch cwd per run and every proxy pointed at a CONNECT recorder, which logged 0 bytes.\n\nItem 1: a typed install of 'git+file://<repo> ' records the trailing space, and update then exits 0 with GIT-REPO 5.0 installed. A hand-written git record with a leading space also exits 0 (8f7d98aa: uv parse error, rc 1). The path record '<dir>/trusted ' installs exactly that name. The path record ' <abs>' is refused with rc 2 and the leading-space note (8f7d98aa pip installed the cwd decoy).\n\nItem 2: update ' ./local-ext' installs the ' ./' entry (TYPED 2.0), and ~/pack resolves to $HOME/pack. A typed name installs the package, ORG-PIN 1.0 (8f7d98aa: the cwd entry, 9.9).\n\nItem 3: CatalogSpec('path-probe==1.0+vendor.whl') with a cwd decoy of that name is KIND pypi and uv installs it with rc 0 (8f7d98aa took the decoy). The six spellings the brief named, plus four more, behave as asked.\n\nItem 4: build_pip_args and verify_and_pin(CatalogSpec('./local-ext'), 'path') refuse, and no pins file is written (8f7d98aa returned <cwd>/local-ext).\n\nItem 5: the caveat is printed, and the printed command works. It drops more than the caveat says (nonblocking N1).\n\nCore and discover: update beside a cwd local-ext symlink installs ORG-PIN 1.0 on uv and pip, also through a pty consent prompt (8f7d98aa: CWD 9.9). discover install beside a same-named entry exits 0 with ORG-PIN (8f7d98aa refused it with rc 2). A typed install still takes the cwd entry.\n\nSabotage: 27 of 29 mutants red, including S14, S28, C4 and C4b. The two survivors are equivalent, and both were checked: R4, and T3, which is a pathlib artifact; the corrected T3' is red.\n\nGates: ruff clean. check_types: 0 errors across 286 files. pyright Windows: product files clean. Citations: 955 gated, none drifted. Rows: 77, with 17 red on e55a9fc8 (as the message claims). py3.11: 794 passed, 22 skipped. Whole suite, run last: 13743 passed, 45 skipped, EXIT=0, matching the message.\n\nCommit: wt-405 is clean and the new file is tracked. No message line starts with '#', the trailer is exact, the guide copies are identical, and main is still 8f7d98aa.\n\nWindows: I checked each row with PureWindowsPath and found none that should fail."
+ }
+}

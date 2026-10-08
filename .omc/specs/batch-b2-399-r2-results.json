@@ -1,0 +1,105 @@
+{
+ "#399 fix r2": {
+  "commit_sha": "3e67f724",
+  "summary": "#399 review round 2 is done. I amended the lane's single commit to 3e67f724 on dfb4ddcc in /tmp/wt-399, branch fix/399-extension-select-shows-the-whole-title. It is not pushed.\\n\\n0. Rebase: all 12 conflicts were citation line numbers. I resolved them to dfb4ddcc's side, and check_citations --fix relocated 15. /settings with an extension's #404 toggle matches dfb4ddcc cell for cell, live, at all six sizes.\\n1. own=True is now main's code path itself: _picker_frame restored byte for byte, a plain FormattedTextControl, main's keys, no wrap, no hold, and a key typed before the first paint is taken. I ran the real CLI in a pty against dfb4ddcc: 13 picker scenarios at 12x8, 20x8, 80x16, 80x22, 80x24 and 120x40 (78 runs). The only differences are the session time and id in /resume's list, plus one key race that 3 of 3 reruns showed identical.\\n2. Extension and model titles:\\n- A title that fits the modal with its highlighted option row is drawn whole and never held. The option rows scroll instead, keeping the highlighted row and its counter on screen.\\n- Only a taller title scrolls and holds.\\n- The smallest held layout is one title row, the footer and the highlighted option. Below that the dialog says the terminal is too small, and only Esc and Ctrl+C (and n in confirm) answer.\\n- ADR-0253 section 11.3 no longer attributes the round-1 layout to the owner.\\n3 and 4. New rows cover resize narrow to wide, consent's pre-paint Enter, Ctrl+Up and Ctrl+Down, and own picker equals main at 7 sizes. An AST table pins own=True at all 11 call sites and checks the descriptor confirm has none. All 28 mutants go RED.\\n5. Text nits fixed: the comment line numbers, the ADR-0197 amendment, and the CR/ESC sentence (select only). Cancel decision: spawn consent's Cancel and the permission fallback's No rows answer while held, through select(cancel_options=...); an extension's own No stays held. This is documented in the ADR, the guide and the CHANGELOG.\\n\\nmain moved to 8428e16c during this round (#178, #405), and 9 files overlap with them. A rebase is needed before merge. Codex cross-review was not run in this lane.",
+  "evidence": "Index: /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r2/EVIDENCE.txt. The kit is in r2/kit/ (r2drive.py, pickers.py, ext.py, sabotage.py) and outputs are in r2/out/.\\n\\nReproduced before the fix, on the rebased round-1 tree 8786511f against dfb4ddcc (repro/compare-R1.txt):\\n- /trust differs at all 6 sizes.\\n- /settings at 12x8 shows 'Enter held …' and at 20x8 differs too.\\n- theme and logout differ at 12x8 and 20x8.\\n- The session-in-use prompt differs at every size.\\n- The new rows on r1: 102 failed, 265 passed (out/red_on_r1.txt).\\n\\nAfter the fix, against dfb4ddcc (fixrun/compare-FIX.txt): 69 of 78 runs are fully cell- and state-identical.\\n- 8 runs differ only in the session time and id in /resume's list.\\n- model-pre-80x16 differed once, from a key race: the base itself flipped between runs. rerun1 to rerun3 were identical 3 of 3.\\n\\nExtension and model dialogs live (out/ext_summary.txt):\\n- Gate select at 80x24: '21 of 33 lines hidden … Enter held'. 2 PgDn, then Enter runs. At 120x40 it fits and answers at once.\\n- room at 80x16: all 5 title rows drawn, not held, 'Run it' reachable at (8/8), and Enter answers at once.\\n- Consent at 80x8: title row, footer and '▸ Run read-only (plan)'.\\n- steer: ^[ ^M <U+202E> drawn.\\n- 0 CONNECT attempts across all runs.\\n\\nSabotage (out/sabotage.txt): 28 of 28 RED. That includes v-resize-keeps-seen, v-consent-own, v-descriptor-confirm-own, own-uses-held-control, Codex's ctrl-up reversal, and own=True removed at each of the 11 call sites.\\n\\nGates:\\n- ruff: 'All checks passed!'\\n- check_types: PASS\\n- pyright --pythonplatform Windows on 21 files: '0 errors, 0 warnings, 0 informations'\\n- check_citations --check: '951 gated, none drifted' (19 too generic, the same as dfb4ddcc)\\n- CI gate tests: 137 passed\\n\\nTests:\\n- touched dirs: 5546 passed, 11 skipped (run before the last doc and citation edits)\\n- Python 3.11.15: 1171 passed\\n- Whole suite, run last: '14048 passed, 44 skipped' (out/full_suite.txt)\\n\\nCommit message: grep -c '^#' prints 0, and the message ends with a single newline after the two trailers.",
+  "sweep": [
+   "tui/context.py select own=True (/resume, theme, /settings with #404 toggles, /trust, session-in-use, /model, /thinking, /login, /logout): before r2, wrapped and held - after: main's code path byte for byte, live-identical at 6 sizes",
+   "tui/context.py select default (an extension's ctx.ui.select, spawn consent, permission fallback): a title that fits with its highlighted option is drawn whole and the option rows scroll; a taller title scrolls and holds; a too-small screen says so and only Esc or Ctrl+C answers; an Enter typed before the first paint is dropped",
+   "tui/context.py confirm default (an extension's ctx.ui.confirm, the descriptor confirm): wraps; a message taller than the modal scrolls, holds y, and shows a [y/n] row; own confirm (/login, /logout) is main's",
+   "aelix_agents/consent.py _ask: select_with_cancel names Cancel, which answers while held; own is never passed",
+   "builtin/permission.py ctx.ui.select fallback: names No and 'No, provide reason' as cancel rows; Yes rows stay held",
+   "extensions/ext_ui.py select_with_cancel: passes cancel_options only to a select that declares it (verified against plain, *args/**kwargs and declaring fakes)",
+   "tabbed and multiselect: unchanged (_picker_frame)",
+   "LoginContext, the batch member 72-character cut and cli/entry.py _prompt_one_shot_select: unchanged (follow-ups)"
+  ],
+  "owner_decisions": [
+   "Lane's reading, not an owner decision: 'a title that fits the modal' means the title plus the highlighted option row fit. A title exactly as tall as the modal is held, because otherwise no option would be visible. The ADR says so.",
+   "Lane's choice: the cancel exemption is an explicit keyword, cancel_options, that aelix's own callers pass (consent Cancel; permission fallback No and 'No, provide reason'). An extension's own No row stays held, since aelix cannot know what the label does; Esc always answers.",
+   "Lane's choice: after a resize the scrolled view keeps its place, so re-wrapped rows above it are reached with PgUp. This is the approval prompt's shared _BodyViewport behaviour and was not changed here."
+  ],
+  "follow_ups": [
+   "main moved to 8428e16c (#178, #405) during this round. 9 files overlap (CHANGELOG, citations.lock.json, ADR-0199, README, extension.py, progress.py, render.py, test_consent_wiring.py, test_print_channel_spawn.py), so rebase and run check_citations --fix before merge.",
+   "Codex cross-review of round 2 was not run in this lane.",
+   "LoginContext (an extension login provider) still gets aelix's own=True partial.",
+   "Spawn-consent batch member rows are still cut at 72 characters.",
+   "cli/entry.py _prompt_one_shot_select (pre-TUI) has no height cap or hold.",
+   "#380: /trust's own question is still cut at the screen edge (unchanged, as main).",
+   "The four 'Esc returns None' citations now anchor on tui/context.py:882-884; on main they anchored on a detail_lines line."
+  ]
+ },
+ "#399 codex r2": {
+  "ran": true,
+  "filtered": false,
+  "reviewed_sha": "3e67f724",
+  "report_path": "/Users/handochan/dev/aelix-ai/.omc/probes/399-live/r2cross/review.out",
+  "findings": [
+   {
+    "title": "Cat1: a fitting title with combining marks is held",
+    "detail": "_title_rows (tree context.py:340) wraps by code point, not grapheme as pi does (pi packages/tui/src/utils.ts:1045). A title 81 cells wide that fits in 2 rows plus the option becomes 3 rows, so it scrolls and Enter is held, against the claim that a title that fits is never held.",
+    "evidence": "input select('x'+'é'*80, ['Yes','No']) at 80x8; uv run --no-sync python scripts/live_dialog.py --fit-combining -> TITLE_CELL_WIDTH: 81 / TITLE_ROW_COUNT: 3 / ENTER: False held; footer '2 of 3 lines hidden (↑0 ↓2) · PgUp/PgDn to scroll · Enter held until all seen'"
+   },
+   {
+    "title": "Cat2: CHANGELOG says the (n/N) counter is always on screen, which is false",
+    "detail": "CHANGELOG.md:1013 says the highlighted option and its (n/N) counter are always on screen. context.py:821 has a layout that leaves the counter out.",
+    "evidence": "select('A\\nB', ['Yes','No']) at 80x8; live_dialog.py --counter -> VISIBLE: '\\nA\\nB\\n▸ Yes\\n\\n\\n\\n' / COUNTER_VISIBLE: False / ENTER: True 'Yes'"
+   },
+   {
+    "title": "Cat3: regression where a combining mark is split from its letter at the wrap",
+    "detail": "At the parent commit a 41-cell combining-mark title displayed intact. At this commit the final accent is separated from its letter, the question shown is altered, and Enter is still accepted.",
+    "evidence": "select('x'+'é'*40, ['Yes','No']) at 80x16; live_dialog.py --combining -> WHOLE_TITLE_VISIBLE: False, ACCENTED_E_COUNT: 39 expected=40, ENTER True 'Yes'; with --parent -> True, 40, ENTER True"
+   },
+   {
+    "title": "Cat3: regression where a multiline option label prints as ^J",
+    "detail": "An option label containing a newline used to render on two lines. At this commit it renders literally as line1^Jline2.",
+    "evidence": "select('Choose', ['line1\\nline2','Other']) at 40x16; live_dialog.py -> LABEL_SECOND_LINE_SEPARATE: False, CARET_J_IN_LABEL: True; --parent -> True, False"
+   },
+   {
+    "title": "Cat4: a mutant that counts scrolled rows as seen survives all changed tests",
+    "detail": "The mutant patches _BodyViewport.scroll to mark destination rows as seen before any repaint, using self._seen.update(range(self.top, self.top+self._frame[2])). With 30 title lines, it accepts Enter after 30 PgDn presses with no repaint. The real code holds Enter. All added and changed tests still pass under the mutant.",
+    "evidence": "buffered_pages.py -> answered= False result= None; --mutant -> answered= True result= Yes. run_mutant.py --changed-only -> 455 passed, 1 skipped (Linux-only PDEATHSIG), 1089 deselected in 18.83s"
+   }
+  ],
+  "verdicts": "1: counterexample found (a fitting combining-mark title is held). 2: false doc found (CHANGELOG.md:1013 'counter always on screen'). 3: regressions found (combining-mark title split at the wrap; multiline option label shown as ^J). 4: surviving mutant found (scroll counts rows as seen before repaint; 455 changed tests pass).",
+  "notes": "Codex v0.160.1 (gpt-6.1-sol, reasoning high) ran to completion in about 18 minutes and was not content-filtered. Saved in /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r2cross/: prompt.txt, review.out, scripts/*.py (dialog_harness, live_dialog, buffered_pages, run_mutant, combining_title, edge_cases), the *-output.txt pytest logs, changed-test-nodeids.txt and evidence/. Codex's scripts reference /tmp/399-work/r2cross/{tree,parent}. For its parent comparisons Codex created its own /tmp/399-work/r2cross/parent checkout; this checkout was not a git worktree of wt-399 and was left in place. The review worktree was clean (no tracked changes) when I removed it with git worktree remove --force. I did not re-run Codex's scripts myself; every output line above is Codex's reported output."
+ },
+ "#399 verify r2": {
+  "pass": false,
+  "head_sha": "3e67f724fbd29d38875aa8690bf25713b241dcd5",
+  "blocking": [
+   {
+    "title": "Two of aelix's own pickers are not own=True and differ from dfb4ddcc",
+    "detail": "The /extension new placement question (tui/commands.py:1750) and the /agents run project-agent confirm (tui/commands.py:936) reach ctx.harness.runtime.ui.select with no own=True, so they take the extension path: the title wraps, Enter can be held, and an Enter typed before the first paint is dropped (main takes it). The goal says aelix's own pickers stay byte-for-byte as on main at every size. ADR-0253 11.3 lists both under Residuals ('are the default'), but the sweep leaves them out and nothing in the decision allows it. test_own_pickers_marked's AST table reads only tui/shell.py, so it cannot see call sites in commands.py.",
+    "evidence": "Live pty F vs dfb4ddcc, cell for cell (r2verify/out/own2-unmarked-compare.txt). extnew 12x8 F: 'Where / Enter held ... / > Every proj', the 'This project only' row is gone; B: '-- Where sho' with both options. Same at 20x8 ('Enter held 2/3 hi...'). projagent differs at 12x8, 20x8, 80x16, 80x22 and 80x24 (F wraps a 'tools.' row; at 12x8/20x8 'Enter held'); only 120x40 is identical. TALLY: DIFF 14, identical 10."
+   },
+   {
+    "title": "Two plausible wrong implementations of the too-small recovery stay GREEN",
+    "detail": "(a) too-small-sticky: drop 'self._too_small = False' in _TitleHeldControl._layout's whole-title branch. After one too-small paint, a title later drawn whole (the terminal is enlarged) never takes Enter or y, and no footer says why. That breaks 'a title that is drawn whole is NEVER held'. (b) scroll-path-too-small-not-reset: drop the same reset in the scroll branch. After a too-small paint, paging through the whole title never releases Enter. No test resizes out of the too-small state; add rows for select and confirm.",
+    "evidence": "r2verify/out/sabotage-extra.txt: each mutant alone in its own worktree, the narrow set and then the broad set (tests/tui, agents_ext, builtin, extensions, agents, cli): 8592 passed, 32 skipped. kit2/sticky_probe.py shows they are not equivalent. Unmutated: 5-row title painted at 80x2, then 80x30, Enter answers (also confirm y, and the paged case). Mutant (a): Enter and y are not answered. Mutant (b): Enter is still held after paging."
+   }
+  ],
+  "nonblocking": [
+   {
+    "title": "Too-small docs leave out the cancel rows",
+    "detail": "CHANGELOG says that on a too-small screen only Esc and Ctrl+C answer. ADR 11.3 and the commit message add n. But a row named in cancel_options (spawn consent's Cancel, the permission fallback's No rows) also answers there, and the on-screen text says 'Enter is held'. The error is on the safe side, but the claim is inexact.",
+    "evidence": "inproc2.py: too-small-cancel-answers H1/H2 OK (Down, Enter answers 'Cancel' at heights 1 and 2)."
+   },
+   {
+    "title": "Two cache-key mutants are equivalent in the product",
+    "detail": "Dropping screen_width from the select or confirm frame cache key stays green, but render_counter changes on every real paint, so the mutant cannot change product behaviour. Recorded for completeness.",
+    "evidence": "sabotage-extra.txt: select-frame-cache-ignores-width and confirm-frame-cache-ignores-width are GREEN on the broad set."
+   },
+   {
+    "title": "A rebase onto main 8428e16c is needed before merge",
+    "detail": "main moved to 8428e16c (#178, #405). 9 files overlap: CHANGELOG, citations.lock.json, ADR-0199, decisions README, aelix_agents/extension.py, progress.py, tui/render.py, test_consent_wiring.py and test_print_channel_spawn.py. The lane already said so.",
+    "evidence": "comm of git diff --name-only dfb4ddcc 8428e16c and dfb4ddcc 3e67f724"
+   },
+   {
+    "title": "Usability of the minimum held layout and of resize",
+    "detail": "At 12x8 and 20x8 a long gate command shows one title row per page, so it needs 100+ PgDn. After a narrow-to-wide resize the view stays at the bottom: PgDn does nothing and the footer's up-arrow count points to PgUp. Both follow the decision and the ADR residuals.",
+    "evidence": "ext-summary: sel-12x8 and sel-20x8 still held after 100 PgDn; resize-60x24 shows '12 of 24 lines hidden (up 12 down 0) ... Enter held'."
+   }
+  ],
+  "evidence": "Kit, outputs and screens are in /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r2verify/ (kit/EVIDENCE.txt, out/). The trees are removed. Isolation: scratch HOME, agent dir and settings, fake keys, mock model on 127.0.0.1, CONNECT recorder: 0 attempts.\\nFix items: (0) Parent is dfb4ddcc. /settings with two #404 toggles (one async) is cell-identical live at all 6 sizes, saved state equal; test_settings_rows and test_run_tui_extension_settings pass. (1) Own pickers live vs dfb4ddcc, cell for cell plus cursor and state: 16 scenarios x 6 sizes = 96 pairs (trust, settings, theme, model with 30 models, resume, thinking, login, logout y/n, in-use, plus pre-paint variants). 88 identical; 8 differ only in /resume's session time and id. _picker_frame body is unchanged apart from its docstring. (2) Extension path live: the gate select at 80x24 holds Enter, Space, Ctrl+J and Down+Enter; 2 PgDn; Enter runs it (dfb4ddcc ran it unseen). A 5-row title over 8 options at 80x12/16/24 is drawn whole and never held, highlight and counter stay on screen, opt7 is answered. confirm holds y/Y, takes 1 PgDn, then y runs. Control characters show in reverse video. A 60-to-120 resize keeps Enter held. Spawn consent: Cancel declines while held; at 80x8 the title row, footer and option are shown. In-process: 4307 OK, 0 FAIL. ADR 11.3 attribution is fixed. (3)(4) 38/38 mutants RED, including every named one and the per-site own=True removals. (5) The doc text fixes are in.\\nGates: ruff clean, check_types PASS, pyright --pythonplatform Windows on 21 files 0 errors, citations 951 none drifted, bundled docs in sync, py3.11 1179 passed. New tests are tracked and portable. Commit message has no '#' lines and the trailer is exact. Whole suite, run last: 14048 passed, 44 skipped, which matches the message."
+ }
+}

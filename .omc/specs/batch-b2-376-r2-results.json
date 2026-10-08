@@ -1,0 +1,101 @@
+{
+ "#376 fix r2": {
+  "commit_sha": "ef5280338b965fa5b28d4ff4054f25a965ccba9e",
+  "summary": "Amended /tmp/wt-376 to one commit, ef528033, on 8f7d98aa. Nothing was pushed. main has since moved to dfb4ddcc, so the merge needs a rebase. Each blocking item was reproduced on 42ce9646 first: of the 41 new or changed rows, 16 failed there.\n\n(1) An idle set_model now records a model_change, as pi's setModel does. It is not gated on the model changing. It never records a placeholder with api 'unknown', a model set while turns are held, or a write to a read-only session.\n(2) The prompt gates now also refuse a model with no credential (has_configured_auth) in RPC and the TUI; print/json already did. The 'Using' half of the fallback line now needs an adapter and a credential.\n(3) The fallback line is now printed on stderr after RPC switch_session, fork and clone, and in the TUI after /reload. CHANGELOG, the guide and its bundled copy, ADR-0239 (new decision 8), the ADR-0250 note and the index now state the exact rules.\n(4) Rows were added for all 9 survivors. M15 is an equivalent mutant: it only goes red together with M1.\n(5) The pi citation is now sdk.ts:456, and the ADR records the /reload divergence from pi.\n\nThe kit is .omc/probes/376-live/r2/ (see EVIDENCE.txt).",
+  "evidence": "Full detail is in /Users/handochan/dev/aelix-ai/.omc/probes/376-live/r2/EVIDENCE.txt.\n\nLive checks (r2drive.py, fake keys, local mock, real TUI pty):\n- Idle /model sonnet, quit, then rpc --continue: the base came back on haiku with no model_change; the tree came back on sonnet with model_change [anthropic claude-sonnet-4-5].\n- /model sonnet, /reload, then a prompt: the mock saw haiku on the base and sonnet on the tree.\n- No key anywhere: the base accepted the RPC prompt (success=True) and wrote it to the file. On the tree, RPC answered success=False with 'No API key found for Anthropic.', -p and json exited 1, and the TUI showed the same line. The session file was unchanged in all four cases, the mock received nothing, and there was no Using half.\n- RPC switch_session to an unrestorable session printed the Warning on stderr.\n- TUI /reload showed the line again.\n- The hold placeholder was not recorded.\n\nTests:\n- Rows red on 42ce9646: 16 of 41.\n- Sabotage: M1-M7 and M9 red, R1-R14 red, M15 equivalent (red only together with M1).\n- The 71 #376 tests pass, and 115 with the harness tail file on 3.11.15.\n- Touched directories: 8846 passed, 33 skipped.\n\nGates:\n- ruff: clean.\n- check_types: PASS.\n- pyright --pythonplatform Windows on the 27 changed product files: 0 errors.\n- Citations: 955 gated, none drifted.\n- CI gate tests: 137 passed.\n- Whole suite, run last: 13738 passed, 44 skipped, EXIT 0.",
+  "sweep": [
+   "The idle record paths for set_model are /model, the picker, /agents use and extension setModel; placeholders are filtered in the harness for both the idle and in-turn paths.",
+   "The credential gate covers RPC prompt and the TUI input loop; print/json keeps its existing gate. All of them use has_configured_auth, which also decides the restore and the Using half.",
+   "The fallback notice now appears at startup, after /resume, /fork, /clone, /import and /reload in the TUI, and after RPC switch_session, fork and clone (not after a cancelled swap).",
+   "Two harness ordering tests used api-less models, which now count as placeholders. I gave those models a named api and a comment."
+  ],
+  "owner_decisions": [
+   "main moved from 8f7d98aa to dfb4ddcc during this round. The commit needs a rebase before merge, and the citation lock may drift on rebase.",
+   "If /agents use fails after its set_model (a hook refuses the thinking-level setter), the rollback leaves the profile's model_change in the session. The ADR records this; decide whether a compensating write is wanted."
+  ],
+  "follow_ups": [
+   "/agents use with a profile that names no model moves a restored session off its model.",
+   "Sessions do not record their launch model as a model_change (pi sdk.ts:456).",
+   "A model an extension sets during a pending launch's session_start, which then stands (not late), is not recorded because turns are held."
+  ]
+ },
+ "#376 codex r2": {
+  "ran": true,
+  "filtered": false,
+  "reviewed_sha": "ef5280338b965fa5b28d4ff4054f25a965ccba9e",
+  "report_path": "/Users/handochan/dev/aelix-ai/.omc/probes/376-live/r2cross/review.out",
+  "findings": [
+   {
+    "title": "Cat1: an unrunnable prompt is still accepted and persisted when an input hook switches the model, or when a session_start send_message(trigger_turn=True) starts the turn",
+    "detail": "The new guard checks the model before the input hook runs and does not check it again after the hook's selection. In pi, input handlers run before credential validation (agent-session.ts:1985-2050). extension send_message(trigger_turn=True) skips the mode-level guard completely, because AgentHarness.prompt has no such validation.",
+    "evidence": "Settings: anthropic/claude-sonnet-4-5 with ANTHROPIC_API_KEY=ant-fake. The input hook calls set_model(openai/gpt-4o) on 'use-openai'. Command: uv run --no-sync python probes/rpc_live.py switch head -> RPC_SUCCESS True, SESSION_MESSAGE_COUNT 2, PERSISTED_USER_TEXT 'use-openai', PERSISTED_ASSISTANT_ERROR No API key for provider: openai. Second case, no key: rpc_live.py trigger head -> SESSION_MESSAGE_COUNT 2, PERSISTED_USER_TEXT 'keyless-trigger', PERSISTED_ASSISTANT_ERROR No API key for provider: anthropic."
+   },
+   {
+    "title": "Cat2: the fallback notice can name a model that is no longer active",
+    "detail": "The fallback notice is computed before session_start and printed after it, so it is stale if a session_start hook changes the model. The existing launch-route warning checks that its route still stands; the new notice does not. Separately, the guide states without qualification that an unrunnable prompt is refused before any session write, and Cat1 contradicts that.",
+    "evidence": "The session records removed-provider/removed-model. Settings: Sonnet. A session_start hook selects claude-haiku-4-5. Fake Anthropic key. Command: rpc_live.py notice head -> ACTIVE_ROUTE anthropic/claude-haiku-4-5, but STDERR Warning: Could not restore model removed-provider/removed-model. Using anthropic/claude-sonnet-4-5."
+   },
+   {
+    "title": "Cat3: regression - with no credential, an RPC prompt that an extension input handler fully handles (InputHandled) is now refused before the handler runs",
+    "detail": "On the parent commit, a keyless setup let an extension handle the input locally. Now the prompt is rejected with 'No API key found for Anthropic.' and the handler never runs. In pi, input interception comes before credential validation.",
+    "evidence": "Keyless Sonnet. The input handler returns InputHandled on 'ping' and writes a marker file. rpc_live.py input parent -> RPC_SUCCESS True, INPUT_HANDLER_CALLED True, SESSION_MESSAGE_COUNT 0. rpc_live.py input head -> RPC_SUCCESS False, INPUT_HANDLER_CALLED False, SESSION_MESSAGE_COUNT 0."
+   },
+   {
+    "title": "Cat4: a mutant that skips restoration for startup --fork passes every changed test",
+    "detail": "Mutation in cli/entry.py: 'if not _user_named_a_model() and parsed.fork is None:'. It is also applied in child interpreters through sitecustomize. All 33 changed test files pass under the mutant. A direct probe shows the mutant is wrong: --fork of a Haiku session comes up on Sonnet.",
+    "evidence": "fork_mutant_suite.py (mutant): CHANGED_TEST_FILES 33, 1187 passed, 10 skipped. Control run: the same 1187 passed, 10 skipped. fork_control.py on head: ACTIVE_MODEL anthropic/claude-haiku-4-5. fork_control.py mutant: ACTIVE_MODEL anthropic/claude-sonnet-4-5, FALLBACK_MESSAGE None."
+   }
+  ],
+  "verdicts": "1: FOUND - an unrunnable prompt can still be accepted and persisted (input-hook model switch; session_start send_message trigger_turn). 2: FOUND - the fallback notice can name a model the runtime is no longer using (session_start hook changes it after the notice is computed). 3: FOUND - an RPC input handled locally by an extension on a keyless setup worked on the parent and is now refused. 4: FOUND - a mutant that drops CLI --fork restoration passes all 33 changed test files (1187 passed, 10 skipped).",
+  "notes": "Codex v0.160.1 (gpt-6.1-sol, reasoning high) ran on a detached tree of ef528033 and exited normally with a final report after the last 'codex' line. It reported no changes to tracked files. Copied to /Users/handochan/dev/aelix-ai/.omc/probes/376-live/r2cross/: prompt.txt, review.out, and probes/*.py (common, rpc_live, fork_mutant_suite, fork_control, fallback_notice, input_handled, extension_turn, fork_mutant_entry). Codex also built a parent source copy at /tmp/376-work/r2cross/parent; it is not a git worktree and was left in place. The review worktree /tmp/376-work/r2cross/tree was removed. /tmp/wt-376 is unchanged (HEAD ef528033, clean). I did not re-run any of Codex's probes myself; every output line quoted above comes from Codex's report."
+ },
+ "#376 verify r2": {
+  "pass": false,
+  "head_sha": "ef5280338b965fa5b28d4ff4054f25a965ccba9e",
+  "blocking": [
+   {
+    "title": "Two guides still say a rebuild re-derives the launch model and holds a late-provider pick again",
+    "detail": "docs/guides/providers-and-models.md (~249-252: 'since aelix's rebuilds re-derive the model from the launch inputs where pi keeps the session's: /new and the other rebuilds'; ~273-276: 'a /model choice lasts until the next /new or other rebuild, which re-derives the launch model and holds again (pi keeps the session's model; aelix rebuilds from the launch inputs)') and docs/guides/extension-authoring.md:167 (same two statements), with their bundled copies, were not updated. After this commit, a rebuild of a session that has history, where the user named no model, restores the recorded pick and is not held. ADR-0250's new amendment itself says the old sentence 'no longer holds', so the guides now contradict the code and the ADR (CLAUDE.md rule 2). The sentences need narrowing to /new and to builds that fall back.",
+    "evidence": "late.py / late.out: settings default sessext/m1 (registered in session_start), TUI '/model sessext/m1', prompt, '/reload', prompt. Tree: the mock saw m1 twice, so the pick was restored. Base 8f7d98aa: the mock saw m1 once, then the TUI printed '✖ The launch model \"sessext/m1\" names provider ...' (held again). grep shows the 're-derives the launch model and holds again' line still present in both guide copies."
+   },
+   {
+    "title": "ADR-0239 decision 3 overstates when /reload keeps the pick",
+    "detail": "Decision 3 says /reload restores the record, and that the record and pi's live model 'differ only where the live model was never recorded - a model set on a read-only session, under the CLI's turn gate, or a placeholder'. That is false whenever the user named a model at launch (--model/--provider/--api-key/a profile model:) or the session has no conversation yet. Those rebuilds re-derive the launch inputs, which drops a recorded /model pick; pi keeps the live model. The behaviour is unchanged from base, but the new ADR text states something untrue and should name these cases.",
+    "evidence": "drive.py phase T2 (tree.out/base.out): 'aelix --continue --provider anthropic --model claude-haiku-4-5', '/model claude-sonnet-4-5' (recorded), '/reload', prompt. Mock: model=claude-haiku-4-5 on the tree and on the base."
+   },
+   {
+    "title": "The idle model_change's #334 queue ordering has no test row; dropping it leaves the stale model as the record",
+    "detail": "core.py set_model's idle branch, 'if self._pending_session_writes or self._drain_lock.locked(): append behind the queue', is claimed in the message ('#334's queue ordering kept'). Replacing it with 'if False' (write directly) survives all 71 #376 rows and 756 harness/session tests. It is a plausible wrong implementation and it changes the restore: a cancelled release flush leaves an in-turn model_change queued, then an idle /model pick is written AHEAD of it. The session's last model_change is then the stale model, which the next --continue restores. A row like .omc/probes/376-live/r2verify/test_r2verify_probe_order.py is needed, mirroring the thinking-level C4 rows.",
+    "evidence": "sabotage.out: I10-skip-queue-order GREEN with the #376 files. sabotage-broad.out: GREEN with tests/harness, tests/session and the harness/session root files (756 passed). Probe test with clean code: ORDER [('p','queued-model'), ('p','picked')], passes. Under I10: [('p','picked'), ('p','queued-model')], AssertionError (RED)."
+   }
+  ],
+  "nonblocking": [
+   {
+    "title": "RPC set_model / cycle_model never record a model_change (a sibling entry point the sweep missed)",
+    "detail": "Both handlers call harness.set_current_model, which only assigns state. pi's RPC set_model calls session.setModel and cycle_model calls cycleModel, and both append model_change. Through the CLI both commands already fail on base and tree because no registry is passed ('aelix --mode rpc has no model registry for set_model', as documented). So only an embedder that passes model_registry would lose an RPC pick on reopen. File as a follow-up.",
+    "evidence": "r1dbg.py: 'set_model requires a ModelRegistry — none configured' on both trees. rpc_mode.py:784 and :845 call set_current_model. pi rpc-mode.ts:476 and :481, agent-session.ts:2485/2552/2587."
+   },
+   {
+    "title": "The credential gate runs before the extension input hook (pi runs input handlers first)",
+    "detail": "RPC _handle_prompt and the TUI input loop refuse a keyless model before harness.prompt runs the 'input' hook. pi's prompt() runs _runInputHandlers (agent-session.ts:1993) before the model/auth check (:2032-2050). On 8f7d98aa an extension that handled input with InputHandled still worked on a keyless model, and nothing was written. This is a narrow regression and a divergence from the 'as pi's prompt() does' claim. The TUI #189 adapter gate already had this ordering.",
+    "evidence": "drive.py phase H. Tree: RPC success=False 'No API key found for Anthropic.', the hook never ran. Base: the hook ran (runs/base-3ux2lmz2/input_ext.py.hits = 'handled by hook') and the prompt was accepted."
+   },
+   {
+    "title": "An uncatalogued id on a catalogued provider outside models.json is restored only on the user's own key; the docs describe only two cases",
+    "detail": "restore_session_route applies route_authenticated (not a .env key) to every provider the user did not define, not only to OpenRouter. As a result, anthropic/claude-www-unlisted with only a .env key falls back, although typing the same --provider/--model at launch with that key is accepted. This is safe (stricter than the launch) and ADR-0239 decision 4 describes it, but the CHANGELOG and providers guide cover only the user-defined and OpenRouter cases.",
+    "evidence": "treeU.out U4: reopen gives 'Could not restore model anthropic/claude-www-unlisted. Using openrouter/anthropic/claude-sonnet-4.5'. Launch with the same .env key gives the custom-id warning and attempts the request."
+   },
+   {
+    "title": "Other surviving mutants are harmless or equivalent",
+    "detail": "I9 (dropping _records_model's provider check) is harmless: resolve_resumed_model skips a record without both names. I11 (idle queued write not drained at once) only delays the write to the next drain, and dispose drains. M15 (no enrich_copilot_base_url on a restored route) is equivalent, as the lane said: catalogued hits are already composed through compose_built_in, and custom ids miss registry.find.",
+    "evidence": "sabotage.out / sabotage-broad.out: 44 of 48 mutants RED. Survivors: I9, I10 (blocking above), I11, M15."
+   },
+   {
+    "title": "getting-started comment simplifies the rule",
+    "detail": "The comment '(all three come back on the model the session last used unless you pass --model)' leaves out --provider, --api-key, a profile, and the can-it-run condition. The providers guide states the full rule.",
+    "evidence": "docs/guides/getting-started.md:235-236"
+   }
+  ],
+  "evidence": "Kit: /Users/handochan/dev/aelix-ai/.omc/probes/376-live/r2verify/ (EVIDENCE.txt; drive.py, late.py, fresh.py, sabotage.py, test_r2verify_probe_order.py; tree.out vs base.out). Throwaway worktrees at ef528033 and 8f7d98aa, both removed afterwards. /tmp/wt-376 is untouched and HEAD is still ef528033. Fake keys only, own mock, proxy set to :9, isolated HOME, agent dir, settings and cwd.\n\nFix items, checked live:\n(1) TUI idle /model sonnet, quit, then --continue gives sonnet, with model_change [('anthropic','claude-sonnet-4-5')]. /model opus, /clone, prompt sends opus to the mock. The hold placeholder is not recorded (sabotage I2, I4, I12 RED).\n(2) With no key: RPC returns success=False 'No API key found for Anthropic.'; -p and json exit 1; the TUI shows '✖ No API key found for Anthropic.'. The session file is unchanged in all four and the mock saw nothing. The line is 'Could not restore model anthropic/claude-opus-4-1' with no Using half. On base, all four wrote to the file.\n(3c) RPC switch_session, fork and clone each print the line on stderr.\n(4) 44 of 48 mutants RED, including every named survivor except M15, which is equivalent.\n(5) sdk.ts:456 and agent-session.ts:2485 and 2032-2050 are correct.\n\nGates on ef528033:\n- ruff check passes.\n- check_types: 0 errors across 286 files.\n- pyright --pythonplatform Windows over the 27 changed product files: 0 errors.\n- Citations: 955 gated, none drifted. Bundled docs are in sync.\n- 5 new test files, all tracked, with 71 rows as claimed.\n- Python 3.11.15: 123 passed.\n- Whole suite run last (env vars unset, uv run pytest -p no:cacheprovider -q): 13738 passed, 44 skipped, EXIT=0, matching the message.\n- Message: no line starts with '#' and the trailer is exact.\n- The new tests use the existing pipe-input and tmp_path harnesses, with no POSIX-only constructs found.\n\nBlocking: two stale or false doc claims, and the queue-order branch has no test row."
+ }
+}

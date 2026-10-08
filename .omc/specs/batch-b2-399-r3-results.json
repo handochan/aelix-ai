@@ -1,0 +1,95 @@
+{
+ "#399 fix r3": {
+  "commit_sha": "ab7d6a02",
+  "summary": "Round 3 of #399 is done as one amended commit, ab7d6a02, on 8428e16c in /tmp/wt-399. Nothing was pushed. Main moved to 31681046 (#379) while I worked, so the commit is no longer on main's tip.\\n(0) Rebased onto 8428e16c. The conflicts were in ADR-0199's status lines (both kept) and in README's ADR-0199 row (the #399 sentence added after #178's text).\\n(1) The /extension new placement question and the /agents run project-agent confirm now call ext_ui.select_declared(..., own=True). select_declared passes a keyword only to a select that declares it. The sweep of packages/*/src found no other aelix-written call through runtime.ui. test_own_pickers_marked now scans every product file (28 call-site rows plus 2 checks).\\n(2) New rows check that a dialog recovers from too-small for select and confirm, both when the title is then drawn whole and when it scrolls.\\n(3) Titles wrap by grapheme cluster. New width.py functions: graphemes (from wcwidth.iter_graphemes, with wcwidth>=0.3.0 declared in the [tui] extra), cluster_cells and cells_by_cluster. The shared approval_dialog._cut no longer splits a cluster. A cluster ending in a zero-width character is kept off the last column, because prompt-toolkit drops the mark there (measured).\\n(4) The rows under a title are parsed as one ANSI text, as on main, so a label with a newline takes two rows. The space left for options is counted in screen rows.\\n(5) The CHANGELOG, ADR-0253 11.3 and the README row now say the counter shows only while there is a row for it, and the too-small sentence lists every key that answers.\\n(6) A new row checks that PgDn presses with no repaint release nothing.",
+  "evidence": "Kit and outputs: /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r3/ (EVIDENCE.txt, kit/, out/, commit-msg.txt).\\nItem 1 live, against 8428e16c at 12x8/20x8/80x16/80x22/80x24/120x40: before the fix DIFF 14, identical 10 (out/own2-pre.log). After: identical 24 of 24 (own2-fix.log). All other own pickers, 16 scenarios x 6 sizes: identical 88, plus 8 that differ only in /resume's session time and id (own-all.log).\\nIn-process, before -> after (out/r3probe.txt): the 81-cell combining title at 80x3 went from held to drawn whole in 2 rows with Enter answering Yes. The 41-cell title went from 39 to 40 accents. Combining, ZWJ and flag clusters at the wrap went from split to whole. The ^J label became two rows.\\nLive (ext-r3-facts.txt): comb81 at 80x8 ended CHOICE=None before and Yes after, with all 80 accents. At 80x2 then RESIZE 80x24, Enter and y answer.\\nRows red before: 29 failed, 33 passed on the pre-fix tree (red_on_pre.txt; some fail only because the new helpers do not exist there). Mutants: 18 run, 17 RED, among them too-small-sticky, scroll-path-too-small-not-reset and Codex's scroll mutant. 1 GREEN: title-fit-by-cells-at-most, which I judged equivalent and did not test further (sabotage*.txt).\\nGates: ruff 'All checks passed!'; check_types 'PASS'; pyright --pythonplatform Windows on 23 changed product files '0 errors, 0 warnings, 0 informations'; check_citations '951 gated, none drifted' (fixed 23 then 7 drifted citations, each read). Gate tests: 137 passed. tests/tui, agents_ext, agents, builtin, extensions, cli and docs: 9046 passed, 33 skipped. py3.11.15: 669 passed. Whole suite, run last: '14490 passed, 45 skipped, 104 warnings in 555.77s'.\\nCONNECT recorder: 0 attempts. Message: 0 lines start with '#', exact trailer. The base, pre, sab and trial worktrees are removed.",
+  "sweep": [
+   "Searched all select/confirm calls in packages/*/src. The only aelix-written calls through runtime.ui were tui/commands.py _extension_new and _confirm_project_agent_for_run; both are now own=True through select_declared.",
+   "Model-text dialogs (aelix_agents/consent.py _ask, builtin/permission.py _prompt) stay unmarked; they go through select_with_cancel, now built on select_declared.",
+   "The shared approval_dialog._cut, used by the approval body and select titles, now cuts by grapheme cluster. The #389 sweep test now measures with cells_by_cluster and get_cwidth and checks every cut falls between clusters.",
+   "Docs moved with the code: CHANGELOG, ADR-0253 11.3 (own list, residuals, grapheme wrap, counter, too-small), the README 0253 row, the extension-authoring guide and its bundled copy, and docstrings in context.py, width.py, approval_dialog.py and ext_ui.py."
+  ],
+  "owner_decisions": [
+   "New dependency: wcwidth>=0.3.0 is now declared in aelix-coding-agent's [tui] extra (it was already installed through prompt-toolkit; iter_graphemes needs 0.3.0). uv.lock gains 2 lines. The alternative is a hand-written UAX#29 approximation."
+  ],
+  "follow_ups": [
+   "Main is now 31681046 (#379), not 8428e16c. 19 files overlap; a trial rebase in a throwaway worktree applied with no conflicts, but citations were not re-checked there. Rebase and run check_citations --fix before merging.",
+   "consent.py's 'option rows plus one counter row (tui/context.py:714)' citation points at select's state dict, as it did on main (:420). It was there before this commit; the cited line is still wrong.",
+   "In an extension select, a multi-line highlighted option at modal heights of 1 or 2 shows the too-small message, while main would show partial rows. This is an edge case and has no row."
+  ]
+ },
+ "#399 codex r3": {
+  "ran": true,
+  "filtered": false,
+  "reviewed_sha": "ab7d6a02",
+  "report_path": "/Users/handochan/dev/aelix-ai/.omc/probes/399-live/r3cross/review.out",
+  "findings": [
+   {
+    "title": "Cat1: grapheme clusters split when a cluster exceeds the row width",
+    "detail": "The fallback in _cut (approval_dialog.py:703) splits an oversized cluster by code point. 'e'+U+0301 at width 1 (the safety column pushes it over) wraps to ['e','́']. The family emoji ZWJ sequence + '?' at width 6 also splits. Enter still answers in both cases.",
+    "evidence": "probes/probe.py; uv run --no-sync python probe.py -> ACCENT wrapped=['e', '́'] / ACCENT intact_cluster_drawn=False / ACCENT Enter=Yes / UNICODE intact_cluster_in_rows=False / UNICODE answer=Yes"
+   },
+   {
+    "title": "Cat2: documented guarantees are false (grapheme never split; n always answers)",
+    "detail": "docs/guides/extension-authoring.md:117 says an accent stays with its letter and an emoji sequence is never split, which Cat1 disproves. The _cut docstring says only degenerate text produces an oversized cluster. The guide also says Esc, Ctrl+C and n always answer, but in select the n key goes to the filter. Input: 20 title lines, options [Yes,No], 80x8, type n.",
+    "evidence": "probe.py -> NKEY last_row='  (1/1)  ·  Filter: n' / NKEY result_done=False"
+   },
+   {
+    "title": "Cat3: regression - a tall multiline option makes a short question unanswerable",
+    "detail": "Title 'Deploy?', option 'Deploy staging' followed by 7 detail lines, plus 'Cancel', at an 80x13 terminal (8 modal rows). The parent commit draws it and Enter selects. This commit shows 'too small' and holds Enter, and 20 PgDn presses do not release it. The minimum option layout keeps every line of the highlighted label.",
+    "evidence": "probes/live_multiline.py (real AelixChrome app) -> LIVE parent result='Deploy staging\\n  detail 1...' / LIVE commit result=HELD; probe.py -> MULTILINE commit screen='The terminal is too small for this question. Enter is held; Esc cancels.' / after_20_PgDn=HELD"
+   },
+   {
+    "title": "Cat4: mutant in the no-matches branch passes all changed tests",
+    "detail": "In context.py:812, the no-matches branch passes [title] instead of title_rows to _picker_head. The result: the title is clipped to one row, newlines show as ^J, scrolling is gone and the hold is released. Input: a 22-line title with TAIL_SECRET last, 80x8, type z. Original: held=True. Mutant: held=False.",
+    "evidence": "probes/mutant_demo.py -> ORIGINAL held=True / MUTANT held=False; probes/mutant.py runs all 22 added/changed test files with the mutation -> 1765 passed, 10 skipped"
+   }
+  ],
+  "verdicts": "Cat1 FOUND (cluster split in the oversized-cluster fallback, Enter still answers); Cat2 FOUND (the guide's 'never split' and 'n always answers' claims are false); Cat3 FOUND (a multiline option that could be selected in the parent is now held at 80x13); Cat4 FOUND (the no-matches title_rows mutant passes all 22 changed test files).",
+  "notes": "Codex (v0.160.1, reasoning_effort=high) ran to completion on detached worktree /tmp/399-work/r3cross/tree at ab7d6a02 and printed a final report. It modified no tracked files. Copies are in /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r3cross/: prompt.txt, review.out and probes/*.py (probe.py, live_multiline.py, mutant.py, mutant_demo.py, reference_clusters.py, parent_context.py). The worktree has been removed. I did not re-run Codex's scripts myself; every output line above is quoted from Codex's report."
+ },
+ "#399 verify r3": {
+  "pass": false,
+  "head_sha": "ab7d6a02ce292a0c82afb210c2800cea0b028ec1",
+  "blocking": [
+   {
+    "title": "The new last-column pad in cells_by_cluster has no test, and a mutant without it stays green",
+    "detail": "I removed ends_row=True from the last cluster in tui/width.py cells_by_cluster, which is the check _title_rows uses to decide a line fits. The narrow and broad sets both stay green (tests/tui, agents_ext, builtin, extensions, cli, agents: 9034 passed). Under that mutant, a title exactly as wide as the window that ends in a combining mark ('x'*79 + e+U+0301 at 80 columns) is kept on one row. prompt-toolkit drops the mark on the last column, so the screen shows a bare e, and Enter answers. That is the item-3 defect class: the question on screen is not the one asked. test_a_cluster_at_the_wrap_is_never_split[79-e] puts ' tail end' after the cluster, so it only exercises _cut and never this fit path. Fix: add one row. _title_rows('x'*79 + e+U+0301, 80) must be 2 rows, and the painted select must keep the accent.",
+    "evidence": "/Users/handochan/dev/aelix-ai/.omc/probes/399-live/r3verify/out/sabotage.txt: cells-by-cluster-no-last-pad GREEN [383s], 9034 passed, 33 skipped. out/greenprobe.txt (a): the product gives 2 rows, accent painted True. The mutant gives 1 row, accent painted False, answered True. Mutant run alone in a throwaway worktree with __pycache__ purged."
+   },
+   {
+    "title": "The Rich term in cluster_cells has no test, and a mutant without it stays green",
+    "detail": "I replaced cluster_cells' max(get_cwidth, rich cell_len, first char) with get_cwidth(cluster). Narrow and broad stay green. A VS16 emoji (U+263A U+FE0F) is 1 cell for prompt-toolkit and 2 for Rich. Under the mutant, both the select title and the shared approval_dialog._cut pack rows that are wider than the screen by Rich's count. The title '41 x U+263A U+FE0F + TAIL' at 80 columns becomes one row of 87 cells. The approval body (60 of them + END) becomes one row of 124 cells. Main's cells_at_most counted U+FE0F as a cell of its own. So #389's 'a row fits by every measure' guarantee for the approval body now rests on a term no test exercises. Fix: add a row with a VS16 cluster, for the title and for _cut, asserting every row is no wider than the window by rich cell_len.",
+    "evidence": "out/sabotage.txt: cluster-cells-ptk-only GREEN [376s], 9034 passed. out/greenprobe.txt (b): the mutant gives 1 row, 87 cells by Rich; the product gives 2 rows, at most 78. (c) approval _cut: the mutant gives 1 row of 124 cells; the product gives 2 rows of at most 78. U+263A U+FE0F measures ptk 1, rich 2, cluster_cells 2, main cells_at_most 2."
+   }
+  ],
+  "nonblocking": [
+   {
+    "title": "The commit needs another rebase: main is now 31681046 (#379)",
+    "detail": "The commit sits on 8428e16c. 19 of its files overlap #379: CHANGELOG, citations.lock.json, decisions/README.md, consent.py, commands.py, shell.py, render.py, extension.py, test_consent_wiring.py, test_run_tui_smoke.py and others. After rebasing, re-run check_citations --fix and then --check.",
+    "evidence": "out/main379_files.txt vs out/c399_files.txt in /tmp/399-work/r3verify: comm -12 lists 19 files."
+   },
+   {
+    "title": "A wrapped row that ends in a combining mark shows the mark twice",
+    "detail": "prompt-toolkit's copy_line writes a zero-width character into the next cell as well as merging it into the base. At the end of a row nothing overwrites that cell, so the mark is drawn twice. It is cosmetic and hides nothing. Main does the same for any line that ends in a mark, but wrapping now produces such rows often.",
+    "evidence": "out/ext-summary.txt and live-json.tar.gz, comb81-80x24 on the tree: row 1 ends in e+U+0301+U+0301 in pyte. Also visible in-process: Screen cell x+1 holds the bare mark."
+   },
+   {
+    "title": "Stale citation numbers in the commit message and ADR evidence paths",
+    "detail": "The message says the select signature moved to tui/context.py:618-627 and the Esc binding is at :882-884. The tree now cites 641-650 and 913-915, after round 3's --fix relocations. In ADR-0253 11.3, the r3 evidence names own2-*, r3probe-* and sabotage*, which live under r3/out/. The r2 'pickers/' and 'sabotage/' directories it names do not exist; the material is r2/kit/pickers.py, r2/out/sabotage.txt and cell-dumps.tar.gz.",
+    "evidence": "grep in consent.py and test_batch_consent.py: tui/context.py:641-650 and :913-915. ls .omc/probes/399-live/r2 and r3."
+   },
+   {
+    "title": "The lane's mutant runs can reuse stale bytecode",
+    "detail": "If a file is rewritten within the same second at the same size, Python reuses the old .pyc. In my first pass, own-ignored-in-confirm failed a select-only test until I purged __pycache__ and set PYTHONDONTWRITEBYTECODE=1. The lane's sabotage*.txt may share that flaw. My clean rerun has every named mutant RED anyway, so its conclusions stand.",
+    "evidence": "kit/sab.py now purges __pycache__ and sets PYTHONDONTWRITEBYTECODE=1; out/sabotage.txt is 30 mutants, 27 RED. The named mutants are also RED on the confirm rows alone (out/sabotage_confirm.txt)."
+   },
+   {
+    "title": "Kit runnability and live pre-paint coverage",
+    "detail": "The r3 kit/r2kit (r2drive.py, ext_r3.py, v_r3.py) runs: I ran SCEN=mlabel against the tree and got CHOICE='Run it' with a two-row label. ext_r3.py hardcodes /tmp/399-work/r3/live, which macOS cleans after 3 days. run_live.sh exists only in impl/kit and does not run the r3 scenarios. A live Enter typed before the first paint never reached the modal on either tree (both identical), so the pre-paint drop rests on the in-process rows, which do go RED under prepaint-not-held.",
+    "evidence": "/tmp/399-work/r3verify/kitcheck/out/FIX/mlabel-40x16.json; out/ext-summary.txt gate-prepaint: CHOICE=None on base and on the tree."
+   }
+  ],
+  "evidence": "Kit and outputs: /Users/handochan/dev/aelix-ai/.omc/probes/399-live/r3verify/ (EVIDENCE.txt, kit/, out/). I used my own pty+pyte driver, mock model and refusing CONNECT recorder (0 CONNECT attempts), with an isolated agent dir, settings path, HOME and cwd per run and a fake key. Throwaway worktrees: tree=ab7d6a02, base=8428e16c, sab; all three removed afterwards. /tmp/wt-399 was not touched and is still clean at ab7d6a02.\n\n(1) Own pickers through runtime.ui.select, live against 8428e16c at 12x8, 20x8, 80x16, 80x22, 80x24 and 120x40. /extension new (choose, Esc, pre-paint Enter) and /agents run's project-agent confirm (and its pre-paint Enter): 30 of 30 identical in cells, cursor and files written. With own=True removed from both calls: 1 of 6 identical, so the probe tells them apart. /trust and /settings, each with pre-paint keys, at 4 sizes: 16 of 16 identical. An AST and grep sweep found no other aelix-written select or confirm.\n\n(2) Too small: mutants a and b are RED for select and also for the confirm rows alone. Live: at 80x2 the dialog says 'too small'; Enter or y is ignored; after resizing to 80x24 the answer is taken. Starting at 80x2 and growing to 80x14, the title is held, 13 PgDn release it, and Yes is taken.\n\n(3) Grapheme wrap: in-process fuzz, 900 titles x 6 widths, 0 problems. Live: all 80 accents on screen; edge79 and the ZWJ emoji and flag stay whole; main cut the title at the edge with a bare e. Two plausible mutants survive (blocking above). title-fit-cells-at-most is render-equivalent: 0 differences in parsed cells over 18000 cases.\n\n(4) Option labels: base vs tree, 84 of 84 cell-identical in-process. Live mlabel at 3 sizes: cells and cursor identical to base.\n\n(5) The docs' claims match the code.\n\n(6) Live: 80 PgDn plus Enter (or y) sent in one write takes nothing, while main answered at once. The PgDn mutants are RED.\n\nMutants: 30 run, 27 RED, 3 GREEN. Gates: ruff OK. check_types PASS. pyright --pythonplatform Windows on the 23 changed product files: 0 errors, 0 warnings, 0 informations. citations: 951 gated, none drifted. Gate tests: 137 passed. Python 3.11: 1234 passed. Whole suite run last with AELIX_CODING_AGENT_DIR, AELIX_SETTINGS_PATH and VIRTUAL_ENV unset: 14490 passed, 45 skipped, the same count the message quotes. New test files are tracked and portable to Windows. The commit message has no line starting with '#' and ends with the two required lines."
+ }
+}

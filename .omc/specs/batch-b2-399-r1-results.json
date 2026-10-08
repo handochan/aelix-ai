@@ -1,0 +1,127 @@
+{
+ "#399 implement": {
+  "commit_sha": "1b098733",
+  "summary": "I committed #399 as one commit, 1b098733, on fix/399-extension-select-shows-the-whole-title in /tmp/wt-399, on top of main 8f7d98aa. It is not pushed. Codex cross-review was not run in this lane.\\n\\nWhat changed:\\n- The select title, and the confirm title and message, now wrap like pi's. They reuse approval_dialog's _shown, _cut and _ansi_named rather than copies. A control character is drawn by name in reverse video (CR as ^M, ESC as ^[).\\n- A new control, _TitleHeldControl in tui/context.py, draws both dialogs. A title drawn whole is never held.\\n- When a title is taller than the room it gets, it scrolls in the approval prompt's _BodyViewport, with the same footer and PgUp/PgDn. Every option (Enter, Space and Ctrl+J in select; y in confirm) waits until every title row has been drawn. Esc, Ctrl+C and n always answer.\\n- The title is never withheld to make room. If even the option rows do not fit, a title that fits is drawn whole and the rows below it are cut as before. A title taller than the whole modal gets half of it.\\n- Text from an extension or the model is the default: an approving key typed before the first paint is dropped, and the option rows stay on screen while the title scrolls. That default covers ctx.ui, the permission fallback and spawn consent; the latter two carry comments saying they pass no own on purpose.\\n- aelix's own pickers pass own=True and keep their old layout and pre-paint behaviour. This covers /resume, theme, /settings, /trust and the session-in-use prompt directly, and /model, /thinking, /login and /logout through functools.partial.\\n- consent.py: the 300-character task cut and the 68-character Directory: middle elision are gone. Source: keeps its elision, and the batch rows keep their 72-character cut.\\n- Docs: ADR-0253 section 11.3, the ADR-0199 status line plus a dated note in its section (c), README rows 0253 and 0199, the extension-authoring guide and its bundled copy, and a CHANGELOG Security entry.\\n\\nThe main loop's kit is /Users/handochan/dev/aelix-ai/.omc/probes/399-live/impl/kit/run_live.sh, with the groups gates, consent and pickers. To compare against base it needs a worktree at 8f7d98aa; the script header says how to create it.",
+  "evidence": "REPRO on 8f7d98aa (/tmp/399-work/impl/base):\\n- probes/repro.py: the gate title was cut at 'arg009 arg'; Enter answered 'Yes', Down+Enter answered 'No', and confirm took y, all with the tail never drawn. A title of a+CR+b+ESC[8mc painted as 'a b [8mc'.\\n- Live, real CLI in a pty with a mock model and a fake key, CONNECT recorder log 0 lines on both trees. B-gate-select-80x24: Enter ran the command (out_has_tail True, tail_first_seen None). B-gate-confirm-80x24: y ran it. B-consent-model-80x24: Enter spawned the child (requests 1 to 4).\\n\\nAFTER, at 80x24:\\n- F-gate-select: footer '29 of 41 lines hidden ... Enter held until all seen'. Enter and Space held (requests stayed 1), 3 PgDn, then Enter ran it.\\n- gate-select-no: Down+Enter held; after paging, Enter blocked the call.\\n- confirm: y held, 2 PgDn, then y ran it. n and Esc block at once.\\n- steer: reverse-video runs ['^[','^M'].\\n- gate-short: Enter answered at once.\\n- consent run/model: footer '12 of 23 lines hidden', Cancel on screen, Enter held, 2 PgDn, then Cancel or Esc gave 'declined'. On base, Enter spawned the child.\\n- At 120x40 all of these fit and answer at once.\\n\\nPickers, live at 4 sizes against base (pickers_live_compare.txt):\\n- 96 snap pairs identical.\\n- /resume differs only in its time/id row.\\n- /trust differs by the wrap.\\n- In-process: 24 of 28 paints have identical cells; the 4 that differ are /trust.\\n\\nTests:\\n- New and changed rows on base: 246 failed, 778 passed.\\n- Sabotage, 19 mutants, all red (sabotage.out).\\n- ruff: All checks passed. check_types: PASS. pyright Windows: 0 errors. Citations: 951 gated, none drifted.\\n- Gates: 137 passed. Touched dirs plus cli and docs: 8529 passed, 32 skipped. Python 3.11.15: 1025 passed.\\n- Whole suite, run last: 13973 passed, 44 skipped.",
+  "sweep": [
+   "tui/context.py select (an extension's ctx.ui.select) - before: title cut at the screen edge, Enter at once, CR shown as a space - after: wraps, names control characters, scrolls and holds every option, drops an Enter typed before the first paint",
+   "tui/context.py confirm (ctx.ui.confirm) - before: message cut at the edge, y at once - after: wraps, names, holds y, drops a y typed before the first paint",
+   "builtin/permission.py ctx.ui.select fallback (a host with a UI but no approval dialog) - before: whole command in the title, cut by aelix's select, Enter at once - after: held by default (comment explains the missing own)",
+   "aelix_agents/consent.py single task, agent tool and /agents run - before: task cut at 300, Directory elided to 68, Enter at once - after: whole task and directory, held, Cancel kept on screen",
+   "consent batch - before: Directory elided, member rows cut at 72, refused if too tall - after: whole Directory (can now wrap and scroll, held); 72-char member cut and the refusal unchanged (follow-up)",
+   "tui/descriptors.py confirm via shell's lambda (an extension descriptor's text) - before: cut, y at once - after: default, held",
+   "tui/commands.py project-agent confirm through runtime.ui.select (repo-authored body) - before: cut, Enter at once - after: default, held",
+   "tui/commands.py /extension new placement select through runtime.ui.select (aelix text) - affected - after: default, so a key typed before the first paint is dropped (accepted)",
+   "login_registry.LoginContext select/confirm (an extension login provider) - affected - after: gets aelix's own=True partial, so it wraps and holds after the first paint but takes a pre-paint key (residual, follow-up)",
+   "shell.py aelix pickers (/resume, theme, /settings, /trust, session-in-use, plus /model, /thinking, /login, /logout via partial) - after: own=True, same layout and keys; /trust's title now wraps",
+   "tabbed and multiselect (/stats, /extension, /statusline, /scoped-models) - not affected (aelix titles), unchanged",
+   "cli/entry.py _prompt_one_shot_select (pre-TUI trust and project agent) - already wraps; no height cap or hold; not changed (follow-up)",
+   "tui/approval_dialog.py _BodyViewport - the held word is now a parameter; default 'Yes' gives identical text"
+  ],
+  "owner_decisions": [
+   "How the calls are marked: an extension's ctx.ui reaches AelixTUIContext.select itself, so the hold is the default and aelix's own pickers are the ones marked (own=True). A picker I missed would drop a key typed before its first paint instead of taking it, which errs on the safe side. The alternative is a proxy bound for extensions.",
+   "Layout: an extension's or the model's title that would fit whole but push its options off screen now scrolls, so the options stay visible. aelix's own pickers keep the old layout. As a result, /trust at 80x16 now wraps its whole disclosure and loses 'Do not trust', the counter and the hint off the bottom of the modal (Esc still answers). Marking /trust as non-own would scroll it and hold Enter instead.",
+   "Every option row is held, including literal 'Cancel' or 'No' rows; Esc and Ctrl+C are the keys that always answer. Exempting labelled refusals would need a new parameter.",
+   "Wrapping the uncut Directory or task lets a model lay text out to look like a row at a known width (for example a flattened 'Permission: plan' inside the Directory row breaking at column 80). It cannot hide the real rows, which are always drawn after it.",
+   "The 72-character batch member cut and the Source: elision are kept, because the decision named only the 300 cut and the 68 Directory elision."
+  ],
+  "follow_ups": [
+   "LoginContext (an extension login provider's select and confirm) should get the default held select and confirm, not aelix's own=True partial.",
+   "Spawn consent batch: member tasks are still cut at 72 characters (BATCH_TASK_PREVIEW_CHARS). Show whole members and hold, or keep the cut on purpose and document it.",
+   "Wrapped title rows could carry a hanging indent or continuation marker so a model cannot align text to look like a row of its own (Directory or task in consent).",
+   "The pre-TUI one-shot selector in cli/entry.py has no height cap or hold: a body taller than the terminal cuts its options, and a key typed before paint is taken.",
+   "/agents run as the first command of a fresh session takes the clamp without a dialog. This is documented in _host_consent_context but surprising; the live kit needs a prompt first.",
+   "pyte draws pi's '⚠️ Dangerous command:' row as just the ⚠ on both base and fix (VS16). Check it in a real terminal.",
+   "#179: option, tab and detail rows are still unnamed and cut at the screen edge."
+  ]
+ },
+ "#399 codex": {
+  "ran": true,
+  "filtered": false,
+  "reviewed_sha": "1b098733",
+  "report_path": "/Users/handochan/dev/aelix-ai/.omc/probes/399-live/cross/review.out",
+  "findings": [
+   {
+    "title": "Own picker /settings holds Enter at 12x8 (cat 1, also cat 3)",
+    "detail": "Terminal 12x8, settings {}, keys '/settings' CR, wait for first paint, then CR. Parent: Enter opens Theme picker. Head: row 02 shows 'Enter held ...' and Enter does nothing. own=True exempts only pre-paint keys; a tall wrapped own title still holds keys after painting, contradicting 'own pickers behave exactly as before at every terminal size'.",
+    "evidence": "Script .omc/probes/399-live/cross/probes/command_settings.py (output command_settings.out). Cmd: UV_CACHE_DIR=/tmp/399-work/cross/uv-cache uv run --no-sync python command_settings.py. Output: 'CASE parent terminal (12, 8) ... ENTER_OPENED_THEME_PICKER= True' / 'CASE head terminal (12, 8) ... ROW 02: Enter held … / ENTER_OPENED_THEME_PICKER= False / HOLDS= True'"
+   },
+   {
+    "title": "Options and spawn-consent Cancel not kept on screen (cat 2)",
+    "detail": "docs/guides/extension-authoring.md:119 promises options kept on screen; ADR-0199 line 335 explicitly includes Cancel. At 80x8, spawn consent for user-scope profile 'writer' (approval_mode auto, parent posture DEFAULT, task 'Review the module', cwd scratch) uses its 3-row modal on title, footer and rule; no option visible, Cancel invisible (Esc still cancels). Also CHANGELOG.md:1028 'own pickers lay out and take keys as before' falsified by findings 1 and 3.",
+    "evidence": "Script .omc/probes/399-live/cross/probes/live_ui.py (live_ui.out). Output: 'CASE spawn-hidden-cancel terminal= (80, 8) own= False confirm= False' / ROW 01: Delegate to agent 'writer'? / ROW 02: '8 of 9 lines hidden (↑0 ↓8) · PgUp/PgDn to scroll · Enter held until all seen' / ROW 03: rule / 'CHOICES_VISIBLE False False CANCEL_VISIBLE False'"
+   },
+   {
+    "title": "/settings loses visible choices at 20x8 (cat 3 regression)",
+    "detail": "Terminal 20x8, same keys as finding 1. Parent shows '▸ Theme' and 'Default model'. Head wraps title 'Settings — select to change (Esc to close)' into 3 rows filling the modal; neither choice visible.",
+    "evidence": "Same script command_settings.py. Output: 'CASE parent terminal (20, 8) ... ROW 02: ▸ Theme / ROW 03: Default model / Theme_visible= True Default_model_visible= True' then 'CASE head terminal (20, 8) ... ROW 01: Settings — select / ROW 02: to change (Esc to / ROW 03: close) / Theme_visible= False Default_model_visible= False'"
+   },
+   {
+    "title": "Reversed Ctrl+Up mutant passes all 15 touched test files (cat 4)",
+    "detail": "Mutation: both Ctrl+Up bindings scroll(-1,...) -> scroll(1,...) in select and confirm. Demo input: 40 title lines 'line 00'..'line 39', 80x18 modal, paint, PgDn, paint, Ctrl+Up, paint; select ['Yes','No'], confirm title 'Approve?'. Reference top 10->9 / 16->15; mutant 10->11 / 16->17. All tests in the 15 files the commit adds or changes still pass.",
+    "evidence": "Script .omc/probes/399-live/cross/probes/mutation.py (mutation.out, reference.out). Cmds: uv run --no-sync python mutation.py reference --demo ; uv run --no-sync python mutation.py mutant. Output: 'MUTATION: Ctrl+Up scrolls DOWN in select and confirm (2 bindings)' / 'mutant select: PgDn then Ctrl+Up: top 10 -> 11' / 'TEST FILES 15' / '1338 passed, 10 skipped, 2 warnings in 113.19s'"
+   }
+  ],
+  "verdicts": "1 Found: own-picker key preservation fails at 12x8 (/settings Enter held after paint). 2 Found: options and spawn-consent Cancel not always visible (guide:119, ADR-0199:335, CHANGELOG:1028). 3 Found: /settings loses visible choices at 20x8 and Enter behaviour at 12x8 vs parent. 4 Found: reversed Ctrl+Up passes all 15 touched test files (1338 passed, 10 skipped).",
+  "notes": "Codex v0.160.1 (gpt-6.1-sol, reasoning high, session 01a11a60-5d25-7ec1-85d4-ae979cdafac9), ~25 min, 188,414 tokens, no content filter. Tree had no tracked-file changes (git status clean) before removal. Codex noted one initial packaging test tried PyPI and failed DNS; later runs used offline builds. I did not re-run Codex's scripts myself. Artifacts copied to /Users/handochan/dev/aelix-ai/.omc/probes/399-live/cross/ (prompt.txt, review.out, probes/ with boundaries.py, command_settings.py/.out, common.py, live_ui.py/.out, mutation.py/.out, reference.out, commit.diff). Scripts reference common.py and absolute paths under /tmp/399-work/cross/ (tree now removed; agent/ scratch/ still under /tmp/399-work/cross/). Worktree /tmp/399-work/cross/tree removed."
+ },
+ "#399 verify": {
+  "pass": false,
+  "head_sha": "1b098733802783635fb68c694a53435a3580d124",
+  "blocking": [
+   {
+    "title": "/trust at 80x16 hides 'Do not trust' and its counter, so the picker no longer behaves as on 8f7d98aa",
+    "detail": "/trust's question now wraps to 8 rows and, under the own=True layout, the title is drawn whole while the rows below it are cut. At 80x16 (modal cap 11), 'Do not trust' and '(1/3)' are not drawn, and Down Down moves the highlight onto a row that is off screen. 'Do not trust' is the only /trust answer that saves a revocation (interpret_trust_option: trusted=False, remember=True); Esc saves nothing. The decision required /trust to be identical to 8f7d98aa at 80x16. Two texts are now false: the CHANGELOG line 'aelix's own pickers ... lay out and take keys as before' and the _TitleHeldControl docstring line '/trust lay out exactly as before'. 80x22, 80x24 and 120x40 still show every option.",
+    "evidence": ".omc/probes/399-live/verify/runs/F-trust-80x16 vs runs/B-trust-80x16 (live pty: F has 0 rows matching 'Do not trust' or '(1/3)', B has 2); out/pickers_compare.txt; in-process kit/trust_probe.py writes out/trust_F.txt ('modal 80x11: Do not trust drawn=False; after Down Down highlighted row drawn=False') and out/trust_B.txt (drawn=True)."
+   },
+   {
+    "title": "An extension title that fits the modal is scrolled to make room for its options, against decision 2",
+    "detail": "For untrusted dialogs, _TitleHeldControl._layout counts a title as whole only when title_count + needed <= height. Otherwise it scrolls the title in the rows left over after the options, even when the title alone fits the modal. Example: a 5-row extension question with 8 options in the 80x16 modal (11 rows) shows 1 of 5 title rows, holds Enter, and needs 4 PgDn. 8f7d98aa draws all 5 rows and cuts options from the bottom. Decision 2 says a fully drawn title is never held and the title is never withheld to make room; when the dialog cannot fit, rows below are cut or the options area scrolls. ADR-0253 §11.3 lists this choice ('How much room ... the modal less the rule and the option rows') under 'Decision (owner)'. It needs rework or the owner's sign-off, plus a fix to that attribution.",
+    "evidence": "kit/room_probe.py: out/room_probe.txt (F at 80x11: 'title rows drawn 1/5, Enter answered at once=False ... answered after 4 PgDn'; at 80x13: 3/5) vs out/room_probe_base.txt (B: 5/5, answered at once). The lane's test test_an_extension_title_scrolls_so_its_options_stay_on_screen pins this behaviour."
+   },
+   {
+    "title": "Sabotage no test catches: the resize reset, the consent and descriptor marks, and the own-picker hold",
+    "detail": "Each mutant was applied alone and stayed GREEN on tests/tui, agents_ext, builtin, extensions, agents and cli (8517 passed each). (1) v-resize-keeps-seen: _BodyViewport gets a constant width key. Page 5 PgDn at 60 columns, widen to 120, and Enter APPROVES the gate with its tail never drawn. test_a_resize_forgets_what_was_drawn only goes wide to narrow. (2) v-consent-own: consent _ask passes own=True, and an Enter typed before the consent dialog's first paint is taken. (3) v-descriptor-confirm-own: shell's descriptor confirm passes own=True. (4) v-own-never-holds: holds() returns False for own=True, so an own picker whose title is taller than the modal answers Enter unseen. Decision 2 applies the hold to every title.",
+    "evidence": "out/sabotage_broad.out (all GREEN, 8517 passed, 32 skipped); kit/gap_probes.py output in out/gap_probes.txt: under v-resize-keeps-seen 'resize 60->120 after 5 PgDn (tail drawn=False): Enter answered=True' (unmutated False); under v-own-never-holds 'own picker, title taller than modal: Enter answered=True'; consent_prepaint under v-consent-own 'pre-paint Enter answered=True' (unmutated False)."
+   },
+   {
+    "title": "own=True marks on aelix pickers are not pinned except /resume and /settings",
+    "detail": "Decision 3 requires aelix's own pickers to keep their pre-paint behaviour. Removing own=True from /trust or from the /model partial stays GREEN on every test (v-trust-not-own, v-model-not-own). By inspection, the theme picker, /thinking, /login, /logout and the session-in-use prompt are just as unpinned. Only /resume (seen['own']), /settings (test_run_tui_settings_toggles_steering_mode) and the permission fallback's absence of own go red.",
+    "evidence": "out/sabotage_broad.out: v-trust-not-own GREEN and v-model-not-own GREEN (8517 passed, 32 skipped each). out/sabotage.out: v-settings-not-own RED and v-permission-own RED; the lane's resume-not-own is red."
+   }
+  ],
+  "nonblocking": [
+   {
+    "title": "Stale second line number in two comments",
+    "detail": "stats_dashboard.py:46 and extension_manager.py:37 now read 'mirror context.py:83/76'. The --fix moved 74 to 83, but _PICK_RST moved from 76 to 85, and line 76 is now a comment. check_citations does not gate the '/76' part.",
+    "evidence": "tree context.py lines 83-85 are _PICK_DIM, _PICK_BOLD and _PICK_RST; line 76 starts the '# Sprint 6h30' comment. check_citations.py --check: 951 gated, none drifted."
+   },
+   {
+    "title": "ADR-0197 still states the 300-character task cut as a mandatory shipped mitigation",
+    "detail": "ADR-0197 R2 (around line 1311) says 'Mitigations, all mandatory and all shipped: ... truncate the task to 300 characters'. Its §(i) dialog text (around line 694) says 'the task truncated to 300 characters'. Neither has a pointer to the #399 amendment, which lives only in ADR-0199 and ADR-0253, and the R3 'stays OPEN' lines in ADR-0199 are not annotated either. This repo's convention so far has amended R2 only through ADR-0199, so this is drift rather than a new break.",
+    "evidence": "grep -n '300' docs/decisions/0197-subagent-runtime-seam-and-aelix-agents.md -> lines 694 and 1314; no '0199' or '#399' anywhere in ADR-0197."
+   },
+   {
+    "title": "'A CR used to be drawn as a space and ESC [8m as [8m' is true of select only",
+    "detail": "On 8f7d98aa, confirm already drew CR as ^M and ESC as ^[ through prompt-toolkit's control-character mapping, though not in reverse video, and it passed U+202E raw. The CHANGELOG bullet and the commit message group that sentence with confirm.",
+    "evidence": "kit/base_repro.py on B, out/base_repro.txt: confirm row 'a^Mb^[[8mc<U+202E>d [y/n]' with style class:control-character; select title '── a b [8mc...'."
+   },
+   {
+    "title": "The consent dialog's 'Cancel' option is held too",
+    "detail": "The decision text says 'EVERY option except cancel is held'. The implementation holds Enter on every option, including the consent dialog's 'Cancel' and the gate's 'No'. Esc and Ctrl+C always answer, so nothing is unsafe, but choosing 'Cancel' with Enter needs paging first. The wording is ambiguous, so this needs the owner's call.",
+    "evidence": "_confirm in tui/context.py checks control.holds() before any option. Live F-selno-80x24: Down to No, Enter held ('21 of 33 lines hidden ... Enter held'), and it answers only after paging."
+   },
+   {
+    "title": "Disclosed residuals, confirmed",
+    "detail": "(1) LoginContext (an extension's login provider) gets the own=True partial, so it takes a pre-paint key. (2) cli/entry.py _prompt_one_shot_select (the pre-TUI trust and project-agent prompt) has no height cap or hold. (3) The extension guide says 'with the options kept on screen', but when the option rows alone exceed the room, a title that fits is drawn whole and the options are cut. (4) The member rows of a batch dialog still cut at 72 characters.",
+    "evidence": "login_wizard.py:221 builds LoginContext from the select and confirm handed to run_login, which shell.py:1682-1684 passes as functools.partial(..., own=True); ADR-0253 §11.3 Residuals."
+   },
+   {
+    "title": "pyte drops the text after the warning sign on both trees",
+    "detail": "In pyte, '⚠️ Dangerous command:' renders as '⚠' alone, on 8f7d98aa and on the fix alike. This is a VS16 width disagreement between pyte and prompt-toolkit, and #399 did not cause it. prompt-toolkit's own screen has the full row (in-process).",
+    "evidence": "runs/B-sel-80x24 and runs/F-sel-80x24 both show '⚠' and then a blank; _title_rows('⚠️ Dangerous command:', 80) returns the row whole."
+   }
+  ],
+  "evidence": "The kit, run outputs and live screens are in /Users/handochan/dev/aelix-ai/.omc/probes/399-live/verify/ (EVIDENCE.txt, kit/, out/, runs/). The probes are my own: vdrive.py and run_v.sh drive the real CLI in a pty read with pyte, with a scripted mock model on 127.0.0.1:24150-24176, a fake key, and per-run isolated AELIX_CODING_AGENT_DIR, AELIX_SETTINGS_PATH, HOME and cwd. The HTTPS_PROXY CONNECT recorder on 24199 logged 0 CONNECT attempts in the gates, consent and pickers groups.\n\nDEFECT: reproduced on 8f7d98aa and gone on 1b098733.\n- Base (8f7d98aa): the pi permission-gate port at 80x24 ran the 450-word command on Enter with its tail never on screen. confirm took y the same way. A 4-option select approved on Enter. Spawn consent spawned the child with the task cut.\n- Fix (1b098733) at 80x24: Enter, Space and Ctrl+J are held on every option. y and Y are held. After 1 to 3 PgDn the dialog answers. n and Esc answer at once. A short title answers at once. At 120x40 everything fits and answers at once. ^[, ^M and <U+202E> are drawn in reverse video in both select and confirm.\n- Consent: the agent tool and /agents run show the whole task and directory, hold Enter with Cancel on screen, and Esc declines.\n- In-process (kit/inproc.py, under a real Application): 77 OK, 0 FAIL. This includes: the pre-paint drop for untrusted calls and the take for own; a short title over 8 or 30 options answering at every height from 1 to 24; wide characters; filter typing; a resize; and the 1-row modal.\n- The permission fallback holds all 4 of its options and drops a pre-paint Enter.\n- Cost per paint: 141 ms for a 400K-character title.\n\nPICKERS, live, fix vs base: /model, /settings, /resume, /thinking, /agents and /login are snap-identical at 80x16, 80x22, 80x24 and 120x40. /trust breaks at 80x16 (blocking).\n\nSABOTAGE: 22 of my mutants are RED on the 8 touched test files. 6 are GREEN on the broad set (8517 tests): resize-keeps-seen (a real bypass), consent-own, descriptor-confirm-own, own-never-holds, trust-not-own and model-not-own.\n\nGATES, run on a worktree at the same HEAD:\n- ruff check: passed. check_types.py run with env -u VIRTUAL_ENV: PASS, 286 files, 0 errors.\n- pyright --pythonplatform Windows on the 18 changed product files: 0 errors.\n- check_citations: 951 gated, none drifted. sync_bundled_docs: 0 updated, and the guide matches its bundled copy.\n- Python 3.11, 8 touched test files: 1116 passed.\n- Whole suite, run last with VIRTUAL_ENV and both AELIX_ paths unset (uv run pytest -p no:cacheprovider -q): 13973 passed, 44 skipped. This matches the commit message.\n- tests/tui/test_select_title_held.py is tracked.\n\nWINDOWS: I read the new and changed tests. Path assertions use str literals or resolve() on both sides. No pty, os-specific or separator assumptions found.\n\nMESSAGE: no line starts with '#', and it ends with the exact two trailer lines.\n\nDOCS: the pi citations are correct: extension-selector.ts:48, and permission-gate.ts puts the whole command in the title.\n\n/tmp/wt-399 is untouched at HEAD 1b098733. My worktrees were removed."
+ }
+}
