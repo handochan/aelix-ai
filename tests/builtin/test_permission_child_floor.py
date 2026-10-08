@@ -138,7 +138,7 @@ async def test_headless_default_block_blocks_write_and_bash(
 async def test_headless_block_still_allows_read_only() -> None:
     """The floor gates MUTATING tools only — a child must still be able to investigate.
 
-    Branch (a) (``permission.py:555-557``) returns before branch (d) is reached,
+    Branch (a) (``permission.py:565-567``) returns before branch (d) is reached,
     so ``read`` is unaffected. A floor that also blocked reads would make a
     read-only delegated agent useless, which is P2's entire default posture.
     """

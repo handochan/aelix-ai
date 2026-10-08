@@ -242,7 +242,7 @@ jobs:
         run: |
           # aelix-server was dropped above → this manifest lists ONLY the
           # 4 published wheels + 4 sdists that github-release/install.sh consume.
-          sha256sum *.whl *.tar.gz > SHA256SUMS
+          sha256sum -- *.whl *.tar.gz > SHA256SUMS
           echo 'Release checksums:'; cat SHA256SUMS
 
       - name: Upload distributions artifact
@@ -252,9 +252,16 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  memory-settings-candidate:
+    name: Verify the publish artifacts with installed Memory
+    needs: build
+    uses: ./.github/workflows/memory-settings-candidate.yml
+    with:
+      artifact_name: dist
+
   publish:
     name: Publish to PyPI (Trusted Publishing)
-    needs: build
+    needs: [build, memory-settings-candidate]
     # Pre-release tags publish too (ADR-0240). Until beta.2 this job carried
     # `if: !contains(github.ref_name, '-')` so a hyphenated tag never started
     # it. That gate left the four PyPI names holding only the `0.0.0a0`
@@ -320,7 +327,7 @@ jobs:
 
   github-release:
     name: Publish GitHub Release (wheels + SHA256SUMS + SBOM)
-    needs: build
+    needs: [build, memory-settings-candidate]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the Release + upload assets (ONLY elevation here)

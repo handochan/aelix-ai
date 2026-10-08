@@ -46,6 +46,7 @@ from aelix_ai.messages import TextContent
 from aelix_ai.tools import Tool as AgentTool
 from aelix_ai.tools import ToolResult
 from aelix_coding_agent.cli.config import VERSION, get_agent_dir
+from aelix_coding_agent.tools.provenance import mark_builtin
 
 from aelix_status.snapshot import (
     RuntimeSnapshot,
@@ -92,7 +93,7 @@ Only the Chat-Completions path normalises, and it does so by accident of
 tests ``if params is None`` (``_openai_responses_shared.py:171``) and ``{}`` is
 not ``None``, so it ships the empty object verbatim; ``_google_shared.py:478``
 assigns it with no test at all. Declaring the schema here makes all three agree,
-which is why ``tools/ls.py:56-69`` — an all-optional tool — writes it out too.
+which is why ``tools/ls.py:57-70`` — an all-optional tool — writes it out too.
 
 ``required: []`` is carried for the same reason ``ls`` carries it: it is the
 explicit statement that there are no required arguments, as opposed to an
@@ -104,14 +105,14 @@ def create_status_tool(execute: Any) -> AgentTool:
     """Build the ``aelix_status`` tool.
 
     NO ``execution_mode="sequential"``. The ``agent`` tool sets it as a security
-    control (``aelix_agents/tool.py:580-589``: it downgrades the whole batch so a
+    control (``aelix_agents/tool.py:581-590``: it downgrades the whole batch so a
     modal consent dialog cannot race), and this tool has no dialog, no process
     and no mutation to protect. Declaring it here would silently serialise every
     batch that happens to contain a status call — a real cost for a fabricated
     reason.
     """
 
-    return AgentTool(
+    tool = AgentTool(
         name=STATUS_TOOL_NAME,
         # Issue #120 named this tool by name: the old hard-coded "Available
         # tools" sentence listed seven built-ins and omitted this one and
@@ -134,6 +135,10 @@ def create_status_tool(execute: Any) -> AgentTool:
         parameters=dict(STATUS_TOOL_PARAMETERS),
         execute=execute,
     )
+    # ADR-0253 (#188): read-only by provenance. The permission gate lets this
+    # OBJECT through silently in every posture, PLAN included; a third-party
+    # tool that merely shares the name is treated as mutating.
+    return mark_builtin(tool, "read_only")
 
 
 @dataclass
@@ -266,7 +271,7 @@ class StatusExtension:
     def _active_tools(self) -> tuple[str, ...]:
         """``ctx.get_active_tools()``, or empty when nothing is bound.
 
-        The unbound action is a THROWING stub (``extensions/api.py:426``,
+        The unbound action is a THROWING stub (``extensions/api.py:427``,
         ``_make_throwing_stub``), unlike ``get_all_tools`` which the API itself
         already converts to ``[]``. So this one has to catch, and an empty tuple
         is the right degradation: "we could not determine the active tools" is

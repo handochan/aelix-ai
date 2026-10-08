@@ -74,6 +74,8 @@ if TYPE_CHECKING:
 
     from aelix_ai.settings import SettingsManager
 
+    from aelix_coding_agent.extensions.api import RegisteredSetting
+
 
 # Sentinel apply-results so the shell knows what (if anything) to do after a row
 # is applied. ``APPLY_OK`` = persisted (commit a green line). ``APPLY_DELEGATE``
@@ -135,6 +137,8 @@ class SettingsRow:
     over a closure variable that is already frozen — so the toggle looks like it
     worked, ``/agents run`` still refuses, and the user has been told twice that
     they enabled something they did not."""
+
+    extension_setting: RegisteredSetting | None = None
 
 
 def _on_off(value: bool) -> str:

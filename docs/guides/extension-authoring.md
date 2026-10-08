@@ -716,3 +716,37 @@ the catalog document from your built wheels, so you never hand-maintain it.
 ```bash
 aelix extension index dist/ --name "Acme internal"
 ```
+
+## Global settings toggles
+
+An extension can add a live boolean row to `/settings` without adding a field to
+the host's settings schema. Persist the global choice in your extension's
+user-owned storage and expose that same value through any slash/CLI controls:
+
+```python
+def setup(aelix):
+    store = MyUserSettings()  # reads do not initialize missing storage
+    aelix.register_setting(
+        "enabled",
+        label="Memory",
+        get_value=store.is_enabled,       # returns exactly bool; read-only
+        set_value=store.set_enabled,      # accepts bool; sync or async
+        description="Use memory globally across projects and sessions.",
+    )
+```
+
+Registration calls neither callback. Opening the menu reads the current value;
+selection toggles through the owner, awaits persistence and rereads it to confirm
+the change. The desired value is the opposite of the value shown in the selected
+row; another process changing it while the menu is open cannot reverse the user's
+ON/OFF intent. Callback failure makes the row unavailable with a generic diagnostic;
+exception text is not displayed. Labels are qualified when they collide with
+built-ins or other contributions, with unique final labels. Built-in settings
+continue to use `SettingsManager` unchanged.
+
+Reload replaces the runner's contributions. Stale callbacks are rejected before
+owner invocation, including invalidation between coroutine creation and awaiting.
+An operation already running belongs to the extension: its setter must implement
+any cancellation or transactional revocation its own persistence requires.
+`/settings` is interactive; this API does not introduce a headless/RPC settings UI.
+This surface is an Aelix addition (ADR-0256), separate from `register_flag`.

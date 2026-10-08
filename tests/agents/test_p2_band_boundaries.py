@@ -431,6 +431,9 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # ``test_kernel_has_no_subagent_surface`` still passes. A session-format
         # question created the requirement; delegation did not.
         "packages/aelix-agent-core/src/aelix_agent_core/session/context.py",
+        # ADR-0256: generic callback-free aggregation for /settings.
+        # No coding-agent import or persistence/consent policy in the kernel.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/_extension_runner.py",
     }
 )
 

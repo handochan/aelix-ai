@@ -207,7 +207,7 @@ async def test_prompt_lists_the_global_target_first_and_labels_the_trust_gate(
 def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
-    ``extensions/loader.py:790-792`` scans ``get_agent_dir()/extensions`` and
+    ``extensions/loader.py:791-793`` scans ``get_agent_dir()/extensions`` and
     ``cli/entry.py:1507`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
@@ -440,7 +440,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:3382-3385`` gates the factory rebuild on
+    ``tui/shell.py:3405-3408`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
@@ -579,8 +579,8 @@ async def test_emitted_api_grep_command_actually_RUNS_in_every_surface() -> None
     three engines a model can actually reach:
 
       (a) real ``/bin/grep`` via the shipped bash tool,
-      (b) ripgrep via the shipped grep tool (``tools/grep.py:311``),
-      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:364-366``).
+      (b) ripgrep via the shipped grep tool (``tools/grep.py:312``),
+      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:365-367``).
 
     All three must agree, exit clean, and surface ``register_tool`` (the call
     the block is mostly about) AND the ``def on(`` hook surface.
@@ -817,7 +817,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:571-572``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:581-582``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -910,7 +910,7 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
       above the read-only short-circuit precisely so it binds headless too
       (``permission.py:545-553``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:619-622``, ``headless_default == "block"``).
+      (``permission.py:629-632``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most

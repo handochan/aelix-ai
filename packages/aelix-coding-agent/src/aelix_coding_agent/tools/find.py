@@ -22,6 +22,7 @@ from aelix_coding_agent.tools._truncate import (
     format_size,
     truncate_head,
 )
+from aelix_coding_agent.tools.provenance import mark_builtin
 from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 1000
@@ -275,7 +276,7 @@ def create_find_tool(
             ),
         )
 
-    return AgentTool(
+    tool = AgentTool(
         name="find",
         # Pi parity, verbatim: ``findToolSystemPromptContribution``
         # (``coding-agent/src/core/tools/find.ts:37-40``).
@@ -289,6 +290,8 @@ def create_find_tool(
         execute=execute,
         execution_mode="parallel",
     )
+    # ADR-0253 (#188): the permission gate trusts this OBJECT, not the name.
+    return mark_builtin(tool, "read_only")
 
 
 __all__ = ["FindOperations", "FindToolDetails", "create_find_tool"]

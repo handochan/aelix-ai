@@ -132,7 +132,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over a mutable flag because the real one
-    (``extensions/api.py:1204`` → ``:1224-1225``) is TIME-VARYING, not a mode
+    (``extensions/api.py:1217`` → ``:1237-1238``) is TIME-VARYING, not a mode
     (finding OC-7).
     """
 
@@ -1027,7 +1027,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:271``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:272``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.

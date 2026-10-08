@@ -1369,6 +1369,10 @@ async def run_tui(
         # (dual-write) where supported. Loops until Esc so several settings can be
         # changed in one open (pi parity). Sprint 6h₁₇ (ADR-0125) shipped a 4-row
         # subset; this grows it to ~16 via the SettingsManager seam.
+        from aelix_coding_agent.tui.extension_settings import (
+            apply_extension_setting,
+            extension_settings_rows,
+        )
         from aelix_coding_agent.tui.settings_rows import (
             apply_setting,
             build_settings_rows,
@@ -1400,9 +1404,23 @@ async def run_tui(
         cursor_idx = 0
         while True:
             rows = build_settings_rows(settings_manager)
+            # Read the current runner on every pass; reload must not retain old callbacks.
+            runner = getattr(runtime_host.harness, "extension_runner", None)
+            get_settings = getattr(runner, "get_settings", None)
+            try:
+                contributions = (
+                    cast("dict[str, Any]", get_settings()) if callable(get_settings) else {}
+                )
+            except Exception:
+                contributions = {}
+            rows.extend(extension_settings_rows(contributions, rows))
             # Pi screenshot parity: pad the label column so values line up.
             width = max(len(r.label) for r in rows) + 2
-            labels = [f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows]
+            displayed_values = [r.read(settings_manager) for r in rows]
+            labels = [
+                f"{r.label.ljust(width)}{value}"
+                for r, value in zip(rows, displayed_values, strict=True)
+            ]
             cursor_idx = max(0, min(cursor_idx, len(labels) - 1))
             # Bind ``rows`` via a default arg so the per-highlight detail closure
             # references THIS iteration's rows (ruff B023 — the loop rebuilds rows
@@ -1444,7 +1462,12 @@ async def run_tui(
                     )
                     continue
 
-            result = apply_setting(row, settings_manager, int_value=int_value)
+            if row.extension_setting is not None:
+                result = await apply_extension_setting(
+                    row, displayed_value=displayed_values[row_idx]
+                )
+            else:
+                result = apply_setting(row, settings_manager, int_value=int_value)
             if result.kind == "delegate":
                 action = actions.get(row.key)
                 if action is not None:

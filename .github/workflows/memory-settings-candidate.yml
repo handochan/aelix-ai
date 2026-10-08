@@ -1,0 +1,67 @@
+name: Installed Memory settings candidate
+
+on:
+  push:
+    branches: [release/memory-settings-compatibility]
+  pull_request:
+    branches: [maintenance/beta.2]
+  workflow_call:
+    inputs:
+      artifact_name:
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ inputs.artifact_name == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.12.23'
+          checksum: '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6'
+          python-version: '3.12'
+      - run: uv build --all-packages
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: memory-settings-candidate-dist
+          path: dist/*.whl
+          if-no-files-found: error
+
+  install:
+    needs: build
+    if: ${{ always() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          repository: handochan/aelix-memory
+          ref: 8c10ec3bf90c213404e4b427ef2d1d304ff98592
+          path: .memory-src
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.12.23'
+          checksum: ${{ runner.os == 'Windows' && '75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90' || (runner.os == 'macOS' && runner.arch == 'ARM64') && '50487ae565ccd96e499056b4674d438f4c53170202617b4c759defe0c6a1b544' || runner.os == 'macOS' && '960da44cb4b73685206ddd250b19e0a117fa41095710c1038f081f5cb613efb4' || '9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6' }}
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.artifact_name || 'memory-settings-candidate-dist' }}
+          path: dist
+      - name: Install candidate wheels over beta.2 and exercise installed Memory
+        run: uv run --no-project --python ${{ matrix.python }} python scripts/check_memory_settings_release.py --memory-tests .memory-src/tests
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: memory-release-${{ matrix.os }}-py${{ matrix.python }}
+          path: memory-release-check.json
+          if-no-files-found: error

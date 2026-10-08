@@ -1055,3 +1055,5 @@ Draft ADR 및 target Phase 요약 (전체).
 | 0037  | Streaming Event Union — adapter coverage   | Phase 4      |
 
 Open question이 ADR로 정리되면 이 표를 함께 갱신합니다.
+
+| [0256](0256-extension-owned-global-settings-toggles.md) | Extension-owned global settings toggles | Accepted |

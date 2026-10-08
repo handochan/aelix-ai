@@ -8,15 +8,15 @@ Protocol in ``subagent_contract.py`` deliberately carries no grant parameter
 ``test_product_core_never_prompts_for_spawn_consent``).
 
 THE PROBLEM IS AN EMPTY GATE, NOT UX. Measured on the shipped ladder:
-``_MUTATING`` (``builtin/permission.py:77``) is
+``_MUTATING`` (``builtin/permission.py:78``) is
 ``['bash','create_file','edit','execute_command','sh','shell','write','write_file']``
 — ``"agent"`` is NOT in it, so an ``agent`` tool call falls into the
-non-mutating branch at ``permission.py:556-557`` and is **silently allowed**.
+non-mutating branch at ``permission.py:566-567`` and is **silently allowed**.
 Delegation is today the one action a model can take that starts a whole second
 agent with real authority and asks nobody.
 
 WHY NOT JUST ADD ``"agent"`` TO ``_MUTATING``. ``_rule_key``
-(``permission.py:222-244``) falls through to an args-blind ``f"tool:{tool_name}"``
+(``permission.py:223-245``) falls through to an args-blind ``f"tool:{tool_name}"``
 at ``:116``. One "allow for this session" would then approve EVERY profile
 against EVERY task for the rest of the run. The gate has to live here, keyed on
 what actually varies. ``builtin/permission.py`` is deliberately left alone.
@@ -69,7 +69,7 @@ the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1203-1204`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1216-1217`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and
@@ -102,7 +102,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:626``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:636``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -239,7 +239,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:304-328``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:305-329``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -1414,7 +1414,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:271``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:272``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1422,7 +1422,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:271)."
+            "AgentCall guarantees at least one task (tool.py:272)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter

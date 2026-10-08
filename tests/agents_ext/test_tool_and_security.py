@@ -3,7 +3,7 @@
 Driven against the REAL extension objects — :class:`_ExtensionRuntime`,
 :class:`ExtensionAPI`, :class:`ExtensionContext` — and not against fakes of
 them, for one reason that matters: ``ctx.has_ui`` is
-``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1224-1225``), a
+``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1237-1238``), a
 TIME-VARYING value (finding OC-7). A hand-rolled context with a boolean
 attribute cannot express "the UI was bound after this extension loaded", which
 is the state every interactive session is actually in.
@@ -1393,7 +1393,7 @@ async def test_rule_8_timeout_ms_is_bounded_at_both_ends(
     apart, and for ``True`` that is the whole test. ``isinstance(True, int)`` is
     True, so ``timeout_ms: true`` reaches the range check as the integer ``1``
     and today's ``MIN_TIMEOUT_MS`` of 1000 refuses it anyway — dropping
-    ``isinstance(timeout_ms, bool) or`` from ``tool.py:500`` therefore changes
+    ``isinstance(timeout_ms, bool) or`` from ``tool.py:501`` therefore changes
     nothing an ``is_error`` assertion can see. (An earlier version of this
     docstring claimed a bare ``true`` would "become a 1 ms deadline". It would
     not, and a reader who believed it would conclude the guard was load-bearing
@@ -1469,7 +1469,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so ``and result.error not in body`` could be dropped from
-    ``tool.py:848`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:861`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the

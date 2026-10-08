@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
+from aelix_coding_agent.tools.provenance import builtin_provenance, mark_builtin
 from rich.cells import cell_len, set_cell_size
 
 from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
@@ -259,10 +260,10 @@ class AgentCall:
     task — are P4 ``aelix-team`` work, and the reason is not conservatism: with
     one profile every member shares the same clamp
     (``posture.child_permission_mode``), the same ``consent_is_required``
-    (``consent.py:530-570``) and the same ``_may_widen``
-    (``consent.py:446-527``), which is what makes ONE consent decision for the
+    (``consent.py:533-573``) and the same ``_may_widen``
+    (``consent.py:449-530``), which is what makes ONE consent decision for the
     whole batch coherent. :class:`~aelix_agents.consent.SpawnGrant` is singular
-    by construction (``consent.py:248-255``: one ``profile``, one
+    by construction (``consent.py:251-258``: one ``profile``, one
     ``source_path``, one ``mode``).
     """
 
@@ -590,7 +591,7 @@ def create_agent_tool(
     pins that the re-injection cannot silently drop it.
     """
 
-    return AgentTool(
+    tool = AgentTool(
         name=AGENT_TOOL_NAME,
         # Issue #120 — the other tool the old hard-coded sentence omitted. It
         # is default-OFF and depth-gated, so when it is absent the derived list
@@ -603,6 +604,11 @@ def create_agent_tool(
         execute=execute,
         execution_mode="sequential",
     )
+    # ADR-0253 (#188): ``delegation`` provenance keeps ADR-0197's treatment —
+    # the permission gate neither prompts for nor blocks THIS object; spawn
+    # consent is ``consent.py``'s. A third-party tool named ``agent`` gets no
+    # such pass: it is an unknown tool, and unknown tools are mutating.
+    return mark_builtin(tool, "delegation")
 
 
 def with_description(tool: AgentTool, description: str) -> AgentTool:
@@ -616,7 +622,14 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     ``turn_start`` handler would already be too late for the current turn.
     """
 
-    return dataclasses.replace(tool, description=description)
+    # The replacement is a NEW object, so it carries no provenance of its own
+    # (ADR-0253): carry the original's over, or the gate would treat this
+    # turn's ``agent`` tool as an unknown, mutating one — fail-closed, but a
+    # regression. Carried, never invented: a tool aelix did not build stays
+    # unmarked through the copy.
+    replaced = dataclasses.replace(tool, description=description)
+    provenance = builtin_provenance(tool)
+    return replaced if provenance is None else mark_builtin(replaced, provenance)
 
 
 def format_partial(text: str) -> ToolResult:

@@ -356,7 +356,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:290``/``tool.py:749`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:290``/``tool.py:762`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -431,7 +431,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:718``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:719``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a
@@ -940,7 +940,7 @@ class _SubagentRuntimeImpl:
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
-        containment ``EventBus`` itself applies (``extensions/api.py:329-335``).
+        containment ``EventBus`` itself applies (``extensions/api.py:330-336``).
         """
 
         progress = SubagentProgress(

@@ -250,7 +250,7 @@ def test_missing_skill_path_is_warning_at_parse(tmp_path: Path) -> None:
 def test_project_scope_extensions_is_error() -> None:
     """THE RCE CUT.
 
-    ``extensions/loader.py:795-859`` exec_module's explicit extension paths
+    ``extensions/loader.py:796-860`` exec_module's explicit extension paths
     outside BOTH the ``no_discovery`` and ``no_project_local`` guards, so a
     checked-in project profile declaring ``extensions:`` would run arbitrary
     code that Project Trust never sees.

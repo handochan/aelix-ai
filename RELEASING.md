@@ -17,9 +17,9 @@ version, in dependency order:
 deferred to a later release. The release workflow builds it as part of
 `uv build --all-packages` and then drops its artifacts before upload.
 
-All four published packages share the same version (currently `0.1.0b1`). The
+All four published packages share the same version (currently `0.1.0b2.post1`). The
 inter-package dependencies are pinned to that exact version (e.g. the meta
-depends on `aelix-ai==0.1.0b1`), so installing `aelix` from PyPI always pulls a
+depends on `aelix-ai==0.1.0b2.post1`), so installing `aelix` from PyPI always pulls a
 matching, lock-step set.
 
 The `aelix` console script is declared **twice**, by both `aelix-coding-agent`
@@ -83,6 +83,42 @@ is needed for subsequent releases.
 > temporarily pointing the publish step at the TestPyPI repository.
 
 ---
+
+## Memory compatibility maintenance release
+
+Issue [#418](https://github.com/handochan/aelix-ai/issues/418) is a deliberate,
+limited exception to the default-branch tag flow. The published beta.2 host does
+not expose the settings contribution API already used by Memory 0.2.0, while the
+beta.3 milestone has separate required exit conditions still open.
+
+The candidate is based on `v0.1.0-beta.2`, is reviewed through a PR targeting
+`maintenance/beta.2`, and is tagged there as `v0.1.0-beta.2.post1` (PEP 440
+`0.1.0b2.post1`). This remains a prerelease and sorts between beta.2 and beta.3.
+A beta post-release is an exceptional compatibility cut, not the normal version
+scheme for feature releases. Unrelated main changes remain Unreleased.
+
+The default branch receives its own reviewed version/pin, update-feed and
+changelog PR so installed users receive the correct notice. Both PRs must pass
+CI before the tag is pushed. The four published packages and server workspace
+version, six exact sibling pins, the TUI extra, version-consistency test, lock
+and SBOM must agree with the maintenance tag.
+
+Before publishing, the release workflow downloads the exact `dist` artifact to
+all nine Linux/macOS/Windows and Python 3.11/3.12/3.13 combinations. It installs
+the candidate over beta.2, checks preserved synthetic settings, sessions,
+extension records and memory consent/data, verifies the installed Memory source
+is BOUND, and runs its deterministic tests. Both PyPI and GitHub publication
+require every installed-candidate job to pass. These jobs make no live model
+requests and do not represent interactive Windows desktop verification.
+
+The installed Memory contract also requires PLAN to block its optional tool.
+Backport identity-based PLAN classification from #188, without importing the
+separate main DEFAULT/approval policy or changing child clamping/consent.
+
+A separate actual TUI and live automatic-memory check uses the built candidate
+wheels before tagging. Record exact artifacts and results in committed
+verification and the issue. The owner-approved host release scope does not waive
+these gates or the existing `pypi` environment protection.
 
 ## Cutting a release
 

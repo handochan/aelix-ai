@@ -20,7 +20,7 @@ One-way pi compat: a pi ``agents/<name>.md`` role loads here unchanged; an
 aelix profile using ``extensions:``/``role:`` does not run on pi.
 
 Scope note (the RCE cut): ``extensions:`` names ``.py`` files that
-``extensions/loader.py:795-859`` ``exec_module``s **outside** both the
+``extensions/loader.py:796-860`` ``exec_module``s **outside** both the
 ``no_discovery`` and the ``no_project_local`` guards, i.e. an explicit
 extension path is ungated by Project Trust. A project-scoped profile is
 therefore forbidden from declaring ``extensions:`` at all
@@ -362,7 +362,7 @@ def parse_profile(
     skills = _parse_path_list(frontmatter, "skills", profile_dir, _err, _warn)
     extensions = _parse_path_list(frontmatter, "extensions", profile_dir, _err, _warn)
 
-    # THE RCE CUT. ``extensions/loader.py:795-859`` exec_module's explicit
+    # THE RCE CUT. ``extensions/loader.py:796-860`` exec_module's explicit
     # extension paths OUTSIDE both the ``no_discovery`` and ``no_project_local``
     # guards, so a project-scoped profile declaring ``extensions:`` would be a
     # checked-in file that runs arbitrary code the Project Trust gate never sees.

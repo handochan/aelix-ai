@@ -90,11 +90,9 @@ def _write_event(path: str, tool_name: str = "write") -> ToolCallHookEvent:
 
 
 def _read_event() -> ToolCallHookEvent:
-    return ToolCallHookEvent(
-        tool_call_id="t1",
-        tool_name="read",
-        args={"path": "/etc/hosts"},
-    )
+    from tests.builtin.gate_tools import builtin_event
+
+    return builtin_event("read", {"path": "/etc/hosts"})
 
 
 # ============================================================

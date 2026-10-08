@@ -388,7 +388,7 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED AGAINST BOTH CAPS,
     and it is the claim most likely to rot. ``read`` truncates when EITHER
     binds — ``truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
-    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:221-223`` — so both are
+    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:222-224`` — so both are
     pinned by ``tests/cli/test_docs_signpost.py``. Widest guide on this tree::
 
         extension-authoring.md   33620 bytes   (DEFAULT_MAX_BYTES = 51200)
@@ -516,7 +516,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     ``$AELIX_CODING_AGENT_DIR`` set after import is still honoured — and so the
     emitted path is the directory the loader actually scans
     (``get_agent_dir()/extensions`` → ``~/.aelix/agent/extensions``, see
-    ``extensions/loader.py:790-792``), never the plausible-but-wrong
+    ``extensions/loader.py:791-793``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
     WHO CHOOSES (issue #161). Ordering alone did not settle it: the global
@@ -545,7 +545,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     exists to kill. ``cli/entry.py:1484`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
-    (``loader.py:790-792``) is not trust-gated at all, so it is the target that
+    (``loader.py:791-793``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
@@ -690,7 +690,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1352-1678``). A model told
+        # typed overloads at ``extensions/api.py:1365-1691``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a
@@ -709,8 +709,8 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # bash tool. ``-E`` costs three characters and makes the command the
         # model is handed actually run. Verified 48/10/38 identically in all
         # three engines the model can reach: real ``/bin/grep -E`` via the bash
-        # tool, ripgrep via ``tools/grep.py:311``, and the Python ``re``
-        # fallback at ``tools/grep.py:364-366``. The ``-E`` sits outside the
+        # tool, ripgrep via ``tools/grep.py:312``, and the Python ``re``
+        # fallback at ``tools/grep.py:365-367``. The ``-E`` sits outside the
         # quotes so the quoted pattern is still copy-pastable verbatim into the
         # grep TOOL's ``pattern`` argument, which takes no flags.
         #
@@ -748,7 +748,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # 50KB cap, so a session that can read but not search would otherwise
         # lose the API surface entirely — a worse outcome than a slower route.
         # ``read``'s own truncation notice already reports the next ``offset``
-        # (``tools/read.py:252-259``), so windowing is a real instruction and
+        # (``tools/read.py:253-260``), so windowing is a real instruction and
         # not a suggestion to guess.
         how = (
             "grep -nE 'def (register_|on\\()' it, then read at the line it reports"
@@ -774,7 +774,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:571-572``) BEFORE the write check, and a headless run
+    # (``permission.py:581-582``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
     # branch (d) at ``:486-489`` allows (or, for a delegated child, blocks).
     # The prompt is reached only via branch (h) at ``:491-498``, because
@@ -817,7 +817,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3382``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3405``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:132-148``) /reload routes to

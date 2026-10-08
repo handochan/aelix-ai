@@ -138,7 +138,7 @@ def classify_scope(
       ``profile.parse_profile``'s ``extensions:``-at-project-scope prohibition —
       the last of which is the RCE cut (tier-3 explicit extension paths are
       ungated by BOTH ``--no-discovery`` and ``--no-project-local``,
-      ``extensions/loader.py:795-859``). Proven end to end before the fix.
+      ``extensions/loader.py:796-860``). Proven end to end before the fix.
 
     ``spelled`` defaults to ``resolved`` so a caller that only has the resolved
     path keeps the old (target-only) behaviour; :func:`load_profile_file` passes

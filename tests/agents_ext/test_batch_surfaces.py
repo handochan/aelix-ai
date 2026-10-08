@@ -1425,7 +1425,7 @@ def test_end_group_clears_both_the_aggregate_row_and_the_panel() -> None:
 
 def test_end_group_cannot_blank_a_panel_it_does_not_own() -> None:
     """One widget key is safe rather than lucky — ``agent`` declares
-    ``execution_mode="sequential"`` (``tool.py:604``) so two calls never have
+    ``execution_mode="sequential"`` (``tool.py:605``) so two calls never have
     panels open at once. The ownership check is what keeps that a belt rather
     than a bet."""
 
@@ -1816,7 +1816,7 @@ def test_a_hostile_profile_name_cannot_grow_the_panel_header() -> None:
 
 
 def test_the_panel_is_bounded_in_HEIGHT_and_says_what_it_dropped() -> None:
-    """The second dimension. ``tool.py:392-398`` refuses a ninth task, so this
+    """The second dimension. ``tool.py:393-399`` refuses a ninth task, so this
     can only fire on a bug — but the window it feeds has no height cap at all,
     and a silently SHORTER panel reads as "those children were dropped"."""
 

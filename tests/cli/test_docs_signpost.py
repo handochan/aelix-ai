@@ -197,7 +197,7 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
 
     BOTH CAPS, which is #101's L2 review. ``read`` calls ``truncate_head(
     selected, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)``
-    (``tools/read.py:221-223``) and truncates when EITHER binds — the details
+    (``tools/read.py:222-224``) and truncates when EITHER binds — the details
     even carry ``truncated_by`` to say which. The first revision of this test
     asserted only the byte cap, so a guide could pass it while the prompt told
     the model something false. Measured with one planted 2603-line / 33 834-byte

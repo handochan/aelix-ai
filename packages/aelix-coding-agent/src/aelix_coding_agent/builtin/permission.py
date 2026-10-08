@@ -58,6 +58,7 @@ from aelix_coding_agent.builtin.permission_mode import (
     PermissionPosture,
 )
 from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
+from aelix_coding_agent.tools.provenance import builtin_provenance
 
 # Shell metacharacters that introduce a NEW command / sub-command. A
 # session-approved bash prefix must NEVER auto-allow a command that contains one
@@ -547,7 +548,16 @@ class PermissionExtension:
         # the ``not has_ui`` ALLOW branch so the plan-mode guarantee holds on
         # non-interactive runs too). Read-only tools stay allowed so the agent
         # can still investigate while planning.
-        if mode == PermissionMode.PLAN and is_mutating:
+        if mode == PermissionMode.PLAN:
+            # Resolve the same LAST object the loop executes; tool names are not
+            # proof of read-only behavior. Missing context fails closed.
+            tool = None
+            if event.context is not None:
+                for candidate in event.context.tools:
+                    if candidate.name == event.tool_name:
+                        tool = candidate
+            if builtin_provenance(tool) in {"read_only", "delegation"}:
+                return None
             return ToolCallResult(
                 block=True, reason=MODE_META[PermissionMode.PLAN].block_reason
             )

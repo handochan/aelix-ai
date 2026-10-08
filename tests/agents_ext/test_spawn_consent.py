@@ -8,7 +8,7 @@ no real TUI is involved — the modal's rendering is explicitly out of scope
 
 The gate exists because the shipped one is EMPTY: ``"agent"`` is not in
 ``builtin/permission.py``'s ``_MUTATING``, so a model-driven ``agent`` call is
-silently allowed at ``permission.py:555-557``. Adding it there is not the fix —
+silently allowed at ``permission.py:565-567``. Adding it there is not the fix —
 ``_rule_key`` falls through to an args-blind ``f"tool:{tool_name}"``, so one
 "allow this session" would approve every profile against every task.
 
@@ -173,7 +173,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over ``self.flag`` on purpose. The real one
-    (``extensions/api.py:1204`` → ``:1224-1225``) is
+    (``extensions/api.py:1217`` → ``:1237-1238``) is
     ``runtime.ui is not HEADLESS_UI_CONTEXT`` — a TIME-VARYING value, not a
     mode: ``False`` during ``harness.bootstrap()``, ``True`` after the TUI
     binds, re-pointed on every harness rebuild, and ``False`` again on exit

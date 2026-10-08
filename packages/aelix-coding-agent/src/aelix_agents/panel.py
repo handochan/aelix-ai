@@ -70,7 +70,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 """The ``set_widget`` slot the batch panel owns.
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
-declares ``execution_mode="sequential"`` (``tool.py:604``), which makes the
+declares ``execution_mode="sequential"`` (``tool.py:605``), which makes the
 kernel run the whole tool batch sequentially (``loop.py:706-716``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
@@ -116,7 +116,7 @@ PANEL_MAX_ROWS = 9
 """Hard ceiling on the panel's HEIGHT, in rows (finding F2, HIGH).
 
 One header plus ``tool.MAX_PARALLEL_TASKS`` (= 8) member rows, which is every
-legal batch — the parser refuses a ninth task outright (``tool.py:392-398``), so
+legal batch — the parser refuses a ninth task outright (``tool.py:393-399``), so
 this never fires on input a model can actually get past the door. Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
