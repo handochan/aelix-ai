@@ -605,8 +605,8 @@ def test_the_c1_csi_does_not_survive_into_a_label(tmp_path: Path) -> None:
     prompt-toolkit's ANSI parser honours it.
 
     A session JSONL is attacker-influenceable: a user can be handed a repository
-    whose sessions folder came with it. ``aelix_agents/panel._CONTROL_KILL``
-    already carries C1 for exactly this reason and its docstring says so; this
+    whose sessions folder came with it. ``aelix_agents/panel._flatten``
+    already strips C1 for exactly this reason and its docstring says so; this
     module was written from pi's ``/[\x00-\x1f\x7f]/g`` and did not.
     """
 

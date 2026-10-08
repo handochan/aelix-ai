@@ -189,7 +189,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
 def _format_count(value: int) -> str:
     """Compact token counts for the ``[total]`` line only.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:178-181``) rather than
     importing it: that helper appends its own ``" tok"`` unit, which this line
     does not want (it reads ``… in / … out``). The threshold and the one decimal
     place are kept identical so a batch total and a statusline row never disagree

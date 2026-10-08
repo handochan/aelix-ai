@@ -1151,7 +1151,7 @@ class AgentsExtension:
 
         ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
         rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:508-521``),
+        open group before dropping the remaining rows (``progress.py:542-555``),
         which is the only ordering that also blanks the widget panel. A teardown
         that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
         row on a statusline whose delegation no longer exists.
@@ -1270,7 +1270,7 @@ class AgentsExtension:
         # (``progress._Group.active`` reads the same constant).
         #
         # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:395-399``), i.e. it
+        # clears the aggregate row unconditionally (``progress.py:429-433``), i.e. it
         # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
         # was never written. S10's floor is that a SINGLE delegation keeps P2's
         # surfaces byte-identical, and a UI write P2 never made is not
@@ -1290,7 +1290,7 @@ class AgentsExtension:
             # group by the time it has to decide between an aggregate row and a
             # per-child one. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:364-383``).
+            # (``progress.py:398-417``).
             if grouped and bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)

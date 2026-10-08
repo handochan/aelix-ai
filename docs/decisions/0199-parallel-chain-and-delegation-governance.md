@@ -6,6 +6,8 @@ topology (S3), owner-ratified UI surfaces (S10) and owner-ratified stop story
 ADR-0196/0197/0198).
 **Amended 2026-09-19 (ADR-0243, #199, owner decision (c)): a parallel or chain
 call shares one 64 KiB summary budget — see the note closing §(i).**
+**Amended 2026-10-08 (#178): the tool card's "byte for byte with P2" holds for
+clean input only; child-authored fields are sanitised — see the note in §(l).**
 Date: 2026-07-28
 Builds on: ADR-0196 (the agent-profile identity every child runs under),
 ADR-0197 (the subagent-runtime seam, the clamp, the consent gate, the caps this
@@ -899,6 +901,118 @@ no UI handle, no process, and the only clock is an injected one).
    parked on the semaphore is rendered as `queued` rather than omitted — a card
    that silently shows 3 of 8 rows reads as "5 tasks were dropped", and the
    model reads this card too.
+
+   > **Amendment (2026-10-08, #178): "byte for byte" now holds for CLEAN input
+   > only, and the card is sanitised otherwise.** Verbatim was how a child put
+   > raw bytes into the card. `current_tool` is the child's own stdout
+   > (`stream.py` keeps any non-empty `tool_execution_start.tool_name`) and
+   > `profile` is whatever the publishing runtime put there — aelix's own
+   > publishes the profile's validated `name:` field (`^[a-z0-9-]+$`, at most 64
+   > characters, `agents/profile.py`), another `SubagentRuntime` anything — and
+   > both were interpolated raw — measured on
+   > `8f7d98aa`, `format_card([p, p])` with `profile="scout\x1b[2J"` and
+   > `current_tool="read\r\x1b[31mFAKE"` carried the ESC and the CR out, while
+   > the widget beside it (surface 3) printed the same fields flattened. The
+   > per-child **status row** had the same hole, and that one is painted:
+   > `chrome._render_status` replaces `\n` and nothing else before prompt_toolkit's
+   > `ANSI` parser, which obeys SGR and passes `\x01…\x02` to the terminal as a
+   > `ZeroWidthEscape` — an OSC 52 clipboard write reached the `Vt100_Output`
+   > byte stream (measured).
+   >
+   > The rule is now two halves, both pinned by rows
+   > (`tests/agents_ext/test_child_authored_strings_178.py`,
+   > `tests/tui/test_subagent_rows_terminal_bytes_178.py`):
+   >
+   > * **Identity** for a clean field. Clean means three things: no steering
+   >   character (the `aelix_ai.utils.terminal_text` set: C0, DEL, C1, the BiDi
+   >   overrides and isolates, U+2028/U+2029, ZWSP, BOM); no whitespace except
+   >   single ASCII spaces (U+0020) between words — so no leading, trailing or
+   >   repeated whitespace, no tab, and no non-ASCII space (no-break U+00A0 and
+   >   U+202F, the typographic U+2000-U+200A, ideographic U+3000); and it fits:
+   >   at most 78 cells **and** at most 312 code points — `_flatten`'s zero-width
+   >   backstop (`_ZERO_WIDTH_SLACK`, 4 code points per cell) clips a longer
+   >   field even when it is narrower than 78 cells, which only a run of
+   >   combining or other zero-width marks reaches. Every built-in tool name,
+   >   every profile name aelix's runtime publishes, and the five
+   >   `SubagentState` literals are clean, so the shipped card is unchanged; the
+   >   identity rows compare against a restatement of P2's formatter, not an
+   >   import of the new one.
+   > * **Sanitised** otherwise: each of `profile`, `state` and `current_tool`
+   >   (and the queued row's profile) goes through `panel._flatten` at
+   >   `PANEL_ROW_MAX_CHARS`, the widget's own sanitiser and per-field bound — one
+   >   function, no copy — after `str()`, which is what P2's f-string did with a
+   >   non-`str` value (`profile=None` still prints `agent None`). What that does,
+   >   exactly: every steering character is **deleted**, and only that character
+   >   — so an escape sequence is **defanged, not removed**: its ESC (or one-byte
+   >   C1 introducer such as `0x9b`) and a BEL terminator go, and the rest of it
+   >   stays as inert text (`read\x1b[31mFAKE` prints `read[31mFAKE`, an OSC 52
+   >   prints `]52;c;…`). Every run of whitespace, in any of `str.split`'s
+   >   spellings — newline, CR, tab, NEL, and each non-ASCII space above —
+   >   becomes **one U+0020**, and leading and trailing whitespace goes — also
+   >   where deleting a steering character left a double, leading or trailing
+   >   space, because `_flatten` collapses whitespace once more after the strip
+   >   (`a \x1b b` prints `a b`; pinned by
+   >   `test_a_deleted_control_leaves_no_extra_space`). A tool name
+   >   `read\u00a0file` prints `read file` (pinned by
+   >   `test_a_non_ascii_space_is_shown_as_one_ascii_space`). A field wider than
+   >   78 cells or longer than 312 code points is cut and ends in `…`. The output
+   >   differs from P2's only in the field that was not clean, and a tool name
+   >   made only of controls and whitespace drops its term.
+   >   `progress.format_status_row` does the same for `profile` and
+   >   `current_tool`.
+   >
+   > The second and third clauses of "clean" are the widget's, kept rather than
+   > special-cased for the card: a field that needs them was never a name, and an
+   > unbounded one is a megabyte per frame in every consumer of the partial.
+   > Keeping non-ASCII spaces instead would have meant a second whitespace rule
+   > for two of the widget's five callers; a tool name that relies on a no-break
+   > space (or U+3000) to read right is the one visible cost, and it is named
+   > here. A profile name from aelix's runtime cannot pay it: its `name:` field
+   > admits no space at all.
+   >
+   > `_flatten`'s control strip moved from a module-local C0/DEL/C1 `translate`
+   > table onto `terminal_text.safe_for_terminal`. The table was a copy, and the
+   > copy had drifted: U+202E survived into a panel row on `8f7d98aa`. So the
+   > widget, the statusline aggregate and the result footer (`tool._usage_field`
+   > imports the same function) now delete the BiDi controls, ZWSP and BOM too.
+   > ZWJ is kept by the helper on purpose (it composes `👩‍💻`).
+   >
+   > **Sanitised at render, not at ingest.** `stream.py` is the single point for
+   > `current_tool` and `model` only: `profile` and `state` come from the
+   > runtime (aelix's own fills `profile` with the validated `name:` field), `SubagentProgress` is a public contract another
+   > `SubagentRuntime` may produce, and the bound is in terminal cells, which is
+   > the renderer's unit. The contract's own docstring already said a renderer
+   > sanitises these fields; #178 makes every `aelix_agents` renderer do it.
+   >
+   > **Known limits — child-authored strings #178 does not touch.**
+   >
+   > * `/agents run` prints the child's `summary` and `error` raw
+   >   (`tui/commands._render_subagent_result` builds `Text(summary)` and
+   >   `chrome.print_above` hands it to `console.print` with no strip) — measured
+   >   in review: an OSC 52 and a U+202E in a child's final answer reached the
+   >   terminal byte stream on both `8f7d98aa` and the #178 tree. That surface is
+   >   outside `aelix_agents` and is tracked as
+   >   [#407](https://github.com/handochan/aelix-ai/issues/407).
+   > * The `child_session` settle records (`aelix_agents/child_session.py`,
+   >   `settle` and `unsettled_records`) write the child's `model`, `provider`,
+   >   `stop_reason` and `error` into the parent session JSONL as they arrived.
+   >   That is a JSON field, not a terminal surface — `jsonl_storage` writes it
+   >   with `json.dumps` and its default `ensure_ascii`, which escapes every
+   >   control and every non-ASCII character, and no product code reads an
+   >   `aelix.child_session` record back (a grep of `packages/` for the type
+   >   finds only its writer) — so it is listed here and left as is; a
+   >   future reader that prints one of those fields owns sanitising it.
+   > * The progress event bus (`subagent_start` / `subagent_tool` /
+   >   `subagent_end`) still hands `SubagentProgress` to extension subscribers
+   >   raw, as its contract documents: a subscriber that renders is a renderer.
+   > * `format_panel` (the widget, `N >= 2`) still raises on a non-`str`
+   >   `profile`, `state` or `current_tool` (`TypeError` for `state`, `AttributeError` for
+   >   the others; for `profile` the aggregate status row raises first) — unchanged from
+   >   `8f7d98aa`, so not a regression; aelix's own runtime never publishes one,
+   >   and `runtime._publish` calls the progress bridge under
+   >   `contextlib.suppress(Exception)`, so the cost is that snapshot's panel
+   >   update, not the delegation. #178 `str()`s the field only on the card and
+   >   the per-child status row.
 3. **Widget panel — only at `N >= PANEL_MIN_CHILDREN` (2)**
    (`panel.py:63`, `:290-311`). `chrome.set_widget(key, lines, above=True)`
    (`chrome.py:1373`) is shipped, keyed and idempotent, reached from an
@@ -1164,8 +1278,12 @@ product-core. §(n) is now the machine gate for that clause.
 * **The parent REPL is read-only for the whole call**, bounded at 30 minutes
   plus at most one 7-second kill leg. shift+tab still works and now tightens the
   members that have not started.
-* **`mode="single"` is byte-identical to P2** — same code path, same renderer,
-  same tool card, same statusline row, no group, no panel.
+* **`mode="single"` is byte-identical to P2 for a clean snapshot** — same code
+  path, same renderer, same tool card, same statusline row, no group, no panel.
+  Since #178 a child-authored field that is not clean (a steering character,
+  whitespace other than single inner ASCII spaces, or over 78 cells or 312 code
+  points) is sanitised on the card and the status row — see the amendment in
+  §(l).
 * **The kernel and product-core are byte-unchanged.** `git diff --stat` over
   both is empty; the whole phase is 1 587 source lines in `aelix_agents` plus
   163 new tests across five files (`test_aggregate.py` 35, `test_batch_consent.py`

@@ -866,6 +866,26 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **A delegated child can no longer put escape sequences on your status line
+  (#178).** While a child runs, the status line shows its profile and the tool
+  it is using, and the tool name is whatever the child reports. Both were
+  printed as received. Measured in the shipped status row: a tool name carrying
+  `\x1b[31m` painted the row red, and one carrying `\x01…\x02` passed an OSC 52
+  clipboard write straight to the terminal. The same two names, and the child's
+  state, also went raw into the progress card an `agent` call streams to
+  extensions and to `--mode json`/`rpc` consumers. They are now cleaned the way
+  the batch panel already cleaned them: control characters and BiDi overrides
+  are removed, which defangs an escape sequence rather than removing it - its
+  ESC goes and the rest stays on screen as plain text, so `\x1b[31m` shows as
+  `[31m`. Every line break, tab, run of spaces and non-ASCII space (a no-break
+  space, U+3000 and the like) becomes one ordinary space, leading and trailing
+  spaces go (including any a removed character leaves behind), and each name is
+  cut to 78 columns. The panel, the batch status row and the result footer now
+  also remove BiDi overrides (U+202E and its relatives), which they used to let
+  through. A name in any script with no control character or BiDi override, whose
+  only spaces are single ordinary ones between words, and that fits - at most 78
+  columns, and at most 312 characters, which only a run of combining accents
+  reaches - is shown exactly as before.
 - **`OPENROUTER_BASE_URL` now applies to OpenRouter models picked inside a
   session, not only at launch (#375, ADR-0251 §11).** If you point OpenRouter at
   a gateway with `OPENROUTER_BASE_URL`, then picking an OpenRouter model with

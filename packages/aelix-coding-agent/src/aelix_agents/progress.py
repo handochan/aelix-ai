@@ -169,8 +169,10 @@ The statusline is one segment on a shared height-1 row and the model is
 child-authored (read off the child's own ``message_end``), so the term is
 sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
 strips newlines from this row but bounds neither its width nor its ESC content
-(``chrome.py:1097-1108``), so — unlike ``current_tool``, which P2 left to that far end —
-this field is defended at the source, the posture the panel already takes."""
+(``chrome.py:1097-1108``), so this field is defended at the source, the posture
+the panel already takes. ``current_tool`` and ``profile`` were left to that far
+end until #178 and are now defended the same way — see
+:func:`format_status_row`."""
 
 
 def _format_tokens(tokens: int) -> str:
@@ -185,13 +187,44 @@ def format_status_row(progress: SubagentProgress) -> str:
     Deliberately terse. ``set_status`` renders into a single height-1 row shared
     with every other status segment, so anything that wraps is anything that
     disappears.
+
+    EVERY FREE-TEXT TERM IS FLATTENED (#178). ``current_tool`` is the child's own
+    stdout, and ``profile`` is whatever the runtime that published the snapshot
+    put there — aelix's own runtime publishes the profile's validated ``name:``
+    field, another ``SubagentRuntime`` anything; both were appended raw while
+    ``model`` beside them was flattened. ``chrome._render_status`` replaces ``\\n`` and
+    nothing else, then hands the row to prompt_toolkit's ``ANSI`` parser, which
+    obeys SGR and passes anything between ``\\x01`` and ``\\x02`` to the terminal
+    as a ``ZeroWidthEscape``. MEASURED on ``8f7d98aa`` through a real
+    ``Vt100_Output``: a ``current_tool`` of
+    ``read\\x1b[31mFAKE\\x01\\x1b]52;c;…\\x07\\x02`` painted the row red and
+    wrote ``\\x1b]52;c;…`` — a clipboard write — to the terminal byte stream.
+    ``profile`` and ``current_tool`` now go through :func:`~aelix_agents.panel._flatten`
+    at :data:`~aelix_agents.panel.PANEL_ROW_MAX_CHARS`, the widget's own per-field
+    bound, so a name that is clean as :func:`~aelix_agents.panel._child_line`
+    defines it renders exactly as it did. Otherwise the steering characters are
+    deleted (an escape sequence is defanged, not removed: its ESC goes and the
+    rest stays as inert text), every run of whitespace — a no-break or
+    ideographic space included — becomes one ASCII space, leading and trailing
+    whitespace goes (also where a deleted control left it), and a field past the
+    bound (78 cells, or 312 code points of zero-width marks) is cut with ``…``.
+    ``current_tool`` is tested after flattening: one made only of controls and
+    whitespace falls back to ``starting`` like an absent one. A
+    non-``str`` value is ``str()``-ed first: ``profile=None`` prints
+    ``agent None`` as P2's f-string did, and a non-``str`` tool, which P2's
+    ``" · ".join`` raised ``TypeError`` on, now prints too.
     """
 
-    parts = [f"agent {progress.profile}"]
+    parts = [f"agent {_flatten(str(progress.profile), limit=PANEL_ROW_MAX_CHARS)}"]
     if progress.model:
         parts.append(_flatten(progress.model, limit=_STATUS_MODEL_MAX_CHARS))
-    if progress.current_tool:
-        parts.append(progress.current_tool)
+    tool = (
+        _flatten(str(progress.current_tool), limit=PANEL_ROW_MAX_CHARS)
+        if progress.current_tool
+        else ""
+    )
+    if tool:
+        parts.append(tool)
     elif progress.state == "starting":
         parts.append("starting")
     parts.append(f"{progress.elapsed_ms / 1000:.0f}s")
@@ -356,7 +389,8 @@ class SubagentProgressBridge:
             key=key,
             snapshots=[None] * max(expected, 0),
             # S10: the panel and the aggregate exist only at N >= 2. At N == 1
-            # every surface stays byte-identical to P2.
+            # every surface stays byte-identical to P2 for a clean snapshot
+            # (#178 — see ``panel._child_line``).
             active=expected >= PANEL_MIN_CHILDREN,
             tasks=tuple(tasks),
         )

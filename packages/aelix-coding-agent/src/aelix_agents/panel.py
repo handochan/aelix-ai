@@ -24,7 +24,11 @@ WHY THREE SURFACES AND NOT ONE (S10):
    a design that survives fan-out.
 2. :func:`format_card` — N lines, one per child, for ``ctx.on_partial``. This is
    the PERMANENT record: it stays in the transcript after the turn ends. At
-   ``N == 1`` its output is byte-identical to P2's ``_partial_text``.
+   ``N == 1`` its output is byte-identical to P2's ``_partial_text`` for every
+   CLEAN snapshot, and sanitised where a field was not clean (a steering
+   character, whitespace other than single ASCII spaces, or over 78 cells or
+   312 code points) —
+   the rule ADR-0199 §(l) was amended to in #178 (see :func:`_child_line`).
 3. :func:`format_panel` — the ``set_widget`` panel, and ONLY at ``N >= 2``
    (:data:`PANEL_MIN_CHILDREN`). Widgets render in their own
    ``Window(…, dont_extend_height=True)`` (``chrome.py:693``/``:698``) so they
@@ -37,6 +41,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from aelix_ai.utils.terminal_text import safe_for_terminal
 from rich.cells import cell_len
 
 if TYPE_CHECKING:
@@ -97,9 +102,13 @@ that matters is with what surface 1 replaces: four per-child rows
 of which an 80-column terminal shows 1.7."""
 
 _MAX_PROFILE_CHARS = 16
-"""Profile names come from filenames and are unbounded. Truncated for surface 1
-ONLY — the tool card (surface 2) prints the name in full, because that is the
-permanent transcript record and byte-identity with P2 is a requirement there."""
+"""A profile name from aelix's own runtime is the profile's validated ``name:``
+field (``agents/profile.py``: ``^[a-z0-9-]+$``, at most 64 characters, so at
+most 64 cells); one handed over by another ``SubagentRuntime`` is not bounded at
+all. Truncated to this for surface 1 ONLY. The tool card (surface 2) prints the name at the panel's own
+per-field bound, :data:`PANEL_ROW_MAX_CHARS`, which is every real profile name in
+full — the byte-identity it keeps with P2 is stated, and bounded, at
+:func:`_child_line` (#178)."""
 
 PANEL_ROW_MAX_CHARS = 78
 """Hard ceiling on ONE panel row, in terminal CELLS (finding F2, HIGH).
@@ -138,7 +147,7 @@ from the ordinary one."""
 _MAX_INPUT_CHARS = 8192
 """Ceiling on what :func:`_flatten` will even LOOK at, before the two width caps.
 
-The whitespace collapse and the ``translate`` are both linear in the input, and
+The whitespace collapse and the control strip are both linear in the input, and
 ``_flatten`` runs on every publish for every member of a batch — the runtime
 publishes after every reduced stdout line. A child that sends a megabyte in
 ``current_tool`` should not buy a megabyte of work per frame.
@@ -154,17 +163,13 @@ worth having, and it is the flood of zero-width marks it is worth having against
 Generous rather than tight (a hundred times the widest row this module draws) so
 it can only ever bite input that was already going to be truncated to nothing
 visible. It is a work bound, not a width bound: the two width caps below are
-what make the OUTPUT safe."""
+what make the OUTPUT safe.
 
-_CONTROL_KILL = dict.fromkeys(
-    [*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)]
-)
-"""``str.translate`` table deleting C0, DEL and C1 — the same set
-``consent._CONTROL_CHARS`` refuses, restated rather than imported because
-``consent`` is the module that prompts and this one may not depend on it.
-
-C1 is in the set because ``\\x9b`` IS a CSI, i.e. the one-byte spelling of
-``\\x1b[``."""
+The ``translate`` figures above predate #178, which swapped the restated C0/DEL/C1
+table for ``aelix_ai.utils.terminal_text.safe_for_terminal``. MEASURED on that
+swap: 8 192 combining acutes cost 270 us through the old ``translate`` and 276 us
+through the shared helper, and a short tool name 0.3 us against 2 us — the bound
+is what keeps either one cheap."""
 
 
 def _flatten(value: str, *, limit: int) -> str:
@@ -181,13 +186,40 @@ def _flatten(value: str, *, limit: int) -> str:
     newlines in ``current_tool`` turned a 3-entry panel into 43 screen rows with
     raw ESC intact.
 
-    ``profile`` gets the same treatment: it comes from a filename, and a filename
-    may contain ``\\n`` too.
+    ``profile`` gets the same treatment although aelix's own runtime only ever
+    publishes a profile's validated ``name:`` field (``agents/profile.py``:
+    ``^[a-z0-9-]+$``, at most 64 characters): ``SubagentProgress`` is a public
+    contract, and a profile handed over by another ``SubagentRuntime`` is as
+    untrusted as a tool name.
 
-    The order matches ``consent._sanitize_field``: collapse whitespace (which is
-    what bounds the ROW COUNT), then delete controls (which is what bounds what
-    the terminal will obey), then bound the width — measured on the flattened
-    string, so the limit counts what is drawn.
+    The order follows ``consent._sanitize_field`` with one step added: collapse
+    whitespace (which is what bounds the ROW COUNT), then delete controls (which
+    is what bounds what the terminal will obey), then collapse once more —
+    deleting a control that sat beside a space, or at either end, leaves a
+    double, leading or trailing space (#178 review round 3) — then bound the
+    width, measured on the flattened string, so the limit counts what is drawn.
+
+    THE CONTROL STRIP IS ``safe_for_terminal``'s, NOT A RESTATED TABLE (#178).
+    This module used to carry its own C0/DEL/C1 ``translate`` table, a copy of
+    ``consent._CONTROL_CHARS``. A copy is a second answer to "what may reach a
+    terminal", and the two had already diverged: the shared helper also deletes
+    the BiDi overrides and isolates (U+202A-U+202E, U+2066-U+2069), ZWSP and a
+    stray BOM, and this table did not — MEASURED, U+202E survived into a panel
+    row on ``8f7d98aa``. It deletes rather than spaces, like the table it
+    replaced, so ``\\x1b[31m`` still collapses to the inert literal ``[31m``;
+    the whitespace collapse before it has already turned every newline, CR, tab,
+    NEL and U+2028/U+2029 into one space. ZWJ is deliberately kept by the helper
+    (it composes ``👩‍💻``), which is why :func:`_cut_to_cells` must still be exact
+    over it.
+
+    EVERY CHILD-AUTHORED TERM EVERY ``aelix_agents`` SURFACE PRINTS GOES THROUGH
+    HERE — the widget rows and header, the statusline aggregate, the per-child
+    status row (``progress.format_status_row``), the tool card
+    (:func:`format_card`) and the result footer (``tool._usage_field``). Until
+    #178 the per-child status row and the tool card interpolated ``profile``,
+    ``state`` and ``current_tool`` raw; the status row is ANSI-parsed by the
+    chrome, so a child's ``\\x01…\\x02`` reached the terminal as a
+    ``ZeroWidthEscape`` — an OSC 52 clipboard write, measured.
 
     ``limit`` IS IN CELLS, AND THAT IS THE WHOLE OF THIS FUNCTION'S SECOND
     FINDING. It counted codepoints, which is not what a terminal draws: a Hangul
@@ -217,7 +249,7 @@ def _flatten(value: str, *, limit: int) -> str:
 
     So the codepoint cap comes FIRST and the cell cap narrows what survives it.
     The input is bounded before any of that work: the whitespace collapse and the
-    translate are linear in the input, and this runs on every publish for every
+    control strip are linear in the input, and this runs on every publish for every
     member of a batch.
     """
 
@@ -230,7 +262,15 @@ def _flatten(value: str, *, limit: int) -> str:
     value = value.strip()
     if len(value) > _MAX_INPUT_CHARS:
         value = value[:_MAX_INPUT_CHARS]
-    flat = " ".join(value.split()).translate(_CONTROL_KILL)
+    # COLLAPSE, DELETE, COLLAPSE AGAIN. The first collapse turns every newline,
+    # CR, tab and Unicode space into one U+0020 before the strip could delete a
+    # newline outright and glue two words together. The second is there because
+    # the strip runs after the first: MEASURED on ``bf37350f``, ``"a \x1b b"``
+    # gave ``"a  b"``, ``"\x1b read"`` gave ``" read"`` and ``"\x01 \x02"`` gave
+    # ``" "`` — a tool term made of controls and one space survived as a blank.
+    # A clean field holds no steering character and no whitespace but single
+    # inner spaces, so neither collapse changes it (#178 review round 3).
+    flat = " ".join(safe_for_terminal(" ".join(value.split())).split())
     # The zero-width backstop, SLACK rather than equal to ``limit``: a slice at
     # exactly the budget would leave the cell cap below with nothing to do and
     # would return an over-long row unmarked. Only zero-width input can reach it,
@@ -336,7 +376,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:178-181``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:189-199``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -597,18 +637,71 @@ def format_aggregate_status(
 
 
 def _child_line(progress: SubagentProgress) -> str:
-    """P2's ``extension._partial_text``, VERBATIM.
+    """P2's ``extension._partial_text`` for every CLEAN snapshot — and only those.
 
-    The single-child tool card must be byte-identical to what P2 wrote, which is
-    what keeps the shipped single-delegation transcript unchanged under S2. Any
-    edit here is a visible change to a surface no P3 decision authorised.
+    THE CONTRACT WAS RE-DECIDED, NOT QUIETLY BROKEN (#178, ADR-0199 §(l)
+    amendment 2026-10-08). This used to say "VERBATIM": the single-child card
+    had to be byte-identical to what P2 wrote, which kept the shipped
+    single-delegation transcript unchanged under S2. Verbatim was also how a
+    child put raw bytes into it. ``current_tool`` is the child's own stdout
+    (``stream.py`` keeps any non-empty ``tool_execution_start.tool_name``), and
+    MEASURED on ``8f7d98aa``: ``profile="scout\\x1b[2J"`` with
+    ``current_tool="read\\r\\x1b[31mFAKE"`` came out of :func:`format_card` with
+    the ESC and the CR intact, while the widget beside it printed the same two
+    fields flattened. One child, two surfaces, two answers.
+
+    So every term this line interpolates goes through :func:`_flatten` at
+    :data:`PANEL_ROW_MAX_CHARS` — the widget's own sanitiser and its own per-field
+    bound (``_panel_row``), one function and no copy — and the contract is
+    now two halves, both pinned by rows in ``tests/agents_ext``:
+
+    * IDENTITY for a clean field: no steering character
+      (``aelix_ai.utils.terminal_text``: C0, DEL, C1, the BiDi overrides and
+      isolates, U+2028/U+2029, ZWSP, BOM); no whitespace except single ASCII
+      spaces (U+0020) between words — so no leading, trailing or repeated
+      whitespace, and no tab, no no-break space (U+00A0, U+202F), no em or other
+      typographic space (U+2000-U+200A) and no ideographic space (U+3000); and it
+      fits — at most 78 cells AND at most 312 code points, the zero-width
+      backstop (:data:`_ZERO_WIDTH_SLACK` code points per cell), which only a
+      run of combining or other zero-width marks reaches. Every built-in tool
+      name, every profile name aelix's runtime publishes (the validated
+      ``name:`` field, ``^[a-z0-9-]+$``, at most 64) and the five
+      ``SubagentState`` literals are clean, so the shipped card is unchanged
+      byte for byte.
+    * SANITISED otherwise, and the output differs from P2's exactly where the
+      input carried one of those. What happens to each: a steering character is
+      DELETED, and only that character — an escape sequence is defanged, not
+      removed: its ESC (or one-byte C1 introducer) goes and the rest of it stays
+      as inert text, so ``\\x1b[31m`` prints ``[31m``. Every run of whitespace,
+      in any of ``str.split``'s spellings (a newline, CR, tab, NEL and every
+      Unicode space above), becomes ONE U+0020, and leading and trailing
+      whitespace goes — also where deleting a steering character left them, so
+      ``"a \\x1b b"`` prints ``"a b"`` — and a tool name ``"read\\u00a0file"``
+      prints ``"read file"``. A field wider than 78 cells or longer than 312
+      code points is cut and ends in ``…``.
+
+    The second and third clauses of "clean" are the widget's, kept rather than
+    special-cased: a field that needs them was never a name, and an unbounded
+    one is a megabyte in the permanent record per frame.
+
+    ``current_tool`` is tested AFTER flattening, so a tool name made only of
+    controls and whitespace drops the term instead of leaving an empty ``·  ·``.
+
+    A non-``str`` field is ``str()``-ed first, which is what P2's f-string did
+    with it: ``profile=None`` still prints ``agent None``. The contract types all
+    three as ``str``, but ``SubagentProgress`` is a public contract another
+    runtime may fill, and raising here would cost the card, not just the term.
     """
 
-    tool = f" · {progress.current_tool}" if progress.current_tool else ""
-    return (
-        f"agent {progress.profile} [{progress.state}]{tool} · "
-        f"{progress.elapsed_ms / 1000:.0f}s"
+    tool_name = (
+        _flatten(str(progress.current_tool), limit=PANEL_ROW_MAX_CHARS)
+        if progress.current_tool
+        else ""
     )
+    tool = f" · {tool_name}" if tool_name else ""
+    profile = _flatten(str(progress.profile), limit=PANEL_ROW_MAX_CHARS)
+    state = _flatten(str(progress.state), limit=PANEL_ROW_MAX_CHARS)
+    return f"agent {profile} [{state}]{tool} · {progress.elapsed_ms / 1000:.0f}s"
 
 
 def _queued_line(profile: str) -> str:
@@ -616,9 +709,14 @@ def _queued_line(profile: str) -> str:
 
     It is named rather than omitted: a card that silently shows 3 of 8 rows
     reads as "5 tasks were dropped", and the model reads this card too.
+
+    ``profile`` is a published member's, so it is flattened here exactly as
+    :func:`_child_line` flattens it, ``str()`` first — a queued row is the same
+    card (#178).
     """
 
-    return f"agent {profile} [queued]" if profile else "[queued]"
+    name = _flatten(str(profile), limit=PANEL_ROW_MAX_CHARS) if profile else ""
+    return f"agent {name} [queued]" if name else "[queued]"
 
 
 def _batch_profile(snapshots: Sequence[SubagentProgress | None]) -> str:
@@ -636,11 +734,14 @@ def _batch_profile(snapshots: Sequence[SubagentProgress | None]) -> str:
 def format_card(snapshots: Sequence[SubagentProgress | None]) -> str:
     """S10 surface 2 — the ``ctx.on_partial`` tool card, one line per child.
 
-    At ``N == 1`` the output is P2's, byte for byte, with NO index prefix: the
-    single-delegation transcript is not something this phase is allowed to
-    change. At ``N >= 2`` every line carries ``[k/N]`` in SUBMITTED order —
-    the order the model wrote the tasks in and the order ``aggregate`` renders
-    the results in (§3.4: "never completion order").
+    At ``N == 1`` the output is P2's, byte for byte, with NO index prefix, for
+    every clean snapshot: the single-delegation transcript is not something this
+    phase is allowed to change. A snapshot that is not clean — a steering
+    character, whitespace other than single ASCII spaces, or a field over 78
+    cells or 312 code points — is sanitised instead; :func:`_child_line` states both halves and
+    what "clean" means (#178). At ``N >= 2`` every line carries ``[k/N]`` in
+    SUBMITTED order — the order the model wrote the tasks in and the order
+    ``aggregate`` renders the results in (§3.4: "never completion order").
     """
 
     total = len(snapshots)
@@ -1019,7 +1120,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:540-542``): a
+    That final dedup mirrors the statusline half (``progress.py:574-576``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """
@@ -1046,7 +1147,9 @@ class PartialThrottle:
         ``queued`` from the first frame instead of appearing one by one.
         :param header: a line to carry ABOVE the table on every frame. Empty for
         every delegation that shipped before #196, which is what keeps
-        :func:`format_card`'s byte-identical ``N == 1`` guarantee intact — the
+        :func:`format_card`'s byte-identical ``N == 1`` guarantee intact for a
+        clean snapshot (the only one it covers since #178 — see
+        :func:`_child_line`) — the
         header is prepended HERE rather than inside ``format_card`` precisely so
         that function stays a pure function of the snapshots and its pin does
         not have to learn about consent.

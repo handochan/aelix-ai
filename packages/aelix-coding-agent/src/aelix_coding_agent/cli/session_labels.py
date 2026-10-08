@@ -387,8 +387,8 @@ def _clean(text: str) -> str:
     ``\\x1b[`` — and prompt-toolkit's ANSI parser honours it, so a session file
     carrying it paints colour into the ``/resume`` picker and into the stderr
     startup menu on any terminal that decodes 8-bit controls. The set is the same
-    one ``aelix_agents/panel._CONTROL_KILL`` uses, and that module's docstring
-    already spells out why C1 belongs in it; this module was written without it.
+    one ``consent._CONTROL_CHARS`` uses, and that constant's docstring already
+    spells out why C1 belongs in it; this module was written without it.
 
     A session JSONL is attacker-influenceable — a user can be handed a repository
     whose sessions folder came with it — so the label is untrusted text, not the

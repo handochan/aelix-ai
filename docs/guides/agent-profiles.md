@@ -235,6 +235,45 @@ stops before its first turn with `No API key found for <provider>` and that
 message reaches you in the delegation's summary. Set the environment variable or
 run `/login` as well.
 
+## What you see while a child runs
+
+The status line shows one row per running child: `agent <profile> · <model> ·
+<tool> · 12s · …`. A batch of two or more gets one row for the whole batch and
+a panel above the input instead. The model and the tool name on those rows are
+what the child reports about itself — a tool name is whatever the child's model
+asked for, real tool or not — so aelix treats them as untrusted. The profile
+name is the profile's `name` field, which aelix has already checked (lowercase
+letters, digits and hyphens, at most 64), so there is nothing in it to clean;
+it goes through the same cleaning anyway, because an extension that supplies its
+own subagent runtime can report any profile name it likes. The progress card an
+`agent` call streams to extensions and to `--mode json`/`rpc` consumers, and the
+`[agent … ]` footer of its result, carry the same names and are cleaned the same
+way ([#178](https://github.com/handochan/aelix-ai/issues/178)):
+
+- Control characters and BiDi overrides are removed. That defangs an escape
+  sequence rather than removing it: its ESC character goes and the rest of the
+  sequence stays on the row as plain text, so a tool name carrying `\x1b[31m`
+  shows `[31m` instead of turning the row red.
+- Every line break, tab, run of spaces and non-ASCII space (a no-break space,
+  the ideographic space U+3000 and the like) becomes one ordinary space, and
+  leading and trailing spaces go, including any a removed character leaves
+  behind. A tool called `read\u00a0file` (with a no-break space) shows as
+  `read file`, so a tool name that relies on a no-break space or U+3000 to read
+  right loses it.
+- A name too wide for where it is shown is cut with `…`. On a child's own
+  status row and in the progress card that is 78 columns for the profile and
+  the tool name, and 40 for the model on the status row. A batch's status row
+  and its panel header cut the profile at 16 columns, and the header's model
+  gets at most 32 and only what the row has left. A panel row stops at 78
+  columns as a whole, and the result footer gives the profile and the model at
+  most 40 each. A name that is narrow but made of more than four characters per
+  column of that limit — a letter carrying hundreds of combining accents — is
+  cut too.
+
+A name in any script with no control character or BiDi override, no spaces
+other than single ordinary ones between words, and that fits where it is shown,
+is shown as written.
+
 ## What a delegation leaves behind
 
 Each delegated child gets a session file of its own, next to yours: a session

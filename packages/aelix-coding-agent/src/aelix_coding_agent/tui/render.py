@@ -634,7 +634,7 @@ _TOOL_MARKER = "●"
 # THE ECHO'S STRIP. C0 and DEL and C1, minus the newline and the tab, become a
 # space rather than vanishing so a word boundary survives. C1 is in the set because
 # ``\x9b`` IS a CSI — the one-byte spelling of ``\x1b[`` — which is the same reason
-# ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
+# ``aelix_agents/panel._flatten`` and ``cli/session_labels._clean`` carry it.
 # The newline is spared because a multi-line paste is meant to be several rows of
 # one bar.
 #

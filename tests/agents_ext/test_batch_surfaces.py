@@ -408,7 +408,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:540-542``)."""
+    statusline half already does (``progress.py:574-576``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -842,7 +842,7 @@ def test_the_cell_bound_holds_for_the_shapes_the_first_sweep_did_not_cover() -> 
 def test_flatten_does_not_do_unbounded_work_per_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The translate is linear in the INPUT, and this runs on every publish for
+    """The control strip is linear in the INPUT, and this runs on every publish for
     every member. A megabyte of ``current_tool`` must not buy a megabyte of work.
 
     COUNTED, NOT TIMED, and on the shape that is actually expensive. The first
@@ -853,26 +853,28 @@ def test_flatten_does_not_do_unbounded_work_per_frame(
     once per DISTINCT byte. Non-ASCII takes the general path, where every
     character is a real lookup; that is the input this constant exists for.
 
-    The observation is the lookup count itself, via a counting mapping. Asserting
-    EQUALITY against the literal bound makes the test its own positive control: a
-    broken instrument reads 0 and fails as loudly as an absent bound reads
-    400 000.
+    The observation is how many characters reach the control strip, recorded by
+    wrapping it. Asserting EQUALITY against the literal bound makes the test its
+    own positive control: a broken instrument reads 0 and fails as loudly as an
+    absent bound reads 400 000.
+
+    #178 moved the strip from a module-local ``translate`` table onto
+    ``terminal_text.safe_for_terminal``; the counting moved with it, because
+    the old counter wrapped a table that no longer exists and would read 0.
     """
 
-    class _Counting(dict):  # type: ignore[type-arg]
-        lookups = 0
+    seen: list[int] = []
+    real = panel_module.safe_for_terminal
 
-        def __getitem__(self, key: object) -> object:
-            type(self).lookups += 1
-            return super().__getitem__(key)
+    def _counting(text: str, **kwargs: Any) -> str:
+        seen.append(len(text))
+        return real(text, **kwargs)
 
-    monkeypatch.setattr(
-        panel_module, "_CONTROL_KILL", _Counting(panel_module._CONTROL_KILL)
-    )
-    out = _flatten("́" * 400_000, limit=PANEL_ROW_MAX_CHARS)
+    monkeypatch.setattr(panel_module, "safe_for_terminal", _counting)
+    out = _flatten("\u0301" * 400_000, limit=PANEL_ROW_MAX_CHARS)
 
-    assert _Counting.lookups == 8192, (
-        f"{_Counting.lookups} characters reached translate; the work bound is 8192"
+    assert seen == [8192], (
+        f"{seen} characters reached the control strip; the work bound is 8192"
     )
     assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
@@ -1873,7 +1875,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:780-794``, the site the finding names), and the next consumer of a
+    (``panel.py:881-895``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
 

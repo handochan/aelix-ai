@@ -1064,7 +1064,7 @@ class _SubagentRuntimeImpl:
                 # Published non-terminal, that snapshot makes
                 # ``SubagentProgressBridge`` take its live branch and WRITE a
                 # statusline row nothing will ever clear, and leak the id in
-                # ``_tools`` (``progress.py:316-320``) — "a statusline segment
+                # ``_tools`` (``progress.py:349-353``) — "a statusline segment
                 # outliving the delegation that owns it is a lie the user cannot
                 # dismiss", in that module's own words.
                 #
