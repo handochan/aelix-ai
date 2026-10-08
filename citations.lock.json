@@ -2465,21 +2465,21 @@
    "",
    "aelix.register_tool(echo_tool)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1143-1143": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1156-1156": [
    "self, \"_is_project_trusted\", is_project_trusted or (lambda: True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1203-1204": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1216-1217": [
    "@property",
    "def has_ui(self) -> bool:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1204-1204": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1217-1217": [
    "def has_ui(self) -> bool:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1224-1225": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1237-1238": [
    "runtime: _ExtensionRuntime = object.__getattribute__(self, \"_runtime\")",
    "return runtime.ui is not HEADLESS_UI_CONTEXT"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1352-1678": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:1365-1691": [
    "@overload",
    "def on(",
    "self,",
@@ -2489,7 +2489,7 @@
    "cleanup: HookCleanup | None = None,",
    "error_mode: HookErrorMode = \"throw\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:150-163": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:151-164": [
    "@dataclass(frozen=True)",
    "class ContextUsage:",
    "\"\"\"Pi ``ContextUsage`` (``types.ts:281-287``).",
@@ -2499,7 +2499,7 @@
    ":class:`~aelix_agent_core.harness.hooks.MessageEndHookEvent` cost when",
    "the harness threads it through; until Phase 4 provider work lands the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:329-335": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:330-336": [
    "def emit(self, channel: str, data: Any = None) -> None:",
    "for handler in list(self._handlers.get(channel, ())):",
    "# Pi parity (``createEventBus`` ``event-bus.ts``): per-handler",
@@ -2508,13 +2508,13 @@
    "with contextlib.suppress(Exception):",
    "handler(data)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:426-426": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:427-427": [
    "get_active_tools=_make_throwing_stub(\"get_active_tools\"),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:47-47": [
    "from __future__ import annotations"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:588-596": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:589-597": [
    "def bind_ui(self, ui: ExtensionUIContext) -> None:",
    "\"\"\"Replace the headless UI with a concrete binding (Sprint 6h₁₀b).",
    "",
@@ -2524,10 +2524,10 @@
    "\"\"\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:718-718": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:719-719": [
    "if not isinstance(runtime, SubagentRuntime):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:718-734": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:719-735": [
    "if not isinstance(runtime, SubagentRuntime):",
    "missing = sorted(",
    "name",
@@ -2537,7 +2537,7 @@
    "\"spawn\",",
    "\"list\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:967-967": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py:979-979": [
    "source: Literal[\"project\", \"global\", \"explicit\", \"entry_points\", \"inline\"]"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/command_context.py:116-116": [
@@ -2593,17 +2593,17 @@
    "@overload",
    "def set_widget("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1197-1201": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1198-1202": [
    "def __repr__(self) -> str:",
    "return (",
    "f\"_ManifestEntry(plugin={self.manifest.plugin.id!r}, \"",
    "f\"pkg_dir={str(self.pkg_dir)!r})\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1475-1475": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1476-1476": [
    "eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1868-1871": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1869-1872": [
    "if isinstance(entry, _EntryPointEntry):",
    "factory = _factory_from_entry_point(entry)",
    "display = getattr(factory, \"__qualname__\", None) or type(factory).__name__",
@@ -2612,7 +2612,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:282-282": [
    "extension.resolved_path = str(entry.pkg_dir)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:403-413": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:404-414": [
    "if shell.shortcuts:",
    "# W1 limitation (adversarial-review MEDIUM): the TUI enumerates",
    "# shortcut KEYS once at chrome build, so keys from a lazily-activated",
@@ -2622,16 +2622,16 @@
    "\"they will bind on the next TUI start (key bindings are built \"",
    "\"once at startup)\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:457-458": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:458-459": [
    "1. ``cwd / .aelix / extensions /`` — project-local files / packages.",
    "2. ``<agent_dir> / extensions /`` — user globals. **In every shipped"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:790-792": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:791-793": [
    "home_aelix = Path.home() / \".aelix\" if agent_dir is None else agent_dir",
    "global_dir = (home_aelix / \"extensions\").resolve(strict=False)",
    "for discovered in _discover_in_dir(global_dir, errors=errors):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:795-859": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:796-860": [
    "# 3. Explicit configured paths.",
    "seen_modules: set[str] = set()",
    "for entry in configured_paths:",
@@ -2641,7 +2641,7 @@
    "all_entries.append(entry)",
    "continue"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:797-859": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:798-860": [
    "for entry in configured_paths:",
    "# Callables/factories pass through (P-21 — explicit takes precedence",
    "# over entry_points but loses to local/global directories).",
@@ -2651,7 +2651,7 @@
    "# Issue #114: a dotted module reference (\"pkg.mod\", \"pkg.mod:factory\")",
    "# passes through AS A STRING so _resolve_factory reaches"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:861-864": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:862-865": [
    "# 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).",
    "# Issue #91: this tier no longer imports anything — endpoints are resolved",
    "# from installed metadata, so it is safe for the metadata-only scan too.",
@@ -3164,7 +3164,7 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1973-1990": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1990-2007": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3174,33 +3174,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2496-2496": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2513-2513": [
    "# call would leave the prompt looking frozen. Drive the \"Working…\" row from"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2678-2680": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2695-2697": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2786-2786": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2803-2803": [
    "abort_retry()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3006-3006": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3023-3023": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3434-3434": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3451-3451": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3530-3530": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3547-3547": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3530-3533": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3547-3550": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1332``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3573-3590": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3590-3607": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3210,7 +3210,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3781-3781": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3798-3798": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:738-738": [

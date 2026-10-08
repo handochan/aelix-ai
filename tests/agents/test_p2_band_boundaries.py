@@ -576,6 +576,14 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # ``test_kernel_has_no_subagent_surface`` still passes. A session-format
         # question created the requirement; delegation did not.
         "packages/aelix-agent-core/src/aelix_agent_core/session/context.py",
+        # ADR-0256, #403. ``get_settings`` aggregates extension-owned boolean
+        # contributions under stable owner/name keys, like the existing command
+        # and shortcut registries. It calls no owner callback and uses only duck
+        # typing: no coding-agent or memory import, no persistence/consent policy,
+        # and no subagent runtime surface. The host menu consumes the current
+        # runner after each rebuild. Generic extension settings created this
+        # requirement; delegation did not.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/_extension_runner.py",
         # ADR-0243, #199. ``harness/core.py`` and ``harness/_session_stats.py``
         # (both listed above) changed AGAIN, and it is recorded here for the
         # reason the ADR-0211 note gives: an already-listed path would otherwise

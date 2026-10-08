@@ -175,7 +175,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over ``self.flag`` on purpose. The real one
-    (``extensions/api.py:1204`` → ``:1224-1225``) is
+    (``extensions/api.py:1217`` → ``:1237-1238``) is
     ``runtime.ui is not HEADLESS_UI_CONTEXT`` — a TIME-VARYING value, not a
     mode: ``False`` during ``harness.bootstrap()``, ``True`` after the TUI
     binds, re-pointed on every harness rebuild, and ``False`` again on exit

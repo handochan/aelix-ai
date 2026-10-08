@@ -40,6 +40,12 @@ No headless menu/RPC setting mutation endpoint is added. This API supplies only
 boolean rows; richer setting types and a persistence convention can follow actual
 extension requirements. `register_flag` retains its existing CLI flag semantics.
 
+The generic aggregation method authorizes a bounded change to
+`packages/aelix-agent-core/src/aelix_agent_core/harness/_extension_runner.py` under
+the kernel change gate. It introduces no coding-agent/memory import, owner callback
+execution, persistence or consent policy and no subagent runtime surface. The
+always-armed kernel independence checks remain enforced.
+
 ## Verification
 
 `tests/extensions/test_settings_contributions.py` covers lazy registration, sync/

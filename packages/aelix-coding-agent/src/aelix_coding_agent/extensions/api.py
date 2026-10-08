@@ -629,7 +629,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:588-596``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:589-597``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -649,7 +649,7 @@ class _ExtensionRuntime:
         3. DEPTH (finding I4). Product-core will not HOLD a runtime inside a
            delegated child, regardless of which extension tier produced it.
            This is the fork-bomb invariant living in the seam rather than in
-           one extension's constructor — ``extensions/loader.py:861-864`` drops
+           one extension's constructor — ``extensions/loader.py:862-865`` drops
            tier-4 entry points under ``--no-extensions`` and
            ``agents/profile.py:369-374`` bans ``extensions:`` at project
            scope, but a user-scope tier-1 extension still loads in a child

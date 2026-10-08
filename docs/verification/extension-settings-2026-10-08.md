@@ -61,3 +61,20 @@ tests. The live fixture used OpenRouter `openai/gpt-5.4-mini` in nine fresh
 processes: single global opt-in, automatic project learning and isolated recall,
 preference correction, and OFF from another project all passed. No user memory,
 credentials, raw transcript or model weights are committed.
+
+## Full repository gates
+
+The first full GitHub run passed 13,403 tests and skipped 35 on Ubuntu/Python3.12,
+then failed two repository gates omitted from the initial affected-suite selection:
+the generic runner delta needed its ADR authorization recorded in the kernel
+allowlist, and 53 existing source citations moved when the new code was inserted.
+Both failures were reproduced locally before repair. ADR-0256 authorizes only the
+generic runner path; the kernel independence checks stay armed. The standard
+`check_citations.py --fix` command relocated exact anchors across 33 files without
+behavioral edits and retained the 19-anchor ambiguity limit.
+
+The two repaired gates plus kernel boundaries, lazy activation, contributed
+settings, real modal/key pipeline and bundled-doc checks passed together: **64
+tests** in 9.81 seconds. Full lint and the 287-file type gate pass. Remote whole-host
+CI is rerun on the final corrected head; it is separate from the 18 passing memory
+core/installed-host jobs and the passing catalog parser/candidate verification.
