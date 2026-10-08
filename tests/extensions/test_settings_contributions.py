@@ -114,6 +114,13 @@ async def test_non_persisted_value_is_not_reported_as_success():
     assert result.kind == "error" and "did not change" in result.message
 
 
+async def test_unavailable_displayed_state_cannot_enable_the_owner():
+    extension, _, values = registered()
+    row = extension_settings_rows(ExtensionRunner(extensions=[extension]).get_settings(), [])[0]
+    result = await apply_extension_setting(row, displayed_value="unavailable")
+    assert result.kind == "error" and values["enabled"] is False
+
+
 def test_colliding_labels_are_qualified_and_builtin_rows_stay_unchanged():
     first, _, _ = registered(name="first", label="Theme")
     second, _, _ = registered(name="second", label="Theme")

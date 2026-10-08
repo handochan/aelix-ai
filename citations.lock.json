@@ -3164,7 +3164,7 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1990-2007": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1996-2013": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3174,33 +3174,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2513-2513": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2519-2519": [
    "# call would leave the prompt looking frozen. Drive the \"Working…\" row from"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2695-2697": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2701-2703": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2803-2803": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2809-2809": [
    "abort_retry()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3023-3023": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3029-3029": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3451-3451": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3457-3457": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3547-3547": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3553-3553": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3547-3550": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3553-3556": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1332``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3590-3607": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3596-3613": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3210,7 +3210,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3798-3798": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3804-3804": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:738-738": [

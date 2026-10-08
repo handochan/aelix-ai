@@ -57,13 +57,21 @@ def extension_settings_rows(
     return rows
 
 
-async def apply_extension_setting(row: SettingsRow) -> ApplyResult:
-    """Toggle through the owner, await persistence, and confirm the actual value."""
+async def apply_extension_setting(
+    row: SettingsRow, *, displayed_value: str | None = None
+) -> ApplyResult:
+    """Apply the user's displayed intent, await persistence and confirm the value."""
     setting = row.extension_setting
     if setting is None:
         return ApplyResult(kind="error", message="This row has no extension setting.")
     try:
-        desired = not setting.get_value()
+        current = setting.get_value()
+        if displayed_value is None:
+            desired = not current
+        elif displayed_value in {"on", "off"}:
+            desired = displayed_value == "off"
+        else:
+            return ApplyResult(kind="error", message=f"{row.label}: setting unavailable.")
         result = setting.set_value(desired)
         if inspect.isawaitable(result):
             await result

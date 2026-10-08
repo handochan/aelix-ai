@@ -26,6 +26,10 @@ The generic runner aggregates contributions under `extension:<owner>:<name>` usi
 its existing duck-typed boundary. The TUI MUST query its current runner each time
 `/settings` opens/reopens, read the owner value, await a selected setter and confirm
 the new value by rereading. It MUST keep built-in `SettingsManager` paths unchanged.
+The desired value MUST reflect the row the user selected, not invert a value
+another process changed after the menu was displayed. A displayed ON selected
+for OFF cannot turn memory back ON because another project already disabled it.
+An unavailable displayed value MUST NOT silently authorize enabling the setting.
 Duplicate owner/name keys use the runner's first-registration rule. Display labels
 MUST be unique, including user labels equal to a generated qualified label.
 

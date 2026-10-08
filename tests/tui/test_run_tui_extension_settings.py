@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from aelix_agent_core.harness._extension_runner import ExtensionRunner
 from aelix_ai.settings import SettingsManager
 from aelix_coding_agent.extensions.api import Extension, ExtensionAPI, _ExtensionRuntime
@@ -47,3 +48,35 @@ async def test_settings_toggle_persists_and_a_fresh_tui_can_turn_it_off(tmp_path
             pipe.send_text("/quit\n")
             assert await _quit_within(task) == 0
         assert read() is desired
+
+
+@pytest.mark.parametrize("initial", [True, False])
+async def test_settings_preserves_displayed_intent_after_an_external_change(initial):
+    state = {"enabled": initial}
+    writes = []
+
+    async def write(value):
+        writes.append(value)
+        state["enabled"] = value
+
+    extension = Extension(name="example")
+    api = ExtensionAPI(extension, _ExtensionRuntime())
+    api.register_setting(
+        "enabled", label="Memory", get_value=lambda: state["enabled"], set_value=write
+    )
+    harness = FakeHarness()
+    harness.extension_runner = ExtensionRunner(extensions=[extension])
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=SettingsManager.in_memory({}))
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/settings\n")
+        await _wait(lambda: chrome.is_modal_open())
+        # Another process changes the global owner after this menu is displayed.
+        state["enabled"] = not initial
+        pipe.send_text("Memory\n")
+        await _wait(lambda: len(writes) == 1)
+        await _esc_until_settings_closed(chrome, pipe)
+        pipe.send_text("/quit\n")
+        assert await _quit_within(task) == 0
+    # Selecting the displayed ON row means OFF, even if someone already set OFF.
+    assert writes == [not initial] and state["enabled"] is not initial

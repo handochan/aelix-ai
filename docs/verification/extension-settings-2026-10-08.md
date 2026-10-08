@@ -78,3 +78,17 @@ settings, real modal/key pipeline and bundled-doc checks passed together: **64
 tests** in 9.81 seconds. Full lint and the 287-file type gate pass. Remote whole-host
 CI is rerun on the final corrected head; it is separate from the 18 passing memory
 core/installed-host jobs and the passing catalog parser/candidate verification.
+
+## Concurrent global choice
+
+A further real-modal regression reproduced both stale-display directions: an ON
+row remained visible while another actor set OFF, and selecting it turned the
+setting back ON. The inverse also reversed a user's ON intent. Both failed before
+repair. The menu now snapshots the displayed value and applies its opposite,
+then confirms the owner's persisted value. An unavailable displayed value cannot
+enable the owner. The focused settings/UI suite passes 13 tests; an independent
+boundary/citation/lazy/settings/UI review passes 57 tests and preserves citation-only
+executable ASTs. The final installed host wheel was exercised in the actual PTY:
+while an ON row stayed open in one process, a separate `aelix-memory off` process
+disabled the shared temporary store; selecting that displayed row kept OFF.
+Normal fresh-process ON/OFF, startup/read no-creation and clean exits also pass.

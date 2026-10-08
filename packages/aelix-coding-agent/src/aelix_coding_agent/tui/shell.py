@@ -1471,7 +1471,11 @@ async def run_tui(
             rows.extend(extension_settings_rows(contributions, rows))
             # Pi screenshot parity: pad the label column so values line up.
             width = max(len(r.label) for r in rows) + 2
-            labels = [f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows]
+            displayed_values = [r.read(settings_manager) for r in rows]
+            labels = [
+                f"{r.label.ljust(width)}{value}"
+                for r, value in zip(rows, displayed_values, strict=True)
+            ]
             cursor_idx = max(0, min(cursor_idx, len(labels) - 1))
             # Bind ``rows`` via a default arg so the per-highlight detail closure
             # references THIS iteration's rows (ruff B023 — the loop rebuilds rows
@@ -1514,7 +1518,9 @@ async def run_tui(
                     continue
 
             if row.extension_setting is not None:
-                result = await apply_extension_setting(row)
+                result = await apply_extension_setting(
+                    row, displayed_value=displayed_values[row_idx]
+                )
             else:
                 result = apply_setting(row, settings_manager, int_value=int_value)
             if result.kind == "delegate":

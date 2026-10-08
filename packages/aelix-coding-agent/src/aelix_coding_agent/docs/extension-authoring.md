@@ -194,7 +194,9 @@ def setup(aelix):
 
 Registration calls neither callback. Opening the menu reads the current value;
 selection toggles through the owner, awaits persistence and rereads it to confirm
-the change. Callback failure makes the row unavailable with a generic diagnostic;
+the change. The desired value is the opposite of the value shown in the selected
+row; another process changing it while the menu is open cannot reverse the user's
+ON/OFF intent. Callback failure makes the row unavailable with a generic diagnostic;
 exception text is not displayed. Labels are qualified when they collide with
 built-ins or other contributions, with unique final labels. Built-in settings
 continue to use `SettingsManager` unchanged.
