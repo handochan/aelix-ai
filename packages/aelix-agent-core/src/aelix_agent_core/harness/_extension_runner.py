@@ -206,6 +206,20 @@ class ExtensionRunner:
             return
         self._runtime.set_flag_value(name, value)
 
+    def get_settings(self) -> dict[str, Any]:
+        """Return current, namespaced contributions without invoking callbacks.
+
+        Duck typing keeps the kernel independent of coding-agent implementation
+        classes. Consumers read through the active runner after every rebuild.
+        """
+        out: dict[str, Any] = {}
+        for ext in self.extensions:
+            for name, setting in (getattr(ext, "settings", None) or {}).items():
+                key = f"extension:{ext.name}:{name}"
+                if key not in out:
+                    out[key] = setting
+        return out
+
     def get_shortcuts(self) -> dict[str, Any]:
         """Issue #20 — aggregate ``Extension.shortcuts`` across extensions.
 

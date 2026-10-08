@@ -274,6 +274,10 @@ async def test_failed_activation_rolls_back_partial_registrations(
             from aelix_agent_core.types import AgentTool
             aelix.register_tool(AgentTool(name="leaked_tool", description="x"))
             aelix.on("session_shutdown", lambda event, ctx: None)
+            aelix.register_setting(
+                "leaked_setting", label="Leaked", get_value=lambda: False,
+                set_value=lambda value: None,
+            )
             raise RuntimeError("factory exploded after registering")
     """)
     harness, runtime = await _build(
@@ -295,6 +299,7 @@ async def test_failed_activation_rolls_back_partial_registrations(
         for rc in harness.extension_runner.get_registered_commands()
     }
     assert "lazy-cmd" not in runner_names
+    assert harness.extension_runner.get_settings() == {}
     assert "leaked_tool" not in {t.name for t in harness.state.tools}
     assert not harness.extension_runner.has_handlers("session_shutdown")
 

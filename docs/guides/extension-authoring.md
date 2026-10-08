@@ -133,6 +133,7 @@ The handle exposes more than tools and commands. The most useful members:
 | ----------------------------------- | -------------------------------------------------------- |
 | `register_tool(tool)`               | Register an `AgentTool`.                                 |
 | `register_command(name, *, handler, description=None)` | Register a slash command.             |
+| `register_setting(name, *, label, get_value, set_value, description="")` | Contribute an extension-owned global boolean toggle to `/settings`. |
 | `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider. A `config.models` map surfaces in `/model` (once a credential is stored) and is selectable at launch — `--model <name>/<id>` or `--provider <name> --model <id>`. |
 | `register_login_provider(provider)` / `unregister_login_provider(id)` | Add / drop a custom `/login` method with your own credential flow (see below). |
 | `register_api_adapter(api, stream_fn)` / `unregister_api_adapter(api)` | Register a custom wire-protocol adapter for an endpoint config can't express (see below). |
@@ -164,6 +165,7 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | ------- | ------ | -------------------------- |
 | `register_tool` | Live | Refreshes the harness tool registry and auto-activates the tool. |
 | `register_command` | Live in **both** the TUI and RPC | The TUI resolves it through `CommandDispatchService` after built-ins; RPC exposes it via `get_registered_commands`. |
+| `register_setting` | Live in the TUI | `/settings` reads current runner contributions each time it opens/reopens. The getter reads the owner's persisted value; the setter can be synchronous or async and completes before the menu reports success. |
 | `register_provider` / `unregister_provider` | Live | Queued at `setup()` time and replayed into the real `ModelRegistry` right after the extensions load — **before** the launch model is resolved, on the first build and on every `/new`, `/fork`, `/resume` and `/reload` (ADR-0249). So `--model <name>/<id>` selects it at launch, and whatever keys are set it is your provider, never an OpenRouter id. `config.models` also appear in `/model` (given a stored credential). A registration made later, while a session is starting (from the end of the build through its `session_start` handlers and the turns they trigger, which aelix waits out, up to aelix's check after `session_start`: in a `session_start` handler, in a handler of a turn one triggers, such as its `input` or `before_agent_start` handler — that turn may run after the handler returned — or in a task a handler or `setup()` started that registers then), reaches the registry immediately but after the launch model was chosen, so a launch model only it could serve is **refused**, as in pi (#367): `-p` / `--mode json` exit 1 before any request, saying to register the provider in `setup()`; interactive starts held on it (`api='unknown'`) and sends nothing until `/model` picks a model. A launch model a provider registered at launch serves (a built-in, `models.json`, `setup()`) stays on that provider, as in pi, even when yours serves the same id or settings `defaultProvider` names yours, and a turn your handler triggers runs there. Rebuilds, `/agents use` of a profile naming no model or provider of its own and the post-`/login` pick are held wherever the launch inputs land on your provider — also after a launch that stayed on a registered one (aelix rebuilds re-derive the model; pi keeps the session's) — after which `/model <name>/<id>` (or a profile whose `model:` or `provider:` names it) reaches your provider, since it is registered by then (a `/model` choice until the next rebuild, which re-derives the launch model and holds again). The decision is about the launch inputs: a `set_model` in your `session_start` handler does not make a refused launch pass, nor release the hold after a rebuild. While `session_start` handlers run, a launch model no registered provider claimed (the refused kind) is not runnable yet, and no turn starts, whatever model your handler set: a turn it triggers then (`send_message(..., trigger_turn=True)`) runs as a **refused turn** — the events of a turn that cannot reach its model, `agent_end` included, with the reason as its error and nothing sent — so a handler awaiting that turn's `agent_end` is woken; its message stays in the conversation as that turn's prompt (as any failed turn's), so it goes out with the next prompt that is sent. `--api-key` is attached only after the decision. The hold is checked, not assumed: a `model_select` handler that answers the placeholder with a `set_model` of its own is put back on the placeholder, at launch, on every rebuild and after `/agents use`, and no turn starts while the hold is applied — a turn that handler triggers there is a refused turn, nothing sent; its message stays in the conversation and goes out with the next prompt that is sent. A task your handler spawns that calls `set_model` and triggers a turn once aelix has made that decision acts outside the hold, like any later extension action (one that acts at once, while a pending launch is being put on hold, is held). RPC starts held too and cannot pick another model (`aelix --mode rpc` has no model registry for `set_model`). **Register providers in `setup()`** (the factory) if a launch may name them. A failed `/reload` (your extension no longer loads) keeps the provider you registered earlier, route and key, until `unregister_provider` removes it — as in pi. Delegated children load **no** extensions by default (`inherit_extensions: false`): the parent passes such a model to the child as `--provider <name> --model <id>`, so the child refuses it (it has no adapter for your provider) rather than re-deriving a route through OpenRouter; set `inherit_extensions: true` on the profile if the child should use it. |
 | `register_login_provider` | Live (interactive TTY only) | The `/login` wizard reads the registry to build its method list. Not available under `--print` / `--json` / `--mode rpc`, which have no wizard. |
 | `register_api_adapter` | Live, and re-applied across `/reload` | Fanned out to the process-global api registry, and replayed on every harness rebuild (the reload resets that registry). |
@@ -171,6 +173,38 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | `on(...)` hooks | Live | Dispatched by the harness hook bus — the built-in Guardrail / Permission extensions use the same path. |
 | `register_shortcut` | Live | Aggregated by `get_shortcuts` and read live by the TUI chrome at key-fire time, so `/reload` handler swaps take effect. First registration wins a key collision. |
 | `register_message_renderer` | Live | Looked up live per custom message by `get_message_renderer`; first extension in load order wins. A renderer that raises falls back to default rendering. |
+
+### Global settings toggles
+
+An extension can add a live boolean row to `/settings` without adding a field to
+the host's settings schema. Persist the global choice in your extension's
+user-owned storage and expose that same value through any slash/CLI controls:
+
+```python
+def setup(aelix):
+    store = MyUserSettings()  # reads do not initialize missing storage
+    aelix.register_setting(
+        "enabled",
+        label="Memory",
+        get_value=store.is_enabled,       # returns exactly bool; read-only
+        set_value=store.set_enabled,      # accepts bool; sync or async
+        description="Use memory globally across projects and sessions.",
+    )
+```
+
+Registration calls neither callback. Opening the menu reads the current value;
+selection toggles through the owner, awaits persistence and rereads it to confirm
+the change. Callback failure makes the row unavailable with a generic diagnostic;
+exception text is not displayed. Labels are qualified when they collide with
+built-ins or other contributions, with unique final labels. Built-in settings
+continue to use `SettingsManager` unchanged.
+
+Reload replaces the runner's contributions. Stale callbacks are rejected before
+owner invocation, including invalidation between coroutine creation and awaiting.
+An operation already running belongs to the extension: its setter must implement
+any cancellation or transactional revocation its own persistence requires.
+`/settings` is interactive; this API does not introduce a headless/RPC settings UI.
+This surface is an Aelix addition (ADR-0256), separate from `register_flag`.
 
 ### What reaches the terminal
 
