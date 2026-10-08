@@ -347,6 +347,16 @@ def _parse_entry_line(
             f"Invalid JSONL session file {file_path}: line {line_number} "
             "is missing timestamp",
         )
+    if (
+        parsed["type"] == "session_info"
+        and parsed.get("name") is not None
+        and not isinstance(parsed["name"], str)
+    ):
+        raise SessionError(
+            "invalid_entry",
+            f"Invalid JSONL session file {file_path}: line {line_number} "
+            "has invalid session name",
+        )
     if parsed["type"] == "leaf":
         target = parsed.get("targetId")
         if target is not None and not isinstance(target, str):
@@ -428,6 +438,21 @@ async def _load_jsonl_storage(
             f"Failed to read session {file_path}: {exc}",
             cause=exc,
         ) from exc
+    loaded = _parse_jsonl_content(content, file_path)
+    if loaded.recovery is not None:
+        # Keep recovery warnings on actual open; picker inspection is read-only.
+        _LOG.warning("%s", loaded.recovery.describe())
+    return loaded
+
+
+def _parse_jsonl_content(content: str, file_path: str) -> _LoadedSession:
+    """Decode retained entries with the storage loader's recovery semantics.
+
+    Shared internally with the resume-label reader (#417): a tail-only name
+    lookup cannot see a corrupt ancestor that makes a later rename orphaned.
+    No I/O, logging, or repair writes occur here.
+    """
+
     lines = [line for line in content.split("\n") if line.strip()]
     if not lines:
         raise SessionError(
@@ -490,9 +515,6 @@ async def _load_jsonl_storage(
         orphaned_entries=tuple(orphaned),
         unterminated_tail=not ends_with_newline,
     )
-    # No logging is configured by the CLI, so `logging.lastResort` puts
-    # this on stderr where the user actually sees it.
-    _LOG.warning("%s", recovery.describe())
     return _LoadedSession(
         header=header,
         entries=kept,

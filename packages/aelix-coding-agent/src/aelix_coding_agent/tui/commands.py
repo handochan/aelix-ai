@@ -2136,7 +2136,7 @@ async def _session_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _name_handler(ctx: CommandContext, args: str) -> None:
-    """``/name [text]`` — show or set the session display name."""
+    """``/name [text]`` (alias ``/rename``) — show or set the session name."""
 
     session = getattr(ctx.harness, "session", None)
     if session is None:
@@ -2171,7 +2171,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
     BuiltinCommand("stats", "Session usage statistics (tools, tokens, models)", _stats_handler),
     BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
-    BuiltinCommand("name", "Show or set the session name", _name_handler),
+    BuiltinCommand("name", "Show or set the session name", _name_handler, aliases=("rename",)),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("skills", "List loaded skills", _skills_handler),

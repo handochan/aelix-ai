@@ -11,8 +11,8 @@ session contains. This module is the single format for both.
 pi builds its row from ``session.name ?? session.firstMessage`` plus a relative
 age (``modes/interactive/components/session-selector.js:368-373``), where
 ``modified`` is the newest MESSAGE timestamp in the file and the file's mtime is
-only the last-resort fallback (``core/session-manager.js:412-418``). aelix has
-no session names, so the first user message carries the label alone.
+only the last-resort fallback (``core/session-manager.js:412-418``). Aelix also
+uses the latest saved session name, falling back to the first user message.
 
 WHY THE FIRST MESSAGE, when the last one is what was asked for: measured across
 the 224 real sessions in this repo's session folder, the last user turn is
@@ -31,9 +31,10 @@ last user message — 128 KB tail window                          27 ms
 newest entry timestamp — 128 KB tail window                     20 ms
 ===========================================================  ========
 
-which is why this needs neither pi's concurrency-10 loader nor its progress
-bar: those exist because ``buildSessionInfo`` streams every file end to end to
-count messages. Nothing here reads a whole file.
+Those figures describe message previews. Saved names (#417) use the core's
+complete-file decoder and corruption recovery, so a rename pruned on reopening
+cannot label the picker. This reads the complete file; the preview timings above
+do not measure name lookup. Older names survive later messages of any size.
 
 LAYOUT DEVIATION FROM pi: pi right-aligns the age against a known component
 width. aelix's :meth:`AelixTUIContext.select` sizes its frame to the widest row
@@ -50,6 +51,10 @@ import os
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+
+from aelix_agent_core.session.entries import SessionInfoEntry
+from aelix_agent_core.session.jsonl_storage import _parse_jsonl_content
+from aelix_agent_core.session.storage import SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +251,25 @@ def last_user_message(path: str) -> str | None:
         text = _user_text(line)
         if text:
             return text
+    return None
+
+
+def session_display_name(path: str) -> str | None:
+    """The latest retained name, matching ``Session.get_session_name`` on reopen.
+
+    Use the actual storage decoder rather than a separate metadata validator:
+    malformed entries and their orphaned descendants must be skipped by both.
+    Inspection does not log recovery warnings or change the saved bytes.
+    """
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            loaded = _parse_jsonl_content(handle.read(), path)
+        for entry in reversed(loaded.entries):
+            if isinstance(entry, SessionInfoEntry):
+                return (entry.name.strip() or None) if entry.name is not None else None
+    except (OSError, UnicodeError, SessionError):
+        return None
     return None
 
 
@@ -459,7 +483,7 @@ def truncate_cells(text: str, cells: int, *, marker: str = "…") -> str:
 
 
 def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:
-    """``  2h  <first user message>`` — one scannable row per session.
+    """``  2h  <saved name or first user message>`` — one row per session.
 
     ``width`` is the total cell budget for the row; the message is truncated to
     what is left after the age column. Fully defensive: an odd metadata shape or
@@ -481,7 +505,9 @@ def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:
     try:
         age = session_age(meta, now)
         path = getattr(meta, "path", "") or ""
-        message = (first_user_message(path) if path else None) or _NO_MESSAGES
+        message = (
+            (session_display_name(path) or first_user_message(path)) if path else None
+        ) or _NO_MESSAGES
         room = max(10, width - _AGE_CELLS - 2)
         return f"{age:>{_AGE_CELLS}}  {truncate_cells(_clean(message), room)}"
     except Exception:  # noqa: BLE001 — see the docstring: one bad file, one bad row
@@ -546,6 +572,7 @@ __all__ = [
     "session_activity_epoch",
     "session_age",
     "session_choice_label",
+    "session_display_name",
     "session_detail_lines",
     "short_field",
     "truncate_cells",

@@ -343,6 +343,9 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_repo.py",
+        # ADR-0208 amendment, #417: the loader's parse/recovery is shared with
+        # resume labels, and invalid session names are skipped as schema errors.
+        # No public API or delegation policy is added to jsonl_storage.py.
         # ADR-0242, #294. The three ADR-0208 session paths just above changed
         # AGAIN, and the change is recorded here for the reason the ADR-0211
         # note below gives: a path that is already listed would otherwise let a

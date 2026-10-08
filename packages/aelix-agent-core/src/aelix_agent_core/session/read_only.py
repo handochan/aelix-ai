@@ -9,7 +9,7 @@ promise the UI makes and no code keeps.
 Ten methods in the :class:`SessionStorage` Protocol; exactly two of them write:
 ``append_entry`` and ``set_leaf_id``. Those raise
 ``SessionError("read_only", …)``. ``create_entry_id`` is **not** one of them —
-it is a pure function over the id set (``jsonl_storage.py:683-684``) that
+it is a pure function over the id set (``jsonl_storage.py:705-706``) that
 touches no file and no in-memory state, so refusing it would only move the
 error to a less informative place. The other seven delegate.
 

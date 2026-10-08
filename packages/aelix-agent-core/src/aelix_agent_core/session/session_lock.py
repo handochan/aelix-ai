@@ -2,7 +2,7 @@
 
 The defect this exists for is **not** torn bytes. ``append_entry`` reparents
 every new entry onto a **process-local** ``_current_leaf_id``
-(``session/jsonl_storage.py:692``), so a second process appending to the same
+(``session/jsonl_storage.py:714``), so a second process appending to the same
 file hangs its turn off a leaf the first process has already moved past. Every
 line on disk is valid JSON, every append is atomic, and one terminal's whole
 turn is invisible on the next load. A byte-range lock on the session file's own

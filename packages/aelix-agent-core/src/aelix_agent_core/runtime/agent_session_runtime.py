@@ -912,7 +912,7 @@ class AgentSessionRuntime:
 
         # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
         # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
-        # (``jsonl_storage.py:692`` reparents every later append onto it), so a
+        # (``jsonl_storage.py:714`` reparents every later append onto it), so a
         # turn the other terminal appends between our read and the moment we
         # own the file is reparented away by our next append — which is #137
         # itself, reproduced by the guard meant to prevent it. Review measured

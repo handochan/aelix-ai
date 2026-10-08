@@ -659,11 +659,11 @@
    "SESSION_FILE_MODE = 0o600",
    "SESSION_DIR_MODE = 0o700"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py:683-684": [
+  "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py:705-706": [
    "async def create_entry_id(self) -> str:",
    "return _generate_entry_id(self._by_id)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py:692-692": [
+  "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py:714-714": [
    "self._current_leaf_id = _leaf_id_after_entry(entry)"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/session/session.py:121-126": [

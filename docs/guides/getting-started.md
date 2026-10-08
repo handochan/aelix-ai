@@ -294,6 +294,11 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
 - `/cost` — show token usage and cost so far.
 - `/tools` — list active tools.
 - `/resume` — switch to another session.
+- `/name <text>` (or `/rename <text>`) — set the current session name. Both
+  `/resume` and `aelix --resume` show the latest saved name, falling back to the
+  first user message for unnamed sessions. Damaged records are skipped with the
+  same recovery rules used when reopening the session. `/name` without arguments
+  shows the current name.
 
 Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to

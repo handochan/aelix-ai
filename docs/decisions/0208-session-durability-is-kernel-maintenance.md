@@ -69,3 +69,19 @@ no cap, no registry and no consent policy. They are session I/O correctness only
 - The single-writer session lock (the two-terminal orphaned-branch loss) is
   **out of scope** here — it is a design decision with a Windows leg (#46) and is
   tracked as a follow-up, not authorised by this ADR.
+
+## Amendment 2026-10-09 — resume labels use the same recovery (#417)
+
+The resume picker accepted incomplete `session_info` records that reopening
+skipped, and displayed names whose corrupt ancestors caused recovery to prune
+them. The core decoder and recovery are extracted into one private pure helper
+used by both storage open and the coding agent's label reader. No public API or
+delegation behavior is added; the dependency still points from the coding agent
+to core. The storage reader also treats a non-string, non-null session name as
+an invalid entry, so `get_session_name()` cannot fail at `.strip()` on one.
+
+Names are inspected across the complete file. A tail-only lookup cannot detect
+an earlier corrupt parent that invalidates the apparent latest rename. This
+costs a full read and decode for each inspected session; existing message-preview
+timings do not measure it. Picker inspection does not log recovery warnings or
+rewrite damaged bytes; actual reopening retains its existing warning behavior.

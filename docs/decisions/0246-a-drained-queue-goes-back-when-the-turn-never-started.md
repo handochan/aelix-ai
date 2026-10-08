@@ -193,7 +193,7 @@ for `MemorySessionStorage` rather than dropping the `Session`
 (`session/session.py:149-154`) goes through `get_branch` → `get_leaf_id()` /
 `get_path_to_root()`, and the shipped `JsonlSessionStorage` raises
 `SessionError` from both when its entry index does not resolve
-(`jsonl_storage.py:660-666`, `:703-721`); `SessionStorage` is a public
+(`jsonl_storage.py:680-686`, `:723-741`); `SessionStorage` is a public
 Protocol, so an embedder's storage can raise anything at all.
 
 ARM 6 puts such a session in front of the same drained message:
