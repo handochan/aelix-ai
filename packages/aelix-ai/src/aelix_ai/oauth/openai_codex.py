@@ -31,8 +31,10 @@ from aelix_ai.oauth._callback_server import start_callback_server
 # Sprint 6e W6 (P-157): single-owner ``maybe_await`` helper. The local
 # ``_maybe_await`` name remains importable for back-compat.
 from aelix_ai.oauth._helpers import (
+    StatusBeforeBody,
     describe_token_response_keys,
     format_error_details,
+    oauth_http_error,
     quote_server_text,
     quoting_transport_errors,
 )
@@ -435,24 +437,32 @@ async def login_openai_codex(callbacks: OAuthLoginCallbacks) -> OAuthCredentials
 async def refresh_openai_codex_token(refresh_token: str) -> OAuthCredentials:
     """Pi parity: ``openai-codex.ts:418-435`` ``refreshOpenAICodexToken``."""
 
-    async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT_SECONDS) as client:
+    # #379 rounds 3-5: a non-2xx status decides once it arrives, whatever the body does.
+    status = StatusBeforeBody()
+    async with httpx.AsyncClient(
+        timeout=_TOKEN_TIMEOUT_SECONDS, event_hooks=status.event_hooks
+    ) as client:
         with quoting_transport_errors():
-            response = await client.post(
-                TOKEN_URL,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": CLIENT_ID,
-                },
+            response = await status.answer(
+                client.post(
+                    TOKEN_URL,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": CLIENT_ID,
+                    },
+                )
             )
         body_text = response.text
         if response.status_code < 200 or response.status_code >= 300:
             # #186: quoted, not interpolated - a 48 KB body carrying ESC[2J
             # cleared the screen from ``-p`` stderr on every refresh attempt.
-            raise RuntimeError(
+            # #379: the status travels as data too - 429/500/502-504/520/524 is retried.
+            raise oauth_http_error(
                 f"OpenAI Codex token refresh failed ({response.status_code}): "
-                f"{quote_server_text(body_text) or quote_server_text(response.reason_phrase)}"
+                f"{quote_server_text(body_text) or quote_server_text(response.reason_phrase)}",
+                response.status_code,
             )
         data = response.json()
 

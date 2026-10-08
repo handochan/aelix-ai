@@ -7,7 +7,7 @@ open, so the underlying request lingers until the transport gives up", needing
 reaching the adapter)".
 
 Measured, it does not linger. ``AgentHarness.abort`` already calls
-``self._current_turn_task.cancel()`` (``harness/core.py:1719-1721``); the
+``self._current_turn_task.cancel()`` (``harness/core.py:1794-1796``); the
 ``CancelledError`` lands in the adapter's ``async for`` over the SDK stream, no
 adapter catches it (``except Exception`` does not catch a ``BaseException``),
 and httpx closes an incompletely-read response as it unwinds. The socket goes

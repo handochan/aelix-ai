@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from aelix_ai.oauth._helpers import refresh_retry_reason
 from aelix_ai.oauth._high_level import get_oauth_api_key_from_credentials
 from aelix_ai.oauth.types import (
     AuthStatus,
@@ -81,7 +82,14 @@ class StoredCredentialError(RuntimeError):
     the environment when ``credential.key`` is empty, and a ``models.json``
     provider inherits it (``provider-composer.ts:459-463``). aelix is stricter
     there (ADR-0251 §4).
+
+    :attr:`retry_reason` is ``None`` for every entry of this class: none of them
+    changes by asking again, so the turn fails at once (#379, ADR-0251 §4). Only
+    :class:`OAuthRefreshError` sets it, for a transient refresh failure.
     """
+
+    #: Why asking again may succeed (#379); ``None`` means fail at once.
+    retry_reason: str | None = None
 
     def __init__(self, provider_id: str, reason: str, auth_path: Path | None = None) -> None:
         where = str(auth_path) if auth_path is not None else "auth.json"
@@ -100,27 +108,55 @@ class OAuthRefreshError(StoredCredentialError):
     passes ``stored_owns=True``. A stored credential owns its provider, so a
     request must not go out on anything else - pi throws
     ``ModelsError("oauth", "OAuth refresh failed for <id>")``
-    (``packages/ai/src/auth/resolve.ts:142`` @ b223082bb). The message keeps
-    the cause's text so the user sees why the refresh failed. It is NOT
-    retried: the callback's raise becomes ``AgentHarnessError("auth")`` in
-    ``_make_stream_fn`` before any assistant message exists, and the harness's
-    auto-retry reads only the last assistant message. pi differs (ADR-0251 §4):
-    its ``lazyStream`` turns the error into an error assistant message whose
-    text keeps the cause, so a ``502`` or ``fetch failed`` refresh is retried
-    and a ``401`` is not (``packages/ai/src/api/lazy.ts:52-58``,
-    ``utils/retry.ts:250``).
+    (``packages/ai/src/auth/resolve.ts:142`` @ 1cedd3272). The message keeps
+    the cause's text so the user sees why the refresh failed.
+
+    :attr:`retry_reason` (#379, ADR-0251 §4) says whether the failure is
+    transient - the token endpoint answered ``429``, ``500``, ``502``-``504``,
+    ``520`` or ``524`` (pi's set), or could not be reached, a 2xx whose body
+    was cut short or timed out included
+    (:func:`aelix_ai.oauth._helpers.refresh_retry_reason`) - and is ``None``
+    for anything else (``400``/``401``/``403``, ``invalid_grant``, ``501``, a
+    2xx whose whole body is not a token or whose encoding is broken). A
+    transient one's message is pi's (no ``/login`` hint, since the turn
+    retries it); a refused one keeps the hint. A transient one is retried by
+    the turn as pi retries it: ``ModelRegistry.get_api_key_and_headers`` carries the reason
+    to the CLI's auth callback, which raises it, and the harness's
+    ``_make_stream_fn`` turns that raise into an error assistant message the
+    auto-retry loop retries with its usual budget and backoff - pi's
+    ``lazyStream`` (``packages/ai/src/api/lazy.ts:46-60``) and
+    ``isRetryableAssistantError`` (``packages/ai/src/utils/retry.ts:252``). A
+    non-transient one still becomes ``AgentHarnessError("auth")`` and fails
+    the turn at once (inside a retry sequence: ends it, ADR-0251 §12.5).
+    Every retry asks this cascade again, so while the stored login exists a
+    retried request carries the refreshed token or nothing - never the
+    environment's. A login another process removes meanwhile (ADR-0251
+    §12.6): during the backoff, the retry's refresh re-reads the store and
+    finds no login, the in-memory entry is still the expired one, and the
+    cascade raises "is an OAuth login that gave no key" - nothing is sent and
+    the retry ends; while the failing refresh is under way, the reload below
+    drops the entry and the retry reads the steps after it, as a new turn does.
     """
 
     def __init__(self, provider_id: str, cause: BaseException) -> None:
+        self.retry_reason = refresh_retry_reason(cause)
         detail = str(cause).strip() or type(cause).__name__
         prefix = f"Failed to refresh OAuth token for {provider_id}: "
         if detail.startswith(prefix):
             detail = detail[len(prefix) :]
-        RuntimeError.__init__(
-            self,
-            f"OAuth refresh failed for {provider_id}: {detail}. "
-            f"Run /login to sign in to {provider_id} again.",
-        )
+        if self.retry_reason is not None:
+            # #379 review round 2: the turn retries this one, so it does not send
+            # the user to /login - pi's text (``ModelsError("oauth", "OAuth
+            # refresh failed for <id>", {cause})`` with its cause detail,
+            # ``packages/ai/src/auth/resolve.ts:142``,
+            # ``utils/models-error.ts:16-21`` @ 1cedd3272).
+            message = f"OAuth refresh failed for {provider_id}: {detail}"
+        else:
+            message = (
+                f"OAuth refresh failed for {provider_id}: {detail}. "
+                f"Run /login to sign in to {provider_id} again."
+            )
+        RuntimeError.__init__(self, message)
         self.provider_id = provider_id
 
 

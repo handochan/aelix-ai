@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Awaitable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -221,6 +221,191 @@ def format_error_details(error: BaseException, *, handled: BaseException | None)
     return "; cause=".join(parts)
 
 
+#: The attribute :func:`oauth_http_error` sets and :func:`refresh_retry_reason` reads.
+_STATUS_ATTR = "oauth_status_code"
+
+
+def oauth_http_error(message: str, status_code: int) -> RuntimeError:
+    """The error for a token endpoint that answered, and not with success (#379).
+
+    The message is the one the raise site always built (the status, the URL,
+    the quoted body); the status code also travels as data, so
+    :func:`refresh_retry_reason` can tell a ``502`` from a ``401`` without
+    reading the text. A plain :class:`RuntimeError`, not a subclass: the
+    Anthropic wrappers' ``details=`` names each link's type (pi's
+    ``formatErrorDetails``), and a refused refresh must keep the message it had.
+    """
+
+    error = RuntimeError(message)
+    setattr(error, _STATUS_ATTR, status_code)
+    return error
+
+
+class StatusBeforeBody:
+    """An OAuth request's non-2xx answer keeps its status whatever happens to its body (#379).
+
+    ``client.post()`` reads the body before it returns, so an error while
+    reading it left the caller with no response and no status, and the
+    caller's status check - the one that attaches the status with
+    :func:`oauth_http_error` - never ran. A ``502`` whose ``Content-Encoding:
+    gzip`` body is not gzip raised ``httpx.DecodingError`` and failed at once
+    with the ``/login`` hint (review round 3, Codex); a ``401`` whose body
+    stopped short of its ``Content-Length`` raised ``httpx.RemoteProtocolError``,
+    which reads as a dropped connection, so the REFUSED refresh was retried
+    and the next ``200`` signed the user back in (review round 4, Codex).
+
+    So: once a non-2xx status has arrived, that status decides. Pass
+    :attr:`event_hooks` to the ``httpx.AsyncClient``: httpx runs a
+    ``response`` hook once the status line and headers are in, before it reads
+    the body. Then ``await answer(client.post(...))``: a non-2xx answer whose
+    body cannot be read - ANY error after the status arrived, a broken
+    encoding, a body cut short, a read timeout - comes back as that status
+    with an empty body. The caller classifies it by its status (``401``
+    refused, ``501`` not retried, ``502`` retried) and builds the message it
+    builds for that status with an empty body - byte for byte the text a
+    ``401`` with an empty body gets. An error before the status and headers
+    arrived (no connection, a write that timed out, a hang-up before the
+    header block completed) leaves as the transport error it is. So does an
+    error while reading a 2xx's body, which has no failure status to keep: a
+    body cut short or a read timeout is retried as a dropped connection
+    (``terminated`` and timeouts are in pi's retry pattern, ``retry.ts``); a
+    broken encoding (``httpx.DecodingError``) fails at once. In short (#379
+    review round 7, ADR-0251 §12.3): a non-2xx answer is decided by its
+    status once it arrives (``400``/``401``/``403`` refused at once; ``429``,
+    ``500``, ``502``-``504``, ``520``, ``524`` retried; any other status
+    fails); a 2xx whose body is cut short or times out is retried as a
+    dropped connection; a 2xx with a broken encoding fails at once. For an
+    answer whose body fails mid-read, pi's behaviour depends on the provider
+    and the connection framing (its Codex refresh reads a non-2xx answer's body with
+    .catch, its Anthropic and Copilot refreshes do not), so aelix's rule
+    above can differ from pi for these malformed answers.
+    """
+
+    def __init__(self) -> None:
+        self.response: httpx.Response | None = None
+        self.event_hooks: dict[str, list[Any]] = {"response": [self._seen]}
+
+    async def _seen(self, response: httpx.Response) -> None:
+        self.response = response
+
+    def _arrived(self) -> httpx.Response | None:
+        """What the hook saw for this request - read through a call, which the
+        ``self.response = None`` reset in :meth:`answer` does not narrow."""
+
+        return self.response
+
+    async def answer(self, sent: Awaitable[httpx.Response]) -> httpx.Response:
+        # A status from an earlier request on this instance says nothing about
+        # this one: an error before this request's status must stay a transport error.
+        self.response = None
+        try:
+            return await sent
+        except Exception:
+            seen = self._arrived()
+            if seen is None or 200 <= seen.status_code < 300:
+                raise
+            headers = [
+                (k, v)
+                for k, v in seen.headers.multi_items()
+                if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+            ]
+            kept = {
+                k: v for k, v in seen.extensions.items() if k in ("http_version", "reason_phrase")
+            }
+            return httpx.Response(
+                seen.status_code,
+                headers=headers,
+                content=b"",
+                request=seen.request,
+                extensions=kept,
+            )
+
+
+#: Transport failures that say nothing about whether the refresh request was
+#: valid: the endpoint was not reached, did not answer in time, or hung up -
+#: before the status and headers arrived, or while a 2xx's body was read (a body cut short
+#: or a read timeout: retried as a dropped connection; ``terminated`` and
+#: timeouts are in pi's retry pattern - for how pi treats a body that fails
+#: mid-read, see :class:`StatusBeforeBody` and ADR-0251 §12.3). A failure
+#: after a non-2xx status never gets here: :class:`StatusBeforeBody` turns it
+#: into that status, which decides. ``httpx.TimeoutException`` is the whole
+#: family on purpose: a ``WriteTimeout`` (the request could not be sent in
+#: time) is as transient as a ``ConnectTimeout`` or a ``ReadTimeout``.
+#: ``httpx.ProxyError`` is one (a proxy that refused the CONNECT): pi's fetch
+#: reports it as ``fetch failed``, which its retry matches. Not here:
+#: ``httpx.UnsupportedProtocol`` and ``httpx.LocalProtocolError`` (a request
+#: this process built wrong fails the same way every time).
+_TRANSIENT_TRANSPORT: tuple[type[BaseException], ...] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    httpx.ProxyError,
+    TimeoutError,
+    ConnectionError,
+)
+
+
+#: The statuses pi's retry pattern names (``RETRYABLE_PROVIDER_ERROR_PATTERN``,
+#: ``packages/ai/src/utils/retry.ts:30-45`` @ 1cedd3272: ``429``, ``500``,
+#: ``502``, ``503``, ``504``, ``520``, ``524``) - exactly those (#379 review
+#: round 2, the owner's "decide in pi's direction"). ``501``, ``505`` and every
+#: other ``5xx`` are not retried, as in pi.
+_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 524})
+
+
+def _transient_status(status: int) -> bool:
+    return status in _TRANSIENT_STATUSES
+
+
+def refresh_retry_reason(exc: BaseException) -> str | None:
+    """Why a failed OAuth refresh is worth retrying, or ``None`` (#379, ADR-0251 §4).
+
+    The owner's decision (2026-10-06) follows pi: a refresh that failed on a
+    transient cause is retried by the turn's auto-retry, anything else fails at
+    once. pi decides on the error's text (``isRetryableAssistantError``,
+    ``packages/ai/src/utils/retry.ts`` @ 1cedd3272); this decides on the
+    exception chain instead, because the text holds the server's own words and
+    the ``auth.json`` path - a ``401`` body that mentions ``502`` must not be
+    retried, and httpx's ``All connection attempts failed`` or ``Server
+    disconnected without sending a response.`` match none of pi's patterns.
+
+    Walks ``exc`` and its ``__cause__`` links (every wrapper on the refresh
+    path chains with ``raise ... from``; ``__context__`` is not followed, so an
+    exception the caller was handling is never read). The first link that
+    decides answers:
+
+    - an HTTP answer - :func:`oauth_http_error` (the built-in Codex, Anthropic
+      and Copilot refreshes) or ``httpx.HTTPStatusError`` (an extension's
+      ``raise_for_status()``): a status pi's pattern names
+      (:data:`_TRANSIENT_STATUSES`: ``429``, ``500``, ``502``, ``503``,
+      ``504``, ``520``, ``524``) is transient, any other status
+      (``400``/``401``/``403``: ``invalid_grant``, a revoked login; ``501``,
+      ``505``) is not;
+    - a transport failure (:data:`_TRANSIENT_TRANSPORT`, pi's ``fetch failed``
+      class): transient.
+
+    A chain with neither - a 2xx whose whole body was read and is not JSON, a
+    2xx whose encoding is broken, a token response missing fields, an unknown
+    OAuth provider - is not transient.
+    """
+
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        status = getattr(link, _STATUS_ATTR, None)
+        if isinstance(link, httpx.HTTPStatusError):
+            status = link.response.status_code
+        if isinstance(status, int):
+            if _transient_status(status):
+                return f"the token endpoint answered HTTP {status}"
+            return None
+        if isinstance(link, _TRANSIENT_TRANSPORT):
+            return f"the token endpoint could not be reached ({type(link).__name__})"
+        link = link.__cause__
+    return None
+
+
 def describe_token_response_keys(data: Any) -> str:
     """Name what a 2xx token response carried — its KEYS, never its values (#186).
 
@@ -239,10 +424,13 @@ def describe_token_response_keys(data: Any) -> str:
 
 
 __all__ = [
+    "StatusBeforeBody",
     "SERVER_TEXT_MAX_CHARS",
     "describe_token_response_keys",
     "format_error_details",
     "maybe_await",
+    "oauth_http_error",
     "quote_server_text",
     "quoting_transport_errors",
+    "refresh_retry_reason",
 ]

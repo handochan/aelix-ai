@@ -147,7 +147,7 @@ moved. Anyone extending this slice should follow the pattern.
    walk to — and `tools/_process_tree.py` is deleted.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
-   (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:270`),
+   (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:306`),
    so they do **not** crash on Windows. They silently `return None` — no lock
    is taken and the cross-process write-safety guarantee is quietly lost. The
    fix is `msvcrt.locking` on the win32 arm; the risk is corruption under

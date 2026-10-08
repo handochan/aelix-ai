@@ -339,7 +339,25 @@ Pi's order):
 2. a credential stored with `/login` (`auth.json`) — it owns the provider,
    whatever it yields: if a stored OAuth login can no longer refresh, the request
    fails before anything is sent, with `OAuth refresh failed for <provider>: <why>.
-   Run /login to sign in to <provider> again.` (it is not retried). An entry that
+   Run /login to sign in to <provider> again.` When the refresh failed on a
+   cause that may pass - the token endpoint answered `429`, `500`, `502`-`504`,
+   `520` or `524` (pi's set), or could not be reached - the turn is retried as
+   a provider's `502` is (up to three retries, 2 s, 4 s and 8 s apart,
+   `Retrying…` in the TUI, `auto_retry_start` in `--mode json` and rpc; the
+   message then has no `/login` hint), and while the login is stored each retry
+   refreshes again; when it was refused (`400`, `401`, `403`: `invalid_grant`, a
+   revoked login; or any other status, `501` included) the turn fails at once,
+   or a retry under way ends - except a `2xx` whose body is cut short or times
+   out, which is retried as a dropped connection (a `2xx` whose encoding is
+   broken fails at once); a non-`2xx` answer is decided by its status once
+   it arrives, whatever then happens to its body. While the login is stored, neither ever sends a
+   key from below in its place. If another aelix logs you out meanwhile: during
+   the wait between retries, the retry sends nothing and ends with the
+   `The auth.json entry for <provider> is an OAuth login that gave no key …`
+   error described next (its advice to remove the entry comes too late: the
+   logout removed it), and the next turn resolves this list without the login;
+   while the failing refresh request is still under way, the retry itself
+   resolves this list without the login, as a new turn would. An entry that
    gives no key at all — an `api_key` that is empty or whose `!command` prints
    nothing or fails, an OAuth login whose OAuth provider is not available in this session,
    an entry of an unknown type — fails the same way, naming the entry:

@@ -284,6 +284,52 @@ A credential can come from four places. Pick whichever fits your setup:
 > `aelix` console script has no `auth` verb, so OAuth login goes through `/login`
 > in the TUI.
 
+A `/login` subscription's access token expires, and aelix refreshes it before
+the request that needs it. If that refresh fails because the token endpoint
+answered `429`, `500`, `502`, `503`, `504`, `520` or `524` (the statuses pi
+retries), or could not be reached (a dropped connection, a timeout, a proxy
+that refused the connection), the turn is retried the way a provider's `502`
+is: up to three retries, 2 s, 4 s and 8 s apart, shown as `Retrying…` in the
+TUI and as `auto_retry_start` / `auto_retry_end` in `--mode json` and rpc, and
+a delegated agent's run retries the same way. The error then reads `OAuth
+refresh failed for <provider>: <cause>`, with no `/login` hint. While your
+stored login exists, each retry refreshes again, and no request is sent until
+one succeeds — never on an environment variable or a `models.json` key instead
+of the login. If another aelix logs you out meanwhile, what the retry does
+depends on when the logout lands:
+
+- **During the wait between retries:** the retry sends nothing and ends with
+  `get_api_key_and_headers failed: The auth.json entry for <provider> is an
+  OAuth login that gave no key. …` (`✖ Retry failed: …` in the TUI,
+  `auto_retry_end` with `success: false` in `--mode json` and rpc). That
+  message still tells you to remove the entry, which the logout already did.
+  The next turn uses the next key in the
+  [order models-json.md lists](models-json.md#which-key-a-request-carries):
+  the provider's `models.json` `apiKey`, else its environment variable.
+- **While the failing refresh request is still under way:** the retry itself
+  uses that next key, as a new turn would. With no such key it sends nothing
+  and ends with the provider's own error (`No API key for provider:
+  anthropic`). An OpenAI Codex request needs a ChatGPT login token, so it
+  sends nothing either and ends with `No OAuth token for openai-codex — run
+  /login …` (or, with a `models.json` key that is not such a token,
+  `openai-codex access token is missing the chatgpt_account_id claim …`).
+
+A refresh the
+endpoint refused (`400`, `401`, `403`, such as `invalid_grant` for a revoked
+login), and any other status such as `501`, is not retried: the turn fails at
+once with `get_api_key_and_headers failed: OAuth refresh failed for
+<provider>: … Run /login to sign in to <provider> again.` The one exception
+is a `2xx` whose body is cut short or times out: it is retried as a dropped
+connection (a `2xx` whose encoding is broken fails at once). A non-`2xx`
+answer is decided by its status once it arrives, whatever then happens to its body (a
+broken encoding, a body cut short, a read that times out). A refusal after a
+retry ends that retry with the same message (`✖ Retry failed: …` in the TUI,
+`auto_retry_end` with `success: false` in `--mode json` and rpc). This covers
+OpenAI Codex, Anthropic and GitHub Copilot logins (pi retries the same
+refreshes;
+[ADR-0251](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0251-own-api-key-before-environment-and-composed-launch-model.md)
+§4, §12). For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.
+
 When an OAuth sign-in or a token refresh fails on an HTTP error answer, the
 error keeps the status code and quotes what the provider's server answered: at
 most 512 characters per quoted string, with terminal control characters and

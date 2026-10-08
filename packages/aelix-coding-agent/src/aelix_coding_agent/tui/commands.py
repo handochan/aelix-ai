@@ -376,7 +376,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2101``) and render it
+    the harness's own auto-compaction guard at ``core.py:2176``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -447,7 +447,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:4872-4878`` intersects ``_state.tools`` with
+    (``harness/core.py:5059-5065`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -916,7 +916,7 @@ async def _confirm_project_agent_for_run(
     # The three ``getattr`` hops are deliberate — a missing or mid-rebuild runtime
     # must degrade to a decline, never raise — but they cost the static type:
     # ``AgentHarness.runtime`` is the KERNEL's ``_ExtensionRuntime | None``
-    # (``harness/core.py:252``), so the chain widens to ``object`` and ``callable()``
+    # (``harness/core.py:259``), so the chain widens to ``object`` and ``callable()``
     # then narrows THAT to ``(...) -> object``, which makes the guarded ``await``
     # below a type error. The annotation states the seam's real shape
     # (``extensions/ext_ui.py:186-193``) so the narrowing lands on it instead;
@@ -1902,11 +1902,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1333-1335``
-    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:613-619``
+    # The double count was the same text twice over: ``cli/entry.py:1352-1354``
+    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:674-680``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1332``.
+    # level up, at ``cli/entry.py:1351``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

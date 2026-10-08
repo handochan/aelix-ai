@@ -27,7 +27,9 @@ import httpx
 
 from aelix_ai.oauth._callback_server import start_callback_server
 from aelix_ai.oauth._helpers import (
+    StatusBeforeBody,
     format_error_details,
+    oauth_http_error,
     quote_server_text,
     quoting_transport_errors,
 )
@@ -132,21 +134,30 @@ async def _post_json(url: str, body: dict[str, Any]) -> str:
     interpolate it into ``details=``.
     """
 
-    async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT_SECONDS) as client:
+    # #379 rounds 3-5: a non-2xx status decides once it arrives, whatever the body does.
+    status = StatusBeforeBody()
+    async with httpx.AsyncClient(
+        timeout=_TOKEN_TIMEOUT_SECONDS, event_hooks=status.event_hooks
+    ) as client:
         with quoting_transport_errors():
-            response = await client.post(
-                url,
-                json=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
+            response = await status.answer(
+                client.post(
+                    url,
+                    json=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                )
             )
         response_body = response.text
         if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(
+            # #379: the status travels as data too - a refresh that got pi's set
+            # (429/500/502-504/520/524) is retried; a sign-in reads only the text.
+            raise oauth_http_error(
                 f"HTTP request failed. status={response.status_code}; "
-                f"url={url}; body={quote_server_text(response_body)}"
+                f"url={url}; body={quote_server_text(response_body)}",
+                response.status_code,
             )
         return response_body
 

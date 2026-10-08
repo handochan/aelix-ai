@@ -25,6 +25,7 @@ import contextlib
 import inspect
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +34,9 @@ from typing import TYPE_CHECKING, Any, Literal, assert_never
 from aelix_ai.api_registry import reset_api_providers
 from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
 from aelix_ai.streaming import (
+    AssistantErrorEvent,
     AssistantMessageEvent,
+    AssistantStartEvent,
     Model,
     ProviderResponse,
     SimpleStreamOptions,
@@ -43,6 +46,7 @@ from aelix_ai.streaming import (
 from aelix_ai.streaming import (
     Context as LlmContext,
 )
+from aelix_ai.utils.overflow import ClassifiedErrorText
 
 from aelix_agent_core.agent import AgentListener
 from aelix_agent_core.default_convert import default_convert_to_llm
@@ -172,7 +176,10 @@ class AgentHarnessError(Exception):
     See ADR-0035 §"Code taxonomy" and ADR-0046 §"AgentHarnessError"
     for the full audit. The ``"auth"`` code lands Sprint 6a and is
     raised by ``_make_stream_fn`` when ``get_api_key_and_headers``
-    fails OR the adapter rejects an OAuth token (P-42b).
+    fails OR the adapter rejects an OAuth token (P-42b) - not for a
+    callback failure that carries a ``retry_reason`` (#379), which is
+    retried instead, nor for one inside a retry sequence, which ends the
+    turn as a non-retryable error message (#379 review round 2).
     """
 
     def __init__(
@@ -267,7 +274,13 @@ class AgentHarnessOptions:
     resources: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.resources. Pi: types.ts:565
     thinking_level: str | None = None  # Sprint 3b wired — flows into AgentState.thinking_level. Pi: types.ts:~576
     active_tool_names: list[str] | None = None  # Sprint 3b wired — flows via F-9 validator path. Pi: types.ts:~577
-    get_api_key_and_headers: Callable[..., Any] | None = None  # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571
+    # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571. A raise
+    # fails the turn as AgentHarnessError("auth"), unless the exception carries a
+    # non-empty str ``retry_reason`` (#379, ADR-0251 §4): that one becomes an error
+    # assistant message the auto-retry loop retries (pi ``lazyStream``). Inside a
+    # retry sequence any other raise ends the turn as a non-retryable error
+    # message instead, so the sequence closes (ADR-0251 §12.5).
+    get_api_key_and_headers: Callable[..., Any] | None = None
     stream_options: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.stream_options. Pi: types.ts:~574
 
     # === Sprint 3c (Phase 2.1.3) — parallel tool execution ===
@@ -544,6 +557,54 @@ _RETRYABLE_ERROR_PATTERN = re.compile(
 )
 
 
+class _SetupErrorText(ClassifiedErrorText):
+    """The ``error_message`` of a turn whose auth callback failed (#379).
+
+    pi's ``lazyStream`` turns every setup failure (auth resolution, a failed
+    OAuth refresh) into an error assistant message, and its auto-retry decides
+    on that message's text (``packages/ai/src/api/lazy.ts:46-60``,
+    ``isRetryableAssistantError``, ``packages/ai/src/utils/retry.ts:252`` @
+    1cedd3272). Here the CALLBACK decides (an exception it raises with a
+    ``retry_reason``), and the harness keeps that answer itself
+    (:class:`_SetupFailure`): neither this text nor its type decides a retry,
+    because a ``message_end`` hook may rebuild either (#379 review round 3: a
+    JSON round trip turned this into a plain ``str``, and a ``401`` body naming
+    ``502`` was then retried by its text). This class only carries the text
+    the classifiers read (:attr:`classifier_text`, #186): aelix's own sentence,
+    so a token endpoint's body cannot route the turn into overflow compaction
+    when no hook touched it.
+
+    Displayed and serialised as the plain message, like every
+    :class:`ClassifiedErrorText`.
+    """
+
+
+def _setup_error_text(display: str) -> _SetupErrorText:
+    text = _SetupErrorText(display)
+    text.classifier_text = "request setup failed before anything was sent"
+    return text
+
+
+@dataclass
+class _SetupFailure:
+    """The harness's own record of the setup failure that ended an attempt (#379).
+
+    Set by :meth:`AgentHarness._setup_error_events` when the auth callback's
+    raise ends the attempt as an error assistant message, re-pointed at the
+    message ``message_end`` hooks leave behind (the one in state), and cleared
+    when the next attempt starts. :meth:`AgentHarness._is_retryable_error`
+    and the overflow recovery read ``retry_reason`` from here for that message
+    - never its text or type, which a hook can rebuild (review round 3).
+    ``retry_reason`` is the callback's (``None``: a refusal inside a retry
+    sequence, never retried).
+    """
+
+    message: Any
+    retry_reason: str | None
+    #: ``message_end`` has run for it: ``message`` is what the hooks left.
+    ended: bool = False
+
+
 class AgentHarness:
     """Hook-aware orchestrator built on top of :func:`agent_loop`.
 
@@ -797,6 +858,9 @@ class AgentHarness:
         # can signal an in-flight ``asyncio.sleep`` to cancel mid-backoff.
         self._retry_attempt: int = 0
         self._retry_abort_event: asyncio.Event | None = None
+        # #379 review round 3: the setup failure that ended the latest attempt,
+        # as the harness itself recorded it (see ``_SetupFailure``).
+        self._setup_failure: _SetupFailure | None = None
         # Issue #4 Lane B (ADR-0126 follow-up) — overflow-driven compaction
         # recovery. pi parity ``agent-session.ts:_checkCompaction`` Case 1 +
         # ``_overflowRecoveryAttempted``. Reset at the start of each ``prompt()``
@@ -1471,17 +1535,28 @@ class AgentHarness:
                     # before the compaction.
                     if self._abort_requested:
                         break
-                    did_retry = await self._handle_retryable_error(last_assistant)
-                    if not did_retry:
-                        break  # max retries / disabled / aborted
-                    # W-review MEDIUM-2: invariant — the user message must still
-                    # be in state for ``agent_loop`` to have something to continue
-                    # from. ``_handle_retryable_error`` pops only the trailing
-                    # error assistant, so a preceding ``UserMessage`` is preserved.
-                    assert any(
-                        isinstance(m, UserMessage) for m in self._state.messages
-                    ), "retry continue requires a pending user message in state"
-                    result = await self._run([], system_prompt=system_prompt)
+                    # #379 review round 2: a raise from the backoff or the re-run
+                    # (a hook, an adapter's token rejection, a cancelled
+                    # ``prompt()``) would skip the #147 arm below and leave the
+                    # sequence open - no ``auto_retry_end``, the TUI's widget up,
+                    # and the counter carried into the next prompt, which then
+                    # started mid-budget. Every way out closes it.
+                    try:
+                        did_retry = await self._handle_retryable_error(last_assistant)
+                        if not did_retry:
+                            break  # max retries / disabled / aborted
+                        # W-review MEDIUM-2: invariant — the user message must
+                        # still be in state for ``agent_loop`` to have something
+                        # to continue from. ``_handle_retryable_error`` pops only
+                        # the trailing error assistant, so a preceding
+                        # ``UserMessage`` is preserved.
+                        assert any(
+                            isinstance(m, UserMessage) for m in self._state.messages
+                        ), "retry continue requires a pending user message in state"
+                        result = await self._run([], system_prompt=system_prompt)
+                    except BaseException as exc:
+                        await self._close_retry_sequence_on_raise(exc)
+                        raise
 
                 # Reset the retry counter and close out the retry sequence. pi
                 # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
@@ -2171,6 +2246,11 @@ class AgentHarness:
         ):
             return False
 
+        # #379 review round 3: a setup failure carries the token endpoint's words,
+        # not the model's; it is never an overflow, whatever a hook made its text.
+        failure = self._setup_failure
+        if failure is not None and last_assistant is failure.message:
+            return False
         if not is_context_overflow(last_assistant, context_window):
             return False
 
@@ -2297,6 +2377,16 @@ class AgentHarness:
 
         from aelix_ai.utils.overflow import classifier_text_of, is_context_overflow
 
+        # #379: a setup failure the harness recorded is decided by the auth
+        # callback's answer it kept (a stored OAuth refresh whose token endpoint
+        # answered 429/500/502/503/504/520/524 or could not be reached), never
+        # by the message's text or type - a ``message_end`` hook may rebuild
+        # both (review round 3), and the text is the token server's words.
+        # ``None`` (a refusal inside a retry sequence) is never retried.
+        failure = self._setup_failure
+        if failure is not None and message is failure.message:
+            return failure.retry_reason is not None
+
         # pi ``:2486`` — context overflow is handled by compaction, not retry.
         model = self._state.model
         context_window = (
@@ -2311,6 +2401,32 @@ class AgentHarness:
         if not err:
             return False
         return _RETRYABLE_ERROR_PATTERN.search(classifier_text_of(err)) is not None  # #186
+
+    async def _close_retry_sequence_on_raise(self, exc: BaseException) -> None:
+        """End an open retry sequence that a raise is leaving (#379 review round 2).
+
+        The #147 arm in :meth:`prompt` closes a sequence that ends on an
+        assistant message; this closes one that ends on a raise instead: the
+        counter is reset first (a subscriber must not read the stale value, and
+        the next prompt must start at attempt 1), then ``auto_retry_end
+        {success: False}`` is emitted once with the raise's text, so the TUI
+        clears its widget and restores its interrupt handler. A no-op when no
+        sequence is open (the backoff's own max/abort paths already closed it).
+        """
+
+        if self._retry_attempt <= 0:
+            return
+        from aelix_agent_core.types import AutoRetryEndEvent
+
+        attempt = self._retry_attempt
+        self._retry_attempt = 0
+        await self._emit_to_subscribers(
+            AutoRetryEndEvent(
+                success=False,
+                attempt=attempt,
+                final_error=str(exc) or type(exc).__name__,
+            )
+        )
 
     async def _handle_retryable_error(self, message: Any) -> bool:
         """pi parity ``agent-session.ts:2432-2506`` ``_handleRetryableError``.
@@ -4676,6 +4792,37 @@ class AgentHarness:
                 f"after_provider_response hook handler raised: {exc}",
             ) from exc
 
+    async def _setup_error_events(
+        self, model: Model, text: str, retry_reason: str | None
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        """A setup failure as a model error's events (#379, pi ``lazyStream``).
+
+        pi's ``createSetupErrorMessage`` shape (``packages/ai/src/api/lazy.ts:
+        4-23`` @ 1cedd3272): no content, the model's provenance, the error's
+        own text. The ``start`` comes first so the loop emits ``message_start``
+        before ``message_end``, as pi's loop does for a message with no partial
+        (``packages/agent/src/agent-loop.ts:451-453``) and as a model error
+        that began streaming does here; its partial is the failure itself, as
+        pi's ``message_start`` carries the final message. The retry decision
+        is recorded here, on the harness (:class:`_SetupFailure`), not in the
+        message (review round 3).
+        """
+
+        failure = AssistantMessage(
+            content=[],
+            stop_reason="error",
+            error_message=_setup_error_text(text),
+            timestamp=time.time(),
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+        )
+        self._setup_failure = _SetupFailure(message=failure, retry_reason=retry_reason)
+        yield AssistantStartEvent(partial=failure)
+        yield AssistantErrorEvent(
+            reason="error", error=failure, error_message=failure.error_message
+        )
+
     def _make_stream_fn(
         self, get_turn_state: Callable[[], _TurnState]
     ) -> StreamFn:
@@ -4687,7 +4834,12 @@ class AgentHarness:
 
         1. Resolves auth via :attr:`AgentHarnessOptions.get_api_key_and_headers`
            (Pi ``getApiKeyAndHeaders``). Failure / missing apiKey AND
-           missing headers raises :class:`AgentHarnessError("auth", …)`.
+           missing headers raises :class:`AgentHarnessError("auth", …)` -
+           except a failure the callback raises with a ``retry_reason``
+           (#379), which ends the stream with an error assistant message the
+           auto-retry loop retries (pi ``lazyStream``), and any failure inside
+           a retry sequence, which ends it with a non-retryable one so the
+           sequence closes (#379 review round 2).
         2. Builds an initial :class:`SimpleStreamOptions` snapshot from
            the per-turn ``stream_options`` merged with auth headers.
         3. Emits ``before_provider_request`` and applies the chained
@@ -4707,6 +4859,8 @@ class AgentHarness:
         ) -> AsyncIterator[AssistantMessageEvent]:
             turn_state = get_turn_state()
             session_id = turn_state.session_id
+            # #379 review round 3: a new attempt; the last one's record is spent.
+            self._setup_failure = None
 
             # 1) Resolve auth.
             auth_dict: dict[str, Any] | None = None
@@ -4718,10 +4872,41 @@ class AgentHarness:
                         raw_auth = await raw_auth
                     auth_dict = raw_auth if isinstance(raw_auth, dict) else None
                 except Exception as exc:  # noqa: BLE001
-                    raise AgentHarnessError(
-                        "auth",
-                        f"get_api_key_and_headers failed: {exc}",
-                    ) from exc
+                    # #379 / ADR-0251 §4: a failure the callback marks transient
+                    # (``retry_reason``: a stored OAuth refresh whose token
+                    # endpoint answered 429/500/502/503/504/520/524 or could not
+                    # be reached) ends this attempt as an error assistant message,
+                    # as pi's ``lazyStream`` does (``packages/ai/src/api/lazy.ts:
+                    # 4-23``, ``:46-60`` @ 1cedd3272), so the auto-retry loop
+                    # retries the turn with its own budget, backoff and
+                    # ``auto_retry_enabled``, and every mode shows what it shows
+                    # for a provider's 502. Nothing was sent; the retry asks the
+                    # callback again, so a stored credential still owns the
+                    # provider (no environment key while it exists).
+                    retry_reason = getattr(exc, "retry_reason", None)
+                    if isinstance(retry_reason, str) and retry_reason:
+                        async for event in self._setup_error_events(
+                            model, str(exc), retry_reason
+                        ):
+                            yield event
+                        return
+                    # #379 review round 2: any other failure INSIDE a retry
+                    # sequence (a refused refresh after a transient one - a
+                    # rotated refresh token whose 502'd answer was lost gets
+                    # invalid_grant next) ends the turn as a non-retryable error
+                    # message, as pi's ``lazyStream`` turns every setup failure
+                    # into one: the prompt's #147 arm then emits
+                    # ``auto_retry_end(success=False)`` once and resets the
+                    # counter, exactly as for a provider's non-retryable error
+                    # (pi ``agent-session.ts:1874-1882``). The text is the one the
+                    # raise below carries, byte for byte. Outside a sequence the
+                    # turn fails at once, as before.
+                    text = f"get_api_key_and_headers failed: {exc}"
+                    if self._retry_attempt > 0:
+                        async for event in self._setup_error_events(model, text, None):
+                            yield event
+                        return
+                    raise AgentHarnessError("auth", text) from exc
                 # Pi parity (types.ts:808-811): the callback may return
                 # ``undefined`` (here: ``None``) which is "no opinion".
                 # Reject only when explicitly returned dict carries
@@ -4729,10 +4914,12 @@ class AgentHarness:
                 if auth_dict is not None and not (
                     auth_dict.get("apiKey") or auth_dict.get("headers")
                 ):
-                    raise AgentHarnessError(
-                        "auth",
-                        "get_api_key_and_headers returned neither apiKey nor headers",
-                    )
+                    text = "get_api_key_and_headers returned neither apiKey nor headers"
+                    if self._retry_attempt > 0:  # #379 review round 2, as above
+                        async for event in self._setup_error_events(model, text, None):
+                            yield event
+                        return
+                    raise AgentHarnessError("auth", text)
 
             api_key = (auth_dict or {}).get("apiKey")
             auth_headers = (auth_dict or {}).get("headers") or {}
@@ -4922,6 +5109,20 @@ class AgentHarness:
                         if (reduced is not None and reduced is not event.message)
                         else event.message
                     )
+                    # #379 review round 3: the setup failure's record follows the
+                    # message the hooks leave (the loop swaps it into state).
+                    failure = self._setup_failure
+                    if (
+                        failure is not None
+                        and not failure.ended
+                        and isinstance(event.message, AssistantMessage)
+                    ):
+                        failure.message = (
+                            final_message
+                            if isinstance(final_message, AssistantMessage)
+                            else event.message
+                        )
+                        failure.ended = True
                     # 2) Persist the REPLACEMENT (Sprint 4a primary write path,
                     #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
                     #    When no session is attached we skip — the no-session

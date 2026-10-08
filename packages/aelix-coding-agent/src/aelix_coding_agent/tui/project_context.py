@@ -8,11 +8,11 @@ cwd, which asks the FILESYSTEM a question only the PROMPT can answer. Discovery
 knows neither of the two things the callers need:
 
 * it does not know about ``--no-context-files`` / ``-nc``. That gate lives one
-  level up, at ``cli/entry.py:1332``, so discovery happily hands back text that
+  level up, at ``cli/entry.py:1351``, so discovery happily hands back text that
   was never injected into anything; and
 * it does not know its own output is ALREADY inside the system prompt the caller
-  is separately counting — ``cli/entry.py:1333-1335`` appends the chunk to
-  ``options.append_system_prompt`` and ``harness/core.py:613-619`` joins those
+  is separately counting — ``cli/entry.py:1352-1354`` appends the chunk to
+  ``options.append_system_prompt`` and ``harness/core.py:674-680`` joins those
   onto the base prompt with ``"\\n\\n"``.
 
 Measured on the pre-change build with one 7175-char ``AGENTS.md`` (1794
@@ -56,7 +56,7 @@ def _discover_without_re_warning(cwd: str) -> str:
     Discovery is not a pure read: it prints a ``Warning:`` line to stderr for
     every context file it truncated or dropped against the 32 KiB budget
     (``cli/agent_context.py:1249-1260``). The injection path at
-    ``cli/entry.py:1333`` has already called it once and those warnings have
+    ``cli/entry.py:1352`` has already called it once and those warnings have
     already been printed, so a second copy is duplicate noise — measured at 115
     bytes re-emitted per banner render on a single oversized ``AGENTS.md``.
 
@@ -103,7 +103,7 @@ def split_project_context(system_prompt: str | None, cwd: str) -> tuple[str, str
     removed: ``entry.py`` appends the chunk exactly once, and removing more would
     be attributing text this function has not identified.
 
-    The ``"\\n\\n"`` separators that ``harness/core.py:613-619`` puts around the
+    The ``"\\n\\n"`` separators that ``harness/core.py:674-680`` puts around the
     chunk stay in the first half. They belong to the prompt's scaffolding rather
     than to either side, they are worth about one estimated token, and moving
     them would make the split depend on how the harness joins.

@@ -283,6 +283,49 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/login` subscription whose token refresh hits a passing failure is
+  retried instead of failing the turn (#379, ADR-0251).** When an OpenAI
+  Codex, Anthropic or GitHub Copilot login's access token had expired and the
+  refresh got a `429`, a `500`, `502`, `503`, `504`, `520` or `524`, a dropped
+  connection or a timeout from the token endpoint, the turn failed at once
+  with `OAuth refresh failed for <provider>: …` — in the TUI, `-p`,
+  `--mode json`, rpc and a delegated agent's run alike — although the same
+  `502` from the model would have been retried. It is now retried the way that
+  `502` is: up to three retries, 2 s, 4 s and 8 s apart, `⟳ Retrying (1/3) in
+  2s…` in the TUI and `auto_retry_start` / `auto_retry_end` in `--mode json`
+  and rpc. The statuses are exactly the ones pi retries; a `501`, a `505` and
+  any other status fail at once. While your stored login exists, each retry
+  refreshes again, nothing is sent until a refresh succeeds, and nothing is
+  sent on an exported key or a `models.json` key instead of your login. If
+  another aelix logs you out during the wait between retries, the retry sends
+  nothing and ends with `The auth.json entry for <provider> is an OAuth login
+  that gave no key …`, and the next turn uses the next key; if the logout lands
+  while the failing refresh is still under way, the retry already uses that
+  next key, as a new turn would. Once an error status (not a `2xx`) has
+  arrived, that status decides, whatever then happens to the body (a broken
+  `gzip` encoding, a body cut short, a read that times out): a refused `400`,
+  `401` or `403` fails at once, a `429`, `500`, `502`, `503`, `504`, `520` or
+  `524` is retried, and any other status fails. A `2xx` whose body is cut
+  short or times out is retried as a dropped connection; a `2xx` with a
+  broken encoding fails at once. For an answer whose body fails mid-read,
+  pi's behaviour depends on the provider and the connection framing (its
+  Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot
+  refreshes do not), so aelix's rule above can differ from pi for these
+  malformed answers. An extension's `message_end` handler that rewrites the
+  error text changes no retry decision.
+  The retried error reads `OAuth refresh failed for <provider>: <cause>`, as
+  pi's does, without the `Run /login` hint. A refresh the endpoint refuses —
+  `400`, `401`, `403` (`invalid_grant`, a revoked login) — still fails at once
+  with the message it had, as does every other unusable `auth.json` entry (a
+  refusal whose body cannot be read now gets the text the same status with an
+  empty body gets, where it used to quote the decoder's or the connection's
+  error); one refused after a retry (a refresh token used up by a refresh whose
+  answer was lost) ends the retry with that same message, `✖ Retry failed: …` in the TUI
+  and `auto_retry_end` with `success: false` in `--mode json` and rpc, and the
+  next turn gets its full three retries again. One visible change: when every
+  retry fails, or a refusal ends one, `--mode json` ends with exit code 0 and
+  the error in its last message, as it does when a model's error ends a
+  retry; `-p` still exits 1.
 - **A delegated agent now thinks at the level you are thinking at, so a model
   that cannot switch reasoning off no longer kills every delegation (#354).**
   A child ran at the thinking level its profile set and nothing else — and none
@@ -2024,7 +2067,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:5146`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:5347`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

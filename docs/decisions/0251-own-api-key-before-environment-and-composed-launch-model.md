@@ -1,6 +1,6 @@
 # 0251. A provider's own `apiKey` comes before its environment variable, and the launch model is the one `/model` composes
 
-Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379; step 4 stated for the anthropic adapter by ADR-0254 (2026-10-06, #374, note in §2.1); 🔴 **amended 2026-10-07 (#375, §11): `OPENROUTER_BASE_URL` now applies to every OpenRouter model the registry hands out, not only the launch's — §2.7's exception is gone, the launch and `/model` are equal field for field**; #375 review round 2 the same day (§11): the docs no longer name Ctrl+P, `--models` or a resumed session as broken surfaces, pi's per-model `baseUrl` is stated, and rows pin that only the provider named exactly `openrouter` moves and that nothing but `base_url` changes; #375 review round 3 (2026-10-08, §11): "M6 is equivalent" withdrawn — the launch's own call is what moves a duck-typed registry's hit, `headers` included, and a row now pins it
+Status: Accepted (2026-10-06); review round 1 the same day (§8): a failed OAuth refresh now fails the request, the status reports `--api-key` first, the launch is `/model`'s registry copy; review round 2 the same day (§9): every stored `auth.json` entry that gives no key fails the request, and the refresh-retry claim is withdrawn; rebased onto `547099f3` (#367, #370, #369) the same day (§10): a stored `!command` that fails names the entry too; owner decisions after the batch, 2026-10-06 (§7): the empty-stored-key strictness stays, the refresh retry follows pi in #379; 🔴 **amended 2026-10-08 (#379, §2.2, §4, §6, §7, §12): a stored OAuth refresh that failed on a transient cause (the token endpoint answered `429`, `500`, `502`-`504`, `520` or `524` — pi's set — or could not be reached) is retried by the turn's auto-retry, as pi retries it — a refused refresh (`400`/`401`/`403`) and every other stored-entry failure still fail at once with the message they had, and while the stored login exists no retry sends anything but the login's own refreshed token**; #379 review round 2 the same day (§12.5): the transient statuses are exactly pi's (`429`, `500`, `502`-`504`, `520`, `524`; not `501`/`505`), a refusal inside a retry sequence ends it (`auto_retry_end` false, counter reset — it leaked into the next turn) and any raise out of a retry closes it too, the setup error gets its `message_start`, the retried text is pi's (no `/login` hint), and "never on another key" holds while the stored login exists (a logout meanwhile: §12.6); #379 review round 3 the same day (§12.6): a logout during the backoff ends the retry with nothing sent (`… is an OAuth login that gave no key`), one during the failing refresh lets the retry use the next key as a new turn does — the texts that said "the next key" for both are corrected; the retry decision is the harness's own record of the setup failure, never the message's text or type, which a `message_end` hook can rebuild; a `5xx` whose body cannot be decoded keeps its status; #379 review round 4 the same day (§12.7): once a non-2xx status has arrived it decides, whatever then happens to the body (a body cut short or a read timeout too, not only a broken encoding) — a cut-short `401`/`501` was retried as a dropped connection — and an unreadable refusal's text is the same status's with an empty body; #379 review round 5 the same day (§12.8, text only): a `2xx` whose body is cut short or times out is retried as a dropped connection, one with a broken encoding fails at once; #379 review round 6 the same day (§12.9, text and rows only): only pi's Codex refresh reads a failed answer's body with `.catch`, and rows pin a `2xx` cut short or timed out at each site; #379 review round 7 the same day (§12.10, text only): the statements of how each pi refresh treats a body that fails mid-read are withdrawn from every text — aelix's rule is §12.2's: a non-2xx answer is decided by its status once it arrives (`400`/`401`/`403` refused at once; `429`, `500`, `502`-`504`, `520`, `524` retried; any other status fails), a `2xx` whose body is cut short or times out is retried as a dropped connection, a `2xx` with a broken encoding fails at once (For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.); step 4 stated for the anthropic adapter by ADR-0254 (2026-10-06, #374, note in §2.1); 🔴 **amended 2026-10-07 (#375, §11): `OPENROUTER_BASE_URL` now applies to every OpenRouter model the registry hands out, not only the launch's — §2.7's exception is gone, the launch and `/model` are equal field for field**; #375 review round 2 the same day (§11): the docs no longer name Ctrl+P, `--models` or a resumed session as broken surfaces, pi's per-model `baseUrl` is stated, and rows pin that only the provider named exactly `openrouter` moves and that nothing but `base_url` changes; #375 review round 3 (2026-10-08, §11): "M6 is equivalent" withdrawn — the launch's own call is what moves a duck-typed registry's hit, `headers` included, and a row now pins it
 Date: 2026-10-06
 Supersedes: **ADR-0249 §2.4**'s two closing paragraphs ("The bearer is the auth cascade's,
 unchanged" and "At launch only the host moves"). ADR-0249's S (a re-pointed built-in's
@@ -196,11 +196,13 @@ is "no opinion" to the CLI's callback, and the adapter then reads the environmen
 the exported vendor key went to the gateway. The cascade therefore takes
 `raise_on_refresh_failure=True` from the request path and raises
 `aelix_ai.oauth.OAuthRefreshError`. Its message keeps the cause's text so the user sees why
-the refresh failed. It is **not retried**: the callback's raise becomes
+the refresh failed. ~~It is **not retried**: the callback's raise becomes
 `AgentHarnessError("auth")` in `_make_stream_fn` before an assistant message exists, and the
 harness's auto-retry reads only the last assistant message (`harness/core.py`, the
-`_is_retryable_error` loop). pi does retry some (§4). Every other caller of the cascade
-keeps its `None`.
+`_is_retryable_error` loop). pi does retry some (§4).~~ **Amended 2026-10-08 (#379, §12):** a
+refresh that failed on a transient cause is retried by the turn, as pi retries it; a refused
+one still fails the turn at once as described here. Every other caller of the cascade keeps
+its `None`.
 
 **Every stored entry owns its provider, whatever it yields** (review round 2, §9). The flag
 is `stored_owns=True` now, and the cascade raises `aelix_ai.oauth.StoredCredentialError`
@@ -350,7 +352,10 @@ What stays:
   the provider's environment variable (an exported `ANTHROPIC_API_KEY` after a refused
   Anthropic refresh: `x-api-key=ant-env`, §8), or on no key with the SDK's
   `Could not resolve authentication method`. Re-run `/login`, or `/logout` to use another
-  source.
+  source. Since #379 (§12) a refresh the token endpoint answered with `429`, `500`,
+  `502`-`504`, `520` or `524` (pi's set, §12.5), or could not be reached for, is retried
+  first (up to three retries, 2 s / 4 s / 8 s); while the stored login exists each retry
+  refreshes again and sends nothing else.
 
 ## 4. Divergences from pi, stated (ADR-0235)
 
@@ -379,7 +384,9 @@ What stays:
   `extension ?? config`, `provider-composer.ts:395-401`, `:429`). A registration that
   carries only an `api_key` replaces them with nothing — the `models.json` `headers` and
   `authHeader` are dropped. Pre-existing; only the key follows pi now (§2.3).
-- **A failed OAuth refresh is not retried.** pi's `lazyStream` turns the refresh's
+- ~~**A failed OAuth refresh is not retried.**~~ **Closed 2026-10-08 by #379 (§12): a
+  refresh that failed on a transient cause is retried, as pi retries it; what remains
+  divergent is how the class is decided (§12.3).** As first written: pi's `lazyStream` turns the refresh's
   `ModelsError` into an error assistant message (`packages/ai/src/api/lazy.ts:4-23`,
   `:52-58` @ b223082bb) whose text keeps the cause (`utils/models-error.ts:9`, `:16-20`), and
   its auto-retry matches that text (`isRetryableAssistantError`, `utils/retry.ts:250`): a
@@ -442,7 +449,8 @@ here (`2 failed, 11668 passed`); the full suite on this change is in the commit 
 
 - #365 (an extension's take-over of a built-in name; then §2.3's key can move to step 3).
 - The config-value syntax (§4), proposed as its own issue.
-- A failed OAuth refresh is not retried, where pi retries a `502` or a network failure (§4).
+- ~~A failed OAuth refresh is not retried, where pi retries a `502` or a network failure (§4).~~
+  Closed 2026-10-08 by #379 (§12).
 - ~~`/model`'s OpenRouter pick does not apply `OPENROUTER_BASE_URL`, which the launch applies
   (§2.7, Codex pass 2 C3).~~ Closed 2026-10-07 by #375 (§11).
 - The `/model` picker's detail line names the provider's environment variable
@@ -461,7 +469,9 @@ here (`2 failed, 11668 passed`); the full suite on this change is in the commit 
   syntax stays and is stated (§4); the ADR-0249 history attribution is corrected (§2.1).
 - 2026-10-06, the owner, after the batch: an empty or empty-resolving stored `api_key`
   keeps failing the request — stricter than pi, kept (§4); a stored-OAuth refresh that
-  failed on a transient cause is to be retried as pi does — #379 (§4).
+  failed on a transient cause is to be retried as pi does — #379 (§4). **Implemented
+  2026-10-08 (§12)**; the choices made under it where the decision left one are listed
+  there (§12.3).
 
 ## 8. Review round 1 (2026-10-06)
 
@@ -897,3 +907,522 @@ text nits; no routing defect. Kit `.omc/probes/375-live/r3/` (the verifier's:
    host and `get_model` the catalog's). ADR-0203's chain table named only
    `runtime_bootstrap.resolve_model` as the reader; it now names
    `model_registry.with_openrouter_base_url` as well, with a pointer here.
+
+## 12. A transient refresh failure is retried, as pi retries it (2026-10-08, #379)
+
+The owner's decision of 2026-10-06 (§7), implemented. Kit: `.omc/probes/379-live/impl/`.
+
+### 12.1 What was measured on `8f7d98aa`
+
+A real `aelix --mode json -p` with an isolated agent dir, an EXPIRED fake stored OAuth, the
+token endpoint pointed at a local fault-injecting server (`probe/sitecustomize.py`,
+`probe/token_server.py`) and the model endpoint at a local SSE server; every exported key
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, `OPENAI_API_KEY`) set to a fake
+(`logs/live_before_8f7d98aa.out`). A token endpoint answering `502`, `429`, or closing the
+connection with no answer, ended the turn in 0.4-0.5 s with `rc=1`, one token request, zero
+`auto_retry_start` and nothing sent — exactly as for a `401`. §2.2 and §9 B1 explain why: the
+CLI's callback raised, `_make_stream_fn` turned the raise into `AgentHarnessError("auth")`
+before an assistant message existed, and the auto-retry loop reads only the last assistant
+message.
+
+### 12.2 Decision
+
+**A stored OAuth refresh whose token endpoint answered `429`, `500`, `502`, `503`, `504`,
+`520` or `524` (pi's set), or could not be reached, is retried by the turn's auto-retry;
+nothing else is.** *(Review round 2, §12.5, narrowed round 1's "`429` or any `5xx`" to pi's
+set; `501`, `505` and the other `5xx` are not retried. Review round 3, §12.6: a status whose
+body cannot be decoded counts by its status. Review round 4, §12.7: once a non-2xx status has
+arrived it decides, whatever then happens to its body. Review round 5, §12.8: "could not be
+reached" is a failure before the status and headers arrived, or a `2xx` whose body is cut short or times out
+(`terminated` and timeouts are in pi's retry pattern, `retry.ts`); a `2xx` with a broken
+encoding fails at once. Review round 7, §12.10: the whole rule, once — a non-2xx answer is
+decided by its status once it arrives (`400`/`401`/`403` refused at once; `429`, `500`,
+`502`-`504`, `520`, `524` retried; any other status fails); a `2xx` whose body is cut short or
+times out is retried as a dropped connection; a `2xx` with a broken encoding fails at once.
+For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.)* pi's shape: its `lazyStream`
+turns a setup failure into an error assistant message (`packages/ai/src/api/lazy.ts:4-23`,
+`:46-60` @ 1cedd3272) and `isRetryableAssistantError` (`packages/ai/src/utils/retry.ts:252`)
+decides on it. In aelix:
+
+1. **Classified where the cause is known.** `aelix_ai.oauth._helpers.refresh_retry_reason`
+   walks the exception and its `__cause__` links: a token endpoint's answer (the status the
+   built-in Codex, Anthropic and Copilot refreshes now attach as data with
+   `oauth_http_error`, or an extension's `httpx.HTTPStatusError`) decides by its status, a
+   transport error (`httpx.TimeoutException`, `NetworkError`, `RemoteProtocolError`,
+   `ProxyError`, `TimeoutError`, `ConnectionError`) is transient, anything else is not.
+   `OAuthRefreshError.retry_reason` carries the answer; every other
+   `StoredCredentialError` has `None`. The error stays a plain `RuntimeError` at the raise
+   site, so the messages are byte-identical (`details=RuntimeError: …` in Anthropic's).
+   *(Review round 3, §12.6: the status is read before the body — `StatusBeforeBody`, an
+   httpx `response` hook — so an answer whose body cannot be decoded keeps it. Review round 4,
+   §12.7: any error after a non-2xx status arrived keeps it, a body cut short or a read timeout
+   included. Review round 5, §12.8: the transport set above decides a failure before the status and headers arrived
+   and a `2xx` whose body is cut short or times out; a `2xx` with a broken encoding raises
+   `httpx.DecodingError`, which is in no set — it fails at once.)*
+2. **Carried, not re-derived.** `ResolvedRequestAuth.retry_reason` (aelix-additive) → the
+   CLI's callback raises it on (`_RequestAuthError`) → `_make_stream_fn` ends the attempt
+   with an error assistant message (pi's `createSetupErrorMessage` shape: no content, the
+   model's provenance, the error's own message without the `get_api_key_and_headers failed:`
+   prefix). The harness contract is generic: any `get_api_key_and_headers` raise that carries
+   a non-empty `str` `retry_reason`.
+3. **Retried by the harness's own record** *(review round 3, §12.6; rounds 1 and 2
+   decided by the text's type — `_RetryableSetupErrorText`, then
+   `_SetupErrorText.retry_reason` — which a `message_end` hook rebuilt into a plain `str`)*.
+   `_make_stream_fn` records the callback's answer (`_SetupFailure`) for the error message
+   it ends the attempt with, re-points the record at the message the `message_end` hooks
+   leave in state, and `_is_retryable_error` and the overflow recovery read the record for
+   that message — never its text or type. A token endpoint's body can route the turn
+   neither into nor out of a retry, nor into overflow compaction, whatever a hook does. The
+   text's classifier text (§2.2, #186) is still aelix's own sentence (`_SetupErrorText`).
+4. **The retry is the turn's.** Same budget (3), backoff (2 s / 4 s / 8 s), counter and
+   `auto_retry_enabled` (`set_auto_retry`) as a provider's `502`; the TUI, `-p`, json and rpc
+   show what they show for that one. Each retry runs the callback again, so the cascade
+   refreshes again and a stored credential still owns the provider: nothing is sent until a
+   refresh succeeds, and never on `models.json`'s `apiKey` or an environment key. *(Review
+   round 2, §12.5: while the stored login exists. Review round 3, §12.6: a login another
+   process removes during the backoff makes the retry send nothing and end with `… is an
+   OAuth login that gave no key`; one removed while the failing refresh is under way lets
+   the retry use the next key, as a new turn would — both measured and pinned.
+   And a refusal inside the sequence now ends it; before, it raised past the #147 arm and
+   left the sequence open.)*
+5. **Everything else is unchanged.** A `400`/`401`/`403` refresh, an empty or failing stored
+   `api_key`, an unregistered OAuth provider, an unknown entry type: `AgentHarnessError("auth")`
+   at once, with the message they had on `8f7d98aa` (byte-compared live: `codex-401`,
+   `codex-403`, `anthropic-401+env`). *(Review round 4, §12.7: one exception, stated — a
+   refusal whose body cannot be read gets the text the same status with an empty body gets;
+   on `8f7d98aa` it quoted the decoder's or the connection's error.)*
+
+### 12.3 Divergences from pi and choices made under the decision (ADR-0235)
+
+- **The chain decides, not the text.** pi matches its retry pattern against the message, which
+  holds the server's body and, in aelix, the `auth.json` path: a `401` whose body names `502`
+  would be retried, and httpx's `All connection attempts failed` and `Server disconnected
+  without sending a response.` match none of the patterns (row
+  `test_the_text_decides_nothing`; sabotage W1: 30 rows red).
+- ~~**Every `5xx` is transient**~~ *(withdrawn in review round 2, §12.5: the set is pi's
+  exactly)*; pi's pattern lists `500`, `502`-`504`, `520`, `524`. `429` is
+  transient in both. `408` is not, in either (its reason phrase does not reach the Codex
+  message when the body is non-empty).
+- **A proxy that refuses the CONNECT is transient**, whatever status it gives (`httpx.ProxyError`);
+  pi's fetch reports every such failure as `fetch failed`, which it retries.
+- **An answer whose body fails mid-read** *(review round 7, §12.10; the bullets rounds 5 and 6
+  wrote here, which stated pi's outcome per body shape, are withdrawn)*. aelix's rule is
+  §12.2's: a non-2xx answer is decided by its status once it arrives (`400`/`401`/`403`
+  refused at once — a refusal must not be retried into a sign-in; `429`, `500`, `502`-`504`,
+  `520`, `524` retried; any other status fails), a `2xx` whose body is cut short or times out
+  is retried as a dropped connection (`RemoteProtocolError`, `ReadTimeout`), and a `2xx` with a
+  broken encoding fails at once (`httpx.DecodingError`, round 3's choice). For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.
+  The source facts behind it, @ 1cedd3272: pi's Codex refresh reads a failed answer's body
+  with `response.text().catch(() => "")` (`openai-codex.ts`); its Anthropic refresh
+  (`anthropic.ts` `postJson`) and its Copilot refresh (`github-copilot.ts` `fetchJson`) call
+  `await response.text()` without one; `terminated` and timeouts are in pi's retry pattern
+  (`retry.ts`).
+- **An extension's refresh that raises a bare `RuntimeError("502 …")` is not retried**; pi would
+  retry it by its text. `raise_for_status()` and httpx transport errors are classified.
+- **The retried message has no `get_api_key_and_headers failed:` prefix** (pi's shape); the
+  refused one keeps it (today's message).
+- **`--mode json` exits 0 when every retry fails**, with the refresh's error in the last
+  message — what it does when a model's `502` outlasts its retries (#363 verify round 2's
+  `server-529` control: `rc=0`); before, the raise made it `rc=1`. Text `-p` exits 1 either way.
+- Not covered, and unchanged: the compaction and branch summaries call the callback themselves
+  and still fail on any refresh failure (they had no retry for a provider `502` either), and
+  `settings.json`'s `retry.enabled` / `retry.maxRetries` are not read by the harness for any
+  retry (module constants and `set_auto_retry` only) — both are follow-ups.
+
+### 12.4 Tests, sabotage and live runs
+
+`tests/oauth/test_refresh_retry_reason_379.py` (51: the classifier and each built-in refresh's
+status), `tests/cli/test_refresh_retry_379.py` (37: the real registry, CLI callback and harness
+over a MockTransport for openai-codex, anthropic and github-copilot — six transient causes,
+three refusals, the budget, `auto_retry_enabled`, a hostile `502` page, a stored-entry
+control, the registry's reason, the real `_async_main` in json mode) and
+`tests/test_agent_harness_auth_retry_379.py` (9: the harness contract). On `8f7d98aa` with the
+tests copied in, 31 of the 46 rows in the last two files fail and the 15 that pass are the
+controls (refusals and the stored-entry error keep today's behaviour); the first file cannot
+import there. Under Python 3.11: 97 passed.
+
+Sabotage (`kit/sabotage.py`, `logs/sabotage.out`), one piece at a time in a throwaway worktree,
+every one red:
+
+| piece reverted or wrong form | failing rows |
+| --- | --- |
+| S1 the Codex refresh carries no status | 11 |
+| S2 the Anthropic `_post_json` carries no status | 8 |
+| S3 the Copilot `_http_error` carries no status | 8 |
+| S4 `OAuthRefreshError` never classifies | 26 |
+| S5 the registry drops `retry_reason` | 25 |
+| S6 the CLI callback raises a plain `RuntimeError` | 24 |
+| S7 the harness raises every callback failure | 26 |
+| S8 the retry loop classifies by text only | 8 |
+| S9 transport errors not transient | 19 |
+| S10 `429` not transient | 7 |
+| W1 pi's text regex instead of the chain | 30 |
+| W2 the walk follows `__context__` | 1 |
+| W3 every `4xx`/`5xx` transient | 26 |
+| W4 the classifiers read the server text | 1 |
+| W5 a transient failure falls through to the environment | 25 |
+| W6 the harness retries the callback inline | 25 |
+| W7 the status error is a `RuntimeError` subclass | 1 |
+
+Live (`logs/live_after.out`, `live_after_text.out`, `rpc_after.out`, `tui_*.out`): json —
+`502`, `429` or a dropped connection then `200`: `rc=0`, one `auto_retry_start` (1/3, 2000 ms),
+`auto_retry_end success=True`, two token requests, one model request carrying the refreshed
+token (Anthropic with both Anthropic variables exported: the refreshed token too); `401`/`403`:
+`rc=1`, one token request, nothing sent; `502` always: four token requests, three retries
+(2000/4000/8000 ms), nothing sent. Text `-p`: the answer and `rc=0`, or the refresh's error on
+stderr and `rc=1`. rpc: `auto_retry_start` then `auto_retry_end success=True`. TUI (the interactive
+TUI in a pty, `--no-session --provider openai-codex --model gpt-5.1-codex-mini`): `✖ OAuth refresh failed …`, `⟳ Retrying (1/3) in 2s… Esc
+to cancel`, the answer, `✓ Retry succeeded (attempt 1)`; on `401` one `✖` line and no retry;
+on `502` always four `✖` lines and `✖ Retry failed: …`. Every TUI error message gets its `✖`
+line whatever its class (`tui/render.py`, `_render_message_error`), so a retried provider error
+shows the same.
+
+### 12.5 Review round 2 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r2/` (`probe/`, `kit/sabotage_r2.py`, `logs/`). Each item was
+reproduced on `a46092fd` first.
+
+1. **A refusal inside a retry sequence left the sequence open (blocking).** The token endpoint
+   answers `502`, the turn retries (`auto_retry_start` 1/3), and the retry's refresh is refused
+   (`401`/`400`: a rotated refresh token whose `502`'d answer was lost gets `invalid_grant`).
+   `_make_stream_fn` raised `AgentHarnessError("auth")` from inside `prompt()`'s retry loop, past
+   the #147 arm that emits `auto_retry_end(success=False)` and resets the counter. Measured on
+   `a46092fd` (`logs/repro_rpc_a46092fd.out`, one rpc process): turn 1 `[502, 401]` →
+   `auto_retry_start=[(1, 3, 2000)] auto_retry_end=[]`; turn 2 `[502, 502, 502, 200]` →
+   starts `(2, 3, 4000), (3, 3, 8000)`, `auto_retry_end=[(False, 3)]`, the `200` never reached —
+   the leaked counter cut the next turn's budget to two retries. **Decision, following pi**
+   (`lazyStream` turns every setup failure into an error message; `agent-session.ts:1874-1882`
+   @ 1cedd3272 emits `auto_retry_end(false)` and resets): inside a retry sequence
+   (`_retry_attempt > 0`) a callback failure without a reason — and a callback answer with
+   neither key nor headers — ends the attempt as a **non-retryable** error message whose text is
+   the one the raise carries, byte for byte (`get_api_key_and_headers failed: OAuth refresh failed
+   for <p>: … Run /login to sign in to <p> again.`). The #147 arm then closes the sequence as it
+   does for a provider's non-retryable error. `_SetupErrorText.retry_reason=None` (since
+   round 3, §12.6: the harness's record with no reason) is never retried, whatever the text (a `401` body naming `502`). Outside a sequence the first refusal
+   is still `AgentHarnessError("auth")` (rc 1, unchanged). A second guard closes the sequence on
+   any raise out of the backoff or the re-run (a hook, an adapter, a cancelled `prompt()`):
+   counter reset, then one `auto_retry_end(False, final_error=str(exc))`, then the raise. After
+   (`logs/rpc_after_r2.out`): turn 1 → `auto_retry_end=[(False, 1)]`; turn 2 → starts 1/2/3,
+   `auto_retry_end=[(True, 3)]`, the refreshed token sent once. Codex's exact row (anthropic,
+   turn 2 with nine model `502`s then `200`, `logs/rpc_after_r2_anthropic_model502.out`): starts
+   1/2/3, `(True, 3)`. TUI in a pty (`logs/tui_502_401_then_3x502_r2.out`): turn 1 shows the
+   `502` line, the refusal line and `✖ Retry failed: get_api_key_and_headers failed: …` and no
+   widget stays up; turn 2 shows `⟳ Retrying (2/3)…`, three `502` lines, the answer and
+   `✓ Retry succeeded (attempt 3)`. The refusal text appears in its `✖` line and again in
+   `✖ Retry failed:`, as for any provider error that ends a retry (pi's TUI shows the same pair,
+   `Retry failed after N attempts: <finalError>`). `--mode json`: rc 0 with the error in the last
+   message, as for every turn that ends on an error message; text `-p`: the same stderr line as a
+   first-attempt refusal, rc 1 (`logs/live_json_r2.out`, `logs/live_text_r2.out`).
+2. **A logout while a retry waits** (Codex cat1/cat2). Another process empties `auth.json` while
+   the `502` is pending; the failed refresh re-reads the store (pi parity, P-142), and the retry
+   then resolves what a new turn after that logout resolves — the exported key. **Kept**: there is
+   no stored login left to own the provider. The texts now say so: "while your stored login
+   exists" (CHANGELOG, both guides, §2.2, §12.2 item 4). Row
+   `test_a_logout_while_a_retry_waits_sends_what_a_new_turn_would` pins it (one token request,
+   start 1, end `(True, 1)`, `x-api-key=ENV`). *(Corrected in review round 3, §12.6: that row's
+   logout lands while the failing refresh is under way, and is renamed so; a logout during the
+   backoff — "while a retry waits" — sends nothing and ends the retry.)*
+3. **The transient set is pi's exactly**: `429`, `500`, `502`, `503`, `504`, `520`, `524`
+   (`RETRYABLE_PROVIDER_ERROR_PATTERN`, `packages/ai/src/utils/retry.ts:30-45`) plus the transport
+   class (pi's `fetch failed`). `501`, `505`, `507`, `521`, `530`, `599` are not (rows; Codex's
+   `501` mutant is now red, R9: 5 rows). Live: `501`/`505` → rc 1, one token request, no retry;
+   `520`/`524` then `200` → one retry, the refreshed token sent.
+4. **Event protocol.** The setup error message had a `message_end` and no `message_start`. It is
+   now emitted as a `start` (whose partial is the failure itself, as pi's `message_start` carries
+   the final message) then an `error`, so the loop emits the pair (pi's loop does for a message
+   with no partial, `packages/agent/src/agent-loop.ts:451-453`). Live json:
+   `message_start, message_end` × 3 for `[502, 200]`. A provider adapter that errors before its
+   own `start` (the anthropic `502` above) still emits only `message_end` — pre-existing, not
+   this path, a follow-up.
+5. **Wording.** The retried (transient) failure reads pi's text, `OAuth refresh failed for <p>:
+   <cause>` (`ModelsError` with its cause detail, `utils/models-error.ts:16-21`), with no `Run
+   /login` hint; a refused one keeps the hint and its text byte for byte (rows; live
+   `openai-codex:401` and `[502, 401]` stderr identical to `8f7d98aa`'s,
+   `verify/logs/refused_text_base.out`).
+
+Rows (`tests/test_agent_harness_auth_retry_379.py` 16, `tests/cli/test_refresh_retry_379.py` 61,
+`tests/oauth/test_refresh_retry_reason_379.py` 61 — 138): on `a46092fd` with these files copied in,
+60 fail (`logs/red_on_a46092fd.out`; the logout row passes there, it pins kept behaviour); Python
+3.11: 138 passed (`logs/py311.out`). Sabotage (`logs/sabotage_r2.out`), every piece red:
+
+| piece reverted or wrong form | failing rows |
+| --- | --- |
+| R1 a refusal inside a sequence raises again | 10 |
+| R2 no close on a raise out of the backoff/re-run | 2 |
+| R3 R1 + R2 (`a46092fd`'s behaviour) | 12 |
+| R4 the guard closes but keeps the counter | 2 |
+| R5 every setup error retried | 11 |
+| R6 the in-sequence refusal loses its prefix | 27 |
+| R7 a key-less answer inside a sequence raises | 1 |
+| R8 no `start` before the setup error | 3 |
+| R9 `501` transient (Codex's mutant) | 5 |
+| R10 every `5xx` transient (`a46092fd`'s set) | 14 |
+| R11 `520` not transient | 4 |
+| R12 `524` not transient | 5 |
+| R13 the transient text keeps `/login` | 28 |
+| R14 the refused text loses `/login` | 22 |
+
+§12.3's "every `5xx` is transient" is withdrawn; its other choices stand. Not changed here:
+`settings.json` `retry.*` wiring and the compaction/branch-summary retries (follow-ups).
+
+### 12.6 Review round 3 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r3/` (`probe/`, `cross/`, `ext/`, `kit/sabotage_r3.py`, `logs/`).
+Each item was reproduced on `7b0207bb` first.
+
+1. **A logout meanwhile, measured per shape (blocking: §12.2 item 4 and the guides said "the
+   next key" for both).** Live rpc, an isolated agent dir, a fake expired login, the token
+   endpoint answering `502` then `200`, every key a fake (`logs/item1_shapes_base_7b0207bb*.out`
+   before, `logs/item1_shapes_tree.out` after — the same, behaviour unchanged):
+
+   | when `auth.json` is emptied | anthropic | openai-codex |
+   | --- | --- | --- |
+   | during the backoff (on `auto_retry_start`) | token `[502]`, nothing sent, `auto_retry_end(False, 1)` with `get_api_key_and_headers failed: The auth.json entry for anthropic is an OAuth login that gave no key. … remove the anthropic entry from <path>`; the next turn sends the `models.json` key, or with none the exported `ANTHROPIC_API_KEY` | the same text for openai-codex, nothing sent; the next turn reads the `models.json` key, which the Codex adapter refuses (`… missing the chatgpt_account_id claim`) |
+   | while the failing refresh is under way (the endpoint empties it, then answers `502`) | the retry sends the `models.json` key, or with none the exported key, `(True, 1)`; with neither, nothing is sent and the retry ends `No API key for provider: anthropic` | nothing sent: `… missing the chatgpt_account_id claim` with a `models.json` key, else `No OAuth token for openai-codex — run /login …`; `(False, 1)` |
+
+   Why: during the backoff the in-memory entry is still the expired login, the retry's refresh
+   re-reads the store under its lock, finds nothing and returns no key
+   (`auth_storage.py` `get_oauth_api_key`), and the cascade raises "is an OAuth login that
+   gave no key"; inside the refresh, the failure's reload (P-142) drops the entry first, so the
+   retry reads the steps after it. The texts now say exactly that, a row per shape (the
+   CHANGELOG, both guides and their bundled copies, the `OAuthRefreshError` docstring in `auth_storage.py`,
+   §12.2 item 4, §12.5 item 2). The message's advice to remove an entry the logout already
+   removed is left as it is: the fix is not one line (`StoredCredentialError` builds the whole
+   sentence) — a follow-up. Rows `test_a_logout_while_a_retry_waits_ends_the_retry_and_sends_nothing`
+   (anthropic, openai-codex; then the next turn's key), the renamed
+   `test_a_logout_during_the_failing_refresh_sends_what_a_new_turn_would` (anthropic, ENV) and
+   `test_a_logout_during_the_failing_codex_refresh_sends_nothing`.
+2. **A status whose body cannot be decoded lost its status (Codex cat1).** A `502` with
+   `Content-Encoding: gzip` and a body that is not gzip: `client.post()` read the body before
+   returning and raised `httpx.DecodingError`, so the site's status check never ran — no retry
+   reason, the turn failed at once with the `/login` hint (live on `7b0207bb`, all three
+   providers, `logs/item2_gzip_base_7b0207bb.out`). *(Review round 7, §12.10: the pi
+   comparison this item made is withdrawn; §12.3 states aelix's rule. For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.)* Now
+   `_helpers.StatusBeforeBody` is passed as an httpx `response` event hook, which httpx runs
+   once the status line and headers are in, before it reads the body; `answer(client.post(…))`
+   turns a non-2xx `DecodingError` into that status with an empty body, so the site classifies
+   it and its message falls back to the reason phrase. A 2xx whose body cannot be decoded still
+   raises as before. Applied at every site that attaches the status: the Codex refresh, the
+   Anthropic `_post_json` (refresh and sign-in) and the Copilot refresh, device-code request and
+   poll. Live after (`logs/item2_gzip_tree.out`): `gz502` then `200` → one retry, the refreshed
+   token sent, rc 0, for each provider; the Codex text is pi's, `OpenAI Codex token refresh
+   failed (502): Bad Gateway`; `gz200` → rc 1, the old text; `gz401` → rc 1, refused;
+   `gz503` then three `gz502` → three retries, nothing sent. TUI in a pty
+   (`logs/tui_gz502_then_200_tree.out`): the `✖` line, the answer, `✓ Retry succeeded
+   (attempt 1)`.
+3. **A `message_end` hook could change the retry decision (Codex cat1).** A hook that rebuilds
+   `error_message` through JSON (the same text, a plain `str`) turned `_SetupErrorText` into a
+   `str`, and the classifier read the text: a `401` whose body names `502` was retried to
+   success and a disconnect was not retried. **Decided:** the harness keeps the decision itself
+   (§12.2 item 3): `_SetupFailure` records the callback's answer for the message it builds,
+   follows the message the hooks leave, and is cleared when the next attempt starts;
+   `_is_retryable_error` and the overflow recovery read it for that message, never its text or
+   type. Before/after with Codex's in-process probe (`logs/item3_hook_base_7b0207bb.out`,
+   `logs/item3_4_codex_probe_tree.out`) and a real `aelix --mode json -e json_round_trip.py`
+   (`logs/item3_hook_extension_live.out`): `[502, 401-naming-502, 200]` was starts `[1, 2]`,
+   end `(True, 2)`, the refreshed token sent; now start `[1]`, end `(False, 1)`, nothing sent
+   (codex, anthropic). `[drop, 200]` was one token request and no retry; now one retry and the
+   refreshed token (codex, copilot). TUI with the extension
+   (`logs/tui_hook_502_401-502_tree.out`): the refusal ends the retry with `✖ Retry failed: …`.
+4. **`httpx.NetworkError` was pinned only by `ConnectError` and `ReadError` (Codex cat4).**
+   Rows for `WriteError` and `CloseError` (each retried to success, three providers, and in the
+   classifier). Codex's narrowing mutant is now red (N1: 8 rows); live in-process, `write` →
+   retried to success, under the mutant → no retry (`logs/item3_4_codex_probe_tree.out`).
+5. **Wording.** The status line, §12.2's headline and the index row name pi's set
+   (`429`, `500`, `502`-`504`, `520`, `524`) and "while the stored login exists".
+
+Rows (`tests/test_agent_harness_auth_retry_379.py` 21, `tests/cli/test_refresh_retry_379.py` 88,
+`tests/oauth/test_refresh_retry_reason_379.py` 73 — 182): on `7b0207bb` with these files copied in,
+23 fail (`logs/red_on_7b0207bb.out`: the gzip rows, the hook rows, the record rows); the logout
+rows pass there — they pin behaviour this round keeps and documents. Python 3.11: those files plus
+`tests/test_auto_retry.py` and `tests/test_agent_harness_auth_error.py`, 231 passed
+(`logs/py311.out`). Sabotage (`kit/sabotage_r3.py`, `logs/sabotage_r3.out`; base 182 passed,
+restored 182 passed):
+
+| piece reverted or wrong form | failing rows |
+| --- | --- |
+| T1 the record is ignored (the text decides) | 79 |
+| T2 `7b0207bb`'s type check instead of the record | 11 |
+| T3 the record does not follow the hooks' message | 10 |
+| T4 the record follows the original message, not the replacement | 10 |
+| T5 the overflow recovery ignores the record | 1 |
+| T6 the record is never set | 77 |
+| T7 the record is not cleared when an attempt starts | 0 (survives) |
+| G1 `StatusBeforeBody` keeps nothing (`7b0207bb`) | 10 |
+| G2 `StatusBeforeBody` keeps a 2xx too | 3 |
+| G3 the Codex refresh does not pass the hook | 3 |
+| G4 the Anthropic `_post_json` does not pass the hook | 3 |
+| G5 the Copilot refresh does not pass the hook | 3 |
+| G6 the Copilot device-code request does not pass the hook | 1 |
+| N1 `NetworkError` narrowed to `ConnectError` + `ReadError` | 8 |
+| V7 the raise guard without its "no open sequence" return (verify r2) | 1 |
+| V24 the raise guard resets the counter after its emit (verify r2) | 1 |
+
+T7 survives because no path observes it: the record is matched by identity, the retry pops its
+message, and a later attempt builds a new one; the clear only stops a spent record from
+outliving its attempt (a session rebuild that put the same message object back last). Kept as
+hygiene, stated here. Follow-ups, not changed: the stale "remove the entry" advice after another
+process's logout; the harness's model-error `_RETRYABLE_ERROR_PATTERN` has no `520`/`524`; the
+anthropic adapter's own model `502` emits `message_end` without `message_start`; an unexpired
+cached token is still sent after another process logs out.
+
+### 12.7 Review round 4 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r4/` (`probe/`, `kit/sabotage_r4.py`, `logs/`). Rebased onto
+`dfb4ddcc` (#404) first: two test docstrings conflicted on citation line numbers and were merged
+by hand (#404's `tui/shell.py` and `extensions/loader.py` lines, this change's `cli/entry.py`
+and `harness/core.py` lines); `check_citations --check` after: 955 gated, none drifted. Each item
+was reproduced on `e946bf53` first.
+
+1. **A status whose body broke off lost its status (Codex r3 cat1, blocking).** A `401` (or
+   `501`) with `Content-Length: 100` and a body of `{` then EOF: httpx raises
+   `RemoteProtocolError` while reading the body, and `StatusBeforeBody.answer` kept the status
+   only for `DecodingError`, so the error read as a dropped connection — the REFUSED refresh was
+   retried and the next `200` sent a model request. Live on `e946bf53`
+   (`logs/item1_base_e946bf53.out`, a raw-socket recorder, all three providers): `tr401,200`,
+   `tr501,200` and `tr502,200` each gave `auto_retry_start (1, 2000)`, `auto_retry_end (True,
+   1)` and the refreshed token sent, with `… peer closed connection without sending complete
+   message body (received 1 bytes, expected 100)`. **Decided:** once a non-2xx status has
+   arrived, it decides, whatever happens while reading the body — `answer` turns ANY error
+   after the `response` hook ran on a non-2xx into that status with an empty body (it also
+   forgets the previous request's status first). *(Review round 7, §12.10: the pi comparison
+   this item made is withdrawn; §12.3 states aelix's rule. For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.)* Apart from a 2xx (next),
+   only a failure before the status and headers arrived — no connection, a write that timed
+   out, a hang-up before the header block completed — is a transport error. A 2xx whose body
+   breaks still raises as before: cut short, it is retried as a dropped connection; a broken
+   encoding fails at once. Live after
+   (`logs/item1_tree.out`): `tr401`/`tr501` → rc 1, one token request, no retry, nothing sent;
+   `tr502`/`tr429` then `200` → one retry, the refreshed token; `drop`, `gz502` and `tr200`
+   then `200` → one retry, as before. The Copilot device-flow poll follows the same rule: a
+   `401` cut short is the poll's refusal (it was polled through as transient), a `502` cut
+   short is its transient `HTTP 502`.
+2. **Wording (Codex r3 cat2).** The CHANGELOG said a `5xx` whose body cannot be read is
+   retried; `501`/`505` are not — it now says "one of those statuses". The refused message for
+   a malformed-gzip or cut-short `401` differed from `8f7d98aa`'s (which quoted the decoder's
+   or the connection's error). It is now byte-identical to the text the same status with an
+   empty body gets, at every site — measured live (`gzS401` and `tr401` against `e401`, the same
+   reason phrase) and pinned by rows; the CHANGELOG and §12.2 item 5 state the exception.
+3. **Rows for two surviving mutants.** `WriteTimeout` (Codex r3: naming `ConnectTimeout`,
+   `ReadTimeout` and `PoolTimeout` instead of `httpx.TimeoutException` was green everywhere)
+   — the classifier row, each site, and a retried-to-success row per provider. The Copilot
+   poll's hook (verify r3 G7) — `gz502` then a token returns the token, and so does a cut-short
+   `502`.
+
+Rows (`tests/oauth/test_refresh_retry_reason_379.py` and `tests/cli/test_refresh_retry_379.py`
+gained 102; the three #379 files are 284): on `e946bf53` with these files copied in, 67 fail
+(`logs/red_on_e946bf53.out`). Sabotage (`kit/sabotage_r4.py`, `logs/sabotage_r4.out`; base 284
+passed, restored 284 passed):
+
+| piece reverted or wrong form | failing rows |
+| --- | --- |
+| S1 only `DecodingError` keeps the status (`e946bf53`) | 67 |
+| S2 only `TransportError` keeps it (a broken encoding loses it) | 26 |
+| S3 `WriteTimeout` dropped from the transport set (Codex r3) | 7 |
+| S4 the Copilot poll without the hook (verify r3 G7) | 2 |
+| S5 `answer` keeps an earlier request's status | 1 |
+| S6 a 2xx whose body fails keeps the 2xx too | 4 |
+| S7 `RemoteProtocolError` dropped from the transport set | 8 |
+
+### 12.8 Review round 5 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r5/` (`kit/`, `logs/`). Text and rows only — no behaviour changed.
+Rebased onto `8428e16c` (#178, #405) first: it applied cleanly (CHANGELOG entries of both
+sides kept); `check_citations --check` after: 955 gated, none drifted.
+
+1. **Six texts stated the rule without its `2xx` exception (verify r4, blocking).** The
+   CHANGELOG, §12.2's headline and item 1, the decisions index row, the `_TRANSIENT_TRANSPORT`
+   comment and the commit message said only a failure before any status arrived counts as
+   "could not be reached"; the `OAuthRefreshError` docstring called every "2xx that is not a
+   token" non-transient. Reproduced live on `d7f25e1a` (`logs/repro_2xx_base_d7f25e1a.out`,
+   the raw-socket recorder, all three providers): `tr200,200` and `sl200,200` (a `2xx` cut
+   short, a `2xx` that times out) → `auto_retry_end (True, 1)`, the refreshed token sent, the
+   error `… peer closed connection …` / `ReadTimeout`; `gz200,200` → rc 1, no retry.
+   **Decided: keep the retry** (`terminated` and timeouts are in pi's retry pattern,
+   `retry.ts`). Every text now says: a non-2xx status decides once it arrives; a `2xx` whose
+   body is cut short or times out is retried as a dropped connection; a `2xx` with a broken
+   encoding fails at once. *(Review round 7, §12.10: the pi comparisons this item added — to
+   §12.3 and the `StatusBeforeBody` docstring — are withdrawn. For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.)* The per-site
+   comments at the Codex, Anthropic and Copilot hooks say "a non-2xx status".
+2. **Rows for verify r4's two surviving mutants.** W2 (`answer` dropping `reason_phrase`): a
+   `401 Status` whose body is gzip-broken or cut short reads byte for byte as a `401 Status`
+   with an empty body, per site — red under W2 (4 rows: Codex and Copilot quote the phrase,
+   Anthropic does not). W1 (`answer` catching `BaseException`): a cancel while a `401`'s or a
+   `502`'s body is read stays a cancel, per site — red under W1 (6 rows).
+3. `ruff format` on `_helpers.py`: the one 101-character line is wrapped.
+
+Rows: 296 in the three #379 files (12 new). Sabotage (`kit/sabotage_r5.py`,
+`logs/sabotage_r5.out`): base 296 passed; W1 6 failed; W2 4 failed; restored 296 passed.
+Behaviour unchanged: the verify's live matrix (18 plans × 3 providers) on `d7f25e1a` and on
+the tree, normalised for timings, is identical (`logs/matrix_*.out`).
+
+### 12.9 Review round 6 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r6/` (`kit/`, `logs/`). Text and rows only — no behaviour changed.
+
+1. **pi's failed-body handling was stated for all three refreshes; only its Codex refresh
+   reads a failed answer's body with `.catch` (verify r5, blocking).** pi @ 1cedd3272:
+   `openai-codex.ts` reads it with `response.text().catch(() => "")`; `anthropic.ts`
+   `postJson` and `github-copilot.ts` `fetchJson` call `await response.text()` without one.
+   §12.6 item 2, §12.7 item 1, the `StatusBeforeBody` docstring and the commit message now
+   limit the `.catch` statement to pi's Codex refresh. *(Review round 7, §12.10: the outcomes
+   per body shape this round measured against pi and wrote into §12.3, the docstring, §12.8
+   and the CHANGELOG are withdrawn; aelix's rule is §12.3's. For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers.)*
+2. **Text.** The guides' "any other status … fails at once / is not retried" now names the
+   one exception, a `2xx` whose body is cut short or times out (retried). *(The CHANGELOG
+   sentence this item added about pi is withdrawn in review round 7, §12.10.)*
+3. **Rows for verify r5's mutant M5** (a `ReadTimeout` while a `2xx` body is read made a
+   plain `RuntimeError`: green on all 296 rows). `_cut_short(200)` and
+   `_cut_short(200, httpx.ReadTimeout)` at the Codex, Anthropic and Copilot refreshes each
+   give `the token endpoint could not be reached (…)` — six rows in place of the one
+   Codex-only control.
+
+Rows: 301 in the three #379 files. Sabotage (`kit/sabotage_r6.py`): with `f1fb0eee`'s rows,
+M5 296 passed, M6 and M7 1 failed each (`logs/sabotage_r6_before_HEAD_tests.out`); with the new
+rows (`logs/sabotage_r6_after.out`, base 301 passed, restored 301 passed) M5 3 failed, M6 6,
+M7 3, and W1 6, W2 4, W2b 4, M4 6, M8 25 still red; M3 (`content-encoding` kept on the rebuilt
+empty response) survives, as in round 5. Behaviour unchanged: the `#379` product code is
+AST-equal to `f1fb0eee` with docstrings ignored (`logs/ast_eq.out`), and the round-5 live matrix
+(18 plans × 3 providers) rerun on the tree is identical to round 5's once timings, the
+recorder's port and cancel-scope ids are normalised (`logs/matrix_tree.out`,
+`logs/matrix_r5_vs_r6.diff` empty).
+
+### 12.10 Review round 7 (2026-10-08)
+
+Kit: `.omc/probes/379-live/r7/` (`kit/`, `logs/`). Text only — no behaviour and no rows changed.
+
+1. **The texts' statements of how pi treats a body that fails mid-read depended on the
+   connection framing (verify r6, blocking).** Reproduced on `d38ad41b` with pi's real refresh
+   code for all three providers (Copilot's module with its missing generated catalog stubbed)
+   against verify r6's raw-socket recorder (`logs/pi_framing_repro.out`): the same chunked
+   bytes cut short get a different pi outcome when the answer says `Connection: close` than on
+   a kept-alive connection (`ch200` against `ck200`, `ch401` against `ck401`), so the texts,
+   written from the `Connection: close` framing alone, stated a difference from aelix that
+   keep-alive does not show and missed one it does (aelix's own outcome is framing-blind:
+   verify r6's `logs/aelix_keepalive.out`). **Decided (main loop):**
+   stop describing pi's per-framing behaviour. Every per-shape pi sentence about a malformed,
+   cut-short or stalled body is removed — from the CHANGELOG, the status line, §12.2, §12.3
+   (two bullets become one), §12.6 item 2, §12.7 item 1, §12.8, §12.9, the decisions index
+   row, the `StatusBeforeBody` docstring, the `_TRANSIENT_TRANSPORT` comment, one test
+   docstring and the commit message (the guides had none; the providers-and-models guide and
+   its bundled copy, which say pi retries the same refreshes, gain the sentence below) — and
+   where a comparison is needed it is this one sentence, the same everywhere: "For an answer whose body fails mid-read, pi's behaviour depends on the provider and the connection framing (its Codex refresh reads a non-2xx answer's body with .catch, its Anthropic and Copilot refreshes do not), so aelix's rule above can differ from pi for these malformed answers."
+   aelix's rule is stated once, exactly (§12.3): a non-2xx answer is decided by its status
+   once it arrives (`400`/`401`/`403` refused at once; `429`, `500`, `502`-`504`, `520`,
+   `524` retried; any other status fails); a `2xx` whose body is cut short or times out is
+   retried as a dropped connection; a `2xx` with a broken encoding fails at once. Both guides
+   now also say that a non-`2xx` answer is decided by its status whatever then happens to its
+   body. What stays about pi is framing-independent and read from source @ 1cedd3272: its
+   retryable status set, `terminated` and timeouts in `retry.ts`'s pattern, and that only its
+   Codex refresh reads a failed answer's body with `.catch`.
+2. **Wording (verify r6, nonblocking N1).** A hang-up after the status line but before the
+   header block completed is a transport error (httpx's `response` hook never ran); the
+   `StatusBeforeBody` docstring, the `_TRANSIENT_TRANSPORT` comment and §12.7 item 1 now say
+   "before the status and headers arrived" instead of "before any status" / "the status line".
+
+No behaviour change: `_helpers.py` and the one test file changed are AST-equal to `d38ad41b`
+with docstrings and comments ignored (`logs/ast_eq.out`; the comparer tells a dropped
+`RemoteProtocolError` or `524` apart, `logs/ast_eq_sensitivity.out`). The three #379 files:
+301 passed. The rule's clauses are each pinned (`kit/sabotage_r7.py`, `logs/sabotage_r7.out`,
+a throwaway worktree, base 301 passed, restored 301 passed): a refusal whose body fails
+retried 70 failed, a `2xx` cut short kept as a `2xx` 9, a `2xx` broken encoding made
+transient 6, `524` dropped 5, `501`/`505` added 28.

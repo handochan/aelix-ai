@@ -64,12 +64,22 @@ class ResolvedRequestAuth:
       ``api_key`` may be :data:`None` for OAuth-only providers that
       attach the bearer token via headers.
     - ``ok=False``: ``{ok: False, error: str}``.
+
+    ``retry_reason`` (aelix-additive, #379 / ADR-0251 §4): set on ``ok=False``
+    only when the failure is a stored OAuth refresh that failed on a transient
+    cause (:attr:`aelix_ai.oauth.OAuthRefreshError.retry_reason` - the token
+    endpoint answered ``429``/``500``/``502``-``504``/``520``/``524``, pi's set,
+    or could not be reached). The CLI's auth
+    callback raises it on, and the harness retries that turn as it retries a
+    provider's ``502``. pi carries no such field: its retry reads the error's
+    text.
     """
 
     ok: bool
     api_key: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     error: str | None = None
+    retry_reason: str | None = None
 
 
 @dataclass
@@ -547,7 +557,11 @@ class ModelRegistry:
 
             return ResolvedRequestAuth(ok=True, api_key=api_key, headers=headers)
         except Exception as exc:  # noqa: BLE001 — Pi reports the message.
-            return ResolvedRequestAuth(ok=False, error=str(exc))
+            # #379: a stored OAuth refresh that failed on a transient cause says
+            # so; every other failure (StoredCredentialError's own reasons, a
+            # header !command, an authHeader with no key) has no reason.
+            retry_reason = exc.retry_reason if isinstance(exc, StoredCredentialError) else None
+            return ResolvedRequestAuth(ok=False, error=str(exc), retry_reason=retry_reason)
 
     async def _request_api_key(self, provider: str, *, uncached: bool = False) -> str | None:
         """The key a request to ``provider`` carries: pi's order (#363 / ADR-0251).
@@ -564,7 +578,12 @@ class ModelRegistry:
            OAuth record whose OAuth provider is not registered (expired or
            not), an entry of an unknown type (review round 2). So
            :meth:`get_api_key_and_headers` answers ``ok=False`` and the request
-           fails before anything is sent. Answering "no key" instead was not
+           fails before anything is sent - or, for a refresh that failed on a
+           transient cause (pi's ``429``/``500``/``502``-``504``/``520``/``524``,
+           or unreachable, #379), the turn is
+           retried, and each attempt asks this step again, never a step below
+           while the login is stored (a logout meanwhile: ADR-0251 §12.6).
+           Answering "no key" instead was not
            enough (review round 1, R1): the CLI's auth callback reads no key and
            no headers as "no opinion", and the adapter then reads the
            environment itself, so an exported vendor key went to the gateway;

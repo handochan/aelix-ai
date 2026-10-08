@@ -941,6 +941,22 @@ def _apply_prompt_files(parsed: Args) -> str | None:
     return None
 
 
+class _RequestAuthError(RuntimeError):
+    """The registry's ``ok=False``, raised to the harness (#379).
+
+    The text is the registry's error, as the plain ``RuntimeError`` before it
+    was. ``retry_reason`` is the registry's too: set only for a stored OAuth
+    refresh that failed on a transient cause, and the harness reads it
+    (``AgentHarnessOptions.get_api_key_and_headers``) to turn this raise into
+    an error assistant message its auto-retry retries, as pi's ``lazyStream``
+    does. ``None`` keeps today's ``AgentHarnessError("auth")``.
+    """
+
+    def __init__(self, message: str, retry_reason: str | None) -> None:
+        super().__init__(message)
+        self.retry_reason = retry_reason
+
+
 def _make_auth_callback(
     model_registry: ModelRegistry,
 ) -> Callable[[Model], Awaitable[dict[str, Any] | None]]:
@@ -954,7 +970,9 @@ def _make_auth_callback(
     adapter converts it:
 
     - ``ok=False`` → raise (the harness wraps it as an ``"auth"`` error;
-      Pi treats a resolution failure as fatal).
+      Pi treats a resolution failure as fatal) - except a stored OAuth refresh
+      that failed on a transient cause, whose ``retry_reason`` the raise
+      carries so the harness retries the turn (#379, ADR-0251 §4).
     - ``ok=True`` with a key or headers → ``{"apiKey": ..., "headers": ...}``.
     - ``ok=True`` with NEITHER a key NOR headers → :data:`None` so the
       harness's "neither apiKey nor headers" guard (@3463) is not tripped
@@ -968,8 +986,9 @@ def _make_auth_callback(
     async def _resolve(model: Model) -> dict[str, Any] | None:
         auth = await model_registry.get_api_key_and_headers(model)
         if not auth.ok:
-            # Surfaced by the harness as an ``"auth"`` AgentHarnessError.
-            raise RuntimeError(auth.error or "auth resolution failed")
+            # Surfaced by the harness as an ``"auth"`` AgentHarnessError, or -
+            # with a ``retry_reason`` (#379) - as a retried error message.
+            raise _RequestAuthError(auth.error or "auth resolution failed", auth.retry_reason)
         if not auth.api_key and not auth.headers:
             # "No opinion" — let the adapter's env fallback take over.
             return None
@@ -1328,7 +1347,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:613-614``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:674-675``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     append: list[str] = list(parsed.append_system_prompt)
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate).
@@ -1515,7 +1534,7 @@ async def _build_harness_options(
                 # A CALLABLE over the RESOLVED decision, never
                 # ``ctx.is_project_trusted()``: that getter's unbound default is
                 # ``True`` (``extensions/api.py`` ``is_project_trusted or
-                # (lambda: True)`` / ``harness/core.py:295``), so a harness that
+                # (lambda: True)`` / ``harness/core.py:308``), so a harness that
                 # nobody told about trust reports itself trusted.
                 project_trusted=lambda: project_trusted,
                 # The SAME holder ``/extension``'s viewer reads, by reference, so
@@ -1629,7 +1648,7 @@ async def _build_harness_options(
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:268 / :649-650), so wiring it
+        # ``AgentState.thinking_level``, core.py:275 / :710-711), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -3029,7 +3048,7 @@ async def _async_main(argv: list[str]) -> int:
             opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:705``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:766``, AFTER
         # the registry merge at ``:564``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What

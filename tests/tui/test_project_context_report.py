@@ -12,9 +12,9 @@ the pre-change build with one 7175-char ``AGENTS.md`` (1794 estimated tokens):
   discovery call re-emitted 115 bytes of stderr warnings carrying the absolute
   path RAW — ESC and BEL from a hostile directory name reached the stream.
 
-The assembly these tests mirror is ``cli/entry.py:1330-1335`` (the chunk is
+The assembly these tests mirror is ``cli/entry.py:1349-1354`` (the chunk is
 appended VERBATIM, gated on ``not parsed.no_context_files``) joined by
-``harness/core.py:613-619`` with ``"\\n\\n"``. Nothing here asserts the chunk's
+``harness/core.py:674-680`` with ``"\\n\\n"``. Nothing here asserts the chunk's
 INTERNAL shape: that belongs to ``cli/agent_context.py`` and changed inside this
 same issue (markdown header → pi's ``<project_context>`` fence), so every
 expectation below is derived by calling ``discover_context_files`` rather than
@@ -84,7 +84,7 @@ class _ReportHarness:
     """Only the seams ``/context`` reads, with production's EXACT signatures.
 
     ``_action_get_system_prompt`` takes no arguments and returns ``str``
-    (``harness/core.py:4272-4273``); ``messages`` is a plain list property. No
+    (``harness/core.py:4388-4389``); ``messages`` is a plain list property. No
     ``_action_get_all_tools``, so the tools category is genuinely absent rather
     than faked — the rows under test are then the only two produced, and no
     ``**kwargs`` anywhere lets a call through that production would reject.
@@ -157,7 +157,7 @@ async def test_context_does_not_count_the_project_context_twice(project: Path) -
 
     chunk = _discover_quietly(project)
     assert chunk, "fixture must produce a context chunk"
-    assembled = f"{BASE_PROMPT}\n\n{chunk}"  # harness/core.py:613-619
+    assembled = f"{BASE_PROMPT}\n\n{chunk}"  # harness/core.py:674-680
 
     rendered = await _run_context(assembled, project)
 
@@ -177,7 +177,7 @@ async def test_context_omits_memory_row_under_no_context_files(project: Path) ->
 
     The ``AGENTS.md`` is on disk and discoverable; the only thing that changed is
     that the assembled prompt does not contain it, which is exactly what
-    ``entry.py:1332`` produces under ``--no-context-files``.
+    ``entry.py:1351`` produces under ``--no-context-files``.
     """
 
     assert _discover_quietly(project), "the file must be discoverable, just not used"
@@ -253,7 +253,7 @@ def test_banner_context_row_reports_agents_md_when_it_is_in_the_prompt(
 def test_banner_does_not_re_emit_the_context_budget_warnings(tmp_path: Path) -> None:
     """Rendering a banner must not print discovery's warnings a second time.
 
-    ``cli/entry.py:1333`` already called discovery once at startup and its
+    ``cli/entry.py:1352`` already called discovery once at startup and its
     ``Warning:`` lines have already been shown; the banner render is a REPORT and
     must be silent. An oversized ``AGENTS.md`` is what makes discovery warn
     (``agent_context.py:1249-1254``, the 32768-byte budget).
@@ -334,7 +334,7 @@ def test_split_returns_the_prompt_whole_when_context_is_absent(project: Path) ->
 def test_split_finds_the_chunk_when_it_is_not_last(project: Path) -> None:
     """The production shape whenever skills are loaded.
 
-    ``cli/entry.py:1330-1352`` orders the appended sections base → user append →
+    ``cli/entry.py:1349-1371`` orders the appended sections base → user append →
     project context → skills catalog, so the chunk is only the tail of the prompt
     in the no-skills case. A split that quietly assumed "at the end" would drop
     the row for every session that has a skill.

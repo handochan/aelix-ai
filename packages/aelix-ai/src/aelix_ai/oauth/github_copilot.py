@@ -28,7 +28,12 @@ from urllib.parse import urlparse
 
 import httpx
 
-from aelix_ai.oauth._helpers import quote_server_text, quoting_transport_errors
+from aelix_ai.oauth._helpers import (
+    StatusBeforeBody,
+    oauth_http_error,
+    quote_server_text,
+    quoting_transport_errors,
+)
 from aelix_ai.oauth.types import (
     OAuthAuthInfo,
     OAuthCredentials,
@@ -151,7 +156,9 @@ def _http_error(response: httpx.Response, url: str) -> RuntimeError:
     body = quote_server_text(response.text)
     if body:
         detail += f"; server said: {body}"
-    return RuntimeError(detail)
+    # #379: the status travels as data too - a Copilot token refresh that got
+    # 429/500/502/503/504/520/524 (pi's set) is retried by the turn.
+    return oauth_http_error(detail, response.status_code)
 
 
 def normalize_domain(input_str: str) -> str | None:
@@ -235,19 +242,25 @@ async def _start_device_flow(domain: str) -> dict[str, Any]:
     """
 
     urls = _get_urls(domain)
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+    # #379 rounds 3-5: a non-2xx status decides once it arrives, whatever the body does.
+    status = StatusBeforeBody()
+    async with httpx.AsyncClient(
+        timeout=_HTTP_TIMEOUT_SECONDS, event_hooks=status.event_hooks
+    ) as client:
         with quoting_transport_errors():
-            response = await client.post(
-                urls["device_code_url"],
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": "GitHubCopilotChat/0.35.0",
-                },
-                data={
-                    "client_id": CLIENT_ID,
-                    "scope": "read:user",
-                },
+            response = await status.answer(
+                client.post(
+                    urls["device_code_url"],
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": "GitHubCopilotChat/0.35.0",
+                    },
+                    data={
+                        "client_id": CLIENT_ID,
+                        "scope": "read:user",
+                    },
+                )
             )
         if response.status_code < 200 or response.status_code >= 300:
             raise _http_error(response, urls["device_code_url"])
@@ -322,22 +335,28 @@ async def _poll_for_github_access_token(
         transient: str | None = None
         raw: Any = None
         try:
-            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+            # #379 rounds 3-5: a non-2xx status decides once it arrives, whatever the body does.
+            status = StatusBeforeBody()
+            async with httpx.AsyncClient(
+                timeout=_HTTP_TIMEOUT_SECONDS, event_hooks=status.event_hooks
+            ) as client:
                 # Quoted before the except below reads it (#186): a proxy's
                 # CONNECT refusal puts its own reason phrase into the error.
                 with quoting_transport_errors():
-                    response = await client.post(
-                        urls["access_token_url"],
-                        headers={
-                            "Accept": "application/json",
-                            "Content-Type": "application/x-www-form-urlencoded",
-                            "User-Agent": "GitHubCopilotChat/0.35.0",
-                        },
-                        data={
-                            "client_id": CLIENT_ID,
-                            "device_code": device_code,
-                            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                        },
+                    response = await status.answer(
+                        client.post(
+                            urls["access_token_url"],
+                            headers={
+                                "Accept": "application/json",
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "User-Agent": "GitHubCopilotChat/0.35.0",
+                            },
+                            data={
+                                "client_id": CLIENT_ID,
+                                "device_code": device_code,
+                                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                            },
+                        )
                     )
                 if response.status_code < 200 or response.status_code >= 300:
                     error_ = _http_error(response, urls["access_token_url"])
@@ -466,15 +485,21 @@ async def refresh_github_copilot_token(
     domain = normalized or DEFAULT_DOMAIN
     urls = _get_urls(domain)
 
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+    # #379 rounds 3-5: a non-2xx status decides once it arrives, whatever the body does.
+    status = StatusBeforeBody()
+    async with httpx.AsyncClient(
+        timeout=_HTTP_TIMEOUT_SECONDS, event_hooks=status.event_hooks
+    ) as client:
         with quoting_transport_errors():
-            response = await client.get(
-                urls["copilot_token_url"],
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {refresh_token}",
-                    **COPILOT_HEADERS,
-                },
+            response = await status.answer(
+                client.get(
+                    urls["copilot_token_url"],
+                    headers={
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {refresh_token}",
+                        **COPILOT_HEADERS,
+                    },
+                )
             )
         if response.status_code < 200 or response.status_code >= 300:
             raise _http_error(response, urls["copilot_token_url"])

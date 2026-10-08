@@ -60,24 +60,24 @@ async def get_oauth_api_key_from_credentials(
         try:
             creds = await provider.refresh_token(creds)
         except Exception as exc:
-            # The cause goes in the MESSAGE, not just in ``__cause__``.
+            # The cause goes in the MESSAGE, not just in ``__cause__``, so the
+            # user sees why ("502 Bad Gateway from https://api.github.com", "401
+            # Unauthorized ..."). The old message dropped it.
             #
-            # This runs on every stream establishment once a short-lived token
-            # expires, and the harness's own auto-retry classifies by reading
-            # ``str(exc)`` against ``harness/core._RETRYABLE_ERROR_PATTERN``.
-            # Measured, with controls:
+            # And in ``__cause__`` too (``raise ... from exc``): whether the turn
+            # retries is decided on the chain, never on this text (#379,
+            # ADR-0251 §12). ``OAuthRefreshError`` walks it with
+            # ``_helpers.refresh_retry_reason`` - the token endpoint's status
+            # (``oauth_http_error``) or a transport error - and the harness
+            # retries by that answer. An earlier note here said the harness
+            # read ``str(exc)`` against ``_RETRYABLE_ERROR_PATTERN``; it never
+            # did (the auth raise came before any assistant message, ADR-0251
+            # §9 B1), and a text match would retry a 401 whose quoted body
+            # happens to say "502".
             #
-            #   "Failed to refresh OAuth token for github-copilot"          -> no match
-            #   ...that, plus "502 Bad Gateway from https://api.github.com"  -> matches "502"
-            #   ...plus "401 Unauthorized from https://api.github.com"       -> no match
-            #
-            # So the old message DISCARDED the one token that would have earned a
-            # retry, while a genuine 401 correctly stays terminal either way.
-            #
-            # The trade, stated: the pattern matches a bare "502" anywhere, so a
-            # terminal error whose quoted server body happens to contain such a
-            # number can now be retried a few times before failing. That costs
-            # seconds; the old behaviour cost the turn.
+            # An extension's refresh is classified the same way: an httpx
+            # transport error or ``raise_for_status()`` counts, a bare
+            # ``RuntimeError("502 ...")`` does not.
             #
             # Neutered as well as cut (#186). Every refresh goes through here,
             # including an extension-registered provider's, whose message may
