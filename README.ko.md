@@ -94,7 +94,7 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 ## 플랫폼 지원
 
 macOS, Linux, Windows. Windows는 `v0.1.0-beta.2`에서 쓸 수 있게 됐고, 셋 중 근거가
-가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12로 전체
+가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12/3.13으로 전체
 스위트를 돌리고 `install.ps1`을 pwsh와 Windows PowerShell 5.1 양쪽에서 end to end로
 실행하며, 2026-09-09에 사람 한 명이 이 후보를 Windows 머신 한 대에서 직접 돌렸습니다 —
 `bash` 호출이 낸 한국어 출력이 한국어로 나왔고, 모델은 자기가 PowerShell 위에 있다고

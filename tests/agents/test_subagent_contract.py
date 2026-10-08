@@ -630,7 +630,7 @@ def _protocol_members(protocol: type) -> frozenset[str]:
         )
 
     public = getattr(typing, "get_protocol_members", None)
-    if public is not None:  # pragma: no cover - 3.13+, outside the CI matrix
+    if public is not None:  # 3.13+ (in the CI matrix since #192)
         return frozenset(public(protocol))
 
     attrs = getattr(protocol, "__protocol_attrs__", None)

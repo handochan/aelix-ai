@@ -589,7 +589,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1148`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1153`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -846,7 +846,10 @@ async def _wait_for_exit(proc: Any, *, poll: float = EXIT_POLL_SECONDS) -> int:
 
     So racing ``proc.wait()`` against the pumps would race pipe EOF against
     pipe EOF. ``returncode`` is the independent signal, and polling it is an
-    attribute read (see :data:`EXIT_POLL_SECONDS`).
+    attribute read (see :data:`EXIT_POLL_SECONDS`). That measurement is CPython
+    up to 3.13.14: from 3.13.15 (gh-119710) ``proc.wait()`` resolves at the exit
+    too, and this poll answers the same on both (#192). The reaper's grace needs
+    the OLD meaning and gets it from ``wait_released``.
     """
 
     while getattr(proc, "returncode", None) is None:
@@ -1292,7 +1295,8 @@ class PrintChannel:
         THE RACE IS AGAINST :func:`_wait_for_exit`, NOT ``proc.wait()``, and that
         distinction is the whole fix — measured, ``proc.wait()`` does not resolve
         until every pipe is disconnected even though ``proc.returncode`` is
-        already set, so racing it against the pumps would race pipe EOF against
+        already set (CPython up to 3.13.14; gh-119710 changed that in 3.13.15),
+        so racing it against the pumps would race pipe EOF against
         pipe EOF. :func:`_drain_after_exit` then finds the actual holder by pipe
         inode, which is the one question a ``PPid`` walk cannot answer once the
         child is gone.

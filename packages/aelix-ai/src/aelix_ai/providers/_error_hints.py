@@ -18,6 +18,21 @@ Python-based agent fails where an Electron one succeeds. ``SSL_CERT_FILE`` /
 installed system-wide, e.g. inside a container. That injection is best-effort
 and embedders never run it, so the hint asks :func:`_os_trust_store_active` which
 store is live instead of asserting one.
+
+EVERY REMEDY FITS THE TUI (#192 review round 3). The TUI prints an error
+through ``safe_error_for_terminal``: 8 lines, each cut at 200 characters. The
+error itself is one line (``quote_model_text`` folds its line breaks) and a
+blank line follows it, so a remedy has 6 lines of at most 200 characters, and
+each action sits on a line of its own. A remedy that ran over lost its action
+there while ``aelix -p``, which does not bound, showed all of it.
+``tests/providers/test_tls_strict.py`` holds every remedy to that bound. The
+one remedy that carries variable text, a relaxed session's note, puts the host
+and the verify message on lines of their own (review round 4: with both in its
+first sentence it was 211 characters for ``api.business.githubcopilot.com``
+with code 89), so it fits whole for a host of up to 576 characters (DNS allows
+253) and a verify message of up to 187 (OpenSSL's longest is 68). A longer
+host pushes the note's last lines past the TUI's 8; a longer message is cut at
+200 on its own line.
 """
 
 from __future__ import annotations
@@ -58,7 +73,7 @@ _CLOCK_CODES: frozenset[int] = frozenset({_CERT_EXPIRED_CODE, _CERT_NOT_YET_VALI
 # the middle sentence off the binding rather than asserting one.
 _TLS_INTERCEPT_INTRO: str = (
     "TLS certificate verification failed — a proxy or firewall is likely "
-    "intercepting HTTPS with a private root CA (common on corporate networks). "
+    "intercepting HTTPS with a private root CA (common on corporate networks).\n"
 )
 _TLS_CERT_FILE_ESCAPE: str = (
     "point SSL_CERT_FILE at a bundle that includes it:\n"
@@ -71,7 +86,7 @@ _TLS_CERT_FILE_ESCAPE: str = (
 # bundle is the wrong lever and offering it sends the user down a dead end.
 _TLS_HOSTNAME_HINT: str = (
     "TLS certificate verification failed — the server presented a certificate "
-    "that is not valid for the hostname aelix connected to. The trust chain "
+    "that is not valid for the hostname aelix connected to.\nThe trust chain "
     "itself is fine, so adding a CA will not help: check this provider's base "
     "URL for a typo, or a proxy/gateway answering for a different host."
 )
@@ -81,10 +96,10 @@ _TLS_HOSTNAME_HINT: str = (
 # valid"), so this states the shared remedy instead of guessing a direction.
 _TLS_CLOCK_HINT: str = (
     "TLS certificate verification failed — the server's certificate is outside "
-    "its validity window (expired, or not yet valid). The trust chain itself is "
+    "its validity window (expired, or not yet valid).\nThe trust chain itself is "
     "fine, so adding a CA will not help: check this machine's clock first (a "
-    "wrong system date puts a perfectly valid certificate outside its window in "
-    "either direction), otherwise the endpoint's operator must renew it."
+    "wrong system date puts a valid certificate outside its window either way).\n"
+    "Otherwise the endpoint's operator must renew it."
 )
 
 
@@ -125,39 +140,106 @@ def _untrusted_issuer_hint() -> str:
             f"{_TLS_INTERCEPT_INTRO}aelix is trusting your operating system's "
             "certificate store, so installing that root CA system-wide is the "
             "fix — it is what already makes VS Code and your browser work on "
-            "this network. If it cannot be installed system-wide (e.g. inside a "
+            "this network.\nIf it cannot be installed system-wide (e.g. inside a "
             f"container), {_TLS_CERT_FILE_ESCAPE}"
         )
     return (
         f"{_TLS_INTERCEPT_INTRO}This process is verifying against certifi's "
         "public-root bundle ONLY — the operating system's certificate store is "
-        "NOT being consulted, so a root CA installed system-wide (the reason VS "
+        "NOT being consulted,\nso a root CA installed system-wide (the reason VS "
         "Code and your browser work on this network) cannot help by itself. "
         f"Instead, {_TLS_CERT_FILE_ESCAPE}"
     )
 
 
-#: OpenSSL verify codes that genuinely mean "I could not build a chain to a root
-#: I trust" — the ones ``_untrusted_issuer_hint`` is written for. Everything else,
-#: when strict verification is on, is far more likely to be an RFC-5280 clause
-#: that only Python 3.13 enforces.
-_UNTRUSTED_ISSUER_CODES: frozenset[int] = frozenset(
-    {
-        2,  # X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT
-        18,  # DEPTH_ZERO_SELF_SIGNED_CERT
-        19,  # SELF_SIGNED_CERT_IN_CHAIN
-        20,  # UNABLE_TO_GET_ISSUER_CERT_LOCALLY
-    }
+#: OpenSSL verify codes raised ONLY under ``X509_V_FLAG_X509_STRICT``, with the
+#: text OpenSSL gives each (``X509_verify_cert_error_string``). The strict remedy
+#: below may claim these and nothing else.
+#:
+#: An ALLOWLIST since #192. It was a denylist - "strict is on and the code is not
+#: 2/18/19/20" - and on a 3.13 interpreter that sent every other failure here: a
+#: certificate whose signature is genuinely bad (7), an issuer that is not a CA
+#: (79), and every error with no code at all (a marker-only match, the #99
+#: shape) were all told "an RFC 5280 rule, not trust; reinstall on 3.12". No CI
+#: leg ran 3.13, so nothing saw it until the matrix grew one (ADR-0241 had named
+#: code 7; at 8f7d98aa the 3.13 suite failed nine rows on it, plus two guards
+#: in test_tls_strict.py that assumed a pre-3.13 interpreter).
+#:
+#: The source is ``include/openssl/x509_vfy.h``'s block "Errors in case a check
+#: in X509_V_FLAG_X509_STRICT mode fails" (78-94, numbering stable across 3.x),
+#: MINUS 79, which is neither strict-only nor never strict's and gets its own
+#: hedged remedy (:func:`_invalid_ca_hint`). 85, 86, 89 and 92 were measured
+#: strict-only on 3.13.13 / OpenSSL 3.5.6 (fail with the flag, pass without);
+#: 7 and 20 fail both ways. ``tests/providers/test_tls_strict.py`` repeats
+#: those handshakes and holds these messages equal to the real ones.
+_STRICT_ONLY: dict[int, str] = {
+    78: "cert info signature and signature algorithm mismatch",
+    80: "Path length invalid for non-CA cert",
+    81: "Path length given without key usage keyCertSign",
+    82: "Key usage keyCertSign invalid for non-CA cert",
+    83: "Issuer name empty",
+    84: "Subject name empty",
+    85: "Missing Authority Key Identifier",
+    86: "Missing Subject Key Identifier",
+    87: "Empty Subject Alternative Name extension",
+    88: "Subject empty and Subject Alt Name extension not critical",
+    89: "Basic Constraints of CA cert not marked critical",
+    90: "Authority Key Identifier marked critical",
+    91: "Subject Key Identifier marked critical",
+    92: "CA cert does not include key usage extension",
+    93: "Using cert extension requires at least X509v3",
+    94: "Certificate public key has explicit ECC parameters",
+}
+
+#: ``X509_V_ERR_INVALID_CA``. OpenSSL raises it for two different chains and
+#: the code cannot say which (measured on 3.12.13 and 3.13.13 / OpenSSL 3.5.6,
+#: the flag forced both ways):
+#:
+#: * an issuer marked ``CA:FALSE`` - 79 with strict on AND off, so strict is
+#:   not the cause and the trust advice is right;
+#: * a trust anchor with no basicConstraints whose keyUsage has keyCertSign
+#:   (an old appliance's root) - 79 ONLY with strict on, passing without it,
+#:   so strict IS the cause.
+#:
+#: So neither remedy alone may claim it: on a strict interpreter it gets both
+#: causes and the ``openssl s_client`` step that tells them apart.
+_INVALID_CA_CODE = 79
+_INVALID_CA_MESSAGE = "invalid CA certificate"
+
+#: The confirm step both strict remedies give: ``openssl`` does not enforce the
+#: strict clauses, so ``0 (ok)`` there means the chain is trusted and only
+#: strict rejected it.
+_STRICT_CONFIRM_COMMAND: str = (
+    "  openssl s_client -connect <host>:443 -servername <host> </dev/null "
+    "2>&1 | grep 'Verify return code'\n"
+)
+_STRICT_WAY_OUT: str = (
+    "reinstall aelix on Python 3.12 (`uv tool install --python 3.12 "
+    "--force …`) or report this host so the check can be relaxed."
 )
 
 
-def _strict_hint(code: int | None) -> str | None:
+def _is_strict_only(code: int | None, text: str) -> bool:
+    """Did OpenSSL reject this on a clause only the strict flag enforces?
+
+    By code when there is one. Without one - a wrapper that kept only the text -
+    by OpenSSL's own message for a strict-only code, so the reporter's
+    ``Missing Authority Key Identifier`` re-raised as a bare ``RuntimeError``
+    still reads as what it is. Anything else is not strict's to claim.
+    """
+
+    if code is not None:
+        return code in _STRICT_ONLY
+    return any(message in text for message in _STRICT_ONLY.values())
+
+
+def _strict_hint(code: int | None, text: str) -> str | None:
     """The remedy when RFC-5280 strictness — not trust — is what rejected the chain.
 
     WHY THIS BRANCH EXISTS. Without it, a strict-only rejection fell through to
     :func:`_untrusted_issuer_hint`, which tells the user to install the corporate
     CA and to set ``SSL_CERT_FILE``. Measured against a real report: verify code
-    **95** (``Missing Authority Key Identifier``) received *byte-identical* advice
+    **85** (``Missing Authority Key Identifier``) received *byte-identical* advice
     to code 20 — on a machine where ``SSL_CERT_FILE`` was ALREADY set to the very
     path suggested and ``openssl verify`` returned ``0 (ok)``. The advice named
     the two things the user had already done. That is the issue-#99 failure mode
@@ -169,32 +251,96 @@ def _strict_hint(code: int | None) -> str | None:
       strict cleared and it passed) — then say so, and say what was done about it.
     * aelix could not measure it (no host on the exception, so no re-check) — then
       say strict is a *likely* cause and how to confirm, without claiming it.
+
+    The second shape is offered only for a code in :data:`_STRICT_ONLY` (or, with
+    no code, its message): a failure strict cannot have caused gets ``None`` here
+    and the trust remedy, whichever interpreter is running (#192). Code 79 (or,
+    with no code, its message) gets :func:`_invalid_ca_hint`, which names both
+    of its causes instead of choosing one.
     """
 
     from aelix_ai.providers._tls_strict import session_relaxation, strict_is_enabled
 
     relaxation = session_relaxation()
     if relaxation is not None:
-        return (
-            f"{relaxation.describe()} If the request still fails, the cause is "
-            "not certificate strictness."
-        )
+        return relaxation.remedy()
 
-    if not strict_is_enabled() or code in _UNTRUSTED_ISSUER_CODES:
+    if not strict_is_enabled():
+        return None
+    if _is_invalid_ca(code, text):
+        return _invalid_ca_hint()
+    if not _is_strict_only(code, text):
         return None
 
     return (
         "TLS certificate verification failed on an RFC 5280 conformance rule, not "
-        "on trust. Python 3.13 turned on strict certificate checking by default; "
+        "on trust. Python 3.13 turned on strict certificate checking by default.\n"
         "Python 3.12, `openssl`, curl and browsers do not enforce it, which is why "
-        "the same host works in every other tool on this machine. Certificates "
-        "minted on the fly by an intercepting proxy commonly fail these rules even "
-        "when their root CA is correctly installed. Confirm with:\n"
-        "  openssl s_client -connect <host>:443 -servername <host> </dev/null "
-        "2>&1 | grep 'Verify return code'\n"
-        "If that reports `0 (ok)`, the CA is trusted and adding another one will "
-        "not help — reinstall aelix on Python 3.12 (`uv tool install --python 3.12 "
-        "--force …`) or report this host so the check can be relaxed for it."
+        "the same host works in every other tool on this machine.\n"
+        "Certificates minted on the fly by an intercepting proxy commonly fail "
+        "these rules even when their root CA is correctly installed. Confirm with:\n"
+        f"{_STRICT_CONFIRM_COMMAND}"
+        f"If that reports `0 (ok)`, the CA is trusted and adding one will not help: {_STRICT_WAY_OUT}"
+    )
+
+
+def _is_invalid_ca(code: int | None, text: str) -> bool:
+    """Is this OpenSSL's 79, by code or - with none - by its message?"""
+
+    if code is not None:
+        return code == _INVALID_CA_CODE
+    return _INVALID_CA_MESSAGE in text
+
+
+def _invalid_ca_hint() -> str:
+    """Code 79 on a strict interpreter: two causes, and how to tell them apart.
+
+    Never asserts either. The ``CA:FALSE`` issuer fails without strict too, so
+    the strict remedy alone would send that user to Python 3.12 for nothing; a
+    root with no basicConstraints fails ONLY with strict, so the trust remedy
+    alone would tell that user to install the CA they already trust (the
+    review-round-2 regression of #192). ``openssl s_client`` enforces neither
+    strict clause, so its verdict picks the branch.
+
+    Six lines of at most 200 characters, each branch's action on a line of its
+    own (see the module docstring): round 2's ten lines lost cause 2's action
+    to the TUI's bound, which showed ``... (2 more lines omitted)`` there.
+    """
+
+    return (
+        "TLS certificate verification failed: a certificate in the chain is not "
+        "a valid CA (`invalid CA certificate`). Two problems give that error, and "
+        "it alone cannot tell which:\n"
+        "  1. Python 3.13's strict checking (on here) also rejects a root CA with "
+        "no Basic Constraints extension, an older shape Python 3.12, `openssl`, "
+        "curl and browsers accept.\n"
+        "  2. A certificate used as a CA is not one (`CA:FALSE`): a broken chain "
+        "from the server or proxy, or the wrong certificate trusted as the CA. "
+        "Strict is not the cause.\n"
+        f"Tell them apart with:{_STRICT_CONFIRM_COMMAND}"
+        f"`0 (ok)` means 1: the CA is already trusted — {_STRICT_WAY_OUT}\n"
+        "Anything else means 2: get the proxy's root CA from whoever runs it and "
+        f"{_trust_store_action()}"
+    )
+
+
+def _trust_store_action() -> str:
+    """The trust remedy's action in one line, for :func:`_invalid_ca_hint`.
+
+    The full remedy is five lines on its own and the hedge has no room for it:
+    the TUI keeps 8 lines of an error, the first two are the error and a blank
+    line, and the hedge's other five lines are its framing, the two causes, the
+    check and cause 1's action.
+    """
+
+    if _os_trust_store_active():
+        return (
+            "install it system-wide (aelix trusts the OS certificate store) or "
+            "point SSL_CERT_FILE at a bundle that includes it."
+        )
+    return (
+        "point SSL_CERT_FILE at a bundle that includes it (this process does not "
+        "read the OS certificate store)."
     )
 
 
@@ -302,7 +448,7 @@ def _tls_hint(err: BaseException) -> str:
     if code in _CLOCK_CODES:
         return _TLS_CLOCK_HINT
 
-    strict = _strict_hint(code)
+    strict = _strict_hint(code, str(err))
     if strict is not None:
         return strict
 

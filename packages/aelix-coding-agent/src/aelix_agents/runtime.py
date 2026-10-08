@@ -846,7 +846,7 @@ class _SubagentRuntimeImpl:
             while self._children:
                 # ABORT THE WHOLE WAVE, THEN JOIN IT — not abort-join per child.
                 # ``abort_child`` signals and ``reap`` waits out a 5 s grace
-                # (``reaper.py:118``), so joining child *k* before child *k+1* has
+                # (``reaper.py:120``), so joining child *k* before child *k+1* has
                 # even been signalled would serialise N graces into N × 5 s of
                 # teardown.
                 wave = list(self._children.values())
@@ -1057,7 +1057,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1099-1100``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1102-1103``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

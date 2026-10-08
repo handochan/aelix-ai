@@ -58,6 +58,7 @@ from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
     containment_spawn_kwargs,
+    wait_released,
 )
 
 from aelix_coding_agent.extensions.loader import ExtensionManifestError
@@ -143,8 +144,10 @@ async def run_hook_subprocess(
     ``sh -c "sleep 6 | cat"`` left ``sleep`` and ``cat`` running and on Windows
     the command ``cmd.exe /c`` had launched was orphaned every time. On timeout
     the teardown is soft (group ``SIGTERM`` / ``CTRL_BREAK_EVENT``) → bounded
-    ``wait()`` → hard (``killpg(SIGKILL)`` / ``taskkill /T /F`` + the job) →
-    bounded ``wait()``, returning ``timed_out=True`` / ``exit_code=124``. A soft
+    wait for the tree to let go of the pipes (``wait_released``, #192 — not
+    ``wait()``, which from CPython 3.13.15 resolves at the shell's exit) → hard
+    (``killpg(SIGKILL)`` / ``taskkill /T /F`` + the job) → bounded ``wait()``,
+    returning ``timed_out=True`` / ``exit_code=124``. A soft
     signal ``soft_kill`` could not SEND skips the grace outright — there is
     nothing to wait for — and goes straight to the hard rung.
 
@@ -155,7 +158,11 @@ async def run_hook_subprocess(
 
     The tree is attached with ``kill_on_close=False``: a hook is allowed to
     background a helper and exit 0, and ``close()`` must not take that away
-    (revision 1 of the spec did, measured).
+    (revision 1 of the spec did, measured). That holds for a helper that lets
+    go of the hook's output. One that keeps the hook's stdout or stderr holds
+    ``communicate()`` open until the timeout, and a timed-out hook loses its
+    whole tree, that helper included - on every interpreter since #192 (review
+    round 6; before it, a helper whose shell had already exited survived).
     """
 
     # env: full inherited environment + caller overrides. AELIX_PROJECT_DIR is
@@ -238,8 +245,21 @@ async def run_hook_subprocess(
                     # nothing: skip it and escalate at once (review win-leg/F2).
                     escalate = not tree.soft_kill(whole_group=True)
                 if not escalate:
+                    # The grace ends when the TREE has let go of the hook's pipes,
+                    # not when the shell exits (#192 review round 5): from CPython
+                    # 3.13.15 ``proc.wait()`` resolves at the shell's exit
+                    # (gh-119710), so a shell that died on the soft signal while
+                    # its command ignored it skipped the hard rung and left the
+                    # whole tree running. On EVERY interpreter this is stricter
+                    # than the old ``proc.wait()`` (review round 6): a shell that
+                    # had already exited at the timeout (no soft signal above)
+                    # got a ``wait()`` that returned at once, so a backgrounded
+                    # helper still holding the hook's stdout or stderr survived;
+                    # now the grace runs out and the hard rung kills it with the
+                    # rest of the tree (ADR-0238). The reap after the hard kill
+                    # below stays ``proc.wait()``.
                     try:
-                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+                        await asyncio.wait_for(wait_released(proc), timeout=1.0)
                     except TimeoutError:
                         escalate = True
                 if escalate:

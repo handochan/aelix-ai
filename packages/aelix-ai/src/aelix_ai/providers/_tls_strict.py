@@ -71,6 +71,7 @@ from __future__ import annotations
 import socket
 import ssl
 from dataclasses import dataclass
+from typing import ClassVar
 
 __all__ = [
     "Relaxation",
@@ -112,13 +113,61 @@ class Relaxation:
     verify_message: str | None
 
     def describe(self) -> str:
-        detail = self.verify_message or f"verify code {self.verify_code}"
+        """Both sentences on one line, as ``aelix status`` prints it."""
+
+        return f"{self.what_happened()} {self.STILL_ENFORCED}"
+
+    def what_happened(self) -> str:
         return (
             f"RFC-5280 strict verification relaxed for this session after "
-            f"{self.host} failed it ({detail}) but verified against this machine's "
-            f"trust store without it. Certificate verification, hostname checking "
-            f"and expiry are still enforced."
+            f"{self.host} failed it ({self._detail()}) but verified against this "
+            f"machine's trust store without it."
         )
+
+    def remedy(self) -> str:
+        """The note a later TLS error's remedy gives, laid out for the TUI.
+
+        The TUI keeps 8 lines of an error and cuts each at 200 characters (see
+        ``_error_hints``' module docstring); the error line and a blank line
+        come first, so the note has 6. :meth:`what_happened` is 133 fixed
+        characters plus the host plus the verify message, which ran past 200
+        for real hosts (#192 review round 4: 211 for
+        ``api.business.githubcopilot.com`` with code 89) and lost its end. So
+        the host and the message each get a line of their own: the framing
+        line and the last line are fixed (144 and 143 characters), the message
+        line is 13 + the message (OpenSSL's longest, in 3.6, is 68), and a host
+        longer than 192 characters continues on the next line instead of being
+        cut. The note fits whole for a host of up to 576 characters (three
+        lines; DNS allows 253) and a verify message of up to 187.
+        """
+
+        width = 200  # safe_error_for_terminal's max_chars_per_line
+        first, rest = "  host: ", "        "
+        room = width - len(first)
+        host_lines = [
+            f"{first if start == 0 else rest}{self.host[start : start + room]}"
+            for start in range(0, max(len(self.host), 1), room)
+        ]
+        return "\n".join(
+            [
+                "RFC-5280 strict verification relaxed for this session after the host "
+                "below failed it but verified against this machine's trust store "
+                "without it.",
+                *host_lines,
+                f"  failed on: {self._detail()}",
+                f"{self.STILL_ENFORCED} If the request still fails, the cause is not "
+                "certificate strictness.",
+            ]
+        )
+
+    def _detail(self) -> str:
+        return self.verify_message or f"verify code {self.verify_code}"
+
+    #: A sentence of its own so the TLS remedy can give it a line of its own:
+    #: the TUI cuts every error line at 200 characters (#192 review round 3).
+    STILL_ENFORCED: ClassVar[str] = (
+        "Certificate verification, hostname checking and expiry are still enforced."
+    )
 
 
 def strict_is_enabled() -> bool:

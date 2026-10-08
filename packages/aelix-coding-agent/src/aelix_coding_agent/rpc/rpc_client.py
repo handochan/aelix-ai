@@ -304,6 +304,8 @@ class RpcClient:
     # the child leaves behind holding fd 1/2 keeps it pending long after the
     # process is gone (CPython ``asyncio/base_subprocess.py``, ``_try_finish``
     # requires ``all(p.disconnected)``). ``returncode`` is the independent signal.
+    # That is CPython up to 3.13.14; from 3.13.15 (gh-119710) ``wait()`` resolves
+    # at the exit instead, and polling ``returncode`` is right on both (#192).
     EXIT_POLL_SECONDS: float = 0.05
 
     def __init__(self, options: RpcClientOptions | None = None) -> None:
@@ -397,9 +399,10 @@ class RpcClient:
         leaning on :meth:`_watch_for_exit`'s event, so it still answers after
         :meth:`stop` has torn the watcher down.
 
-        NOT ``proc.wait()``: that resolves only once every pipe is disconnected,
-        so a descendant holding the child's stdio keeps it pending long after
-        the process is gone. ``returncode`` is the independent signal.
+        NOT ``proc.wait()``: up to CPython 3.13.14 that resolves only once every
+        pipe is disconnected, so a descendant holding the child's stdio keeps it
+        pending long after the process is gone (from 3.13.15, gh-119710, it
+        resolves at the exit). ``returncode`` is the independent signal on both.
         """
 
         proc = self._proc
@@ -583,7 +586,9 @@ class RpcClient:
         # 1.00 s SIGTERM grace on a child that had already died — while
         # ``returncode`` was set the whole time. Without a holder both shapes
         # return in 0.00 s, which is why the bug survived: only the pipe-holder
-        # case is slow, and only that case reproduces it.
+        # case is slow, and only that case reproduces it. (Measured up to CPython
+        # 3.13.14; from 3.13.15, gh-119710, ``wait()`` resolves at the exit and
+        # the poll answers the same, #192.)
         if soft_kill_refused or not await self._await_exit(
             self.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
         ):

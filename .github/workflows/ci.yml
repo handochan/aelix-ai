@@ -37,11 +37,22 @@ jobs:
     # 433 it opened at. Leaving `continue-on-error` on now would mean the next
     # `fcntl` import lands green — the exact regression this leg was added to
     # stop. A green leg that cannot fail is not a measurement either.
+    #
+    # #192: 3.13 since 2026-10-08, on BOTH runners. It is the interpreter
+    # install.sh / install.ps1 actually build users on (`--python
+    # '>=3.11,<3.14'`, ADR-0241: uv takes the newest in range), and until this
+    # leg nothing had ever executed it - 3.13 turns on X509_V_FLAG_X509_STRICT,
+    # and the TLS remedy text it reached was wrong for every failure that was
+    # not strict-only. tests/test_ci_python_matrix.py holds this list equal to
+    # the installer's range, so widening the installer without a leg, or
+    # dropping a leg, goes red. Windows 3.13 is not just one more version: its
+    # time.monotonic() is QueryPerformanceCounter, where 3.11/3.12 tick
+    # GetTickCount64's ~15.6 ms, so the ordering tests must hold on both clocks.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout

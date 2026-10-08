@@ -1229,7 +1229,7 @@ async def test_an_all_failed_policy_batch_retries_once_after_a_measured_relaxati
         state["relaxed"] = True
         return _tls_strict.Relaxation(
             host="api.business.githubcopilot.com",
-            verify_code=95,
+            verify_code=85,
             verify_message="Missing Authority Key Identifier",
         )
 

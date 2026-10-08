@@ -7,9 +7,11 @@ the consent gate, the offline guard, arg parsing, and the entry.py verb dispatch
 
 from __future__ import annotations
 
+import ntpath
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -1588,7 +1590,18 @@ def _force_backend(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
     monkeypatch.setattr(ei, "resolve_install_backend", lambda _runner: backend)
 
 
-def _uv_backend(path: str = "/opt/bin/uv") -> Any:
+#: A uv executable path that is ABSOLUTE on the host running the suite, built from
+#: the platform's own root. The POSIX literal these rows used ('/opt/bin/uv') has no
+#: drive, so on Windows it is not absolute: ``ntpath.isabs`` says so from Python 3.13,
+#: and the product's rule (``_is_absolute_path``: a drive or a UNC share) says so on
+#: every interpreter (#192 review round 5 - 47 windows py3.13 failures). A real
+#: Windows ``shutil.which`` hit always carries the drive, which is what this has.
+_FAKE_UV = os.path.abspath(os.path.join(os.sep, "opt", "bin", "uv"))
+_FAKE_UV_ELSEWHERE = os.path.abspath(os.path.join(os.sep, "usr", "local", "bin", "uv"))
+_FAKE_UV_TOML = os.path.abspath(os.path.join(os.sep, "x", "uv.toml"))
+
+
+def _uv_backend(path: str = _FAKE_UV) -> Any:
     return _ei().InstallBackend(name="uv", uv_path=path)
 
 
@@ -1600,7 +1613,7 @@ def test_backend_prefers_pip_even_when_uv_is_present(
 ) -> None:
     # pip WINS whenever importable: it is the only backend that can `download`,
     # i.e. the only one that can verify. uv is a fallback, never a preference.
-    _force_env(monkeypatch, pip=True, uv="/opt/bin/uv")
+    _force_env(monkeypatch, pip=True, uv=_FAKE_UV)
     backend = _ei().detect_install_backend()
     assert backend is not None
     assert backend.name == "pip"
@@ -1610,11 +1623,11 @@ def test_backend_prefers_pip_even_when_uv_is_present(
 def test_backend_falls_back_to_uv_when_pip_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    _force_env(monkeypatch, pip=False, uv=_FAKE_UV)
     backend = _ei().detect_install_backend()
     assert backend is not None
     assert backend.name == "uv"
-    assert backend.uv_path == "/opt/bin/uv"
+    assert backend.uv_path == _FAKE_UV
     assert backend.supports_download is False  # `uv pip` has no `download`
 
 
@@ -1633,7 +1646,7 @@ def test_injected_runner_short_circuits_to_the_pip_backend(
     # dialect. Without this the whole injected-runner cluster would flip to `uv
     # pip install …` argv on any machine whose interpreter lacks pip.
     ei = _ei()
-    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    _force_env(monkeypatch, pip=False, uv=_FAKE_UV)
     backend = ei.resolve_install_backend(_FakeRunner())
     assert backend is not None
     assert backend.name == "pip"
@@ -1648,7 +1661,7 @@ def test_pip_available_short_circuit_and_backend_agreement(
     _force_env(monkeypatch, pip=False, uv=None)
     assert ei._pip_available(None) is False  # nothing usable
     assert ei._pip_available(_FakeRunner()) is True  # injected → always available
-    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    _force_env(monkeypatch, pip=False, uv=_FAKE_UV)
     assert ei._pip_available(None) is True  # uv alone is enough to INSTALL
 
 
@@ -1737,10 +1750,93 @@ def test_absolute_uv_on_path_is_still_accepted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The guard rejects relative paths ONLY — the normal absolute hit is unaffected.
-    _force_env(monkeypatch, pip=False, uv="/usr/local/bin/uv")
+    _force_env(monkeypatch, pip=False, uv=_FAKE_UV_ELSEWHERE)
     backend = _ei().detect_install_backend()
     assert backend is not None
-    assert backend.uv_path == "/usr/local/bin/uv"
+    assert backend.uv_path == _FAKE_UV_ELSEWHERE
+
+
+def _answer_paths_like_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make extension_install ask its path questions the way a Windows host does, on
+    any host and any interpreter: ``os.path`` is ``ntpath`` and ``sys.platform`` is
+    ``win32`` for that module alone (proxies, so nothing else in the process moves).
+    ``abspath`` puts a drive-less path on drive C:, as Windows does with a cwd on C:.
+    """
+
+    ei = _ei()
+    win_path = types.SimpleNamespace(**{k: getattr(ntpath, k) for k in dir(ntpath)})
+    win_path.abspath = lambda p: ntpath.join("C:\\cwd", p)
+    win_os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if k != "path"})
+    win_os.path = win_path
+    win_sys = types.SimpleNamespace(**{k: getattr(sys, k) for k in dir(sys)})
+    win_sys.platform = "win32"
+    monkeypatch.setattr(ei, "os", win_os)
+    monkeypatch.setattr(ei, "sys", win_sys)
+
+
+@pytest.mark.parametrize(
+    ("uv_path", "accepted"),
+    [
+        ("\\opt\\bin\\uv.exe", False),  # rooted, no drive: the cwd's drive decides
+        ("/opt/bin/uv", False),
+        ("C:uv.exe", False),  # drive-relative
+        ("C:\\opt\\bin\\uv.exe", True),
+        ("\\\\srv\\share\\uv.exe", True),  # UNC
+    ],
+)
+def test_a_windows_uv_path_needs_a_drive_on_every_interpreter(
+    monkeypatch: pytest.MonkeyPatch, uv_path: str, accepted: bool
+) -> None:
+    # #192 review round 5. ``ntpath.isabs("\\opt\\bin\\uv.exe")`` is True up to
+    # Python 3.12 and False from 3.13, so with ``os.path.isabs`` the same Windows
+    # machine got a uv backend - or "no usable package installer" - depending on the
+    # interpreter. The rule is ``_is_absolute_path``'s on every interpreter: a drive
+    # or a UNC share. Red on a 3.11/3.12 interpreter before the fix; both the
+    # constructor and the PATH lookup are pinned.
+    _answer_paths_like_windows(monkeypatch)
+    ei = _ei()
+    if accepted:
+        assert ei.InstallBackend(name="uv", uv_path=uv_path).uv_path == uv_path
+    else:
+        with pytest.raises(ValueError, match="ABSOLUTE uv_path"):
+            ei.InstallBackend(name="uv", uv_path=uv_path)
+    _force_env(monkeypatch, pip=False, uv=uv_path)
+    backend = ei.detect_install_backend()
+    assert (backend is not None) is accepted
+    if backend is not None:
+        assert backend.uv_path == uv_path
+
+
+def test_windows_config_and_index_paths_without_a_drive_are_anchored_on_every_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #192 review round 5 - the three other installer paths ``os.path.isabs`` judged.
+    # A drive-less ``\\x`` is relative to the current DRIVE, so it is joined to the
+    # directory it is read from, exactly as a relative one is; up to Python 3.12
+    # ``os.path.isabs`` left it as typed on Windows (read from THIS process's drive).
+    _answer_paths_like_windows(monkeypatch)
+    ei = _ei()
+    # UV_CONFIG_FILE: uv opens it from the directory it works in.
+    assert _REAL_UV_CONFIG_FILES(
+        {"UV_CONFIG_FILE": "\\x\\uv.toml"}, cwd="D:\\installer"
+    ) == ["D:\\x\\uv.toml"]
+    assert _REAL_UV_CONFIG_FILES(
+        {"UV_CONFIG_FILE": "E:\\x\\uv.toml"}, cwd="D:\\installer"
+    ) == ["E:\\x\\uv.toml"]
+    # PIP_CONFIG_FILE: pip opens it from the installer child's directory.
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        ei,
+        "_pip_config_candidates",
+        lambda env: seen.append(env.get("PIP_CONFIG_FILE")) or [],
+    )
+    ei.read_pip_index_config({"PIP_CONFIG_FILE": "\\x\\pip.ini"}, cwd="D:\\installer")
+    ei.read_pip_index_config({"PIP_CONFIG_FILE": "E:\\x\\pip.ini"}, cwd="D:\\installer")
+    assert seen == ["D:\\x\\pip.ini", "E:\\x\\pip.ini"]
+    # A typed --index-url naming a local directory: anchored in the cwd it was typed in.
+    assert ei._anchor_typed_index_url("\\simple") == "C:\\simple"
+    assert ei._anchor_typed_index_url("E:\\simple") == "E:\\simple"
+    assert ei._anchor_typed_index_url("https://idx/simple") == "https://idx/simple"
 
 
 def test_cwd_relative_uv_aborts_the_install_instead_of_executing_it(
@@ -2358,7 +2454,7 @@ def test_uv_config_search_path_is_uvs_own(tmp_path: Path) -> None:
     # UV_CONFIG_FILE wins outright; otherwise the project config uv reads from cwd
     # (#392: project-root discovery, then the first file walking UP), then the
     # user-level uv.toml ($XDG_CONFIG_HOME on POSIX, %APPDATA% on Windows).
-    assert _REAL_UV_CONFIG_FILES({"UV_CONFIG_FILE": "/x/uv.toml"}) == ["/x/uv.toml"]
+    assert _REAL_UV_CONFIG_FILES({"UV_CONFIG_FILE": _FAKE_UV_TOML}) == [_FAKE_UV_TOML]
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     (tmp_path / "uv.toml").write_text("", "utf-8")

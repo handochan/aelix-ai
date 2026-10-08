@@ -81,6 +81,7 @@ from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
+from tests.asyncio_exit_wait import resolve_wait_at_exit
 from tests.env_sandbox import child_env
 from tests.event_waits import check_anti_hang, record_armed_waits, wait_until, within
 from tests.posix_modes import POSIX_MODES
@@ -1208,7 +1209,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1365-1372) and kills the tree.
+        # (print_channel.py:1369-1376) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -2024,7 +2025,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:981-985``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:984-988``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2076,7 +2077,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1099``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1102``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
@@ -3504,9 +3505,10 @@ def _pipe_holding_daemon_stub(marker: Path, pid_file: Path) -> str:
       ``_eager_abort`` takes cannot name it. Without that, Linux would kill it at
       the cancel and the reaper would resolve immediately;
     * it inherits fd 1/2 and stays in the child's process GROUP (no ``setsid``),
-      so ``proc.wait()`` does not resolve while it lives — measured, and the
-      reason the grace is bounded by pipe disconnection rather than by the
-      child's exit — and ``killpg`` can still end it.
+      so the reaper's grace does not end while it lives — the grace is bounded by
+      pipe disconnection rather than by the child's exit (``wait_released``; up to
+      CPython 3.13.14 ``proc.wait()`` itself waited for the pipes, measured, and
+      from 3.13.15 it does not, #192) — and ``killpg`` can still end it.
 
     So the reaper waits out its whole grace and escalates for real, which is what
     makes "was the tree still armed when ``hard_kill`` ran" an observable
@@ -3558,8 +3560,11 @@ def _pipe_holding_daemon_stub(marker: Path, pid_file: Path) -> str:
     )
 
 
+@pytest.mark.parametrize(
+    "wait_resolves_at_exit", [False, True], ids=["interpreter-wait", "gh-119710-wait"]
+)
 async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_resolves_at_exit: bool
 ) -> None:
     """``close()`` DISARMS both legs — so it must not precede the escalation.
 
@@ -3579,8 +3584,18 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
     Cancellation, not the timeout path, because the timeout path returns with a
     FINISHED reaper and takes the other arm of the same ``if`` — which
     :func:`test_the_tree_is_closed_when_a_run_returns_with_no_reaper` covers.
+
+    ``gh-119710-wait`` (#192 review round 5): the same case with
+    ``Process.wait()`` resolving at the child's EXIT, as it does from CPython
+    3.13.15. The cancel's eager abort kills the child and the reparented holder
+    keeps the pipes; a reaper that spent its grace on ``proc.wait()`` returned at
+    once with no escalation and left the holder alive (CI's ubuntu py3.13 leg,
+    ``['close']``). The reaper waits for the pipes (``wait_released``); this row
+    holds that on every interpreter, not only on 3.13.15+.
     """
 
+    if wait_resolves_at_exit:
+        resolve_wait_at_exit(monkeypatch)
     ready = tmp_path / "holder.ready"
     pid_file = tmp_path / "holder.pid"
     channel = _stub_channel(

@@ -703,7 +703,11 @@ class InstallBackend:
     def __post_init__(self) -> None:
         if self.name != "uv":
             return
-        if not self.uv_path or not os.path.isabs(self.uv_path):
+        # The same absoluteness every installer path here is held to
+        # (:func:`_is_absolute_path`), NOT ``os.path.isabs``: on Windows that
+        # answered True for a drive-less ``\opt\uv`` up to Python 3.12 and False
+        # from 3.13, so one user's backend depended on the interpreter (#192).
+        if not self.uv_path or not _is_absolute_path(self.uv_path):
             raise ValueError(
                 "InstallBackend(name='uv') requires an ABSOLUTE uv_path; got "
                 f"{self.uv_path!r}. A bare or relative program name would be "
@@ -1016,7 +1020,12 @@ def read_pip_index_config(
 
     env = os.environ if env is None else env
     explicit = env.get("PIP_CONFIG_FILE")
-    if explicit and explicit != os.devnull and cwd is not None and not os.path.isabs(explicit):
+    if (
+        explicit
+        and explicit != os.devnull
+        and cwd is not None
+        and not _is_absolute_path(explicit)
+    ):
         env = {**env, "PIP_CONFIG_FILE": os.path.join(cwd, explicit)}
     # Stage 1 — cross-file merge, later file replaces the key.
     merged: dict[str, tuple[str, str]] = {}
@@ -1336,7 +1345,7 @@ def _uv_config_files(env: Mapping[str, str] | None = None, cwd: str | None = Non
     workdir = _uv_working_dir(env, cwd)
     explicit = env.get("UV_CONFIG_FILE")
     if explicit:
-        if os.path.isabs(explicit):
+        if _is_absolute_path(explicit):
             return [explicit]
         return [os.path.join(workdir, explicit)]
     if (env.get("UV_NO_CONFIG") or "").strip().lower() in _BOOLISH_TRUE:
@@ -1485,7 +1494,7 @@ def detect_install_backend() -> InstallBackend | None:
     if importlib.util.find_spec("pip") is not None:
         return PIP_BACKEND
     uv = shutil.which("uv")
-    if uv is not None and os.path.isabs(uv):
+    if uv is not None and _is_absolute_path(uv):
         return InstallBackend(name="uv", uv_path=uv)
     return None
 
@@ -1898,7 +1907,7 @@ def _anchor_typed_index_url(index_url: str | None) -> str | None:
     absolute one.)
     """
 
-    if not index_url or _has_url_scheme(index_url) or os.path.isabs(index_url):
+    if not index_url or _has_url_scheme(index_url) or _is_absolute_path(index_url):
         return index_url
     return os.path.abspath(index_url)
 
@@ -1908,7 +1917,15 @@ def _is_absolute_path(value: str) -> bool:
     POSIX path, or on Windows a path with a drive or a UNC share (``C:\\x``,
     ``\\\\host\\share\\x``) — a rooted ``\\x`` without a drive is relative to the
     current DRIVE, which the installer directory may not share. Nothing is stripped
-    or expanded: ``value`` is judged exactly as the installer will read it."""
+    or expanded: ``value`` is judged exactly as the installer will read it.
+
+    Every absoluteness question in this module about a path an installer will open
+    or run goes through here, never through ``os.path.isabs`` (#192): on Windows
+    ``ntpath.isabs`` answers True for a drive-less ``\\x`` up to Python 3.12 and
+    False from 3.13, so ``os.path.isabs`` made the uv backend, ``PIP_CONFIG_FILE``,
+    ``UV_CONFIG_FILE`` and a typed ``--index-url`` mean different things on the same
+    machine depending on the interpreter. This rule gives 3.13's answer for every
+    well-formed path on every interpreter (the drive clause is what 3.13 added)."""
 
     if sys.platform == "win32":
         import ntpath

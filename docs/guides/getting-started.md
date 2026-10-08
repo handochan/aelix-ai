@@ -37,9 +37,9 @@ Three environment variables configure it:
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
 - `AELIX_PYTHON` — the interpreter uv builds the tool environment on, as a uv
   Python request. Default `>=3.11,<3.14` — the range the pinned OpenAI SDK
-  survives. It is **not** "the range CI runs": CI runs 3.11 and 3.12, and 3.13
-  is in the range because the suite passes on it, not because anything gates it
-  (#192 adds 3.13 to the matrix).
+  survives, and it is also the range CI runs: since #192 the full suite runs on
+  3.11, 3.12 and 3.13, on Ubuntu and on Windows, so on Linux and Windows
+  whichever of them uv picks for you has been tested. CI has no macOS leg.
   `uv tool install` reads neither `.python-version` nor `uv.lock`; left to
   itself it takes the newest interpreter on the machine, and on Python 3.14
   `openai<2.0` raises `'typing.Union' object has no attribute
@@ -137,7 +137,7 @@ indistinguishable from unset and falls back to `tui`. For the bare CLI, run
 `uv tool install --force --find-links <dir> aelix` yourself.
 
 **What is measured, and by whom.** CI runs the full test suite on
-`windows-latest` under Python 3.11 and 3.12, and that leg gates every branch;
+`windows-latest` under Python 3.11, 3.12 and 3.13, and a red leg fails the run on every branch;
 it also runs `install.ps1` end to end there, under both pwsh 7 and Windows
 PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)`
 jobs in `.github/workflows/ci.yml`). CI drives the **checked-out** script

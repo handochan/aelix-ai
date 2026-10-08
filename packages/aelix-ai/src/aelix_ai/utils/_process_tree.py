@@ -125,6 +125,7 @@ never did anywhere.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes
 import os
@@ -160,6 +161,7 @@ __all__ = [
     "KILL_DRAIN_SECONDS",
     "ProcessTree",
     "REAP_GRACE_SECONDS",
+    "RELEASE_POLL_SECONDS",
     "_PipeReader",
     "_ReadState",
     "_end_the_tree",
@@ -168,6 +170,7 @@ __all__ = [
     "containment_spawn_kwargs",
     "kill_process_tree",
     "run_contained",
+    "wait_released",
 ]
 
 #: ``subprocess.CREATE_NEW_PROCESS_GROUP``. Spelled as a literal because the
@@ -856,6 +859,83 @@ def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
         # ``test_win32_never_touches_killpg_or_sigkill`` deletes exactly these
         # names and passes on the windows runner itself.
         os.killpg(pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+
+
+# ---------------------------------------------------------------------------
+# "the tree let go": the grace a teardown ladder waits out (#192)
+# ---------------------------------------------------------------------------
+
+#: How often :func:`wait_released` looks at the child's pipes once the root has
+#: exited. An attribute read per pipe; the graces it runs inside are 1.0 s (the
+#: hook ladder) and 2.0 s+ (the delegation reaper).
+RELEASE_POLL_SECONDS = 0.02
+
+
+async def wait_released(proc: Any, *, poll: float = RELEASE_POLL_SECONDS) -> int:
+    """Resolve when the child has exited AND every pipe asyncio holds to it is
+    closed - on every interpreter, whenever it is called.
+
+    WHY THIS EXISTS (#192 review round 5). CPython gh-119710, shipped in 3.13.15
+    and 3.14.7 (3.14.5 and 3.14.6 do not have it), made ``Process.wait()``
+    resolve as soon as the CHILD exits; before it, ``BaseSubprocessTransport``
+    woke ``wait()`` only once every pipe was disconnected, i.e. once nothing in
+    the tree still held the child's stdio. Two teardown ladders spent their
+    grace on ``wait()`` and read "it resolved" as "the tree is gone, skip the
+    hard rung": the hook timeout teardown
+    (``subprocess_hooks.run_hook_subprocess``) and the delegation reaper
+    (``aelix_agents.reaper.reap``). On 3.13.15+ and 3.14.7+ a root that dies
+    on the soft signal while a descendant ignores it (or a daemon keeps the
+    pipe) made the grace end at once, the hard rung never ran, and the
+    descendants outlived the teardown - measured on Linux 3.13.15 and CI's
+    3.13.16, both rows red every run; with gh-119710 reverted in-process,
+    green.
+
+    What it does: ``proc.wait()``, then a poll until each pipe transport the
+    child has (stdin, stdout, stderr - only those created with ``PIPE``) is
+    closing. It is NOT the pre-3.13.15 ``wait()`` exactly - it is stricter, on
+    every interpreter (review round 6). The old ``wait()`` gated on the pipes
+    only for a waiter registered while the child ran; called once the exit
+    status was already known, it returned at once. So a timed-out hook whose
+    shell had ALREADY exited (it backgrounded a helper that keeps the hook's
+    stdout or stderr, so ``communicate()`` never saw EOF) ended the grace at
+    once and the helper survived - on 3.11, 3.12 and 3.13.13-14 too. Here the
+    grace waits on the pipes, runs out, and the hard rung kills the helper:
+    a timed-out hook's whole tree is lost (ADR-0238), on every interpreter. On
+    3.13.15+ and 3.14.7+ it also closes the gh-119710 leak above. For a waiter
+    registered while the child runs (the reaper), it is what ``wait()`` meant
+    up to 3.13.14, and there the poll finds the pipes closed at once.
+
+    stdin is asked because the old ``wait()`` asked it, but it never holds the
+    poll: asyncio closes the stdin transport at the child's exit even while a
+    grandchild holds the read end (measured on 3.12.13 macOS, 3.12.14 and
+    3.13.15 Linux), so in practice this waits on stdout and stderr - each on
+    its own: a holder of only one of them holds the poll. ``get_pipe_transport``
+    is the public ``SubprocessTransport`` method; reaching the transport is
+    ``proc._transport``, private, so a process object without one (a stub) is
+    answered by its ``wait()`` alone.
+
+    Use it only where "resolved" decides whether to escalate. The reap after a
+    hard kill stays ``proc.wait()``: it exists to collect the exit status, and a
+    holder that escaped the tree must not turn it into a hang.
+    """
+
+    code = await proc.wait()
+    transport = getattr(proc, "_transport", None)
+    get_pipe = getattr(transport, "get_pipe_transport", None)
+    if get_pipe is None:
+        return code
+    while True:
+        open_pipes = 0
+        for fd in (0, 1, 2):
+            try:
+                pipe = get_pipe(fd)
+                if pipe is not None and not pipe.is_closing():
+                    open_pipes += 1
+            except Exception:  # noqa: BLE001, PERF203 - a closed transport answers nothing
+                continue
+        if not open_pipes:
+            return code
+        await asyncio.sleep(poll)
 
 
 # ---------------------------------------------------------------------------

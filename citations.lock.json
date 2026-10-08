@@ -1178,7 +1178,7 @@
    "PermissionMode.YOLO: PermissionMode.YOLO,",
    "}"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1031-1039": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1034-1042": [
    "\"\"\"Spawn, stream, reap, and return an envelope. NEVER raises except on",
    "cancellation.",
    "",
@@ -1188,24 +1188,24 @@
    "the human already pressed the key once, and a second press means \"stop",
    "waiting\", not \"restart the 5 s clock\" (finding B1)."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1062-1066": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1065-1069": [
    "timeout_ms = (",
    "plan.timeout_ms",
    "if plan.timeout_ms is not None",
    "else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1099-1099": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1102-1102": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1099-1100": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1102-1103": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)",
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1100-1100": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1103-1103": [
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1365-1372": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1369-1376": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",
@@ -1215,13 +1215,13 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1479-1482": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1483-1486": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
    "only purpose was to let a cooperative child clean up."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1504-1506": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1508-1510": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
@@ -1287,7 +1287,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:731-731": [
    "if state.cost or registry is None or not state.provider or not state.model:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:981-985": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:984-988": [
    "# ``Exception`` only: a ``CancelledError`` here means the CALLER is being",
    "# torn down, and it must propagate — the reaper itself is shielded and",
    "# keeps going regardless.",
@@ -1357,7 +1357,7 @@
    "path = directory / f\"prompt-{_safe_stem(name)}.md\"",
    "fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/reaper.py:118-118": [
+  "packages/aelix-coding-agent/src/aelix_agents/reaper.py:120-120": [
    "DEFAULT_GRACE_SECONDS = 5.0"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1241-1245": [
@@ -2657,7 +2657,7 @@
    "# from installed metadata, so it is safe for the metadata-only scan too.",
    "if not no_discovery:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/subprocess_hooks.py:171-171": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/subprocess_hooks.py:178-178": [
    "proc = await asyncio.create_subprocess_shell("
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/mcp/client.py:232-232": [
@@ -2733,19 +2733,19 @@
    "line = self._buffer[:idx]",
    "self._buffer = self._buffer[idx + 1 :]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1013-1016": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1018-1021": [
    "def _listener(event: dict[str, Any]) -> None:",
    "if collect:",
    "collected.append(event)",
    "if event.get(\"type\") == \"agent_end\" and not done.done():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1148-1148": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1153-1153": [
    "argv = [sys.executable, \"-m\", \"aelix\", \"--mode\", \"rpc\"]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:611-611": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:616-616": [
    "tree.hard_kill()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:638-643": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:643-648": [
    "# caller, which is precisely when an empty group's number is free for",
    "# somebody else). On win32 it is ``CloseHandle(job)``, and because this",
    "# tree asked for ``kill_on_close`` it also ends whatever is left.",

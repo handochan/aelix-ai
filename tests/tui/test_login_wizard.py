@@ -1174,7 +1174,7 @@ async def test_a_relaxed_strict_wall_tells_the_user_the_next_login_will_work() -
     def measured_relax(_exc: BaseException) -> object:
         return _tls_strict.Relaxation(
             host="api.business.githubcopilot.com",
-            verify_code=95,
+            verify_code=85,
             verify_message="Missing Authority Key Identifier",
         )
 

@@ -5,8 +5,8 @@
 # EXPERIMENTAL (#106). What CI measures: this script runs end to end on
 # windows-latest, under both pwsh 7 and Windows PowerShell 5.1 (the
 # `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
-# .github/workflows/ci.yml), and the full test suite is green on the same
-# runner under 3.11 and 3.12. What CI does not cover: the agent itself. That
+# .github/workflows/ci.yml), and CI runs the full test suite on the same
+# runner under 3.11, 3.12 and 3.13. What CI does not cover: the agent itself. That
 # was hand-checked on one Windows host, by one person, in one locale
 # (2026-09-09) -- no second machine, no long run, and no upgrade path, since
 # the previous beta had no Windows story to upgrade from. Known gaps live in
@@ -43,10 +43,11 @@
 #                  `uv tool install --force --find-links <dir> aelix`.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
 #   AELIX_PYTHON   uv interpreter request for the tool environment. Default
-#                  `>=3.11,<3.14`, the range the pinned openai<2.0 survives.
-#                  NOT "the range CI runs": CI runs 3.11 and 3.12, and 3.13 is
-#                  in here because it works, not because anything gates it
-#                  (#192 adds it to the matrix). Step 5 explains the ceiling.
+#                  `>=3.11,<3.14`, the range the pinned openai<2.0 survives,
+#                  and since #192 also the range CI runs: 3.11, 3.12 and 3.13
+#                  are each a test leg on ubuntu and windows, and
+#                  tests/test_ci_python_matrix.py holds the matrix equal to
+#                  this default. Step 5 explains the ceiling.
 #                  Set it to override, e.g. AELIX_PYTHON=3.12. An EMPTY
 #                  value means the default, not "no constraint"; widen it
 #                  explicitly with AELIX_PYTHON='>=3.11'.
@@ -313,9 +314,10 @@ try {
     #                                                    different Python"
     #
     # The first line is this script's path. Only the project-directory path
-    # reads the ceiling, and no user of this script takes it. #192's bound is
-    # still worth having, because it makes `pip install aelix` refuse cleanly
-    # instead of breaking later, but it does not retire this flag.
+    # reads the ceiling, and no user of this script takes it. A
+    # `requires-python` bound is still worth having, because it makes `pip
+    # install aelix` refuse cleanly instead of breaking later (#192 left it to
+    # #278), but it does not retire this flag.
     #
     # WIDENING IS NOT A ONE-LINE EDIT. When 3.14 becomes supported (#262: the
     # floor is openai>=2.7.2), raising the default here reaches EVERY release

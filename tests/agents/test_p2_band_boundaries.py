@@ -67,7 +67,7 @@ _SPAWN_CALL_SUFFIXES = (
 _SPAWN_CALL_EXACT = frozenset({"create_subprocess_exec", "Popen", "fork"})
 
 # KNOWN GAP, stated rather than hidden: ``asyncio.create_subprocess_shell`` is
-# NOT in the set. ``extensions/subprocess_hooks.py:171`` already calls it and is
+# NOT in the set. ``extensions/subprocess_hooks.py:178`` already calls it and is
 # outside the allowlist, so including it would make this gate red on arrival.
 # The P2 spawner uses ``create_subprocess_exec`` (argv, never a shell string),
 # so the gate covers the real drift path; widening it means first re-homing or

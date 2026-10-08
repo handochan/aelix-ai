@@ -22,10 +22,11 @@
 #                  bare CLI.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
 #   AELIX_PYTHON   uv interpreter request for the tool environment. Default
-#                  `>=3.11,<3.14` — the range the pinned openai<2.0 survives.
-#                  NOT "the range CI runs": CI runs 3.11 and 3.12, and 3.13 is
-#                  in here because it works, not because anything gates it
-#                  (#192 adds it to the matrix). See Step 5 for the ceiling.
+#                  `>=3.11,<3.14` — the range the pinned openai<2.0 survives,
+#                  and since #192 also the range CI runs: 3.11, 3.12 and 3.13
+#                  are each a test leg on ubuntu and windows, and
+#                  tests/test_ci_python_matrix.py holds the matrix equal to
+#                  this default. See Step 5 for the ceiling.
 #                  Set it to override, e.g. AELIX_PYTHON=3.12. An EMPTY
 #                  value means the default, not "no constraint" — see
 #                  Step 0. Widen it explicitly: AELIX_PYTHON='>=3.11'.
@@ -250,9 +251,10 @@ log "installing $target with uv (version pinned from the verified SHA256SUMS)...
 #                                                     different Python"
 #
 # The first line is this script's path. Only the project-directory path reads
-# the ceiling, and no user of this script takes it. #192's bound is still worth
-# having — it is what makes `pip install aelix` refuse cleanly instead of
-# breaking later — but it does not retire this flag.
+# the ceiling, and no user of this script takes it. A `requires-python` bound
+# is still worth having — it is what makes `pip install aelix` refuse cleanly
+# instead of breaking later; #192 left it to #278 — but it does not retire
+# this flag.
 #
 # WIDENING IS NOT A ONE-LINE EDIT. When 3.14 becomes supported (#262: the floor
 # is openai>=2.7.2), raising the default here reaches EVERY release this script

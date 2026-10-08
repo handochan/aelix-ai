@@ -257,7 +257,7 @@ class _ExplodingChannel(_RecordingChannel):
     """Raises ``OSError`` for the first member, answers normally for the rest.
 
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1099`` vs ``:1100``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1102`` vs ``:1103``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
@@ -774,7 +774,7 @@ async def test_the_kill_leg_reserve_is_per_step_for_chain_and_flat_for_parallel(
 ) -> None:
     """Why the two modes reserve differently, made observable.
 
-    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:118``)
+    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:120``)
     plus the bounded ``POST_EXIT_DRAIN_SECONDS = 2.0``
     (``print_channel.py:151``). In parallel those legs OVERLAP, so one reserve
     covers the wave; in a chain they are strictly sequential, so an eight-step
@@ -895,7 +895,7 @@ async def test_a_batch_member_falls_back_to_the_profiles_own_timeout(
 
     ``PrintChannel.run`` resolves the clock as ``plan.timeout_ms if ... is not
     None else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)``
-    (``print_channel.py:1062-1066``), and the executor is what decides whether
+    (``print_channel.py:1065-1069``), and the executor is what decides whether
     ``plan.timeout_ms`` is ``None``. Substituting ``DEFAULT_TIMEOUT_MS`` here
     made the channel's profile fallback UNREACHABLE for every batch member: an
     author who wrote ``timeout_ms: 60000`` in frontmatter
@@ -982,7 +982,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1479-1482``.
+    ``print_channel.py:1483-1486``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -1021,7 +1021,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1479-1482``.
+    escalation at ``print_channel.py:1483-1486``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1782,7 +1782,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1479-1482`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1483-1486`` at once.
     """
 
     marker_dir = tmp_path / "markers"

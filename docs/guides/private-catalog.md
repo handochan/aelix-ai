@@ -370,7 +370,10 @@ you are. That holds on uv too, where aelix reads your `pip.conf` to pass its ind
 to uv: a relative `PIP_CONFIG_FILE` is opened in the installer directory, where pip
 itself would open it. Some of those fail
 loudly; pip skips a find-links location it cannot find with a warning and installs
-from the default index. Use absolute paths. aelix checks one variable:
+from the default index. Use absolute paths — on Windows that means a drive letter
+or a UNC share (`C:\…`, `\\host\share\…`): a drive-less `\x` is relative to the
+current drive, and aelix reads it as relative on every Python version. aelix checks
+one variable:
 `UV_CONFIG_FILE`, which uv reads instead of every other configuration file, must be
 an absolute path exactly as uv reads it — no leading or trailing space, no `~` (uv
 does not expand it), no `file:` URL — or these installs are refused with "Set

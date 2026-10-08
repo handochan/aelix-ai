@@ -119,21 +119,43 @@ ago — violate at least one:
 
 | verify code | strict-only failure |
 |---|---|
+| 85 | Missing Authority Key Identifier |
 | 89 | Basic Constraints of CA cert not marked critical |
 | 92 | CA cert does not include key usage extension |
-| 95 | Missing Authority Key Identifier |
 
-If you see one of those, or `aelix status` shows
-`RFC 5280 strict  on`, that is what you are looking at. **The certificate is
-not the problem and no CA bundle will fix it.**
+Those three are the common ones, each measured failing with strict on and
+passing with it off (Python 3.13.13, OpenSSL 3.5.6). The strict-only set is
+codes 78 and 80–94 — OpenSSL's own list of strict-mode errors, less 79. If you
+see one of those, that is what you are looking at. **The certificate is not the
+problem and no CA bundle will fix it.**
 
-`aelix` handles this for you. When a connection fails with a strict-only code,
-it re-tests the same host twice — once with strict on, once with it off — and
-only if the handshake **fails with strict and succeeds without it** does it
-relax that one flag for the rest of the session, saying so:
+Code 79 (`invalid CA certificate`) can be either, and the code alone cannot say
+which. OpenSSL raises it for an issuer marked `CA:FALSE` with or without
+strict — there strict is not the cause — and, only with strict on, for a root
+CA that has no Basic Constraints extension, an older appliance shape (both
+measured on Python 3.12.13 and 3.13.13, OpenSSL 3.5.6). So on a strict
+interpreter `aelix` names both causes and the `openssl s_client` check that
+separates them: `Verify return code: 0 (ok)` there means it is the strict case.
 
-> RFC 5280 strict verification relaxed for this session after
-> `api.business.githubcopilot.com` failed it
+Any other code — an untrusted root (18–20), a bad signature (7) — gets the
+advice for that failure even with strict on, because strict mode does not
+produce it.
+`aelix status` showing `RFC 5280 strict  on` tells you the flag is set, not
+that it is the cause.
+
+`aelix` handles this for you. When a connection fails certificate
+verification on a strict interpreter, it re-tests that host twice — once with
+strict on, once with it off — whatever the verify code, as long as the error
+names the host (the Google adapters do not take this path). Only if the
+handshake **fails with strict and succeeds without it** does it relax that one
+flag for the rest of the session, saying so in place of the advice:
+
+```text
+RFC-5280 strict verification relaxed for this session after the host below failed it but verified against this machine's trust store without it.
+  host: api.business.githubcopilot.com
+  failed on: Basic Constraints of CA cert not marked critical
+Certificate verification, hostname checking and expiry are still enforced. If the request still fails, the cause is not certificate strictness.
+```
 
 Everything else about verification stays on: the chain is still checked against
 the same trust store, and the hostname is still matched. Restarting `aelix`

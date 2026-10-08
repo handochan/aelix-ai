@@ -106,6 +106,15 @@ jobs:
           # this step loudly instead of installing an unchecked uv.
           version: "0.12.23"
           checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
+          # 3.12 and NOT the 3.11-3.13 matrix ci.yml tests on (#192), on
+          # purpose: this job builds and publishes, it runs no tests. Every
+          # wheel is pure `py3-none-any`, and the interpreter that runs
+          # hatchling does not reach the bytes - measured at 8f7d98aa with
+          # SOURCE_DATE_EPOCH fixed, `uv build --all-packages --wheel` under
+          # 3.12 and under 3.13 gave five byte-identical wheels. What a user's
+          # 3.13 executes is tested where tests run: ci.yml's legs on the
+          # branch push of the commit being tagged (this job does not re-check
+          # that they passed; a tag push does not trigger ci.yml).
           python-version: "3.12"
           enable-cache: true
 

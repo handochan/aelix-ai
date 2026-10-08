@@ -483,7 +483,9 @@ PR 검토 순서는 제품 목표 적합성 → 패키지/확장 경계 → 안�
 - fork PR 실행과 release 권한을 분리한다. 외부 코드 실행에 지속적인 개인 머신·비밀정보를 주지 않는다.
 - dependency·secret 검사, manifest·패키징·문서 계약 검사와 재현 가능한 CI를 점검한다.
 - CI의 실제 Python/OS와 사용자 설치 경로를 맞춘다. 현재 CI는 Ubuntu/Windows,
-  Python 3.11/3.12이며 install.sh E2E와 3.13 관련 열린 이슈를 재판정해야 한다.
+  Python 3.11/3.12/3.13이다(#192, 2026-10-08 — 설치기 범위 `>=3.11,<3.14` 전체이고
+  `tests/test_ci_python_matrix.py`가 둘을 묶는다). install.sh E2E와 `requires-python`
+  상한(#278)은 아직 열려 있다.
 - 릴리스에는 candidate artifact 자체의 설치/업그레이드 검증, 알려진 문제,
   이전 버전으로 돌아갈 수 있는 범위와 세션 마이그레이션 방침을 포함한다.
 

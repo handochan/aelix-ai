@@ -385,6 +385,76 @@ unwritten. Add them with the next release.
   one of those is not restored to its model — it falls back and says so. A mid-turn
   model change was recorded with the model's protocol (`anthropic-messages`)
   where its provider belongs, and now records the provider.
+
+- **On Python 3.13 — the interpreter the installers give you — a TLS failure
+  now gets the advice for what actually failed, and CI now runs 3.13 (#192).**
+  3.13 turns on OpenSSL's strict RFC 5280 checks, and aelix's remedy text
+  treated *every* verification failure on a strict interpreter as a strict-only
+  one unless it was one of four untrusted-issuer codes: a certificate with a
+  genuinely bad signature, an issuer that is not a CA, or an error that kept
+  only its text ("unable to get local issuer certificate", the shape a corporate
+  CA that is not installed produces) were all told "an RFC 5280 rule, not trust
+  — the same host works in every other tool; reinstall on Python 3.12". Only
+  the codes that always mean strict mode (78 and 80–94) get that advice now;
+  everything else gets the advice for its own failure — install the CA or set
+  `SSL_CERT_FILE`, check the clock, check the hostname. Code 79 (`invalid CA
+  certificate`) gets both: OpenSSL raises it for an issuer marked `CA:FALSE`
+  with or without strict, and only under strict for a root CA with no Basic
+  Constraints extension, so on a strict interpreter the advice names both
+  causes and the `openssl s_client` check that tells them apart. Nothing had
+  caught it because the test matrix was Python 3.11 and 3.12 while
+  `install.sh` / `install.ps1` build on the newest of 3.11–3.13, i.e. 3.13: the
+  suite failed 11 tests on 3.13 at `8f7d98aa` — nine on this defect, and two
+  that asserted they were running on an interpreter older than 3.13. CI now
+  runs the full suite on 3.11, 3.12 and 3.13 on both Ubuntu and Windows, and a
+  test holds the matrix equal to the installers' interpreter range. The TLS
+  guide's table also named the wrong code for "Missing Authority Key
+  Identifier": it is 85, not 95. And in the TUI every TLS remedy now shows
+  whole: the TUI keeps 8 lines of an error and cuts each at 200 characters, and
+  the hostname, clock, trust-store and strict remedies each had a sentence past
+  that cut — the hostname and clock ones lost their only action ("check this
+  provider's base URL", "check this machine's clock"). The note a session gets
+  once strict checking has been relaxed for it now names the host and the
+  failed check on lines of their own, so it too shows whole for any host name
+  of up to 576 characters (DNS allows 253) and any verify message of up to 187
+  (OpenSSL's longest is 68); with both in its first sentence it ran past 200
+  for hosts such as `api.business.githubcopilot.com`.
+
+- **A timed-out hook and a stopped delegation no longer leave processes
+  running on Python 3.13.15 and later (3.14.7 and later on 3.14) - and on
+  every Python version a timed-out hook now also loses a helper it
+  backgrounded that still holds its output (#192).** Both give what they are
+  stopping a grace after the polite signal and kill the whole process tree
+  only if the grace runs out. They ended the grace when Python said the
+  process had exited - and from CPython 3.13.15 and 3.14.7 (CPython's
+  gh-119710; 3.14.5 and 3.14.6 do not have it) Python says so as soon as the
+  FIRST process exits, not once nothing holds its output open any more. A hook
+  run through a shell that died on the signal while its command ignored it
+  (`cmd && …`), or a delegation whose child had left a helper behind, then had
+  its grace end at once and the rest of the tree was never killed. The grace
+  now ends only when nothing holds the output open, on every Python version.
+  For the delegation that is what it already meant before 3.13.15. For a hook
+  it is stricter than before on every version, 3.11 and 3.12 included: a hook
+  that backgrounds a helper which keeps the hook's stdout or stderr open never
+  reaches the end of its output, so it times out - and because its own shell
+  had already exited, the grace used to end at once and the helper kept
+  running. Now the grace runs out and the helper is killed with the rest of
+  the hook's tree, as for any timed-out hook. A helper that sends its output
+  elsewhere (`helper >/dev/null 2>&1 &`) does not hold the hook open, so the
+  hook finishes and the helper keeps running, as before. CI's first run on
+  3.13 found the leak; a local 3.13 suite had passed because 3.13.13 and
+  3.13.14 do not have the change.
+
+- **On Windows, a path without a drive letter now means the same thing on
+  every Python version (#192).** The uv executable `aelix extension install`
+  uses, `PIP_CONFIG_FILE`, `UV_CONFIG_FILE` and a typed `--index-url` were
+  checked with Python's own "is this path absolute?", which on Windows answers
+  yes for `\tools\uv.exe` up to Python 3.12 and no from 3.13. Such a path is
+  relative to the current drive, so it is now treated as relative everywhere:
+  a uv found through a drive-less `PATH` entry is not used, and a drive-less
+  config file or index directory is read from the directory the installer runs
+  in (or, for `--index-url`, the one you typed it in).
+
 - **A delegated agent now thinks at the level you are thinking at, so a model
   that cannot switch reasoning off no longer kills every delegation (#354).**
   A child ran at the thinking level its profile set and nothing else — and none

@@ -102,6 +102,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aelix_ai.utils._process_tree import wait_released
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -511,8 +513,17 @@ async def reap(
         _signal_child(proc, signal.SIGTERM)
 
     if not eager_kill:
+        # The grace ends when the TREE has let go of the child's pipes, not when
+        # the root exits (#192 review round 5): from CPython 3.13.15 ``waiter``
+        # resolves at the root's exit (gh-119710), and a child that dies on the
+        # SIGTERM while a pipe-holding descendant lives on then ended the grace
+        # at once and skipped the escalation below - the descendant survived.
+        # :func:`~aelix_ai.utils._process_tree.wait_released` is what ``waiter``
+        # meant up to 3.13.14. Its own ``proc.wait()`` is a second waiter, which
+        # is legal; ``waiter`` stays the one the final reap awaits.
+        released = asyncio.ensure_future(wait_released(proc))
         try:
-            return int(await asyncio.wait_for(asyncio.shield(waiter), grace))
+            return int(await asyncio.wait_for(asyncio.shield(released), grace))
         except BaseException:  # noqa: BLE001 — TimeoutError AND CancelledError
             # Deliberately NOT ``Exception``. A ``CancelledError`` here is the
             # second Ctrl+C (finding B1); swallowing it and escalating is the
@@ -520,6 +531,8 @@ async def reap(
             # cancellation is not lost — the caller awaits this task under
             # ``asyncio.shield`` and re-raises on its own side.
             pass
+        finally:
+            released.cancel()
 
     kill_tree(proc, snapshot, tree=tree)
     if not _is_win32() and _usable(tree):

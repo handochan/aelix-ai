@@ -55,6 +55,7 @@ from aelix_coding_agent.extensions.subprocess_hooks import (
     validate_subprocess_hook_event,
 )
 
+from tests.asyncio_exit_wait import resolve_wait_at_exit
 from tests.event_waits import check_anti_hang, record_armed_waits
 from tests.process_probe import (
     STATE_ALIVE,
@@ -536,8 +537,11 @@ async def test_a_cancelled_hook_does_not_leave_its_tree_behind(tmp_path: Path) -
         _reap(grandchild)
 
 
+@pytest.mark.parametrize(
+    "wait_resolves_at_exit", [False, True], ids=["interpreter-wait", "gh-119710-wait"]
+)
 async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_resolves_at_exit: bool
 ) -> None:
     """#202 — the OTHER cancellation window: inside the teardown's own waits.
 
@@ -551,8 +555,17 @@ async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree
     The cancel is timed to land inside that grace. If a slow runner makes the
     hook's setup outlast the timeout, the cancel lands wherever it lands and the
     case still asserts the thing that matters: nothing of the tree is left.
+
+    ``gh-119710-wait`` (#192 review round 5): ``Process.wait()`` resolving at the
+    shell's EXIT, as from CPython 3.13.15. Where ``sh`` does not ``exec`` the
+    command (dash, CI's ubuntu), the shell dies on the soft signal while the
+    root ignores it; the grace ended at once, the teardown returned before the
+    cancel, and the root outlived it (``alive`` on the py3.13 leg). The grace
+    now waits for the pipes; this row holds that on every interpreter.
     """
 
+    if wait_resolves_at_exit:
+        resolve_wait_at_exit(monkeypatch)
     pid_file = tmp_path / "tree.pid"
     cmd = _py_command(tmp_path, _pid_file_source(_SIGNAL_SURVIVING_SOURCE, pid_file))
 
@@ -580,6 +593,137 @@ async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree
     finally:
         _reap(grandchild)
         _reap(root)
+
+
+@pytest.mark.parametrize(
+    "wait_resolves_at_exit", [False, True], ids=["interpreter-wait", "gh-119710-wait"]
+)
+async def test_a_timed_out_hook_whose_shell_dies_on_the_soft_signal_still_loses_its_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait_resolves_at_exit: bool
+) -> None:
+    """#192 review round 5 - the timeout ladder's grace waits for the TREE.
+
+    ``&& echo done`` keeps the shell from ``exec``-ing the command on every
+    shell (bash, dash, cmd.exe), so the shell is the hook's root and survives
+    only as long as the soft signal lets it: it dies on it, while the command
+    under it ignores it and keeps the pipes. From CPython 3.13.15 (gh-119710)
+    ``Process.wait()`` resolves at the shell's exit, so a grace spent on it ended
+    at once, the hard rung never ran, and the command and its grandchild
+    outlived the timeout. ``gh-119710-wait`` gives every interpreter that
+    ``wait()``; ``interpreter-wait`` is whichever this leg has. Measured red
+    before the fix: the ``gh-119710-wait`` row on 3.12, both rows on 3.13.15.
+    """
+
+    if wait_resolves_at_exit:
+        resolve_wait_at_exit(monkeypatch)
+    pid_file = tmp_path / "tree.pid"
+    cmd = _py_command(tmp_path, _pid_file_source(_SIGNAL_SURVIVING_SOURCE, pid_file))
+    task = asyncio.ensure_future(
+        run_hook_subprocess(cmd + " && echo done", "", timeout_ms=1500)
+    )
+    root, grandchild = await _await_pid_file(pid_file)
+    try:
+        outcome = await asyncio.wait_for(task, 30)
+        assert outcome.timed_out is True
+        for label, pid in (("the command", root), ("its grandchild", grandchild)):
+            state = await await_dead_or_zombie(pid, timeout=5.0)
+            assert state in (STATE_GONE, STATE_ZOMBIE), (
+                f"{label} ({pid}) outlived the hook's timeout teardown: {state}"
+            )
+    finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        _reap(grandchild)
+        _reap(root)
+
+
+#: A hook that backgrounds a helper which KEEPS some of the hook's output pipes,
+#: then exits 0 at once - ``helper & echo started`` without a shell's ``&``, so
+#: the same command runs under sh, dash and cmd.exe. ``__PIPES__`` names what the
+#: helper keeps: ``"both"``, ``"stdout"`` or ``"stderr"`` (the other goes to
+#: ``DEVNULL``). The helper lives until the gate file exists (or 60 s), so
+#: whether it holds the pipes is decided by the test alone. The pid file holds
+#: the launcher's pid, then the helper's.
+_PIPE_KEEPING_HELPER_SOURCE = """\
+import os
+import subprocess
+import sys
+
+keep = __PIPES__
+path = __PID_FILE__
+helper = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import os, sys, time\\n"
+        "end = time.monotonic() + 60\\n"
+        "while not os.path.exists(sys.argv[1]) and time.monotonic() < end:\\n"
+        "    time.sleep(0.02)\\n",
+        path + ".gate",
+    ],
+    stdin=subprocess.DEVNULL,
+    stdout=sys.stdout if keep in ("both", "stdout") else subprocess.DEVNULL,
+    stderr=sys.stderr if keep in ("both", "stderr") else subprocess.DEVNULL,
+)
+with open(path + ".part", "w", encoding="utf-8") as handle:
+    handle.write("%d\\n%d" % (os.getpid(), helper.pid))
+os.replace(path + ".part", path)
+"""
+
+
+@pytest.mark.parametrize("pipes", ["both", "stdout", "stderr"])
+async def test_a_timed_out_hook_loses_a_backgrounded_helper_that_keeps_its_output(
+    tmp_path: Path, pipes: str
+) -> None:
+    """#192 review round 6 - stricter than ``wait()`` was, on EVERY interpreter.
+
+    The hook's root exits at once, but the helper it backgrounded keeps the
+    hook's stdout and/or stderr, so ``communicate()`` never sees EOF and the
+    hook times out with its root ALREADY gone. No soft signal is sent (there is
+    no root to send it to). Before #192 the grace was ``proc.wait()``, which on
+    every CPython returns at once when the exit status is already known - so the
+    hard rung never ran and the helper outlived the timeout (measured ALIVE on
+    3.11.15, 3.12.13 and 3.13.13 at 8428e16c). ``wait_released`` waits on the
+    pipes, the 1.0 s grace runs out, and the hard rung ends the helper: a
+    timed-out hook's whole tree is lost (ADR-0238), including a helper that
+    still holds its output. A helper that lets go of the output keeps living
+    (``test_a_hook_that_backgrounds_a_helper_keeps_it_after_a_normal_return``).
+
+    ``stdout`` / ``stderr``: a helper that keeps only ONE pipe - a
+    ``wait_released`` that polled only the other one would end the grace at
+    once and leave the helper running (review round 5's pipe-subset mutants).
+    """
+
+    pid_file = tmp_path / "helper.pid"
+    source = _pid_file_source(_PIPE_KEEPING_HELPER_SOURCE, pid_file).replace(
+        "__PIPES__", repr(pipes)
+    )
+    cmd = _py_command(tmp_path, source)
+    gate = Path(str(pid_file) + ".gate")
+    task = asyncio.ensure_future(run_hook_subprocess(cmd, "", timeout_ms=3000))
+    launcher, helper = await _await_pid_file(pid_file)
+    try:
+        # Vacuity guard: the root is gone while the hook is still waiting for
+        # its output - the timeout below fires with no root left to signal.
+        state = await await_dead_or_zombie(launcher, timeout=2.0)
+        assert state in (STATE_GONE, STATE_ZOMBIE), state
+        assert not task.done(), "the hook ended before its timeout"
+        assert probe_state(helper) == STATE_ALIVE
+
+        outcome = await asyncio.wait_for(task, 30)
+        assert outcome.timed_out is True
+        state = await await_dead_or_zombie(helper, timeout=5.0)
+        assert state in (STATE_GONE, STATE_ZOMBIE), (
+            f"the helper ({helper}) keeping the hook's {pipes} outlived the "
+            f"hook's timeout teardown: {state}"
+        )
+    finally:
+        gate.write_text("", encoding="utf-8")
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        _reap(helper)
 
 
 async def test_a_soft_signal_that_could_not_be_sent_skips_the_grace(
