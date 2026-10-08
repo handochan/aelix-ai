@@ -232,6 +232,10 @@ equivalent.
 aelix --continue                 # continue the most recent session (-c)
 aelix --resume                   # pick a previous session interactively (-r)
 aelix --resume <id>              # resume a specific session by id/prefix
+                                 # (all three come back on the model the session
+                                 #  last used, if it can still run, unless you
+                                 #  pass --model, --provider or --api-key or an
+                                 #  agent profile names a model)
 aelix --no-session               # in-memory session, not persisted
 aelix --thinking medium          # off | minimal | low | medium | high | xhigh
                                  # (the level is remembered per session: --continue

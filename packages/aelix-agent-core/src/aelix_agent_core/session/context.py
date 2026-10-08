@@ -238,6 +238,54 @@ def resolve_resumed_thinking_level(
     return clamp_thinking_level(model, level)
 
 
+def resolve_resumed_model(
+    path_entries: list[SessionTreeEntry],
+) -> tuple[str, str] | None:
+    """Which model did this branch last run on? ``(provider, model_id)``, or ``None``.
+
+    Issue #376 — pi's ``getBranchSelection`` (``core/virtual-models.ts:128-145``
+    at ``pi@1cedd3272``), the input to its session-model restore
+    (``core/sdk.ts:217-232``). Walking back from the leaf, the first of
+
+    * a ``model_change`` entry — a selection the session recorded, or
+    * an assistant message that names its ``provider`` and ``model`` — the model
+      that answered (every adapter writes the request's ``model.provider`` /
+      ``model.id`` there)
+
+    is the answer. aelix has no virtual models, so pi's one exception (a
+    virtual selection outranks the physical model its response names) has no
+    case to apply to here.
+
+    The responses matter more in aelix than in pi: pi writes a ``model_change``
+    for the launch model of every new session (``sdk.ts:456``), aelix never
+    has, so a session that only ever ran on its ``--model`` holds no
+    ``model_change`` at all and its responses are the whole record. An entry
+    without both names is skipped rather than read as "no model" — an assistant
+    message for a turn refused before any request carries none, and one failed
+    turn must not erase the record behind it.
+
+    :func:`build_session_context`'s ``model`` fold reads ``model_change``
+    entries only and is left as it is.
+    """
+
+    for entry in reversed(path_entries):
+        if entry.type == "model_change":
+            provider = getattr(entry, "provider", "") or ""
+            model_id = getattr(entry, "model_id", "") or ""
+            if provider and model_id:
+                return provider, model_id
+            continue
+        if entry.type == "message":
+            msg = entry.message  # type: ignore[union-attr]
+            if getattr(msg, "role", None) != "assistant":
+                continue
+            provider = getattr(msg, "provider", None)
+            model_id = getattr(msg, "model", None)
+            if isinstance(provider, str) and provider and isinstance(model_id, str) and model_id:
+                return provider, model_id
+    return None
+
+
 def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContext:
     """Pi `buildSessionContext` (``session.ts:21-76``).
 
@@ -418,5 +466,6 @@ __all__ = [
     "create_compaction_summary_message",
     "create_custom_message",
     "create_display_custom_message",
+    "resolve_resumed_model",
     "select_display_entries",
 ]

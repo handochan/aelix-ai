@@ -300,6 +300,19 @@ class AgentSessionRuntime:
         """Pi parity (``:95-97``)."""
         return self._model_fallback_message
 
+    def set_model_fallback_message(self, message: str | None) -> None:
+        """Record why the live harness is not on its session's model (#376).
+
+        pi's ``apply`` takes ``modelFallbackMessage`` from each replacement's
+        ``createRuntime`` result (``agent-session-runtime.ts:180-185``). Aelix's
+        factory returns a harness only, so the product layer that resolved the
+        model (``cli/entry.py``'s harness factory) sets it here on every build —
+        ``None`` when the session's model was restored or there was none to
+        restore — and a surface reads it after a swap.
+        """
+
+        self._model_fallback_message = message
+
     # === The seam (Pi `:99-113`) ================================================
 
     def set_rebind_session(

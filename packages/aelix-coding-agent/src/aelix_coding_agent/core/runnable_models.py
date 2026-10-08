@@ -781,6 +781,76 @@ def unsupported_message(model: Any) -> str:
     return _no_adapter_message(model)
 
 
+def _runs_without_asking_auth(model: Any) -> bool:
+    """:func:`is_runnable` without its one auth-configuration arm (#376).
+
+    The arms of :func:`is_runnable`, per provider: an ``api`` with no
+    registered adapter (``api 'unknown'`` among them), a base URL with an
+    unexpanded ``{ENV_VAR}`` (cloudflare's account / gateway id, which names
+    the host and path, not a credential), a declared-empty base URL (#98), and
+    for ``google-vertex`` :func:`_vertex_config_missing` — a GCP-auth question
+    read from the environment only (``GOOGLE_CLOUD_API_KEY``, or a project and
+    a location), blind to a key from ``--api-key``, ``auth.json`` or a
+    ``models.json`` ``apiKey`` that the adapter does use. This is every arm but
+    that last one: a Vertex model is judged on its adapter alone, as
+    :func:`is_runnable` already bypasses the base-URL guards for it (its
+    ``{location}`` host is filled by the SDK). Fails open with no adapter
+    registered, like :func:`is_runnable`.
+    """
+
+    apis = supported_apis()
+    if not apis:
+        return True
+    api = getattr(model, "api", None)
+    if api == _GOOGLE_VERTEX_API:
+        return api in apis
+    if _base_url_unconfigured(model) or _base_url_missing(model):
+        return False
+    return api is None or api in apis
+
+
+def turn_refusal(model: Any) -> str | None:
+    """Why no turn can run on ``model`` at all, or ``None`` when one might (#376).
+
+    The question :meth:`AgentHarness.prompt` asks (``set_prompt_check``) after
+    the ``input`` hook and before it writes anything, in pi's place
+    (``agent-session.ts:1993`` then ``:2032-2050`` at ``pi@1cedd3272``), but
+    ONLY about a model that certainly cannot run for a reason that is not a
+    credential: the empty placeholder (no provider and no adapter — the
+    unresolved launch's ``''/''``, answered "No model selected."), one with no
+    adapter for its ``api`` whatever its base URL (the late-provider hold's
+    ``api 'unknown'`` among them), or one with no base URL (declared empty, or
+    an unexpanded ``{ENV_VAR}`` in it — cloudflare's account / gateway id; kept
+    by the main loop in #376 review round 6, as ``main`` sent that request with
+    the placeholder in its path). A missing provider words the refusal; it is
+    not a reason on its own. Every credential or
+    auth-configuration question is left to the request, as before #376, in
+    every mode (owner decision 2026-10-08): no key is asked, and the
+    google-vertex arm of :func:`is_runnable` (``_vertex_config_missing``: a
+    ``GOOGLE_CLOUD_API_KEY``, or a project and location, read from the
+    environment only) is not asked either (:func:`_runs_without_asking_auth`) —
+    the adapters accept auth no registry predicate sees (a ``models.json`` /
+    registration auth header, ``ANTHROPIC_CUSTOM_HEADERS`` (ADR-0254 2.2),
+    ``ANTHROPIC_AUTH_TOKEN``, google-vertex ADC, a Vertex key from
+    ``--api-key`` / ``auth.json`` / ``models.json``), so such a prompt runs as
+    before and fails, if it fails, with its adapter's own message at request
+    time. pi refuses a keyless prompt here too; that is a follow-up, not this
+    check. Fails OPEN with no adapter registered at all, so an embedder that
+    binds this before it registers its adapters is never blocked. :func:`is_runnable` itself (the TUI #189
+    gate, the ``-p`` #98 gate, the restore predicate) is unchanged.
+    """
+
+    if _runs_without_asking_auth(model):
+        return None
+    if not getattr(model, "provider", ""):
+        from aelix_coding_agent.cli.auth_guidance import format_no_model_selected_message
+
+        return format_no_model_selected_message()
+    if getattr(model, "api", None) == _GOOGLE_VERTEX_API:
+        return _no_adapter_message(model)
+    return unsupported_message(model)
+
+
 __all__ = [
     "BLOCKED_CONFIG_MISSING",
     "BLOCKED_MIXED",
@@ -800,5 +870,6 @@ __all__ = [
     "provider_block_reasons",
     "provider_block_sample",
     "supported_apis",
+    "turn_refusal",
     "unsupported_message",
 ]

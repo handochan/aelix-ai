@@ -52,6 +52,87 @@ provider, so a `.env` key may authenticate it, as with `--provider`.
 (`aelix --mode rpc` itself wires no registry, and answers both with "requires
 a ModelRegistry".)
 
+### A resumed session keeps its model
+
+Opening a session that already has a conversation — `--continue`, `--resume`,
+`--session`, `--fork`, and inside a session `/resume`, `/fork`, `/clone`,
+`/import` and `/reload` (RPC: `switch_session`, `fork`, `clone`) — puts you back
+on the model it last ran on: whichever the session recorded last, a `/model`
+pick or the model that wrote an answer. A pick is recorded when you make it, so
+`/model` then quitting comes back on that model. Your settings `defaultModel`
+does not override the session; it is for new sessions (`/new` starts on the
+launch model). `--model` / `--provider`, an agent profile that names a `model:`
+or `provider:`, or `--api-key` (typed for the launch model) win over the
+session, as in pi.
+
+The model comes back only if it can still run: it must be one this build or
+your `models.json` / an extension knows, with a key for its provider (from any
+source, a project `.env` included: the session already chose the route). A
+model id nothing lists comes back as a custom id on a provider you defined in
+`models.json` or an extension, when that provider has any key — as
+`--provider <it> --model <id>` would at launch. On any other provider it comes
+back only on a key of your own for that provider, never on a project `.env`'s:
+for one the launch sent to OpenRouter as written that is the rule the launch
+itself follows, and for a built-in provider whose catalogue does not list the
+id (say `anthropic/claude-www-unlisted`) it is stricter than the launch, where
+`--provider anthropic --model claude-www-unlisted` is accepted on a `.env` key.
+When the model cannot come back, aelix falls back to the model it would have
+picked without the session and says so:
+
+```
+Warning: Could not restore model anthropic/claude-haiku-4-5. Using openrouter/anthropic/claude-sonnet-4.5
+```
+
+It is shown under the banner in the TUI and after each in-session command
+above, and printed on stderr in `-p`, `--mode json` and RPC (at startup and
+after `switch_session`, `fork` and `clone`). The `Using …` half names the model
+the run is on when the line is said — after the extensions' `session_start`
+handlers ran, so a handler that selects a model there is the one named — and
+appears only when that model can run: it has an adapter and its provider a key.
+
+A prompt on a model that certainly cannot run, for a reason that is not a
+credential, is refused before anything is written to the session, in every
+mode: no model at all (the empty placeholder of a launch that resolved
+none — no provider and no adapter — answered `No model selected.`), a model
+this build has no adapter for, whatever its base URL (`mistral/...` models,
+for one), or a model with no base URL (none declared, or a `{NAME}`
+placeholder in it left unset — a `cloudflare-workers-ai` model without
+`CLOUDFLARE_ACCOUNT_ID` even with a key set, whose request would go out with
+the placeholder in its path). It is asked once, after the extensions' `input`
+handlers ran and before the prompt is written (pi's place), so an input an
+extension handles itself is still answered, a model an `input` handler
+switches to is the one judged, and a turn an extension triggers
+(`send_message(..., trigger_turn=True)`) is refused the same way (pi does not
+ask there; while `session_start` handlers still run after a launch that
+resolved no model, the late-provider hold answers that turn first, as before,
+and its message is written with the hold's error). `-p` / `--mode json` stop with exit 1, the TUI says it and waits, and an
+RPC `prompt` is answered `success: false`. (The TUI still answers a model with
+no adapter before the `input` handlers, with its own advice, as it did before.)
+
+No credential or auth setting is asked there — no key, header, token or
+Google Cloud setting. A prompt whose provider has no key runs as it always
+did: the TUI and RPC send it and it fails with `No API key for provider:
+<provider>`, and `-p` / `--mode json` refuse it at startup (before any `input`
+handler) with `No API key found for <provider>.` That keeps every kind of auth
+the providers accept working — an auth header in `models.json` or an
+extension's provider `headers`, `ANTHROPIC_CUSTOM_HEADERS`,
+`ANTHROPIC_AUTH_TOKEN`, Vertex Application Default Credentials, a Vertex key
+from `--api-key`, `auth.json` or `models.json` — and an RPC prompt on Vertex
+with no Google Cloud setup is written and fails with the adapter's own error
+(`Vertex AI requires a project ID`), as before. (The TUI and `-p` still refuse
+such a Vertex model before the `input` handlers, as they did before.) pi
+refuses a keyless prompt before writing it; aelix does not yet.
+
+Known limit: "a key" in the restore rule above means a key aelix's registry
+counts (an API key from `auth.json`, `models.json`, the environment, a project
+`.env`, `--api-key`, an extension's registration). A session whose provider is
+authenticated only by a header, `ANTHROPIC_AUTH_TOKEN` or Vertex Application
+Default Credentials is not restored: it falls back to the launch model and says
+`Could not restore model …` (without the `Using` half when the fallback is
+authenticated the same way). Pass `--model` to reopen it on that model.
+The session's thinking level is restored against the model the session came
+back on (below).
+
 ### How a `--model` string becomes a provider
 
 Aelix follows pi's order (`resolveCliModel`), with exact ids only and two guards
@@ -208,9 +289,12 @@ mode starts with that warning and sends nothing until you pick a model with
 not what the handler did: a `set_model` in it does not make the launch pass. And
 whatever re-derives the model from those inputs without you naming one holds the
 session again wherever it lands on that provider — also when the session started on
-a registered provider, since aelix's rebuilds re-derive the model from the launch
-inputs where pi keeps the session's: `/new` and the other rebuilds
-(also when a `session_start` handler of the rebuild sets a model), `/agents use`
+a registered provider, since those builds re-derive the model from the launch
+inputs where pi keeps the session's: `/new`, and a rebuild that does not restore
+the session's own model (one of a session with no conversation yet, of a run
+whose model you named at launch, or whose recorded model cannot run — see "A
+resumed session keeps its model"; a rebuild that restores it is not held), also
+when a `session_start` handler of the rebuild sets a model; `/agents use`
 of a profile that names no model or provider of its own (or `--none`, or one whose
 `model:` your `--model` overrides) — also after a launch that went elsewhere, such
 as `--agent` with `provider: openrouter` and `--model <name>/<id>` — and the model
@@ -231,10 +315,12 @@ model it is not used at all, and no provider holds it. The same holds while a
 rebuild's `session_start` handlers run in a session that is held. Once the session is running the provider is there,
 so `/model <name>/<id>` switches to it like any other, and so does `/agents use`
 of a profile whose own `model:` or `provider:` names it (`provider:` alone names
-the route too) — a `/model` choice lasts until the next `/new` or other rebuild,
-which re-derives the launch model and holds again (pi keeps the session's model;
-aelix rebuilds from the launch inputs), a profile's until an `/agents use` that
-names no route. `/model` also saves it as your default, so the next launch without
+the route too). A `/model` choice is recorded in the session, so a rebuild that
+restores the session's model (`/reload`, `/fork`, `/clone`, a `/resume` back to
+it) comes back on it and is not held; `/new`, and a rebuild that does not
+restore (as above), re-derive the launch model and hold again (pi keeps the
+session's model). A profile's choice lasts until an `/agents use` that names no
+route. `/model` also saves it as your default, so the next launch without
 `--model` reads it from `settings.json` and is refused the same way. The RPC mode
 starts held too but cannot pick another model (`aelix --mode rpc` has no model
 registry for `set_model`): restart it with another `--model`. Register providers

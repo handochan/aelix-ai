@@ -1331,7 +1331,10 @@ async def test_a_model_select_handler_cannot_move_a_held_launch_off_the_placehol
     code = await entry_mod._async_main(["--no-session", "-e", ext, "--model", "sessext/m1", *flags])
     err = capsys.readouterr().err
     assert (code, seen["route"], seen["gate"]) == (0, _HELD, None)
-    assert "api='unknown'" in seen["refused"]
+    # #376 review round 3: the harness's prompt check refuses the placeholder
+    # before the turn (``unsupported_message``); it used to be refused inside
+    # it, ``No provider registered for api='unknown'``. Nothing sent either way.
+    assert "could not be resolved to a known API protocol" in seen["refused"]
     assert wire == []
     assert "Warning: " + _REFUSAL.format(subject="sessext/m1") in err
     assert "No prompt will be sent for it" in err
@@ -1636,7 +1639,10 @@ async def test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing
     held_turns = 2 if path == "agents-use-after-model" else 1
     expected = f"{HOLD_GATE} " + _REFUSAL.format(subject="sessext/m1")
     assert seen["answers"] == [expected] * held_turns
-    assert "api='unknown'" in seen["refused"]
+    # #376 review round 3: the harness's prompt check refuses the placeholder
+    # before the turn (``unsupported_message``); it used to be refused inside
+    # it, ``No provider registered for api='unknown'``. Nothing sent either way.
+    assert "could not be resolved to a known API protocol" in seen["refused"]
     if path == "launch":
         assert "No prompt will be sent for it; run /model to select a model." in err
     if path.startswith("agents-use"):

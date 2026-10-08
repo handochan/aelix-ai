@@ -309,6 +309,21 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
 # === Supported handlers (Pi parity per P-107) =================================
 
 
+def _takes_on_accept(prompt: Any) -> bool:
+    """Does ``prompt`` take :meth:`AgentHarness.prompt`'s ``on_accept`` (#376)?"""
+
+    import inspect
+
+    try:
+        parameters = inspect.signature(prompt).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.name == "on_accept" or p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in parameters
+    )
+
+
 async def _handle_prompt(
     harness: AgentHarness,
     cmd: RpcCommandPrompt,
@@ -346,7 +361,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1357-1362``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1386-1391``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -354,7 +369,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1345-1347``).
+        # enqueue-only regardless of phase (``core.py:1374-1376``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -371,6 +386,30 @@ async def _handle_prompt(
             ),
         )
 
+    # #376 — a prompt no turn can run (no model, adapter or base URL) is rejected
+    # BEFORE acceptance and nothing is written: the harness asks
+    # (``AgentHarness.set_prompt_check``, which the CLI's harness factory
+    # binds) AFTER the ``input`` hook, as pi's ``prompt`` does
+    # (``agent-session.ts:1993`` then ``:2032-2050`` at ``pi@1cedd3272``), so
+    # an input an extension handles itself is answered without a model and a
+    # model an ``input`` handler switched to is the one judged. The response
+    # waits for that verdict, as pi's does (``rpc-mode.ts:394-412``: success
+    # from ``preflightResult``, the error when the prompt threw first).
+    # Commands are dispatched in their own tasks (``run_rpc_mode``), so an
+    # ``input`` hook that waits on another command does not deadlock this one.
+    verdict: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    def _accepted(_disposition: str) -> None:
+        if not verdict.done():
+            verdict.set_result(None)
+
+    prompt_kwargs: dict[str, Any] = {"images": images, "source": "rpc"}
+    if _takes_on_accept(harness.prompt):
+        prompt_kwargs["on_accept"] = _accepted
+    else:
+        # A harness double without the parameter: accepted as it always was.
+        _accepted("assumed")
+
     async def _run() -> None:
         # Errors are observable via the AgentEvent stream and stderr; the
         # response was already emitted (Pi parity: ``rpc-mode.ts:237-260``).
@@ -378,8 +417,13 @@ async def _handle_prompt(
         # stderr so the operator sees failures and ``wait_for_idle``
         # callers don't hang on a dropped error.
         try:
-            await harness.prompt(cmd.message, images=images, source="rpc")
+            await harness.prompt(cmd.message, **prompt_kwargs)
         except Exception as exc:  # noqa: BLE001
+            if not verdict.done():
+                # Rejected before acceptance (the #376 check, a busy harness, a
+                # raising ``input`` hook): this ``id`` is answered with it.
+                verdict.set_exception(exc)
+                return
             print(
                 f"[rpc] prompt task failed: {exc!r}",
                 file=sys.stderr,
@@ -409,6 +453,12 @@ async def _handle_prompt(
     # `track_task()` helper per ADR-0058 carry-forward.
     harness._pending_tasks.add(task)
     task.add_done_callback(harness._pending_tasks.discard)
+    # Belt and braces: a prompt that ends without answering counts as accepted.
+    task.add_done_callback(lambda _t: _accepted("done"))
+    try:
+        await verdict
+    except Exception as exc:  # noqa: BLE001 — the rejection, on the wire
+        return RpcErrorResponse(id=cmd.id, command="prompt", error=str(exc))
     return RpcSuccessResponse(id=cmd.id, command="prompt")
 
 
@@ -1445,6 +1495,24 @@ async def _handle_get_last_assistant_text(
 # ``rpc-mode.ts:566`` / ``:574`` / ``:586`` is NOT mirrored.
 
 
+def _say_model_fallback(runtime_host: Any, result: Any) -> None:
+    """Say on stderr why a swapped-in session is not on the model it last ran on (#376).
+
+    The harness factory sets ``model_fallback_message`` on every build (pi's
+    ``Could not restore model …``); RPC says it on stderr at startup
+    (``cli/entry.py``) and, here, after each swap that rebuilt a session with
+    history — ``switch_session``, ``fork``, ``clone``. stdout is the JSONL
+    stream and carries nothing new; pi's RPC says nothing at all. Not for a
+    swap an extension cancelled (nothing was built).
+    """
+
+    if getattr(result, "cancelled", False):
+        return
+    message = getattr(runtime_host, "model_fallback_message", None)
+    if isinstance(message, str) and message:
+        print(f"Warning: {message}", file=sys.stderr, flush=True)
+
+
 async def _handle_switch_session(
     runtime_host: AgentSessionRuntime,
     cmd: Any,  # ``RpcCommandSwitchSession``
@@ -1471,6 +1539,7 @@ async def _handle_switch_session(
     # The handler stays pure — :class:`SessionError` from ``repo.open``
     # propagates and reaches the wire as the same envelope.
     result = await runtime_host.switch_session(cmd.session_path)
+    _say_model_fallback(runtime_host, result)
     return RpcSuccessResponse(
         id=cmd.id,
         command="switch_session",
@@ -1513,6 +1582,7 @@ async def _handle_fork(
         return RpcErrorResponse(
             id=cmd.id, command="fork", error=str(exc)
         )
+    _say_model_fallback(runtime_host, result)
     data: dict[str, Any] = {"cancelled": result.cancelled}
     if result.selected_text is not None:
         data["text"] = result.selected_text
@@ -1576,6 +1646,7 @@ async def _handle_clone(
         return RpcErrorResponse(
             id=cmd.id, command="clone", error=str(exc)
         )
+    _say_model_fallback(runtime_host, result)
     # Pi line 588: clone DROPS selected_text from the wire (only
     # ``{cancelled}`` reaches the client).
     return RpcSuccessResponse(

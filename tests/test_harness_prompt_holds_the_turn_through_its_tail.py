@@ -814,7 +814,8 @@ async def _parked_release_flush(
         "PendingThinkingLevelChangeWrite"
     ]
     if also_model:
-        await h.set_model(Model(id="queued-model", context_window=100_000))
+        # #376: a named api, or set_model treats it as a placeholder and records nothing.
+        await h.set_model(Model(id="queued-model", provider="p", api="anthropic-messages", context_window=100_000))
     reached = asyncio.Event()
     release = asyncio.Event()
     real_append = session.append_thinking_level_change
@@ -840,7 +841,8 @@ async def test_writes_made_while_the_release_flush_awaits_are_written_before_the
 
     h, session, first, release = await _parked_release_flush()
     assert h.phase == "turn"
-    await h.set_model(Model(id="late-model", context_window=100_000))
+    # #376: a named api, or set_model treats it as a placeholder and records nothing.
+    await h.set_model(Model(id="late-model", provider="p", api="anthropic-messages", context_window=100_000))
     await h.append_message(UserMessage(content=[TextContent(text="late-append")]))
     assert [type(w).__name__ for w in h._pending_session_writes] == [
         "PendingModelChangeWrite",

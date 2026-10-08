@@ -923,6 +923,13 @@ async def restore_model_from_session(
     Returns a :class:`RestoreModelResult` mirroring Pi's
     ``{model, fallbackMessage}`` object literal (W6 P-206 fix —
     previously a dict).
+
+    NOT the product's restore (#376): pi exports ``restoreModelFromSession``
+    but calls it nowhere — its session restore is inline in
+    ``core/sdk.ts:217-251`` (``pi@1cedd3272``) — and aelix's port of THAT is
+    ``cli/runtime_bootstrap.restore_session_route`` +
+    ``restore_fallback_message``, which the harness build calls. This port
+    keeps no production caller, as in pi.
     """
 
     restored_model = model_registry.find(saved_provider, saved_model_id)

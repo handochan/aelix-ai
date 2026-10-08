@@ -87,7 +87,11 @@ from aelix_coding_agent.cli.session_labels import (
     session_choice_label,
     short_field,
 )
-from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
+from aelix_coding_agent.core.runnable_models import (
+    is_runnable,
+    turn_refusal,
+    unsupported_message,
+)
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
     gate_manifest_mcp_contribs,
@@ -130,6 +134,8 @@ from .runtime_bootstrap import (
     load_dotenv,
     register_providers,
     resolve_route,
+    restore_fallback_message,
+    restore_session_route,
 )
 from .skills_prompt import format_skills_for_prompt, skills_catalog_visible
 
@@ -1403,6 +1409,13 @@ async def _build_harness_options(
     # every caller that has no holder (tests, one-shot builds).
     skills_provider: Callable[[], list[Any]] | None = None,
     app_mode: str | None = None,
+    # #376 — the model the session being opened last ran on (``(provider, id)``),
+    # to restore in place of ``parsed``'s; ``None`` when the caller found none to
+    # restore or the user named a model (see the resolve below).
+    restore_selection: tuple[str, str] | None = None,
+    # #376 — a holder the resolve below fills: ``"route"`` is the restored
+    # :class:`ResolvedRoute`, or ``None`` when ``parsed`` decided the model.
+    restore_report: dict[str, Any] | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -1595,16 +1608,31 @@ async def _build_harness_options(
     # ``enrich_copilot_base_url`` adopts the registry's modify_models-injected
     # proxy-ep base_url for github-copilot (the enterprise/business host), which
     # ``resolve_model``/``get_model`` leaves at the static individual default.
-    model = enrich_copilot_base_url(
-        resolve_route(
+    #
+    # #376 — a resumed session's own model first, when the caller passes one
+    # (``restore_selection``: the session has history and the user named no
+    # model): pi restores it before ``findInitialModel`` (``core/sdk.ts:217-251``
+    # at ``pi@1cedd3272``). Resolved HERE, after the bind above, so a provider
+    # an extension's ``setup()`` registers is as visible to it as to the launch;
+    # and before the thinking-level restore, which clamps against this model
+    # (ADR-0239 decision 7's ordering note). When it cannot run, ``parsed``
+    # decides as it always has: that is the fallback.
+    route = (
+        restore_session_route(restore_selection, model_registry)
+        if restore_selection is not None
+        else None
+    )
+    if restore_report is not None:
+        restore_report["route"] = route
+    if route is None:
+        route = resolve_route(
             parsed.model,
             parsed.provider,
             model_registry,
             default_provider,
             typed_key=parsed.api_key is not None,
-        ).model,
-        model_registry,
-    )
+        )
+    model = enrich_copilot_base_url(route.model, model_registry)
     # WP-8 (Feature 3) — capture the discovered extensions ONCE for the TUI's
     # /extension viewer. ``discover_and_load_extensions`` runs per harness build
     # (it is called here, inside the factory), so the caller passes a mutable
@@ -2972,12 +3000,79 @@ async def _async_main(argv: list[str]) -> int:
 
     late_rule = LateRoute(model_registry, default_provider)
 
+    # #376 — what the LATEST build decided about its session's own model:
+    # ``route`` (the restored :class:`ResolvedRoute`, or ``None``) and
+    # ``message`` (pi's ``Could not restore model …``, or ``None``). The launch
+    # block below reads the first build's; ``_settle_late_route`` reads each
+    # rebuild's, and the runtime carries ``message`` for the TUI.
+    session_model: dict[str, Any] = {"route": None, "message": None, "failed": None}
+
+    def _fallback_message(active: Any) -> str | None:
+        """pi's ``Could not restore model …`` for the latest build, naming ``active``.
+
+        ``failed`` is the session's ``(provider, id)`` the latest build could
+        not restore (``None``: restored, or nothing to restore). The ``Using``
+        half names ``active`` — the model the run is on when the line is said —
+        and only when a turn can run on it (``restore_fallback_message``). Said
+        after ``session_start``, whose handlers can change the model the build
+        fell back to (review round 3, Codex cat2): computed before it, the line
+        named a model no longer active.
+        """
+
+        failed = session_model["failed"]
+        if failed is None:
+            return None
+        return restore_fallback_message(failed, active, model_registry)
+
+    def _user_named_a_model() -> bool:
+        """Did the user pick this run's model — the flags, or a profile's route?
+
+        #376 — pi restores the session's model only when no ``--model`` resolved
+        (``core/sdk.ts:224``: ``!model``). Here the flags are ``parsed.provided``
+        (a settings ``defaultModel`` seeded into ``parsed`` is not in it), and an
+        agent profile that names ``model:`` / ``provider:`` (``--agent``, or the
+        live ``/agents use`` pick) is a pick of the same kind (ADR-0196: profile
+        > settings). ``--api-key`` too: it is typed for the launch model
+        (``_attach_api_key``), and pi refuses it without ``--model``
+        (``main.ts:827-834``), so in pi it never meets a restore — here a
+        settings default can stand in for that ``--model``, and the key stays
+        with the model it was typed for rather than following the session's.
+        """
+
+        if "model" in parsed.provided or "provider" in parsed.provided:
+            return True
+        if parsed.api_key is not None:
+            return True
+        profile = agent_service.active if agent_service is not None else active_profile
+        return profile is not None and (
+            profile.model is not None or profile.provider is not None
+        )
+
     async def _harness_factory(
         new_session: Session, *, reload_seed: ReloadSeed | None = None
     ) -> AgentHarness:
+        # #376 — the session's own model, when it has history and the user named
+        # none: startup ``--continue``/``--resume``/``--session``/``--fork``,
+        # ``/resume``, ``/fork``, ``/import``, RPC ``switch_session`` and
+        # ``/reload`` all build here. pi's ``hasExistingSession`` is
+        # ``messages.length > 0`` (``core/sdk.ts:210-211``), so ``/new`` (an empty
+        # session) keeps the launch inputs.
+        restore_selection: tuple[str, str] | None = None
+        if not _user_named_a_model():
+            from aelix_agent_core.session.context import (
+                build_session_context,
+                resolve_resumed_model,
+            )
+
+            entries = await new_session.get_branch()
+            if build_session_context(entries).messages:
+                restore_selection = resolve_resumed_model(entries)
+        restore_report: dict[str, Any] = {}
         opts = await _build_harness_options(
             parsed,
             new_session,
+            restore_selection=restore_selection,
+            restore_report=restore_report,
             mcp_tools=mcp_tools,
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
@@ -3033,7 +3128,23 @@ async def _async_main(argv: list[str]) -> int:
             # session when --tools named a since-removed extension tool).
             on_reload=reload_seed is not None,
         )
-        held = late_rule.hold_for(parsed.model, parsed.provider)
+        restored = restore_report.get("route")
+        session_model["route"] = restored
+        # A restored model is the session's record, not the launch inputs, so
+        # the late-provider hold below (which asks where THOSE land) is not
+        # owed; nor is it after ``session_start`` (``_settle_late_route``).
+        held = late_rule.hold_for(parsed.model, parsed.provider) if restored is None else None
+        session_model["failed"] = (
+            restore_selection if restore_selection is not None and restored is None else None
+        )
+        # Refreshed after this build's ``session_start`` (``_settle_late_route``,
+        # and the launch below) against the model then active.
+        session_model["message"] = _fallback_message(
+            held.placeholder if held is not None else opts.model
+        )
+        live_runtime = session_host.get("runtime")
+        if live_runtime is not None:
+            live_runtime.set_model_fallback_message(session_model["message"])
         if held is not None:
             # #367 — a rebuild (/new /fork /resume /reload) re-resolves the
             # launch inputs over a registry that still holds the providers an
@@ -3135,6 +3246,11 @@ async def _async_main(argv: list[str]) -> int:
         # ``getAvailable``), so the bind is correct at runtime even though the
         # concrete registry does not structurally satisfy the stub protocol.
         harness.runtime.bind_model_registry(model_registry)  # pyright: ignore[reportArgumentType]
+        # #376 — the one question every prompt path asks before it writes
+        # anything (RPC, the TUI, -p, json, an extension's trigger_turn), after
+        # the ``input`` hook (``AgentHarness.set_prompt_check``): can a turn run
+        # on the model at all: provider, adapter, base URL; no auth setting (rounds 4, 5).
+        harness.set_prompt_check(turn_refusal)
         # Issue #77 — replay queued extension login providers onto the
         # process-global login registry so they appear in the /login method list
         # (guarded: alternate runtimes without the method are a no-op).
@@ -3257,7 +3373,9 @@ async def _async_main(argv: list[str]) -> int:
     # registry is bound, ``session_start`` has not run): its ``warning`` (a
     # custom id, guard 2) is printed once below, unless the late-route check
     # refused the model; rebuilds (/new /fork /resume /reload) do not reprint it.
-    launch_route = resolve_route(
+    # #376 — or the route the first build restored from the session (above).
+    launch_restored = session_model["route"] is not None
+    launch_route = session_model["route"] or resolve_route(
         parsed.model,
         parsed.provider,
         model_registry,
@@ -3330,8 +3448,18 @@ async def _async_main(argv: list[str]) -> int:
         # startup seed, which clamps the thinking level against the real route.
         pending_model = streaming.Model(id=launch_model.id, provider=launch_model.provider)
         harness.state.model = pending_model
+    # #376 — pi's ``modelFallbackMessage``: why this run is not on the model
+    # the session it opened last ran on. Carried by the runtime (the TUI shows
+    # it under the banner, as pi's ``showWarning``; every build sets it again
+    # after its ``session_start``, naming the model then active) and said on
+    # stderr in the other modes, where pi says nothing — stdout stays the
+    # run's own.
     runtime = await create_agent_session_runtime(
-        harness, _harness_factory, repo=repo, fs=fs
+        harness,
+        _harness_factory,
+        repo=repo,
+        fs=fs,
+        model_fallback_message=session_model["message"],
     )
     # #137 / ADR-0244 — hand the startup lock over. From here the runtime
     # moves it on every ``/new``, ``/fork``, ``/resume`` and ``/import``, and
@@ -3454,6 +3582,10 @@ async def _async_main(argv: list[str]) -> int:
             if rebuilt.turns_held is not None:
                 await _finish_refused_turns(rebuilt)
             late_rule.after_session_start()
+            if session_model["route"] is not None:
+                # #376 — this rebuild restored its session's own model: the
+                # launch inputs the hold asks about did not choose it.
+                return
             hold = late_rule.hold_for(parsed.model, parsed.provider)
             if hold is None or hold.holds(rebuilt.current_model):
                 return
@@ -3463,6 +3595,10 @@ async def _async_main(argv: list[str]) -> int:
             await hold.apply(rebuilt)
         finally:
             rebuilt.hold_turns(None)
+            # #376 review round 3 — the line names the model this rebuild is on
+            # now, after its ``session_start`` and any hold (``_fallback_message``).
+            session_model["message"] = _fallback_message(rebuilt.current_model)
+            runtime.set_model_fallback_message(session_model["message"])
 
     runtime.set_after_session_start(_settle_late_route)
     startup_model = harness.current_model
@@ -3487,6 +3623,15 @@ async def _async_main(argv: list[str]) -> int:
         # stdout stays byte-clean.
         label = "Note" if launch_route.kind == "guard2" else "Warning"
         print(f"{label}: {launch_route.warning}", file=sys.stderr)
+    # #376 review round 3 — said about the model the run is on now, after
+    # ``session_start`` and the late-route decision (``_fallback_message``), as
+    # the resolver's line above is said only while its route stands.
+    launch_fallback_message = _fallback_message(startup_model)
+    runtime.set_model_fallback_message(launch_fallback_message)
+    if launch_fallback_message and app_mode != "interactive":
+        # #376 — the TUI shows it in the transcript (``run_tui``): stderr written
+        # before it paints is erased by the repaint (see the #98 gate below).
+        print(f"Warning: {launch_fallback_message}", file=sys.stderr)
 
     # === First-run onboarding gate (#23) ===
     # Judged HERE for the same reason as the #98 gate directly above: this is
@@ -3659,7 +3804,9 @@ async def _async_main(argv: list[str]) -> int:
         # (so has_configured_auth is True) AND owns the empty-provider diagnostic,
         # so condition (a) cannot wrongly fire for it.
         if app_mode in ("print", "json"):
-            turn_route = resolve_route(
+            # #376 — a restored session model is judged as itself: ``parsed``
+            # is only the fallback it did not need.
+            turn_route = launch_route if launch_restored else resolve_route(
                 parsed.model,
                 parsed.provider,
                 model_registry,

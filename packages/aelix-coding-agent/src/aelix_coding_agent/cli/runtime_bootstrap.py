@@ -2209,6 +2209,103 @@ def resolve_model(
     return resolve_route(model_flag, provider_flag, registry, default_provider).model
 
 
+def restore_session_route(selection: tuple[str, str], registry: Any = None) -> ResolvedRoute | None:
+    """The route for the model a resumed session last ran on, or ``None`` when it cannot run (#376).
+
+    ``selection`` is :func:`aelix_agent_core.session.context.resolve_resumed_model`'s
+    ``(provider, model_id)``: an exact provider and id the session recorded, never a
+    string to be placed, so none of :func:`resolve_route`'s inference runs — no
+    prefix reading, no swap, no guard 2, no settings ``defaultProvider``. pi's
+    restore (``core/sdk.ts:217-232`` at ``pi@1cedd3272``) takes
+    ``modelRuntime.getModel(provider, id)`` when ``hasConfiguredAuth(provider)``
+    holds, and otherwise says ``Could not restore model …`` and falls back.
+
+    * **A model the registry knows** (the catalogue, ``models.json``, an
+      extension's ``setup()`` registration — :func:`_find_in`, the lookup step E
+      of :func:`resolve_route` makes for ``--provider``) is restored when its
+      provider holds a credential from any source, ``.env`` included, as pi's
+      ``hasConfiguredAuth`` and as step E: the session's record named the route,
+      and a credential that only authenticates a route it did not choose is what
+      ADR-0250 allows.
+    * **An id the registry does not know** is restored as a custom id under the
+      recorded provider (:func:`_custom_in`, the model step E builds) only on a
+      provider the user defined (``models.json`` or an extension) that holds a
+      credential, or on one their OWN credential authenticates
+      (:func:`route_authenticated` — not a ``.env``). That is the condition
+      under which the launch itself sends an uncatalogued id anywhere (guard 2:
+      to OpenRouter only on the user's own key), so a session cannot reach a
+      route the same string typed at launch could not. pi restores no custom id
+      at all (``getModel`` knows none).
+    * **Nothing this build cannot run** (:func:`is_runnable`: no adapter for the
+      ``api``, an unexpanded base URL). pi has no such check; aelix's launch
+      gates and ``find_initial_model`` all apply it.
+
+    Known limit: "a credential" is :func:`_configured_auth`
+    (``ModelRegistry.has_configured_auth``), which does not count request-level
+    auth the adapters accept without a key — an auth header in ``models.json``
+    or a registration's ``headers``, ``ANTHROPIC_CUSTOM_HEADERS``,
+    ``ANTHROPIC_AUTH_TOKEN``, google-vertex ADC (pi's ``hasConfiguredAuth``
+    counts ADC). A session whose only auth is one of those is not restored: it
+    falls back to the launch inputs and says so (ADR-0239 decision 5).
+    """
+
+    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    provider, model_id = selection
+    if not provider or not model_id:
+        return None
+    found = _find_in(provider, model_id, registry)
+    if found is not None:
+        if not _configured_auth(registry, provider):
+            return None
+        model = _openrouter_base(found)
+        return ResolvedRoute(model, "session") if is_runnable(model) else None
+    user_defined = user_defined_providers(registry)
+    if provider in user_defined:
+        if not _configured_auth(registry, provider):
+            return None
+    elif not route_authenticated(registry, provider):
+        return None
+    custom = _openrouter_base(_custom_in(provider, model_id, registry, user_defined))
+    if custom.api == "unknown" or not is_runnable(custom):
+        return None
+    return ResolvedRoute(custom, "session", warning=_custom_warning(provider, model_id, custom))
+
+
+def restore_fallback_message(
+    selection: tuple[str, str], fallback: Model | None, registry: Any = None
+) -> str:
+    """pi's line for a session model that could not be restored (``core/sdk.ts:230,249``).
+
+    ``Could not restore model <provider>/<id>``, then ``. Using <provider>/<id>``
+    naming the model the run fell back to — only when a turn can run on it: it
+    has an adapter (:func:`is_runnable`) AND its provider a credential
+    (:func:`_configured_auth`, the restore's own question). pi's
+    ``findInitialModel`` falls back only to a model with auth, and with none
+    says ``No models available`` instead; aelix's fallback is what the launch
+    inputs resolve to, keyed or not — a keyless one fails at its first request
+    (``-p`` / ``--mode json``: at their launch gate) with its own message — so
+    the first half stands alone. The same known limit as
+    :func:`restore_session_route`: a fallback whose only auth is a header, an
+    auth token or Vertex ADC gets no ``Using`` half.
+    """
+
+    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    provider, model_id = selection
+    message = f"Could not restore model {provider}/{model_id}"
+    if (
+        fallback is not None
+        and fallback.provider
+        and fallback.id
+        and fallback.api != "unknown"
+        and is_runnable(fallback)
+        and _configured_auth(registry, fallback.provider)
+    ):
+        message += f". Using {fallback.provider}/{fallback.id}"
+    return message
+
+
 def enrich_copilot_base_url(model: Model, registry: Any) -> Model:
     """Adopt the registry's proxy-ep ``base_url`` for a github-copilot turn model.
 
@@ -2659,6 +2756,8 @@ __all__ = [
     "ResolvedRoute",
     "resolve_model",
     "resolve_route",
+    "restore_fallback_message",
+    "restore_session_route",
     "route_authenticated",
     "user_defined_providers",
 ]

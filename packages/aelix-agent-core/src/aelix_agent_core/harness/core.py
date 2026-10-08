@@ -806,6 +806,9 @@ class AgentHarness:
         self._pending_tasks: set[asyncio.Task[Any]] = set()
         # #367 (Aelix-additive) — the turn gate, see :meth:`hold_turns`.
         self._turn_gate: str | None = None
+        # #376 (Aelix-additive) — can a turn run on the model? See
+        # :meth:`set_prompt_check`. ``None``: nothing to ask (an embedder).
+        self._prompt_check: Callable[[Model], str | None] | None = None
         # #367 verify round 5 — set while the claimed turn is one the gate
         # refused (a gated ``trigger_turn``): ``_run`` streams nothing for it.
         self._turn_refusal: str | None = None
@@ -1095,6 +1098,31 @@ class AgentHarness:
 
         self._turn_gate = reason
 
+    def set_prompt_check(self, check: Callable[[Model], str | None] | None) -> None:
+        """Aelix-additive (#376): what :meth:`prompt` asks before it writes anything.
+
+        ``check(model)`` answers why no turn can run on ``model`` at all (no
+        provider, adapter or base URL), or ``None`` when one might.
+        :meth:`prompt` asks it once, at one point every prompt path goes
+        through — RPC ``prompt``, the TUI, ``-p``, ``--mode json`` and an
+        extension's ``send_message(..., trigger_turn=True)`` alike — AFTER the
+        ``input`` hook ran and BEFORE the user message is built, and raises
+        ``AgentHarnessError("invalid_state", reason)`` on an answer: nothing is
+        written and no turn starts. That is pi's place (``prompt`` runs
+        ``_runInputHandlers`` at ``agent-session.ts:1993``, then validates the
+        model at ``:2032-2050``, at ``pi@1cedd3272``): an ``InputHandled``
+        input needs no model, and a model an ``input`` handler switched to is
+        the one judged. pi also refuses a model without auth there; the CLI's
+        check asks no credential or auth setting (``turn_refusal``: a keyless
+        or GCP-unset Vertex prompt fails at request time, as before #376). pi does not ask on ``sendMessage``'s
+        ``triggerTurn``; here that turn is refused like the others. A refused
+        turn of the turn gate (:meth:`hold_turns`) is not asked: it sends
+        nothing. The CLI's harness factory binds it on every build
+        (``core.runnable_models.turn_refusal``); ``None`` asks nothing.
+        """
+
+        self._prompt_check = check
+
     @property
     def turns_held(self) -> str | None:
         """Why turns are held (:meth:`hold_turns`), or ``None`` when they are not."""
@@ -1339,6 +1367,7 @@ class AgentHarness:
         *,
         images: list[ImageContent] | None = None,
         source: Literal["interactive", "rpc", "extension"] = "interactive",
+        on_accept: Callable[[str], None] | None = None,
         _refused_by: str | None = None,
     ) -> list[AgentMessage]:
         # Sprint 4b §A: guard covers all non-idle phases (turn / compaction /
@@ -1401,11 +1430,27 @@ class AgentHarness:
                 if isinstance(input_result, InputHandled):
                     # Pi: handled exits prompt() entirely — harness returns idle,
                     # through the ``finally`` below like every other exit (#334).
+                    if on_accept is not None:
+                        on_accept("handled")
                     return []
                 if isinstance(input_result, InputTransform):
                     text = input_result.text
                     if input_result.images is not None:
                         images = input_result.images
+            # #376 — can a turn run on the model? Asked HERE, after the input
+            # hook and before anything of this prompt is built or written: pi's
+            # order (``agent-session.ts:1993`` then ``:2032-2050`` at
+            # ``pi@1cedd3272``). See :meth:`set_prompt_check`.
+            if _refused_by is None and self._prompt_check is not None:
+                refusal = self._prompt_check(self._state.model)
+                if refusal is not None:
+                    raise AgentHarnessError("invalid_state", refusal)
+            if on_accept is not None:
+                # pi's ``preflightResult`` (``agent-session.ts:2109``): the prompt
+                # is accepted. A caller that answers on it (RPC's response) does
+                # so at the next suspension, which comes before ``agent_start``
+                # (``test_the_response_precedes_the_turns_first_event``).
+                on_accept("started")
             # ``images`` REACHES THE MODEL HERE, and until this line it did not.
             #
             # Pi builds every user message through one helper —
@@ -2708,6 +2753,29 @@ class AgentHarness:
 
     # === Sprint 3b — 8 setters (Pi parity, agent-harness.ts:704-776) ===
 
+    def _records_model(self, model: Model) -> bool:
+        """Is ``model`` a selection the session should record (#376)?
+
+        Not a placeholder: a model whose resolution never named a protocol
+        (``api`` ``"unknown"``, the :class:`Model` default, or empty) — the
+        late-provider hold's ``Model(id, provider)`` (#367, ADR-0250 §2.11), an
+        unresolved route — or one with no provider or id. Restoring such a
+        record could only fall back, and recording the hold's placeholder
+        would name the late provider the hold keeps the session off. Nor a
+        model set while turns are held (:meth:`hold_turns`): the CLI holds
+        them while a pending launch or a held rebuild runs ``session_start``
+        and while it applies a hold, and a model a handler sets there is put
+        back to the placeholder, so it was never the session's.
+        """
+
+        if self._turn_gate is not None:
+            return False
+        return (
+            getattr(model, "api", None) not in ("", "unknown")
+            and bool(getattr(model, "provider", ""))
+            and bool(getattr(model, "id", ""))
+        )
+
     async def set_model(self, model: Model) -> None:
         """Replace the active model. Pi: ``agent-harness.ts:704-718``.
 
@@ -2715,14 +2783,34 @@ class AgentHarness:
         change is also queued onto ``_pending_session_writes`` so the eventual
         Session ADR-0022 path can persist it (Phase 2.2). State mutation is
         immediate either way.
+
+        Issue #376 — an IDLE change is written to the session too, as #198 did
+        for the thinking level. pi's ``AgentSession.setModel`` appends a
+        ``model_change`` on every call (``agent-session.ts:2485`` at
+        ``pi@1cedd3272``); here only the in-turn queue did, while every caller
+        a user reaches (the ``/model`` picker, ``/model <id>``, ``/agents use``,
+        an extension's ``setModel`` between turns) runs idle — so ``/model X``
+        then quitting reopened on the model the session's last answer named.
+        :meth:`_records_model` keeps placeholders out, in a turn too. Unlike the
+        thinking level it is not gated on a change: the live model can be one
+        the session never recorded (aelix writes no ``model_change`` for a
+        launch model), and re-picking it is what makes it the record. The idle
+        append runs after the emit and only while the state still holds
+        ``model``: a ``model_select`` handler that refuses it (the raise) or
+        answers with a ``set_model`` of its own (which records that one) leaves
+        no record of it.
         """
 
         previous = self._state.model
         self._state.model = model
-        if self._phase == "turn":
+        if self._phase == "turn" and self._records_model(model):
+            # #376 — the PROVIDER, as pi records it (``appendModelChange(
+            # model.provider, model.id)``). This wrote ``model.api`` here
+            # (``anthropic-messages``), a name no provider has, so the session
+            # restore read a record it could not resolve.
             self._pending_session_writes.append(
                 PendingModelChangeWrite(
-                    provider=getattr(model, "api", ""),
+                    provider=getattr(model, "provider", ""),
                     model_id=getattr(model, "id", ""),
                 )
             )
@@ -2737,6 +2825,33 @@ class AgentHarness:
                 "hook",
                 f"model_select hook handler raised: {exc}",
             ) from exc
+        if (
+            self._phase != "turn"
+            and self._session is not None
+            and self._state.model is model
+            and self._records_model(model)
+        ):
+            write = PendingModelChangeWrite(
+                provider=getattr(model, "provider", ""),
+                model_id=getattr(model, "id", ""),
+            )
+            if self._pending_session_writes or self._drain_lock.locked():
+                # #334's ordering, as ``set_thinking_level`` keeps it: behind an
+                # older queued write, never ahead of it.
+                self._pending_session_writes.append(write)
+                if self._phase == "idle":
+                    await self._drain_pending_session_writes()
+            else:
+                from aelix_agent_core.session.storage import SessionError
+
+                try:
+                    await self._session.append_model_change(write.provider, write.model_id)
+                except SessionError as exc:
+                    # A session another terminal owns (#137, ADR-0244): this one
+                    # switches its live model and records nothing — ``/model``
+                    # worked here before #376 and must not start failing.
+                    if exc.code != "read_only":
+                        raise
 
     async def set_thinking_level(self, level: str) -> None:
         """Replace the thinking level. Pi: ``agent-harness.ts:720-733``

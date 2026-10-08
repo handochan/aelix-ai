@@ -326,6 +326,65 @@ unwritten. Add them with the next release.
   retry fails, or a refusal ends one, `--mode json` ends with exit code 0 and
   the error in its last message, as it does when a model's error ends a
   retry; `-p` still exits 1.
+- **A session you reopen without `--model` comes back on the model it last ran
+  on, and a prompt that cannot run is no longer written into it (#376).**
+  `aelix --continue` (also `--resume`, `--session`, `--fork`, and `/resume`,
+  `/fork`, `/clone`, `/import`, `/reload` and RPC `switch_session`, `fork` and
+  `clone` inside a session) did not restore the session's model. With no
+  settings default the session had no model at all: RPC's `get_state` showed an
+  empty model, every prompt failed with `No provider registered for
+  api='unknown'` and was still written into the session, and `/compact` and
+  branch summaries failed the same way. With a settings `defaultModel` it
+  silently switched: a session that ran on `claude-haiku-4-5` resumed on your
+  default instead, in every mode. The model is now restored — whichever the
+  session recorded last: a `/model` pick, or the model that wrote an answer —
+  unless you pass `--model`, `--provider` or `--api-key`, or an agent profile
+  names a model, as in pi. A `/model` pick is now recorded when you make it, as
+  pi records every pick, so `/model` then quitting comes back on that model; a
+  model the session is only held on (the late-provider placeholder) is never
+  recorded. The model comes back only if it can still run: a model this build,
+  your `models.json` or an extension knows, with a key for its provider from
+  any source. A model id nothing lists comes back as a custom id on a provider
+  you defined (in `models.json` or an extension) when that provider has any
+  key, as `--provider <it> --model <id>` would at launch; on any other
+  provider — OpenRouter, where the launch sends such an id as written, or a
+  built-in provider whose catalogue does not list it — only on a key of your
+  own, never one from a project `.env` (for a built-in provider that is
+  stricter than typing the same `--provider`/`--model` at launch). Otherwise
+  aelix uses what it would have picked without the session and says `Could not
+  restore model <provider>/<id>. Using <provider>/<id>` — the `Using` half
+  naming the model the run is on once the extensions' `session_start` handlers
+  have run, and only when that model has an adapter and a key — under the
+  banner in the TUI and after each of the in-session commands above, on stderr
+  in `-p`, `--mode json` and RPC (at startup and after `switch_session`, `fork`
+  and `clone`). The thinking level the session recorded is now clamped against
+  the model it came back on. A prompt on a model that certainly cannot run
+  for a reason that is not a credential — no model at all (the empty model
+  above: no provider and no adapter), one this build has no adapter for
+  whatever its base URL (`mistral/...`, for one), or one with no base URL
+  (none declared, or a `{NAME}` placeholder in it left unset, such as
+  `CLOUDFLARE_ACCOUNT_ID` for `cloudflare-workers-ai`, even with a key set) —
+  is refused before anything is written to the session, in every mode (RPC
+  answers `success: false`, `-p` and `--mode json` exit 1). As in pi, that is
+  asked after the
+  extensions' `input` handlers ran: an input an extension handles itself is
+  still answered, and a model an `input` handler switches to is the one
+  judged; a turn an extension triggers with `send_message(...,
+  trigger_turn=True)` is refused the same way (while the extensions'
+  `session_start` handlers are still running after a launch that resolved no
+  model, the late-provider hold answers such a turn first, as before: its
+  message is written with the hold's error). No key, auth header, token or
+  Google Cloud setting is asked: a prompt whose provider has no key is handled
+  exactly as before — in the TUI and RPC it is sent and fails with `No API key
+  for provider: <provider>`, and `-p` / `--mode json` refuse it at startup as
+  they already did — so an auth header in `models.json`,
+  `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_AUTH_TOKEN`, Vertex Application
+  Default Credentials, or a Vertex key from `--api-key`, `auth.json` or
+  `models.json` keep working, and an RPC prompt on Vertex with no Google Cloud
+  setup is written and fails with the adapter's own error, as before. Known limit: a session whose only auth is
+  one of those is not restored to its model — it falls back and says so. A mid-turn
+  model change was recorded with the model's protocol (`anthropic-messages`)
+  where its provider belongs, and now records the provider.
 - **A delegated agent now thinks at the level you are thinking at, so a model
   that cannot switch reasoning off no longer kills every delegation (#354).**
   A child ran at the thinking level its profile set and nothing else — and none
@@ -2067,7 +2126,7 @@ unwritten. Add them with the next release.
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
   but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:5347`), so they all painted the same pre-turn figure,
+  the turn ends (`core.py:5462`), so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

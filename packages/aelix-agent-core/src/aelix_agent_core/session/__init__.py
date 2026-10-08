@@ -31,6 +31,7 @@ from aelix_agent_core.session.context import (
     create_compaction_summary_message,
     create_custom_message,
     create_display_custom_message,
+    resolve_resumed_model,
     resolve_resumed_thinking_level,
     select_display_entries,
 )
@@ -158,6 +159,7 @@ __all__ = [
     "load_jsonl_session_metadata",
     "lock_path_for",
     "prepare_compaction",
+    "resolve_resumed_model",
     "resolve_resumed_thinking_level",
     "select_display_entries",
 ]
