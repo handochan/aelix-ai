@@ -18,6 +18,7 @@ from aelix_coding_agent.extensions.api import (
     ExtensionFactory,
     ExtensionFlag,
     ExtensionRuntimeActions,
+    RegisteredSetting,
     _ExtensionRuntime,
 )
 from aelix_coding_agent.extensions.command_context import (
@@ -49,6 +50,7 @@ __all__ = [
     "ExtensionUIContext",
     "HeadlessExtensionUIContext",
     "LoadExtensionsResult",
+    "RegisteredSetting",
     "_ExtensionRuntime",
     "load_extension_from_factory",
     "load_extensions",

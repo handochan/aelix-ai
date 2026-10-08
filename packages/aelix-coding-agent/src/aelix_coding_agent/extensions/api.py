@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import os
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
@@ -628,7 +629,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:588-596``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:589-597``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -648,7 +649,7 @@ class _ExtensionRuntime:
         3. DEPTH (finding I4). Product-core will not HOLD a runtime inside a
            delegated child, regardless of which extension tier produced it.
            This is the fork-bomb invariant living in the seam rather than in
-           one extension's constructor — ``extensions/loader.py:861-864`` drops
+           one extension's constructor — ``extensions/loader.py:862-865`` drops
            tier-4 entry points under ``--no-extensions`` and
            ``agents/profile.py:369-374`` bans ``extensions:`` at project
            scope, but a user-scope tier-1 extension still loads in a child
@@ -906,6 +907,17 @@ class ExtensionShortcut:
 
 
 @dataclass(frozen=True)
+class RegisteredSetting:
+    """A live boolean setting owned and persisted by an extension."""
+
+    name: str
+    label: str
+    get_value: Callable[[], bool]
+    set_value: Callable[[bool], None | Awaitable[None]]
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class MessageRenderOptions:
     """Pi ``MessageRenderOptions`` (``types.ts:1047-1049``)."""
 
@@ -1003,6 +1015,7 @@ class Extension:
     # === Sprint 5a (Phase 3.1) additions (P-27) ===
     commands: dict[str, RegisteredCommand] = field(default_factory=dict)
     shortcuts: dict[str, ExtensionShortcut] = field(default_factory=dict)
+    settings: dict[str, RegisteredSetting] = field(default_factory=dict)
     message_renderers: dict[str, MessageRenderer] = field(default_factory=dict)
     source_info: ExtensionSourceInfo | None = None
     resolved_path: str | None = None
@@ -1842,6 +1855,50 @@ class ExtensionAPI:
             handler=handler,
             description=description,
             source=self._extension.name,
+        )
+
+    def register_setting(
+        self,
+        name: str,
+        *,
+        label: str,
+        get_value: Callable[[], bool],
+        set_value: Callable[[bool], None | Awaitable[None]],
+        description: str = "",
+    ) -> None:
+        """Contribute a live /settings toggle; its owner persists the global value.
+
+        Registration performs no getter/setter calls. Runtime guards prevent old
+        contributions from running after reload; the TUI supports async setters.
+        """
+        self._runtime.assert_active()
+        if not name or not label.strip() or not callable(get_value) or not callable(set_value):
+            raise ValueError("A setting needs a name, label, getter and setter.")
+        if any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name + label + description):
+            raise ValueError("Setting metadata may not contain control characters.")
+
+        def checked_get() -> bool:
+            self._runtime.assert_active()
+            value = get_value()
+            if type(value) is not bool:
+                raise TypeError("A setting getter must return bool.")
+            return value
+
+        async def checked_set(value: bool) -> None:
+            self._runtime.assert_active()
+            if type(value) is not bool:
+                raise TypeError("A setting setter needs bool.")
+            result = set_value(value)
+            if inspect.isawaitable(result):
+                await result
+            self._runtime.assert_active()
+
+        self._extension.settings[name] = RegisteredSetting(
+            name=name,
+            label=label.strip(),
+            get_value=checked_get,
+            set_value=checked_set,
+            description=description,
         )
 
     def register_shortcut(

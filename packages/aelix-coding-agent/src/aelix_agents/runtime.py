@@ -517,7 +517,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:718``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:719``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a
@@ -1205,7 +1205,7 @@ class _SubagentRuntimeImpl:
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
-        containment ``EventBus`` itself applies (``extensions/api.py:329-335``).
+        containment ``EventBus`` itself applies (``extensions/api.py:330-336``).
         """
 
         progress = SubagentProgress(

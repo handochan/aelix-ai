@@ -72,7 +72,7 @@ the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1203-1204`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1216-1217`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and

@@ -516,7 +516,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     ``$AELIX_CODING_AGENT_DIR`` set after import is still honoured — and so the
     emitted path is the directory the loader actually scans
     (``get_agent_dir()/extensions`` → ``~/.aelix/agent/extensions``, see
-    ``extensions/loader.py:790-792``), never the plausible-but-wrong
+    ``extensions/loader.py:791-793``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
     WHO CHOOSES (issue #161). Ordering alone did not settle it: the global
@@ -545,7 +545,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     exists to kill. ``cli/entry.py:1503`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
-    (``loader.py:790-792``) is not trust-gated at all, so it is the target that
+    (``loader.py:791-793``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
@@ -690,7 +690,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1352-1678``). A model told
+        # typed overloads at ``extensions/api.py:1365-1691``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a
@@ -819,7 +819,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3530``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3553``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:137-153``) /reload routes to

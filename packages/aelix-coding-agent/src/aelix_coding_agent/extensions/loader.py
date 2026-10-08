@@ -392,6 +392,7 @@ async def activate_pending_extension(
         shell.cleanups.clear()
         shell.commands.clear()
         shell.shortcuts.clear()
+        shell.settings.clear()
         shell.message_renderers.clear()
         runtime.actions.refresh_tools()
         runtime.actions.refresh_hooks()
