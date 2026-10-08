@@ -101,7 +101,9 @@ The default branch receives its own reviewed version/pin, update-feed and
 changelog PR so installed users receive the correct notice. Both PRs must pass
 CI before the tag is pushed. The four published packages and server workspace
 version, six exact sibling pins, the TUI extra, version-consistency test, lock
-and SBOM must agree with the maintenance tag.
+and SBOM must agree with the maintenance tag. The default branch keeps the
+candidate's canonical SBOM verbatim; main's unreleased dependency additions do
+not belong in the bill attached to this maintenance release.
 
 Before publishing, the release workflow downloads the exact `dist` artifact to
 all nine Linux/macOS/Windows and Python 3.11/3.12/3.13 combinations. It installs
