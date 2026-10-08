@@ -377,7 +377,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2221``) and render it
+    the harness's own auto-compaction guard at ``core.py:2222``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -448,7 +448,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5174-5180`` intersects ``_state.tools`` with
+    (``harness/core.py:5187-5193`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -771,7 +771,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3619-3636`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3612-3629`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -902,7 +902,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2825`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2818`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 

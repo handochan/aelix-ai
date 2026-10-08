@@ -26,7 +26,7 @@ import inspect
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
@@ -1493,15 +1493,12 @@ class AgentHarness:
             # exception. The guard covers the region, not those two calls by name,
             # so an await added to this gap later is covered too.
             #
-            # It ENDS at the ``_run`` call because that is the last point where this
-            # frame can prove the turn never started — NOT because the messages are
-            # safe past it: ``_run`` awaits ``self._session.build_context()``
-            # (its first await) before ``agent_loop(prompts, ...)`` is handed
-            # the list, and a session raising there loses them the same three ways
-            # (.omc/specs/311-next-turn-drain.py ARM 6). That window is open and
-            # reported, not closed here — it takes the live user message with it
-            # too, so it is a decision about a failed turn's whole input, and
-            # widening this guard is not it (311-sabotage.py ARM D).
+            # This guard ends at ``_run``. Its setup guard owns the remaining
+            # ``build_context`` await and restores BOTH the drained messages
+            # and this live input if it fails (ADR-0258, #320). Once the loop
+            # owns them, ``message_end`` commits each message to live state.
+            # Its uncommitted inputs are also restored on cancellation, while
+            # committed inputs never replay merely because the provider fails.
             #
             # Prepended, not appended: ``next_turn()`` is legal from inside these
             # very handlers, so the queue can already hold a STRICTLY NEWER message
@@ -1533,7 +1530,11 @@ class AgentHarness:
             except BaseException:
                 self._next_turn_queue = drained_next + self._next_turn_queue
                 raise
-            result = await self._run(prompts, system_prompt=system_prompt)
+            result = await self._run(
+                prompts,
+                system_prompt=system_prompt,
+                pending_inputs=[*drained_next, user_msg],
+            )
             # Issue #4 Lane B — outer recovery loop. pi parity
             # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
             # agent.continue()``). Each pass first drains the auto-retry loop
@@ -5103,6 +5104,7 @@ class AgentHarness:
         prompts: list[AgentMessage],
         *,
         system_prompt: str,
+        pending_inputs: list[AgentMessage] | None = None,
     ) -> list[AgentMessage]:
         # #334 — runs under its ``prompt()``'s claim and flips nothing: the
         # phase is "turn" from the prompt's entry to its release, and this
@@ -5115,19 +5117,30 @@ class AgentHarness:
         # before this point should do); an abort made after it survives this
         # run, which is what the tail's checks in ``prompt()`` read.
         self._abort_requested = False
+        uncommitted_inputs = list(pending_inputs or [])
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
         # ``session.build_context().messages`` (Pi parity:
         # ``agent-harness.ts:419, 427`` rebuilds per turn). When None, keep
         # the in-memory primary (Sprint 3b backward compat per ADR-0022
         # §"Aelix-additive divergences" item 3).
-        if self._session is not None:
-            session_ctx = await self._session.build_context()
-            turn_messages: list[AgentMessage] = list(session_ctx.messages)
-            turn_session_id = self._state.session_id
-        else:
-            turn_messages = list(self._state.messages)
-            turn_session_id = self._state.session_id
+        try:
+            if self._session is not None:
+                session_ctx = await self._session.build_context()
+                turn_messages: list[AgentMessage] = list(session_ctx.messages)
+                turn_session_id = self._state.session_id
+            else:
+                turn_messages = list(self._state.messages)
+                turn_session_id = self._state.session_id
+        except BaseException:
+            # #320 — the loop has not received any input yet. Preserve the
+            # submitted messages, including the live user message, ahead of
+            # anything queued during the await. Hook-injected messages are
+            # deliberately excluded: before_agent_start will generate them
+            # again. A retry's inputs are already committed and supplies none.
+            if uncommitted_inputs:
+                self._next_turn_queue = uncommitted_inputs + self._next_turn_queue
+            raise
         # F-10: install per-turn snapshot so ``_current_system_prompt`` returns
         # the chained value resolved by ``before_agent_start`` for the duration
         # of this turn only. Sprint 4b extends with messages + session_id per
@@ -5224,6 +5237,20 @@ class AgentHarness:
                         if (reduced is not None and reduced is not event.message)
                         else event.message
                     )
+                    # #320 — commit at the same lifecycle boundary as the
+                    # session, not only when the entire loop returns. A later
+                    # provider/tool failure or cancellation must retain inputs
+                    # and completed partial turns. Use the reduced message in
+                    # both stores, and never append the loop's return again.
+                    self._state.messages.append(final_message)
+                    # Admission happens at this commit, not when the loop was
+                    # scheduled: cancellation in agent_start/message_start or
+                    # the reducer still owes the uncommitted input back. Match
+                    # the original identity since hooks may replace it.
+                    for input_index, pending in enumerate(uncommitted_inputs):
+                        if pending is event.message:
+                            uncommitted_inputs.pop(input_index)
+                            break
                     # #379 review round 3: the setup failure's record follows the
                     # message the hooks leave (the loop swaps it into state).
                     failure = self._setup_failure
@@ -5241,8 +5268,7 @@ class AgentHarness:
                     # 2) Persist the REPLACEMENT (Sprint 4a primary write path,
                     #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
                     #    When no session is attached we skip — the no-session
-                    #    path carries the replacement via the loop return into
-                    #    ``_state.messages`` (ADR-0022 backward-compat).
+                    #    path has already committed it to ``_state.messages``.
                     if self._session is not None:
                         try:
                             await self._session.append_message(final_message)
@@ -5447,19 +5473,20 @@ class AgentHarness:
                     stop_reason="error",
                     error_message=str(exc),
                 )
-                self._state.messages.append(failure)
-                for closure_event in (
-                    MessageStartEvent(message=failure),
-                    MessageEndEvent(message=failure),
-                    TurnEndEvent(message=failure, tool_results=[]),
-                    AgentEndEvent(messages=list(self._state.messages)),
-                ):
+
+                def failure_events() -> Iterator[AgentEvent]:
+                    yield MessageStartEvent(message=failure)
+                    yield MessageEndEvent(message=failure)
+                    yield TurnEndEvent(message=failure, tool_results=[])
+                    # Build after message_end committed the failure/replacement.
+                    yield AgentEndEvent(messages=list(self._state.messages))
+
+                for closure_event in failure_events():
                     try:
                         await emit(closure_event)
                     except Exception as emit_exc:  # noqa: BLE001
                         _log.debug("emit during hook-fail close-out raised: %r", emit_exc, exc_info=True)
                 raise
-            self._state.messages.extend(new_messages)
             # Settled event: this run is over. Not idle yet — ``prompt()``'s
             # tail may still retry or compact (#334).
             # Sprint 3b populates ``next_turn_count`` from the queue size at
@@ -5472,6 +5499,11 @@ class AgentHarness:
                 _log.debug("settled hook handler raised: %r", exc, exc_info=True)
             return new_messages
         finally:
+            # Before any cleanup await: a cancelled reducer/listener can leave
+            # only part of the input list committed. Restore that remainder,
+            # once, ahead of late queue entries; completed messages stay put.
+            if uncommitted_inputs:
+                self._next_turn_queue = uncommitted_inputs + self._next_turn_queue
             # Safety net: guarantee a flush even if the loop crashed before
             # turn_end fired. Idempotent if turn_end already drained the queue.
             # Issue #301: a write that the session refuses is now handled

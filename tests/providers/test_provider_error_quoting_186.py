@@ -434,7 +434,9 @@ async def _prompt_through(h: Any, failure: Any) -> tuple[list[list[Any]], list[A
 
     runs: list[list[Any]] = []
 
-    async def fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def fake_run(
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
+    ) -> list[Any]:
         runs.append(list(prompts))
         if len(runs) == 1:
             h._state.messages.extend(prompts)

@@ -622,7 +622,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2011-2028``) nor child (``modes/print_mode.py:160-219``)
+    (``tui/shell.py:2009-2026``) nor child (``modes/print_mode.py:160-219``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """

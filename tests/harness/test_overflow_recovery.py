@@ -112,7 +112,7 @@ async def test_overflow_compacts_with_reason_and_reruns() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
@@ -142,7 +142,7 @@ async def test_overflow_pops_error_before_rerun() -> None:
     messages_at_rerun: list[Any] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
@@ -174,7 +174,7 @@ async def test_overflow_never_loops_forever() -> None:
     run_calls: list[list[Any]] = []
 
     async def _always_overflow(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -200,7 +200,7 @@ async def test_silent_overflow_on_success_compacts_without_retry() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         # A completed answer whose usage exceeded the window (z.ai style).
@@ -234,7 +234,7 @@ async def test_overflow_nothing_to_compact_is_safe() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -258,7 +258,7 @@ async def test_overflow_disabled_when_auto_compaction_off() -> None:
     run_calls: list[list[Any]] = []
 
     async def _fake_run(
-        prompts: Any, *, system_prompt: Any = None
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
     ) -> list[Any]:
         run_calls.append(list(prompts))
         h._state.messages.extend(prompts)
@@ -312,7 +312,9 @@ async def test_real_compact_emits_overflow_reason_and_will_retry() -> None:
 
     run_calls: list[list[Any]] = []
 
-    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+    async def _fake_run(
+        prompts: Any, *, system_prompt: Any = None, pending_inputs: Any = None
+    ) -> list[Any]:
         run_calls.append(list(prompts))
         if len(run_calls) == 1:
             h._state.messages.append(_overflow_err())

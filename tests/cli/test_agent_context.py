@@ -440,11 +440,11 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:3576-3579`` gates the factory rebuild on
+    ``tui/shell.py:3569-3572`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
-    (``harness/core.py:3848-3855``) and never re-scans the extension
+    (``harness/core.py:3849-3856``) and never re-scans the extension
     directories — so the file the agent just wrote stays dormant while the
     agent reports success.
 

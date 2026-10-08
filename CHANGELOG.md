@@ -2256,8 +2256,8 @@ unwritten. Add them with the next release.
   `◔ 42% · 84K/200K` sat on the previous turn's number for a whole
   ten-minute multi-tool turn, and `/model` changed the denominator without
   recomputing anything. The refresh already ran once per provider round-trip —
-  but each one estimated over a message list the harness does not extend until
-  the turn ends (`core.py:5462`), so they all painted the same pre-turn figure,
+  but each one estimated over a message list the harness then extended only
+  when the turn ended, so they all painted the same pre-turn figure,
   which on the first turn of a fresh session is literally `◔ 0%`. The
   mid-turn number now comes from the assistant message the provider just
   finished — its own reported usage, the same term the turn-end estimate

@@ -937,7 +937,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:739, 1051, 2151) — without asking each to remember.
+        # (shell.py:737, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -1236,7 +1236,7 @@ class EventRenderer:
         (interactive-mode.ts:2752-2757) because pi's abort is signal-based: the
         stream returns a message with stopReason "aborted" and ``message_end``
         fires normally on the way out (agent-loop.ts:195-199). Aelix aborts by
-        CANCELLING the turn task, and the close-out (harness/core.py:5405-5421)
+        CANCELLING the turn task, and the close-out (harness/core.py:5431-5447)
         deliberately emits ONLY ``turn_end`` + ``agent_end`` — no
         ``message_start``/``message_end`` pair, so that abort stays off the
         session write path. ``_render_message_error`` is message_end-only and
@@ -1245,7 +1245,7 @@ class EventRenderer:
 
         ``stop_reason == "aborted"`` on ``turn_end`` is produced by that close-out
         and, today, by nothing else — the harness never threads ``signal`` into
-        ``agent_loop`` (core.py:5361-5367, loop.py:107), so no adapter can raise
+        ``agent_loop`` (core.py:5387-5393, loop.py:107), so no adapter can raise
         it. Normal turns carry "end_turn"/"tool_use"; provider failures carry
         "error" and already print via ``_render_message_error``. Cancelling the
         retry COUNTDOWN goes through ``abort_retry`` and prints its own line;
@@ -1307,7 +1307,7 @@ class EventRenderer:
         frame grows with the block while the frames keep coming at the throttle
         floor, so a 150KB chain of thought spent tens of seconds inside
         ``plain_lines`` — on the prompt-toolkit loop, since the harness calls the
-        subscriber synchronously (harness/core.py:2398). At 50KB, 98% of the
+        subscriber synchronously (harness/core.py:2399-2403). At 50KB, 98% of the
         rendered lines were discarded unread.
 
         Rich wraps each newline-separated line independently, so a slice that
@@ -1343,7 +1343,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3480). A provider
+            # write the same last-writer-wins sink (shell.py:3473). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

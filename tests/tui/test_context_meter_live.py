@@ -1,9 +1,9 @@
 """#249 — the footer context meter's MID-TURN figure, read off ``message_end``.
 
-``get_session_stats`` cannot serve a mid-turn read: the harness only extends
-``_state.messages`` once the loop has returned (``harness/core.py:5462``), so
-the per-round-trip refreshes the TUI already ran all estimated over an
-unchanged list and repainted the PRE-turn number. The fresh figure is carried
+Before #320, the harness extended state only after the whole loop returned,
+so the TUI's per-round-trip stats walks repainted the PRE-turn number. State
+now commits at message_end, and the direct usage figure still avoids repeated
+stats walks during tool iterations. The fresh figure is carried
 by the ``message_end`` payload itself, and
 :func:`~aelix_coding_agent.tui.shell._live_context_usage` is the five lines
 that read it.

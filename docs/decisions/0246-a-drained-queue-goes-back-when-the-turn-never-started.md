@@ -1,6 +1,8 @@
 # 0246. A drained queue goes back when the turn never started
 
 Status: Accepted (2026-09-22)
+Follow-up: ADR-0258 (#320, 2026-10-09) closes the `build_context` window
+reported below and commits completed failed-turn messages to live state.
 Date: 2026-09-22
 Supersedes/relates: ADR-0245 (the same shape one queue over — this ADR closes
 the gap 0245's own audit found, left open and named, at the two hook awaits

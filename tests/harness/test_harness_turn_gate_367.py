@@ -101,10 +101,9 @@ async def test_a_trigger_turn_while_held_runs_as_a_refused_turn() -> None:
     assert (harness.is_idle, harness.turns_held) == (True, _REASON)
     harness.hold_turns(None)
     await harness.prompt("hi")
-    # No session here, so the refused turn's own message is not in the
-    # history (a failed turn's prompt lives in the session); the queued one
-    # rides with the prompt.
-    assert [_users(c) for c in seen] == [["queued-before", "hi"]]
+    # #320 preserves the refused turn's committed input in history even with
+    # no session. The unrelated queue still rides with the next real prompt.
+    assert [_users(c) for c in seen] == [["hook-prompt", "queued-before", "hi"]]
 
 
 async def test_a_trigger_turn_while_a_refused_turn_runs_is_queued() -> None:
@@ -122,7 +121,7 @@ async def test_a_trigger_turn_while_a_refused_turn_runs_is_queued() -> None:
     await harness.wait_for_idle()
     harness.hold_turns(None)
     await harness.prompt("hi")
-    assert [_users(c) for c in seen] == [["second", "hi"]]
+    assert [_users(c) for c in seen] == [["first", "second", "hi"]]
 
 
 async def test_a_held_harness_refuses_a_manual_compaction() -> None:
