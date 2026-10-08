@@ -36,6 +36,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0260 — Retry recovery closes at the successful assistant response](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
+  (Accepted, 2026-10-09; #197). Reset and notify before tools and later responses;
+  subsequent provider failures get a fresh budget. Supersedes successful retry
+  completion timing in ADR-0128 and ADR-0215.
+
 | #    | Title                                                                                                                                                  | Status                              | 한 줄 결정                                                                                                                                          |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0001 | [Use Aelix as the Product Name](0001-use-aelix-as-product-name.md)                                                                                     | Accepted                            | 프로젝트와 플랫폼 이름은 `Aelix`를 사용한다.                                                                                                        |

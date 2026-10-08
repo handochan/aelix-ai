@@ -293,6 +293,9 @@ unwritten. Add them with the next release.
   during shutdown cannot leave a second worker waiting forever on a queue.
   Slash commands and ordinary text no longer start a file-completion worker;
   file-completion values and ordering stay the same.
+- Clear the retry indicator as soon as the recovered assistant response ends,
+  including a response that calls tools. Remaining tool work and later responses
+  keep running, and a later provider failure gets a fresh retry budget. (#197)
 
 - **A `/login` subscription whose token refresh hits a passing failure is
   retried instead of failing the turn (#379, ADR-0251).** When an OpenAI

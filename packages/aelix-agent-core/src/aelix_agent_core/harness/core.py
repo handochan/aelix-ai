@@ -1644,9 +1644,9 @@ class AgentHarness:
                         # the path reachable often enough to see, and shipping a
                         # fix that thanks the user for cancelling would be worse
                         # than the defect it replaces.
-                        succeeded = terminal_assistant.stop_reason not in (
-                            "error",
-                            "aborted",
+                        failure = self._setup_failure  # #379: authoritative record
+                        succeeded = terminal_assistant.stop_reason not in ("error", "aborted") and (
+                            failure is None or terminal_assistant is not failure.message
                         )
                         # Reset BEFORE emitting: a subscriber that reads the
                         # counter must not observe the stale value. (One that
@@ -5267,11 +5267,11 @@ class AgentHarness:
                                 await raw
                         except Exception:  # noqa: BLE001 — listener errors must not break
                             _log.debug("listener raised", exc_info=True)
-                    # 4) Return the replacement (or ``None``) so the loop can
-                    #    apply the identity swap into ``context.messages`` and
-                    #    ``new_messages`` → ``_state.messages``. Do NOT run the
-                    #    generic ``_to_hook_event`` fan-out again — for
-                    #    message_end that fan-out IS the reduction in step 1.
+                    # 4) Close recovery before tools or later responses (#197).
+                    await self._close_recovered_retry(final_message)
+                    # 5) Return the replacement for the loop's identity swap
+                    #    into context/new/state messages. The hook reduction
+                    #    already ran in step 1; do not fan out a second time.
                     return reduced
                 # Dispatch to local listeners first.
                 for listener in list(self._listeners):
@@ -5508,6 +5508,30 @@ class AgentHarness:
 
     async def _drain_follow_up(self) -> list[AgentMessage]:
         return self._follow_up_queue.drain()
+
+    async def _close_recovered_retry(self, message: AgentMessage) -> None:
+        """#197 / ADR-0260 — success closes at the recovered assistant response.
+
+        Pi closes here too (agent-session.ts @ ce950d78). Waiting for `_run()`
+        to return leaves the retry widget up during successful tool work and
+        spends this call's budget on a later, unrelated provider failure.
+        """
+
+        failure = self._setup_failure
+        if (
+            not isinstance(message, AssistantMessage)
+            or message.stop_reason in ("error", "aborted")
+            # #379's recorded setup failure remains authoritative even if a
+            # hook rebuilt its type or made it look like a successful response.
+            or (failure is not None and message is failure.message)
+            or self._retry_attempt <= 0
+        ):
+            return
+        from aelix_agent_core.types import AutoRetryEndEvent
+
+        attempt = self._retry_attempt
+        self._retry_attempt = 0
+        await self._emit_to_subscribers(AutoRetryEndEvent(success=True, attempt=attempt))
 
 
 # === AgentEvent → HookEvent mapping ===

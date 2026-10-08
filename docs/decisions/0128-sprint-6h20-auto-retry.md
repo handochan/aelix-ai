@@ -1,6 +1,8 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
 Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2)
+Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
+for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 

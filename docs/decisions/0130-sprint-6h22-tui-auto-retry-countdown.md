@@ -4,6 +4,10 @@ Status: Accepted (6h₂₂ shipped — v2 polish closing the Sprint 6h₂₀ def
 Date: 2026-06-03
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
+Follow-up: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
+closes a successful retry at the recovered assistant response, so this same
+subscriber clears “Retrying” while tools and later responses are still running.
+
 ## Context
 
 Sprint 6h₂₀ (ADR-0128) ported pi's `_handleRetryableError` into protected core

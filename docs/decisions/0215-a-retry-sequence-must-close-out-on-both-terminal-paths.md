@@ -1,6 +1,8 @@
 # 0215. A retry sequence must close out on both terminal paths, and Esc must mean something once the request is in flight
 
 Status: Accepted (2026-08-13).
+Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
+for successful retry completion timing only; failure cleanup and interruption remain accepted.
 Date: 2026-08-13
 Relates: ADR-0128 (the auto-retry loop port), ADR-0130 (the TUI retry countdown + Esc handler swap).
 ADR-0197 (the band rule — a kernel edit that adds no delegation surface is authorised by exception,
