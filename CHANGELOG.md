@@ -302,7 +302,10 @@ unwritten. Add them with the next release.
 - Clear the retry indicator as soon as the recovered assistant response ends,
   including a response that calls tools. Remaining tool work and later responses
   keep running, and a later provider failure gets a fresh retry budget. (#197)
-
+- **A git URL's query or fragment can no longer impersonate a commit pin
+  (#402, ADR-0187).** Verification reads only the URL path's final revision.
+  `git+URL@main#x=@<sha>` remains unpinned and is refused by `--strict`;
+  repository pin identities preserve query and fragment contents.
 - **A `/login` subscription whose token refresh hits a passing failure is
   retried instead of failing the turn (#379, ADR-0251).** When an OpenAI
   Codex, Anthropic or GitHub Copilot login's access token had expired and the

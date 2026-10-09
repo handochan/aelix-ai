@@ -109,9 +109,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from aelix_ai.utils.terminal_text import safe_for_terminal
+from packaging.requirements import Requirement
 
 from ..extensions.ep_manifest import (
     EpApiLevelRefusal,
@@ -531,8 +532,15 @@ def _git_url_part(spec: str) -> str:
     spec unchanged — so the pin identity and the PEP 610 source key of a named git
     reference are its repository, as for the same URL typed bare (#131 round 5)."""
 
-    url = extension_catalog.direct_reference_url(spec)
-    return url if url is not None else spec
+    if extension_catalog.direct_reference_url(spec) is None:
+        return spec  # Includes scp shorthand; its user is not a PEP 508 name.
+    # The catalog regex classifies a source; it is not the installer's URL
+    # tokenizer. Unicode whitespace can be a legal part of a Git ref, so use
+    # the complete PEP 508 URL instead of truncating it at Python's \s (#402).
+    url = Requirement(spec).url
+    if url is None:
+        raise ValueError("A named git reference must contain a URL")
+    return url
 
 
 def _install_spec(target: InstallTarget, kind: TargetKind) -> str:
@@ -2483,8 +2491,8 @@ def _runner_in(
 # === #64 (ADR-0187): pre-pip integrity verification gate ==============
 # =====================================================================
 
-#: A pinned commit SHA embedded in a git spec: ``…@<40-hex>`` at end-or-``#frag``.
-_GIT_SHA_RE = re.compile(r"@([0-9a-fA-F]{40})(?=$|#)")
+#: Only a complete URL-path revision can establish a commit pin (#402).
+_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 
 def _git_repo_identity(git_spec: str) -> str:
@@ -2494,14 +2502,34 @@ def _git_repo_identity(git_spec: str) -> str:
     SAME pin identity (a ref move is a re-pin event, not a new blind trust).
     """
 
-    return _GIT_SHA_RE.sub("", git_spec)
+    url = _git_url_part(git_spec)
+    if _extract_git_sha(url) is None:
+        return url
+    # Preserve URL spelling and every query/fragment byte. urlunsplit can turn
+    # git+file:/// into git+file:/, changing already-provisioned pin identities.
+    head = url.partition("#")[0].partition("?")[0]
+    return head[:-41] + url[len(head):]
 
 
 def _extract_git_sha(git_spec: str) -> str | None:
     """The pinned 40-hex commit SHA in a git spec, or None for a mutable ref."""
 
-    m = _GIT_SHA_RE.search(git_spec)
-    return m.group(1).lower() if m else None
+    url = _git_url_part(git_spec)
+    # urlsplit silently removes these bytes. Accepting its cleaned candidate
+    # while slicing the raw identity can retain SHA characters in the pin key,
+    # turning a changed commit into a fresh TOFI acquisition (#402 review).
+    if any(char in url for char in "\t\r\n"):
+        return None
+    parsed = urlsplit(url)
+    # pip decodes file URL paths before re-parsing their revision. Encoded URL
+    # delimiters can therefore put the apparent suffix into a query/fragment;
+    # refuse to infer a pin where the backend interpretations can differ.
+    if parsed.scheme.endswith("file") and any(char in unquote(parsed.path) for char in "?#"):
+        return None
+    _, separator, revision = parsed.path.rpartition("@")
+    if not separator or _GIT_SHA_RE.fullmatch(revision) is None:
+        return None
+    return revision.lower()
 
 
 def _pin_identity(target: InstallTarget, kind: TargetKind) -> str:

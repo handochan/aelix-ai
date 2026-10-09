@@ -563,6 +563,13 @@ for the packaging rules that decide whether a manifest ships.
 
 ## Related
 
+For a pinned git source, put the full 40-hex commit after the repository path's
+last `@`, for example `git+https://host/repo.git@<sha>#subdirectory=package`.
+A hash in the query or fragment does not pin the revision:
+`git+https://host/repo.git@main#x=@<sha>` remains mutable and `--strict` refuses
+it. `subdirectory` remains part of the pin identity. For `git+file` sources,
+use a repository path without `?` or `#`; encoded spaces are supported.
+
 - [extension-authoring.md](extension-authoring.md) — writing the packs you list.
 - [ADR-0188](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0188-issue65-discover-catalog.md) — the catalog format
   and why it is advisory.

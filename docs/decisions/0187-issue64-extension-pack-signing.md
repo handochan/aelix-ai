@@ -1,6 +1,6 @@
 # ADR-0187 — #64: extension pack signing / hash verification (pre-pip integrity gate)
 
-- **Status:** Accepted (2026-07-05) — scheme owner-confirmed. Lands with the #64
+- **Status:** Accepted (2026-07-05; amended 2026-10-09, #402 revision boundary) — scheme owner-confirmed. Lands with the #64
   implementation (Phase 1); this record precedes the code and seeds it.
 - **Date:** 2026-07-05
 - **Sprint:** Marketplace — resolving ADR-0005 Open Question Q2 ("구체 신뢰 모델은
@@ -266,3 +266,37 @@ air-gap default. Track PEP 458/480 PyPI deployment as an ecosystem watch item.
 
 **Gate (on implementation):** pytest (full suite) pass · ruff clean · pyright 0
 errors on changed source.
+
+## Amendment — revision boundary (#402, 2026-10-09)
+
+The commit candidate is the complete revision after the URL **path's last `@`**,
+with exactly 40 literal hexadecimal characters. The authority, query and fragment
+cannot establish a pin. Named PEP 508 git references use their URL component.
+Thus `git+https://host/repo.git@main#x=@<sha>` installs an unpinned mutable ref
+under the default policy and is refused before the installer in strict mode.
+Neither a first nor a repeated default install records or verifies that fragment
+as a commit.
+
+The pin identity removes only that path revision, preserving the spelling of the
+repository URL and the entire query/fragment, including `subdirectory`. A SHA
+inside `subdirectory` cannot disappear from the identity and merge distinct
+projects into one pin. Existing ordinary pinned URL identities are unchanged.
+
+For git+file URLs, pip decodes the path before parsing it again. An encoded `?`
+or `#` can relocate the apparent revision into a query/fragment. Such a spelling
+does not establish a pin; use a repository path without those delimiters. Ordinary
+encoded spaces remain supported. The installer arguments are not rewritten.
+
+The guarantee remains commit-reference/tree integrity, not provenance or a
+verification of built bytes. This change does not inspect git objects or alter
+the previously accepted same-shaped 40-hex branch/tag limitation.
+
+Independent review found two additional grammar boundaries in this amendment.
+Literal TAB/CR/LF inside a bare URL cannot establish a pin: `urlsplit` removes
+them, while raw identity slicing otherwise leaves commit characters in the key.
+Named references now extract their full URL with the existing runtime
+`packaging.Requirement` parser. Python's `\S+` truncated a URL at NBSP even though
+pip can install a legal branch named `<sha><NBSP>`; a fragment after that branch
+made the truncated candidate falsely claim `<sha>`. Unicode whitespace in the
+URL remains part of the actual ref and is not a 40-literal-hex candidate. Ordinary
+ASCII separators around a named URL or its marker remain supported.
