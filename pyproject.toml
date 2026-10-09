@@ -219,7 +219,9 @@ aelix-server = { workspace = true }
 dev = [
   "httpx>=0.27",
   "pyright>=1.1.409",
-  "pytest>=8",
+  # #429: 9.0 adds faulthandler_exit_on_timeout; older pytest only dumps a
+  # stalled test's stacks and then continues hanging.
+  "pytest>=9.0",
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
   # Sprint 6h₁₀a: aelix-coding-agent[tui] extra libs, pulled into the dev
@@ -261,6 +263,10 @@ asyncio_mode = "auto"
 # Repo root on sys.path so cross-module test imports (`from tests.tui...`)
 # resolve under the bare `pytest` script (CI) as well as `python -m pytest`.
 pythonpath = ["."]
+# Bound setup/call/teardown, including Python 3.11's unbounded executor join.
+# 240 s is below asyncio's 300 s executor grace on newer interpreters.
+faulthandler_timeout = 240
+faulthandler_exit_on_timeout = true
 
 [tool.pyright]
 # `packages/*/src` matched NOTHING. With it pyright analysed 8 files -- this

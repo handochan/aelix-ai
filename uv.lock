@@ -55,7 +55,7 @@ dev = [
     { name = "prompt-toolkit", specifier = ">=3.0,<4" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "pyte", specifier = ">=0.8.2" },
-    { name = "pytest", specifier = ">=8" },
+    { name = "pytest", specifier = ">=9.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "rich", specifier = ">=13.7,<15" },
     { name = "ruff", specifier = ">=0.6" },

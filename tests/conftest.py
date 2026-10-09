@@ -175,3 +175,24 @@ def mkdir_or_skip() -> Callable[..., Path]:
         return path
 
     return _mkdir
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Bound interpreter exit after pytest's per-test watchdog is disarmed.
+
+    A stranded non-daemon executor worker can leave all tests green and then
+    hang threading._shutdown forever (#428). Use the original stderr, not
+    pytest's temporary capture fd, and arm after pytest's own fault-handler
+    teardown. Disabling exit_on_timeout also disables this final watchdog.
+    """
+
+    if not config.pluginmanager.hasplugin("faulthandler"):
+        return
+    if not config.getini("faulthandler_exit_on_timeout"):
+        return
+
+    import faulthandler
+    import sys
+
+    faulthandler.dump_traceback_later(180, exit=True, file=sys.__stderr__)

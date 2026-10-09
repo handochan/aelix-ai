@@ -283,6 +283,11 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **CI hangs now fail within a bounded time and report Python thread stacks
+  (#429).** Lint/test jobs have Ubuntu/Windows limits of 25/50 minutes, and
+  pytest steps have 20/45 minute limits. A test stuck for 240 seconds exits
+  with a traceback; a separate 180 second watchdog covers interpreter exit
+  after the test summary. Development now requires pytest 9.0 or newer.
 - **A `/login` subscription whose token refresh hits a passing failure is
   retried instead of failing the turn (#379, ADR-0251).** When an OpenAI
   Codex, Anthropic or GitHub Copilot login's access token had expired and the

@@ -31,6 +31,10 @@ jobs:
   test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    # #429: the slowest measured green jobs were 15.6 min on Ubuntu and
+    # 31 min on Windows. Bound a stalled test or interpreter exit instead of
+    # spending GitHub's default six hours (run 37806642579, #428).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 25 }}
     # #103 P0-b: the windows leg GATES since 2026-09-04. It was advisory
     # while it was a measurement; run 33853043685 (beffc2f) closed that at
     # 0 failed / 9338 passed / 71 skipped on py3.11 and py3.12, down from the
@@ -121,6 +125,7 @@ jobs:
         run: uv run python scripts/check_types.py
 
       - name: Test gate (pytest)
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
         run: uv run pytest -p no:cacheprovider -q
 
   # install.ps1 has no coverage that executes it (#106). Its only gate was
