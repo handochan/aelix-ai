@@ -3176,19 +3176,19 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3045-3045": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3478-3478": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3480-3480": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3574-3574": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3576-3576": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3574-3577": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3576-3579": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1357``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3617-3634": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3619-3636": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3198,7 +3198,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3825-3825": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3827-3827": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:739-739": [

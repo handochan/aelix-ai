@@ -134,7 +134,7 @@ def test_the_built_completer_carries_the_toggle(monkeypatch: Any, tmp_path: Path
     """``_build_input_completer`` forwards into ``FileMentionCompleter``.
 
     Driven through the real merged completer (``merge_completers`` +
-    ``ThreadedCompleter``), not by reaching inside it, so a forward that lands
+    ``OffLoopFileMentionCompleter``), not by reaching inside it, so a forward that lands
     on the wrong sub-completer is red.
     """
 

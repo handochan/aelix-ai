@@ -5,6 +5,8 @@ Status: Accepted (shipped) — **AMENDED 2026-09-06 by #231** (`## Amendment
 enumerators / same set regardless of `.gitignore`" claim was false five ways.
 Further **AMENDED 2026-09-08 by #238** (`## Amendment (2026-09-08, #238)` below):
 the `@` menu's ignore behaviour is now a `/settings` toggle.
+Further **AMENDED 2026-10-09 by #428** (`## Amendment (2026-10-09, #428)` below):
+file completion uses one worker job rather than `ThreadedCompleter`'s queue pair.
 Everything else in this ADR stands.
 Date: 2026-07-12
 Supersedes-deferred: ADR-0121 §Deferred (fd-fuzzy `@` search + quoted-path mentions)
@@ -62,11 +64,12 @@ Two design decisions were put to the owner and confirmed:
   the `fd` output only, and the two enumerators diverged five ways; see the
   Amendment below for what #231 repaired and what it documented. `fd` output is
   bounded at the source with `--max-results`.
-- **ThreadedCompleter.** The file completer is wrapped in
-  `ThreadedCompleter` (`shell._build_input_completer`) so its fd subprocess /
+- **Off-loop completion.** The file completer is wrapped in
+  `OffLoopFileMentionCompleter` (`shell._build_input_completer`) so its fd subprocess /
   `os.walk` runs off the prompt-toolkit event-loop thread — a large monorepo or a
   stalled `fd` can no longer freeze the UI or the token stream. The cheap slash
-  completer stays synchronous.
+  completer stays synchronous. This was `ThreadedCompleter` until #428; the
+  amendment below records why its streaming queue was removed.
 - **Quoted mentions.** `_extract_mention` is a **quote-aware left-to-right scan**:
   `@"path with spaces"` is one mention (whitespace inside the quotes does not
   terminate it), an `@` typed *inside* an open quote is a literal path char (not a
@@ -262,3 +265,46 @@ live row in `settings_rows.py`, whose `_apply_live_setting` branch is a document
 no-op because the shell does not hold the completer. Where no `fd` exists the toggle
 changes nothing until one arrives, and then the chosen value is honoured at the next
 `@`, no restart. Pi has no equivalent setting.
+
+## Amendment (2026-10-09, #428)
+
+The off-loop requirement stands; the `ThreadedCompleter` mechanism does not.
+prompt-toolkit 3.0.52 submits a producer plus a consumer blocked in `queue.get`.
+One cancellation enters the generator's cleanup and waits for the producer. If
+a second cancellation arrives before that producer starts, its Future can be
+cancelled before it puts the end marker in the queue. The consumer then has
+nothing to wake it, and both executor and interpreter shutdown can hang. A
+slash command such as `/quit` reached this pair too: the merged completer calls
+the file arm even when it cannot offer a mention.
+
+`OffLoopFileMentionCompleter` checks the same mention parser as
+`FileMentionCompleter`. Outside a mention it submits no job. Inside one it uses
+one `asyncio.to_thread` job to collect the capped completion list and then yields
+that batch on the loop. Cancellation before the job starts leaves no blocked
+consumer; an already-running job can finish normally. Fuzzy results were already
+ranked before yielding. The directory arm now also waits for its whole capped
+list before showing the menu, rather than delivering each entry incrementally.
+Completion text, replacement position, presentation, ordering, gitignore policy
+and cache behaviour are preserved.
+
+This removes the orphaned queue worker, without adding general cancellation or a
+deadline to filesystem calls. An already-running walk or filesystem operation
+still completes before its executor thread can be joined. `fd` retains its
+existing subprocess timeout and process-tree handling (ADR-0238).
+
+The current reference was checked at
+[`earendil-works/pi@f1b2e77f`](https://github.com/earendil-works/pi/blob/f1b2e77f5b13b2a199b1052cb79c235451afe7d7/packages/tui/src/autocomplete.ts):
+Pi returns an asynchronous result array and aborts an active `fd` child through
+an `AbortSignal`; it does not use a Python executor queue. The upstream
+[`ThreadedCompleter` implementation](https://github.com/prompt-toolkit/python-prompt-toolkit/blob/583b3412c792a5cc9f01adde603679f3824a88f3/src/prompt_toolkit/completion/base.py)
+still uses the queue pair and discusses collecting a list in one executor job
+as an alternative. Neither source is treated as a parity requirement.
+
+Regression coverage drives the actual `shell._build_input_completer` in a child
+process with an event-gated producer, sends one, two and three cancellations,
+and requires normal executor shutdown and a natural process exit. The child
+is bounded by the parent, so the pre-fix hang cannot strand pytest. Separate
+cases cover an already-running producer, unchanged drill-in/fuzzy/quoted/slash
+menus, no worker outside a mention, and a stalled file worker leaving the loop
+responsive. A passing test is bounded evidence; live TUI verification is recorded
+separately in the issue handoff.

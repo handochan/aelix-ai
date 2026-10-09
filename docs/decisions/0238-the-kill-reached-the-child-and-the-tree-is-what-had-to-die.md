@@ -500,7 +500,8 @@ warning, so the case is not in the console list below.)
   frame, reached from `_cmd_discover`, which calls `fetch_all` synchronously on
   the event loop — that is, on the main thread, the only thread CPython raises
   `KeyboardInterrupt` on. `tui/completion.py`'s fd scan is not that site
-  (`shell.py` wraps its completer in a `ThreadedCompleter`) and
+  (`shell.py` used `ThreadedCompleter` then; since #428, the single-worker
+  `OffLoopFileMentionCompleter`, ADR-0193) and
   `ExtensionAPI.exec` runs on a `to_thread` worker, where the same ^C leaves
   the ladder empty and the helper alive (3/3). It is left alone deliberately: at that one live
   site the ladder is load-bearing for a second reason — it ends the tree before

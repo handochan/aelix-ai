@@ -43,6 +43,7 @@ whole-tree walk entirely.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -55,7 +56,7 @@ from aelix_ai.utils._process_tree import run_contained
 from prompt_toolkit.completion import Completer, Completion
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
@@ -726,7 +727,7 @@ class FileMentionCompleter(Completer):
         # The flag is part of the KEY, not just an input: keyed, a /settings flip
         # is answered by the NEXT keystroke; unkeyed the menu is stale for a full
         # TTL (measured 2.05 s). Flipping back reuses the other entry. This
-        # callable runs on the completer WORKER thread (ThreadedCompleter), so it
+        # callable runs on the completer worker thread, so it
         # must stay cheap and non-blocking — see get_respect_gitignore.
         key = f"{base}\x00{int(respect)}"
         now = time.monotonic()
@@ -741,4 +742,39 @@ class FileMentionCompleter(Completer):
         return tree
 
 
-__all__ = ["DescriptorCommandCompleter", "FileMentionCompleter", "wants_completion"]
+class OffLoopFileMentionCompleter(Completer):
+    """Collect the bounded ``@file`` menu in one worker, keeping the UI responsive.
+
+    ``ThreadedCompleter`` submits both a producer and a blocking ``queue.get``
+    consumer. A second cancellation before the producer starts can cancel it
+    permanently, stranding the consumer and hanging executor shutdown (#428).
+    A single job needs no consumer thread: it either finishes or is cancelled
+    before starting. Directory results, like fuzzy results, arrive as one batch.
+    """
+
+    def __init__(self, completer: FileMentionCompleter) -> None:
+        self.completer = completer
+
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
+        return self.completer.get_completions(document, complete_event)
+
+    async def get_completions_async(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> AsyncGenerator[Completion, None]:
+        if _extract_mention(document.text_before_cursor) is None:
+            return
+        completions = await asyncio.to_thread(
+            lambda: list(self.completer.get_completions(document, complete_event))
+        )
+        for completion in completions:
+            yield completion
+
+
+__all__ = [
+    "DescriptorCommandCompleter",
+    "FileMentionCompleter",
+    "OffLoopFileMentionCompleter",
+    "wants_completion",
+]

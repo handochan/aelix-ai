@@ -1024,8 +1024,8 @@ class SettingsManager:
         ``set_check_for_updates(True)`` leaves the getter ``False``, so
         ``/settings`` prints "→ on" and redraws "off".
 
-        Read on the COMPLETER WORKER THREAD (``ThreadedCompleter`` drains the sync
-        generator in an executor — measured, the read landed on ``asyncio_0``,
+        Read on the COMPLETER WORKER THREAD (the sync generator is collected in
+        one executor job — measured, the read landed on ``asyncio_0``,
         never ``MainThread``) while ``_open_settings`` writes from the loop
         thread. Benign for any candidate body, because ``reload()`` REBINDS
         ``self._global_settings`` rather than mutating it, so a reader gets an old

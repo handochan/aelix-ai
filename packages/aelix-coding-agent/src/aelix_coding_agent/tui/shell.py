@@ -3396,7 +3396,9 @@ def _build_input_completer(
     deleting the guard flips the default OFF rather than leaving it ON (measured —
     the whole suite stays green)."""
 
-    from prompt_toolkit.completion import ThreadedCompleter, merge_completers
+    from prompt_toolkit.completion import merge_completers
+
+    from aelix_coding_agent.tui.completion import OffLoopFileMentionCompleter
 
     return merge_completers(
         [
@@ -3407,11 +3409,11 @@ def _build_input_completer(
             ),
             # Issue #39: the @file completer does fuzzy whole-tree enumeration
             # (fd subprocess or an os.walk of up to 20k entries) on a cache miss.
-            # Wrap it in ThreadedCompleter so that runs OFF the prompt-toolkit
+            # Collect it in one worker so that runs OFF the prompt-toolkit
             # event-loop thread — a large monorepo or a stalled fd can no longer
             # freeze the UI / token stream while completing. The cheap slash
             # completer stays synchronous (instant).
-            ThreadedCompleter(
+            OffLoopFileMentionCompleter(
                 FileMentionCompleter(cwd, respect_gitignore=respect_gitignore or (lambda: True))
             ),
         ]

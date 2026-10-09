@@ -771,7 +771,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3617-3634`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3619-3636`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the

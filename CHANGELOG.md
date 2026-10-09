@@ -288,6 +288,12 @@ unwritten. Add them with the next release.
   pytest steps have 20/45 minute limits. A test stuck for 240 seconds exits
   with a traceback; a separate 180 second watchdog covers interpreter exit
   after the test summary. Development now requires pytest 9.0 or newer.
+- **Quitting during file completion no longer leaves aelix running (#428).**
+  The `@file` menu is collected in one background job, so repeated cancellation
+  during shutdown cannot leave a second worker waiting forever on a queue.
+  Slash commands and ordinary text no longer start a file-completion worker;
+  file-completion values and ordering stay the same.
+
 - **A `/login` subscription whose token refresh hits a passing failure is
   retried instead of failing the turn (#379, ADR-0251).** When an OpenAI
   Codex, Anthropic or GitHub Copilot login's access token had expired and the
