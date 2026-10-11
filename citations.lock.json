@@ -2974,17 +2974,17 @@
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1229-1230": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1244-1245": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1617-1617": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1632-1632": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2166-2166": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2181-2181": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2167-2167": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2182-2182": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1250-1250": [

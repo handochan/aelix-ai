@@ -1,6 +1,8 @@
 # 0197. Subagent-runtime seam & the bundled `aelix-agents` extension (P2)
 
 Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
+**Amended 2026-10-11 (#407): `/agents run` sanitises child-influenced display
+text through the shared terminal helper — see §(l).**
 **Amended 2026-10-08 (#399): R2's 300-character task cut is removed — see R2.**
 **Amended 2026-07-27 (owner): §(i)'s consent dialog fires only when write
 authority is at stake, and the widening option is offered only to a profile that
@@ -1181,6 +1183,53 @@ subcommands in P2 would ship two commands that cannot be reached. They exist so
 the vocabulary is stable for the P3/P4 surfaces that CAN reach them — a
 background/parallel mode is what first makes them callable. `stop_all()` is the
 one member with a live consumer: the extension teardown.
+
+#### Amendment 2026-10-11 (#407): `/agents run` owns its display boundary
+
+`tui.commands._render_subagent_result` MUST sanitise every displayed string from
+`SubagentResult`: summary, error, profile (including a declined delegation),
+status, permission mode, model, provider and dropped tool names. Resolution and
+spawn exceptions in `/agents run` cross the same boundary and MUST be sanitised.
+`details`, `id`, `stop_reason` and `tool_trail` are not printed by this renderer;
+only the full output's byte count is displayed.
+
+The strip lives in `aelix_ai.utils.terminal_text.safe_for_terminal`, below both
+product-core and extensions. The former local C0/DEL/C1 table in `tui.commands`
+is removed; its public `sanitize_for_terminal` remains a compatibility wrapper
+for one-row fields such as paths. This also covers the shared helper's BiDi
+overrides/isolates, Unicode separators, ZWSP and BOM, while retaining ZWJ.
+The existing `tui.stream.drop_format_controls` additionally removes the three
+BiDi marks (U+200E/U+200F/U+061C), matching the ordinary answer renderer without
+changing the shared helper's global contract or adding another control table.
+Escape sequences become inert visible text when their steering characters are
+deleted; this is neutralisation, not an ANSI parser.
+
+Summary and error retain newlines and tabs for normal paragraphs and code
+indentation. Normal Korean/Japanese/accented Latin/Arabic/Hebrew text and joined
+emoji such as `👩‍💻` remain intact; only explicit steering/format controls are
+removed. Model/provider retain whitespace collapse and the existing 40
+code-point cap; status/permission use the same cell formatting. Profile titles
+and dropped tools are literal Rich `Text`, so
+child-authored markup cannot change styling. Aelix still owns the panel border,
+labels, error colour and truncation note. Sanitisation changes display copies,
+never the result object, recorded history, permission posture or consent flow.
+
+`tests/tui/test_agents_run_terminal_bytes_407.py` captures both plain and forced
+terminal Console output, tests each displayed field with OSC 52/8, DCS, CSI,
+SGR, C0/DEL/C1 and BiDi payloads, and has positive controls for visible output,
+normal multilingual paragraphs, blank lines and Aelix's styling. The same tests
+are run against the base renderer as a counterfactual; command exception paths
+are driven through the real handler. A full TUI/live check remains a separate
+gate, not a consequence of these tests.
+
+The current Pi reference was checked on 2026-10-11 at
+[`ea448f45`](https://github.com/earendil-works/pi/tree/ea448f454af474f3e2fe9733b331e17b0662f5d6).
+Its [example subagent renderer](https://github.com/earendil-works/pi/blob/ea448f454af474f3e2fe9733b331e17b0662f5d6/packages/coding-agent/examples/extensions/subagent/index.ts)
+passes final output to `Markdown` and errors to styled `Text`; those call sites
+do not establish Aelix's raw Console safety. Pi's
+[#5996](https://github.com/earendil-works/pi/issues/5996) records a session name
+with newlines breaking a single-row footer, reinforcing the separate contracts
+for grid fields and authored multiline output (ADR-0235).
 
 ### (m) The settings gate
 

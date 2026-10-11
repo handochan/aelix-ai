@@ -1014,13 +1014,17 @@ no UI handle, no process, and the only clock is an injected one).
    >
    > **Known limits — child-authored strings #178 does not touch.**
    >
-   > * `/agents run` prints the child's `summary` and `error` raw
+   > * **Resolved 2026-10-11 (#407; ADR-0197 §(l)).** `/agents run` formerly
+   >   printed the child's `summary` and `error` raw
    >   (`tui/commands._render_subagent_result` builds `Text(summary)` and
    >   `chrome.print_above` hands it to `console.print` with no strip) — measured
    >   in review: an OSC 52 and a U+202E in a child's final answer reached the
    >   terminal byte stream on both `8f7d98aa` and the #178 tree. That surface is
-   >   outside `aelix_agents` and is tracked as
-   >   [#407](https://github.com/handochan/aelix-ai/issues/407).
+   >   outside `aelix_agents`. The result renderer and its resolution/spawn
+   >   exception paths now use the shared terminal strip. Summary/error retain
+   >   normal lines; profile, status, permission, model/provider and dropped
+   >   tools are sanitised too, with literal Rich `Text` for untrusted markup.
+   >   The transport, event and session fields below retain their contracts.
    > * The `child_session` settle records (`aelix_agents/child_session.py`,
    >   `settle` and `unsettled_records`) write the child's `model`, `provider`,
    >   `stop_reason` and `error` into the parent session JSONL as they arrived.

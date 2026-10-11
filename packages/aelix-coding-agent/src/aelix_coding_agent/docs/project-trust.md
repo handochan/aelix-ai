@@ -191,7 +191,7 @@ Cancelling (Esc / Ctrl+C) denies (`project_trust.py:783-785`).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1617`, registered at `:2167`)
+selector from inside a session (`tui/commands.py:1632`, registered at `:2182`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every

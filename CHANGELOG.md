@@ -289,6 +289,12 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`/agents run` output cannot send child-authored terminal controls (#407).**
+  Summary, error, profile, status, permission, model/provider and dropped tool
+  names use the shared terminal sanitiser and existing BiDi format-control strip.
+  Resolution and spawn errors are sanitised too. Normal multiline output and
+  Aelix's own colours remain; child-authored Rich markup is displayed literally.
+
 - **CI hangs now fail within a bounded time and report Python thread stacks
   (#429).** Lint/test jobs have Ubuntu/Windows limits of 25/50 minutes, and
   pytest steps have 20/45 minute limits. A test stuck for 240 seconds exits

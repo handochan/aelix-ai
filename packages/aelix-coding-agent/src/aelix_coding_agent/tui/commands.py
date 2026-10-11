@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from aelix_ai.utils.terminal_text import safe_for_terminal
 from rich.box import ROUNDED
 from rich.panel import Panel
 from rich.table import Table
@@ -26,6 +27,7 @@ from rich.text import Text
 
 from aelix_coding_agent.extensions.ext_ui import select_declared
 from aelix_coding_agent.tui.stats_dashboard import format_session_cost, format_tool_usage
+from aelix_coding_agent.tui.stream import drop_format_controls
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -944,20 +946,12 @@ async def _confirm_project_agent_for_run(
     return answer == PROJECT_AGENT_CONFIRM_OPTIONS[0]
 
 
-# ``str.translate`` table deleting C0, DEL and C1 — the same set
-# ``panel._flatten`` and ``consent._sanitize_field`` refuse. Restated inline, NOT
-# imported: the band rule (ADR-0197) forbids product-core importing
-# ``aelix_agents``. ``0x9b`` is in the set because it IS a one-byte CSI — the
-# spelling of ``\x1b[`` that survives a scrub which only chases the ESC byte.
-_CONTROL_KILL = dict.fromkeys([*range(0x20), 0x7F, *range(0x80, 0xA0)])
-
-
 def sanitize_for_terminal(value: str) -> str:
     """De-fang one attacker-influenceable string before it is RENDERED (issue #121).
 
-    :data:`_CONTROL_KILL` with no width bound and no truncation marker — for
-    values that must survive intact, such as a path. :func:`_sanitize_child_field`
-    is the variant for grid CELLS, where a width budget also has to be enforced.
+    The shared ``terminal_text`` strip with no width bound or truncation marker
+    — for values that must survive intact, such as a path.
+    :func:`_sanitize_child_field` additionally bounds grid cells.
 
     PUBLIC because the startup banner needs it: ``shell._build_banner`` renders
     the session ``cwd`` verbatim, and POSIX permits every byte but ``/`` and NUL
@@ -972,14 +966,24 @@ def sanitize_for_terminal(value: str) -> str:
     was an unterminated OSC title-set sequence — which then eats every byte
     printed after it until some terminator turns up.
 
-    DELETION, not escaping, matching :func:`_sanitize_child_field` and
-    ``consent._sanitize_field``: what survives ``\\x1b[8m`` is the inert literal
-    ``[8m``, which renders as itself and reads as visibly odd. The table also
-    covers ``\\n`` and ``\\t``, so a path carrying a newline cannot break a
-    one-row panel layout either.
+    DELETION, not escaping: what survives ``\\x1b[8m`` is the inert literal
+    ``[8m``. C0/DEL/C1, BiDi and the shared helper's other steering characters
+    are removed. This one-row contract also deletes ``\\n`` and ``\\t``.
+    Kept public for the startup banner and existing callers (#407).
     """
 
-    return value.translate(_CONTROL_KILL)
+    return drop_format_controls(safe_for_terminal(value))
+
+
+def _sanitize_child_prose(value: str) -> str:
+    """Child output: retain authored layout, strip terminal and BiDi controls.
+
+    Match the ordinary answer renderer: the shared terminal helper removes C0,
+    C1 and BiDi overrides/isolates; the existing stream helper also removes the
+    three BiDi marks (U+200E/U+200F/U+061C). No second control table lives here.
+    """
+
+    return drop_format_controls(safe_for_terminal(value, keep_newline=True, keep_tab=True))
 
 
 def _sanitize_child_field(value: str, width: int = 40) -> str:
@@ -993,14 +997,13 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     cursor — so ``Text`` alone is not a defence and the bytes must be removed
     here.
 
-    The three steps ``panel._flatten`` takes, replicated because the band rule
-    forbids importing it: collapse whitespace (kills newlines), delete C0 / DEL /
-    C1 (kills ESC and the one-byte CSI), then bound the width so a multi-kilobyte
-    model cannot blow out the panel. Returns ``""`` for a value that was nothing
-    but control bytes — the caller treats that as "nothing to name".
+    Collapse whitespace, strip through the low-level ``terminal_text`` helper
+    (including BiDi, unlike the former C0/DEL/C1 copy), then retain the existing
+    code-point width bound. Product-core does not import the extension's panel.
+    Returns ``""`` for an all-control value — the caller omits the model row.
     """
 
-    flat = " ".join(value.split()).translate(_CONTROL_KILL)
+    flat = sanitize_for_terminal(" ".join(value.split()))
     return flat if len(flat) <= width else flat[: width - 1] + "…"
 
 
@@ -1019,26 +1022,31 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
 
     from rich.console import Group
 
+    profile = sanitize_for_terminal(result.profile)
     if result.status == "declined":
         return [
             Text(
-                f"Delegation to {result.profile!r} declined — nothing was started.",
+                f"Delegation to {profile!r} declined — nothing was started.",
                 style="yellow",
             )
         ]
 
     summary = (result.summary or "").strip()
-    body = Text(summary or "(no output)")
+    # Display copies only: the transport/session material remains unchanged.
+    # Unlike grid fields, summary/error keep authored lines and indentation.
+    clean_summary = _sanitize_child_prose(summary)
+    body = Text(clean_summary or "(no output)")
     if result.truncated:
         body.append("\n\n… output truncated to the profile's cap.", style="dim")
     if result.error:
-        body.append(f"\n\n{result.error}", style="red")
+        error = _sanitize_child_prose(result.error)
+        body.append(f"\n\n{error}", style="red")
 
     usage = result.usage
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold cyan", no_wrap=True)
     grid.add_column(style="white")
-    grid.add_row("status", result.status)
+    grid.add_row("status", Text(_sanitize_child_field(result.status)))
     # WHICH MODEL THE CHILD ACTUALLY RAN (``SubagentResult.model``, read off its
     # own ``message_end``). Surfaced here so the substitution a profile with no
     # ``model:`` triggers — the persisted default at a different price — stops
@@ -1059,7 +1067,8 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
         grid.add_row("model", Text(f"{provider}/{model}" if provider else model))
     # ``—`` rather than an omitted row: "which posture did that child get" must
     # be answerable even when a runtime declined to say.
-    grid.add_row("permission", result.permission_mode or "—")
+    permission = _sanitize_child_field(result.permission_mode or "")
+    grid.add_row("permission", Text(permission or "—"))
     grid.add_row("turns", str(usage.turns))
     grid.add_row(
         "tokens",
@@ -1071,7 +1080,10 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
         # The child's tool set is the INTERSECTION with the parent's live grant,
         # so a profile asking for more silently gets less — say so, or a
         # half-equipped agent looks like a bad model.
-        grid.add_row("dropped tools", ", ".join(result.dropped_tools))
+        grid.add_row(
+            "dropped tools",
+            Text(", ".join(sanitize_for_terminal(tool) for tool in result.dropped_tools)),
+        )
     if result.dropped_lines:
         grid.add_row("dropped lines", str(result.dropped_lines))
 
@@ -1088,7 +1100,7 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
     return [
         Panel(
             Group(*parts),
-            title=f"Subagent: {result.profile}",
+            title=Text(f"Subagent: {profile}"),
             box=ROUNDED,
             border_style="green" if result.ok else "red",
         )
@@ -1205,7 +1217,8 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
             resolved = runtime.resolve_profile(name)
         except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
             if not _is_project_scope_refusal(exc):
-                ctx.commit(Text(f"✖ agents run failed: {exc}", style="bold red"))
+                error = _sanitize_child_prose(str(exc))
+                ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
                 return
             path = _project_agent_source_path(ctx, name)
             if not await _confirm_project_agent_for_run(ctx, name, path):
@@ -1214,8 +1227,9 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
             try:
                 resolved = runtime.resolve_profile(name, allow_project=True)
             except Exception as confirmed_exc:  # noqa: BLE001
+                error = _sanitize_child_prose(str(confirmed_exc))
                 ctx.commit(
-                    Text(f"✖ agents run failed: {confirmed_exc}", style="bold red")
+                    Text(f"✖ agents run failed: {error}", style="bold red")
                 )
                 return
         try:
@@ -1224,7 +1238,8 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
             # says no — so an exception here is a real failure, not a refusal.
             result = await runtime.spawn(resolved, task)
         except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            ctx.commit(Text(f"✖ agents run failed: {exc}", style="bold red"))
+            error = _sanitize_child_prose(str(exc))
+            ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
             return
         for renderable in _render_subagent_result(result):
             ctx.commit(renderable)

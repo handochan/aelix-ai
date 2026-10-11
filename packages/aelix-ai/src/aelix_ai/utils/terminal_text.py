@@ -19,7 +19,7 @@ band prints, so the helper has to sit where all of them can reach it, and
 ``aelix_ai`` is the bottom of the dependency graph. It is also the only band that
 can be imported from the five raw-body sites that need it
 (``oauth/github_copilot``, ``oauth/openai_codex``, ``oauth/anthropic``) — the
-existing copy in ``aelix_coding_agent.tui.commands`` cannot be, because
+TUI wrapper in ``aelix_coding_agent.tui.commands`` cannot be, because
 ``aelix_ai`` may not import upward. Placement was measured against
 ``tests/agents/test_p2_band_boundaries.py`` with the gate armed: here is green,
 product-core and kernel are RED.
