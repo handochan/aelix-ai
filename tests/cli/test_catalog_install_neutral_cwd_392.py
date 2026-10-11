@@ -202,9 +202,11 @@ async def test_every_catalog_entry_runs_its_installer_in_the_installer_directory
 ) -> None:
     """Every source form, both backends: the child's cwd is ``<agent>/installer-cwd``.
 
-    pip reads no project config, but ``python -m pip`` puts its working directory
-    first on ``sys.path`` (a cloned repo's ``pip/`` package ran as the installer,
-    measured), so the pip backend runs there too."""
+    pip reads no project config. Before #394, ``python -m pip`` also put its
+    working directory first on ``sys.path`` (a cloned repo's ``pip/`` package ran
+    as the installer, measured). #394 blocks that automatic lookup with ``-P``;
+    both backends retain the catalog cwd policy that isolates uv project config.
+    """
 
     _use_backend(monkeypatch, lab, backend)
     rec = _recorder(monkeypatch)

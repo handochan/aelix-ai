@@ -155,7 +155,7 @@ def test_classify_pypi_specs(spec: str) -> None:
 def test_build_pip_args_path_resolves_absolute(tmp_path: Path) -> None:
     (tmp_path / "ext").mkdir()
     args = build_pip_args(str(tmp_path / "ext"), "path", index_url=None)
-    assert args[1:4] == ["-m", "pip", "install"]
+    assert args[1:5] == ["-P", "-m", "pip", "install"]
     assert args[-1] == str((tmp_path / "ext").resolve())
 
 
@@ -360,7 +360,7 @@ def test_build_pip_args_pypi_without_index() -> None:
     import sys as _sys
 
     assert build_pip_args("my-ext", "pypi", index_url=None) == [
-        _sys.executable, "-m", "pip", "install", "my-ext",
+        _sys.executable, "-P", "-m", "pip", "install", "my-ext",
     ]
 
 
@@ -822,7 +822,7 @@ def test_remove_uninstalls_and_drops_source(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert code == 0
     argv = runner.calls[0]
-    assert argv[3:] == ["uninstall", "-y", "my-ext-dist"]
+    assert argv[4:] == ["uninstall", "-y", "my-ext-dist"]
     assert mem.get_extension_sources() == []  # recorded source dropped too
 
 
@@ -1682,9 +1682,9 @@ def test_uv_backend_install_argv_shape() -> None:
     ]
 
 
-def test_pip_backend_install_argv_is_the_historical_shape() -> None:
-    # backend=None keeps the pre-#113 argv byte-for-byte.
-    prefix = [sys.executable, "-m", "pip", "install"]
+def test_pip_backend_install_argv_keeps_pip_flags_with_safe_python_prefix() -> None:
+    # backend=None preserves pip's tail and adds only Python's safe-path option.
+    prefix = [sys.executable, "-P", "-m", "pip", "install"]
     assert build_pip_args("some-pkg", "pypi") == [*prefix, "some-pkg"]
     assert build_pip_args("some-pkg", "pypi", backend=_ei().PIP_BACKEND) == [
         *prefix,
@@ -1711,7 +1711,7 @@ def test_uninstall_argv_per_backend() -> None:
     ]
     assert "-y" not in uv.uninstall_args("my-dist")
     assert ei.PIP_BACKEND.uninstall_args("my-dist") == [
-        sys.executable, "-m", "pip", "uninstall", "-y", "my-dist",
+        sys.executable, "-P", "-m", "pip", "uninstall", "-y", "my-dist",
     ]
 
 
@@ -2472,12 +2472,11 @@ def test_uv_config_search_path_is_uvs_own(tmp_path: Path) -> None:
 def test_pip_backend_argv_is_never_index_translated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # pip reads its own configuration natively, so the argv must stay byte-for-byte
-    # what it was before #113 — no injected flags, on either the default or the
-    # explicit pip backend.
+    # pip reads its own configuration natively: Python's safe-path option does
+    # not introduce translated index flags, on either default or explicit pip.
     monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
     monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://mirror/simple")
-    prefix = [sys.executable, "-m", "pip", "install"]
+    prefix = [sys.executable, "-P", "-m", "pip", "install"]
     assert build_pip_args("ext", "pypi") == [*prefix, "ext"]
     assert build_pip_args("ext", "pypi", backend=_ei().PIP_BACKEND) == [*prefix, "ext"]
 

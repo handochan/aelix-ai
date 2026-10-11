@@ -3,7 +3,7 @@
 Issue #19 (ADR-0185) shipped ``extension install <path|git|pypi>``: a
 closed-network-native installer where all three source kinds resolve to a single
 ``pip install`` into the RUNNING interpreter's environment
-(``sys.executable -m pip``), so the plugin's module becomes importable AND its
+(``sys.executable -P -m pip`` since #394), so the plugin's module becomes importable AND its
 ``entry_points(group="aelix.extensions")`` registration is discovered by the
 loader's Tier-4 pass — no bespoke registry, no ``sys.path`` machinery. pip's own
 ``--index-url`` / ``git+file`` / ``ssh`` carry the self-hosted / air-gapped
@@ -586,7 +586,7 @@ def build_pip_args(
     index becomes ``--index-url``, the rest ``--extra-index-url``). ``upgrade``
     adds ``--upgrade`` (used by ``extension update``).
 
-    ``backend`` defaults to :data:`PIP_BACKEND` (``python -m pip install …``);
+    ``backend`` defaults to :data:`PIP_BACKEND` (``python -P -m pip install …``);
     the ``uv`` backend swaps only the PREFIX (``uv pip install --python <interp>``)
     — every *flag* after it is spelled identically by both, which is what makes one
     builder serve both (#113).
@@ -597,8 +597,9 @@ def build_pip_args(
     URL routinely carries a basic-auth password (the standard Nexus/Artifactory form)
     and argv is world-readable, so the uv backend receives it through the ENVIRONMENT
     instead (:func:`uv_ambient_index_env`). This builder's output therefore contains
-    only values the user typed — and is byte-identical to the pre-#113 pip argv for
-    the pip backend.
+    only values the user typed. The pip flags retain their pre-#113 spelling;
+    Python's ``-P`` prevents an automatic cwd module-search entry (#394), while
+    the user's Python environment and pip configuration still apply.
 
     A catalog or record target (:class:`extension_catalog.CatalogSpec`,
     :class:`extension_catalog.ResolvedPath`) whose ``kind`` is not the one its
@@ -744,7 +745,9 @@ class InstallBackend:
         if self.name == "uv":
             # __post_init__ guarantees an absolute uv_path — never a PATH lookup.
             return [str(self.uv_path), "pip", "install", "--python", sys.executable]
-        return [sys.executable, "-m", "pip", "install"]
+        # #394: keep the cwd for typed relative paths, but never prepend it to
+        # Python's module search. The user's PYTHONPATH/site configuration applies.
+        return [sys.executable, "-P", "-m", "pip", "install"]
 
     def uninstall_args(self, dist: str) -> list[str]:
         """The argv that uninstalls ``dist`` from this interpreter's environment.
@@ -762,7 +765,7 @@ class InstallBackend:
                 sys.executable,
                 dist,
             ]
-        return [sys.executable, "-m", "pip", "uninstall", "-y", dist]
+        return [sys.executable, "-P", "-m", "pip", "uninstall", "-y", dist]
 
 
 #: The canonical full-capability backend (also what an injected runner implies).
@@ -1514,8 +1517,8 @@ def resolve_install_backend(runner: PipRunner | None) -> InstallBackend | None:
     or an alternate package manager driving the argv itself), so it resolves to
     :data:`PIP_BACKEND` unconditionally — never probing, never failing. That
     preserves both halves of the historical ``_pip_available`` short-circuit: an
-    injected runner is always "available", AND the argv keeps its ``python -m pip``
-    shape, which the whole injected-runner test cluster asserts on. Environment
+    injected runner is always "available", AND the argv keeps the pip dialect
+    (with Python's safe-path ``-P`` prefix, #394). Environment
     detection therefore only ever runs for the DEFAULT runner (a real subprocess).
     """
 
@@ -1826,9 +1829,11 @@ def catalog_installer_cwd(agent_dir: str | None = None) -> str:
     ``pyproject.toml``, up to a workspace root) or, failing a project, from its
     working directory and every ancestor. A cloned repository's ``find-links`` /
     index there turned a trusted catalog's package NAME into the repository's own
-    wheel (#392 — the #131 dependency-confusion result by another door). ``python -m
-    pip`` puts its working directory first on ``sys.path``. So an install whose
-    source came from a catalog never runs in the cwd: it runs here,
+    wheel (#392 — the #131 dependency-confusion result by another door). Before
+    #394, ``python -m pip`` also put its working directory first on ``sys.path``;
+    pip children now use ``python -P -m pip`` to block that automatic module lookup.
+    The catalog cwd policy remains on both backends, with uv's project-configuration
+    isolation still needed: an install whose source came from a catalog runs here,
     ``<agent dir>/installer-cwd``, created ``0700`` on POSIX (user-only; Windows has
     no such mode — the directory inherits the agent dir's ACL), holding
     :data:`INSTALLER_CWD_PYPROJECT_TOML` and :data:`INSTALLER_CWD_UV_TOML`, which
@@ -2552,7 +2557,7 @@ def build_download_args(
     extra_index_urls: Iterable[str] | None,
     dest: str,
 ) -> list[str]:
-    """``python -m pip download <spec> --dest <dest>`` (+ index flags).
+    """``python -P -m pip download <spec> --dest <dest>`` (+ index flags).
 
     Fetches the FULL dependency closure into ``dest`` (no ``--no-deps``) so the
     subsequent ``pip install --no-index --find-links <dest>`` can resolve the
@@ -2565,7 +2570,7 @@ def build_download_args(
     (:attr:`InstallBackend.supports_download` is the capability flag).
     """
 
-    args = [sys.executable, "-m", "pip", "download", spec, "--dest", dest]
+    args = [sys.executable, "-P", "-m", "pip", "download", spec, "--dest", dest]
     if index_url:
         args += ["--index-url", index_url]
     for extra in extra_index_urls or ():

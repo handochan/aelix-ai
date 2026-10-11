@@ -1,6 +1,9 @@
 # 0255. A catalog entry's source is placed by its catalog, not by the working directory
 
 Status: Accepted (2026-10-06; revised 2026-10-07 after review rounds 1, 2, 3, 4, 5 and 6 and verify round 7, §7, §8, §9, §10, §11, §13, §14; threat model §12) — §12 amended 2026-10-07 by #392 (§15) and corrected 2026-10-08 by its review rounds 2, 3, 4 and 5: `discover install` and every `update` run the installer in aelix's installer directory, whose `pyproject.toml` (no `[project]`) and empty `uv.toml` make uv read no project configuration — none from the cwd, its parents, or the agent dir's ancestors; that directory and its two files are refused when they are links at preparation time, every runner is handed the directory, the user's own environment and user/system installer configuration reach the installer as set (inside the trust boundary, §12), and the one variable checked is `UV_CONFIG_FILE`, refused for those installs unless it is a bare absolute path; the directory follows the target's origin (a `ResolvedPath` or `CatalogSpec` from the resolver), not a caller flag; a typed `extension install` keeps running in the cwd (a stated limit) — amended 2026-10-08 by #405 (§16): a catalog or record spec (`CatalogSpec`) is classified by its spelling, never by what the cwd holds, so `update` and `install_extension()` no longer install a cwd entry named like a recorded package; one spelled as a relative path, and a relative path record, are refused; `discover install`'s cwd-collision refusal (§2 (5)) is gone — the package is installed; corrected 2026-10-08 by #405 review round 2 (§16): a caller-supplied kind that disagrees with a `CatalogSpec`'s or `ResolvedPath`'s spelling is refused (`verify_and_pin`, `build_pip_args`), so is a relative `ResolvedPath`, a PEP 508 requirement is a package whatever its marker holds, and a path the user TYPES as `update`'s filter is that path, resolved as typed; corrected 2026-10-08 by #405 review round 3 (§16): round 2's whitespace refusal is replaced by one normalisation — a `CatalogSpec` that is not spelled as a path (package, URL, git) is stripped once where it is built and every check and the installation read that string, while a path spelling keeps its exact string and is judged absolute or relative on it; a requirement with a version specifier, marker or URL is a package before the bare-archive test (`x==1.0+v.whl`); the relative-path check runs whatever kind a caller passes; a typed `update` filter is never stripped and is resolved by the typed install's own function; the printed `source remove` advice says it matches by name too; corrected 2026-10-08 by #405 review round 4 (§16): a requirement with a version specifier or a marker is a package before the `.git`-suffix git reading (`probe405==1.0+vendor.git`; a bare `acme.git` stays git, and the resolver now refuses only that bare form), a `ResolvedPath` must be absolute exactly as written (`~` is not expanded) and is refused, never raised, by all three Python entry points, the `source remove` advice says it matches by path too, and the relative-path refusal is stated with its exception (`file:x`, `name @ ./x` in a record or a Python `CatalogSpec`)
+Amended 2026-10-11 by #394 (§17): all pip children use `python -P -m pip`;
+the automatic cwd module-search entry is blocked, while cwd and the trusted
+Python environment and installer configuration keep their existing meaning.
 Date: 2026-10-06
 Amends: **ADR-0188** §2 (`discover install` no longer hands `entry.source` to the
 installer unchanged; a dated note there points here) and the #68 `extension index
@@ -665,9 +668,10 @@ rounds found and leave open:
 - a typed `aelix extension install <spec>` runs its installer in the cwd, where the
   user typed it (a relative path in it means that directory): there uv still reads the
   cwd's and its parents' `uv.toml` / `[tool.uv]`, as ADR-0200 intends, so a cloned
-  repository's `find-links` can still answer a package name the user types in it, and
-  `python -m pip` still imports a `pip/` package from it first — for a typed install
-  and for `extension remove` (issue #394, §15);
+  repository's `find-links` can still answer a package name the user types in it.
+  Since #394 (2026-10-11, §17), pip children use `python -P -m pip` and no longer
+  search the cwd automatically. The trusted Python environment, including an
+  explicit cwd entry in `PYTHONPATH`, remains effective;
 - a RELATIVE path in the user's own installer configuration resolves against the
   installer directory for a catalog install and `update` (#392): an environment value
   such as `PIP_FIND_LINKS=./w` or `file:w`, `UV_FIND_LINKS`, `UV_INDEX_URL=./simple`,
@@ -882,7 +886,7 @@ stay exposed.
 **pip.** pip reads no project configuration, but `python -m pip` puts its working
 directory first on `sys.path`: measured (`pipshadow.txt`), a cwd holding
 `pip/__main__.py` ran that file as the installer (rc 0, nothing installed) for a
-catalog install on 402a8013 and for a typed install still. The pip backend therefore
+catalog install on 402a8013 and for a typed install before #394 (§17). The pip backend therefore
 runs in the same directory — every child of the call, the install and the verify gate's
 `pip download` alike — and the catalog install now installs the catalog's directory.
 
@@ -958,8 +962,8 @@ and `anchor_catalog_location` return plain strings or a flag and start nothing. 
    now uv's own rule there too.
 7. `extension remove` (`_cmd_remove` → `uninstall_args` → `runner(argv)`): cwd,
    unchanged — `uv pip uninstall` resolves
-   nothing from an index; on pip, `python -m pip uninstall` imports a cwd `pip/` first
-   (the typed class; issue #394).
+   nothing from an index. The original pip child imported a cwd `pip/` first;
+   #394 (2026-10-11, §17) changes its prefix to `python -P -m pip uninstall`.
 8. git catalog fetch (`extension_catalog._git_clone_bytes`): cwd, unaffected — git
    clone did not read the cwd repository's `.git/config` (`url.….insteadOf` mapping a
    decoy: cloned the real repository; the same mapping via `-c` cloned the decoy; git
@@ -973,8 +977,8 @@ and `anchor_catalog_location` return plain strings or a flag and start nothing. 
 **Known limits.**
 
 - a typed `extension install` still runs in the cwd: uv reads that directory's project
-  configuration there, and on pip a cwd `pip/` package runs as the installer — for a
-  typed install and for `extension remove` (issue #394; §12);
+  configuration there. #394 (§17) blocks pip's automatic cwd module lookup, while
+  trusted Python environment and site configuration remain applicable (§12);
 - the user's own installer environment and user/system configuration are not policed
   (review round 5, owner decision): they reach uv and pip exactly as set, and a
   RELATIVE path among them resolves against the installer directory for these
@@ -1755,3 +1759,42 @@ requirement, the advice without its path clause, URL requirements counted as
 qualified, the marker dropped from the qualifier (killed only by the helper's own
 assertion: a marker spelling never ends in `.git`, so its classification is equivalent),
 and a `build_pip_args` guard for `CatalogSpec` only.
+
+## 17. Pip's module search must not add the cwd (#394, 2026-10-11)
+
+The #392 cwd policy remains: typed installs and removals run where the user runs
+the command; catalog installs and every recorded update use aelix's installer
+directory. Changing that policy would change typed relative paths and uv's
+configuration discovery. #394 instead changes **every pip interpreter prefix**
+to `[sys.executable, "-P", "-m", "pip", ...]`: `InstallBackend.install_prefix`,
+`InstallBackend.uninstall_args` and `build_download_args`. The verified PyPI
+local-install rewrite already reuses `install_prefix`, so its child gets the same
+protection. The uv argv and interpreter selection are unchanged.
+
+[Python 3.11's command-line contract](https://docs.python.org/3.11/using/cmdline.html#cmdoption-P)
+defines `-P` before `-m` as suppressing the automatic cwd entry in `sys.path`.
+Aelix requires Python 3.11 or newer. This does **not** provide Python environment
+isolation: `PYTHONPATH`, user/site configuration and pip configuration still apply,
+inside §12's existing trust boundary. A user explicitly putting the cwd in
+`PYTHONPATH` can still select its `pip/`. The parent's backend-availability probe
+(`find_spec("pip")`) is unchanged; this amendment protects the spawned pip child,
+not the parent CLI's own Python startup or all configured import paths.
+
+The regression file `tests/cli/test_pip_module_search_path_394.py` runs real
+CPython children with a hostile cwd `pip/` and a trusted shim supplied through
+an absolute `PYTHONPATH`. For install, uninstall, download and the verified local
+rewrite, removing only `-P` executes the hostile module and writes its marker;
+the production argv selects the trusted module with `sys.flags.safe_path` true,
+the same cwd and the same pip arguments. Lifecycle rows also exercise typed
+relative installs (verification on/off), removal's source cleanup and the
+download → pin → local-install rewrite, including closure-directory cleanup.
+An explicit hostile `PYTHONPATH` control records the trusted-environment limit.
+The shim records execution and stages fixture bytes; these rows do not claim a
+real distribution was installed. Real pip/uv CLI installation and binding are
+separate live validation.
+
+Pi's reference at `ea448f454af474f3e2fe9733b331e17b0662f5d6` uses
+[`--prefix installRoot` for npm/pnpm and `--cwd installRoot` for bun](https://github.com/earendil-works/pi/blob/ea448f454af474f3e2fe9733b331e17b0662f5d6/packages/coding-agent/src/core/package-manager.ts#L1845-L1889).
+Those flags choose installation roots; they are not a solution for Python's
+`-m` lookup. Its [pnpm removal issue #10202](https://github.com/earendil-works/pi/issues/10202)
+also illustrates why removal must be included in a sweep of installer policy.

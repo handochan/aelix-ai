@@ -389,9 +389,11 @@ A typed `aelix extension install <spec>` is different: you typed it in your
 current directory, so it means what it means from there — `aelix extension
 install acme-notes` beside a directory named `acme-notes` installs that
 directory — and its installer runs there, where uv reads that directory's
-`uv.toml` / `[tool.uv]` (and `python -m pip` imports a `pip/` package from it
-first — for `aelix extension remove` too; tracked as issue #394). Install from a
-directory you trust, or install through a catalog.
+`uv.toml` / `[tool.uv]`. Install from a directory you trust, or install through
+a catalog. The pip backend uses `python -P -m pip` for installation, removal
+and verification downloads (#394): Python no longer automatically searches the
+current directory for `pip`. Your Python environment (including `PYTHONPATH`)
+and pip configuration still apply; this does not isolate Python from them.
 
 It does not make a hostile catalog safe. A catalog can already name any package
 or URL to install, so a catalog whose own content is hostile does not need a

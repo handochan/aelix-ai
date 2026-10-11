@@ -289,6 +289,12 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Extension install/remove no longer automatically run a cwd `pip/` package
+  (#394).** Every pip child uses `python -P -m pip`, including verification
+  downloads and installation of their verified bytes. Typed relative paths keep
+  their cwd meaning; pip configuration and the user's Python environment,
+  including `PYTHONPATH`, still apply. The uv backend is unchanged.
+
 - **`/agents run` output cannot send child-authored terminal controls (#407).**
   Summary, error, profile, status, permission, model/provider and dropped tool
   names use the shared terminal sanitiser and existing BiDi format-control strip.
@@ -1587,8 +1593,9 @@ unwritten. Add them with the next release.
   `[tool.uv]` index in any parent directory switched it off, even one uv
   never read. Unchanged, and a stated limit: a typed `aelix extension install
   <spec>` still runs in your current directory and reads its uv configuration
-  there, and on pip a typed install or `aelix extension remove` still imports
-  a `pip/` package from your current directory first (issue #394).
+  there. At that point a typed pip install or `aelix extension remove` also
+  imported a `pip/` package from your current directory first; #394 now blocks
+  that automatic cwd lookup with Python's `-P` option.
 
 ## [0.1.0-beta.2] - 2026-09-09
 

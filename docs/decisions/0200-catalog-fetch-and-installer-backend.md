@@ -10,6 +10,9 @@ counts only the files uv really reads — a project the user chose with `UV_PROJ
 `UV_WORKING_DIR` included; the user's own environment and user/system configuration
 reach the installer as set (inside the trust boundary), and the one variable checked
 is `UV_CONFIG_FILE`, which must be a bare absolute path for those installs.
+Amended 2026-10-11 by #394 (ADR-0255 §17): every pip child uses
+`python -P -m pip`, keeping cwd and pip flags/configuration while preventing
+Python's automatic cwd module-search entry.
 Date: 2026-07-31
 Closes: **#111 A-1** (default marketplace catalog 100% unfetchable) and **#113**
 (no extension install can succeed on the official install path). Both were
@@ -176,9 +179,12 @@ The final decision:
 - **argv carries no ambient index value at all.**
 - Anything rendered to screen goes through `_redact_auth`, which rewrites
   userinfo to `****` (pip's own convention).
-- The pip backend gets **no env injection and byte-identical argv to
-  pre-#113** — pip reads its own config natively, and emitting flags there would
-  be redundant and could diverge from pip's real parsing.
+- The pip backend gets **no env injection and unchanged pip flags** — pip
+  reads its own config natively, and emitting index flags there would be redundant
+  and could diverge from pip's real parsing. #394 (2026-10-11, ADR-0255 §17)
+  changes only the interpreter prefix to `python -P -m pip` for install,
+  uninstall and download. `PYTHONPATH` and user/site configuration still apply;
+  this prevents Python's automatic cwd search, not all Python environment effects.
 
 A second review finding on the same surface: a `pip.conf` value can span
 configparser continuation lines, letting a hostile or careless config **inject
