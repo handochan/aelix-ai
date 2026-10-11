@@ -23,6 +23,12 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Configured authentication is checked before recording a prompt (#416).**
+  TUI, RPC, print and json check after input hooks, accepting request-supported
+  model/provider/registration headers, Anthropic tokens/custom headers and Vertex
+  key/ADC configuration. Header-only sessions restore. Credential resolution,
+  OAuth retry and ambient ADC discovery remain at request time.
+
 - **System prompt files load automatically (#287).** `SYSTEM.md` replaces the
   generated base and `APPEND_SYSTEM.md` adds instructions, from a trusted
   project's `.aelix/` directory or the global agent directory. CLI flags retain

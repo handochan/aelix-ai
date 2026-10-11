@@ -865,36 +865,208 @@ async def test_print_mode_refuses_unrunnable_uncatalogued_provider(
     assert "models.md" not in err
 
 
+def _observe_real_print_boundary(
+    monkeypatch: pytest.MonkeyPatch, *, handled: bool = False
+) -> dict[str, Any]:
+    """Observe the public prompt/acceptance/session surface of the real print runner."""
+    from aelix_agent_core.harness.hooks import InputHandled
+    from aelix_coding_agent import modes
+    from aelix_coding_agent.cli import entry
+    from aelix_coding_agent.modes.print_mode import run_print_mode
+
+    monkeypatch.setattr(modes, "run_print_mode", run_print_mode)
+    real_create = entry.create_agent_session_runtime
+    observed: dict[str, Any] = {"input": [], "prompts": [], "accepted": [], "events": []}
+
+    async def observe(harness: Any, factory: Any, **kwargs: Any) -> Any:
+        runtime = await real_create(harness, factory, **kwargs)
+        live = runtime.harness
+        observed["harness"] = live
+        live.subscribe(lambda event: observed["events"].append(getattr(event, "type", "?")))
+
+        def input_hook(event: Any, ctx: Any = None) -> Any:
+            observed["input"].append(event.text)
+            return InputHandled() if handled else None
+
+        live.hooks.on("input", input_hook)
+        real_prompt = live.prompt
+
+        async def prompt(*args: Any, **kwargs: Any) -> Any:
+            observed["prompts"].append(args[0])
+            previous = kwargs.pop("on_accept", None)
+
+            def accept(outcome: str) -> None:
+                observed["accepted"].append(outcome)
+                if previous is not None:
+                    previous(outcome)
+
+            return await real_prompt(*args, on_accept=accept, **kwargs)
+
+        monkeypatch.setattr(live, "prompt", prompt)
+        return runtime
+
+    monkeypatch.setattr(entry, "create_agent_session_runtime", observe)
+    return observed
+
+
+def _seal_openai_sdk_wire(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Keep the genuine OpenAI SDK's request encoding below a no-socket transport."""
+    import json
+    import socket
+
+    import httpx
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("416 gate test attempted socket/DNS outside MockTransport")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
+    requests: list[dict[str, Any]] = []
+
+    def response(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(
+            {
+                "host": request.url.host,
+                "path": request.url.path,
+                "body": body,
+                "tag": "own416"
+                if request.headers.get("authorization") == "Bearer fake416-gate"
+                else "unexpected",
+            }
+        )
+        if request.url.path.endswith("/responses"):
+            from tests.cli.test_refresh_retry_379 import _codex_sse
+
+            return httpx.Response(
+                200,
+                content=_codex_sse(body["model"]).replace(b"hello", b"gate416-ok"),
+                headers={"content-type": "text/event-stream"},
+            )
+        chunk = {
+            "id": "chatcmpl416",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": body["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "gate416-ok"},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        finish = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+        data = f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(finish)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(
+            200, content=data.encode(), headers={"content-type": "text/event-stream"}
+        )
+
+    original = httpx.AsyncClient.__init__
+
+    def client(self: Any, *args: Any, **kwargs: Any) -> None:
+        kwargs["transport"] = httpx.MockTransport(response)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", client)
+    return requests
+
+
+@pytest.mark.parametrize("case", ["absent", "handled", "configured", "no-input"])
 async def test_provider_without_key_emits_no_api_key_guidance(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    case: str,
 ) -> None:
-    """A provider IS named but no key is resolvable for it (no env, no stored,
-    no runtime override) → "No API key found for <provider>" + exit 1.
+    """#416: real input is checked after hooks, while handled/no-input needs no key.
+
+    The configured control traverses the same print runner and genuine SDK,
+    proving that no records/wire/start for absent auth are a guard result.
     """
+    import json
+    import os
+    import re
 
-    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    sandbox_home(monkeypatch, tmp_path / "home")
-    # Ensure the anthropic provider has NO resolvable key in the environment.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_OAUTH_TOKEN", raising=False)
+    from aelix_ai.providers import openai_responses
 
-    code = await _async_main(
-        ["--provider", "anthropic", "--model", "claude-3", "--no-session", "--print"]
+    for name in list(os.environ):
+        if re.search(r"(_API_KEY|_KEY|_TOKEN|_SECRET)$", name) or name.startswith(
+            ("OPENAI_", "ANTHROPIC_", "OPENROUTER_", "AELIX_")
+        ):
+            monkeypatch.delenv(name)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    (agent / "models.json").write_text(
+        json.dumps({"providers": {"openai": {"baseUrl": "https://gate416.invalid/v1"}}}), "utf-8"
     )
-    err = capsys.readouterr().err
-    assert code == 1
-    assert "No API key found for" in err
-    # The provider display name appears in the message.
-    assert "Anthropic" in err
-    # #111 — CORRECTED, same false premise as above: ``/login`` exists
-    # (``tui/commands.py:2181``). This was the WORST of the three headless
-    # dead ends — a user who names a provider they have not signed in to was
-    # given the env-var route and nothing else, no interactive path at all.
-    assert "/login" in err
-    assert "run 'aelix'" in err
-    assert "_API_KEY" in err
+    (agent / "settings.json").write_text('{"retry":{"enabled":false}}', "utf-8")
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent))
+    monkeypatch.setenv("AELIX_SETTINGS_PATH", str(agent / "settings.json"))
+    monkeypatch.setenv("AELIX_AUTH_PATH", str(agent / "auth.json"))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    requests = _seal_openai_sdk_wire(monkeypatch)
+    openai_responses.register_all()
+    observed = _observe_real_print_boundary(monkeypatch, handled=case == "handled")
+    if case == "configured":
+        monkeypatch.setenv("OPENAI_API_KEY", "fake416-gate")
+
+    messages = [] if case == "no-input" else ["gate-input416"]
+    code = await _async_main(
+        [
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-4o",
+            "--session-dir",
+            str(agent / "sessions"),
+            "--print",
+            *messages,
+        ]
+    )
+    captured = capsys.readouterr()
+    harness = observed["harness"]
+    records = [
+        e for e in await harness.session.get_branch() if e.type in ("message", "custom_message")
+    ]
+    assert code == (1 if case == "absent" else 0)
+    assert observed["prompts"] == messages
+    assert observed["input"] == messages
+    assert (
+        observed["accepted"]
+        == {"absent": [], "handled": ["handled"], "configured": ["started"], "no-input": []}[case]
+    )
+
+    if case == "configured":
+        assert len(requests) == 1
+        assert (
+            requests[0]["host"],
+            requests[0]["path"],
+            requests[0]["body"]["model"],
+            requests[0]["tag"],
+        ) == ("gate416.invalid", "/v1/responses", "gpt-4o", "own416")
+        assert "gate-input416" in json.dumps(requests[0]["body"])
+        assert "agent_start" in observed["events"]
+        assert [message.role for message in harness.state.messages] == ["user", "assistant"]
+        assert harness.state.messages[-1].content[0].text == "gate416-ok"
+        assert len(records) == 2
+    else:
+        assert requests == []
+        assert observed["events"] == []
+        assert harness.state.messages == []
+        assert records == []
+
+    if case == "absent":
+        assert "No API key found for OpenAI" in captured.err
+        assert "/login" in captured.err
+        assert "run 'aelix'" in captured.err
+        assert "_API_KEY" in captured.err
+    else:
+        assert "No API key found for" not in captured.err
 
 
 async def test_env_authenticated_print_passes_guard(

@@ -1360,7 +1360,11 @@ def _resolve_in_provider(
     registered = _registration_models(registry, provider)
     if registered is not None:
         exact = next((m for m in registered if m.id == model_id), None)
-        return exact or _unanimous_backfill(registered, provider, model_id) or Model(id=model_id, provider=provider)
+        return (
+            exact
+            or _unanimous_backfill(registered, provider, model_id)
+            or Model(id=model_id, provider=provider)
+        )
     catalog = get_model(provider, model_id)
     if catalog is not None:
         return _compose_catalog_model(catalog, registry)
@@ -1521,20 +1525,31 @@ def holds_route_auth(registry: Any, *, runtime_overrides: bool = True) -> bool:
     )
 
 
-def _configured_auth(registry: Any, provider: str) -> bool:
-    """Auth from ANY source, ``.env`` included — the "can this route run" question.
+def _configured_auth(registry: Any, provider: str, model: Model | None = None) -> bool:
+    """Configured request sources, ``.env`` included, without resolving validity.
 
     A duck-typed registry without ``has_configured_auth`` is read through what
     it offers: ``get_available()`` is the auth-filtered list by contract.
     """
 
     if registry is None:
+        if model is not None:
+            from aelix_ai.providers._configured_auth import has_configured_request_auth
+
+            return has_configured_request_auth(model, model.headers) is not False
         from aelix_ai.providers._env_api_keys import get_env_api_key
 
         return bool(get_env_api_key(provider))
     try:
         checker = getattr(registry, "has_configured_auth", None)
         if callable(checker):
+            if model is not None:
+                return bool(checker(model))
+            # Provider-only callers must not invent an unknown-API model:
+            # unknown contracts defer, whereas known keyless rows are absent.
+            get_all = getattr(registry, "get_all", None)
+            if callable(get_all) and callable(getattr(registry, "has_route_auth", None)):
+                return any(checker(m) for m in cast(list[Model], get_all()) if m.provider == provider)
             return bool(checker(Model(id="", provider=provider)))
         return any(m.provider == provider for m in registry.get_available())
     except Exception:  # noqa: BLE001
@@ -2231,38 +2246,34 @@ def restore_session_route(selection: tuple[str, str], registry: Any = None) -> R
       to OpenRouter only on the user's own key), so a session cannot reach a
       route the same string typed at launch could not. pi restores no custom id
       at all (``getModel`` knows none).
-    * **Nothing this build cannot run** (:func:`is_runnable`: no adapter for the
+    * **Nothing this build cannot run** (:func:`turn_refusal`: no adapter for the
       ``api``, an unexpanded base URL). pi has no such check; aelix's launch
       gates and ``find_initial_model`` all apply it.
 
-    Known limit: "a credential" is :func:`_configured_auth`
-    (``ModelRegistry.has_configured_auth``), which does not count request-level
-    auth the adapters accept without a key — an auth header in ``models.json``
-    or a registration's ``headers``, ``ANTHROPIC_CUSTOM_HEADERS``,
-    ``ANTHROPIC_AUTH_TOKEN``, google-vertex ADC (pi's ``hasConfiguredAuth``
-    counts ADC). A session whose only auth is one of those is not restored: it
-    falls back to the launch inputs and says so (ADR-0239 decision 5).
+    #416 asks configured request sources on the actual candidate, preserving
+    per-model headers. This is presence, not validity: OAuth refresh, commands
+    and ambient Vertex ADC discovery remain at request time (ADR-0263).
     """
 
-    from aelix_coding_agent.core.runnable_models import is_runnable
+    from aelix_coding_agent.core.runnable_models import turn_refusal
 
     provider, model_id = selection
     if not provider or not model_id:
         return None
     found = _find_in(provider, model_id, registry)
     if found is not None:
-        if not _configured_auth(registry, provider):
+        if not _configured_auth(registry, provider, found):
             return None
         model = _openrouter_base(found)
-        return ResolvedRoute(model, "session") if is_runnable(model) else None
+        return ResolvedRoute(model, "session") if turn_refusal(model) is None else None
     user_defined = user_defined_providers(registry)
+    custom = _openrouter_base(_custom_in(provider, model_id, registry, user_defined))
     if provider in user_defined:
-        if not _configured_auth(registry, provider):
+        if not _configured_auth(registry, provider, custom):
             return None
     elif not route_authenticated(registry, provider):
         return None
-    custom = _openrouter_base(_custom_in(provider, model_id, registry, user_defined))
-    if custom.api == "unknown" or not is_runnable(custom):
+    if custom.api == "unknown" or turn_refusal(custom) is not None:
         return None
     return ResolvedRoute(custom, "session", warning=_custom_warning(provider, model_id, custom))
 
@@ -2274,18 +2285,16 @@ def restore_fallback_message(
 
     ``Could not restore model <provider>/<id>``, then ``. Using <provider>/<id>``
     naming the model the run fell back to — only when a turn can run on it: it
-    has an adapter (:func:`is_runnable`) AND its provider a credential
+    has an adapter (:func:`turn_refusal`) AND its actual model a configured source
     (:func:`_configured_auth`, the restore's own question). pi's
     ``findInitialModel`` falls back only to a model with auth, and with none
     says ``No models available`` instead; aelix's fallback is what the launch
-    inputs resolve to, keyed or not — a keyless one fails at its first request
-    (``-p`` / ``--mode json``: at their launch gate) with its own message — so
-    the first half stands alone. The same known limit as
-    :func:`restore_session_route`: a fallback whose only auth is a header, an
-    auth token or Vertex ADC gets no ``Using`` half.
+    inputs resolve to, keyed or not. A definite configured-source absence is
+    refused by the post-input prompt check (#416); the first half stands alone.
+    Header/token/ADC configured intent can qualify the actual fallback too.
     """
 
-    from aelix_coding_agent.core.runnable_models import is_runnable
+    from aelix_coding_agent.core.runnable_models import turn_refusal
 
     provider, model_id = selection
     message = f"Could not restore model {provider}/{model_id}"
@@ -2294,8 +2303,8 @@ def restore_fallback_message(
         and fallback.provider
         and fallback.id
         and fallback.api != "unknown"
-        and is_runnable(fallback)
-        and _configured_auth(registry, fallback.provider)
+        and turn_refusal(fallback) is None
+        and _configured_auth(registry, fallback.provider, fallback)
     ):
         message += f". Using {fallback.provider}/{fallback.id}"
     return message

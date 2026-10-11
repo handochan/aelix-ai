@@ -149,11 +149,7 @@ def _resolve_vertex_api_key(api_key: str | None) -> str | None:
     if not api_key:
         return None
     trimmed = api_key.strip()
-    if (
-        not trimmed
-        or trimmed == _GCP_VERTEX_CREDENTIALS_MARKER
-        or _PLACEHOLDER_KEY.match(trimmed)
-    ):
+    if not trimmed or trimmed == _GCP_VERTEX_CREDENTIALS_MARKER or _PLACEHOLDER_KEY.match(trimmed):
         return None
     return trimmed
 
@@ -180,21 +176,34 @@ def _resolve_location(options: GoogleVertexOptions) -> str:
     location = options.location or os.environ.get("GOOGLE_CLOUD_LOCATION")
     if not location:
         raise RuntimeError(
-            "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or "
-            "pass location in options."
+            "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options."
         )
     return location
 
 
-def _create_client(model: Model, opts: GoogleVertexOptions) -> Any:
-    """Resolve Vertex auth and build the client (pi stream() 95-99).
+def resolve_vertex_auth(
+    model: Model, opts: GoogleVertexOptions
+) -> tuple[str | None, str | None, str | None]:
+    """Select API key or ADC configuration without discovering credentials.
 
     An explicit Vertex API key (option or ``GOOGLE_CLOUD_API_KEY``) takes
-    precedence; otherwise ADC with a resolved project + location.
+    precedence; otherwise ADC with a resolved project + location. ADC is a
+    deferred SDK mode: ambient metadata/WIF sources cannot be proved absent
+    offline. This selector never reads credential files, refreshes, or builds
+    an SDK client (#416).
     """
 
     raw_key = opts.api_key or get_env_api_key(model.provider)
     api_key = _resolve_vertex_api_key(raw_key)
+    if api_key:
+        return api_key, None, None
+    return None, _resolve_project(opts), _resolve_location(opts)
+
+
+def _create_client(model: Model, opts: GoogleVertexOptions) -> Any:
+    """Build the client for the same source configuration the guard inspects."""
+
+    api_key, project, location = resolve_vertex_auth(model, opts)
     headers = dict(getattr(model, "headers", None) or {})
     if opts.headers:
         headers.update(opts.headers)
@@ -205,8 +214,8 @@ def _create_client(model: Model, opts: GoogleVertexOptions) -> Any:
             api_key=api_key, base_url=base_url, headers=headers or None
         )
     return create_vertex_client(
-        project=_resolve_project(opts),
-        location=_resolve_location(opts),
+        project=project,
+        location=location,
         base_url=base_url,
         headers=headers or None,
     )

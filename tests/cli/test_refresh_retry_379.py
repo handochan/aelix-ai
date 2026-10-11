@@ -46,7 +46,7 @@ from aelix_ai.messages import AssistantMessage
 from aelix_ai.oauth import AuthStorage, anthropic, openai_codex
 from aelix_ai.utils.terminal_text import contains_steering_chars
 from aelix_coding_agent.cli import entry as entry_mod
-from aelix_coding_agent.cli.entry import _make_auth_callback
+from aelix_coding_agent.cli.entry import _make_auth_callback, _make_prompt_check
 from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
 from aelix_coding_agent.model_registry import ModelRegistry
 
@@ -354,6 +354,7 @@ async def _harness(agent: Path, provider: str) -> tuple[AgentHarness, list[Any]]
         )
     )
     harness._state.auto_compaction_enabled = False
+    harness.set_prompt_check(_make_prompt_check(registry))
     events: list[Any] = []
     harness.subscribe(events.append)
     return harness, events
@@ -581,6 +582,7 @@ async def _harness_and_storage(agent: Path, provider: str) -> tuple[AgentHarness
         )
     )
     harness._state.auto_compaction_enabled = False
+    harness.set_prompt_check(_make_prompt_check(registry))
     events: list[Any] = []
     harness.subscribe(events.append)
     return harness, events, storage

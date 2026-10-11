@@ -86,6 +86,26 @@ def read_env_custom_headers() -> dict[str, str]:
     return parsed
 
 
+def has_request_auth(
+    provider: str,
+    api_key: str | None,
+    auth_token: str | None,
+    headers: dict[str, str] | None,
+) -> bool:
+    """The auth sources the Anthropic adapter accepts, without building a client.
+
+    Custom headers from the environment belong only to provider ``anthropic``.
+    Shared by request validation and configured-source inspection (#416).
+    """
+
+    return bool(
+        api_key
+        or auth_token
+        or has_auth_header(headers)
+        or (provider == "anthropic" and has_auth_header(read_env_custom_headers()))
+    )
+
+
 @lru_cache(maxsize=2)
 def _client_class(env_custom_headers: bool = False) -> type[AsyncAnthropic]:
     """The SDK client subclass every aelix Anthropic request is built on.

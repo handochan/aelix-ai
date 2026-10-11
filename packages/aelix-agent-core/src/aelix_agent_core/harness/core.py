@@ -1104,8 +1104,8 @@ class AgentHarness:
     def set_prompt_check(self, check: Callable[[Model], str | None] | None) -> None:
         """Aelix-additive (#376): what :meth:`prompt` asks before it writes anything.
 
-        ``check(model)`` answers why no turn can run on ``model`` at all (no
-        provider, adapter or base URL), or ``None`` when one might.
+        ``check(model)`` answers a refusal reason or ``None`` to proceed. Core
+        does not own the policy or a model/auth registry.
         :meth:`prompt` asks it once, at one point every prompt path goes
         through — RPC ``prompt``, the TUI, ``-p``, ``--mode json`` and an
         extension's ``send_message(..., trigger_turn=True)`` alike — AFTER the
@@ -1115,13 +1115,13 @@ class AgentHarness:
         ``_runInputHandlers`` at ``agent-session.ts:1993``, then validates the
         model at ``:2032-2050``, at ``pi@1cedd3272``): an ``InputHandled``
         input needs no model, and a model an ``input`` handler switched to is
-        the one judged. pi also refuses a model without auth there; the CLI's
-        check asks no credential or auth setting (``turn_refusal``: a keyless
-        or GCP-unset Vertex prompt fails at request time, as before #376). pi does not ask on ``sendMessage``'s
+        the one judged. #416's CLI factory composes structural runnability and
+        configured request-source presence without resolving credentials.
+        pi does not ask on ``sendMessage``'s
         ``triggerTurn``; here that turn is refused like the others. A refused
         turn of the turn gate (:meth:`hold_turns`) is not asked: it sends
         nothing. The CLI's harness factory binds it on every build
-        (``core.runnable_models.turn_refusal``); ``None`` asks nothing.
+        (``cli.entry._make_prompt_check``); ``None`` asks nothing.
         """
 
         self._prompt_check = check

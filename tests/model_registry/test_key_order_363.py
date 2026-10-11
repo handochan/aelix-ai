@@ -417,8 +417,8 @@ async def test_the_fallback_resolver_never_authenticates_a_request(
     auth = await registry.get_api_key_and_headers(_row(registry))
     assert auth.ok and auth.api_key is None
     assert await registry.get_api_key_for_provider("openai") is None
-    # It still counts as configured auth (pi ``hasAuth``); it is not a request's key.
-    assert registry.has_configured_auth(_row(registry))
+    # #416: configured request sources exclude this routing-only capability.
+    assert not registry.has_configured_auth(_row(registry))
 
 
 @pytest.mark.parametrize(

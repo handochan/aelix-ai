@@ -1700,8 +1700,7 @@ async def run_tui(
         scope = "saved" if result.remember else "this session only"
         _commit(
             Text(
-                f"Project {verdict} ({scope}): {target}\n"
-                "Restart aelix for this to take effect.",
+                f"Project {verdict} ({scope}): {target}\nRestart aelix for this to take effect.",
                 style="yellow",
             )
         )
@@ -1803,7 +1802,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3785``) always passes one, so this is
+            # production caller (``entry.py:3794``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2792,8 +2791,7 @@ async def run_tui(
         # without this the swap looks like it did what was asked.
         _commit(
             Text(
-                "Forking it into a new session — the other terminal keeps the "
-                "original.",
+                "Forking it into a new session — the other terminal keeps the original.",
                 style="yellow",
             )
         )
@@ -3584,11 +3582,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1392``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1413``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1375`` already printed at startup, and one that
+    #       what ``entry.py:1396`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3861,13 +3859,12 @@ async def _input_loop(
         emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
     )
 
-
     # #189 — imported once per loop, not once per turn. Local rather than
     # module-level for the same reason the other three call sites in this file
     # are local: ``core.runnable_models`` pulls the provider registry in, and
     # ``tui.shell`` is imported on paths that must not pay for it.
     from aelix_coding_agent.core.runnable_models import (
-        is_runnable,
+        turn_refusal,
         unsupported_message,
     )
 
@@ -4086,8 +4083,8 @@ async def _input_loop(
         # adapter set ⇒ runnable), so an embedder that registers late is never
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
-        if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3716-3732 and
+        if turn_model is not None and turn_refusal(turn_model) is not None:
+            # Two audiences, discriminated exactly as entry.py:3725-3741 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider
@@ -4108,8 +4105,7 @@ async def _input_loop(
                 advice = Text(f"✖ {held.notice}", style="bold red")
             elif available:
                 advice = Text(
-                    f"✖ {unsupported_message(turn_model)}\n"
-                    "  Run /model to select a working model.",
+                    f"✖ {unsupported_message(turn_model)}\n  Run /model to select a working model.",
                     style="bold red",
                 )
             else:
@@ -4123,8 +4119,8 @@ async def _input_loop(
         # adapter) is refused by the harness itself, after that hook and before
         # anything is written (``set_prompt_check``, pi's order):
         # ``harness.prompt`` raises, and the ``except`` below prints it. The
-        # #189 gate above predates it and keeps its own advice. No auth setting is
-        # asked there: a keyless turn fails at request time, as before.
+        # #189 gate above keeps structural advice. Auth is checked only after
+        # input handling, so InputHandled needs no credential (#416).
 
         chrome.set_running(True)
         turn_raised = False

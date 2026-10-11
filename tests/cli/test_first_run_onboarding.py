@@ -349,15 +349,15 @@ async def test_never_fires_for_an_extension_registered_provider(
     assert _call(registry) is False
 
 
-async def test_never_fires_with_a_fallback_resolver(tmp_path: Path) -> None:
-    """Layer 6 — an embedder's fallback credential resolver."""
+async def test_fallback_resolver_alone_does_not_suppress_login(tmp_path: Path) -> None:
+    """#416: a fallback resolver is routing capability, not a request source."""
 
     auth = AuthStorage(path=tmp_path / "auth.json")
     await auth.load()
     auth.set_fallback_resolver(lambda provider: provider == "anthropic")
     registry = ModelRegistry(auth, None)
-    assert registry.get_available()
-    assert _call(registry) is False
+    assert registry.get_available() == []
+    assert _call(registry) is True
 
 
 # === No new environment surface (ADR-0203) ==================================

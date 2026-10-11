@@ -79,7 +79,11 @@ async def _types(session: Session) -> list[str]:
 
 
 def _checked(harness: AgentHarness) -> AgentHarness:
-    """Bind the question as ``cli/entry.py``'s harness factory does."""
+    """Bind the structural half; #416's product factory composes auth presence.
+
+    These embedders provide a local stream directly. Their auth contract is
+    outside the built-in adapters, so this test intentionally asks no auth.
+    """
 
     from aelix_coding_agent.core.runnable_models import turn_refusal
 

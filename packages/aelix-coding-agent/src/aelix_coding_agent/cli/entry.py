@@ -194,8 +194,8 @@ def should_offer_first_run_login(
     credentials it only refuses a NON-interactive run (``main.ts:660-663``
     ``if (appMode !== "interactive" && !session.model)``) and its
     ``InteractiveMode.run()`` never consults ``getAvailable()``. Aelix already
-    ports pi's headless half faithfully (the auth-guidance refusal at the
-    print/json dispatch below); this adds the interactive half pi lacks.
+    checks auth at the common post-input prompt seam (#416); this adds the
+    interactive onboarding half pi lacks.
 
     THE PREDICATE is ``model_registry.get_available()`` being empty — the ONE
     call that consults every auth layer :meth:`ModelRegistry.has_configured_auth`
@@ -206,9 +206,11 @@ def should_offer_first_run_login(
       3. ``_provider_request_configs[p].api_key``  (models.json ``apiKey`` —
          counts even when it names an unset env var, pi parity)
       4. ``get_env_api_key(provider)``       (process env, read live)
-      5. ``_registered_providers[p].api_key`` / ``.oauth``  (extension /
-         issue-#77 login providers)
-      6. ``AuthStorage._fallback_resolver``  (counts here; never a request's key)
+      5. accepted request headers, Anthropic token/custom headers, Vertex ADC
+         configuration; unknown custom auth requirements are deferred (#416)
+
+    OAuth registration capability and fallback resolvers do not supply request
+    credentials and do not keep the wizard closed on their own.
 
     ``is_runnable(startup_model)`` is deliberately NOT the predicate. It is
     False for a fully-configured user who merely typo'd ``--model``, and a
@@ -368,8 +370,7 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
                 # devnull the LIVE stdout (adversarial-review LOW).
                 with contextlib.suppress(OSError):
                     print(
-                        f"aelix: no data on piped stdin after {timeout:g}s; "
-                        f"{detail}",
+                        f"aelix: no data on piped stdin after {timeout:g}s; {detail}",
                         file=sys.stderr,
                     )
                 return None
@@ -966,6 +967,26 @@ class _RequestAuthError(RuntimeError):
 
 class _DelegatedRouteError(RuntimeError):
     """An explicit owner selected by the parent was not reproduced by the child."""
+
+
+def _make_prompt_check(model_registry: ModelRegistry) -> Callable[[Model], str | None]:
+    """Post-input, pre-record structural and configured-source check (#416).
+
+    The current model is supplied by the harness after input handlers finish.
+    Credential resolution remains in the request callback, including #379 retry.
+    """
+
+    def check(model: Model) -> str | None:
+        refusal = turn_refusal(model)
+        if refusal is not None:
+            return refusal
+        if not model_registry.has_configured_auth(model):
+            return format_no_api_key_found_message(
+                model_registry.get_provider_display_name(model.provider)
+            )
+        return None
+
+    return check
 
 
 def _make_auth_callback(
@@ -2365,8 +2386,7 @@ async def _async_main(argv: list[str]) -> int:
 
     if parsed.models:
         print(
-            "Warning: --models (scoped models) is not yet implemented; the "
-            "patterns were ignored.",
+            "Warning: --models (scoped models) is not yet implemented; the patterns were ignored.",
             file=sys.stderr,
         )
 
@@ -2648,10 +2668,7 @@ async def _async_main(argv: list[str]) -> int:
         # file, which additionally WINS a name collision against the user's own
         # profile of the same name. ``--approve`` is the pre-existing "trust
         # project-local files for this run" escape hatch — no new flag.
-        if (
-            active_profile.scope == "project"
-            and parsed.project_trust_override is not True
-        ):
+        if active_profile.scope == "project" and parsed.project_trust_override is not True:
             if app_mode != "interactive":
                 print(
                     f"Error: project-scoped agent profile {active_profile.name!r} "
@@ -2698,8 +2715,7 @@ async def _async_main(argv: list[str]) -> int:
             # It is a NOTICE rather than a refusal because the precedence itself is
             # correct and intended — the user's own flag won.
             print(
-                "Notice: agent profile: CLI flags override "
-                f"{', '.join(application.skipped)}",
+                f"Notice: agent profile: CLI flags override {', '.join(application.skipped)}",
                 file=sys.stderr,
             )
 
@@ -2784,9 +2800,7 @@ async def _async_main(argv: list[str]) -> int:
     with contextlib.suppress(Exception):
         default_model = settings_manager.get_default_model()
         persisted_provider = settings_manager.get_default_provider()
-        user_named_a_model = (
-            "model" in parsed.provided or "provider" in parsed.provided
-        )
+        user_named_a_model = "model" in parsed.provided or "provider" in parsed.provided
         if not user_named_a_model:
             # ADR-0196 (review fix) — BACK-FILL THE ``/agents use`` BASELINE.
             # ``profile_baseline`` was snapshotted far above (before the profile
@@ -2812,11 +2826,7 @@ async def _async_main(argv: list[str]) -> int:
                 profile_baseline.model = default_model
             if persisted_provider:
                 profile_baseline.provider = persisted_provider
-        if (
-            not user_named_a_model
-            and parsed.model is None
-            and parsed.provider is None
-        ):
+        if not user_named_a_model and parsed.model is None and parsed.provider is None:
             if default_model:
                 parsed.model = default_model
             if persisted_provider:
@@ -3307,11 +3317,10 @@ async def _async_main(argv: list[str]) -> int:
         # ``getAvailable``), so the bind is correct at runtime even though the
         # concrete registry does not structurally satisfy the stub protocol.
         harness.runtime.bind_model_registry(model_registry)  # pyright: ignore[reportArgumentType]
-        # #376 — the one question every prompt path asks before it writes
-        # anything (RPC, the TUI, -p, json, an extension's trigger_turn), after
-        # the ``input`` hook (``AgentHarness.set_prompt_check``): can a turn run
-        # on the model at all: provider, adapter, base URL; no auth setting (rounds 4, 5).
-        harness.set_prompt_check(turn_refusal)
+        # One check for every mode and rebuild, after input handling and before
+        # acceptance/new UserMessage. The registry stays below the CLI, not a
+        # member or upward import in core (#416).
+        harness.set_prompt_check(_make_prompt_check(model_registry))
         # Issue #77 — replay queued extension login providers onto the
         # process-global login registry so they appear in the /login method list
         # (guarded: alternate runtimes without the method are a no-op).
@@ -3854,36 +3863,22 @@ async def _async_main(argv: list[str]) -> int:
             )
             return 0
 
-        # === No-usable-model guard (ITEM #2, Pi main.ts ``!session.model``) ===
-        # Pi aborts a NON-INTERACTIVE run with an auth-guidance message BEFORE
-        # the first turn when no usable model is available. Placed at the print/
-        # json dispatch (turn time, mirroring Pi's ``!session.model``) AFTER the
-        # session build + ``--models`` warning + ``--session`` resolution so none
-        # of those paths is shadowed; the ``finally`` still disposes the runtime.
-        #
-        # ``resolve_model`` is TOTAL (always returns a Model), so the real
-        # "unusable" conditions are:
-        #   (a) provider empty — a bare ``--model`` with no ``--provider``
-        #       and no OpenRouter env: nothing to authenticate against → emit
-        #       ``formatNoModelSelectedMessage``; OR
-        #   (a·2) provider NON-empty but unresolvable to an ``api`` (#98) → emit
-        #       the ``unsupported_message`` reason; OR
-        #   (b) provider set but NO API key resolvable for it via the auth cascade
-        #       (runtime override / stored / OAuth / env / models.json), checked
-        #       sync via ``ModelRegistry.has_configured_auth`` (P0 #7 Wave 1
-        #       registry reuse) → emit ``formatNoApiKeyFoundMessage(provider)``.
-        # When ``--api-key`` was supplied it already set a runtime override above
-        # (so has_configured_auth is True) AND owns the empty-provider diagnostic,
-        # so condition (a) cannot wrongly fire for it.
+        # Structural/route launch gates remain here. #416 moves auth absence
+        # to the common post-input check: keyless InputHandled and a model an
+        # input handler switches to must reach that seam in print/json too.
         if app_mode in ("print", "json"):
             # #376 — a restored session model is judged as itself: ``parsed``
             # is only the fallback it did not need.
-            turn_route = launch_route if launch_restored else resolve_route(
-                parsed.model,
-                parsed.provider,
-                model_registry,
-                default_provider,
-                typed_key=parsed.api_key is not None,
+            turn_route = (
+                launch_route
+                if launch_restored
+                else resolve_route(
+                    parsed.model,
+                    parsed.provider,
+                    model_registry,
+                    default_provider,
+                    typed_key=parsed.api_key is not None,
+                )
             )
             if (
                 not launch_pending
@@ -3920,7 +3915,7 @@ async def _async_main(argv: list[str]) -> int:
             # still holds the placeholder (the late-route check above refuses
             # that case first; this keeps the gate from passing it regardless).
             unrunnable = next(
-                (model for model in (turn_model, startup_model) if not is_runnable(model)),
+                (model for model in (turn_model, startup_model) if turn_refusal(model) is not None),
                 None,
             )
             if unrunnable is not None:
@@ -3931,15 +3926,6 @@ async def _async_main(argv: list[str]) -> int:
                     parsed.model, parsed.provider, model_registry, default_provider
                 ) or unsupported_message(unrunnable)
                 print(f"Error: {reason}", file=sys.stderr)
-                return 1
-            if not model_registry.has_configured_auth(turn_model):
-                provider_display = model_registry.get_provider_display_name(
-                    turn_model.provider
-                )
-                print(
-                    format_no_api_key_found_message(provider_display),
-                    file=sys.stderr,
-                )
                 return 1
 
         from aelix_coding_agent.modes import run_print_mode

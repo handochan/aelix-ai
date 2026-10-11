@@ -109,29 +109,23 @@ and its message is written with the hold's error). `-p` / `--mode json` stop wit
 RPC `prompt` is answered `success: false`. (The TUI still answers a model with
 no adapter before the `input` handlers, with its own advice, as it did before.)
 
-No credential or auth setting is asked there — no key, header, token or
-Google Cloud setting. A prompt whose provider has no key runs as it always
-did: the TUI and RPC send it and it fails with `No API key for provider:
-<provider>`, and `-p` / `--mode json` refuse it at startup (before any `input`
-handler) with `No API key found for <provider>.` That keeps every kind of auth
-the providers accept working — an auth header in `models.json` or an
-extension's provider `headers`, `ANTHROPIC_CUSTOM_HEADERS`,
-`ANTHROPIC_AUTH_TOKEN`, Vertex Application Default Credentials, a Vertex key
-from `--api-key`, `auth.json` or `models.json` — and an RPC prompt on Vertex
-with no Google Cloud setup is written and fails with the adapter's own error
-(`Vertex AI requires a project ID`), as before. (The TUI and `-p` still refuse
-such a Vertex model before the `input` handlers, as they did before.) pi
-refuses a keyless prompt before writing it; aelix does not yet.
+The same post-input check now refuses a known adapter with no configured
+authentication source before a new user message or turn event is recorded
+(#416). TUI, RPC, `-p` and json share it; `InputHandled` still needs no auth.
+The check uses the actual model and the request's header merge: accepted
+provider/model/registration auth headers, Anthropic's own `ANTHROPIC_AUTH_TOKEN`
+and `ANTHROPIC_CUSTOM_HEADERS`, and Vertex keys or ADC configuration count.
+Header-only and ADC sessions restore on that actual candidate too.
 
-Known limit: "a key" in the restore rule above means a key aelix's registry
-counts (an API key from `auth.json`, `models.json`, the environment, a project
-`.env`, `--api-key`, an extension's registration). A session whose provider is
-authenticated only by a header, `ANTHROPIC_AUTH_TOKEN` or Vertex Application
-Default Credentials is not restored: it falls back to the launch model and says
-`Could not restore model …` (without the `Using` half when the fallback is
-authenticated the same way). Pass `--model` to reopen it on that model.
-The session's thinking level is restored against the model the session came
-back on (below).
+Configured does not mean valid. Stored entries and credential commands are
+resolved at request time, preserving OAuth retry and stored-provider ownership.
+An OAuth registration alone is login capability; a fallback resolver alone is
+route selection capability. Neither supplies a request credential. Unknown
+custom stream requirements are deferred. Vertex with project and location
+defers ambient ADC discovery to the SDK, including metadata/WIF; if actual ADC
+is absent or invalid, that accepted prompt can still be recorded before the SDK
+fails. The check never refreshes, executes a credential command or discovers
+ADC. The session's thinking level is restored against its selected model.
 
 ### How a `--model` string becomes a provider
 

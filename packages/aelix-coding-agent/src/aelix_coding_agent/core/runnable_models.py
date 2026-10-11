@@ -823,21 +823,13 @@ def turn_refusal(model: Any) -> str | None:
     an unexpanded ``{ENV_VAR}`` in it — cloudflare's account / gateway id; kept
     by the main loop in #376 review round 6, as ``main`` sent that request with
     the placeholder in its path). A missing provider words the refusal; it is
-    not a reason on its own. Every credential or
-    auth-configuration question is left to the request, as before #376, in
-    every mode (owner decision 2026-10-08): no key is asked, and the
-    google-vertex arm of :func:`is_runnable` (``_vertex_config_missing``: a
-    ``GOOGLE_CLOUD_API_KEY``, or a project and location, read from the
-    environment only) is not asked either (:func:`_runs_without_asking_auth`) —
-    the adapters accept auth no registry predicate sees (a ``models.json`` /
-    registration auth header, ``ANTHROPIC_CUSTOM_HEADERS`` (ADR-0254 2.2),
-    ``ANTHROPIC_AUTH_TOKEN``, google-vertex ADC, a Vertex key from
-    ``--api-key`` / ``auth.json`` / ``models.json``), so such a prompt runs as
-    before and fails, if it fails, with its adapter's own message at request
-    time. pi refuses a keyless prompt here too; that is a follow-up, not this
-    check. Fails OPEN with no adapter registered at all, so an embedder that
-    binds this before it registers its adapters is never blocked. :func:`is_runnable` itself (the TUI #189
-    gate, the ``-p`` #98 gate, the restore predicate) is unchanged.
+    not a reason on its own. This function remains structural: #416's CLI
+    factory composes it with the request-shared configured-source question.
+    The environment-only Vertex arm of :func:`is_runnable` is intentionally
+    not used for prompt/restore: runtime/stored/JSON/registration keys and
+    ambient ADC configuration are judged by that shared auth question instead.
+    Credential resolution and #379 retry remain request-time. Fails OPEN with
+    no adapter registered at all, so late-registering embedders are not blocked.
     """
 
     if _runs_without_asking_auth(model):

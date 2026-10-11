@@ -2,6 +2,9 @@
 
 Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too
 Date: 2026-09-08
+Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
+(2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
+credential deferral for definite source absence; historical #376 evidence below).
 Supersedes/relates: ADR-0196 (its D6.3 thinking-level ladder, **amended** here
 with a third rung), ADR-0135 (the thinking level as harness *state* — untouched;
 this ADR is about the *file*), ADR-0235 (Pi is a reference, not a target, so the

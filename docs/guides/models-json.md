@@ -376,17 +376,16 @@ protocol. Where such a request stops depends on the mode. In the TUI and
 (`Authorization`, `x-api-key` or `cf-aig-authorization` in `headers`) stops
 before anything is sent, with `No API key for provider: mygw`, as in pi, and a
 gateway you authenticate with one of those headers gets that header and no key
-beside it. `-p` and `--mode json` stop before the turn with
-`No API key found for Mygw.`, and today they do so for a gateway that has only
-an auth header as well; give it an `apiKey` (or pass `--api-key`) to use it
-there. `ANTHROPIC_CUSTOM_HEADERS`, which the Anthropic SDK adds to every
+beside it. In every mode (`-p`, json, TUI and RPC), configured-source absence
+is refused after input hooks and before the new user message is recorded
+(#416); a gateway's accepted auth header counts without an `apiKey`.
+`ANTHROPIC_CUSTOM_HEADERS`, which the Anthropic SDK adds to every
 request, reaches only the provider named `anthropic`: the built-in one, or an
 entry here named `anthropic` (an override with its own `baseUrl`), where an
 auth header in it (`X-Api-Key`, `Authorization` or `cf-aig-authorization`, any
 letter case, with a non-blank value) also counts as that request's auth in the
-TUI and `--mode rpc`, next to any other `headers` the entry adds; `-p` and
-`--mode json` do not read the variable and stop such a setup with
-`No API key found`, as before. A provider you define under any other name never
+TUI, RPC, `-p` and json, next to any other `headers` the entry adds.
+A provider you define under any other name never
 gets those headers, and they never stand in for its key
 ([#374](https://github.com/handochan/aelix-ai/issues/374), ADR-0254).
 

@@ -44,8 +44,12 @@ async def _registry(
 
 
 def _both(registry: ModelRegistry, provider: str) -> tuple[bool, bool]:
+    model = next(
+        (m for m in registry.get_all() if m.provider == provider),
+        Model(id="source-probe", provider=provider, api="openai-completions"),
+    )
     return (
-        registry.has_configured_auth(Model(id="", provider=provider)),
+        registry.has_configured_auth(model),
         registry.has_route_auth(provider),
     )
 
@@ -232,8 +236,8 @@ async def test_a_fallback_answer_routes_unless_it_is_a_dotenv_value(
 ) -> None:
     """Layer 6 of ``has_route_auth``: compared by value, since a resolver is opaque.
 
-    ``has_configured_auth`` (the "can it run" question) still says True: the
-    request's bearer is unchanged, only the route-deciding predicate differs.
+    #416 excludes this fallback-only capability from request-source presence;
+    ``has_route_auth`` keeps its routing contract and the request never uses it.
     """
 
     monkeypatch.setenv("OPENAI_API_KEY", "repo-openai-fake")
@@ -248,7 +252,7 @@ async def test_a_fallback_answer_routes_unless_it_is_a_dotenv_value(
         answer = _Masked("repo-openai-fake")
     registry = await _registry(agent)
     registry._auth_storage.set_fallback_resolver(lambda p: answer if p == "fallback-only" else None)
-    assert _both(registry, "fallback-only") == (True, routes)
+    assert _both(registry, "fallback-only") == (False, routes)
     assert registry.has_fallback_resolver() is True
 
 
@@ -277,7 +281,7 @@ async def test_every_recorded_value_is_checked_not_just_one(
     registry._auth_storage.set_fallback_resolver(
         lambda p: "repo-openai-fake" if p == "fallback-only" else None
     )
-    assert _both(registry, "fallback-only") == (True, False)
+    assert _both(registry, "fallback-only") == (False, False)
 
 
 async def test_a_mixed_case_dotenv_value_is_case_folded_too(
@@ -296,7 +300,7 @@ async def test_a_mixed_case_dotenv_value_is_case_folded_too(
     registry._auth_storage.set_fallback_resolver(
         lambda p: "repo-openai-fake" if p == "fallback-only" else None
     )
-    assert _both(registry, "fallback-only") == (True, False)
+    assert _both(registry, "fallback-only") == (False, False)
 
 
 async def test_case_folding_is_casefold_not_lower(
@@ -314,7 +318,7 @@ async def test_case_folding_is_casefold_not_lower(
     registry._auth_storage.set_fallback_resolver(
         lambda p: "strasse-key-fake" if p == "fallback-only" else None
     )
-    assert _both(registry, "fallback-only") == (True, False)
+    assert _both(registry, "fallback-only") == (False, False)
 
 
 async def test_a_short_dotenv_value_inside_an_own_answer_does_not_refuse_it(
@@ -332,7 +336,7 @@ async def test_a_short_dotenv_value_inside_an_own_answer_does_not_refuse_it(
     registry._auth_storage.set_fallback_resolver(
         lambda p: "vault-dev-own-fake" if p == "fallback-only" else None
     )
-    assert _both(registry, "fallback-only") == (True, True)
+    assert _both(registry, "fallback-only") == (False, True)
 
 
 async def test_no_fallback_resolver_is_installed_by_default(agent: Path) -> None:

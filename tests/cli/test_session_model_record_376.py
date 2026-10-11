@@ -9,10 +9,8 @@ fixtures of ``test_session_model_restore_376.py``:
   ``/clone`` after the pick keep it (pi's ``setModel`` appends ``model_change``,
   ``agent-session.ts:2485`` at ``pi@1cedd3272``); the late-provider hold's
   placeholder (#367) is never recorded;
-* a prompt on a model with no credential runs as on ``main`` (review round 4,
-  owner decision 2026-10-08: no credential refusal): RPC accepts and writes it
-  and the turn fails ``No API key for provider``; ``-p`` and ``--mode json``
-  keep ``main``'s launch gate (exit 1, nothing written); the fallback line's
+* #416 now refuses definite configured-source absence in RPC, print and json
+  at the common post-input/pre-record seam; the fallback line's
   ``Using`` half names only a model that can run and has a credential (pi's
   ``findInitialModel`` falls back only to a model with auth);
 * rows for the restore edges no test held (review round 1's surviving mutants):
@@ -42,7 +40,7 @@ from aelix_coding_agent.cli.runtime_bootstrap import (
     restore_session_route,
 )
 from aelix_coding_agent.rpc.rpc_mode import _handle_prompt
-from aelix_coding_agent.rpc.rpc_types import RpcCommandPrompt, RpcSuccessResponse
+from aelix_coding_agent.rpc.rpc_types import RpcCommandPrompt, RpcErrorResponse
 
 from tests.cli.test_session_model_restore_376 import (
     _HAIKU,
@@ -243,7 +241,7 @@ async def test_the_late_provider_holds_placeholder_is_never_recorded(
     ]
 
 
-# === 2. a keyless prompt runs as on main (review round 4) ====================
+# === 2. definite source absence refuses before new records (#416) ===========
 
 
 async def _keyless_continue(env: Path) -> str:
@@ -253,14 +251,10 @@ async def _keyless_continue(env: Path) -> str:
     return await _session(env, _HAIKU)
 
 
-async def test_rpc_accepts_a_keyless_prompt_as_main_does(
+async def test_rpc_refuses_a_keyless_prompt_before_new_records(
     env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Review round 4 (owner decision 2026-10-08): the round-3 commit refused
-    it (``No API key found for Anthropic.``, nothing written), which also
-    refused auth the adapters accept without a key. As on ``main``: accepted,
-    written, and the turn fails with the adapter's own message at request time
-    (no request leaves: the adapter has no key to send)."""
+    """#416 shares request-supported auth first, then safely refuses absence."""
 
     path = await _keyless_continue(env)
     before = [e for e in _lines(path) if e.get("type") == "message"]
@@ -279,15 +273,11 @@ async def test_rpc_accepts_a_keyless_prompt_as_main_does(
     assert await _rpc(env, monkeypatch, drive) == 0
 
     response, phase = responses
-    assert isinstance(response, RpcSuccessResponse), response
+    assert isinstance(response, RpcErrorResponse), response
+    assert "No API key found for Anthropic." in response.error
     assert phase == "idle"
     after = [e for e in _lines(path) if e.get("type") == "message"]
-    assert len(after) == len(before) + 2, after
-    assert after[-2]["message"]["role"] == "user"
-    last = after[-1]["message"]
-    assert last["role"] == "assistant"
-    failure = str(last.get("errorMessage") or last.get("error_message") or "")
-    assert "No API key for provider: anthropic" in failure, last
+    assert after == before
     err = capsys.readouterr().err
     # The fallback has no credential either: pi's first half alone.
     assert "Warning: Could not restore model anthropic/claude-haiku-4-5" in err.splitlines(), err
@@ -295,22 +285,17 @@ async def test_rpc_accepts_a_keyless_prompt_as_main_does(
 
 
 @pytest.mark.parametrize("mode", ["print", "json"])
-async def test_print_and_json_keep_mains_launch_gate_for_a_keyless_model(
+async def test_print_and_json_refuse_a_keyless_model_at_the_common_prompt_check(
     env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
 ) -> None:
-    """``main``'s own print/json no-usable-model gate (``cli/entry.py``,
-    ``has_configured_auth`` before any prompt), unchanged by #376: exit 1,
-    ``No API key found for Anthropic.``, nothing written."""
+    """The real runner reaches the post-input check, then exits 1 without records."""
 
     path = await _keyless_continue(env)
     before = _lines(path)
-    seen = _stub_modes(monkeypatch)
-
     code = await entry_mod._async_main(_argv(env, mode))
 
     err = capsys.readouterr().err
     assert code == 1
-    assert "model" not in seen  # no turn
     assert "No API key found for Anthropic." in err
     assert "Warning: Could not restore model anthropic/claude-haiku-4-5" in err.splitlines(), err
     assert "Using" not in err

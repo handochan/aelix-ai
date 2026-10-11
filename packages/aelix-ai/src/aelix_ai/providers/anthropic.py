@@ -57,7 +57,7 @@ from aelix_ai.models import clamp_thinking_level
 from aelix_ai.providers._anthropic_client import (
     create_async_client,
     has_auth_header,
-    read_env_custom_headers,
+    has_request_auth,
 )
 from aelix_ai.providers._anthropic_compat import get_compat
 from aelix_ai.providers._anthropic_transforms import (
@@ -502,7 +502,7 @@ async def stream_anthropic(
     )
     # #250: clamp the requested level against what THIS row offers, the way
     # every sibling adapter already does (google_generative_ai.py:309,
-    # google_vertex.py:434, openai_responses.py:598, openai_completions.py:1501,
+    # google_vertex.py:443, openai_responses.py:598, openai_completions.py:1501,
     # openai_codex_responses.py:664). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
@@ -532,13 +532,11 @@ async def stream_anthropic(
     # computes ``min(base + budget, model.max_tokens)``, so an unclamped ceiling
     # would let the carved thinking budget add itself straight back on top and
     # re-cross the context window.
-    thinking_extra, thinking_max_tokens, needs_interleaved = (
-        resolve_anthropic_thinking(
-            model,
-            clamped_reasoning,
-            default_max_tokens,
-            max_tokens_ceiling=model_output_cap,
-        )
+    thinking_extra, thinking_max_tokens, needs_interleaved = resolve_anthropic_thinking(
+        model,
+        clamped_reasoning,
+        default_max_tokens,
+        max_tokens_ceiling=model_output_cap,
     )
     if oauth_mode:
         import logging as _logging
@@ -568,15 +566,8 @@ async def stream_anthropic(
         env_custom_headers = model.provider == "anthropic"
         if opts.client is not None:
             client = opts.client
-        elif not (
-            request_api_key
-            or request_auth_token
-            or has_auth_header(opts.headers)
-            # Review rounds 2-3: only provider ``anthropic`` keeps the SDK's
-            # ``ANTHROPIC_CUSTOM_HEADERS`` (above), so an auth header there (any
-            # case, non-blank; ADR-0254 §6) counts, also beside non-auth
-            # ``options.headers`` such as a models.json ``x-team``.
-            or (env_custom_headers and has_auth_header(read_env_custom_headers()))
+        elif not has_request_auth(
+            model.provider, request_api_key, request_auth_token, opts.headers
         ):
             # pi ``assertRequestAuth`` (anthropic-messages.ts:325-326, called at
             # :612-613 before any client exists): neither a key nor an auth
@@ -659,10 +650,7 @@ async def stream_anthropic(
             # plain header — NOT an ``anthropic-beta`` value — so it never
             # touches the delicate beta CSV. Deliberately omitted on the OAuth
             # branch (pi omits it there too — ADR-0190 divergence #1).
-            if (
-                opts.session_id
-                and get_compat(model).send_session_affinity_headers
-            ):
+            if opts.session_id and get_compat(model).send_session_affinity_headers:
                 default_headers = dict(default_headers or {})
                 default_headers["x-session-affinity"] = opts.session_id
             client = create_async_client(
@@ -1004,12 +992,8 @@ async def _translate_event(
             # event for signature deltas (anthropic.ts:598-604), so this arm
             # yields nothing — it only mutates the captured block.
             sig_piece = getattr(delta, "signature", "")
-            buffer["thinking_signature"] = (
-                buffer.get("thinking_signature", "") + sig_piece
-            )
-            if index < len(output_content) and isinstance(
-                output_content[index], ThinkingContent
-            ):
+            buffer["thinking_signature"] = buffer.get("thinking_signature", "") + sig_piece
+            if index < len(output_content) and isinstance(output_content[index], ThinkingContent):
                 output_content[index] = ThinkingContent(
                     thinking=buffer.get("thinking", ""),
                     thinking_signature=buffer["thinking_signature"],

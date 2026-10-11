@@ -39,7 +39,7 @@ from aelix_coding_agent.cli import entry as entry_mod
 from aelix_coding_agent.core import runnable_models
 from aelix_coding_agent.core.runnable_models import is_runnable, turn_refusal
 from aelix_coding_agent.rpc.rpc_mode import _handle_prompt
-from aelix_coding_agent.rpc.rpc_types import RpcCommandPrompt, RpcSuccessResponse
+from aelix_coding_agent.rpc.rpc_types import RpcCommandPrompt, RpcErrorResponse, RpcSuccessResponse
 
 from tests.cli import test_session_model_record_376 as _record
 from tests.cli.test_session_model_restore_376 import _settings
@@ -113,7 +113,7 @@ _SHAPES: dict[str, tuple[Any, list[str], str | None]] = {
 
 
 @pytest.mark.parametrize("shape", list(_SHAPES))
-async def test_a_vertex_prompt_over_rpc_is_handled_as_on_main(
+async def test_vertex_key_sources_run_and_definite_config_absence_refuses_before_records(
     env: Path, monkeypatch: pytest.MonkeyPatch, wire: WireRecorder, no_gcp: None, shape: str
 ) -> None:
     """Round 4 (``619f7524``): ``success: false``, "needs Google Cloud
@@ -142,9 +142,15 @@ async def test_a_vertex_prompt_over_rpc_is_handled_as_on_main(
     assert await entry_mod._async_main([*argv, "--no-session", "--mode", "rpc"]) == 0
 
     assert seen["model"].api == "google-vertex"
-    # is_runnable keeps its Vertex arm (the TUI and -p gates); only the prompt
-    # check leaves it out.
+    # The picker keeps its environment-only filter; prompt auth uses the
+    # actual configured sources instead (#416).
     assert is_runnable(seen["model"]) is False
+    if shape == "keyless":
+        assert "No API key" in str(seen["check"])
+        assert isinstance(seen["response"], RpcErrorResponse)
+        assert seen["messages"] == []
+        assert wire.hosts() == []
+        return
     assert seen["check"] is None
     assert isinstance(seen["response"], RpcSuccessResponse), seen["response"]
     roles = [getattr(m, "role", None) for m in seen["messages"]]

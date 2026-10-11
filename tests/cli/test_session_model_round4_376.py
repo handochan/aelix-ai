@@ -1,8 +1,8 @@
-"""#376 review round 4 — the prompt check asks no credential; ``--resume`` restores.
+"""#376's header/token/ADC regressions remain accepted by #416's shared-source check.
 
-* **Request-level auth runs as on ``main``** (owner decision 2026-10-08). Round
+* **Request-level auth remains accepted** (#416). Round
   3's check also refused a model whose provider ``has_configured_auth`` did not
-  count, and that predicate does not see auth the adapters accept without an
+  count. #416 now shares the request's auth acceptance, including an
   API key: an auth header in ``models.json`` (or a registration's ``headers``),
   ``ANTHROPIC_CUSTOM_HEADERS`` on anthropic (ADR-0254 §2.2),
   ``ANTHROPIC_AUTH_TOKEN``, google-vertex Application Default Credentials. All

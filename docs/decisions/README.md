@@ -36,6 +36,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0263 — Configured request auth before new prompt records](0263-configured-request-auth-before-new-prompt-records.md)
+  (Accepted, 2026-10-12; #416). Request-supported headers/token/Vertex source
+  configuration count after input hooks; invalid credentials and ambient ADC
+  discovery stay at request time. Restoration judges the actual model.
+
 - [0262 — Explicit provider registrations own model routes](0262-explicit-provider-registrations-own-model-routes.md)
   (Accepted, 2026-10-11; #365). Explicit maps replace provider rows, empty maps
   stay empty, and request/child guards preserve the effective owner. Extension

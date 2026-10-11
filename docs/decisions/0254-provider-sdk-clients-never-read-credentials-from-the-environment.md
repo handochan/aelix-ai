@@ -3,6 +3,8 @@
 Status: Accepted (2026-10-06); review round 1 (2026-10-07, §2.1, §3, §4, §7); review round 2
 (2026-10-07, §2.1-§2.3, §3, §8); review round 3 (2026-10-07, §2.2, §5, §6, §9)
 Date: 2026-10-06
+Amended by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
+(2026-10-12, #416: header/token auth works in print/json too).
 Amends: **ADR-0045** §A.4 (the `_anthropic_client` wrapper now owns the "no credential of
 its own" rule), **ADR-0052** (the OAuth branch's blank `api_key` becomes no `api_key`),
 **ADR-0251** §2.1 step 4 (the anthropic adapter's environment step, stated; dated note
@@ -126,10 +128,9 @@ a request carries is the one aelix's key order resolved (ADR-0251: `--api-key` �
   counts none of them (§6). On an SDK before 0.98, which does not read
   the variable, that request carries no auth and the SDK itself refuses it before
   sending (`Could not resolve authentication method`). For every other provider the
-  variable never counts, as it never reaches them. `-p` and `--mode json` are unchanged:
-  for a header-only setup they keep `aab1f210`'s "No API key found for …" before the turn,
-  because `has_configured_auth` does not read the variable. Whether it should is an owner
-  question this ADR does not decide (§5 item 5). An injected `options.client` skips the
+  variable never counts, as it never reaches them. #416 (ADR-0263) now shares this
+  request acceptance with configured-source inspection, so print/json accept these
+  header-only setups too, after input hooks and before new records. An injected `options.client` skips the
   check, as in pi.
 - The OAuth and Copilot branches pass no `api_key` (was `""`), so the bearer goes alone.
   The Copilot branch adds its bearer only when there is a key (it wrote

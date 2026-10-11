@@ -333,10 +333,11 @@ class ModelRegistry:
     def _owned_request_model(self, model: Model) -> tuple[Model | None, str | None]:
         scope = self.get_registration_models(model.provider)
         required = self._required_registration_route
-        if required is not None and (
-            scope is None or registration_route_digest(model) != required
-        ):
-            return None, f"Delegated model '{model.provider}/{model.id}' requires its original explicit provider registration and route"
+        if required is not None and (scope is None or registration_route_digest(model) != required):
+            return (
+                None,
+                f"Delegated model '{model.provider}/{model.id}' requires its original explicit provider registration and route",
+            )
         if scope is None:
             return model, None
         live = next((m for m in scope if m.id == model.id), None)
@@ -358,11 +359,17 @@ class ModelRegistry:
             or live.api == "unknown"
             or (model.api, model.base_url) != (live.api, live.base_url)
         ):
-            return None, f"Model '{model.provider}/{model.id}' does not belong to the current provider registration; select the model again"
+            return (
+                None,
+                f"Model '{model.provider}/{model.id}' does not belong to the current provider registration; select the model again",
+            )
         # Adapters merge Model.headers again below this callback. Reject a stale
         # projection rather than allowing a removed credential header to survive.
         if (model.headers or {}) != (live.headers or {}):
-            return None, f"Model '{model.provider}/{model.id}' has stale provider registration headers; select it again"
+            return (
+                None,
+                f"Model '{model.provider}/{model.id}' has stale provider registration headers; select it again",
+            )
         return live, None
 
     def registration_route_error(self, model: Model) -> str | None:
@@ -385,18 +392,17 @@ class ModelRegistry:
 
     # ── Auth resolution ────────────────────────────────────────────
     def has_configured_auth(self, model: Model) -> bool:
-        """Pi parity: ``model-registry.ts::hasConfiguredAuth``.
+        """Whether the request has a configured source, without resolving it (#416).
 
-        Returns :data:`True` if ANY auth layer has a key for
-        ``model.provider`` (runtime override, stored credential,
-        models.json ``apiKey``, env var, registered ProviderConfigInput,
-        fallback resolver). Does NOT trigger OAuth refresh. The layers are
-        checked in the request's order (#363, :meth:`_request_api_key`), but
-        the answer is a union, so the order cannot change it.
+        Uses the request's effective model and header merge, then asks the
+        built-in adapter's acceptance. Stored entries, raw keys and commands
+        are configured intent even when invalid: refresh/command failures stay
+        at request time (#379). OAuth registration is login capability and the
+        fallback resolver is not a request source; neither counts here.
 
-        Implementation note: this is a sync method (matches Pi). It
-        consults :class:`AuthStorage` state plus the dynamic provider
-        registry — both are sync-readable on the Aelix runtime.
+        Unknown/custom stream contracts and Vertex ambient ADC discovery are
+        deferred, rather than declared absent. True is not credential validity.
+        No refresh, shell command, SDK client, file discovery or network runs.
         """
 
         provider = model.provider
@@ -417,28 +423,59 @@ class ModelRegistry:
 
         if get_env_api_key(provider):
             return True
-        # Dynamic registration: ProviderConfigInput.api_key or oauth.
-        config = self._registered_providers.get(provider)
-        if config is not None:
-            if config.api_key:
-                return True
-            if config.oauth is not None:
-                return True
-        # Pi parity: fallback resolver consulted for has_configured_auth.
-        fallback = self._auth_storage._fallback_resolver
-        if fallback is not None:
-            try:
-                if fallback(provider):
-                    return True
-            except Exception:  # noqa: BLE001
-                # Errors are accumulated on the storage when invoked via
-                # ``has_auth`` (Sprint 6e); ``has_configured_auth`` is
-                # sync so we swallow silently to match Pi.
-                pass
-        return False
+        effective, ownership_error = self._owned_request_model(model)
+        if ownership_error is not None:
+            # Keep #365's ownership refusal and its request-time no-send
+            # boundary; it is not a "missing key" diagnosis.
+            return True
+        from aelix_ai.providers._configured_auth import has_configured_request_auth
+
+        headers = self._request_headers(model, effective, resolve=False)
+        return has_configured_request_auth(effective or model, headers) is not False
+
+    def _request_headers(
+        self, model: Model, effective: Model | None, *, resolve: bool
+    ) -> dict[str, str]:
+        """One effective header merge for request resolution and source inspection.
+
+        Static model headers are literal, as before. Provider/per-model values
+        use the existing env/literal resolver; inspection leaves commands
+        unevaluated, retaining configured intent without spawning a shell.
+        """
+
+        provider = model.provider
+        config = self._provider_request_configs.get(provider)
+        sources = (
+            (config.headers if config is not None else None, f'provider "{provider}"'),
+            (
+                self._model_request_headers.get(self._get_model_request_key(provider, model.id)),
+                f'model "{provider}/{model.id}"',
+            ),
+        )
+        headers = dict(effective.headers if effective is not None and effective.headers else {})
+        for source, description in sources:
+            if resolve:
+                headers.update(
+                    resolve_headers_or_throw(source, description, cache=self._command_value_cache)
+                    or {}
+                )
+            else:
+                headers.update(
+                    {
+                        name: value
+                        if value.startswith("!")
+                        else cast(str, resolve_config_value_uncached(value))
+                        for name, value in (source or {}).items()
+                    }
+                )
+        return headers
 
     def has_route_auth(self, provider: str, *, runtime_overrides: bool = True) -> bool:
-        """:meth:`has_configured_auth` without a credential a cwd ``.env`` supplied.
+        """Route-selection auth, excluding credentials a cwd ``.env`` supplies.
+
+        Unlike #416's request-source presence, this historical routing union
+        includes login/fallback capabilities and does not add header/token/ADC
+        sources. Its route and provenance rules remain unchanged.
 
         #362 / ADR-0250 guard 1. pi's ``resolveCliModel`` lets auth decide three
         things — a bare id several providers serve, a ``<provider>/<id>`` whose
@@ -627,30 +664,11 @@ class ModelRegistry:
             api_key = await self._request_api_key(provider, generation=generation)
             if generation != self._generation:
                 return ResolvedRequestAuth(
-                    ok=False, error="Provider registration changed while resolving request authentication; select the model again"
+                    ok=False,
+                    error="Provider registration changed while resolving request authentication; select the model again",
                 )
 
-            provider_headers = resolve_headers_or_throw(
-                provider_config.headers if provider_config is not None else None,
-                f'provider "{provider}"',
-                cache=self._command_value_cache,
-            )
-            model_headers = resolve_headers_or_throw(
-                self._model_request_headers.get(
-                    self._get_model_request_key(provider, model.id)
-                ),
-                f'model "{provider}/{model.id}"',
-                cache=self._command_value_cache,
-            )
-
-            headers: dict[str, str] = {}
-            effective_headers = effective.headers if effective is not None else None
-            if effective_headers or provider_headers or model_headers:
-                headers = {
-                    **(effective_headers or {}),
-                    **(provider_headers or {}),
-                    **(model_headers or {}),
-                }
+            headers = self._request_headers(model, effective, resolve=True)
 
             if provider_config is not None and provider_config.auth_header:
                 if not api_key:
@@ -665,7 +683,10 @@ class ModelRegistry:
             )
         except Exception as exc:  # noqa: BLE001 — Pi reports the message.
             if generation != self._generation:
-                return ResolvedRequestAuth(ok=False, error="Provider registration changed while resolving request authentication")
+                return ResolvedRequestAuth(
+                    ok=False,
+                    error="Provider registration changed while resolving request authentication",
+                )
             # #379: a stored OAuth refresh that failed on a transient cause says
             # so; every other failure (StoredCredentialError's own reasons, a
             # header !command, an authHeader with no key) has no reason.
@@ -787,9 +808,7 @@ class ModelRegistry:
             return auth_status
 
         provider_config = self._provider_request_configs.get(provider)
-        provider_api_key = (
-            provider_config.api_key if provider_config is not None else None
-        )
+        provider_api_key = provider_config.api_key if provider_config is not None else None
         if auth_status.source and not provider_api_key:
             return auth_status
         if not provider_api_key:
@@ -1244,10 +1263,7 @@ class ModelRegistry:
                     )
                 loaded = cast("list[Model]", returned)
             except Exception as exc:  # noqa: BLE001
-                err_line = (
-                    f"modify_models failed for provider "
-                    f"{oauth_provider.id!r}: {exc}"
-                )
+                err_line = f"modify_models failed for provider {oauth_provider.id!r}: {exc}"
                 # P-175 (multi-provider): append rather than overwrite
                 # so :meth:`get_error` surfaces every modify_models
                 # failure within this pass.

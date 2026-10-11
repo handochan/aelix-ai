@@ -268,34 +268,101 @@ async def test_an_explicit_model_to_the_provider_then_switches(
 # === the print gate judges the harness's model ================================
 
 
+@pytest.mark.parametrize(
+    "case", ["held", "factory-configured", "factory-handled", "factory-absent"]
+)
 async def test_the_print_gate_judges_the_harness_model_not_only_the_re_resolve(
-    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], case: str
 ) -> None:
     """Decision 2's cause: the #98 gate re-resolves after ``session_start``.
 
     With the late-route check silenced, the OpenRouter-less launch holds the
     placeholder while the gate's re-resolve finds ``sessext``; judging only the
     re-resolve let the run reach its first turn (``No provider registered for
-    api='unknown'``). The harness's own model is judged too, so no turn starts.
+    api='unknown'``). Public registration of the genuine adapter makes that
+    structural question real; factory registration provides accepted/handled
+    controls through the real print runner, without a private predicate stub.
     """
 
     from aelix_coding_agent.cli import runtime_bootstrap
-    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    from tests.cli.test_entry_router import _observe_real_print_boundary, _seal_openai_sdk_wire
+
+    requests = _seal_openai_sdk_wire(monkeypatch)
+    from aelix_ai.api_registry import get_registered_providers
+    from aelix_ai.providers import openai_completions
 
     monkeypatch.setattr(runtime_bootstrap, "late_registered_route", lambda *a, **k: None)
-    # ``is_runnable`` fails open with no adapter registered (``register_providers``
-    # runs in ``main_sync``, which this bypasses); judge against the one
-    # ``sessext`` uses, without touching the process-wide api registry.
-    monkeypatch.setattr(
-        entry_mod, "is_runnable", lambda model: is_runnable(model, {"openai-completions"})
-    )
-    turns = _stub_print(monkeypatch)
+    openai_completions.register_all()
+    assert "openai-completions" in get_registered_providers()
+    assert "unknown" not in get_registered_providers()
+    monkeypatch.setenv("AELIX_AUTH_PATH", str(env / "agent" / "auth.json"))
+    observed = _observe_real_print_boundary(monkeypatch, handled=case == "factory-handled")
+    extension = env / "sessext.py"
+    if case != "held":
+        key = 'api_key="fake416-gate",' if case == "factory-configured" else ""
+        extension.write_text(
+            "from aelix_ai.streaming import Model\n"
+            "from aelix_coding_agent.model_registry import ProviderConfigInput\n"
+            "def setup(aelix):\n"
+            '    aelix.register_provider("sessext", ProviderConfigInput('
+            f'{key} models={{"m1": Model(id="m1", api="openai-completions", '
+            'base_url="https://gate416.invalid/v1")}))\n',
+            "utf-8",
+        )
     code = await entry_mod._async_main(
-        ["--no-session", "-e", str(env / "sessext.py"), "--model", "sessext/m1", "-p", "hi"]
+        [
+            "--session-dir",
+            str(env / "agent" / "sessions"),
+            "-e",
+            str(extension),
+            "--model",
+            "sessext/m1",
+            "-p",
+            "gate-input416",
+        ]
     )
-    err = capsys.readouterr().err
-    assert (code, turns) == (1, [])
-    assert "Error: model 'm1' (provider 'sessext') could not be resolved" in err
+    captured = capsys.readouterr()
+    harness = observed["harness"]
+    records = [
+        e for e in await harness.session.get_branch() if e.type in ("message", "custom_message")
+    ]
+    assert code == (1 if case in ("held", "factory-absent") else 0)
+    assert observed["prompts"] == ([] if case == "held" else ["gate-input416"])
+    assert observed["input"] == observed["prompts"]
+    assert (
+        observed["accepted"]
+        == {
+            "held": [],
+            "factory-configured": ["started"],
+            "factory-handled": ["handled"],
+            "factory-absent": [],
+        }[case]
+    )
+    if case == "factory-configured":
+        assert len(requests) == 1
+        assert (
+            requests[0]["host"],
+            requests[0]["path"],
+            requests[0]["body"]["model"],
+            requests[0]["tag"],
+        ) == ("gate416.invalid", "/v1/chat/completions", "m1", "own416")
+        assert "gate-input416" in json.dumps(requests[0]["body"])
+        assert "agent_start" in observed["events"]
+        assert [message.role for message in harness.state.messages] == ["user", "assistant"]
+        assert harness.state.messages[-1].content[0].text == "gate416-ok"
+        assert len(records) == 2
+    else:
+        assert requests == []
+        assert observed["events"] == []
+        assert harness.state.messages == []
+        assert records == []
+    if case == "held":
+        assert harness.current_model.api == "unknown"
+        assert "Error: model 'm1' (provider 'sessext') could not be resolved" in captured.err
+    else:
+        assert harness.current_model.api == "openai-completions"
+        assert ("No API key found for Sessext" in captured.err) == (case == "factory-absent")
 
 
 # === verify round 1 (B1): every re-resolver of the launch inputs keeps the hold ====
