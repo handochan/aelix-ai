@@ -98,13 +98,13 @@ async def test_auth_callback_surfaces_runtime_key(tmp_path: Path) -> None:
 
     callback = _make_auth_callback(registry)
     result = await callback(Model(provider="anthropic", id="claude-3"))
-    assert result == {"apiKey": "sk-RUNTIME-123", "headers": {}}
+    assert result is not None
+    assert result["apiKey"] == "sk-RUNTIME-123" and result["headers"] == {}
+    assert callable(result["validate"])
 
 
-async def test_auth_callback_returns_none_when_no_key(tmp_path: Path) -> None:
-    """No key + no headers → ``None`` ("no opinion") so the harness's
-    "neither apiKey nor headers" guard is not tripped and the adapter env
-    fallback can still resolve."""
+async def test_auth_callback_keeps_no_key_opinion_with_a_closing_validator(tmp_path: Path) -> None:
+    """A validator-only snapshot leaves native/env authentication to the adapter."""
 
     storage = AuthStorage(tmp_path / "auth.json")
     await storage.load()
@@ -112,7 +112,8 @@ async def test_auth_callback_returns_none_when_no_key(tmp_path: Path) -> None:
 
     callback = _make_auth_callback(registry)
     result = await callback(Model(provider="no-such-provider", id="x"))
-    assert result is None
+    assert result is not None and result["apiKey"] is None and result["headers"] == {}
+    assert callable(result["validate"])
 
 
 # === stream sees the key (end-to-end through the harness) ====================

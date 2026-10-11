@@ -6,6 +6,7 @@ Pi parity reference: ``packages/ai/src/stream.ts:42-46`` at SHA
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator
 
 import pytest
@@ -45,6 +46,65 @@ async def test_stream_simple_no_provider_raises() -> None:
             pass
     assert ei.value.code == "no_provider_registered"
     assert "anthropic" in str(ei.value)
+
+
+@pytest.mark.parametrize("async_validator", [False, True])
+async def test_optional_closing_validator_preserves_payload_and_unknown_stream(async_validator):
+    calls = []
+    sent = []
+
+    def validate(model):
+        calls.append(model.id)
+
+    async def validate_async(model):
+        validate(model)
+
+    async def payload_hook(payload, model):
+        return {"patched": payload["value"]}
+
+    async def fake(model, context, options):
+        payload = options.on_payload({"value": 42}, model)
+        if inspect.isawaitable(payload):
+            payload = await payload
+        sent.append((payload, options.headers))
+        yield AssistantStartEvent()
+
+    register_provider("unknown-stream", fake)
+    options = SimpleStreamOptions(
+        on_payload=payload_hook,
+        headers={"x-caller": "own"},
+        validate_request=validate_async if async_validator else validate,
+    )
+    iterator = await stream_simple(Model(id="m1", api="unknown-stream"), Context(), options)
+    async for _ in iterator:
+        pass
+    assert calls == ["m1", "m1"]
+    assert sent == [({"patched": 42}, {"x-caller": "own"})]
+
+
+async def test_validator_only_auth_keeps_no_credential_opinion_for_a_stream():
+    from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+
+    seen = []
+
+    def validate(model):
+        seen.append("validate")
+
+    async def fake(model, context, options):
+        assert options.api_key is None and options.headers == {}
+        seen.append("stream")
+        yield AssistantStartEvent()
+        yield AssistantEndEvent()
+
+    register_provider("native-auth", fake)
+    model = Model(id="m1", api="native-auth")
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=model, get_api_key_and_headers=lambda model: {"validate": validate}
+        )
+    )
+    await harness.prompt("hi")
+    assert seen == ["validate", "stream"]
 
 
 async def test_stream_simple_no_provider_raises_eagerly() -> None:

@@ -1,8 +1,8 @@
 """#363 / ADR-0251 — the key a request carries follows pi's order.
 
 ``--api-key`` -> ``auth.json`` (a stored credential owns the provider) ->
-``models.json`` ``apiKey`` -> environment -> an extension registration's
-``api_key`` (kept after the environment until #365). pi:
+configured extension/models.json ``apiKey`` -> environment (#365 completes
+the extension's move to step 3 after replacing its owned rows). pi:
 ``packages/ai/src/auth/resolve.ts:56-92`` and
 ``coding-agent/src/core/provider-composer.ts:457-479`` @ b223082bb (since
 9993c9690, 2026-07-14). Before #363 aelix asked the AuthStorage cascade first, so
@@ -296,15 +296,10 @@ async def test_an_api_key_naming_the_dotenv_variable_still_sends_its_value(
     assert await _bearer(registry) == "sk-dotenv-fake"
 
 
-async def test_an_extension_api_key_stays_after_the_env_until_365(
+async def test_an_extension_api_key_precedes_env_on_its_owned_model_365(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Scope limit: only the models.json ``apiKey`` moved ahead of the environment.
-
-    pi puts a registration's key in step 3 too; here the registration still
-    leaves the catalogue's rows in the registry (#365), so step 3 would put the
-    extension's key on ``api.openai.com`` (measured: ``bearer=ext``).
-    """
+    """#365 removes vendor rows before putting the extension key in configured step 3."""
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-exported-fake")
     _, registry = await _registry(scrubbed, {})
@@ -322,11 +317,12 @@ async def test_an_extension_api_key_stays_after_the_env_until_365(
             },
         ),
     )
-    row = _row(registry)
-    assert row.base_url == "https://api.openai.com/v1"
-    assert await _bearer(registry) == "sk-exported-fake"
+    row = registry.find("openai", "m1")
+    assert row is not None and row.base_url == "http://127.0.0.1:9/ext/v1"
+    assert registry.find("openai", "gpt-4o-mini") is None
+    assert (await registry.get_api_key_and_headers(row)).api_key == "ext-fake"
     status = await registry.get_provider_auth_status("openai")
-    assert status.source == "environment"
+    assert status.source == "models_json_key"
 
 
 async def test_an_extension_api_key_still_answers_when_the_env_has_none(
@@ -365,7 +361,9 @@ async def test_an_extension_registering_models_but_no_key_keeps_the_models_json_
             },
         ),
     )
-    auth = await registry.get_api_key_and_headers(_row(registry))
+    selected = registry.find("openai", "m1")
+    assert selected is not None
+    auth = await registry.get_api_key_and_headers(selected)
     assert auth.ok and auth.api_key == _OWN
     # A registration that carries nothing leaves the models.json config whole.
     assert auth.headers == {"x-probe": "1"}
@@ -380,7 +378,7 @@ async def test_a_headers_only_registration_keeps_the_models_json_key(
 
     RED on 4cbff14e (and 5dee21d1): the registration replaced the models.json
     request config, the key with it, and the exported key went out. The
-    registration's headers are the ones sent (unchanged: it replaces them).
+    #365 merges JSON provider headers with extension headers.
     """
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-exported-fake")
@@ -388,20 +386,20 @@ async def test_a_headers_only_registration_keeps_the_models_json_key(
     registry.register_provider("openai", ProviderConfigInput(headers={"x-ext": "e"}))
     auth = await registry.get_api_key_and_headers(_row(registry))
     assert auth.ok and auth.api_key == _OWN
-    assert auth.headers == {"x-ext": "e"}
+    assert auth.headers == {"x-probe": "1", "x-ext": "e"}
     assert await registry.get_api_key_for_provider("openai") == _OWN
     assert (await registry.get_provider_auth_status("openai")).source == "models_json_key"
 
 
-async def test_a_registration_with_its_own_key_still_waits_for_the_env(
+async def test_a_registration_with_its_own_key_precedes_the_env_365(
     scrubbed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The extension's key replaces the models.json one (pi) and stays after the env (#365)."""
+    """The extension's configured key replaces JSON's and precedes env (#365)."""
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-exported-fake")
     _, registry = await _registry(scrubbed, _OWN_ENTRY)
     registry.register_provider("openai", ProviderConfigInput(api_key="ext-fake"))
-    assert await _bearer(registry) == "sk-exported-fake"
+    assert await _bearer(registry) == "ext-fake"
     monkeypatch.delenv("OPENAI_API_KEY")
     assert await _bearer(registry) == "ext-fake"
 

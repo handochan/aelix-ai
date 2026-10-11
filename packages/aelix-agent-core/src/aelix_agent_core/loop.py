@@ -216,7 +216,12 @@ async def _run_loop(
             )
             new_messages.append(message)
 
-            if message.stop_reason in ("error", "aborted"):
+            stop_response = (
+                config.should_stop_after_response(message)
+                if config.should_stop_after_response is not None
+                else False
+            )
+            if stop_response or message.stop_reason in ("error", "aborted"):
                 await emit(TurnEndEvent(message=message, tool_results=[]))
                 await emit(AgentEndEvent(messages=new_messages))
                 return

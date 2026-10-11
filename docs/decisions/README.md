@@ -36,6 +36,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0262 — Explicit provider registrations own model routes](0262-explicit-provider-registrations-own-model-routes.md)
+  (Accepted, 2026-10-11; #365). Explicit maps replace provider rows, empty maps
+  stay empty, and request/child guards preserve the effective owner. Extension
+  keys move to configured step 3; JSON headers merge and explicit False clears authHeader.
+
 - [0261 — Root commands reject launch options before dispatch](0261-root-commands-reject-launch-options-before-dispatch.md)
   (Accepted, 2026-10-11; #289). Shared arity preserves values and intentional
   prompts; only offline may precede a command, and other launch prefixes fail

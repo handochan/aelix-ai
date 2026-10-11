@@ -272,7 +272,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     message layer and no ``error_message`` is ever emitted.
 
     On a genuine failure the rung fires exactly as specified: the last turn's
-    error sets ``stop_reason`` too (``loop.py:322-325`` states the adapter
+    error sets ``stop_reason`` too (``loop.py:327-330`` states the adapter
     contract), so ``ok`` is already False by the time this is reached.
 
     On ``aborted`` / ``timeout`` the sanitizer usually reduces the tail to the

@@ -42,7 +42,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 from aelix_ai.providers import anthropic as _anthropic
 from aelix_ai.providers import google_generative_ai as _google_generative_ai
@@ -1309,35 +1309,22 @@ def _registry_sibling_backfill(registry: Any, provider: str, model_id: str) -> M
 
 
 def _registration_models(registry: Any, provider: str) -> list[Model] | None:
-    """What an extension registration brings for a CATALOGUED provider it took over.
+    """The registry's explicit model scope: None for augmentation, [] for zero rows.
 
-    ``None`` unless ``provider`` is a catalogued name that is user-defined ONLY
-    because an extension's ``register_provider`` brought ``models`` for it (a
-    ``models.json`` provider-level ``baseUrl`` moves the whole provider instead,
-    decision 3). Such a registration is MERGED into the registry next to the
-    catalog's own models, so the registry's ``openai`` still lists
-    ``gpt-4o-mini`` at ``api.openai.com`` — but the provider-wide ``api_key`` is
-    the extension's. The launch therefore resolves such a prefix inside the
-    REGISTRATION (and the registration's models replace the catalogue's in the
-    set a ``--model`` string can name): the #344 review measured
-    ``openai/gpt-4o-mini`` with
-    ``OPENROUTER_API_KEY`` set reaching ``api.openai.com`` with the extension's
-    key (on ``fbead6e0`` it went to OpenRouter with the user's). pi replaces a
-    provider's models on ``registerProvider`` with models, so there the catalog
-    id is simply not found. Introspection-only and fail-closed.
+    No models.json override cancels an extension's ownership. Legacy structural
+    registries may still supply their registration enumeration instead.
     """
-
-    if registry is None or provider not in _catalogued_providers():
+    if registry is None:
         return None
     try:
-        override = getattr(registry, "get_base_url_override", None)
-        if callable(override) and override(provider):
-            return None
+        scope = getattr(registry, "get_registration_models", None)
+        if callable(scope):
+            return cast("list[Model] | None", scope(provider))
         registrations = getattr(registry, "get_registered_providers", None)
         registered: Any = registrations() if callable(registrations) else None
         config = registered.get(provider) if isinstance(registered, Mapping) else None
         brought: Any = getattr(config, "models", None) if config is not None else None
-        if not isinstance(brought, Mapping) or not brought:
+        if not isinstance(brought, Mapping):
             return None
         models: list[Model] = []
         for model in brought.values():
@@ -1345,9 +1332,9 @@ def _registration_models(registry: Any, provider: str) -> list[Model] | None:
             # pass may have touched it), else the registration's own entry.
             live = registry.find(provider, model.id)
             models.append(live if live is not None else replace(model, provider=provider))
-    except Exception:  # noqa: BLE001 — resolution must never break launch
-        return None
-    return models or None
+    except Exception:  # noqa: BLE001 — a failed ownership read is never catalog permission
+        return []
+    return models
 
 
 def _resolve_in_provider(
@@ -1370,6 +1357,10 @@ def _resolve_in_provider(
 
     from aelix_ai.models import get_model
 
+    registered = _registration_models(registry, provider)
+    if registered is not None:
+        exact = next((m for m in registered if m.id == model_id), None)
+        return exact or _unanimous_backfill(registered, provider, model_id) or Model(id=model_id, provider=provider)
     catalog = get_model(provider, model_id)
     if catalog is not None:
         return _compose_catalog_model(catalog, registry)
@@ -1594,7 +1585,11 @@ def _route_universe(registry: Any) -> list[Model]:
         except Exception:  # noqa: BLE001 — resolution must never break launch
             models = []
     served = {m.provider for m in models}
-    models += [m for p in get_providers() if p not in served for m in get_models(p)]
+    models += [
+        m for p in get_providers()
+        if p not in served and _registration_models(registry, p) is None
+        for m in get_models(p)
+    ]
     for name in sorted(user_defined_providers(registry)):
         registered = _registration_models(registry, name)
         if registered is not None:
@@ -2098,7 +2093,7 @@ def resolve_route(
 
     # --- 3: inside the inferred provider, the id exactly -------------------------
     found = _find_in(inferred, rest, registry)
-    if inferred in user_defined:
+    if inferred in user_defined or _registration_models(registry, inferred) is not None:
         if found is not None:
             return ResolvedRoute(found, "prefix")
         custom = _custom_in(inferred, rest, registry, user_defined)

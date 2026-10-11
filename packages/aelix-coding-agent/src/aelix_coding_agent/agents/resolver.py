@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2564-2571``).
+  (``cli/entry.py:2581-2588``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -38,8 +38,8 @@ two sides can agree on a field that nothing reads, and both can collapse
 Two flag choices are not cosmetic:
 
 * ``--tools`` takes ONE comma-separated token and is NOT repeatable
-  (``args.py:636-643`` overwrites), so the list is joined, never repeated.
-* ``--system-prompt`` takes a LITERAL string (``args.py:576-580``); a profile
+  (``args.py:647-654`` overwrites), so the list is joined, never repeated.
+* ``--system-prompt`` takes a LITERAL string (``args.py:587-591``); a profile
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 
@@ -150,7 +150,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the rest of the resolver's order (#98,
-``cli/entry.py:1628-1633``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1637-1642``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -192,7 +192,9 @@ def parent_model_flags(parent_model: Model | None) -> list[str]:
     return flags
 
 
-def _pin_route(flags: list[str], model_registry: object | None) -> list[str]:
+def _pin_route(
+    flags: list[str], model_registry: object | None, inherited_model: Model | None = None
+) -> list[str]:
     """Rewrite a provider-less ``--model`` into the route the parent resolves, when the child could not.
 
     #344 / ADR-0249 (M3), narrowed by ADR-0250 (#362). A delegated child is a
@@ -244,36 +246,48 @@ def _pin_route(flags: list[str], model_registry: object | None) -> list[str]:
     if model_registry is None:
         return flags
     from aelix_coding_agent.cli.runtime_bootstrap import (
+        _registration_models,
         canonical_provider_name,
         resolve_route,
         user_defined_providers,
     )
 
+    provider = None
     if "--provider" in flags:
         at = flags.index("--provider")
         if at + 1 < len(flags):
             named = canonical_provider_name(flags[at + 1], model_registry)
             if named != flags[at + 1]:
-                return [*flags[: at + 1], named, *flags[at + 2 :]]
-        return flags
+                flags = [*flags[: at + 1], named, *flags[at + 2 :]]
+            provider = named
     if "--model" not in flags:
         return flags
 
     at = flags.index("--model")
-    route = resolve_route(flags[at + 1], None, model_registry)
-    landed = route.model
-    if route.error is not None or route.kind == "held" or not landed.provider:
-        return flags
-    if landed.provider not in user_defined_providers(model_registry):
-        return flags
-    return [
-        *flags[:at],
-        "--model",
-        landed.id,
-        "--provider",
-        landed.provider,
-        *flags[at + 2 :],
-    ]
+    if (
+        inherited_model is not None
+        and getattr(inherited_model, "provider", None) not in (None, "", _UNRESOLVED)
+        and getattr(inherited_model, "api", None) not in (None, "", _UNRESOLVED)
+        and getattr(inherited_model, "base_url", None)
+    ):
+        landed = inherited_model
+    else:
+        route = resolve_route(flags[at + 1], provider, model_registry)
+        landed = route.model
+        if route.error is not None or route.kind == "held" or not landed.provider:
+            return flags
+    scope = _registration_models(model_registry, landed.provider)
+    if provider is None and (
+        landed.provider in user_defined_providers(model_registry) or scope is not None
+    ):
+        flags = [
+            *flags[:at], "--model", landed.id, "--provider", landed.provider, *flags[at + 2 :]
+        ]
+    if scope is not None:
+        from aelix_coding_agent.model_registry import registration_route_digest
+
+        flags += ["--require-registration-route", registration_route_digest(landed)]
+    return flags
 
 
 def inherits_parent_model(profile: AgentProfile) -> bool:
@@ -316,7 +330,7 @@ def child_model_flags(
         # run its own cascade and find whatever the PARENT's cascade would have
         # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
         # parent whose model came from ``--model`` or ``/model``. Inherit.
-        return _pin_route(parent_model_flags(parent_model), model_registry)
+        return _pin_route(parent_model_flags(parent_model), model_registry, parent_model)
     flags: list[str] = []
     if profile.model is not None:
         flags += ["--model", profile.model]
@@ -477,7 +491,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:3024-3028``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:3041-3045``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

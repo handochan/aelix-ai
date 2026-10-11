@@ -893,6 +893,7 @@ async def _generate_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
+        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
         max_tokens=_summary_max_tokens(model, 0.8),
     )
 
@@ -983,6 +984,7 @@ async def _generate_turn_prefix_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
+        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
         max_tokens=_summary_max_tokens(model, 0.5),
     )
 

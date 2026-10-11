@@ -420,7 +420,9 @@ async def test_a_profile_provider_is_passed_as_the_parent_matches_it(
         return child_model_flags(profile, None, registry)
 
     assert flags("m1", "openai") == ["--model", "m1", "--provider", "OpenAI"]
-    assert flags("m3", "groq") == ["--model", "m3", "--provider", "Groq"]
+    owned_flags = flags("m3", "groq")
+    assert _model_flags(owned_flags) == ["--model", "m3", "--provider", "Groq"]
+    assert "--require-registration-route" in owned_flags
     assert flags(None, "OPENAI") == ["--provider", "OpenAI"]
     assert flags("m1", "OpenAI") == ["--model", "m1", "--provider", "OpenAI"]
     assert flags("m1", "shared") == ["--model", "m1", "--provider", "shared"]

@@ -296,6 +296,19 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Extension provider models own their route (#365).** An explicit `models`
+  map replaces that provider's catalog/JSON rows; `{}` stays empty and `None`
+  keeps auth-only augmentation. Launch and `/model` share the owned models and
+  safe sibling backfill. Requests refuse stale routes or Model headers before
+  resolving credentials, and a pure closing check cancels changes made during
+  request/payload hooks before the SDK sends. Print/RPC children require the same
+  explicit owner and route through startup, hooks and rebuilds.
+  Fatal refusal also ends loop execution before tools or queued inputs can
+  continue, independently of message replacement; pending inputs are retained.
+  Extension keys now precede
+  the environment at configured step 3; JSON provider headers merge with
+  extension headers and explicit `auth_header=False` overrides JSON's True.
+
 - **Extension install/remove no longer automatically run a cwd `pip/` package
   (#394).** Every pip child uses `python -P -m pip`, including verification
   downloads and installation of their verified bytes. Typed relative paths keep

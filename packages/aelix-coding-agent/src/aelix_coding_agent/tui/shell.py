@@ -181,7 +181,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
     """#249 — the meter's MID-TURN figure, read straight off a finished message.
 
     The fresh number is in the ``message_end`` payload, and reading it avoids
-    a stats walk for every provider round-trip (``loop.py:240``). Before #320,
+    a stats walk for every provider round-trip (``loop.py:245``). Before #320,
     state was appended only after the whole loop returned, so those walks also
     repainted the pre-turn number. State now commits at each message_end, while
     reading this payload remains O(1): measured
@@ -193,10 +193,10 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
     persisted session adds on top, which was not measured.
 
     The validity rule is the estimator's own, verbatim:
-    ``_valid_assistant_usage`` (``session/compaction.py:1102``, pi #5526) — an
+    ``_valid_assistant_usage`` (``session/compaction.py:1104``, pi #5526) — an
     assistant message, ``stop_reason`` neither ``"aborted"`` nor ``"error"``,
     usage present and summing POSITIVE. That matters because
-    ``estimate_context_tokens`` (``compaction.py:1130``) is exactly *this* term
+    ``estimate_context_tokens`` (``compaction.py:1132``) is exactly *this* term
     plus a heuristic for the trailing messages, so the live paint is the
     turn-end estimate's anchor and the meter does not jump at the boundary. The
     helper is private (an aborted or all-zero-usage response would otherwise
@@ -1803,7 +1803,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3765``) always passes one, so this is
+            # production caller (``entry.py:3785``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2192,8 +2192,8 @@ async def run_tui(
     # figure directly, avoiding a repeated stats walk at every tool iteration.
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
-    # ``agent_end`` (one per PROMPT — ``loop.py:221``, ``:260``, ``:271``, plus
-    # the abort close-out ``core.py:5438`` and the hook-fail one ``:5438``)
+    # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
+    # the abort close-out ``core.py:5478`` and the hook-fail one ``:5478``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2276,7 +2276,7 @@ async def run_tui(
         """#249 — every model change re-derives the meter, immediately.
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2780``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2783``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2284,7 +2284,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2825``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2828``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2584,11 +2584,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2046``), so the refresh below is
+                # ``_state.messages`` (``core.py:2049``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1692``), so this never discards a figure a running
+                # ``core.py:1695``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -2613,7 +2613,7 @@ async def run_tui(
             # unconditional and opens with its own ``get_session_stats``, so a
             # thirty-tool turn still performs thirty of them for the ``/stats``
             # history row. ``turn_end`` is per provider round-trip
-            # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop), so
+            # (``loop.py:245``, inside the ``loop.py:192`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks formerly estimated over a message list the harness
             # only extended when the loop returned (fixed by #320). Each
@@ -2666,7 +2666,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5498-5499`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5538-5539`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2694,7 +2694,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2825``).
+        # the model is already swapped in (``core.py:2828``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3584,11 +3584,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1383``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1392``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1366`` already printed at startup, and one that
+    #       what ``entry.py:1375`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3605,7 +3605,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4504-4505``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4507-4508``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4087,7 +4087,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:3696-3712 and
+            # Two audiences, discriminated exactly as entry.py:3716-3732 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

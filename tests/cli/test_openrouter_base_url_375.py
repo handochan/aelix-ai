@@ -518,17 +518,20 @@ def test_the_helper_changes_base_url_and_no_other_field(
     assert with_openrouter_base_url(model) is model
 
 
+@pytest.mark.parametrize("source", ["models-json", "explicit-registration"])
 async def test_registry_and_launch_copies_differ_from_the_unredirected_ones_only_in_base_url(
-    scrubbed: Path, monkeypatch: pytest.MonkeyPatch
+    scrubbed: Path, monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
     """Every OpenRouter copy, read without the variable and then with it, differs in ``base_url`` alone.
 
-    Two sources: a models.json ``openrouter`` entry (name, reasoning, input, cost,
+    Separate scopes: a models.json ``openrouter`` entry (name, reasoning, input, cost,
     window, compat - a models.json ``headers`` is request config, not a model
     field) and an extension registration under ``openrouter`` carrying every
     :class:`Model` field, ``headers`` and ``thinking_level_map`` included. The
     launch-vs-``/model`` rows above cannot see a field BOTH paths lose; this
-    compares each path with itself. RED with the helper dropping ``headers``.
+    compares each path with itself. Explicit models replace the JSON/catalog
+    rows under ADR-0262; the removed JSON row must not survive in that scope.
+    RED with the helper dropping ``headers`` or any other Model field.
     """
 
     from dataclasses import replace
@@ -555,8 +558,14 @@ async def test_registry_and_launch_copies_differ_from_the_unredirected_ones_only
     }
     registry = await _registry(scrubbed, providers)
     ext = replace(_every_field_set(), id="mine/ext-full")
-    registry.register_provider("openrouter", ProviderConfigInput(models={ext.id: ext}))
-    ids = ("mine/full-model", "mine/ext-full")
+    if source == "explicit-registration":
+        assert registry.find("openrouter", "mine/full-model") is not None
+        registry.register_provider("openrouter", ProviderConfigInput(models={ext.id: ext}))
+        assert registry.find("openrouter", "mine/full-model") is None
+        assert {m.id for m in registry.get_all() if m.provider == "openrouter"} == {ext.id}
+        ids = (ext.id,)
+    else:
+        ids = ("mine/full-model",)
 
     def snapshot() -> tuple[list[Model], list[Model], list[Model]]:
         found = [registry.find("openrouter", i) for i in ids]
@@ -566,13 +575,16 @@ async def test_registry_and_launch_copies_differ_from_the_unredirected_ones_only
         return found, listed, launched  # type: ignore[return-value]
 
     before = snapshot()
-    assert before[0][1].headers == ext.headers and before[0][1].thinking_level_map
-    assert before[0][0].compat == {"supportsDeveloperRole": False}
+    if source == "explicit-registration":
+        assert _differing_fields(ext, before[0][0]) == []
+        assert before[0][0].headers and before[0][0].thinking_level_map
+    else:
+        assert before[0][0].compat == {"supportsDeveloperRole": False}
     monkeypatch.setenv("OPENROUTER_BASE_URL", _ENV)
     after = snapshot()
 
     for kind, b_list, a_list in zip(("find", "get_all", "launch"), before, after, strict=True):
-        assert len(b_list) == len(a_list) >= 2, kind
+        assert len(b_list) == len(a_list) >= 1, kind
         for b, a in zip(b_list, a_list, strict=True):
             assert (b.provider, b.id, a.base_url) == (a.provider, a.id, _ENV), (kind, b.id)
             assert _differing_fields(b, a) == ["base_url"], (kind, b.id)

@@ -964,6 +964,10 @@ class _RequestAuthError(RuntimeError):
         self.retry_reason = retry_reason
 
 
+class _DelegatedRouteError(RuntimeError):
+    """An explicit owner selected by the parent was not reproduced by the child."""
+
+
 def _make_auth_callback(
     model_registry: ModelRegistry,
 ) -> Callable[[Model], Awaitable[dict[str, Any] | None]]:
@@ -980,10 +984,11 @@ def _make_auth_callback(
       Pi treats a resolution failure as fatal) - except a stored OAuth refresh
       that failed on a transient cause, whose ``retry_reason`` the raise
       carries so the harness retries the turn (#379, ADR-0251 §4).
-    - ``ok=True`` with a key or headers → ``{"apiKey": ..., "headers": ...}``.
-    - ``ok=True`` with NEITHER a key NOR headers → :data:`None` so the
-      harness's "neither apiKey nor headers" guard (@3463) is not tripped
-      and the adapter's env fallback (``get_env_api_key``) still resolves.
+    - ``ok=True`` forwards key/headers and an optional pure closing ``validate``
+      callback. The latter stays tied to the same resolved auth snapshot.
+    - With no key/headers, a validator-only dict still gives no credential
+      opinion; the adapter's existing native/env auth remains available.
+      A legacy result without a validator keeps :data:`None` for this case.
       This keeps OAuth-only / env-only providers working. A stored auth.json
       entry that gives no key (a failed refresh, an empty key) never gets here:
       the registry answers ``ok=False`` (#363 review rounds 1-2), because "no
@@ -996,10 +1001,14 @@ def _make_auth_callback(
             # Surfaced by the harness as an ``"auth"`` AgentHarnessError, or -
             # with a ``retry_reason`` (#379) - as a retried error message.
             raise _RequestAuthError(auth.error or "auth resolution failed", auth.retry_reason)
-        if not auth.api_key and not auth.headers:
+        validate = getattr(auth, "validate", None)
+        if not auth.api_key and not auth.headers and not callable(validate):
             # "No opinion" — let the adapter's env fallback take over.
             return None
-        return {"apiKey": auth.api_key, "headers": auth.headers}
+        result: dict[str, Any] = {"apiKey": auth.api_key, "headers": auth.headers}
+        if callable(validate):
+            result["validate"] = validate
+        return result
 
     return _resolve
 
@@ -1359,7 +1368,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:674-675``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:677-678``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     from .system_prompt_files import discover_system_prompt_file
 
@@ -1659,6 +1668,14 @@ async def _build_harness_options(
             typed_key=parsed.api_key is not None,
         )
     model = enrich_copilot_base_url(route.model, model_registry)
+    if parsed.registration_route is not None and model_registry is not None:
+        try:
+            model_registry.require_registration_route(parsed.registration_route)
+        except ValueError as exc:
+            raise _DelegatedRouteError(str(exc)) from exc
+        reason = model_registry.registration_route_error(model)
+        if reason:
+            raise _DelegatedRouteError(reason)
     # WP-8 (Feature 3) — capture the discovered extensions ONCE for the TUI's
     # /extension viewer. ``discover_and_load_extensions`` runs per harness build
     # (it is called here, inside the factory), so the caller passes a mutable
@@ -1702,7 +1719,7 @@ async def _build_harness_options(
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:275 / :710-711), so wiring it
+        # ``AgentState.thinking_level``, core.py:275 / :713-714), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -3203,7 +3220,7 @@ async def _async_main(argv: list[str]) -> int:
             opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:766``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:769``, AFTER
         # the registry merge at ``:564``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What
@@ -3400,6 +3417,9 @@ async def _async_main(argv: list[str]) -> int:
     # identically.
     try:
         harness = await _harness_factory(session)
+    except _DelegatedRouteError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     except UnknownToolNamesError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         # The list is the actionable half. It comes from the live registry, so

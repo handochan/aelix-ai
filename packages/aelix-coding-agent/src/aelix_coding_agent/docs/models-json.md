@@ -363,12 +363,10 @@ Pi's order):
    an entry of an unknown type — fails the same way, naming the entry:
    `The auth.json entry for <provider> … Run /login to sign in to <provider> again,
    or remove the <provider> entry from <path>.` No key below is tried in its place;
-3. this file's `apiKey` for the provider;
+3. the extension registration's configured key, or this file's `apiKey` when
+   the registration carries no key;
 4. the provider's environment variable (`OPENAI_API_KEY`, …), whether you
-   exported it or a project's `.env` supplied it;
-5. a key an extension registered for the provider (until
-   [#365](https://github.com/handochan/aelix-ai/issues/365) — Pi puts it with
-   step 3).
+   exported it or a project's `.env` supplied it.
 
 Step 4 reads **that provider's own** variable and nothing else. A provider you
 define here has none, so `mygw` with `"api": "anthropic-messages"` and no
@@ -395,11 +393,13 @@ gets those headers, and they never stand in for its key
 This applies to every provider, re-pointed or not: an `apiKey` here beats an
 exported vendor key. An extension that registers the same provider name changes
 it in one of two ways. If the registration carries its own key, that key replaces
-this file's `apiKey` and is tried at step 5, after the environment. If it carries
+this file's `apiKey` at step 3, ahead of the environment. If it carries
 no key (only models, `headers` or `authHeader`), this file's `apiKey` stays at
-step 3. A registration that carries a key, `headers` or `authHeader` — any of
-them, even a key alone — replaces both this file's `headers` and its `authHeader`,
-with nothing when it carries none. For an extension or a program embedding Aelix,
+step 3. Provider headers merge: extension values override collisions with this
+file's headers. `auth_header=None` inherits this file's `authHeader`, and explicit
+`False` clears it. An explicit registration `models` map replaces the provider's
+whole model list, including this file's models and their per-model headers;
+an empty map stays empty, and `None` only augments existing models. For an extension or a program embedding Aelix,
 `ModelRegistry.get_provider_auth_status` reports the source in the same order,
 `--api-key` first.
 

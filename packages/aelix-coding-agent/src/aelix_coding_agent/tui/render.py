@@ -984,7 +984,7 @@ class EventRenderer:
             self._on_stream_event(event.assistant_message_event)
         elif event.type == "message_end":
             # Terminal failures arrive here as a MessageEndEvent whose message
-            # carries stop_reason ∈ {"error","aborted"} (loop.py:385-410).
+            # carries stop_reason ∈ {"error","aborted"} (loop.py:390-415).
             self._finalize_text()
             self._close_thinking()
             self._render_message_error(event.message)
@@ -1236,7 +1236,7 @@ class EventRenderer:
         (interactive-mode.ts:2752-2757) because pi's abort is signal-based: the
         stream returns a message with stopReason "aborted" and ``message_end``
         fires normally on the way out (agent-loop.ts:195-199). Aelix aborts by
-        CANCELLING the turn task, and the close-out (harness/core.py:5431-5447)
+        CANCELLING the turn task, and the close-out (harness/core.py:5471-5487)
         deliberately emits ONLY ``turn_end`` + ``agent_end`` — no
         ``message_start``/``message_end`` pair, so that abort stays off the
         session write path. ``_render_message_error`` is message_end-only and
@@ -1245,7 +1245,7 @@ class EventRenderer:
 
         ``stop_reason == "aborted"`` on ``turn_end`` is produced by that close-out
         and, today, by nothing else — the harness never threads ``signal`` into
-        ``agent_loop`` (core.py:5387-5393, loop.py:107), so no adapter can raise
+        ``agent_loop`` (core.py:5427-5433, loop.py:107), so no adapter can raise
         it. Normal turns carry "end_turn"/"tool_use"; provider failures carry
         "error" and already print via ``_render_message_error``. Cancelling the
         retry COUNTDOWN goes through ``abort_retry`` and prints its own line;
@@ -1263,7 +1263,7 @@ class EventRenderer:
         that "cannot go stale"; that was wrong in both directions, and both
         failures are measured, not theoretical:
 
-        * Identity goes stale on REPLACEMENT. loop.py:401-410 identity-swaps the
+        * Identity goes stale on REPLACEMENT. loop.py:406-415 identity-swaps the
           message when a message_end handler returns a replacement, so
           ``_render_message_error`` sees the ORIGINAL while turn_end carries the
           REPLACEMENT — ``is`` misses and the notice prints twice.
@@ -1307,7 +1307,7 @@ class EventRenderer:
         frame grows with the block while the frames keep coming at the throttle
         floor, so a 150KB chain of thought spent tens of seconds inside
         ``plain_lines`` — on the prompt-toolkit loop, since the harness calls the
-        subscriber synchronously (harness/core.py:2399-2403). At 50KB, 98% of the
+        subscriber synchronously (harness/core.py:2402-2406). At 50KB, 98% of the
         rendered lines were discarded unread.
 
         Rich wraps each newline-separated line independently, so a slice that

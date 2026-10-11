@@ -355,8 +355,8 @@ uv run aelix --help      # 진짜 CLI
 신뢰하는지 알기 전에 읽습니다. 이 허용 목록은 좁지만 비어 있지는 않습니다: 클론한 저장소의
 `.env`가 **세션이 쓸 API 키를 넣을 수 있고**, 그 경로에 사용자 자신의 키가 없으면 프롬프트가
 공격자 계정으로 갑니다. `models.json`이 내장 프로바이더를 게이트웨이로 돌려놓은 경우에도
-그 키가 해당 항목의 `apiKey`보다 먼저 게이트웨이로 전달됩니다
-([#363](https://github.com/handochan/aelix-ai/issues/363)). 다만 프로그램을 실행하거나, 자격증명 저장소를 옮기거나, 자기 게이트를
+런타임·저장된 자격증명 다음에는 확장/JSON의 설정 키가 환경변수보다 먼저 전달됩니다
+([키 순서](docs/guides/models-json.md#which-key-a-request-carries)). 다만 프로그램을 실행하거나, 자격증명 저장소를 옮기거나, 자기 게이트를
 넓히거나, 프로바이더를 진짜 호스트에서 떼어내지는 못하고
 ([ADR-0203](docs/decisions/0203-dotenv-admission-control.md)), 모델 문자열이 어느 프로바이더로
 갈지도 고르지 못합니다 — `.env`의 키는 경로를 인증할 뿐 고르지 않고, 직접 쓴 base URL

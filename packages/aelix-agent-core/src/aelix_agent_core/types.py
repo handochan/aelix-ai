@@ -336,6 +336,9 @@ class AgentLoopConfig:
     # ``streamOptions.reasoning`` as the raw thinking-level string and the
     # adapters gate on its falsiness (``"off"`` arrives as ``None``).
     reasoning: str | None = None
+    # Pure functional boundary after the final response/message_end replacement,
+    # before tools or queued inputs are consumed. Appended for positional ABI.
+    should_stop_after_response: Callable[[AssistantMessage], bool] | None = None
 
 
 __all__ = [

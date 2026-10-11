@@ -198,13 +198,18 @@ with a `models.json` `baseUrl`, or one an extension registered — the child get
 `--model <id> --provider <provider>` instead of the string as written
 ([ADR-0249](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0249-a-model-openrouter-cannot-serve-is-resolved-before-openrouter-from-env.md),
 [ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md)).
-The child then reaches that provider, or — for an extension provider it did not
-load — stops with an error naming it. It never re-derives the route through
-OpenRouter. `/agents show` and the consent dialog render the same flags. One
-exception to "stops": when the extension registered a **built-in** name
-(`openai`, say), a child without extensions still knows that name from the
-catalog and reaches the vendor's own host with its own credentials; set
-`inherit_extensions: true` if the child must use the extension's endpoint.
+The child then reaches that provider, or — for an explicit model registration it
+did not reproduce — stops with an error naming it. This also applies when the
+extension registered a **built-in** name (`openai`, say): the vendor's catalog
+cannot substitute for the parent's explicit owner. Enable `inherit_extensions`
+or supply the same registration in profile `extensions` (explicit `-e` still
+loads with discovery disabled). A same-name/id registration on another host/API
+is refused too. The child checks its requirement after setup and on every
+request, so unregister, auth-only re-registration and model switches in hooks
+cannot remove it; closing checks also run after request/payload hooks finish.
+Ordinary builtin children and child-only extension selections
+retain their behavior. `/agents show` and consent use the same model decision;
+the internal route requirement contains a digest, never a URL or credential.
 
 Everything else reaches the child as written and is resolved by the same rule as
 `--model` (see

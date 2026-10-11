@@ -14,8 +14,9 @@ Sprint 6b/6c).
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from aelix_ai.messages import AssistantMessage, Message, ToolCallContent
@@ -194,6 +195,13 @@ class Model:
     # etc. dataclasses land. ADDITIVE default :data:`None` preserves
     # Sprint 6a/6b/6c/6d/6e/6f behavior.
     compat: dict[str, Any] | None = None
+
+
+def _model_request_identity(model: Model | None) -> tuple[str, str, str, str, dict[str, str]] | None:
+    """Copy routing/header identity; mutable headers and display metadata are distinct."""
+    if model is None:
+        return None
+    return model.provider, model.id, model.api, model.base_url, dict(model.headers or {})
 
 
 @dataclass(frozen=True)
@@ -477,6 +485,10 @@ class SimpleStreamOptions:
     # Optional pre-built SDK client (Anthropic / OpenAI / OpenRouter).
     # Pi parity: ``options.client`` in provider adapters.
     client: Any | None = None
+    # Optional pure check of the auth/model snapshot, before dispatch and after
+    # on_payload completes. Raises to refuse; must not resolve credentials or
+    # refresh OAuth. Native streams without it retain their existing behavior.
+    validate_request: Callable[[Model], Any] | None = None
 
 
 # A stream function returns an async iterator of message events. In pi-ai,
@@ -539,6 +551,26 @@ async def stream_simple(
 
     provider = _resolve_provider(model.api)
     opts = options if options is not None else SimpleStreamOptions()
+    validate = opts.validate_request
+    if validate is not None:
+        async def check(request_model: Model) -> None:
+            result = validate(request_model)
+            if inspect.isawaitable(result):
+                await result
+
+        await check(model)
+        original_payload = opts.on_payload
+
+        async def checked_payload(payload: Any, request_model: Model) -> Any:
+            result = original_payload(payload, request_model) if original_payload is not None else None
+            if inspect.isawaitable(result):
+                result = await result
+            # Built-in adapters await on_payload immediately before their SDK
+            # request. Preserve the hook result and intentional header overrides.
+            await check(request_model)
+            return result
+
+        opts = replace(opts, on_payload=checked_payload)
     return provider(model, context, opts)
 
 

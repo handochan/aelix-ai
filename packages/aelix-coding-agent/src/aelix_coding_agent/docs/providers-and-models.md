@@ -182,6 +182,7 @@ of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/deci
    authenticates, or a provider you defined (`models.json`, an extension, a
    re-pointed built-in); otherwise it is ignored and the error says so
    (`Settings defaultProvider "anthropic" was not used: …`).
+
 4. **Inside the provider a prefix named, the id must match exactly** (no fuzzy
    matching). When it does, but you hold no credential for that provider and
    exactly one provider you do hold a credential for lists the whole string as
@@ -192,6 +193,17 @@ of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/deci
    provider you hold a credential for first; if you hold one for the provider
    the prefix named, the id stays there as a custom id.
 
+An extension's explicit `models` map replaces the named provider's builtin and
+models.json rows in every selection surface, including `/model`; `{}` offers
+none and `None` leaves the model list intact. Explicitly named unknown ids may
+backfill from the owner's models when their API and nonempty host agree. A
+previously selected Model on an old route or with old Model headers is refused
+before credentials are resolved; select the current model again. Delegated
+children must load the same explicit owner and route, including builtin names.
+Request/payload hooks that change the registration or selected route/headers
+also cancel that pending request before the SDK sends. Metadata changes alone
+do not cancel it. The same closing check covers compaction and branch summaries.
+See [extension-authoring.md](extension-authoring.md#custom-providers-with-their-own-login-method).
 Then the two guards:
 
 - **A key from a project `.env` never chooses where a prompt goes.** It still

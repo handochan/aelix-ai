@@ -179,7 +179,7 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | `register_tool` | Live | Refreshes the harness tool registry and auto-activates the tool. |
 | `register_command` | Live in **both** the TUI and RPC | The TUI resolves it through `CommandDispatchService` after built-ins; RPC exposes it via `get_registered_commands`. |
 | `register_setting` | Live in the TUI | `/settings` reads current runner contributions each time it opens/reopens. The getter reads the owner's persisted value; the setter can be synchronous or async and completes before the menu reports success. |
-| `register_provider` / `unregister_provider` | Live | Queued at `setup()` time and replayed into the real `ModelRegistry` right after the extensions load — **before** the launch model is resolved, on the first build and on every `/new`, `/fork`, `/resume` and `/reload` (ADR-0249). So `--model <name>/<id>` selects it at launch, and whatever keys are set it is your provider, never an OpenRouter id. `config.models` also appear in `/model` (given a stored credential). A registration made later, while a session is starting (from the end of the build through its `session_start` handlers and the turns they trigger, which aelix waits out, up to aelix's check after `session_start`: in a `session_start` handler, in a handler of a turn one triggers, such as its `input` or `before_agent_start` handler — that turn may run after the handler returned — or in a task a handler or `setup()` started that registers then), reaches the registry immediately but after the launch model was chosen, so a launch model only it could serve is **refused**, as in pi (#367): `-p` / `--mode json` exit 1 before any request, saying to register the provider in `setup()`; interactive starts held on it (`api='unknown'`) and sends nothing until `/model` picks a model. A launch model a provider registered at launch serves (a built-in, `models.json`, `setup()`) stays on that provider, as in pi, even when yours serves the same id or settings `defaultProvider` names yours, and a turn your handler triggers runs there. Rebuilds, `/agents use` of a profile naming no model or provider of its own and the post-`/login` pick are held wherever the launch inputs land on your provider — also after a launch that stayed on a registered one (those builds re-derive the model; pi keeps the session's) — after which `/model <name>/<id>` (or a profile whose `model:` or `provider:` names it) reaches your provider, since it is registered by then. A `/model` choice is recorded in the session, so a rebuild that restores the session's own model (#376: one with a conversation, the model named by nobody at launch, the record able to run) comes back on it and is not held; `/new`, and a rebuild that does not restore, re-derive the launch model and hold again. The decision is about the launch inputs: a `set_model` in your `session_start` handler does not make a refused launch pass, nor release the hold after a rebuild. While `session_start` handlers run, a launch model no registered provider claimed (the refused kind) is not runnable yet, and no turn starts, whatever model your handler set: a turn it triggers then (`send_message(..., trigger_turn=True)`) runs as a **refused turn** — the events of a turn that cannot reach its model, `agent_end` included, with the reason as its error and nothing sent — so a handler awaiting that turn's `agent_end` is woken; its message stays in the conversation as that turn's prompt (as any failed turn's), so it goes out with the next prompt that is sent. `--api-key` is attached only after the decision. The hold is checked, not assumed: a `model_select` handler that answers the placeholder with a `set_model` of its own is put back on the placeholder, at launch, on every rebuild and after `/agents use`, and no turn starts while the hold is applied — a turn that handler triggers there is a refused turn, nothing sent; its message stays in the conversation and goes out with the next prompt that is sent. A task your handler spawns that calls `set_model` and triggers a turn once aelix has made that decision acts outside the hold, like any later extension action (one that acts at once, while a pending launch is being put on hold, is held). RPC starts held too and cannot pick another model (`aelix --mode rpc` has no model registry for `set_model`). **Register providers in `setup()`** (the factory) if a launch may name them. A failed `/reload` (your extension no longer loads) keeps the provider you registered earlier, route and key, until `unregister_provider` removes it — as in pi. Delegated children load **no** extensions by default (`inherit_extensions: false`): the parent passes such a model to the child as `--provider <name> --model <id>`, so the child refuses it (it has no adapter for your provider) rather than re-deriving a route through OpenRouter; set `inherit_extensions: true` on the profile if the child should use it. |
+| `register_provider` / `unregister_provider` | Live | `setup()` registrations bind before launch lookup and replay on rebuilds (ADR-0249). Late registrations reach the registry but cannot claim a pending launch. See [Launch and rebuilds](#launch-and-rebuilds) and [ownership notes](#custom-providers-with-their-own-login-method). |
 | `register_login_provider` | Live (interactive TTY only) | The `/login` wizard reads the registry to build its method list. Not available under `--print` / `--json` / `--mode rpc`, which have no wizard. |
 | `register_api_adapter` | Live, and re-applied across `/reload` | Fanned out to the process-global api registry, and replayed on every harness rebuild (the reload resets that registry). |
 | `register_flag` / `get_flag` | Registration live, **no way to set one** | The declared default seeds the runtime flag values and `get_flag` reads them back — but nothing threads a command line into that dict, so `get_flag` only ever returns your default. See the warning below. |
@@ -273,26 +273,14 @@ the same as registering it. What each family actually does at runtime:
 
 ## Custom providers with their own `/login` method
 
-An extension can add a private provider — say a `selfhosted` OpenAI-compatible
-endpoint your team runs on its own network — and give it its **own entry in the
-`/login` method list** with a custom credential flow (e.g. "paste the access token
-your endpoint's console issued"). Two calls, sharing one id:
+A private provider can expose its own `/login` flow, such as pasting an
+endpoint-issued token. Register its runtime and login method under the same id:
 
-- `register_provider(id, ProviderConfigInput(...))` wires the provider for turns:
-  which wire protocol it speaks (`api`), its `base_url`, and its `models` (which
-  appear in `/model` once a credential is stored). Call it in `setup()`, as below:
-  registered there, `--model <id>/<model>` selects it at launch; registered while
-  a session is starting (in a `session_start` handler, in a handler of a turn one
-  triggers — awaited or not — or in a task started then, up to aelix's check after
-  `session_start`) it arrives after the launch model was chosen, and a
-  launch only it could serve is refused (`/model` reaches it once the session
-  runs) — a `set_model` to it in that handler does not change that, and no turn
-  starts while that handler runs, whatever model you set (a
-  `send_message(..., trigger_turn=True)` there is a refused turn: its
-  `agent_end` arrives, nothing is sent, and its message goes out with the next
-  prompt that is sent); a launch a provider
-  registered at launch serves stays there, and its handlers' turns run, while the
-  rebuilds after it are held where they land on yours.
+- `register_provider(id, ProviderConfigInput(...))` declares its wire protocol
+  (`api`), `base_url` and `models` (shown in `/model` with a credential). Register
+  in `setup()` so `--model <id>/<model>` can select it at launch. Later
+  registrations reach the registry immediately but cannot serve an unclaimed
+  pending launch; see [Launch and rebuilds](#launch-and-rebuilds).
 - `register_login_provider(LoginProvider(id, name, authenticate))` adds `name`
   to the `/login` method list. When the user picks it, your async `authenticate`
   handler runs a custom flow through a `LoginContext` (the same masked
@@ -326,6 +314,42 @@ def setup(aelix):
 
 Notes and limits:
 
+- `models=None` augments existing builtin/models.json models. An explicit map
+  replaces every model for that exact provider name, including `{}` (zero
+  models). This applies to built-in names and coexisting models.json base URLs
+  too. Model.provider is copied and stamped with the registration name. Each
+  re-registration replaces the whole previous extension configuration; caller
+  mutation does not change a queued or active registration. Refresh/reset keep
+  it, unregister restores lower layers, and a failed reload keeps the prior one.
+- Launch, `/model`, pickers and registry consumers see the same replacement
+  models. An unlisted explicitly named id may still backfill from those models
+  when all agree on one API and nonempty host. Empty/split/hostless scopes refuse;
+  this is not a strict id allowlist. A stale selected route or Model.headers
+  projection refuses before credentials are resolved: select the current model
+  again after re-registration. Name, cost and context metadata alone do not
+  invalidate it. Nonowned Model headers and explicit request-option headers
+  retain their existing behavior.
+- Changing the registration, route or Model headers in `before_provider_request`
+  or `before_provider_payload` cancels that pending request before the SDK sends.
+  The same auth snapshot is checked after those hooks; credentials are not
+  refreshed or resolved twice. Metadata-only model changes remain valid. After
+  a registration or OAuth projection changes the route/headers, select the current
+  model again; Aelix does not silently replace your selection.
+  A closing refusal never restarts that request, even if its displayed text looks
+  like a retryable provider status. A later user turn may use a fresh snapshot;
+  ordinary provider/OAuth retries retain their existing behavior.
+  A `message_end` replacement may change the displayed response but cannot
+  reopen a fatal request through tool calls, steering or follow-ups in the same
+  user prompt. Unconsumed queued input remains pending for a later user prompt;
+  steering keeps its configured one-at-a-time/all behavior.
+- Keys use runtime → stored-owning → extension key (or JSON key if absent) →
+  provider environment. JSON provider headers merge with extension headers,
+  whose collisions win; `auth_header=None` inherits JSON and `False` clears it.
+  JSON per-model headers on replaced rows are removed. A delegated child must
+  reproduce the explicit registration and route, even if it uses a builtin
+  name: enable inheritance or supply the same owner through profile `extensions`.
+  Missing/wrong owners refuse through hooks and reloads as well as startup.
+  See [ADR-0262](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0262-explicit-provider-registrations-own-model-routes.md).
 - The credential your handler returns is stored under the provider `id`, so the
   same id must be used for both calls for turns to authenticate.
 - `api` is normally a built-in adapter id (`openai-completions`,
@@ -337,18 +361,58 @@ Notes and limits:
 - The login registry is process-global: an extension removed on `/reload` should
   call `unregister_login_provider(id)` in its teardown.
 
+### Launch and rebuilds
+
+`setup()` registrations bind before model selection on the first build and every
+`/new`, `/fork`, `/resume` and `/reload`. A named registered provider keeps its
+route regardless of keys; it never becomes an OpenRouter id (ADR-0249).
+
+A provider arriving after launch lookup cannot claim that launch (#367), even
+if its id matches or settings `defaultProvider` names it. This includes
+registrations during `session_start`, in tasks started by `setup()` or a handler,
+and in hooks of turns those handlers trigger. Aelix waits out those turns and
+checks again after `session_start`. `set_model` there cannot release the decision:
+
+- An unclaimed launch exits 1 in print/JSON before any request, asking for a
+  `setup()` registration. Interactive and RPC start held (`api='unknown'`).
+  Interactive `/model` can then select the now-registered provider; CLI RPC has
+  no model registry for `set_model`.
+- During `session_start`, an unclaimed launch cannot start a request, whatever
+  model a handler selects. A triggered turn emits the normal refused-turn events,
+  including `agent_end`, with its error and no send. Awaiters are woken; its
+  prompt stays in the conversation and goes out with the next prompt that runs,
+  as for other failed turns.
+- A launch served by an already registered builtin, JSON or setup provider stays
+  there; handlers' turns may run there. Later rebuilds re-derive launch inputs
+  and hold wherever they land on the late provider. This also covers the
+  post-login pick and `/agents use` of a profile naming neither model nor provider.
+  `/model <name>/<id>` or a profile explicitly naming it can select it afterwards.
+
+`/model` records its choice. A rebuild restoring the session's runnable model
+(#376: conversation present, no launch model override) keeps that choice without
+a hold. `/new` and rebuilds that do not restore re-derive launch inputs and hold
+again. Pi retains the session model instead; Aelix checks these rebuilt inputs.
+
+`--api-key` attaches only after the decision. The hold also checks `model_select`:
+a handler replacing its placeholder is put back on it at launch, rebuild and
+`/agents use`. Turns triggered while applying it are refused, with their prompts
+retained. A task acting after the decision is a later extension action, outside
+that hold; one acting while the hold is being applied is held.
+
+A failed `/reload` retains the previous provider's route/key until unregister,
+as in Pi. Delegated children load no extensions by default. Enable
+`inherit_extensions: true` or profile `extensions` to reproduce a selected
+explicit owner; its missing/wrong route refuses even under a builtin name.
+The parent passes `--provider <name> --model <id>` rather than letting the child
+infer OpenRouter. The ownership notes above govern subsequent hook/reload checks.
+
 ### When config isn't enough — a custom wire adapter
 
-If the endpoint deviates from what `ProviderConfigInput` can express — the model
-in the URL path, non-OpenAI request fields, or a custom `httpx` client (e.g. a
-private CA bundle for an endpoint you host yourself) — register a custom **StreamFn**
-`(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]` under your own
-`api` id with `register_api_adapter(api, stream_fn)`. A `Model` whose `api` equals
-that id then routes to your function.
-
-The easiest StreamFn builds its own `openai.AsyncOpenAI` (with whatever
-`http_client` / `base_url` it needs) and **delegates** to the built-in adapter via
-`replace(opts, client=...)`, reusing all of aelix's SSE parsing and event mapping:
+For a model in the URL, custom body fields or private-CA `httpx` client,
+register a **StreamFn** `(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]`
+with `register_api_adapter(api, stream_fn)`. A matching `Model.api` routes to it.
+Delegate to the built-in adapter with `replace(opts, client=...)` to reuse SSE
+parsing and event mapping:
 
 ```python
 import contextlib
@@ -361,10 +425,8 @@ from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
 from aelix_ai.streaming import Model
 from aelix_coding_agent.model_registry import ProviderConfigInput
 
-# Point this at the CA bundle that signs your endpoint's certificate. Read it
-# from the environment, never hardcode it: the context validates the path AT
-# CONSTRUCTION and raises FileNotFoundError if the file is missing, so a baked-in
-# path breaks every user who has not created that exact file. Unset = system trust.
+# The operator supplies the signing CA bundle; unset uses system trust.
+# A missing path raises FileNotFoundError at context construction.
 _CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
 
 async def selfhosted_stream(model, context, opts):
@@ -396,44 +458,25 @@ def setup(aelix):
         base_url="https://llm.internal.example/v1/gpt5mini")}))
 ```
 
-**Close the client you build.** Your StreamFn runs once per request, so a client
-built inside it is built once per turn. The built-in adapter you delegate to does
-`client = opts.client or create_async_client(...)` and only closes the ones it
-created — a client you hand it through `replace(opts, client=...)` is
-deliberately left alone, because closing an injected client would break the next
-turn of whoever injected it. So the `finally` is yours. Without it each turn
-strands a client and its connection pool until the cyclic garbage collector
-happens to run (#174).
+**Close clients you build in `finally`.** The adapter closes only clients it
+creates; closing an injected client would break its owner's next turn. Otherwise
+each request strands its client/pool until cyclic collection (#174). The method
+is SDK-specific: OpenAI/Anthropic async clients use `await client.close()` (no
+`aclose`); httpx uses `await client.aclose()`; Google uses
+`await client.aio.aclose()` (its synchronous `close()` leaves the async pool open).
+Closing the example's OpenAI client also closes its injected httpx client.
+Suppress cleanup exceptions so generator cancellation remains a clean abort.
 
-Which method depends on the SDK, and guessing gets you a silent no-op:
-`openai.AsyncOpenAI` and `anthropic.AsyncAnthropic` have **no** `aclose` and
-their `close()` is a coroutine; `httpx.AsyncClient` is the reverse (`aclose()`
-only); `google.genai.Client` has both, and only `await client.aio.aclose()`
-closes the async pool — its plain `close()` is synchronous and leaves that pool
-open. Closing the `AsyncOpenAI` above also closes the `httpx.AsyncClient` passed
-into it, so that one needs no separate teardown. Suppress exceptions in the
-`finally`: it also runs while an abort unwinds your generator, and a raise there
-would replace the user's clean cancel with a bogus provider error.
-
-`register_api_adapter` re-applies your adapter across `/reload` (the api registry
-is reset on reload; the harness rebuild replays your registration). Unlike the
-built-in adapters, custom body keys must be OpenAI-valid or go inside
-`extra_body` — the OpenAI SDK rejects unknown top-level kwargs. This is a real,
-supported extension surface (no fork), but it does run your networking code, so
-get the TLS right: hand httpx the **CA bundle** that signs your endpoint's
-certificate, as `verify=ssl.create_default_context(cafile=...)`, read from an
-environment variable so the path is the operator's to set — that is the deviation
-no aelix config key can express, and it is why you need your own client at all.
-Pass a context rather than the path: `verify="/path/ca.pem"` still works on httpx
-0.28 but is deprecated, and the warning names this replacement. Do **not** reach
-for `verify=False`: it does not "trust your internal CA", it stops checking
-certificates altogether and accepts *any* certificate from anyone on the path,
-including on a network you run yourself. Either spelling resolves the file **at
-construction** and raises `FileNotFoundError` when it is absent, so a hardcoded
-bundle path fails at import time for everyone who lacks that exact file — fall
-back to system trust (`verify=True`) when the variable is unset. Note this *adds*
-a trust anchor rather than pinning one: aelix injects truststore at startup, and
-its handshake path also loads the platform's default roots.
+`register_api_adapter` replays across `/reload`, which resets the api registry.
+Custom body keys must be OpenAI-valid or go in `extra_body`; the SDK rejects
+unknown top-level kwargs. Your adapter owns networking and TLS. Pass
+`verify=ssl.create_default_context(cafile=...)` the CA bundle signing your
+endpoint, with its path read from an environment variable. A path is validated
+at construction and raises `FileNotFoundError` if absent, so an unset variable
+should use system trust (`verify=True`). The context replaces httpx 0.28's
+deprecated `verify="/path/ca.pem"`. `verify=False` disables certificate checking
+and accepts any certificate; it does not trust an internal CA. This adds a trust
+anchor, not a pin: Aelix's startup truststore also loads platform default roots.
 
 A complete worked example ships at
 `aelix_coding_agent/examples/selfhosted/selfhosted.py`. Load it like any extension —

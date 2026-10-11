@@ -439,7 +439,7 @@ def test_usage_dual_spelling_read() -> None:
     ``aelix_ai/messages.py:127`` types it ``dict[str, Any]`` and it rides
     through ``asdict`` untransformed, so it is explicitly OUT of the wire-shape
     guarantee. The kernel itself dual-reads at
-    ``session/compaction.py:1036-1043``; a camelCase usage dict must populate
+    ``session/compaction.py:1038-1045``; a camelCase usage dict must populate
     the SAME fields as the snake_case one.
     """
 

@@ -53,6 +53,7 @@ REQUIRED_VALUE_FLAGS = frozenset(
         "--model",
         "--models",
         "--api-key",
+        "--require-registration-route",
         "--system-prompt",
         "--append-system-prompt",
         "--system-prompt-file",
@@ -326,6 +327,9 @@ class Args:
     no_extensions: bool = False
     """Pi parity: ``--no-extensions`` / ``-ne``."""
 
+    registration_route: str | None = None
+    """Internal delegated explicit-owner requirement: only a route digest, never a URL."""
+
     trust_extension_paths: list[str] = field(default_factory=list)
     """Aelix-original (issue #91 provenance gate) — ``--trust-extension-path
     <dist-name>`` (repeatable).
@@ -345,7 +349,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:644-661``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:655-672``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -402,7 +406,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:1077-1118``) resolves
+    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:1086-1127``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -573,6 +577,13 @@ def parse_args(argv: list[str]) -> Args:
             if takes_value:
                 parsed.api_key = argv[i + 1]
                 i += 1
+        elif arg == "--require-registration-route":
+            if takes_value:
+                parsed.registration_route = argv[i + 1]
+                parsed.provided.add("registration_route")
+                i += 1
+            else:
+                parsed.diagnostics.append({"type": "error", "message": "--require-registration-route requires a route digest"})
         elif arg == "--system-prompt":
             if takes_value:
                 parsed.system_prompt = argv[i + 1]
@@ -670,7 +681,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:644-660): warn + drop, never
+                    # Mirrors --thinking (args.py:655-671): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user

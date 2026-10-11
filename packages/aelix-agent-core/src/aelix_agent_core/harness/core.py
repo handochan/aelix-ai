@@ -590,7 +590,10 @@ class _SetupFailure:
     """The harness's own record of the setup failure that ended an attempt (#379).
 
     Set by :meth:`AgentHarness._setup_error_events` when the auth callback's
-    raise ends the attempt as an error assistant message, re-pointed at the
+    raise ends the attempt as an error assistant message, or by the pure closing
+    validator when that snapshot is refused (#365). The latter's adapter may
+    convert the raise into an error event; message_end binds this record to it.
+    Re-pointed at the
     message ``message_end`` hooks leave behind (the one in state), and cleared
     when the next attempt starts. :meth:`AgentHarness._is_retryable_error`
     and the overflow recovery read ``retry_reason`` from here for that message
@@ -4974,6 +4977,11 @@ class AgentHarness:
             options: SimpleStreamOptions,
         ) -> AsyncIterator[AssistantMessageEvent]:
             turn_state = get_turn_state()
+            # An opted-in auth snapshot also guards the live harness selection.
+            # Metadata-only changes remain valid; headers are copied, not aliased.
+            from aelix_ai.streaming import _model_request_identity
+
+            active_model = self.current_model
             session_id = turn_state.session_id
             # #379 review round 3: a new attempt; the last one's record is spent.
             self._setup_failure = None
@@ -5026,9 +5034,11 @@ class AgentHarness:
                 # Pi parity (types.ts:808-811): the callback may return
                 # ``undefined`` (here: ``None``) which is "no opinion".
                 # Reject only when explicitly returned dict carries
-                # neither apiKey nor headers.
+                # neither apiKey nor headers nor a pure closing validator. A
+                # validator-only result retains native/env credential resolution.
                 if auth_dict is not None and not (
                     auth_dict.get("apiKey") or auth_dict.get("headers")
+                    or callable(auth_dict.get("validate"))
                 ):
                     text = "get_api_key_and_headers returned neither apiKey nor headers"
                     if self._retry_attempt > 0:  # #379 review round 2, as above
@@ -5039,6 +5049,24 @@ class AgentHarness:
 
             api_key = (auth_dict or {}).get("apiKey")
             auth_headers = (auth_dict or {}).get("headers") or {}
+            validate_auth = (auth_dict or {}).get("validate")
+            active_identity = _model_request_identity(active_model) if callable(validate_auth) else None
+
+            async def _validate_request(request_model: Model) -> None:
+                try:
+                    if not callable(validate_auth):
+                        return
+                    result = validate_auth(request_model)
+                    if inspect.isawaitable(result):
+                        await result
+                    if _model_request_identity(self.current_model) != active_identity:
+                        raise RuntimeError("Current model changed after request authentication; select the model again")
+                except Exception as exc:  # noqa: BLE001 — closing failure is fatal, never OAuth retry
+                    # Adapters may convert this raise into AssistantErrorEvent.
+                    # Keep the fatal identity outside its text/type, just as
+                    # auth setup failures survive message_end replacements.
+                    self._setup_failure = _SetupFailure(message=None, retry_reason=None)
+                    raise AgentHarnessError("auth", f"Request authentication snapshot is no longer valid: {exc}") from exc
 
             # 2) Snapshot — Pi parity ``snapshotOptions``: turn state +
             # auth headers (auth wins on key collision).
@@ -5081,6 +5109,7 @@ class AgentHarness:
                 on_payload=_on_payload,
                 on_response=_on_response,
                 client=options.client,
+                validate_request=_validate_request if callable(validate_auth) else None,
             )
 
             # W6 Fix 1: translate adapter-layer _AuthError to harness contract
@@ -5096,6 +5125,16 @@ class AgentHarness:
                 raise AgentHarnessError("auth", str(exc)) from exc
 
         return stream_fn
+
+    def _request_response_is_terminal(self, message: AssistantMessage) -> bool:
+        """Setup refusal ends this loop independently of hook-rewritten display data.
+
+        Transient OAuth failures also end the loop; the outer harness alone owns
+        their retry. Closing refusals have no retry reason. Queues remain pending
+        for a later user prompt rather than reopening this request's dispatch.
+        """
+        failure = self._setup_failure
+        return failure is not None and message is failure.message
 
     # === Run loop ===
 
@@ -5165,6 +5204,7 @@ class AgentHarness:
                 get_api_key=self._options.get_api_key,
                 get_steering_messages=self._drain_steering,
                 get_follow_up_messages=self._drain_follow_up,
+                should_stop_after_response=self._request_response_is_terminal,
                 before_tool_call=self._before_tool_call_bridge,
                 after_tool_call=self._after_tool_call_bridge,
                 # Sprint 3c §A.5 — Pi parity, default "parallel".

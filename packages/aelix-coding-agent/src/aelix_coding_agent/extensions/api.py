@@ -1947,6 +1947,10 @@ class ExtensionAPI:
         the registration so ``ctx.model_registry`` callers see something.
         """
 
+        from aelix_coding_agent.model_registry import ProviderConfigInput, snapshot_provider_config
+
+        if isinstance(config, ProviderConfigInput):
+            config = snapshot_provider_config(name, config)
         self._runtime.pending_provider_registrations.append((name, config))
         # Best-effort fan-out to the current in-process registry so
         # ``ctx.model_registry`` callers see the registration immediately.

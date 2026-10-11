@@ -591,6 +591,19 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # runner after each rebuild. Generic extension settings created this
         # requirement; delegation did not.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/_extension_runner.py",
+        # ADR-0262, #365, decisions 5 and "Approved repair 3": generic auth
+        # snapshots carry a pure closing validator. The two summary paths must
+        # forward it, including compaction's turn-prefix request. types.py adds
+        # only the optional, appended should_stop_after_response predicate;
+        # loop.py (already listed) asks it after message_end, before tools or
+        # queues. harness/core.py (already listed) binds the typed setup-failure
+        # identity and preserves fatal classification across adapter events.
+        # Route/auth policy remains in coding-agent; these lower-layer callback
+        # boundaries add no registry import, spawn/cap/consent policy or subagent
+        # surface. ADR-0262's "Kernel boundary" authorizes these specific paths.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/compaction.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/branch_summarization.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/types.py",
         # ADR-0243, #199. ``harness/core.py`` and ``harness/_session_stats.py``
         # (both listed above) changed AGAIN, and it is recorded here for the
         # reason the ADR-0211 note gives: an already-listed path would otherwise

@@ -38,7 +38,7 @@ The ONE exception is ``AssistantMessage.usage`` (``aelix_ai/messages.py:127``),
 typed ``dict[str, Any]`` and passed through ``asdict`` untransformed: its keys
 are whatever the adapter wrote, so it is explicitly OUT of the wire-shape
 guarantee and every read here dual-spells, exactly as the kernel itself does at
-``session/compaction.py:1036-1043``.
+``session/compaction.py:1038-1045``.
 """
 
 from __future__ import annotations
@@ -454,7 +454,7 @@ def _usage_field(usage: dict[str, Any] | None, *names: str) -> int:
     """First truthy, int-coercible spelling among ``names`` (0 when none).
 
     Skip-on-falsy rather than first-key-present, matching the kernel's own
-    dual-read at ``session/compaction.py:1036-1043``
+    dual-read at ``session/compaction.py:1038-1045``
     (``usage.get("total_tokens") or usage.get("totalTokens")``): an adapter
     that emits both spellings with one of them zeroed must not report zero.
 

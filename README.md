@@ -361,8 +361,9 @@ credentials and a short list of provider-configuration names, and nothing else �
 before Aelix knows whether it trusts the directory. That admission list is narrow but it is not
 nothing: a cloned repo's `.env` **can** supply the API key your session then runs on when you
 hold none of your own for that route, so the prompts go to the attacker's account — and when
-your `models.json` re-points a built-in provider at a gateway, its key is still the bearer the
-gateway receives over that entry's `apiKey` ([#363](https://github.com/handochan/aelix-ai/issues/363)). What it
+your `models.json` re-points a built-in provider at a gateway, the configured extension/JSON
+key precedes the environment after runtime and stored credentials
+([key order](docs/guides/models-json.md#which-key-a-request-carries)). What it
 cannot do is execute a program, relocate the credentials store, widen its own gate, move a
 provider off its real host ([ADR-0203](docs/decisions/0203-dotenv-admission-control.md)), or
 choose which provider a model string goes to — a key from a `.env` authenticates a route, it

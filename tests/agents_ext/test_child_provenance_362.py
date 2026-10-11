@@ -216,6 +216,12 @@ async def test_the_child_is_pinned_only_where_it_could_not_decide_alone(
         monkeypatch.setenv(name, value)
     registry = await _registry(scrubbed)
     flags = child_model_flags(_profile(model, provider, extensions), None, registry)
+    if "--require-registration-route" in flags:
+        from aelix_coding_agent.model_registry import registration_route_digest
+
+        at = flags.index("--require-registration-route")
+        assert flags[at + 1] == registration_route_digest(registry.find("extprov", "m1"))
+        flags = flags[:at]
     assert flags == expected, row
 
 

@@ -257,7 +257,7 @@ async def test_usage_is_present_but_its_inner_keys_are_not_pinned(
 
     ``AssistantMessage.usage`` is ``dict[str, Any] | None``: adapters disagree
     about the inner spelling and the kernel itself dual-reads
-    (``session/compaction.py:1036-1043``). Pinning the inner keys here would
+    (``session/compaction.py:1038-1045``). Pinning the inner keys here would
     make this test fail for a correct new provider, so it pins that the slot
     exists, survives the wire, and is ``null`` — not absent, not ``{}`` — on an
     errored message.

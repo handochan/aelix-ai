@@ -303,6 +303,7 @@ async def generate_branch_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
+        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
         # P0 #6: pi ``generateBranchSummary`` caps the call at maxTokens=2048.
         max_tokens=2048,
     )

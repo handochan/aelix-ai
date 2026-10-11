@@ -30,7 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import hashlib
+import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -42,7 +46,7 @@ from aelix_ai.oauth._resolve_config import (
     resolve_headers_or_throw,
 )
 from aelix_ai.oauth.types import AuthStatus, OAuthProvider
-from aelix_ai.streaming import Model
+from aelix_ai.streaming import Model, _model_request_identity
 
 from .models_json import (
     ProviderOverride,
@@ -80,6 +84,7 @@ class ResolvedRequestAuth:
     headers: dict[str, str] = field(default_factory=dict)
     error: str | None = None
     retry_reason: str | None = None
+    validate: Callable[[Model], None] | None = None
 
 
 @dataclass
@@ -105,8 +110,32 @@ class ProviderConfigInput:
     headers: dict[str, str] | None = None
     auth_header: bool | None = None
     oauth: OAuthProvider | None = None
-    # Custom catalog entries — Sprint 6g wires the merge path.
+    # Explicit map replaces this provider's rows, including {}. None augments
+    # auth/headers without owning its model list (#365 / ADR-0262).
     models: dict[str, Model] | None = None
+
+
+def snapshot_provider_config(name: str, config: ProviderConfigInput) -> ProviderConfigInput:
+    """Copy caller-owned containers and place every model in the registration's namespace.
+
+    The OAuth implementation itself remains shared; its callbacks are not configuration
+    containers. Used at both the extension queue and the concrete registry boundary.
+    """
+    return replace(
+        config,
+        headers=copy.deepcopy(config.headers),
+        models=(
+            {key: replace(copy.deepcopy(model), provider=name) for key, model in config.models.items()}
+            if config.models is not None
+            else None
+        ),
+    )
+
+
+def registration_route_digest(model: Model) -> str:
+    """A delegated owner's route identity without exposing a possibly credentialled URL."""
+    identity = ["aelix-registration-route-v1", model.provider, model.id, model.api, model.base_url]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=True).encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -124,13 +153,8 @@ class ProviderRequestConfig:
     api_key: str | None = None
     headers: dict[str, str] | None = None
     auth_header: bool | None = None
-    # #363 / ADR-0251: True when ``api_key`` is the ``models.json`` provider
-    # ``apiKey`` - the loader's callback stored this config, or an extension
-    # ``register_provider`` for the same name that carries no ``api_key``
-    # replaced it and kept that key (``_load_models`` step 3, review round 1
-    # R5). False when a registration's own ``api_key`` (or none) is here. Only
-    # a models.json ``api_key`` comes before the environment; a registration's
-    # stays after it until #365 (see :meth:`ModelRegistry._request_api_key`).
+    # Provenance of the composed key. Both sources occupy configured step 3
+    # since #365; a registration with no key keeps models.json's apiKey.
     from_models_json: bool = False
 
 
@@ -179,6 +203,11 @@ class ModelRegistry:
         # Built BEFORE the ``_load_models`` call below, which clears it.
         self._command_value_cache: dict[str, str] = {}
         self._registered_providers: dict[str, ProviderConfigInput] = {}
+        self._generation = 0
+        self._projected_owners: frozenset[str] = frozenset()
+        # A delegated child's requirement is sticky across refresh, unregistration and
+        # auth-only re-registration. Direct CLI/embedders have no requirement.
+        self._required_registration_route: str | None = None
         self._load_error: str | None = None
         # #344 — which providers the USER defined, and the models.json ``baseUrl``
         # of each built-in one they re-pointed. Both are rebuilt by every
@@ -287,6 +316,72 @@ class ModelRegistry:
             if m.provider == provider and m.id == model_id:
                 return m
         return None
+
+    def get_registration_models(self, provider: str) -> list[Model] | None:
+        """Effective explicit-model scope: None for augmentation, [] for an empty owner."""
+        config = self._registered_providers.get(provider)
+        if config is None or config.models is None:
+            return None
+        return [m for m in self._served_models() if m.provider == provider]
+
+    def require_registration_route(self, digest: str) -> None:
+        """Install the secret-free delegated requirement; never clear it on a reload."""
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("Invalid delegated registration route requirement")
+        self._required_registration_route = digest
+
+    def _owned_request_model(self, model: Model) -> tuple[Model | None, str | None]:
+        scope = self.get_registration_models(model.provider)
+        required = self._required_registration_route
+        if required is not None and (
+            scope is None or registration_route_digest(model) != required
+        ):
+            return None, f"Delegated model '{model.provider}/{model.id}' requires its original explicit provider registration and route"
+        if scope is None:
+            return model, None
+        live = next((m for m in scope if m.id == model.id), None)
+        if live is None and scope:
+            apis = {m.api for m in scope}
+            bases = {m.base_url for m in scope}
+            if len(apis) == len(bases) == 1 and scope[0].api != "unknown" and scope[0].base_url:
+                live = Model(
+                    id=model.id,
+                    name=model.id,
+                    provider=model.provider,
+                    api=scope[0].api,
+                    base_url=scope[0].base_url,
+                )
+        if (
+            live is None
+            or not live.base_url
+            or not live.api
+            or live.api == "unknown"
+            or (model.api, model.base_url) != (live.api, live.base_url)
+        ):
+            return None, f"Model '{model.provider}/{model.id}' does not belong to the current provider registration; select the model again"
+        # Adapters merge Model.headers again below this callback. Reject a stale
+        # projection rather than allowing a removed credential header to survive.
+        if (model.headers or {}) != (live.headers or {}):
+            return None, f"Model '{model.provider}/{model.id}' has stale provider registration headers; select it again"
+        return live, None
+
+    def registration_route_error(self, model: Model) -> str | None:
+        """Check ownership without reading a key, refreshing OAuth or running a command."""
+        return self._owned_request_model(model)[1]
+
+    def _request_validator(self, model: Model, generation: int) -> Callable[[Model], None]:
+        identity = _model_request_identity(model)
+
+        def validate(request_model: Model) -> None:
+            if generation != self._generation:
+                raise RuntimeError("Provider registration changed after request authentication; select the model again")
+            if _model_request_identity(request_model) != identity:
+                raise RuntimeError("Model route or headers changed after request authentication; select the model again")
+            reason = self.registration_route_error(request_model)
+            if reason:
+                raise RuntimeError(reason)
+
+        return validate
 
     # ── Auth resolution ────────────────────────────────────────────
     def has_configured_auth(self, model: Model) -> bool:
@@ -495,9 +590,8 @@ class ModelRegistry:
 
         1. ``api_key`` = :meth:`_request_api_key`: ``--api-key``, then
            ``auth.json`` (which owns the provider), then the ``models.json``
-           provider ``apiKey`` (resolved via :func:`resolve_config_value_or_throw`
-           - env-var / ``!command`` / literal indirection), then the
-           environment, then an extension registration's ``api_key``.
+           configured registration key (or models.json ``apiKey`` when absent;
+           env-var / ``!command`` / literal indirection), then the environment.
         2. ``headers`` = ``model.headers`` < provider request-config headers
            < per-model request headers (each value resolved through the
            same indirection; later sources win).
@@ -521,11 +615,20 @@ class ModelRegistry:
         (ADR-0235 permits it).
         """
 
+        generation = self._generation
         try:
             provider = model.provider
+            effective, ownership_error = self._owned_request_model(model)
+            if ownership_error is not None:
+                return ResolvedRequestAuth(ok=False, error=ownership_error)
+            generation = self._generation
             provider_config = self._provider_request_configs.get(provider)
 
-            api_key = await self._request_api_key(provider)
+            api_key = await self._request_api_key(provider, generation=generation)
+            if generation != self._generation:
+                return ResolvedRequestAuth(
+                    ok=False, error="Provider registration changed while resolving request authentication; select the model again"
+                )
 
             provider_headers = resolve_headers_or_throw(
                 provider_config.headers if provider_config is not None else None,
@@ -541,9 +644,10 @@ class ModelRegistry:
             )
 
             headers: dict[str, str] = {}
-            if model.headers or provider_headers or model_headers:
+            effective_headers = effective.headers if effective is not None else None
+            if effective_headers or provider_headers or model_headers:
                 headers = {
-                    **(model.headers or {}),
+                    **(effective_headers or {}),
                     **(provider_headers or {}),
                     **(model_headers or {}),
                 }
@@ -555,15 +659,22 @@ class ModelRegistry:
                     )
                 headers = {**headers, "Authorization": f"Bearer {api_key}"}
 
-            return ResolvedRequestAuth(ok=True, api_key=api_key, headers=headers)
+            return ResolvedRequestAuth(
+                ok=True, api_key=api_key, headers=headers,
+                validate=self._request_validator(model, generation),
+            )
         except Exception as exc:  # noqa: BLE001 — Pi reports the message.
+            if generation != self._generation:
+                return ResolvedRequestAuth(ok=False, error="Provider registration changed while resolving request authentication")
             # #379: a stored OAuth refresh that failed on a transient cause says
             # so; every other failure (StoredCredentialError's own reasons, a
             # header !command, an authHeader with no key) has no reason.
             retry_reason = exc.retry_reason if isinstance(exc, StoredCredentialError) else None
             return ResolvedRequestAuth(ok=False, error=str(exc), retry_reason=retry_reason)
 
-    async def _request_api_key(self, provider: str, *, uncached: bool = False) -> str | None:
+    async def _request_api_key(
+        self, provider: str, *, uncached: bool = False, generation: int | None = None
+    ) -> str | None:
         """The key a request to ``provider`` carries: pi's order (#363 / ADR-0251).
 
         1. ``--api-key`` (a runtime override) and
@@ -587,22 +698,18 @@ class ModelRegistry:
            enough (review round 1, R1): the CLI's auth callback reads no key and
            no headers as "no opinion", and the adapter then reads the
            environment itself, so an exported vendor key went to the gateway;
-        3. the ``models.json`` provider ``apiKey`` (env-var name / ``!command`` /
-           literal, :func:`resolve_config_value_or_throw`) - pi's
+        3. the extension's ``api_key`` or, when absent, the ``models.json``
+           provider ``apiKey`` (env-var name / ``!command`` / literal,
+           :func:`resolve_config_value_or_throw`) - pi's
            ``composeApiKeyAuth.resolve`` hands this ``rawKey`` to the built-in
            resolver as the credential and asks the environment only when there
            is none (``coding-agent/src/core/provider-composer.ts:457-479``);
         4. the environment (``ENV_API_KEYS``; ``include_fallback=False``, so the
            fallback resolver never authenticates a request, as before);
-        5. an extension ``register_provider`` ``api_key`` - where it was before
-           #363. pi puts it in step 3 (``configuredApiKey = extension?.apiKey ??
-           config?.apiKey``, ``provider-composer.ts:388-393``); aelix keeps it
-           after the environment until #365 lands, because a registration that
-           brings models for a catalogued name still leaves the catalogue's rows
-           in the registry, and step 3 would put the extension's key on them
-           (measured: ``/model`` row ``openai/gpt-4o-mini`` on
-           ``api.openai.com`` went from the exported vendor key to the
-           extension's).
+
+        #365 / ADR-0262 moved extension keys into step 3 after replacing owned
+        rows and guarding stale request models. The fallback resolver still
+        never authenticates requests.
 
         Before #363 the AuthStorage cascade (1, 2, environment) ran first and
         the provider ``apiKey`` only when it found nothing, so an exported
@@ -612,12 +719,14 @@ class ModelRegistry:
 
         storage = self._auth_storage
         await storage._ensure_loaded()
+        if generation is not None and generation != self._generation:
+            raise ValueError("Provider registration changed while resolving request authentication")
         if storage._runtime_overrides.get(provider) or storage.has(provider):
             return await storage.get_api_key_cascade(
                 provider, include_fallback=False, stored_owns=True
             )
         config = self._provider_request_configs.get(provider)
-        if config is not None and config.api_key and config.from_models_json:
+        if config is not None and config.api_key:
             if uncached:
                 return resolve_config_value_uncached(config.api_key)
             return resolve_config_value_or_throw(
@@ -628,14 +737,6 @@ class ModelRegistry:
         api_key = await storage.get_api_key_cascade(provider, include_fallback=False)
         if api_key is not None:
             return api_key
-        if config is not None and config.api_key:
-            if uncached:
-                return resolve_config_value_uncached(config.api_key)
-            return resolve_config_value_or_throw(
-                config.api_key,
-                f'API key for provider "{provider}"',
-                cache=self._command_value_cache,
-            )
         return None
 
     async def get_api_key_for_provider(self, provider: str) -> str | None:
@@ -664,8 +765,8 @@ class ModelRegistry:
         (``models_json_command`` for a ``!command``, ``environment`` when the
         value names a set env var, else ``models_json_key``); then the
         environment / fallback answer of :meth:`AuthStorage.get_auth_status`;
-        then an extension registration's ``api_key``, reported the same way as a
-        ``models.json`` one (where it was before #363). Reports source WITHOUT
+        A registration's configured key is reported as a ``models.json`` one
+        and occupies the same step 3 (#365). Reports source WITHOUT
         exposing the credential value or refreshing OAuth.
 
         ``runtime`` is checked here, before :meth:`AuthStorage.get_auth_status`,
@@ -689,9 +790,7 @@ class ModelRegistry:
         provider_api_key = (
             provider_config.api_key if provider_config is not None else None
         )
-        if auth_status.source and not (
-            provider_api_key and provider_config is not None and provider_config.from_models_json
-        ):
+        if auth_status.source and not provider_api_key:
             return auth_status
         if not provider_api_key:
             return auth_status
@@ -795,7 +894,7 @@ class ModelRegistry:
         update; Sprint 6g wires the models.json-driven shape.
         """
 
-        self._registered_providers[name] = config
+        self._registered_providers[name] = snapshot_provider_config(name, config)
         # Pi parity: re-run loadModels so modify_models callbacks pick
         # up the new provider's catalog entries.
         self._load_models()
@@ -815,7 +914,7 @@ class ModelRegistry:
         live registry.
         """
 
-        return dict(self._registered_providers)
+        return {name: snapshot_provider_config(name, config) for name, config in self._registered_providers.items()}
 
     def get_user_defined_providers(self) -> frozenset[str]:
         """The providers whose endpoint the USER chose, rather than this build (#344).
@@ -833,7 +932,7 @@ class ModelRegistry:
           ``huggingface`` and ``opencode*``;
         * an extension ``register_provider`` provider — every one whose name is
           not catalogued, and a catalogued name only when the registration brings
-          models (an auth-only or header-only registration tunes a built-in the
+          an explicit model map, including empty (an auth-only or header-only registration tunes a built-in the
           same way ``headers`` does). The launch resolver then scopes such a
           catalogued name to the models the registration brought
           (``runtime_bootstrap._registration_models``).
@@ -846,7 +945,11 @@ class ModelRegistry:
         ``.env`` cannot change it.
         """
 
-        return self._user_defined_providers
+        # A bind/replay may contain a load failure. The registration still owns
+        # its namespace, even before a successful projection has been published.
+        return self._user_defined_providers | frozenset(
+            name for name, config in self._registered_providers.items() if config.models is not None
+        )
 
     def get_base_url_override(self, provider: str) -> str | None:
         """The ``models.json`` provider-level ``baseUrl`` of a BUILT-IN provider (#344).
@@ -955,7 +1058,7 @@ class ModelRegistry:
         :attr:`ProviderRequestConfig.from_models_json`).
         """
 
-        if not api_key and not headers and not auth_header:
+        if api_key is None and not headers and auth_header is None:
             return
         self._provider_request_configs[provider_name] = ProviderRequestConfig(
             api_key=api_key,
@@ -1018,6 +1121,13 @@ class ModelRegistry:
 
         # Pi parity: the request-config maps are fully rebuilt from the
         # current models.json each load, so clear them first.
+        self._generation += 1
+        # Never combine a new explicit registration's credentials with an old
+        # projection if a loader fails and API.bind contains that exception.
+        owned = self._projected_owners | {
+            name for name, config in self._registered_providers.items() if config.models is not None
+        }
+        self._models = [m for m in self._models if m.provider not in owned]
         self._provider_request_configs.clear()
         self._model_request_headers.clear()
         # #240: the cached ``!command`` values were resolved FROM the two maps
@@ -1068,7 +1178,7 @@ class ModelRegistry:
             | {
                 name
                 for name, config in self._registered_providers.items()
-                if name not in catalogued or config.models
+                if name not in catalogued or config.models is not None
             }
         )
 
@@ -1076,51 +1186,33 @@ class ModelRegistry:
         built_in = load_built_in_models(result.overrides, result.model_overrides)
         loaded = merge_custom_models(built_in, result.models)
 
-        # Step 3: re-apply dynamically-registered providers' request configs
-        # (register_provider stores into _registered_providers; the maps
-        # were just cleared above). A registration that carries no
-        # ``api_key`` keeps the models.json ``apiKey`` of the same name at the
-        # request's step 3 (#363 review round 1, R5; pi ``configuredApiKey =
-        # extension?.apiKey ?? config?.apiKey``, ``provider-composer.ts:388-393``
-        # @ b223082bb); before, a headers-only registration dropped it and the
-        # exported vendor key went out. One that carries nothing leaves the
-        # models.json config as it is (the store's early return).
+        # Step 3: compose provider request settings. The extension's configured
+        # key wins when present; headers merge over JSON and only None inherits
+        # its authHeader (explicit False clears it). Every load starts from JSON,
+        # so a full re-registration never preserves the preceding extension.
         for name, config in self._registered_providers.items():
-            kept_key: str | None = None
-            prior = self._provider_request_configs.get(name)
-            if (
-                not config.api_key
-                and (config.headers or config.auth_header)
-                and prior is not None
-                and prior.from_models_json
-            ):
-                kept_key = prior.api_key
+            prior = self._provider_request_configs.get(name) or ProviderRequestConfig()
             self._store_provider_request_config(
                 name,
-                api_key=config.api_key or kept_key,
-                headers=config.headers,
-                auth_header=config.auth_header,
-                from_models_json=kept_key is not None,
+                api_key=config.api_key if config.api_key is not None else prior.api_key,
+                headers={**(prior.headers or {}), **(config.headers or {})} or None,
+                auth_header=config.auth_header if config.auth_header is not None else prior.auth_header,
+                from_models_json=config.api_key is None and prior.from_models_json,
             )
 
-        # Step 3b (Issue #77 Gap B): merge dynamically-registered providers'
-        # catalog models so ``register_provider(ProviderConfigInput(models=...))``
-        # actually contributes ``/model`` rows — not just auth wiring. A model
-        # left at the default provider (``"unknown"``) is stamped with the
-        # registration name so (provider, id) dedup + auth resolution line up.
-        # ``merge_custom_models`` dedups on (provider, id) with the registered
-        # entry winning, so re-running this on every ``register_provider`` +
-        # ``modify_models`` pass is idempotent. Placed before Step 4 so the OAuth
-        # ``modify_models`` callbacks see these rows too.
+        # Step 3b (#365): an explicit model map owns the entire provider row set.
+        # Models were copied and namespace-stamped at registration; OAuth may
+        # project these rows next. None leaves the lower layers untouched.
         registered_models: list[Model] = []
         for name, config in self._registered_providers.items():
-            for model in (config.models or {}).values():
-                provider = getattr(model, "provider", "") or ""
-                registered_models.append(
-                    model
-                    if provider and provider != "unknown"
-                    else replace(model, provider=name)
-                )
+            if config.models is None:
+                continue
+            loaded = [m for m in loaded if m.provider != name]
+            # JSON model-level header overrides belonged to the replaced rows.
+            for key in list(self._model_request_headers):
+                if key.startswith(f"{name}:"):
+                    self._model_request_headers.pop(key)
+            registered_models.extend(config.models.values())
         if registered_models:
             loaded = merge_custom_models(loaded, registered_models)
 
@@ -1164,7 +1256,15 @@ class ModelRegistry:
                 else:
                     self._load_error = f"{self._load_error}\n{err_line}"
 
-        self._models = loaded
+        # OAuth can transform the owner's listed models, but cannot repopulate
+        # replaced catalogue rows (including an explicit empty registration).
+        declared = {
+            name: {m.id for m in config.models.values()}
+            for name, config in self._registered_providers.items()
+            if config.models is not None
+        }
+        self._models = [m for m in loaded if m.provider not in declared or m.id in declared[m.provider]]
+        self._projected_owners = frozenset(declared)
 
     # ── Internal helpers ───────────────────────────────────────────
     def _registered_oauth_providers(self) -> list[OAuthProvider]:

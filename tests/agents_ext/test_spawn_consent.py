@@ -1075,7 +1075,7 @@ async def test_concurrent_requests_are_serialized() -> None:
     ``tui/chrome.py:524``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn
     hangs until Ctrl+C. The kernel already serialises the ``tool_call`` hook
-    (``loop.py:829-839``), and the tool additionally declares
+    (``loop.py:834-844``), and the tool additionally declares
     ``execution_mode="sequential"``, but the lock is what covers the
     ``/agents run`` door and any future caller.
     """

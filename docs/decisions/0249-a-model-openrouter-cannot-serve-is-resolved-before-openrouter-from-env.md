@@ -1,7 +1,7 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
 Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7)
-Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand); [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) (2026-10-06, #363: §2.4's bearer paragraph and its "only the host moves" paragraph)
+Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand); [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) (2026-10-06, #363: §2.4's bearer paragraph and its "only the host moves" paragraph); [ADR-0262](0262-explicit-provider-registrations-own-model-routes.md) (2026-10-11, #365: explicit registration scope in sections 2.1/2.2, and the provider-name-only delegated pin)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
 now runs before the OpenRouter-env path) and **ADR-0195 §"Known limitations" bullet 1**
@@ -24,6 +24,10 @@ string into an OpenRouter model id — including `<provider>/<id>` for a provide
 had defined in `models.json` or through an extension, whose whole point is that it is
 *their* endpoint. The prompt went to a third party; so did an `--api-key` meant for the
 user's endpoint. The owner's own configuration hit it.
+
+> **#365 amendment (2026-10-11):** [ADR-0262](0262-explicit-provider-registrations-own-model-routes.md) now governs explicit registration
+> replacement (empty included), owned request/child routes and configured extension
+> key/header composition. Earlier measurements below remain historical evidence.
 
 ## 1. What was measured
 

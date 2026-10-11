@@ -438,7 +438,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:397-398``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:411-412``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.

@@ -119,7 +119,7 @@ def test_live_usage_agrees_with_the_estimator_anchor(
     way. If they drift the meter jumps at every turn boundary — #249's exact
     complaint, arriving by the other door.
 
-    ``_valid_assistant_usage`` (``session/compaction.py:1102``, pi #5526) is
+    ``_valid_assistant_usage`` (``session/compaction.py:1104``, pi #5526) is
     private, so it is imported HERE and not in the product code; this test is
     what keeps the five duplicated lines honest.
     """

@@ -17,7 +17,7 @@ tests here that need a real envelope drive a real (stub) child.
 THE ONE SHAPE TO INTERNALISE BEFORE READING ON: consent is taken in the
 extension's ``tool_call`` HOOK and spent in the tool's ``execute()``, linked by
 ``tool_call_id``. :func:`_call` therefore runs BOTH halves, and renders a
-blocked hook the way the kernel does (``loop.py:529-542``) — as a model-readable
+blocked hook the way the kernel does (``loop.py:534-547``) — as a model-readable
 error result — so a refusal from either half is observed identically.
 """
 
@@ -352,7 +352,7 @@ async def _call(
     """Run the hook and then ``execute()``, exactly as the kernel would.
 
     A blocked hook is rendered as an ``is_error`` tool result because that is
-    what the kernel does with one (``loop.py:529-542``): the model sees a
+    what the kernel does with one (``loop.py:534-547``): the model sees a
     refusal it can read either way, so the tests assert on the OUTCOME rather
     than on which half produced it.
     """
@@ -410,7 +410,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:969-1035`` materialises the ``None`` sentinel into a real list),
+    (``core.py:972-1038`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.
@@ -591,8 +591,8 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
 
     The gate now re-resolves the approved NAME and compares. The window is real:
     the ``tool_call`` hook runs in the kernel's SEQUENTIAL prep phase
-    (``loop.py:521-542``) and ``execute()`` under ``asyncio.gather``
-    (``loop.py:900``), and the profile search path is a directory the model's own
+    (``loop.py:526-547``) and ``execute()`` under ``asyncio.gather``
+    (``loop.py:905``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
     (``agents/service.py:102-103``) — the exact B5 shape, arriving one step later.
@@ -1088,7 +1088,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
 # the model as a blocked call (``extension.py:901-904``) rendered by the kernel
-# as an immediate error result (``loop.py:529-542``) — no consent dialog, no
+# as an immediate error result (``loop.py:534-547``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
 
@@ -1825,7 +1825,7 @@ def test_execution_mode_survives_dataclasses_replace() -> None:
 
     The kernel downgrades the WHOLE BATCH to sequential when any tool in it
     declares ``execution_mode="sequential"`` (``types.py:47-56``,
-    ``loop.py:706-716``), which is what stops two ``agent`` calls in one
+    ``loop.py:711-721``), which is what stops two ``agent`` calls in one
     assistant message racing two modals onto ``tui/chrome.py:524``'s single
     ``_modal`` slot. Because the description is re-stamped with
     :func:`dataclasses.replace` on every ``before_agent_start``, losing the
