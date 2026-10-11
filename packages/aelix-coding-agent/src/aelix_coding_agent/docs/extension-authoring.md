@@ -240,7 +240,12 @@ JSON (a cell, a form field's name and value, a grid item, the text body) the
 way a tool result is stripped. It strips them after it decodes your JSON, so
 a column's `key`, `rows_path` and `text_path` are matched against your JSON
 keys exactly as you wrote them, escaped (`\u200b`) or not. The status line, widgets, toasts and modals you
-register are drawn outside the transcript and are not stripped this way.
+register are drawn outside the transcript and are not stripped this way. Every
+displayed descriptor string is literal text (#390), including titles, headers,
+table cells, form names and values, grid items and text bodies. Rich tags such as
+`[bold]` and `[link=…]` appear as written, including their targets; they do not
+apply styles or create hyperlinks. This also applies to the shared descriptor
+builder used by `render_tool_result` and management modals.
 
 ### Flags
 

@@ -296,6 +296,13 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Descriptor views display Rich markup literally (#390).** Titles, table
+  headers and cells, form names and values, grid items and text bodies preserve
+  tag text and link targets without creating OSC 8 hyperlinks. Existing terminal
+  cleanup still runs after raw JSON projection and key lookup. Shared descriptor
+  builder callers also display markup literally; clean ANSI component links
+  retain their existing validation and behavior.
+
 - **Extension provider models own their route (#365).** An explicit `models`
   map replaces that provider's catalog/JSON rows; `{}` stays empty and `None`
   keeps auth-only augmentation. Launch and `/model` share the owned models and

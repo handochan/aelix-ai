@@ -1,6 +1,6 @@
 # 0112. Sprint 6h₁₂c — Compact Tool Cards (result truncation + per-tool headers)
 
-Status: Accepted (TUI completeness Sprint C / W4 shipped) — Amended 2026-09-08 (#247), 2026-10-06 (#177)
+Status: Accepted (TUI completeness Sprint C / W4 shipped) — Amended 2026-09-08 (#247), 2026-10-06 (#177), 2026-10-12 (#390)
 Date: 2026-05-27
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance — pure tui/ consumer)
 
@@ -135,7 +135,8 @@ lookup, and the second cleaned the body before decoding it; each blanked a colum
 zero-width space and merged two form fields whose names cleaned to the same text (the second only
 for the literal spelling). A `grid` draws a dict row as its `repr`, which already escapes control
 characters. The chrome callers of `build_tool_renderable` (`render_tool_result`,
-`open_modal`) draw with plain `str`, as before.
+`open_modal`) use plain `str` callbacks; the #390 amendment below makes their displayed strings
+literal too.
 
 The output of the user's own `!cmd` is bytes a process wrote, so it takes the tool-output shape:
 the live line (`EventRenderer.user_bash_output`, committed by `tui/shell.py`) and the replay of its
@@ -147,12 +148,47 @@ longer starts with `ESC [ 36 m`. Tool output that used to arrive coloured now sh
 does a coloured `!cmd`, live and on `/resume` (where it used to show `[31m`). Right-to-left prose
 that relied on U+200E, U+200F or U+061C to order neutral characters can show them in a different
 order; the letters themselves are kept. A component's `javascript:` or custom-scheme link is shown
-as plain text. A descriptor view still parses its title, its column headers and the cells of the
+as plain text. At this amendment's closeout, a descriptor view still parsed its title, its column
+headers and the cells of the
 `table` and `form` views as rich markup, so a tool or an extension can draw a `[link=…]` whose
 text differs from its target and whose scheme is not checked (the `text` body and `grid` items are
 not parsed). That target cannot hold a C0, C1 or DEL character or a BiDi override or isolate, so it
 cannot end the OSC 8 early; it can hold U+200E, U+200F or U+061C, which both shapes keep. It is
-left for a follow-up issue. Outside the transcript, this amendment does not cover the descriptor
+left for follow-up #390, resolved by the amendment below. Outside the transcript, this amendment
+does not cover the descriptor
 surfaces drawn in the chrome (status, widgets, toasts, modals and the rest of
 `tui/descriptors.py`), the subagent panel (#178), the picker body (#179) or tool-result `details`
 on replay (#168).
+
+## Amendment 2026-10-12 (#390) — descriptor strings are literal text
+
+**Context.** #177's sanitizers remove existing escape sequences before rendering. Rich markup
+can create new OSC 8 sequences afterwards: descriptor titles, table headers and table/form cells
+accepted `[link=…]` with unchecked targets. The component ANSI-link validator does not process
+these renderables. Grid items, text bodies and the empty-grid title already used `Text`; they
+were not affected by this markup path.
+
+**Decision.** `DescriptorRenderer.build_tool_renderable` wraps every displayed descriptor string
+in `rich.text.Text` after its existing `heading` or `value` callback. This includes each view's
+title, explicit and key-derived table headers, dict and scalar table cells, form field names and
+values, grid items and text bodies. Rich tags, including safe HTTPS links, ordinary styles,
+malformed closing tags and nested markup, are visible literal characters. The empty-grid title
+reuses the literal title directly; absent and empty titles remain distinct inputs. The shared
+builder's chrome callers also lose descriptor markup styling, while their default `str` callbacks
+remain unchanged. This does not extend #177's control-character sanitization to every chrome
+surface.
+
+Projection and lookup remain raw: JSON keys, column lookup keys, `rows_path`, `text_path`,
+namespace, descriptor identity and tool matching are unchanged. #177's header/value control and
+right-to-left policies still apply only after projection. ANSI links from a registered component
+retain their separate scheme/control validator and clean-link support. No descriptor schema,
+kernel or persistence change is needed.
+
+**Verification scope.** Byte-stream regressions exercise all displayed positions in live events
+and explicitly named replay, requiring both zero descriptor OSC 8 sequences and visible literal
+content. They cover the shared builder's default callbacks, absent/empty titles and empty grids,
+raw Unicode/markup keys, colliding displayed form labels, nested paths and the real session-entry
+serializer. A named persisted result keeps its name and uses the descriptor; ordinary loop
+results currently persist the default empty name and replay through the default card. This
+amendment preserves that contract. Independent review, actual TUI/model/resume observations and
+fresh-head full/CI results are recorded separately in the issue handoff.

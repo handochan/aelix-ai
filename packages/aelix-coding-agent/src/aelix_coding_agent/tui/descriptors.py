@@ -479,6 +479,10 @@ class DescriptorRenderer:
         ``open_modal``) draw; the transcript passes its terminal-safe shapes
         (``render.EventRenderer._render_with_descriptor``).
 
+        #390 — wrap the shaped display strings in ``Text`` so Rich draws markup
+        literally, including link targets and malformed tags. The shared chrome
+        callers also get literal text; their default shapes remain ``str``.
+
         They run on what is DRAWN, after every lookup. A column's ``key`` is
         matched against the row's keys exactly as they arrived, and a form row
         is drawn entry by entry, so two field names that clean to the same
@@ -489,26 +493,30 @@ class DescriptorRenderer:
         payload = envelope.payload
         view = getattr(payload, "view", "text")
         raw_title = getattr(payload, "title", None)
-        title = None if raw_title is None else heading(str(raw_title))
+        title = None if raw_title is None else Text(heading(str(raw_title)))
         columns = getattr(payload, "columns", None) or []
         row_data = rows if isinstance(rows, list) else []
 
         if view == "table":
             table = Table(title=title)
-            headers = [heading(str(c.get("header", c.get("key", "")))) for c in columns]
+            headers = [Text(heading(str(c.get("header", c.get("key", ""))))) for c in columns]
             for header in headers:
                 table.add_column(header)
             keys = [str(c.get("key", c.get("header", ""))) for c in columns]
             for row in row_data:
                 if isinstance(row, dict):
-                    table.add_row(*[value(str(row.get(k, ""))) for k in keys])
+                    table.add_row(*[Text(value(str(row.get(k, "")))) for k in keys])
                 else:
-                    table.add_row(value(str(row)))
+                    table.add_row(Text(value(str(row))))
             return table
 
         if view == "grid":
             cells = [Text(value(str(item))) for item in row_data]
-            return Columns(cells, title=title) if cells else Columns([Text(title or "")])
+            return (
+                Columns(cells, title=title)
+                if cells
+                else Columns([title if title is not None else Text("")])
+            )
 
         if view == "form":
             form = Table(show_header=False, box=None, title=title)
@@ -517,7 +525,7 @@ class DescriptorRenderer:
             for row in row_data:
                 if isinstance(row, dict):
                     for label, item in row.items():
-                        form.add_row(value(str(label)), value(str(item)))
+                        form.add_row(Text(value(str(label))), Text(value(str(item))))
             return form
 
         # text
