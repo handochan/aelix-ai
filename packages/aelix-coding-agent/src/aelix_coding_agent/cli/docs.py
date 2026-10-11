@@ -42,6 +42,7 @@ _USAGE = (
     "  aelix docs                       list the bundled guides\n"
     "  aelix docs <topic>               print one guide to stdout\n"
     "  aelix docs --search <term>       search every guide (-s)\n"
+    "  --offline is accepted before docs, not after it; no other launch prefix is allowed.\n"
 )
 
 

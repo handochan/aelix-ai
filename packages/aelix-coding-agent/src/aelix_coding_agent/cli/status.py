@@ -80,6 +80,7 @@ _USAGE = (
     "  aelix status                     report what a launch in this directory would be\n"
     "  aelix status --json              the same report as a JSON object\n"
     "  aelix status --no-extensions     skip discovery (imports no extension code)\n"
+    "  --offline is accepted before status, not after it; no other launch prefix is allowed.\n"
 )
 
 #: The fields :class:`~aelix_status.snapshot.RuntimeSnapshot` carries that only a

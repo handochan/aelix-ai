@@ -410,6 +410,9 @@ issue.)
 - **`Extension`'s repr no longer expands the manifest.** Capabilities, activation and contributes
   are gone from tracebacks by design; registration buckets are counts. Use the object, not its repr.
 - **`aelix --offline docs …` does not work**, and neither does `aelix --offline extension …`.
+  **Closed 2026-10-11 (#289):** [ADR-0261](0261-root-commands-reject-launch-options-before-dispatch.md) accepts the leading
+  offline-only prefix and rejects other launch prefixes with exit 2. The text
+  below records the original limitation.
   Subcommands route before the flag parser, so a leading flag is never seen by them and the whole
   invocation falls through to a chat turn. For `docs` this is harmless (it touches no network); for
   `extension` it is a real sharp edge and is now documented in `providers-and-models.md`, with

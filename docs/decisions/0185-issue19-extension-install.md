@@ -55,3 +55,9 @@ A 4-lens adversarial review (correctness / security / consistency / test-adequac
 - **[NIT] No `__all__`** — added.
 
 **Documented, not code-changed** (design calls upheld): PIP_* env is honored on purpose (closed-network), `--offline` is advisory, local-path-wins can shadow a bare pypi name (consent shows the resolved abspath), and exit-2-for-usage is a deliberate standard-CLI choice — all captured in Consequences above. **Tests +25** (54 total): empty-target, scp-git, missing-pip, consent accept/decline matrices, offline path pass-through, `PI_OFFLINE=0`-off, `--index-url=` empty, `--offline`/`--`/`--help` parsing, and a non-`extension` argv fall-through regression.
+
+## Root routing amendment (2026-10-11, #289)
+
+[ADR-0261](0261-root-commands-reject-launch-options-before-dispatch.md) adds a leading offline-only root prefix and rejects other launch
+options before a command with exit 2. The command's existing tail parser and
+execution/trust contracts remain in force.

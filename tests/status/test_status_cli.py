@@ -326,12 +326,12 @@ def test_the_verb_is_dispatched_before_the_flag_parser() -> None:
     dispatch_at: int | None = None
     parse_at: int | None = None
     for node in ast.walk(fn):
-        if isinstance(node, ast.Compare) and ast.unparse(node) == "argv[0] == 'status'":
+        if isinstance(node, ast.Compare) and ast.unparse(node) == "command_argv[0] == 'status'":
             dispatch_at = node.lineno
         if isinstance(node, ast.Call) and ast.unparse(node) == "parse_args(argv)":
             parse_at = node.lineno
 
-    assert dispatch_at is not None, "no `argv[0] == 'status'` dispatch in _async_main"
+    assert dispatch_at is not None, "no `command_argv[0] == 'status'` dispatch in _async_main"
     assert parse_at is not None, "parse_args(argv) moved or was renamed"
     assert dispatch_at < parse_at, (
         f"the status dispatch (line {dispatch_at}) is BELOW parse_args "
@@ -349,7 +349,7 @@ def test_the_dispatch_awaits_the_real_command() -> None:
         for n in ast.walk(tree)
         if isinstance(n, ast.Await)
     }
-    assert "await run_status_command(argv[1:])" in calls
+    assert "await run_status_command(command_argv[1:])" in calls
 
 
 def test_the_always_on_names_are_the_ones_entry_py_actually_prepends() -> None:

@@ -1991,10 +1991,25 @@ async def _finish_refused_turns(harness: AgentHarness) -> None:
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
-    # Offline export before every verb (pi main.ts:576-580,597 @ b223082bb; #288).
+    from aelix_coding_agent.cli.args import classify_root_command
     from aelix_coding_agent.util.offline import export_if_offline
 
-    export_if_offline(bool(argv) and argv[0] == "extension" and "--offline" in argv)
+    route = classify_root_command(argv)
+    if route is not None and route.rejected_options:
+        options = ", ".join(route.rejected_options)
+        print(
+            f"Error: only --offline may precede the {route.command} command "
+            f"(unsupported: {options}). Use `aelix [--offline] {route.command} ...`; "
+            f"for an agent prompt use `aelix -- {route.command} ...`.",
+            file=sys.stderr,
+        )
+        return 2
+    command_argv = argv[route.index :] if route is not None else []
+    # Preserve #288's raw extension-tail detection, including after its --.
+    export_if_offline(
+        (route is not None and route.index > 0)
+        or (bool(command_argv) and command_argv[0] == "extension" and "--offline" in command_argv)
+    )
 
     # Issue #19 (ADR-0185) / #32-A (ADR-0186) — ``aelix extension <subcommand>``
     # verb dispatch, BEFORE parse_args: the hand-rolled flat flag parser would
@@ -2004,12 +2019,12 @@ async def _async_main(argv: list[str]) -> int:
     # already inside the ``asyncio.run`` loop — a nested ``asyncio.run`` shim
     # would raise) so the marketplace subcommands can ``await`` the async
     # settings-write flush that persists ``extension_sources``.
-    if argv and argv[0] == "extension":
+    if command_argv and command_argv[0] == "extension":
         from aelix_coding_agent.cli.extension_install import (
             run_extension_command_async,
         )
 
-        return await run_extension_command_async(argv[1:])
+        return await run_extension_command_async(command_argv[1:])
 
     # #101 — ``aelix docs [<topic>]`` reads the guides bundled inside the wheel.
     # Same placement and same reason as ``extension`` above: BEFORE parse_args,
@@ -2020,19 +2035,19 @@ async def _async_main(argv: list[str]) -> int:
     # Lazy import so a plain ``aelix`` launch pays nothing for a verb it is not
     # running: ``cli.docs`` pulls in ``aelix_coding_agent.help``, which globs the
     # bundled docs directory on first use.
-    if argv and argv[0] == "docs":
+    if command_argv and command_argv[0] == "docs":
         from aelix_coding_agent.cli.docs import run_docs_command
 
-        return run_docs_command(argv[1:])
+        return run_docs_command(command_argv[1:])
 
     # #101 — ``aelix status`` reports what a launch in this directory WOULD be,
     # without becoming one. Same placement and same reason as the two above.
     # Async, like ``extension``: it awaits the real trust resolver and the real
     # extension loader rather than describing them.
-    if argv and argv[0] == "status":
+    if command_argv and command_argv[0] == "status":
         from aelix_coding_agent.cli.status import run_status_command
 
-        return await run_status_command(argv[1:])
+        return await run_status_command(command_argv[1:])
 
     parsed = parse_args(argv)
 

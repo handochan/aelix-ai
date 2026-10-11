@@ -239,9 +239,13 @@ if you set their API key. See the [providers guide](docs/guides/providers-and-mo
 Built for closed networks and customer-site deployment. `--offline` turns off the outbound
 calls Aelix makes for itself — the `rg`/`fd` download, the catalog fetch, index-less extension
 installs, the update check — but not the provider you configured, so a closed network still
-needs a reachable or self-hosted model endpoint. Two gaps worth knowing: `--offline` before an
-`extension` subcommand is not seen (pass it after), and a `git+https://` install target
-proceeds regardless. Policy and guardrails run as built-in
+needs a reachable or self-hosted model endpoint. `aelix --offline status`,
+`aelix --offline docs`, and `aelix --offline extension …` run their commands.
+Only `--offline` may precede these root commands; other launch options cause a usage error
+(exit 2). For an intentional agent prompt, use `aelix -p status` or `aelix -- status`.
+`status` and `docs` require the offline flag before the command; their own parsers reject it
+afterward. A `git+https://` install target still proceeds regardless of offline mode.
+Policy and guardrails run as built-in
 extensions, so every tool call and context mutation is an auditable hook event.
 
 Built extension artifacts carry a signed supply chain that survives an air-gapped install —

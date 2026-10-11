@@ -36,6 +36,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0261 — Root commands reject launch options before dispatch](0261-root-commands-reject-launch-options-before-dispatch.md)
+  (Accepted, 2026-10-11; #289). Shared arity preserves values and intentional
+  prompts; only offline may precede a command, and other launch prefixes fail
+  with exit 2. Bare -- ends agent option parsing.
+
 - [0260 — Retry recovery closes at the successful assistant response](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
   (Accepted, 2026-10-09; #197). Reset and notify before tools and later responses;
   subsequent provider failures get a fresh budget. Supersedes successful retry

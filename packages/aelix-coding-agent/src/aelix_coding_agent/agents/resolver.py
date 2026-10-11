@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2549-2556``).
+  (``cli/entry.py:2564-2571``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -38,8 +38,8 @@ two sides can agree on a field that nothing reads, and both can collapse
 Two flag choices are not cosmetic:
 
 * ``--tools`` takes ONE comma-separated token and is NOT repeatable
-  (``args.py:500-509`` overwrites), so the list is joined, never repeated.
-* ``--system-prompt`` takes a LITERAL string (``args.py:440-444``); a profile
+  (``args.py:636-643`` overwrites), so the list is joined, never repeated.
+* ``--system-prompt`` takes a LITERAL string (``args.py:576-580``); a profile
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 
@@ -477,7 +477,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:3009-3013``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:3024-3028``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

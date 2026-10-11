@@ -613,14 +613,24 @@ network operations aelix starts on its own:
   binary on `PATH`: `ensure_tool("rg")` printed
   `ripgrep not found. Offline mode enabled, skipping download.` and returned
   nothing, instead of fetching a release archive from GitHub.
-- the extension catalog fetch and index-less pip installs. Note the spelling
-  here: subcommands are routed before the flag parser runs, so
-  `aelix --offline extension …` does **not** reach them. Use the subcommand's
-  own flag (`aelix extension discover --refresh --offline`) or export
+- the extension catalog fetch and index-less pip installs. Use
+  `aelix --offline extension …`, the subcommand's own flag
+  (`aelix extension discover --refresh --offline`), or export
   `PI_OFFLINE=1` / `AELIX_OFFLINE=1`. With it on, a catalog on a network transport is skipped with a
   per-source notice, and a bare `aelix extension install <pkg>` with no
   `--index-url` is refused rather than silently reaching PyPI.
 - the once-a-day update check.
+
+Only `--offline` may precede the root commands `extension`, `docs`, and `status`.
+Other launch options before a command, such as `-e policy.py status` or
+`--provider anthropic --model example status`, fail with exit 2 before a
+session starts. `aelix --offline docs` and `aelix --offline status` work;
+`docs --offline` and `status --offline` remain usage errors. To send a command
+word to the agent intentionally, use `aelix -p status` or `aelix -- status`.
+An option's literal value and an already started ordinary prompt keep their
+agent meaning; an unknown long option immediately followed by a command word
+is rejected as ambiguous. `--custom=status` keeps its explicit extension value.
+Bare `--` ends agent option parsing: subsequent tokens are messages or `@files`.
 
 The two variable names are the same switch, and every one of the operations
 above reads them the same way: `1`, `true` or `yes` (any case) turns offline

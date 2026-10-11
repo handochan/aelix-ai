@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 
@@ -42,6 +42,71 @@ VALID_THINKING_LEVELS: tuple[str, ...] = (
 """Pi parity: ``cli/args.ts`` ``VALID_THINKING_LEVELS``."""
 
 VALID_MODES: tuple[str, ...] = ("text", "json", "rpc")
+
+# Shared lexical arity for the flat parser and the root-command classifier.
+# Required values deliberately include flag-shaped tokens: changing that
+# existing agent grammar is outside #289 (ADR-0261).
+REQUIRED_VALUE_FLAGS = frozenset(
+    {
+        "--mode",
+        "--provider",
+        "--model",
+        "--models",
+        "--api-key",
+        "--system-prompt",
+        "--append-system-prompt",
+        "--system-prompt-file",
+        "--append-system-prompt-file",
+        "--agent",
+        "--agent-file",
+        "--session",
+        "--fork",
+        "--session-dir",
+        "--tools",
+        "-t",
+        "--thinking",
+        "--permission-mode",
+        "--extension",
+        "-e",
+        "--trust-extension-path",
+        "--skill",
+        "--prompt-template",
+        "--theme",
+        "--export",
+    }
+)
+PRINT_FLAGS = frozenset({"--print", "-p"})
+OPTIONAL_VALUE_FLAGS = frozenset({"--resume", "-r", "--list-models"})
+FLAG_ONLY_FLAGS = frozenset(
+    {
+        "--help",
+        "-h",
+        "--version",
+        "-v",
+        "--continue",
+        "-c",
+        "--no-session",
+        "--no-tools",
+        "-nt",
+        "--no-builtin-tools",
+        "-nbt",
+        "--agents",
+        "--no-agents",
+        "--no-extensions",
+        "-ne",
+        "--approve",
+        "-a",
+        "--no-approve",
+        "-na",
+        "--no-skills",
+        "-ns",
+        "--no-context-files",
+        "-nc",
+        "--offline",
+    }
+)
+RootCommand = Literal["extension", "docs", "status"]
+ROOT_COMMANDS: tuple[RootCommand, ...] = ("extension", "docs", "status")
 
 REMOVED_FLAGS: dict[str, str] = {
     "--verbose": "it never enabled any logging",
@@ -70,6 +135,79 @@ never accept a posture the gate does not know (or reject one it does): a new
 cycle entry lands in both places at once. Mirrors the
 :data:`VALID_THINKING_LEVELS` / :data:`VALID_MODES` house pattern.
 """
+
+
+def _option_takes_value(argv: list[str], index: int) -> bool:
+    """The existing parser's lookahead, without interpreting or exposing values."""
+    arg = argv[index]
+    if index + 1 == len(argv):
+        return False
+    value = argv[index + 1]
+    if arg in REQUIRED_VALUE_FLAGS:
+        return True
+    if arg in PRINT_FLAGS:
+        return not value.startswith("@") and (not value.startswith("-") or value.startswith("---"))
+    if arg in ("--resume", "-r"):
+        return bool(value) and not value.startswith(("-", "@"))
+    if arg == "--list-models":
+        return not value.startswith(("-", "@"))
+    if (
+        arg.startswith("--")
+        and "=" not in arg
+        and arg not in FLAG_ONLY_FLAGS
+        and arg not in REMOVED_FLAGS
+    ):
+        return not value.startswith(("-", "@"))
+    return False
+
+
+@dataclass(frozen=True)
+class RootCommandRoute:
+    """A command at the first unconsumed positional, or its safe usage error."""
+
+    command: RootCommand
+    index: int
+    rejected_options: tuple[str, ...]
+
+
+def classify_root_command(argv: list[str]) -> RootCommandRoute | None:
+    """Pure routing: only ``--offline`` may precede a root command (#289).
+
+    Values, an explicit print message, ``@file``, a started ordinary prompt,
+    and bare ``--`` belong to agent parsing. An unknown long option followed
+    immediately by a command is ambiguous, so reject rather than silently
+    consuming the command as an extension flag's optional value.
+    """
+    index = 0
+    rejected: list[str] = []
+    known = REQUIRED_VALUE_FLAGS | PRINT_FLAGS | OPTIONAL_VALUE_FLAGS | FLAG_ONLY_FLAGS
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--" or arg.startswith("@"):
+            return None
+        if arg in ROOT_COMMANDS:
+            return RootCommandRoute(cast(RootCommand, arg), index, tuple(dict.fromkeys(rejected)))
+        if not arg.startswith("-") or arg == "-":
+            return None
+        takes_value = _option_takes_value(argv, index)
+        if arg in PRINT_FLAGS and takes_value:
+            return None
+        if arg != "--offline":
+            name = arg.split("=", 1)[0]
+            # Unknown input may itself contain a path/credential. Diagnostics
+            # name registered options only, never values or arbitrary tokens.
+            rejected.append(name if name in known or name in REMOVED_FLAGS else "<unknown option>")
+        if (
+            takes_value
+            and arg.startswith("--")
+            and arg not in known
+            and argv[index + 1] in ROOT_COMMANDS
+        ):
+            return RootCommandRoute(
+                cast(RootCommand, argv[index + 1]), index + 1, tuple(dict.fromkeys(rejected))
+            )
+        index += 2 if takes_value else 1
+    return None
 
 
 @dataclass
@@ -207,7 +345,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:510-527``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:644-661``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -369,12 +507,20 @@ def parse_args(argv: list[str]) -> Args:
     n = len(argv)
     while i < n:
         arg = argv[i]
-        if arg in ("--help", "-h"):
+        takes_value = _option_takes_value(argv, i)
+        if arg == "--":
+            for positional in argv[i + 1 :]:
+                if positional.startswith("@"):
+                    parsed.file_args.append(positional[1:])
+                else:
+                    parsed.messages.append(positional)
+            break
+        elif arg in ("--help", "-h"):
             parsed.help = True
         elif arg in ("--version", "-v"):
             parsed.version = True
         elif arg == "--mode":
-            if i + 1 < n:
+            if takes_value:
                 mode_val = argv[i + 1]
                 if mode_val in VALID_MODES:
                     parsed.mode = mode_val  # type: ignore[assignment]
@@ -387,9 +533,7 @@ def parse_args(argv: list[str]) -> Args:
                     )
                 i += 1
             else:
-                parsed.diagnostics.append(
-                    {"type": "error", "message": "--mode requires a value"}
-                )
+                parsed.diagnostics.append({"type": "error", "message": "--mode requires a value"})
         elif arg in ("--print", "-p"):
             parsed.print_mode = True
             # Pi parity: ``args.ts:123-129`` opportunistic positional eat.
@@ -397,13 +541,9 @@ def parse_args(argv: list[str]) -> Args:
             # with ``@`` (file arg). Flags (``-``) are excluded BUT the
             # ``---`` triple-dash escape (P-396) lets messages that
             # legitimately start with ``---`` pass through positionally.
-            if i + 1 < n:
-                next_tok = argv[i + 1]
-                if not next_tok.startswith("@") and (
-                    not next_tok.startswith("-") or next_tok.startswith("---")
-                ):
-                    parsed.messages.append(next_tok)
-                    i += 1
+            if takes_value:
+                parsed.messages.append(argv[i + 1])
+                i += 1
         elif arg in ("--continue", "-c"):
             parsed.continue_session = True
         elif arg in ("--resume", "-r"):
@@ -412,38 +552,34 @@ def parse_args(argv: list[str]) -> Args:
             # token as the id UNLESS it is a flag (``-``) or a ``@file``
             # positional (mirrors the ``--print`` peek). ``-r`` with no id →
             # interactive picker.
-            if i + 1 < n:
-                next_tok = argv[i + 1]
-                if next_tok and not next_tok.startswith(("-", "@")):
-                    parsed.resume_id = next_tok
-                    i += 1
+            if takes_value:
+                parsed.resume_id = argv[i + 1]
+                i += 1
         elif arg == "--provider":
-            if i + 1 < n:
+            if takes_value:
                 parsed.provider = argv[i + 1]
                 parsed.provided.add("provider")
                 i += 1
         elif arg == "--model":
-            if i + 1 < n:
+            if takes_value:
                 parsed.model = argv[i + 1]
                 parsed.provided.add("model")
                 i += 1
         elif arg == "--models":
-            if i + 1 < n:
-                parsed.models = [
-                    s.strip() for s in argv[i + 1].split(",") if s.strip()
-                ]
+            if takes_value:
+                parsed.models = [s.strip() for s in argv[i + 1].split(",") if s.strip()]
                 i += 1
         elif arg == "--api-key":
-            if i + 1 < n:
+            if takes_value:
                 parsed.api_key = argv[i + 1]
                 i += 1
         elif arg == "--system-prompt":
-            if i + 1 < n:
+            if takes_value:
                 parsed.system_prompt = argv[i + 1]
                 parsed.provided.add("system_prompt")
                 i += 1
         elif arg == "--append-system-prompt":
-            if i + 1 < n:
+            if takes_value:
                 parsed.append_system_prompt.append(argv[i + 1])
                 parsed.provided.add("append_system_prompt")
                 i += 1
@@ -453,13 +589,13 @@ def parse_args(argv: list[str]) -> Args:
             # (``entry._apply_prompt_files``), not here, because parse_args
             # must stay pure — it has no cwd, no stderr contract and no way
             # to fail a run.
-            if i + 1 < n:
+            if takes_value:
                 parsed.system_prompt_file = argv[i + 1]
                 parsed.provided.add("system_prompt_file")
                 i += 1
         elif arg == "--append-system-prompt-file":
             # Aelix-original (ADR-0196), repeatable like its string twin.
-            if i + 1 < n:
+            if takes_value:
                 parsed.append_system_prompt_files.append(argv[i + 1])
                 parsed.provided.add("append_system_prompt_files")
                 i += 1
@@ -467,28 +603,28 @@ def parse_args(argv: list[str]) -> Args:
             # Aelix-original (ADR-0196) — named agent profile. Resolution,
             # the trust gate and the confirmation prompt all live in
             # ``cli/entry.py``; the parser only records the request.
-            if i + 1 < n:
+            if takes_value:
                 parsed.agent = argv[i + 1]
                 parsed.provided.add("agent")
                 i += 1
         elif arg == "--agent-file":
             # Aelix-original (ADR-0196) — profile at an explicit path.
-            if i + 1 < n:
+            if takes_value:
                 parsed.agent_file = argv[i + 1]
                 parsed.provided.add("agent_file")
                 i += 1
         elif arg == "--no-session":
             parsed.no_session = True
         elif arg == "--session":
-            if i + 1 < n:
+            if takes_value:
                 parsed.session = argv[i + 1]
                 i += 1
         elif arg == "--fork":
-            if i + 1 < n:
+            if takes_value:
                 parsed.fork = argv[i + 1]
                 i += 1
         elif arg == "--session-dir":
-            if i + 1 < n:
+            if takes_value:
                 parsed.session_dir = argv[i + 1]
                 i += 1
         elif arg in ("--no-tools", "-nt"):
@@ -498,17 +634,15 @@ def parse_args(argv: list[str]) -> Args:
             parsed.no_builtin_tools = True
             parsed.provided.add("no_builtin_tools")
         elif arg in ("--tools", "-t"):
-            if i + 1 < n:
-                parsed.tools = [
-                    s.strip() for s in argv[i + 1].split(",") if s.strip()
-                ]
+            if takes_value:
+                parsed.tools = [s.strip() for s in argv[i + 1].split(",") if s.strip()]
                 # Recorded even when the CSV is empty (``--tools ''`` → []):
                 # provenance is about the FLAG, not the value, and that empty
                 # case is precisely the one a plain default cannot express.
                 parsed.provided.add("tools")
                 i += 1
         elif arg == "--thinking":
-            if i + 1 < n:
+            if takes_value:
                 level = argv[i + 1]
                 if level in VALID_THINKING_LEVELS:
                     parsed.thinking = level
@@ -530,13 +664,13 @@ def parse_args(argv: list[str]) -> Args:
             # spawner ALWAYS passes this explicitly to a delegated child, so
             # this branch is the enforcement point for the child-authority
             # clamp — see the SECURITY note on ``Args.permission_mode``.
-            if i + 1 < n:
+            if takes_value:
                 value = argv[i + 1]
                 if value in VALID_PERMISSION_MODES:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:510-526): warn + drop, never
+                    # Mirrors --thinking (args.py:644-660): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -569,7 +703,7 @@ def parse_args(argv: list[str]) -> Args:
         elif arg == "--no-agents":
             parsed.agents_override = False
         elif arg in ("--extension", "-e"):
-            if i + 1 < n:
+            if takes_value:
                 parsed.extensions.append(argv[i + 1])
                 parsed.provided.add("extensions")
                 i += 1
@@ -580,7 +714,7 @@ def parse_args(argv: list[str]) -> Args:
             # Issue #91 provenance gate — name a distribution to allow despite
             # it resolving outside the environment site directories (the
             # 'pip install -e .' developer escape hatch).
-            if i + 1 < n:
+            if takes_value:
                 parsed.trust_extension_paths.append(argv[i + 1])
                 parsed.provided.add("trust_extension_paths")
                 i += 1
@@ -591,7 +725,7 @@ def parse_args(argv: list[str]) -> Args:
             # Pi parity: ``args.ts:182`` — ignore project-local files this run.
             parsed.project_trust_override = False
         elif arg == "--skill":
-            if i + 1 < n:
+            if takes_value:
                 parsed.skills.append(argv[i + 1])
                 parsed.provided.add("skills")
                 i += 1
@@ -599,18 +733,18 @@ def parse_args(argv: list[str]) -> Args:
             parsed.no_skills = True
             parsed.provided.add("no_skills")
         elif arg == "--prompt-template":
-            if i + 1 < n:
+            if takes_value:
                 parsed.prompt_templates.append(argv[i + 1])
                 i += 1
         elif arg == "--theme":
-            if i + 1 < n:
+            if takes_value:
                 parsed.themes.append(argv[i + 1])
                 i += 1
         elif arg in ("--no-context-files", "-nc"):
             parsed.no_context_files = True
             parsed.provided.add("no_context_files")
         elif arg == "--export":
-            if i + 1 < n:
+            if takes_value:
                 parsed.export = argv[i + 1]
                 i += 1
         elif arg == "--list-models":
@@ -618,11 +752,7 @@ def parse_args(argv: list[str]) -> Args:
             # Both ``-`` AND ``@`` are excluded (P-397) so ``@file`` args
             # are NOT eaten as the search pattern — they must remain in
             # ``file_args`` for downstream processing.
-            if (
-                i + 1 < n
-                and not argv[i + 1].startswith("-")
-                and not argv[i + 1].startswith("@")
-            ):
+            if takes_value:
                 parsed.list_models = argv[i + 1]
                 i += 1
             else:
@@ -658,20 +788,14 @@ def parse_args(argv: list[str]) -> Args:
             if "=" in arg:
                 key, val = arg[2:].split("=", 1)
                 parsed.unknown_flags[key] = val
-            elif (
-                i + 1 < n
-                and not argv[i + 1].startswith("-")
-                and not argv[i + 1].startswith("@")
-            ):
+            elif takes_value:
                 parsed.unknown_flags[arg[2:]] = argv[i + 1]
                 i += 1
             else:
                 parsed.unknown_flags[arg[2:]] = True
         elif arg.startswith("-") and len(arg) > 1:
             # Unknown short flag — Pi diagnostic.
-            parsed.diagnostics.append(
-                {"type": "error", "message": f"Unknown short flag: {arg}"}
-            )
+            parsed.diagnostics.append({"type": "error", "message": f"Unknown short flag: {arg}"})
         else:
             # Plain positional → message.
             parsed.messages.append(arg)
@@ -695,6 +819,13 @@ def print_help(out: TextIO | None = None) -> None:
     stream: TextIO = out if out is not None else sys.stdout
 
     text = f"""Usage: {APP_NAME} [options] [@file ...] [message ...]
+       {APP_NAME} [--offline ...] <extension|docs|status> [command arguments]
+
+Root commands:
+  Only --offline may precede a command; other launch options are usage errors.
+  status/docs accept --offline before the command, not after it.
+  Use -p status or -- status for an intentional agent prompt.
+  -- ends agent options; following tokens are messages or @files.
 
 Modes:
   (default)             Interactive mode (Phase 5b — TUI carry-forward)

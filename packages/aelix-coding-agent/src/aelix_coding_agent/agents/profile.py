@@ -88,7 +88,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:3668-3685``."""
+``cli/entry.py:3683-3700``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -213,7 +213,7 @@ class AgentProfile:
     """Validated against ``cli.args.VALID_THINKING_LEVELS``.
 
     DELIBERATE ASYMMETRY with the CLI flag: ``--thinking bogus`` warns and drops
-    the value (``args.py:510-527``) because a typo must not abort a session
+    the value (``args.py:644-661``) because a typo must not abort a session
     already being launched; a profile is a checked-in file read before anything
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 

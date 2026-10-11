@@ -249,6 +249,25 @@ aelix @path/to/file.py "explain this"   # inline a file into the first message
 
 Run `aelix --help` for the complete, authoritative list.
 
+Root commands use `aelix [--offline ...] <extension|docs|status> [arguments]`.
+Only `--offline` may go before the command; other launch options cause exit 2
+instead of starting an agent session. For example:
+
+```bash
+aelix --offline status --no-extensions --json
+aelix --offline docs getting-started
+aelix --offline extension list
+aelix -p status                  # intentionally ask the agent about "status"
+aelix -p -- status               # -- ends options; status is a message
+```
+
+`status` and `docs` accept the offline flag before the command, and reject it
+afterward. Command help goes after the command (`aelix status --help`).
+Option values and an already started prompt keep their existing meaning;
+an unknown long option immediately followed by a command word is a usage error.
+Use an explicit extension value (`--custom=status`) when that word is a value.
+After bare `--`, flag-shaped tokens are messages and `@files` remain file inputs.
+
 ## System prompt files
 
 Place `SYSTEM.md` or `APPEND_SYSTEM.md` in `~/.aelix/agent/` to customize every

@@ -280,7 +280,7 @@ def test_user_scope_extensions_allowed() -> None:
 
 
 def test_invalid_thinking_is_error() -> None:
-    """Deliberate asymmetry with ``args.py:510-527``, which warns and drops.
+    """Deliberate asymmetry with ``args.py:644-661``, which warns and drops.
 
     A typo on the command line must not abort a session already launching; a
     checked-in profile is read before anything starts, so it is fatal.

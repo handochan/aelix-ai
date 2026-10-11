@@ -120,3 +120,9 @@ a command that cannot run.
 - **Exit code is 0 even when an extension failed to load.** The command succeeded in
   reporting; the failure is content, not status. A caller that wants to branch reads the
   JSON. This is a choice, and a reasonable person could want `1` instead.
+
+## Root routing amendment (2026-10-11, #289)
+
+[ADR-0261](0261-root-commands-reject-launch-options-before-dispatch.md) adds a leading offline-only root prefix and rejects other launch
+options before a command with exit 2. The command's existing tail parser and
+execution/trust contracts remain in force.

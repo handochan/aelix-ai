@@ -58,6 +58,13 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **Root commands accept a leading `--offline` without becoming agent prompts
+  (#289).** `aelix --offline extension …`, `docs`, and `status` dispatch their
+  commands. Other launch options before a command fail with exit 2; option
+  values, immediate `-p` messages, and already started prompts retain their
+  meaning. Bare `--` now explicitly ends agent options. `status`/`docs` still
+  reject a trailing offline flag.
+
 - **Windows: a `git+file:` extension source needs uv 0.11.27 or newer, and the
   private-catalog guide now says so (#393).** When aelix installs with uv (after
   `install.sh` / `install.ps1`, whose environment has no pip), uv before 0.11.27
