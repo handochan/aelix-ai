@@ -84,6 +84,15 @@ or `grep` does not make it read-only. Posture by posture:
 | `-p` / `--mode json` / `--mode rpc` | runs, no prompt, as `bash` does (blocked in `plan`). |
 | inside a delegated agent | refused in every posture except `yolo`. |
 
+
+Embedding hosts that bind a UI with only the public `select` protocol cannot approve
+prompted built-in `write` or `edit` calls. These calls are denied before any picker,
+with a reason asking the host to configure a file-change preview approval runner
+(#395). Wire `PermissionExtension(approval_runner=...)` to present the full
+`ApprovalRequest` and return its `ApprovalDecision`. Aelix's TUI already does this.
+Bash and third-party tools keep their whole-command or whole-argument select fallback;
+existing session grants, automatic postures and headless policy are unchanged.
+
 There is no flag your tool can set to skip this. For an MCP tool, a
 `readOnlyHint` annotation does not skip it either, because a hint is the tool
 describing itself. If a read-only tool of yours prompts too often, "Yes, for

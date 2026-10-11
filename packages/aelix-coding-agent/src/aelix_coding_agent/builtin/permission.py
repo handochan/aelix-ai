@@ -587,8 +587,8 @@ class PermissionExtension:
     posture: PermissionPosture = field(default_factory=PermissionPosture)
     # Optional purpose-built approval-dialog runner (ADR-0157, STEP 5). The TUI
     # host wires this to drive ``run_approval_dialog`` (full command, diff
-    # preview, no "Type to search"). ``None`` → the generic ``ctx.ui.select``
-    # fallback (headless / tests), preserving prior behaviour. The callback maps
+    # preview, no "Type to search"). With ``None``, prompted built-in file
+    # changes fail closed (#395); bash/other tools retain select. A runner maps
     # an :class:`ApprovalRequest` to an :class:`ApprovalDecision`.
     approval_runner: Callable[[Any], Awaitable[Any]] | None = None
     # The headless (``not ctx.has_ui``) verdict for a mutating tool that reached
@@ -856,10 +856,24 @@ class PermissionExtension:
         # the same way the gate resolved it.
         provenance = _resolve_provenance(event)
 
-        # Issue #161 shape 3 — computed ONCE and shared by both prompt paths, so
-        # the dialog and the generic fallback cannot offer different answers to
-        # the same question. ``None`` for every write outside the two extension
-        # tiers, which is every ordinary edit.
+        # #395: public select has no full file-preview/hold contract. A path
+        # alone cannot authorize the content of a built-in write or edit.
+        # Deny before redirect resolution, prompting or recording a grant;
+        # the posture/session/headless decisions above remain independent.
+        if provenance == "write" and self.approval_runner is None:
+            operation = "edit" if event.tool_name == "edit" else "write"
+            return ToolCallResult(
+                block=True,
+                reason=(
+                    f"Cannot approve {operation}: this host has no file-change preview "
+                    "approval runner. Configure an approval runner to review the full change."
+                ),
+            )
+
+        # Issue #161 shape 3 — the preview runner can offer a redirect for a
+        # built-in write to an extension tier. ``None`` for writes outside the
+        # two tiers and for every ordinary edit. Select-only file changes were
+        # denied above, before resolving either destination (#395).
         redirect = (
             _extension_redirect(event.args, ctx.cwd)
             if provenance == "write" and event.tool_name == "write"
@@ -869,13 +883,13 @@ class PermissionExtension:
         if self.approval_runner is not None:
             return await self._prompt_via_dialog(event, redirect, provenance)
 
-        # aelix's own bash / write / edit show their whole command or path.
+        # aelix's own bash shows its whole command. Built-in file changes
+        # without a runner were denied above (#395).
         # #389: it stopped at 120 characters, so a host that binds a UI but no
         # approval dialog (an embedding that calls ``bind_ui``; the TUI always
         # wires the dialog, and -p / json / rpc have no UI) was asked about the
-        # start of a command whose end is what it does. A write's or an edit's
-        # CONTENT is not in this title, a residual of this path (ADR-0253
-        # §11). Every other tool shows EVERY argument, each value whole (#188
+        # start of a command whose end is what it does. Every other tool shows
+        # EVERY argument, each value whole (#188
         # round 1; the 200-character cut went in #389 review round 2): this
         # title is all a generic ``ctx.ui.select`` host shows, and a bare
         # "Allow fs__write_file?" asks the user to approve a call they cannot

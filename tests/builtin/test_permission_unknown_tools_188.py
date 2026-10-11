@@ -33,6 +33,7 @@ from aelix_ai.tools import ToolResult
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
 from aelix_coding_agent.mcp.adapter import mcp_tool_to_agent_tool
+from aelix_coding_agent.tui.approval_dialog import ApprovalDecision, ApprovalRequest
 
 from tests.builtin.gate_tools import BUILTIN_TOOLS
 
@@ -336,12 +337,18 @@ async def test_a_builtin_write_grant_does_not_cover_a_third_party_write_tool() -
     """On ``aab1f210`` an extension ``write_file`` shared the ``write:`` key
     namespace with aelix's own write, so a ``write:src/*`` grant covered it."""
 
-    perm = _perm(PermissionMode.DEFAULT)
+    async def runner(request: ApprovalRequest) -> ApprovalDecision:
+        assert request.kind == "write"
+        return ApprovalDecision.YES_SESSION
+
+    perm = _perm(PermissionMode.DEFAULT, approval_runner=runner)
     yes = _UI(answer="Yes, for this session")
     await _gate(
         perm, _event(BUILTIN_TOOLS["write"], {"path": "src/a.py"}), _Ctx(has_ui=True, ui=yes)
     )
     assert perm._session_allows == {"write:src/*"}
+    assert yes.titles == []
+    perm.approval_runner = None
 
     ui = _UI(answer="No")
     await _gate(
@@ -392,15 +399,27 @@ async def test_a_session_grant_for_an_unknown_tool_never_covers_aelix_own_tool(
     assert wildcard not in perm._session_allows
 
     ui = _UI(answer="No")
+    seen: list[ApprovalRequest] = []
+
+    async def runner(request: ApprovalRequest) -> ApprovalDecision:
+        seen.append(request)
+        return ApprovalDecision.NO
+
+    if own == "write":
+        perm.approval_runner = runner
     result = await _gate(perm, _event(BUILTIN_TOOLS[own], own_args), _Ctx(has_ui=True, ui=ui))
-    assert len(ui.titles) == 1, f"aelix's own {own} must still ask"
+    if own == "write":
+        assert len(seen) == 1 and seen[0].kind == "write"
+        assert ui.titles == []
+    else:
+        assert len(ui.titles) == 1, f"aelix's own {own} must still ask"
     assert result is not None and result.block
 
 
 async def test_the_dialog_shows_a_third_party_tool_raw() -> None:
     """``other`` (raw arguments), never the built-in write's synthesized diff."""
 
-    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision, ApprovalRequest
+    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision
 
     seen: list[ApprovalRequest] = []
 
@@ -443,7 +462,7 @@ async def test_the_dialog_is_handed_and_shows_every_argument() -> None:
     """The request carries the arguments the tool will run with, all of them,
     and the rendered body shows every one — the seventh included."""
 
-    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision, ApprovalRequest
+    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision
 
     seen: list[ApprovalRequest] = []
 
@@ -612,23 +631,35 @@ async def test_the_generic_fallback_shows_every_argument(
         assert f"{key}={value!r}" in title
 
 
-async def test_the_generic_fallback_keeps_aelix_own_one_line_summary() -> None:
-    """aelix's own bash and write keep the command / path title (a pin)."""
+async def test_builtin_bash_summary_and_write_preview_runner() -> None:
+    """Bash retains select; a built-in write gets the full runner request."""
 
     for name, args, title in [
         ("bash", {"command": "git status"}, "Allow bash? git status"),
         ("write", {"path": "src/a.py", "content": "x"}, "Allow write? src/a.py"),
     ]:
         ui = _UI(answer="No")
+        seen: list[ApprovalRequest] = []
+
+        async def runner(
+            request: ApprovalRequest, captured: list[ApprovalRequest] = seen
+        ) -> ApprovalDecision:
+            captured.append(request)
+            return ApprovalDecision.NO
+
         await _gate(
-            _perm(PermissionMode.DEFAULT),
+            _perm(PermissionMode.DEFAULT, approval_runner=runner if name == "write" else None),
             _event(BUILTIN_TOOLS[name], args),
             _Ctx(has_ui=True, ui=ui),
         )
-        assert ui.titles == [title]
+        if name == "write":
+            assert len(seen) == 1 and seen[0].kind == "write" and seen[0].args == args
+            assert ui.titles == []
+        else:
+            assert ui.titles == [title]
 
 
-async def test_the_generic_fallback_title_carries_the_whole_command_and_path() -> None:
+async def test_bash_fallback_and_write_runner_carry_the_whole_command_and_path() -> None:
     """#389: the title stopped at 120 characters, so a host with a UI and no
     approval dialog was asked about the start of a command whose end is what
     it does."""
@@ -640,12 +671,24 @@ async def test_the_generic_fallback_title_carries_the_whole_command_and_path() -
         ("write", {"path": path, "content": "x"}, f"Allow write? {path}"),
     ]:
         ui = _UI(answer="No")
+        seen: list[ApprovalRequest] = []
+
+        async def runner(
+            request: ApprovalRequest, captured: list[ApprovalRequest] = seen
+        ) -> ApprovalDecision:
+            captured.append(request)
+            return ApprovalDecision.NO
+
         await _gate(
-            _perm(PermissionMode.DEFAULT),
+            _perm(PermissionMode.DEFAULT, approval_runner=runner if name == "write" else None),
             _event(BUILTIN_TOOLS[name], args),
             _Ctx(has_ui=True, ui=ui),
         )
-        assert ui.titles == [title]
+        if name == "write":
+            assert len(seen) == 1 and seen[0].kind == "write" and seen[0].args == args
+            assert ui.titles == []
+        else:
+            assert ui.titles == [title]
 
 
 @pytest.mark.parametrize("mode", list(PermissionMode))
@@ -678,8 +721,14 @@ async def test_the_extension_tier_redirect_is_offered_for_aelix_write_only(
     target = str(agent_dir / "extensions" / "x.py")
 
     builtin_ui = _UI(answer="No")
+    seen: list[ApprovalRequest] = []
+
+    async def runner(request: ApprovalRequest) -> ApprovalDecision:
+        seen.append(request)
+        return ApprovalDecision.NO
+
     await _gate(
-        _perm(PermissionMode.DEFAULT),
+        _perm(PermissionMode.DEFAULT, approval_runner=runner),
         _event(BUILTIN_TOOLS["write"], {"path": target, "content": "x"}),
         _Ctx(has_ui=True, cwd=str(project), ui=builtin_ui),
     )
@@ -690,7 +739,9 @@ async def test_the_extension_tier_redirect_is_offered_for_aelix_write_only(
         _Ctx(has_ui=True, cwd=str(project), ui=shadow_ui),
     )
 
-    assert len(builtin_ui.options[0]) == 5, "the built-in write is offered the redirect"
+    assert len(seen) == 1 and seen[0].redirect_label
+    assert "Only this project" in seen[0].redirect_label
+    assert builtin_ui.options == [], "built-in file approval requires the preview runner"
     assert shadow_ui.options == [["Yes", "Yes, for this session", "No", "No, provide reason"]]
 
 

@@ -296,6 +296,14 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Select-only embeddings cannot approve built-in file changes (#395).**
+  Prompted `write` and `edit` calls now refuse when no file-change preview
+  approval runner is wired, before a picker or extension-tier redirect can
+  approve content the host has not shown. Wire the existing approval runner to
+  review the full change. The TUI already wires it; automatic, session and
+  headless authorization keep their prior policy. Bash and third-party tool
+  select fallbacks remain available.
+
 - **Descriptor views display Rich markup literally (#390).** Titles, table
   headers and cells, form names and values, grid items and text bodies preserve
   tag text and link targets without creating OSC 8 hyperlinks. Existing terminal

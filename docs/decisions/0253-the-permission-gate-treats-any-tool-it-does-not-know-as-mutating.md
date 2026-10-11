@@ -429,7 +429,8 @@ Costs and residuals:
   lines (20,005 rows) renders in 0.34 s, and only a width change renders it again.
   Whether a very large write should be refused outright is left open.
 - **The fallback still shows no content.** On the `ctx.ui.select` path, `write` and
-  `edit` show only the path. That path has no viewport to hold.
+  `edit` show only the path. That path has no viewport to hold. Resolved by #395
+  (§11.4): this prompted fallback now denies without an approval runner.
 - A resize while the prompt is open still forgets what was drawn (§9), so a resized
   prompt holds Yes until it is scrolled through again.
 
@@ -506,7 +507,8 @@ live in a pty (`.omc/probes/389-live/r2/`).
   P and Enter on it while held (no answer), page to the end, and press it again.
 
 Residuals kept as follow-ups: the `ctx.ui.select` fallback shows no write or edit
-content; a very large approval needs many PgDn; a resize forgets what was drawn.
+content (resolved by #395, §11.4); a very large approval needs many PgDn; a resize
+forgets what was drawn.
 
 ### 11.2 Review round 3 (2026-10-08)
 
@@ -678,3 +680,43 @@ the mutants that stayed green in round 2 (`out/sabotage*.txt`).
 Review round 4 (`.omc/probes/399-live/r4/`): the rows red before the fix
 (`out/red_on_ab7d.txt`), the mutants of verify round 3 and Codex round 3
 (`out/sabotage.txt`), and the live kit with the multi-line option scenario (`kit/`).
+
+
+### 11.4 Select-only hosts cannot approve built-in file changes (#395, 2026-10-12)
+
+§11's path-only fallback could approve a built-in `write` or `edit` without showing
+its content. The public `select(title, options, opts)` contract has no full preview,
+scrolling or paint-before-approval guarantee. #399's concrete TUI behavior does not
+supply that guarantee to an arbitrary embedding that calls `bind_ui`.
+
+Decision: when a provenance-verified built-in `write` or `edit` reaches the prompt
+without an `approval_runner`, deny with an actionable missing-preview reason before
+resolving an extension-tier redirect or calling `select`. The refusal does not read
+files, parse an edit payload, change arguments, request a reason or grant session
+permission. Embeddings must wire the existing `ApprovalRequest` runner to review the
+full file change (ADR-0157); no public UI protocol is added.
+
+A wired runner keeps its full write/edit preview request and Yes, session approval,
+No, cancellation and redirect verdicts. A raising runner still denies without a
+weaker select retry. Read-only built-ins, existing session authority, YOLO, in-project
+AUTO/AUTO_ACCEPT file changes, PLAN and parent/child headless floors keep their prior
+policy. A prompted AUTO/AUTO_ACCEPT file change outside the project or to a sensitive
+target now encounters the same missing-runner refusal. Bash fallback still carries
+the whole command; third-party tools, including ones named `write` or `edit`, still
+use the whole-argument fallback because provenance remains decisive.
+
+The latest Pi reference checked on 2026-10-12 has a bash-only
+[`permission-gate.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/extensions/permission-gate.ts)
+and only signal/timeout in the public
+[select options](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts).
+Its internal selector description is not a public file-preview contract.
+[Pi #9610](https://github.com/earendil-works/pi/issues/9610) and
+[#9228](https://github.com/earendil-works/pi/issues/9228) are closed as not planned;
+neither is evidence of an upstream preview guarantee.
+
+Author evidence: `tests/builtin/test_permission_preview_required_395.py` uses real
+factory objects, the extension loader, a public select-only UI and the real harness
+hook/loop with a scripted model. On predecessor `858bc06c`, 50 refusal rows failed
+and 24 runner/policy controls passed; on the repair, all 74 passed. These are automated,
+model-free results, not live-model or independent review evidence. The dated #395
+handoff records commands and the remaining coordinator-owned gates.

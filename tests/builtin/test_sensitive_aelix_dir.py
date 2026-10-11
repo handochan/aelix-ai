@@ -274,16 +274,24 @@ async def test_a_headless_child_cannot_widen_into_dot_aelix_via_a_symlink(
 
 
 async def test_aelix_write_prompts_under_auto_accept() -> None:
-    """Interactive AUTO_ACCEPT + ``.aelix/agents/x.md`` → the 4-option prompt.
+    """Interactive AUTO_ACCEPT + ``.aelix/agents/x.md`` → preview runner.
 
     The deliberate, user-visible behaviour change (ADR-0197 §(i) / CHANGELOG):
     branch (f) declines, control reaches the prompt at ``permission.py:747-755``
     instead of returning ``None``.
     """
 
+    from aelix_coding_agent.tui.approval_dialog import ApprovalDecision, ApprovalRequest
+
     ui = _RecordingUI()
+    seen: list[ApprovalRequest] = []
+
+    async def runner(request: ApprovalRequest) -> ApprovalDecision:
+        seen.append(request)
+        return ApprovalDecision.NO
+
     perm = PermissionExtension(
-        posture=PermissionPosture(mode=PermissionMode.AUTO_ACCEPT)
+        posture=PermissionPosture(mode=PermissionMode.AUTO_ACCEPT), approval_runner=runner
     )
     event = ToolCallHookEvent(
         tool_call_id="t1",
@@ -292,7 +300,8 @@ async def test_aelix_write_prompts_under_auto_accept() -> None:
         context=BUILTIN_CONTEXT,
     )
     result = await perm._on_tool_call(event, _FakeCtx(has_ui=True, ui=ui))  # type: ignore[arg-type]
-    assert ui.select_calls == 1
+    assert len(seen) == 1 and seen[0].kind == "write"
+    assert ui.select_calls == 0
     assert result is not None and result.block is True
 
 

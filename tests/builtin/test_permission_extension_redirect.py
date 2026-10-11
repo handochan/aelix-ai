@@ -191,43 +191,55 @@ def test_the_redirect_row_sits_above_no_and_the_hint_follows_it() -> None:
     )
 
 
-# --- the generic ctx.ui fallback ----------------------------------------------
+# --- select-only refusal and wired runner denial -----------------------------
 
 
-async def test_the_generic_prompt_offers_and_performs_the_redirect(tiers) -> None:
+async def test_select_only_host_cannot_redirect_a_builtin_write(tiers) -> None:
     project, global_dir, project_dir = tiers
     ext = PermissionExtension()
-    ui = _Ui(answer=2)  # index 2 = the inserted redirect option
+    ui = _Ui(answer=2)  # would pick the old redirect row if a picker were called
     event = _event(global_dir / "x.py")
 
     result = await ext._prompt(event, _Ctx(project, ui))  # type: ignore[arg-type]
 
-    assert result is None, "a redirect ALLOWS the write; it is not a denial"
-    assert event.args["path"] == str(project_dir / "x.py")
-    assert "Only this project" in ui.offered[0][2]
+    assert result is not None and result.block
+    assert "file-change preview approval runner" in (result.reason or "")
+    assert event.args["path"] == str(global_dir / "x.py")
+    assert ui.offered == []
+    assert not (project_dir / "x.py").exists()
 
 
-async def test_the_generic_prompt_is_unchanged_for_an_ordinary_write(tiers) -> None:
+async def test_select_only_host_cannot_approve_an_ordinary_write(tiers) -> None:
     project, _g, _p = tiers
     ext = PermissionExtension()
     ui = _Ui(answer=0)
     event = _event(project / "src.py")
 
-    await ext._prompt(event, _Ctx(project, ui))  # type: ignore[arg-type]
+    result = await ext._prompt(event, _Ctx(project, ui))  # type: ignore[arg-type]
 
-    assert ui.offered[0] == ["Yes", "Yes, for this session", "No", "No, provide reason"]
+    assert result is not None and result.block
+    assert "file-change preview approval runner" in (result.reason or "")
+    assert ui.offered == []
 
 
 async def test_declining_after_a_redirect_is_offered_still_denies(tiers) -> None:
     project, global_dir, project_dir = tiers
-    ext = PermissionExtension()
-    ui = _Ui(answer=3)  # "No", now at index 3
+    seen: list[ApprovalRequest] = []
+
+    async def runner(request: ApprovalRequest) -> ApprovalDecision:
+        seen.append(request)
+        return ApprovalDecision.NO
+
+    ext = PermissionExtension(approval_runner=runner)
+    ui = _Ui(answer=0)  # must not replace the runner's No with a generic Yes
     event = _event(global_dir / "x.py")
 
     result = await ext._prompt(event, _Ctx(project, ui))  # type: ignore[arg-type]
 
     assert result is not None and result.block
     assert event.args["path"] == str(global_dir / "x.py"), "a denial must not move it"
+    assert len(seen) == 1 and seen[0].redirect_label
+    assert ui.offered == []
 
 
 # --- the purpose-built dialog path -------------------------------------------
