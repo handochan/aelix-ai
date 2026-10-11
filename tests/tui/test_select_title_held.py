@@ -144,7 +144,9 @@ class _Dialog:
 
         kb = self.box["window"].content.key_bindings
         (binding,) = [
-            b for b in kb.bindings if tuple(getattr(k, "value", str(k)) for k in b.keys) == ("<any>",)
+            b
+            for b in kb.bindings
+            if tuple(getattr(k, "value", str(k)) for k in b.keys) == ("<any>",)
         ]
         for ch in text:
             binding.handler(types.SimpleNamespace(data=ch))
@@ -953,7 +955,9 @@ def _writer() -> Any:
         scope="user",
         approval_mode="auto",
     )
-    return ResolvedProfile(name="writer", profile=profile, source_path=profile.file_path, scope="user")
+    return ResolvedProfile(
+        name="writer", profile=profile, source_path=profile.file_path, scope="user"
+    )
 
 
 async def test_spawn_consent_drops_a_pre_paint_enter_and_its_cancel_answers_while_held(
@@ -969,9 +973,7 @@ async def test_spawn_consent_drops_a_pre_paint_enter_and_its_cancel_answers_whil
     task = "Review " + " ".join(f"step{i:03d}" for i in range(160)) + " " + _TAIL
     dialog = _Dialog(monkeypatch)
     ctx = types.SimpleNamespace(has_ui=True, ui=dialog.ctx)
-    await dialog.open(
-        request_spawn_consent(ctx, _writer(), task, PermissionMode.DEFAULT, cwd="/w")
-    )
+    await dialog.open(request_spawn_consent(ctx, _writer(), task, PermissionMode.DEFAULT, cwd="/w"))
     dialog.press("enter")
     assert not dialog.answered, "an Enter typed before the consent dialog's first paint"
     screen = dialog.paint(80, 19)
@@ -1160,16 +1162,15 @@ async def test_paging_with_no_repaint_releases_nothing(
     [
         ["line1\nline2", "Other"],
         ["Other", "line1\nline2\nline3"],
-        ["\x1b[31mred", "green", "blue"],
-        ["a\rb", "x"],
     ],
 )
 async def test_an_extension_select_draws_its_option_rows_as_main(
     monkeypatch: pytest.MonkeyPatch, options: list[str]
 ) -> None:
     """Codex round 2: an option label with a newline was drawn as
-    ``line1^Jline2`` (main drew two rows). Option rows are #179's, so an
-    extension's select whose title fits draws them cell for cell as main."""
+    ``line1^Jline2`` (main drew two rows). Plain option rows retain that layout.
+    #179's caller-control naming is separately exercised in test_picker_caller_text;
+    raw ANSI/CR labels no longer share the legacy parser's representation."""
 
     for idx in (0, 1):
         dialog = _Dialog(monkeypatch)
@@ -1247,9 +1248,7 @@ async def test_a_cluster_at_the_wrap_is_never_split(
     dialog = _Dialog(monkeypatch)
     await dialog.open(dialog.ctx.select(title, ["Yes", "No"]))
     dialog.paint(80, 12)
-    painted = [
-        "".join(dialog.screen.data_buffer[y][x].char for x in range(80)) for y in range(12)
-    ]
+    painted = ["".join(dialog.screen.data_buffer[y][x].char for x in range(80)) for y in range(12)]
     assert sum(row.count(cluster) for row in painted) == 1, painted[:3]
     dialog.press("enter")
     assert await dialog.answer() == "Yes"

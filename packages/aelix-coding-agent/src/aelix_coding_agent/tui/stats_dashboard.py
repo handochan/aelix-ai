@@ -28,10 +28,8 @@ Design (mirrors :mod:`aelix_coding_agent.tui.model_picker` /
   tab footer points there). Empty history degrades to an honest one-liner rather
   than a fabricated chart.
 
-The dim footer escape codes mirror ``context.py`` (``_PICK_DIM`` / ``_PICK_RST``)
-so a note renders dim inside the framed modal; they are duplicated here as small
-local constants rather than importing ``context.py`` privates (this module stays
-a leaf consumer that never reaches into a shared file).
+Dim footer notes use private structured fragments, so the picker can retain
+their owned style while naming controls in every producer's text (#179).
 """
 
 from __future__ import annotations
@@ -40,13 +38,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.tui.picker_text import _PickerText
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-# Dim / reset escapes — mirror context.py:82/84 so a footer note renders dim
-# inside the framed tabbed modal (duplicated, not imported, to keep this a leaf).
-_DIM = "\x1b[2m"
-_RST = "\x1b[0m"
 
 # Width of the small inline composition / leaderboard bars.
 _BAR_WIDTH = 16
@@ -60,9 +55,9 @@ _HEAT_RAMP = " ▁▂▃▄▅▆▇█"
 
 
 def _dim(text: str) -> str:
-    """Wrap ``text`` in the dim/reset escapes used by the picker frame."""
+    """An owned dim fragment; its text still goes through picker safety."""
 
-    return f"{_DIM}{text}{_RST}"
+    return _PickerText((("dim", text),))
 
 
 def _num(value: Any) -> str:
@@ -165,9 +160,7 @@ UNPRICED_COST = "n/a"
 PARTIAL_COST_PREFIX = "≥ "
 
 
-def _format_cost_value(
-    value: Any, *, cost_known: bool, prefix: str
-) -> str:
+def _format_cost_value(value: Any, *, cost_known: bool, prefix: str) -> str:
     try:
         cost = float(value or 0.0)
     except (TypeError, ValueError):
@@ -345,9 +338,7 @@ def build_activity_tab(snapshot: Any) -> list[str]:
     if not per_model:
         lines.append("  (no model requests recorded yet)")
     else:
-        lines.append(
-            f"  {'model':<28}{'reqs':>6}{'in':>10}{'out':>10}{'cache':>10}"
-        )
+        lines.append(f"  {'model':<28}{'reqs':>6}{'in':>10}{'out':>10}{'cache':>10}")
         for stat in per_model:
             model = str(getattr(stat, "model", "?") or "?")
             if len(model) > 28:

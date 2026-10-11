@@ -139,8 +139,11 @@ in `confirm` (in `select`, `n` types into the filter). An Enter or
 `permission-gate.ts` example, ported, shows the whole command and runs it only
 once its end has been on screen. Your own `No` or `Cancel` option is held like
 any other while the question is held (aelix cannot know what a label does):
-Esc is the answer that is always taken. Option labels are drawn as given, one
-row per line of the label (issue #179).
+Esc is the answer that is always taken. Option/detail and tab name/body/error
+controls are displayed by name in reverse video before picker styling (#179).
+Newlines remain rows; CJK, accents and ZWJ sequences stay intact. Filtering and
+width use this safe display text. `select` still returns the original option
+string, and detail receives its original index; caller ANSI is never trusted.
 
 A non-empty **string** return is shown in the transcript (a convenience for
 simple commands); richer output should go through `ctx.ui`. Built-in commands

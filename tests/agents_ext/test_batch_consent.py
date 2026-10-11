@@ -10,7 +10,7 @@ this module removed covered LATER calls, whose tasks nobody had seen).
 WHAT MAKES THIS FILE DIFFERENT FROM ``test_spawn_consent.py``: a batch dialog can
 be TOO TALL, and the failure is silent. ``ctx.ui.select`` composes title and
 options into ONE non-wrapping, non-scrolling ``Window``
-(``tui/context.py:148-226``, ``:797-800``) and ``tui/overlay.py``'s
+(``tui/context.py:149-227``, ``:818-821``) and ``tui/overlay.py``'s
 ``_CappedContainer`` clamps its height (``overlay.py:221-231``), so the overflow
 is BOTTOM TRUNCATION — and ``build_options`` appends ``Cancel`` LAST. A naive
 8-task dialog at 80x24 composes to 23 rows against a cap of 19: the hint, the
@@ -76,7 +76,7 @@ _SHIPPED_RESERVE_ROWS = 5
 _MODAL_MIN_HEIGHT = 3  # ``overlay.py:60``
 
 # Rows ``ctx.ui.select`` adds around a picker body: one divider under the title,
-# one counter row, one closing divider, one hint row (``tui/context.py:148-226``,
+# one counter row, one closing divider, one hint row (``tui/context.py:149-227``,
 # ``:365``).
 _FRAME_ROWS = 4
 
@@ -112,7 +112,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:668-677``).
+    (``tui/context.py:681-690``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -646,7 +646,7 @@ async def test_a_declined_batch_starts_nothing() -> None:
 
 
 async def test_esc_is_a_decline() -> None:
-    """``None`` is what ``tui/context.py:668-677`` returns for Esc."""
+    """``None`` is what ``tui/context.py:681-690`` returns for Esc."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -1140,7 +1140,7 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title
-# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:148-226``), and
+# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:149-227``), and
 # prompt_toolkit honours SGR 8 (hidden).
 #
 # Measured before the fix, with a 150-byte directory created by plain

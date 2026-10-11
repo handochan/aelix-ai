@@ -125,8 +125,14 @@ def test_session_tab_wall_time_formatted() -> None:
 def test_session_tab_has_honest_no_history_footer() -> None:
     lines = build_session_tab(_stats(), _snapshot())
     assert any(_HISTORY_HINT in ln for ln in lines)
-    # The note is rendered dim (mirrors the picker frame).
-    assert any(_HISTORY_HINT in ln and "\x1b[2m" in ln for ln in lines)
+    # The internal style is structured; the actual tab renderer's dim output
+    # and safety boundary are covered by test_picker_caller_text.
+    from aelix_coding_agent.tui.picker_text import _PickerText
+
+    assert any(
+        isinstance(ln, _PickerText) and _HISTORY_HINT in ln and ln.fragments == (("dim", str(ln)),)
+        for ln in lines
+    )
 
 
 def test_session_tab_success_rate_none_is_dash() -> None:
@@ -190,9 +196,7 @@ def test_efficiency_tab_cache_hit_rate_math() -> None:
 
 
 def test_efficiency_tab_cache_hit_dash_when_no_tokens() -> None:
-    lines = build_efficiency_tab(
-        _snapshot(per_model=[_model("m", input=0, cache_read=0)])
-    )
+    lines = build_efficiency_tab(_snapshot(per_model=[_model("m", input=0, cache_read=0)]))
     assert any("Cache-hit rate   —" in ln for ln in lines)
 
 
@@ -376,9 +380,33 @@ def test_history_tab_collapses_latest_per_session_for_project_table() -> None:
     # s1 has two CUMULATIVE rows; the latest (3,900 tokens) is what the project
     # table must reflect — NOT the sum of both rows.
     records = [
-        _hrec(session_id="s1", cwd="/work/alpha", ts=1.0, input=1000, output=400, cost=0.01, tool_calls=3),
-        _hrec(session_id="s1", cwd="/work/alpha", ts=2.0, input=3000, output=900, cost=0.04, tool_calls=7),
-        _hrec(session_id="s2", cwd="/work/beta", ts=3.0, input=500, output=200, cost=0.005, tool_calls=2),
+        _hrec(
+            session_id="s1",
+            cwd="/work/alpha",
+            ts=1.0,
+            input=1000,
+            output=400,
+            cost=0.01,
+            tool_calls=3,
+        ),
+        _hrec(
+            session_id="s1",
+            cwd="/work/alpha",
+            ts=2.0,
+            input=3000,
+            output=900,
+            cost=0.04,
+            tool_calls=7,
+        ),
+        _hrec(
+            session_id="s2",
+            cwd="/work/beta",
+            ts=3.0,
+            input=500,
+            output=200,
+            cost=0.005,
+            tool_calls=2,
+        ),
     ]
     lines = build_history_tab(records, hour_of=lambda ts: 0)
     body = "\n".join(lines)
@@ -406,7 +434,14 @@ def test_history_tab_project_table_bounds_large_values() -> None:
     # tokens and >$1000 cost; the columns must abbreviate AND keep a leading-space
     # gap so they never fuse into an unreadable digit-wall.
     records = [
-        _hrec(session_id="s1", cwd="/work/huge", input=900_000_000, output=123_456_789, cost=1234.5678, tool_calls=54210),
+        _hrec(
+            session_id="s1",
+            cwd="/work/huge",
+            input=900_000_000,
+            output=123_456_789,
+            cost=1234.5678,
+            tool_calls=54210,
+        ),
     ]
     lines = build_history_tab(records, hour_of=lambda ts: 0)
     row = next(ln for ln in lines if ln.strip().startswith("huge"))
@@ -418,8 +453,7 @@ def test_history_tab_project_table_bounds_large_values() -> None:
 
 def test_history_tab_project_table_discloses_top_10_cap() -> None:
     records = [
-        _hrec(session_id=f"s{i}", cwd=f"/work/proj{i:02d}", input=1000 - i)
-        for i in range(15)
+        _hrec(session_id=f"s{i}", cwd=f"/work/proj{i:02d}", input=1000 - i) for i in range(15)
     ]
     body = "\n".join(build_history_tab(records, hour_of=lambda ts: 0))
     assert "5 more project(s)" in body  # the cap is disclosed, not silent
@@ -434,7 +468,11 @@ def test_history_tab_token_trend_has_bars() -> None:
 
 def test_history_tab_heatmap_buckets_by_hour() -> None:
     # Two events at hour 9, one at hour 15 → 06–11 block peaks, 12–17 is lighter.
-    records = [_hrec(session_id="a", ts=1.0), _hrec(session_id="b", ts=2.0), _hrec(session_id="c", ts=3.0)]
+    records = [
+        _hrec(session_id="a", ts=1.0),
+        _hrec(session_id="b", ts=2.0),
+        _hrec(session_id="c", ts=3.0),
+    ]
     hours = {1.0: 9, 2.0: 9, 3.0: 15}
     lines = build_history_tab(records, hour_of=lambda ts: hours[ts])
     block_0611 = next(ln for ln in lines if ln.strip().startswith("06"))

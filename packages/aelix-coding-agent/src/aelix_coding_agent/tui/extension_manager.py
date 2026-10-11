@@ -30,16 +30,10 @@ from aelix_coding_agent.extensions.always_on import (
     BUILTIN_ALWAYS_ON_NAMES,
     is_builtin_always_on,
 )
+from aelix_coding_agent.tui.picker_text import _PickerText
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-# Dim / reset escapes — mirror context.py:82/84 (and stats_dashboard.py) so the
-# built-in section renders dim inside the framed tabbed modal (duplicated, not
-# imported, to keep this a leaf consumer that never reaches into a shared file).
-_DIM = "\x1b[2m"
-_RST = "\x1b[0m"
-
 
 # The Aelix-additive built-ins that ``_build_harness_options`` PREPENDS on every
 # run. They carry no manifest — they are NOT user-installed plugins — so they are
@@ -119,9 +113,7 @@ def _error_rows(errors: Any) -> list[str]:
     return rows
 
 
-def build_installed_lines(
-    extensions: Any, mcp_conns: Any, errors: Any = None
-) -> list[str]:
+def build_installed_lines(extensions: Any, mcp_conns: Any, errors: Any = None) -> list[str]:
     """Render the "Installed" tab: loaded extensions, refusals, then MCP servers.
 
     ``extensions`` is the discovered ``list[Extension]`` (each with an optional
@@ -192,7 +184,7 @@ def build_installed_lines(
             lines.append("")
         lines.append("Built-in (always on):")
         for ext in builtins:
-            lines.append(f"  {_DIM}● {_extension_name(ext)}{_RST}")
+            lines.append(_PickerText((("dim", f"  ● {_extension_name(ext)}"),)))
     lines.append("")
     lines.append("Read-only: extensions + MCP servers load at startup.")
     return lines

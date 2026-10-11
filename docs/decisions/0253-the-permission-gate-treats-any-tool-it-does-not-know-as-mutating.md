@@ -647,7 +647,11 @@ owner did not decide round 1's layout, which round 2 reverses):
   whole task (it was cut at `TASK_PREVIEW_CHARS`, 300) and both dialogs the whole
   directory (it was elided to `DIALOG_FIELD_CHARS`, 68, in the middle). Whitespace is still
   collapsed and control characters still deleted.
-- **Out of scope**: option, tab and detail rows are not sanitised or wrapped (#179); a
+- **Amended 2026-10-12 (#179)**: select option/detail and tab name/body/error controls
+  are now displayed by name before owned styles (ADR-0227's #179 amendment).
+  `own=True` keeps this section's layout/key namespace, not caller text trust.
+  Original values/indices/cancel identity and all first-paint/title hold behavior
+  remain; newline option rows remain rows. Option wrapping/viewport is still #424; a
   batch member is still one row of up to 72 characters (`BATCH_TASK_PREVIEW_CHARS`), the
   row `batch_dialog_fits` counts.
 

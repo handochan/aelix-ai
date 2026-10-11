@@ -21,7 +21,10 @@ auth-filtered, ordered catalog that already powers `--list-models`). The gap was
    keyword `detail: Callable[[int], list[str]] | None = None`. The callback receives the ORIGINAL option
    index of the highlighted row and returns extra lines rendered below the list. Default `None` preserves
    every existing caller (`/settings`, `/resume`, the permission prompt) unchanged. It is cosmetic and
-   guarded — a raising callback never breaks the modal.
+   guarded — a raising callback never breaks the modal. Amended 2026-10-12 (#179):
+   detail text names terminal controls before owned dim styling. Its original option
+   index is unchanged, and the same safe display text is used for width/filtering
+   where applicable (ADR-0227's #179 amendment); `own=True` grants no text trust.
 2. **Pure, testable formatting helpers** (`tui/model_picker.py`): `model_picker_labels()` (numbered
    `N. [provider] {id}` rows, `✱` on the current model, unique so index-recovery is lossless) and
    `model_detail_lines()` (modality / context-window / base-url / api-key env via the shared

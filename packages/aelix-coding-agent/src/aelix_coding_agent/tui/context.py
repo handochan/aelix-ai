@@ -55,6 +55,7 @@ from aelix_coding_agent.extensions.ext_ui import (
 from aelix_coding_agent.extensions.widget_protocols import Component, Theme
 from aelix_coding_agent.tui import themes as theme_registry
 from aelix_coding_agent.tui.overlay import show_modal
+from aelix_coding_agent.tui.picker_text import _PickerText
 
 if TYPE_CHECKING:
     from prompt_toolkit.formatted_text import StyleAndTextTuples
@@ -183,13 +184,9 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     every content width, Hangul titles included.
     """
 
-    # THE TITLE IS SANITISED; the BODY is not, and the asymmetry is NARROWER than
-    # it looks. Body rows do arrive already styled by this module — the cursor row
-    # is ``_PICK_SEL``, the counter is dim — but ``select`` also interpolates the
-    # caller's OPTION strings into them, so "the body is our own styling" is true
-    # of the wrapper and not of what it wraps. That gap is pre-existing (it is
-    # unchanged from ``main``) and is not closed here; it is named so the next
-    # reader does not take the asymmetry for a proof of safety.
+    # This frame consumes owned ANSI rows. select/tabbed name caller payloads
+    # with _picker_payload BEFORE adding their owned styles (#179); own=True
+    # selects layout/key behavior, never trust in caller option/detail strings.
     #
     # WHAT IT ACTUALLY BUYS, measured rather than assumed — this comment has
     # carried a wrong version of it twice. The map deletes the CONTROL BYTES, so
@@ -200,10 +197,9 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     #
     # WHAT IT DOES NOT BUY, and two earlier drafts said it did:
     #
-    # * The window title. No OSC reaches a terminal from here with or without the
-    #   map — driven through the real frame onto a pyte screen, ``screen.title``
-    #   stays ``''``, against a control that reads ``'REAL'`` from a genuine OSC
-    #   fed to the same emulator.
+    # * The window title for ordinary OSC. That fixture never emitted OSC,
+    #   against a genuine raw positive control. SOH/STX-wrapped OSC is different:
+    #   prompt-toolkit parses it as ZeroWidthEscape and writes it raw (#179).
     # * The rules agreeing. They already agree: both are drawn from the one
     #   ``width`` number below, so they are equal in every escape class and in both
     #   title placements — measured +0 for plain, SGR, OSC, CSI-non-``m``, one-byte
@@ -253,7 +249,9 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     return ANSI("\n".join(lines))
 
 
-def _picker_head(title_rows: list[str], content_width: int, screen_width: int) -> tuple[list[str], str]:
+def _picker_head(
+    title_rows: list[str], content_width: int, screen_width: int
+) -> tuple[list[str], str]:
     """The rows above the body of an extension's or the model's ``select`` (#399), and its rule.
 
     :func:`_picker_frame`'s head for ``title_rows`` that :func:`_title_rows`
@@ -284,20 +282,35 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _visible_len(text: str) -> int:
-    """Display COLUMNS of ``text`` ignoring SGR (color/dim) escape sequences.
+    """Widest display row in cells, excluding this module's owned SGR.
 
-    ``_picker_frame`` sizes its dividers from the widest PLAIN content line, so a
-    body line carrying its own ANSI (e.g. a dim footer note from the stats /
-    extension tabs) must be measured by its VISIBLE length — counting the escape
-    bytes would over-pad the frame.
-
-    Width is measured in terminal cells, not codepoints: East-Asian wide
-    characters occupy two columns each, so counting ``len()`` made every
-    Hangul/CJK row under-span its frame by roughly half. ``get_cwidth`` is
-    the same wcwidth-backed measure ``chrome.py`` already uses.
+    Caller text must first go through _picker_payload. Measuring the same
+    named representation that is parsed/painted prevents caller escapes from
+    changing width or filter semantics. Newlines remain rows; cluster width is
+    the shared #399 measure, preserving CJK, marks and ZWJ sequences.
     """
 
-    return get_cwidth(_ANSI_RE.sub("", text))
+    from aelix_coding_agent.tui.width import cells_by_cluster  # noqa: PLC0415
+
+    return max(cells_by_cluster(line) for line in _ANSI_RE.sub("", text).split("\n"))
+
+
+def _picker_payload(text: str) -> str:
+    """Name caller controls before owned ANSI styling, keeping newline rows.
+
+    _shown uses the terminal safety helper's steering set and marks every name
+    in reverse video. Only private structured fragments retain internal dim
+    styling; the text inside them is treated with the same safety boundary.
+    """
+
+    from aelix_coding_agent.tui.approval_dialog import _ansi_named, _shown  # noqa: PLC0415
+
+    def named(value: str) -> str:
+        return "\n".join(_ansi_named(_shown(line, one_row=True)) for line in value.split("\n"))
+
+    if isinstance(text, _PickerText):
+        return "".join(f"{_PICK_DIM}{named(value)}{_PICK_RST}" for _style, value in text.fragments)
+    return named(text)
 
 
 def _title_rows(title: str, width: int) -> list[str]:
@@ -538,8 +551,8 @@ def _rows(lines: list[str]) -> list[StyleAndTextTuples]:
 
     :func:`_picker_frame` joins its rows with newlines into ONE ANSI text and a
     ``FormattedTextControl`` splits that into screen rows, so on main an option
-    label with a newline in it is two rows and a style a label leaves open runs
-    on into the rows under it. #399 review round 3 (Codex): parsed a row at a
+    label with a newline in it is two rows. #179 names caller controls before
+    owned styling, so a label cannot leave a caller style open. #399 review round 3 (Codex): parsed a row at a
     time, the newline reached the screen as a character and was drawn as
     ``^J``. Joined, parsed once and split the same way, the option rows are
     main's (#179 owns them).
@@ -724,11 +737,17 @@ class AelixTUIContext:
 
         ``own`` and ``cancel_options`` are deliberately NOT on the protocol.
 
+        #179: option/detail controls are displayed by name before owned styling,
+        in both paths. Newlines stay rows; filtering and width use this display
+        text. The return value, detail index and cancel identity remain ORIGINAL.
+
         Empty ``options`` resolves to ``None`` immediately (no dialog).
         """
 
         if not options:
             return None
+
+        displayed = [_picker_payload(option) for option in options]
 
         # Per-call mutable state. ``idx`` is into the FILTERED view, not
         # ``options`` — the filter changes the visible set so the cursor is
@@ -745,11 +764,13 @@ class AelixTUIContext:
         viewport = 8  # max rows of options shown at once; ⋮ markers for scroll
 
         def filtered() -> list[tuple[int, str]]:
-            """``(orig_index, text)`` rows matching the current filter (case-insensitive)."""
+            """Original indices and safe display text matching the visible filter."""
             needle = state["filter"].lower()
             if not needle:
-                return list(enumerate(options))
-            return [(i, o) for i, o in enumerate(options) if needle in o.lower()]
+                return list(enumerate(displayed))
+            return [
+                (i, o) for i, o in enumerate(displayed) if needle in _ANSI_RE.sub("", o).lower()
+            ]
 
         def render() -> ANSI:
             # Sprint 6h₃₀ (ADR-0163) — framed + colored. Current row is bold cyan
@@ -779,7 +800,7 @@ class AelixTUIContext:
                 # into ``options``, not the filtered view). Guarded: a raising
                 # callback must never break the modal.
                 with contextlib.suppress(Exception):
-                    detail_lines = list(detail(items[idx][0]))
+                    detail_lines = [_picker_payload(line) for line in detail(items[idx][0])]
             counter = f"({idx + 1}/{len(items)})"
             if state["filter"]:
                 # #66 item 4: brighten the typed VALUE (bold cyan); the "  ·  Filter:"
@@ -788,7 +809,7 @@ class AelixTUIContext:
             hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
             width = max(
                 [_visible_len(title), _visible_len(counter), _visible_len(hint)]
-                + [_visible_len(items[i][1]) + 2 for i in range(start, end)]
+                + [_visible_len(f"▸ {items[i][1]}") for i in range(start, end)]
                 + [_visible_len(d) for d in detail_lines]
             )
             body: list[str] = []
@@ -851,7 +872,7 @@ class AelixTUIContext:
             detail_lines: list[str] = []
             if detail is not None:
                 with contextlib.suppress(Exception):
-                    detail_lines = list(detail(items[idx][0]))
+                    detail_lines = [_picker_payload(line) for line in detail(items[idx][0])]
             counter = f"({idx + 1}/{len(items)})"
             if state["filter"]:
                 counter += _filter_counter_suffix(state["filter"])
@@ -875,7 +896,9 @@ class AelixTUIContext:
             ]
             # Rooms in screen rows: a label with a newline is a row per line.
             full_rows = sum(1 + row.count("\n") for row in full)
-            unders += [[*option_rows(items, idx, room), count] for room in range(full_rows - 1, 0, -1)]
+            unders += [
+                [*option_rows(items, idx, room), count] for room in range(full_rows - 1, 0, -1)
+            ]
             unders.append(option_rows(items, idx, 1))
             return head[: len(head) - len(lead)], unders
 
@@ -886,7 +909,9 @@ class AelixTUIContext:
 
         def frame(
             screen_width: int,
-        ) -> tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]:
+        ) -> tuple[
+            list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]
+        ]:
             key = (get_app().render_counter, screen_width, state["idx"], state["filter"])
             if drawn["key"] != key:
                 title_rows, unders = parts(screen_width)
@@ -909,7 +934,8 @@ class AelixTUIContext:
                 if not items:
                     return
                 idx = max(0, min(state["idx"], len(items) - 1))
-                if control is not None and control.holds() and items[idx][1] not in refusals:
+                original = options[items[idx][0]]
+                if control is not None and control.holds() and original not in refusals:
                     # #399: no option is taken while part of an extension's or
                     # the model's question has not been on screen (pi's
                     # permission-gate example puts the whole command there).
@@ -917,7 +943,7 @@ class AelixTUIContext:
                     # Ctrl+C always answer.
                     self.chrome.invalidate()
                     return
-                _resolve(result, items[idx][1])
+                _resolve(result, original)
 
             @kb.add("up")
             def _up(_e: object) -> None:
@@ -998,7 +1024,9 @@ class AelixTUIContext:
         ``tabs`` returns immediately.
 
         :param tabs: ``(tab_name, render)`` pairs; ``render`` is a no-arg callable
-            returning the active tab's body lines.
+            returning the active tab's body lines. #179 names controls in names,
+            body and error text before owned styling; filtering/width use that
+            display text. Internal structured fragments retain owned dim style.
         :param initial: the tab index shown first (clamped into range).
         :param filter_tabs: (Issue #65, ADR-0188) the OPTIONAL set of tab indices
             that accept an in-tab type-to-filter. On a filterable tab printable
@@ -1017,6 +1045,8 @@ class AelixTUIContext:
         if not tabs:
             return None
 
+        names = [_picker_payload(name) for name, _render in tabs]
+
         state: dict[str, Any] = {"idx": max(0, min(initial, len(tabs) - 1)), "filter": ""}
 
         def _is_filterable(idx: int) -> bool:
@@ -1028,7 +1058,7 @@ class AelixTUIContext:
             filterable = _is_filterable(idx)
             # Header row: each tab name, the active one bold-cyan, the rest plain.
             header_cells: list[str] = []
-            for i, (name, _render) in enumerate(tabs):
+            for i, name in enumerate(names):
                 if i == idx:
                     header_cells.append(f"{_PICK_SEL}{name}{_PICK_RST}")
                 else:
@@ -1037,13 +1067,15 @@ class AelixTUIContext:
             # Active tab body — guarded so a raising formatter never breaks the
             # modal (spec: "a raising tab shows an error line").
             try:
-                body_lines = list(tabs[idx][1]())
+                body_lines = [_picker_payload(line) for line in tabs[idx][1]()]
             except Exception as exc:  # noqa: BLE001 — degrade, never crash
-                body_lines = [f"{_PICK_DIM}(this tab failed to render: {exc}){_PICK_RST}"]
+                body_lines = [
+                    f"{_PICK_DIM}(this tab failed to render: {_picker_payload(str(exc))}){_PICK_RST}"
+                ]
             extra_lines: list[str] = []
             if filterable:
-                # Filter on the VISIBLE text (strip a line's own ANSI first) so a
-                # dim/styled body line still matches by its plain content.
+                # Filter the same named display text that is measured/painted,
+                # ignoring only the owned styles generated above.
                 needle = state["filter"].lower()
                 if needle:
                     body_lines = [
@@ -1057,11 +1089,7 @@ class AelixTUIContext:
                 hint = "Tab/←→ switch · type to filter · Esc close"
             else:
                 hint = "Tab/←→ switch · Esc close"
-            # Plain (un-styled) widths for the divider span: measure the raw tab
-            # names for the header, and the VISIBLE length of each body line
-            # (a tab body may carry its own ANSI — counting the escape bytes
-            # would over-pad the frame).
-            plain_header_len = _visible_len("  ".join(name for name, _ in tabs))
+            plain_header_len = _visible_len(header)
             width = max(
                 [_visible_len(title), plain_header_len, _visible_len(hint)]
                 + [_visible_len(line) for line in (*extra_lines, *body_lines)]
@@ -1370,7 +1398,9 @@ class AelixTUIContext:
 
         def frame(
             screen_width: int,
-        ) -> tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]:
+        ) -> tuple[
+            list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]
+        ]:
             key = (get_app().render_counter, screen_width)
             if drawn["key"] != key:
                 rows = [_row(r) for r in _title_rows(f"{title}\n{message} [y/n]", screen_width)]
@@ -1440,9 +1470,7 @@ class AelixTUIContext:
         # so a secret (API key / OAuth code) is NOT echoed to the screen or left
         # in the terminal scrollback. The buffer still holds the real text, only
         # the rendering is replaced (PasswordProcessor draws ``*`` per char).
-        processors: list[Processor] | None = (
-            [PasswordProcessor()] if password else None
-        )
+        processors: list[Processor] | None = [PasswordProcessor()] if password else None
 
         def build(result: asyncio.Future[Any]) -> HSplit:
             kb = KeyBindings()
@@ -1705,9 +1733,7 @@ class AelixTUIContext:
         enabled = self._enabled_segment_ids()
         values: dict[str, str] = {}
         for segment in self._segments:
-            is_on = (
-                segment.default_enabled if enabled is None else segment.id in enabled
-            )
+            is_on = segment.default_enabled if enabled is None else segment.id in enabled
             if not is_on:
                 continue
             value = segment.produce()
@@ -1762,8 +1788,15 @@ class AelixTUIContext:
     # TRADE for the row this merge saves, not a free win: on ``main``, where
     # ``current-dir`` had a row to itself, this path rendered whole.
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
-        ("model", "thinking-level", "git-branch", "context-remaining",
-         "input-tokens", "output-tokens", "cost"),
+        (
+            "model",
+            "thinking-level",
+            "git-branch",
+            "context-remaining",
+            "input-tokens",
+            "output-tokens",
+            "cost",
+        ),
         ("permission-mode", "steering", "pending-queued", "current-dir"),
     )
 
@@ -1906,7 +1939,7 @@ class AelixTUIContext:
             return "~"
         prefix = home.rstrip("/") + "/"
         if cwd.startswith(prefix):
-            return "~/" + cwd[len(prefix):]
+            return "~/" + cwd[len(prefix) :]
         return cwd
 
 

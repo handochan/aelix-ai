@@ -296,6 +296,13 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Picker caller text is safe before styling (#179).** Select option/detail and
+  tab name/body/error controls are displayed by name, including SOH/STX that
+  prompt-toolkit treated as raw zero-width escapes. Width and filtering use that
+  display text; original values, detail indices, cancel behavior and #399 title
+  hold remain. Internal stats dim notes and Installed-tab built-in rows retain
+  their style through private structured fragments.
+
 - **Select-only embeddings cannot approve built-in file changes (#395).**
   Prompted `write` and `edit` calls now refuse when no file-change preview
   approval runner is wired, before a picker or extension-tier redirect can

@@ -538,7 +538,7 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     component, so a model-chosen ``cwd`` may contain ``\\n`` and ``\\x1b`` — and
     the value this function returns is interpolated verbatim into the consent
     dialog, which ``ctx.ui.select`` both newline-splits into rows and ANSI-parses
-    (``tui/context.py:148-226``). A 150-byte directory name was demonstrated to
+    (``tui/context.py:149-227``). A 150-byte directory name was demonstrated to
     render a wholly forged, benign-looking dialog while the real permission row
     and the real tasks sat hidden behind SGR 8. ``consent.py``'s
     :func:`~aelix_agents.consent._sanitize_field` is the fix and is sufficient on

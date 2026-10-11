@@ -1,6 +1,6 @@
 # 0227. Five legibility asks, and the four defects that were already shipped
 
-Status: Accepted (2026-08-16).
+Status: Accepted (2026-08-16); amended 2026-10-12 (#179, caller text before owned picker styling).
 Date: 2026-08-16
 Relates: ADR-0153 (the first user echo), ADR-0159 (the statusline badge invariant),
 ADR-0163 (the picker frame), ADR-0194 (the synchronized-update bracket),
@@ -191,12 +191,13 @@ is also persisted and replayed by ``/resume``. (This paragraph said "17 painted"
 in three places — here, ``render.py`` and a commit message — until the round-three
 review re-ran it. 17 is the complement.)
 
-**And the picker title.** ``ExtensionUIContext.select`` takes whatever an
-extension passes, and an OSC title both SET THE TERMINAL'S WINDOW TITLE and made
-the top rule 32 visible cells against the bottom rule's 40 — because
-``_visible_len`` strips SGR only while prompt-toolkit consumes every escape. The
-title is sanitised now; the BODY deliberately is not, because those rows are this
-module's own styling.
+**And the picker title (corrected).** ``ExtensionUIContext.select`` takes whatever
+an extension passes. The original report claimed ordinary OSC set the terminal's
+window title and made rules of 32 and 40 cells; both claims were disproved in the
+round-five correction below. Removing title control bytes leaves inert printable
+tails. The old claim that the body was trusted because its wrappers were owned was
+also false: option/detail/tab payloads still came from callers. #179's amendment
+below closes that payload boundary, including the distinct SOH/STX parser path.
 
 **Ask 1 broke itself in ask 5.** ``/resume`` sized its rows from the terminal
 while ``_picker_frame`` clamps its rule to 78: measured, a 120-column terminal put
@@ -410,6 +411,59 @@ characters"; measured, U+200B, U+0301, U+FE0F, U+200E and U+00AD are all exact a
 it is U+200D specifically. Over-broad prose is not harmless here: a reader hardening
 "zero-width" would guard five characters that were never broken and might conclude
 from three clean tests that the guard was pointless.
+
+### #179 amendment: caller text before owned picker styling (2026-10-12)
+
+The correction above remains the finding for **ordinary OSC**. It is not a claim
+about every prompt-toolkit parser path. Its ANSI parser treats `SOH … STX`
+(`\x01 … \x02`) as a `[ZeroWidthEscape]` fragment, written raw by the renderer.
+The root's isolated actual `uv run aelix` baseline at `8eaf440` emitted two OSC 0
+writes each from extension and own option fixtures, and one from a tab name;
+pyte's title changed to their markers. Its ordinary OSC option, detail and tab-body
+fixtures emitted none. A genuine raw OSC positive control changed the same
+emulator's title. This is raw-byte/virtual-terminal evidence, not an OS window,
+clipboard or code-execution claim.
+
+At the sequential predecessor `3b3adb4`, the author's separate model-free parser
+PTY probe paints the actual modal Window and serializes it through prompt-toolkit's
+Renderer/Vt100_Output. With an `_END` after the delimiter payload, both select
+paths, detail, tab name/body and raising tab message emitted OSC 0 and changed
+pyte's title; the identical fixed fixtures emitted none and produced no
+ZeroWidthEscape fragments. Ordinary OSC emitted none in both, and the genuine
+raw positive still worked. A delimiter at the very end of a painted row may stay
+pending without a following cell: do not transfer this probe's detail/body results
+to the root's different actual CLI fixtures, or count a no-op fixture as a fix.
+
+Decision:
+
+- `select` option/detail and `tabbed` name/body/exception strings go through the
+  approval prompt's `_shown`/`_ansi_named` before owned styling. Each terminal
+  steering character is a caret/Unicode name in reverse video. Printable escape
+  tails stay visible. Newlines remain rows, and CJK, combining and ZWJ clusters
+  remain intact. Width measures the widest displayed row with the shared cluster
+  measure; filter comparison uses the same displayed text without owned SGR.
+- Raw option values and indices are separate from display strings. Enter returns
+  the original object; detail receives the original index; `cancel_options` checks
+  original identity even when two display strings collide. `own=True` decides
+  layout/key behavior and never trusts caller content.
+- Internal stats dim notes and Installed-tab built-in rows use private `_PickerText`
+  structured fragments. Their
+  text is still named before rendering; ordinary caller ANSI never gains trust.
+  Selected rows, counters/details, cyan rules and bright typed filters retain
+  their owned styles. No public UI protocol or production dependency is added.
+- #399's title naming/wrapping, first-paint/all-seen hold, dialog cancel, Esc/Ctrl+C
+  and own picker namespace remain. This does not redesign option clipping/viewport
+  (#424), multiselect preview styling, authentication or model selection.
+
+Latest Pi was checked before implementation at
+[`cd8bdf7`](https://github.com/earendil-works/pi/tree/cd8bdf7518c0f9a381deef49bff95163bff127d8):
+[`SelectItem`/themes](https://github.com/earendil-works/pi/blob/cd8bdf7518c0f9a381deef49bff95163bff127d8/packages/tui/src/components/select-list.ts)
+separate value, label/description and owned style, and
+[`visibleWidth`/`stripTerminalSequences`](https://github.com/earendil-works/pi/blob/cd8bdf7518c0f9a381deef49bff95163bff127d8/packages/tui/src/utils.ts)
+handle its supported terminal sequences. The latest control-character issues
+were also read; [#10607](https://github.com/earendil-works/pi/issues/10607) concerns
+program status OSC, not this picker parser path. Pi's renderer and single-line
+normalization do not replace Aelix's newline contract (ADR-0235).
 
 ## Round six, after the merge: the two commits nobody had reviewed
 

@@ -65,7 +65,7 @@ the hook already validated and every member's task is on screen, whereas the mem
 covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
-(``tui/context.py:148-226``, ``:797-800``) and ``tui/overlay.py``'s
+(``tui/context.py:149-227``, ``:818-821``) and ``tui/overlay.py``'s
 ``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
@@ -386,7 +386,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
     things with the composed title: it SPLITS IT ON ``\\n`` into rows and it
-    ANSI-PARSES it (``tui/context.py:148-226``). A single directory of 150 bytes
+    ANSI-PARSES it (``tui/context.py:149-227``). A single directory of 150 bytes
     was demonstrated end-to-end to render a coherent, benign dialog — right
     ``Directory:``, right ``Permission: plan``, two innocuous task rows — while
     hiding the REAL permission row and the REAL tasks behind ``\\x1b[8m`` (SGR 8,
@@ -427,7 +427,7 @@ def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     the reasoning as it stood for both rows.
 
     Same three properties; only the truncation differs, and the difference is not
-    cosmetic. The modal does not wrap (``tui/context.py:797-800``), so an
+    cosmetic. The modal does not wrap (``tui/context.py:818-821``), so an
     over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO
     MARKER — the human sees a plausible prefix and cannot tell there is more.
     Containment (``print_channel.resolve_child_cwd``) only guarantees the child
@@ -726,7 +726,7 @@ def build_consent_title(
     model-chosen and the profile fields come from a filename, so all four are
     strings an attacker can put ``\\n`` and ``\\x1b`` into; the composed title is
     newline-split into rows AND ANSI-parsed by ``ctx.ui.select``
-    (``tui/context.py:148-226``). :func:`_sanitize_field` is what makes this a
+    (``tui/context.py:149-227``). :func:`_sanitize_field` is what makes this a
     nine-row body for every input rather than for well-behaved ones — see its
     docstring for the demonstrated forgery.
 
@@ -997,13 +997,13 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #     own shape — the label rides the top rule, one row shorter — precisely
 #     because this budget must not move: nine rows of title cannot ride a rule,
 #     so that arm was left byte-shaped as it was
-#     (``tui/context.py:148-226``). ``build()`` returns a single
+#     (``tui/context.py:149-227``). ``build()`` returns a single
 #     ``Window(FormattedTextControl(...), dont_extend_height=True)``
 #     (``:419-422``). ``wrap_lines`` is left False and the control supplies no
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
 #     overflow is BOTTOM TRUNCATION. ``select``'s own ``viewport = 8`` (``:303``)
 #     scrolls the OPTIONS list and does nothing for a tall title.
-#   * ``body`` is the option rows plus one counter row (``tui/context.py:741``).
+#   * ``body`` is the option rows plus one counter row (``tui/context.py:760``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
 #     (``tui/overlay.py:221-231``).
 #
@@ -1015,7 +1015,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # which is why this has never bitten. A naive 8-task batch is 16 + 3 + 4 = 23:
 # the bottom four rows — the hint, the closing divider, the counter, and the LAST
 # OPTION, which ``build_options`` guarantees is ``Cancel`` — are simply not
-# drawn. It bites from N >= 5. Esc still works (``tui/context.py:940-942``), but a
+# drawn. It bites from N >= 5. Esc still works (``tui/context.py:966-968``), but a
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
@@ -1209,7 +1209,7 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:668-677``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:681-690``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer

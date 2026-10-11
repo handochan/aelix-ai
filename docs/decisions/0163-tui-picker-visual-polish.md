@@ -23,7 +23,12 @@ pressing Esc to back out **reset the `/settings` cursor to the top** instead of 
    - the **counter / detail / preview / hint** are dim, so the eye lands on the selection;
    - a dim bottom divider closes the panel; dividers span the widest plain content (clamped 28–78 cols).
    Raw ANSI is used (theme-agnostic, independent of the prompt-toolkit style map) — the same Rich→ANSI
-   precedent as the approval dialog (ADR-0159). The detail callback (ADR-0154) output is dimmed as-is.
+   precedent as the approval dialog (ADR-0159). Amended 2026-10-12 (#179): select
+   option/detail and tab name/body/error controls are named before owned styling;
+   the detail output is then dimmed. Width/filter use this displayed text while
+   original selection values/indices remain. Internal stats dim notes and Installed
+   built-in rows use private structured fragments, not raw caller ANSI
+   (ADR-0227's #179 amendment).
 
 2. **Cursor preservation (`select(initial_index=...)` + `tui/shell.py::_open_settings`).** `select()` gained an
    `initial_index` keyword (clamped to range) that seeds the highlighted row. The `/settings` loop now remembers

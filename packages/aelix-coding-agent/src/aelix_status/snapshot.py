@@ -88,7 +88,7 @@ if TYPE_CHECKING:
 # ``source_info`` the loader writes for the endpoint one. An inline factory has
 # no such record, and inventing a "builtin" label for it would mean keeping a
 # hardcoded list of built-in class names — the same list
-# ``tui/extension_manager.py:58-60`` keeps. A label that is true beats a label that
+# ``tui/extension_manager.py:52-54`` keeps. A label that is true beats a label that
 # is specific and wrong.
 SCOPE_PROJECT = "project"
 SCOPE_GLOBAL = "global"

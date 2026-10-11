@@ -50,9 +50,7 @@ def test_frame_divider_spans_a_hangul_row() -> None:
 
     row = "한국어 확장 설명입니다"
     frame = _picker_frame("제목", [row], "힌트", _visible_len(row))
-    divider = next(
-        line for line in frame.value.split("\n") if "─" in line
-    )
+    divider = next(line for line in frame.value.split("\n") if "─" in line)
     assert _visible_len(divider) >= _visible_len(row)
 
 
@@ -185,13 +183,10 @@ def test_an_empty_title_keeps_the_bare_rule() -> None:
 def test_a_control_character_in_the_title_never_reaches_the_frame() -> None:
     """``ExtensionUIContext.select`` takes whatever an extension passes.
 
-    MEASURED with an OSC title (``Set\x1b]0;pwned\x07tings``): the escape reached
-    the output — which SETS THE TERMINAL'S WINDOW TITLE — and made the top rule 32
-    visible cells against the bottom rule's 40, because ``_visible_len`` strips
-    SGR only while prompt-toolkit's ANSI parser consumes every escape.
-
-    The BODY is deliberately not sanitised: those rows arrive already styled by
-    this module (``_PICK_SEL`` on the cursor row, dim on the counter).
+    The earlier claim that ordinary OSC set a window title and made unequal
+    rules was disproved below. This row pins control-byte removal in the own
+    frame title only. #179 separately names option/detail/tab caller text before
+    owned styling; SOH/STX-wrapped OSC is a distinct parser path.
     """
 
     rows = _rows("Set\x1b]0;pwned\x07tings", _BODY, _HINT, 40)
@@ -236,8 +231,9 @@ def test_the_title_sanitiser_removes_escapes_and_leaves_the_frame_square() -> No
     throughout. An earlier draft reported "32 cells against 40"; that does not
     reproduce in either direction.
 
-    AND NO OSC EVER SET A WINDOW TITLE, before the map or after. The control at
-    the end proves the emulator would have noticed if one had.
+    AND THESE ORDINARY OSC FIXTURES NEVER SET A WINDOW TITLE, before the map or
+    after. This does not cover SOH/STX-wrapped ZeroWidthEscape (#179). The control
+    at the end proves the emulator would have noticed a genuine raw OSC.
     """
 
     import pyte
@@ -273,7 +269,10 @@ def test_the_title_sanitiser_removes_escapes_and_leaves_the_frame_square() -> No
             rules = [r for r in rows if set(paint(r).strip()) <= {"─"} and "─" in paint(r)]
             top = rules[0] if rules else rows[1]
             assert len(paint(top)) == len(paint(rows[-2])), (
-                base[:12], name, len(paint(top)), len(paint(rows[-2]))
+                base[:12],
+                name,
+                len(paint(top)),
+                len(paint(rows[-2])),
             )
 
     # CONTROL: the emulator used above genuinely reads OSC titles, so "no title was
