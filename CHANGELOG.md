@@ -309,6 +309,24 @@ unwritten. Add them with the next release.
   kill. The cancellation case's pid file is written atomically and read only
   when whole.
 
+- **Tests only: the RPC bash cases no longer fail on a slow Windows shell start,
+  and a slow call now says where its time went (#449).** Nothing changes for
+  users. `tests/rpc/test_rpc_mode_bash_abort.py` awaited each real `_handle_bash`
+  call under a 5 s `wait_for`, and once on windows-latest `echo hello` did not
+  finish inside it. Measured there phase by phase (run 38439411854, 3000 calls),
+  the product's own steps stayed under 140 ms; the time was PowerShell's — a
+  bare `pwsh -NoProfile` with no Aelix code in the path once took 5.97 s from
+  process creation to its first statement. An ordinary call now waits under a
+  30 s hang guard. An aborted call keeps a bound, because there the time is the
+  property: it waits for the shell's first output, aborts the running
+  `sleep 30`, and must return within 15 s of the abort — an abort that kills
+  nothing returns ~30 s after it, and `cancelled` alone cannot tell. Any call
+  slower than 2 s warns with every phase it went through (spawn, executor pickup,
+  the shell's first output, the child's exit on win32, the reap, the kill ladder
+  after an abort as a phase of its own, the drain), naming the slowest; an
+  expired bound fails with the same timeline, through `tests/event_waits.within`,
+  so a `TimeoutError` the call raises itself is still reported as one.
+
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that
   prompt-toolkit treated as raw zero-width escapes. Width and filtering use that

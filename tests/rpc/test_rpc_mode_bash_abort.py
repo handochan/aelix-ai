@@ -5,6 +5,16 @@ Covers:
   fires while the exec is in flight.
 - ``cancelled=False`` on normal (non-aborted) completion.
 - The AbortSignal is unregistered from the harness after the exec (no leak).
+
+Every call runs a REAL shell (``pwsh`` on windows-latest). An ordinary call is
+awaited under :data:`tests.rpc._bash_phases.HANG_GUARD_SECONDS`, a hang guard
+and not a budget. An ABORTED call asserts the one thing about time that is the
+property: the abort ENDS it. It waits (under the hang guard) for the shell's first
+output, aborts the running ``sleep 30``, and must return within
+:data:`tests.rpc._bash_phases.ABORT_ENDS_CALL_SECONDS` of the abort — an abort
+that kills nothing returns ~30 s after it, with ``cancelled`` still True, since
+that comes from ``sig.aborted``. A slow call reports each phase it went through,
+naming the slowest (#449, which also has the distributions both are sized from).
 """
 
 from __future__ import annotations
@@ -27,6 +37,26 @@ from aelix_ai.streaming import (
 from aelix_coding_agent.rpc.rpc_mode import _handle_bash
 from aelix_coding_agent.rpc.rpc_types import RpcCommandBash, RpcSuccessResponse
 
+from tests.rpc._bash_phases import ABORT_ENDS_CALL_SECONDS, BashPhases
+
+#: Says it is running, then outlives any bound here; ``echo`` and ``sleep`` are
+#: spelled the same in bash and pwsh (``tests/tools/test_abort_signal.py``'s
+#: ``_STARTED_THEN_SLEEPS``). The first output is the event the abort waits for.
+_STARTED_THEN_SLEEPS = "echo started; sleep 30"
+
+_ABORT_WHAT = (
+    "the aborted rpc bash call (an abort that kills nothing leaves 'sleep 30' "
+    "to return ~30 s after it)"
+)
+
+
+async def _abort_once_running(harness: AgentHarness, phases: BashPhases) -> None:
+    """Abort when the shell has written its first output, not on a timer."""
+
+    await phases.shell_started()
+    phases.stamp("abort")
+    harness.abort_bash()
+
 
 def _stream_fn() -> Any:
     async def fn(
@@ -45,6 +75,11 @@ def _stream_fn() -> Any:
     return fn
 
 
+@pytest.fixture
+def phases(monkeypatch: pytest.MonkeyPatch) -> BashPhases:
+    return BashPhases().install(monkeypatch)
+
+
 def _make_harness(tmp_path) -> AgentHarness:
     return AgentHarness(
         AgentHarnessOptions(
@@ -55,19 +90,22 @@ def _make_harness(tmp_path) -> AgentHarness:
     )
 
 
-async def test_handle_bash_cancelled_true_when_abort_bash_fires(tmp_path) -> None:
+async def test_handle_bash_cancelled_true_when_abort_bash_fires(
+    tmp_path, phases: BashPhases
+) -> None:
     """``cancelled`` is True when harness.abort_bash() fires during exec."""
 
     harness = _make_harness(tmp_path)
-    cmd = RpcCommandBash(command="sleep 30", id="b1")
+    cmd = RpcCommandBash(command=_STARTED_THEN_SLEEPS, id="b1")
 
+    phases.stamp("call")
     handle_task = asyncio.create_task(_handle_bash(harness, cmd))
 
-    # Give the exec time to start, then fire abort_bash.
-    await asyncio.sleep(0.15)
-    harness.abort_bash()
+    await _abort_once_running(harness, phases)
 
-    response = await asyncio.wait_for(handle_task, timeout=5.0)
+    response = await phases.guard(
+        handle_task, _ABORT_WHAT, bound=ABORT_ENDS_CALL_SECONDS, kind="abort-to-return bound"
+    )
     assert isinstance(response, RpcSuccessResponse)
     assert response.command == "bash"
     data = response.data
@@ -78,13 +116,15 @@ async def test_handle_bash_cancelled_true_when_abort_bash_fires(tmp_path) -> Non
     await harness.dispose()
 
 
-async def test_handle_bash_cancelled_false_on_normal_completion(tmp_path) -> None:
+async def test_handle_bash_cancelled_false_on_normal_completion(
+    tmp_path, phases: BashPhases
+) -> None:
     """``cancelled`` is False when the command exits normally."""
 
     harness = _make_harness(tmp_path)
     cmd = RpcCommandBash(command="echo hello", id="b2")
 
-    response = await asyncio.wait_for(_handle_bash(harness, cmd), timeout=5.0)
+    response = await phases.guard(_handle_bash(harness, cmd), "rpc bash 'echo hello'")
     assert isinstance(response, RpcSuccessResponse)
     data = response.data
     assert isinstance(data, dict)
@@ -95,14 +135,14 @@ async def test_handle_bash_cancelled_false_on_normal_completion(tmp_path) -> Non
     await harness.dispose()
 
 
-async def test_handle_bash_signal_unregistered_after_exec(tmp_path) -> None:
+async def test_handle_bash_signal_unregistered_after_exec(tmp_path, phases: BashPhases) -> None:
     """The AbortSignal is unregistered from the harness after normal exec."""
 
     harness = _make_harness(tmp_path)
     assert len(harness._active_bash_signals) == 0
 
     cmd = RpcCommandBash(command="echo check", id="b3")
-    await asyncio.wait_for(_handle_bash(harness, cmd), timeout=5.0)
+    await phases.guard(_handle_bash(harness, cmd), "rpc bash 'echo check'")
 
     # Registry must be empty — no signal leak.
     assert len(harness._active_bash_signals) == 0
@@ -110,17 +150,19 @@ async def test_handle_bash_signal_unregistered_after_exec(tmp_path) -> None:
     await harness.dispose()
 
 
-async def test_handle_bash_signal_unregistered_after_abort(tmp_path) -> None:
+async def test_handle_bash_signal_unregistered_after_abort(tmp_path, phases: BashPhases) -> None:
     """The AbortSignal is unregistered even when the exec is aborted."""
 
     harness = _make_harness(tmp_path)
-    cmd = RpcCommandBash(command="sleep 30", id="b4")
+    cmd = RpcCommandBash(command=_STARTED_THEN_SLEEPS, id="b4")
 
+    phases.stamp("call")
     handle_task = asyncio.create_task(_handle_bash(harness, cmd))
-    await asyncio.sleep(0.15)
-    harness.abort_bash()
+    await _abort_once_running(harness, phases)
 
-    await asyncio.wait_for(handle_task, timeout=5.0)
+    await phases.guard(
+        handle_task, _ABORT_WHAT, bound=ABORT_ENDS_CALL_SECONDS, kind="abort-to-return bound"
+    )
 
     # Signal must be cleaned up regardless of abort path.
     assert len(harness._active_bash_signals) == 0
@@ -157,6 +199,8 @@ async def test_handle_bash_signal_unregistered_after_exec_raises(
 
     cmd = RpcCommandBash(command="echo irrelevant", id="b5")
 
+    # No shell is spawned here, so there is nothing for #449's guard to time:
+    # the 5 s stays a plain bound on a call that never leaves this process.
     with pytest.raises(RuntimeError, match="simulated exec failure"):
         await asyncio.wait_for(_handle_bash(harness, cmd), timeout=5.0)
 

@@ -112,7 +112,14 @@ async def wait_until(
     raise AssertionError(message)
 
 
-async def within(awaitable: Awaitable[T], *, bound: float, what: str) -> T:
+async def within(
+    awaitable: Awaitable[T],
+    *,
+    bound: float,
+    what: str,
+    detail: Callable[[], str] | None = None,
+    kind: str = "anti-hang bound",
+) -> T:
     """Await *awaitable* under an ANTI-HANG bound that says what it waited for.
 
     ``asyncio.wait_for(x, 30)`` fails as a bare ``TimeoutError``, which in a
@@ -120,6 +127,14 @@ async def within(awaitable: Awaitable[T], *, bound: float, what: str) -> T:
     ``"<what> did not finish within <bound>s (waited <measured>s)"``, and warns
     with the number when a success took more than half the bound. The awaitable
     is cancelled on a hit, as ``wait_for`` would.
+
+    ``detail``, as in :func:`wait_until`, is appended to the failure on a bound
+    hit, and called only then — after the awaitable's cancellation has run, so
+    what it reports includes what that cancellation did (#449's phase timeline,
+    ``tests/rpc/_bash_phases.py``, is the caller it was added for). ``kind``
+    names the bound in both messages: a caller whose bound DECIDES a verdict,
+    not just a hang — #449's "an abort ends the call within 15 s of it", whose
+    regression returns at ~30 s — says so instead of calling it anti-hang.
 
     ONLY THE BOUND'S OWN EXPIRY is reported as a bound hit. A ``TimeoutError``
     the awaited call raises itself (a product budget firing — the bare-timeout
@@ -138,14 +153,17 @@ async def within(awaitable: Awaitable[T], *, bound: float, what: str) -> T:
     except TimeoutError as exc:  # asyncio.TimeoutError is this, since 3.11
         if not scope.expired():
             raise
-        raise AssertionError(
-            f"{what} did not finish within its {bound:.1f}s anti-hang bound "
+        message = (
+            f"{what} did not finish within its {bound:.1f}s {kind} "
             f"(waited {loop.time() - started:.2f}s)"
-        ) from exc
+        )
+        if detail is not None:
+            message += "\n" + detail()
+        raise AssertionError(message) from exc
     waited = loop.time() - started
     if waited > bound / 2:
         warnings.warn(
-            f"{what} took {waited:.2f}s of its {bound:.1f}s anti-hang bound",
+            f"{what} took {waited:.2f}s of its {bound:.1f}s {kind}",
             stacklevel=2,
         )
     return result
