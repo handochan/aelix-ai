@@ -128,8 +128,32 @@ else
   else
     sh "$_uv_installer" || die "uv install failed."
   fi
-  # Make uv visible to THIS process (installer targets XDG_BIN_HOME or ~/.local/bin).
-  _uv_bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
+  # Make uv visible to THIS process. Look where the Astral installer actually
+  # put it, in ITS order (uv's install.sh, `install()`): UV_INSTALL_DIR, then
+  # CARGO_DIST_FORCE_INSTALL_DIR, then UV_UNMANAGED_INSTALL (each a flat dir,
+  # or <dir>/bin when it is a cargo home), then XDG_BIN_HOME, then
+  # XDG_DATA_HOME/../bin, then ~/.local/bin. Until #279 this looked only at
+  # XDG_BIN_HOME and ~/.local/bin, so a custom XDG_DATA_HOME or UV_INSTALL_DIR
+  # left uv installed and this script dying with "uv still not found" while
+  # naming a directory uv was never put in (measured: XDG_DATA_HOME=~/data puts
+  # uv in ~/bin). ~/.local/bin is spelled ${HOME:+...} so this search never
+  # expands an unset HOME under `set -u`: a HOME-less environment that names
+  # the dir uv went to gets past it. Before #279 that held for XDG_BIN_HOME
+  # only; the old ${XDG_BIN_HOME:-$HOME/.local/bin} expanded HOME whenever
+  # XDG_BIN_HOME was unset, so UV_INSTALL_DIR without HOME died under set -u
+  # (bash: "HOME: unbound variable"; dash: "HOME: parameter not set").
+  _uv_bin=""
+  _uv_tried=""
+  for _d in "${UV_INSTALL_DIR-}" "${CARGO_DIST_FORCE_INSTALL_DIR-}" \
+            "${UV_UNMANAGED_INSTALL-}" "${XDG_BIN_HOME-}" \
+            "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
+    [ -n "$_d" ] || continue
+    for _c in "$_d" "$_d/bin"; do
+      _uv_tried="$_uv_tried '$_c'"
+      if [ -x "$_c/uv" ]; then _uv_bin="$_c"; break 2; fi
+    done
+  done
+  [ -n "$_uv_bin" ] || die "uv still not found after install (looked in:$_uv_tried); add the directory the uv installer named above to PATH and re-run."
   PATH="$_uv_bin:$PATH"
   export PATH
   have uv || die "uv still not found after install; add '$_uv_bin' to PATH and re-run."

@@ -11,6 +11,8 @@ the ``install.ps1 e2e`` job in .github/workflows/ci.yml now does the executing
 on both Windows hosts. Its first run (33862346729) found two defects that every
 assertion in this file passed straight over — the byte[] response body and the
 CP1252 em dash below — which is the calibration for how much this file proves.
+``install.sh``, the side this file treats as the reference, is executed too
+since #279, by the ``install.sh e2e`` jobs on ubuntu and macOS.
 """
 
 from __future__ import annotations
@@ -255,6 +257,18 @@ def test_the_windows_postcondition_asserts_the_same_range() -> None:
     assert f"-lt {lo}" in text, f"post-condition floor is not {lo} (from {_PY_REQUEST!r})"
     assert f"-gt {hi}" in text, f"post-condition ceiling is not {hi} (from {_PY_REQUEST!r})"
     assert _PY_REQUEST in text, "the post-condition's failure message must name the request it enforces"
+
+
+def test_the_posix_postcondition_asserts_the_same_range() -> None:
+    """The fifth site (#279): ``assert-install-sh.sh`` keeps the range as ONE
+    named value and derives its floor and ceiling from it, so one equality is
+    the whole check. It fails closed like the Windows one, and it is the only
+    thing that proves install.sh's default did something on a POSIX host."""
+
+    text = (_REPO_ROOT / ".github" / "scripts" / "assert-install-sh.sh").read_text(encoding="utf-8")
+    m = re.search(r"^INSTALLER_PY_REQUEST='([^']*)'\s*$", text, re.MULTILINE)
+    assert m, "assert-install-sh.sh no longer names INSTALLER_PY_REQUEST"
+    assert m.group(1) == _PY_REQUEST, (m.group(1), _PY_REQUEST)
 
 
 def test_both_installers_pin_the_exact_version(sh: str, ps1: str) -> None:

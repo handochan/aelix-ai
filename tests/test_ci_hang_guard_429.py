@@ -149,3 +149,16 @@ def test_ci_limits_cover_every_test_leg() -> None:
     options = config["tool"]["pytest"]["ini_options"]
     assert options["faulthandler_timeout"] == 240
     assert options["faulthandler_exit_on_timeout"] is True
+
+
+def test_every_ci_job_is_bounded() -> None:
+    """#279 added a job and found the e2e one beside it unbounded: a job with no
+    ``timeout-minutes`` spends GitHub's default six hours when a download or an
+    installer stalls (#428). Every job in ci.yml states its own bound."""
+
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    unbounded = [job_id for job_id, job in jobs.items() if "timeout-minutes" not in job]
+    assert not unbounded, unbounded
+    for job_id in ("install-ps1-e2e", "install-sh-e2e"):
+        assert isinstance(jobs[job_id]["timeout-minutes"], int), job_id
+        assert jobs[job_id]["timeout-minutes"] <= 30, job_id

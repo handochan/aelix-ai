@@ -215,6 +215,20 @@ still only proves the script has not *drifted* from `install.sh` — same env
 vars, same checksum gate, same `uv` flags — but the e2e job now proves the
 script itself runs, which the drift check alone could not.
 
+**And the other side of that comparison (2026-10-14, #279).** Until then
+`install.sh` — the script the parity test treats as the reference, and the one
+the README leads with — had never been executed by CI, so #263's interpreter
+post-condition was proven on Windows and on POSIX by nothing. The
+`install.sh e2e (ubuntu-latest)` / `install.sh e2e (macos-latest)` jobs now run
+it end to end in five passes (uv bootstrap, uv present, `AELIX_EXTRAS=`,
+`AELIX_PYTHON=` empty, `AELIX_PYTHON=3.11`), each checked by
+`.github/scripts/assert-install-sh.sh`, the POSIX twin of the Windows
+post-condition script. Its first local execution found a Step 2 defect (a
+custom `XDG_DATA_HOME` or `UV_INSTALL_DIR` left the bootstrapped uv unfound),
+fixed in `install.sh` in the same change. `install.ps1` has the same hard-coded
+`~\.local\bin` and is left to a follow-up: the Windows job cannot reach it
+without a custom-directory pass, and nothing here measured it.
+
 **CLOSED — the unpinned-version hole.** This slice originally shipped
 `install.ps1` reproducing `install.sh`'s lack of a package-version pin, flagged
 as a shared risk to be fixed in both files at once. The release-and-honesty

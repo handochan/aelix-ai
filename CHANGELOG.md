@@ -327,6 +327,36 @@ unwritten. Add them with the next release.
   expired bound fails with the same timeline, through `tests/event_waits.within`,
   so a `TimeoutError` the call raises itself is still reported as one.
 
+- **`install.sh` finds the uv it just installed wherever uv put it (#279).**
+  With uv absent, the installer bootstraps it with Astral's installer and then
+  looked for it only in `$XDG_BIN_HOME` or `~/.local/bin`. Astral's installer
+  also honours `UV_INSTALL_DIR` and puts uv in `$XDG_DATA_HOME/../bin` when
+  `XDG_DATA_HOME` is set, so with either of those the install stopped with
+  "uv still not found after install" and told you to add a directory uv was
+  never in. It now looks where Astral's installer does, in the same order,
+  takes the first uv it finds there (an old `~/.local/bin/uv` no longer wins
+  over the one just installed), and if uv is still missing the error lists
+  every directory it checked.
+
+- **CI now runs `install.sh` end to end on Ubuntu and macOS (#279).** The
+  `install.sh e2e (ubuntu-latest)` and `install.sh e2e (macos-latest)` jobs run
+  the checked-out `install.sh` on runners with no uv. That covers both `sh`
+  dialects users hit: dash, and bash in POSIX mode. Each job installs five
+  times. The first two use the README's `curl … | sh` line: the uv bootstrap,
+  then a re-run with uv present (the upgrade path). The last three use the
+  getting-started guide's `VAR=… sh -c "$(curl …)"` form: `AELIX_EXTRAS=`
+  (the bare CLI), `AELIX_PYTHON=` empty and `AELIX_PYTHON=3.11`. Python 3.14
+  is installed before the third pass, so the last three run with it on the
+  machine (on macOS, Homebrew's 3.14 is on `PATH` for all five). After each
+  pass, `.github/scripts/assert-install-sh.sh` checks that uv's receipt was
+  rewritten since the previous pass's check (from the second pass on), that
+  the `aelix` on `PATH` is uv's launcher, that `aelix --version` matches the
+  verified `SHA256SUMS`, that the interpreter and extras are the ones
+  requested, and that the download directory is gone. Until this change only
+  `install.ps1` was executed in CI, and the 3.11–3.13 interpreter promise from
+  #263 was checked on Windows only. The `install.ps1 e2e` jobs now have a 15-minute timeout,
+  and every CI job is required to declare one.
+
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that
   prompt-toolkit treated as raw zero-width escapes. Width and filtering use that

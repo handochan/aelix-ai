@@ -92,7 +92,9 @@ overwrites a correct 3.13 install.
 
 ## Platform support
 
-macOS, Linux and Windows. Windows became usable in `v0.1.0-beta.2` and has the
+macOS, Linux and Windows. On macOS and Linux CI runs `install.sh` end to end
+(`ubuntu-latest` and `macos-latest`, five passes each, #279); the test suite
+itself runs on Ubuntu and Windows. Windows became usable in `v0.1.0-beta.2` and has the
 thinnest evidence of the three: CI runs the full suite on `ubuntu-latest` and
 `windows-latest` under Python 3.11, 3.12 and 3.13 and runs `install.ps1` end to end
 under both pwsh and Windows PowerShell 5.1, and on 2026-09-09 one person drove

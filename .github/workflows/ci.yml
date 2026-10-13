@@ -155,6 +155,9 @@ jobs:
   install-ps1-e2e:
     name: install.ps1 e2e (${{ matrix.shell }})
     runs-on: windows-latest
+    # #279: every job in this file is bounded (#429's lesson, which bounded only
+    # the test job). 24 green runs before this line measured 0.9-1.6 min.
+    timeout-minutes: 15
     # The documented one-liner spells `powershell`, i.e. Windows PowerShell 5.1
     # — the host whose default SecurityProtocol can still be TLS 1.0 and whose
     # Invoke-WebRequest wants the IE engine, which is why install.ps1 Step 0's
@@ -249,3 +252,180 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: '& ./.github/scripts/assert-install-ps1.ps1'
+
+  # install.sh had no coverage that executes it (#279) - the line the README
+  # leads with, and the one users actually run. Its only gate was the same
+  # regex parity test, and #263's interpreter promise (the tool environment is
+  # built on 3.11-3.13) was proven on Windows by the job above and on POSIX by
+  # nothing. This job is that job's POSIX twin: the documented one-liner end to
+  # end against the published release, post-conditions from a SEPARATE step
+  # (.github/scripts/assert-install-sh.sh), and it gates from its first run.
+  #
+  # The two `sh` dialects the README's `| sh` reaches: ubuntu-latest's sh is
+  # dash, macos-latest's is bash 3.2 in POSIX mode (/private/var/select/sh).
+  #
+  # Deliberately NOT astral-sh/setup-uv, for the same reason as the job above
+  # (and tests/test_ci_uv_pin.py counts setup-uv steps). `grep -niE
+  # '\buv\b|astral'` over actions/runner-images at 2c421200 (2026-10-12),
+  # images/ubuntu/Ubuntu2404-Readme.md (ubuntu-latest, image 20261004.327.1)
+  # and images/macos/macos-26-arm64-Readme.md (macos-latest, 20260907.0351.1),
+  # returns nothing - Pipx is the only Python tool installer on either - so uv
+  # is absent and install.sh Step 2's bootstrap arm runs for real. The "uv must
+  # be ABSENT" step asserts that premise instead of assuming it; the day an
+  # image ships uv, that step goes red and says so, rather than this job
+  # quietly measuring half of Step 2.
+  #
+  # The install steps run the README's line with ONE substitution: the URL is
+  # file://$GITHUB_WORKSPACE/install.sh, the checked-out file, not
+  # raw.githubusercontent.com/.../main. Fetching main would test the wrong
+  # bytes - a branch that breaks install.sh has to go red on that branch. The
+  # rest is the user's command byte for byte: the same curl flags, and the
+  # script read by `sh` from a PIPE, so a child that reads stdin would eat the
+  # rest of install.sh exactly as it would for a user. The knob passes use the
+  # spelling getting-started.md teaches for passing a variable through the
+  # pipe, `VAR=x sh -c "$(curl -fsSL <url>)"`, with the same substitution.
+  # tests/test_ci_install_sh_e2e.py holds both equal to the docs. They run in
+  # $RUNNER_TEMP, not the checkout: a user's cwd is not this repo, whose
+  # pyproject.toml and .python-version uv would otherwise get to see.
+  #
+  # Every arm is its own step, so a red run names the arm: the bootstrap, the
+  # uv-already-present re-run (idempotence, the documented upgrade path),
+  # AELIX_EXTRAS= (the bare CLI - POSIX-only, executed nowhere else), and
+  # AELIX_PYTHON empty (#263: means the default) and set.
+  install-sh-e2e:
+    name: install.sh e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Five installs plus up to three interpreter downloads (3.14 for the trap;
+    # 3.13 and 3.11 where the runner has none in range). Bounded like every job
+    # here (#429). The same steps took about 40 s locally on a fresh uv cache
+    # with no interpreter download (macOS 26.6.2, 2026-10-14).
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    # `bash` spelled out, not left to the default: an explicit `shell: bash` is
+    # `bash --noprofile --norc -eo pipefail {0}`, so a curl that fails on the
+    # left of `| sh` fails the step instead of handing sh an empty script that
+    # exits 0. The installer itself still runs under `sh`, as the README says.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        # Shallow on purpose, as in the job above.
+
+      - name: Record the host
+        run: |
+          uname -a
+          printf 'sh -> %s\n' "$(command -v sh)"
+          ls -l "$(command -v sh)"
+          if [ -L /private/var/select/sh ]; then ls -l /private/var/select/sh; fi
+          printf 'python3 on PATH: %s (%s)\n' "$(command -v python3 || echo none)" "$(python3 --version 2>&1 || true)"
+          printf 'TMPDIR=%s\nPATH=%s\n' "${TMPDIR-<unset>}" "$PATH"
+
+      - name: uv must be ABSENT (the Step 2 bootstrap is the point)
+        run: |
+          if command -v uv >/dev/null 2>&1; then
+            echo "::error::uv is preinstalled at $(command -v uv). install.sh Step 2's bootstrap arm is now dead in CI and only the 'uv already installed' arm is measured. Take it off PATH in this step, or record in this job's comment that the bootstrap is no longer covered."
+            exit 1
+          fi
+          echo "uv absent - install.sh Step 2 will bootstrap it."
+
+      - name: Install (pass 1 - uv bootstrap arm)
+        working-directory: ${{ runner.temp }}
+        env:
+          # 60/hr unauthenticated is PER IP and the runner pool shares
+          # addresses; install.sh sends it as Bearer to api.github.com only.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: curl -fsSL "file://$GITHUB_WORKSPACE/install.sh" | sh
+
+      - name: Assert what the script promised (pass 1 - uv bootstrap arm)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 1 - uv bootstrap arm
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
+
+      # Step 2's OTHER arm: uv is on PATH now (the Astral installer appended its
+      # dir to GITHUB_PATH, or the runner already had it there), so this pass
+      # takes `if have uv` - and it is the "re-run the same line to upgrade"
+      # path the README documents, whose idempotence Step 5's --force claims.
+      - name: Install (pass 2 - uv-already-present arm, idempotence)
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: curl -fsSL "file://$GITHUB_WORKSPACE/install.sh" | sh
+
+      - name: Assert what the script promised (pass 2 - uv-already-present arm)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 2 - uv-already-present arm
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
+
+      # Arm the #262 trap before the AELIX_PYTHON passes. Left to itself `uv
+      # tool install` takes the newest interpreter it can find, and an empty
+      # `--python ""` is ignored rather than refused, so the empty-AELIX_PYTHON
+      # pass can only tell "empty means the default" from "empty means no
+      # constraint" on a box where the newest interpreter is OUTSIDE the range.
+      # macos-latest already is (Homebrew python3 is 3.14); ubuntu-latest's
+      # newest on PATH is the system 3.12, inside the range, which would make
+      # that pass green either way. Asserted, not assumed.
+      - name: "Put Python 3.14 on the box (the #262 trap the gate exists for)"
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv python install 3.14
+          unrequested="$(uv python find)"
+          minor="$("$unrequested" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          echo "uv with no interpreter request picks $unrequested (Python $minor)"
+          if [ "$minor" != "3.14" ]; then
+            echo "::error::uv with no request picks Python $minor, not 3.14: the AELIX_PYTHON= pass below could not tell an ignored request from the default."
+            exit 1
+          fi
+
+      - name: Install (pass 3 - AELIX_EXTRAS= bare CLI)
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: AELIX_EXTRAS='' sh -c "$(curl -fsSL "file://$GITHUB_WORKSPACE/install.sh")"
+
+      - name: Assert what the script promised (pass 3 - AELIX_EXTRAS= bare CLI)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 3 - AELIX_EXTRAS= bare CLI
+          E2E_EXPECT_EXTRAS: ""
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
+
+      - name: Install (pass 4 - AELIX_PYTHON= empty means the default)
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: AELIX_PYTHON='' sh -c "$(curl -fsSL "file://$GITHUB_WORKSPACE/install.sh")"
+
+      - name: Assert what the script promised (pass 4 - AELIX_PYTHON= empty means the default)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 4 - AELIX_PYTHON= empty means the default
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
+
+      # 3.11, the floor: an interpreter the default never picks on either
+      # runner (they land on 3.12 and 3.13), so the pass proves the request
+      # reached uv rather than agreeing with it by accident.
+      - name: Install (pass 5 - AELIX_PYTHON=3.11 set)
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: AELIX_PYTHON=3.11 sh -c "$(curl -fsSL "file://$GITHUB_WORKSPACE/install.sh")"
+
+      - name: Assert what the script promised (pass 5 - AELIX_PYTHON=3.11 set)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 5 - AELIX_PYTHON=3.11 set
+          E2E_EXPECT_PYTHON: "3.11"
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"

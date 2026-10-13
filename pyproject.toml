@@ -169,8 +169,8 @@ exclude = [
   ".env.local",
   # #190 — BULK, not developer state. The entries above answer "is this the
   # maintainer's local mess?"; these three answer "does a consumer of the
-  # sdist have any use for it?". Nothing does: `install.sh:147` and
-  # `install.ps1:166` both note the installer downloads wheels only and never
+  # sdist have any use for it?". Nothing does: Step 4 of `install.sh` and
+  # of `install.ps1` both note the installer downloads wheels only and never
   # an sdist; `release.yml` builds, hashes, uploads and attaches sdists but
   # never unpacks one; `ci.yml` runs pytest against the checkout. Measured:
   # dropping `tests` takes the root sdist from 6,343,886 B / 1,158 members to

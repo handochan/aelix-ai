@@ -1,6 +1,6 @@
 # 0241. The installer chooses the interpreter, because uv chooses the newest one
 
-Status: Accepted (2026-09-13) — Amended 2026-10-08 (#192: CI runs the whole range)
+Status: Accepted (2026-09-13) — Amended 2026-10-08 (#192: CI runs the whole range); 2026-10-14 (#279: CI executes install.sh)
 Date: 2026-09-13
 Supersedes/relates: ADR-0192 (GitHub Release as the checksum channel; `install.sh`
 as the documented install path) — this constrains the last step of that path and
@@ -105,7 +105,7 @@ either script on locally is the one that checks the flag did something. Verified
 both ways against real environments before shipping: a 3.13 env passes, a 3.14
 env fails with the #262 reason in the message. `install.sh` has no such e2e
 because CI never executes it at all — a real gap, older than this issue, and not
-closed here; it was executed by hand three ways instead (default, `AELIX_PYTHON=3.12`,
+closed here (closed by #279 — see the 2026-10-14 amendment); it was executed by hand three ways instead (default, `AELIX_PYTHON=3.12`,
 `AELIX_PYTHON=` empty), plus the 3.14 -> 3.13 upgrade path.
 
 **`${AELIX_PYTHON:->=3.11,<3.14}`, with `:-` and not the `-` its siblings use.**
@@ -334,3 +334,81 @@ suite had passed both times because neither shows on the box it ran on.
   delegation stub keeps the child alive instead of leaving a holder) - and
   both graces wait on `wait_released` there too (on every leg it is stricter
   than the old `wait()` for a hook whose shell had already exited; ADR-0238).
+
+## Amendment (2026-10-14, #279) — install.sh runs end to end too, under the same post-condition
+
+**The gap "And a post-condition" named is closed.** `ci.yml` has an
+`install-sh-e2e` job on `ubuntu-latest` (whose `sh` is dash) and `macos-latest`
+(bash 3.2 in POSIX mode). Passes 1 and 2 run README's `curl ... | sh` line,
+with only the URL changed to the checked-out file: first on a runner where uv
+is asserted absent, then with uv present. Passes 3-5 run the getting-started
+guide's `VAR=... sh -c "$(curl ...)"` form for `AELIX_EXTRAS=`,
+`AELIX_PYTHON=` empty and `AELIX_PYTHON=3.11`. After each pass a separate step runs
+`.github/scripts/assert-install-sh.sh`, the POSIX twin of
+`assert-install-ps1.ps1`. That script reads `version_info` from the tool
+environment's `pyvenv.cfg`, as the Windows one does.
+
+**The range is in five places now.** The fifth is `INSTALLER_PY_REQUEST` in
+`assert-install-sh.sh`. It is a single named value, and the script derives its
+floor and ceiling from it. `test_install_ps1_parity.py` asserts it equals
+`_PY_REQUEST`. It is the range of the release being installed: 0.1.0b2 pins
+`openai<2.0`. #278 widens it for b3+ releases only, together with the
+installer default.
+
+**An empty request can only be told apart from the default on a box whose
+newest interpreter is outside the range.** "Empty means the default" (`:-`)
+and "empty means no constraint" (`-`, where uv ignores `--python ""`) give the
+same result when the newest interpreter on the box is already inside the range.
+That is ubuntu-latest's case: its newest on PATH is the system 3.12. So the job
+installs 3.14 with uv before the `AELIX_PYTHON` passes, and fails unless
+`uv python find` with no request picks 3.14. macos-latest already has
+Homebrew's 3.14. The post-condition has a second witness for this pass: the
+request uv recorded in `uv-receipt.toml` (`python = ">=3.11, <3.14"`). A
+`--python ""` that reached uv records no request.
+
+**Measured locally before the job existed.** Run on macOS 26.6.2 against the
+published v0.1.0-beta.2, through the real astral.sh bootstrap (uv 0.13.0). HOME,
+XDG and uv directories were isolated, and Python 3.11 to 3.14 were on PATH. All
+five passes were green with `sh` as dash and as bash. Sabotage, each run
+through the same steps:
+
+| Sabotage | Failing pass | Post-condition |
+| --- | --- | --- |
+| `:-` changed to `-` | pass 4 | 3 (environment on 3.14) |
+| `--python` dropped | pass 1 | 3 (3.14) |
+| `--python` hard-coded | pass 5 | 3 (3.13 where 3.11 was asked) |
+| `AELIX_EXTRAS` default changed to `:-tui` | pass 3 | 3 (the receipt records the `tui` extra) |
+| `trap cleanup` removed | pass 1 | 4 (the download dir was left behind) |
+
+Each failure names its pass and post-condition.
+
+**What executing the script found.** Step 2 found the bootstrapped uv only in
+`${XDG_BIN_HOME:-$HOME/.local/bin}`. Astral's installer chooses from more
+places, in this order: `UV_INSTALL_DIR`, then `CARGO_DIST_FORCE_INSTALL_DIR`,
+then `UV_UNMANAGED_INSTALL`, then `XDG_BIN_HOME`, then `XDG_DATA_HOME/../bin`,
+then `~/.local/bin`. On 7d163232, `XDG_DATA_HOME=$HOME/data` put uv in
+`$HOME/bin`. The install then died with "uv still not found" and named
+`~/.local/bin`, where uv had never been. Step 2 now checks the same places in
+the same order, and the first executable `uv` found wins, so a stale
+`~/.local/bin/uv` cannot shadow one just installed into `UV_INSTALL_DIR` or
+`XDG_DATA_HOME/../bin` (`test_step2_first_uv_found_wins_over_a_stale_one`;
+the CI job cannot see this, it has one uv). `~/.local/bin` is written
+`${HOME:+$HOME/.local/bin}`, so a HOME-less environment that names its install
+dir does not die under `set -u`. Before #279 that held for `XDG_BIN_HOME`
+only: with `UV_INSTALL_DIR` and no HOME, 7d163232 died under `set -u`
+(bash: `HOME: unbound variable`; dash: `HOME: parameter not set`) (`test_step2_does_not_need_home_when_the_install_dir_is_named`,
+1 failed, 1 passed on the base). This does not touch the interpreter decision; it is recorded
+here because this is where the e2e is argued. `install.ps1` hard-codes
+`~\.local\bin` the same way and is left to a follow-up, because nothing
+measured it on Windows.
+
+**One portability fact the post-condition depends on.** On macOS, `mktemp -d`
+with no template ignores `TMPDIR` and uses the per-user temp dir (measured on
+26.6.2). So the temp-dir check asks `mktemp -d` where it puts directories
+rather than reading `$TMPDIR`. A leftover is recognised by what install.sh
+writes into it, because the directory name is generic. The unit rows put a
+`mktemp` of their own on `PATH` that answers with a directory private to the
+row and, like macOS's, ignores `TMPDIR`: so a check that scanned `$TMPDIR`
+goes red on the Ubuntu test legs too (GNU mktemp honours `TMPDIR` and would
+hide it), and a concurrent install.sh elsewhere on the machine is never taken
+for a leftover.

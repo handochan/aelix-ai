@@ -484,8 +484,12 @@ PR 검토 순서는 제품 목표 적합성 → 패키지/확장 경계 → 안�
 - dependency·secret 검사, manifest·패키징·문서 계약 검사와 재현 가능한 CI를 점검한다.
 - CI의 실제 Python/OS와 사용자 설치 경로를 맞춘다. 현재 CI는 Ubuntu/Windows,
   Python 3.11/3.12/3.13이다(#192, 2026-10-08 — 설치기 범위 `>=3.11,<3.14` 전체이고
-  `tests/test_ci_python_matrix.py`가 둘을 묶는다). install.sh E2E와 `requires-python`
-  상한(#278)은 아직 열려 있다.
+  `tests/test_ci_python_matrix.py`가 둘을 묶는다). install.sh E2E는 #279(2026-10-14)로
+  생겼다 — `install.sh e2e` 잡이 ubuntu(dash)·macOS(bash POSIX sh)에서 체크아웃의
+  install.sh를 다섯 번 돌린다. 1·2회(uv 부트스트랩·uv 있음)는 README의 `curl … | sh` 형태,
+  3~5회(`AELIX_EXTRAS=`·`AELIX_PYTHON=` 빈 값·`AELIX_PYTHON=3.11`)는 가이드의
+  `VAR=… sh -c "$(curl …)"` 형태이고, 매번 별도 스텝이 사후 조건을 확인한다.
+  `requires-python` 상한(#278)은 아직 열려 있다.
 - 릴리스에는 candidate artifact 자체의 설치/업그레이드 검증, 알려진 문제,
   이전 버전으로 돌아갈 수 있는 범위와 세션 마이그레이션 방침을 포함한다.
 
@@ -742,6 +746,8 @@ pi 방향 배치(#362 #350 #367 #370 #369 #363 #368, main `986f5916`)를 마친 
 - (1) 보안·기록 이슈가 남아 있다.
   - #177: 모델이 쓴 도구 인자가 OSC 52(클립보드 쓰기)와 `ESC[2J`를 터미널에 보낸다. 실측했다.
 - (2) 후보 산출물을 설치해 보는 단계가 publish 앞에 없다. install.sh는 CI에서 돈 적이 없다.
+  (2026-10-14 추기: #279로 CI가 install.sh를 ubuntu·macOS에서 **배포된** 릴리즈에 대해 실행한다.
+  publish 전 **후보** 산출물 설치(#382)는 별개이고 여전히 열려 있다.)
 - (3) 릴리즈 후보 라이브 기록과 Windows 데스크톱 결과가 없다.
 - (4) CHANGELOG에 Known limitations 절이 없다. README의 제한 목록은 이미 고친 #137·#260을 결함으로 적고 있다.
 

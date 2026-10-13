@@ -286,7 +286,7 @@ def _package_pointer(*parts: str) -> str | None:
     dir to the INHERITED ``PATH`` (``shell_env.py:41-43``) — measured through
     the real bash tool, 43 entries with all 42 inherited ones intact.
 
-    The true reason is the INTERPRETER, not the ``PATH``. ``install.sh:165``
+    The true reason is the INTERPRETER, not the ``PATH``. ``install.sh`` Step 5
     installs via ``uv tool install``, which puts Aelix in a per-tool
     virtualenv; only the ``aelix`` console script lands on ``PATH``, and its
     shebang points into that venv. A bare ``python`` in a shell still resolves

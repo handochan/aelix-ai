@@ -135,7 +135,7 @@ every caller degrades rather than assumes.
 Guardrail and Permission. A separate distribution was rejected on measured cost:
 it trips `tests/test_license_sync.py:19`,
 `tests/test_release_version_consistency.py:26-31`, `scripts/generate_sbom.py:37`,
-`RELEASING.md`, `install.sh:165`, and needs a new PyPI pending publisher — six
+`RELEASING.md`, `install.sh` Step 5, and needs a new PyPI pending publisher — six
 release-plumbing edits to gain nothing a package directory does not already give.
 
 ### (b) `bind_subagents` refuses four ways — and the version is a RANGE

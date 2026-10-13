@@ -362,7 +362,7 @@ def test_prompt_never_tells_the_model_to_import_aelix_in_bash() -> None:
     ``get_shell_env`` PREPENDS to the inherited ``PATH`` (``shell_env.py:41-43``),
     so that reason is measurably wrong.
 
-    The real reason is the INTERPRETER. ``install.sh:165`` installs with
+    The real reason is the INTERPRETER. ``install.sh`` Step 5 installs with
     ``uv tool install``, which isolates Aelix in a per-tool virtualenv; only the
     ``aelix`` console script is on ``PATH`` and a bare ``python`` resolves to a
     different interpreter whose ``sys.path`` excludes that venv. Reproducing a

@@ -39,7 +39,10 @@ Three environment variables configure it:
   Python request. Default `>=3.11,<3.14` — the range the pinned OpenAI SDK
   survives, and it is also the range CI runs: since #192 the full suite runs on
   3.11, 3.12 and 3.13, on Ubuntu and on Windows, so on Linux and Windows
-  whichever of them uv picks for you has been tested. CI has no macOS leg.
+  whichever of them uv picks for you has been tested. The test suite has no
+  macOS leg; the installer does — CI runs this script on macOS and checks the
+  environment lands inside the range with Homebrew's Python 3.14 on the box
+  (see *What CI measures* below).
   `uv tool install` reads neither `.python-version` nor `uv.lock`; left to
   itself it takes the newest interpreter on the machine, and on Python 3.14
   `openai<2.0` raises `'typing.Union' object has no attribute
@@ -66,6 +69,24 @@ never sees it and the installer silently falls back to its default:
 AELIX_VERSION=vX.Y.Z-beta.N AELIX_EXTRAS=tui \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
 ```
+
+**What CI measures.** The `install.sh e2e (ubuntu-latest)` and
+`install.sh e2e (macos-latest)` jobs in `.github/workflows/ci.yml` run the
+`curl … | sh` line at the top of this page on a runner with no uv — `sh` is
+dash on the first and bash's POSIX mode on the second — then run it again with
+uv present (the re-run that upgrades). Three more passes use the
+`sh -c "$(curl …)"` form just above: with `AELIX_EXTRAS=`, with `AELIX_PYTHON=`
+empty and with `AELIX_PYTHON=3.11`. Python 3.14 is put on the box before
+the third pass, so the last three run with it present (on macOS, Homebrew's
+3.14 is already on `PATH` for all five). After every pass a separate step
+(`.github/scripts/assert-install-sh.sh`) checks what the script promises: the
+`aelix` launcher is in uv's tool bin and is the `aelix` on `PATH`,
+`aelix --version` is the version the verified `SHA256SUMS` named, the
+interpreter and extras are the ones asked for, and the download directory was
+removed. Each pass is one of those two forms with only the URL changed, to the
+**checked-out** script; the fetch from raw.githubusercontent.com is not part of that
+measurement, and neither is the `uv tool update-shell` branch — on these
+runners `aelix` is already on the script's own `PATH` when it finishes.
 
 Extras:
 
