@@ -25,9 +25,10 @@ which side of the attach it fell on.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
+import re
 import sys
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -40,7 +41,7 @@ from aelix_coding_agent.tools._subprocess import run_cancellable
 
 from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
 from tests.process_tree.test_process_tree_real_processes import strays as _strays_fixture
-from tests.process_tree.test_run_contained_real_processes import _Registrar
+from tests.process_tree.test_run_contained_real_processes import _ANNOUNCE_BOUND, _Registrar
 
 # ---------------------------------------------------------------------------
 # Success path
@@ -147,10 +148,85 @@ async def test_run_cancellable_cancellation_propagates():
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
 
 
-async def test_run_cancellable_cancellation_kills_child():
+#: HOW A ``-c`` CHILD HANDS THIS FILE A PID (#388), the writer half: a temp
+#: sibling in the SAME directory (``os.replace`` is atomic within one filesystem
+#: only), then ``os.replace`` onto the name, so the marker comes into being
+#: complete. The shape :data:`CHILD_SOURCE` below always had, and the one the
+#: #406 fix gave ``tests/agents_ext/test_print_channel_spawn.py``.
+_ANNOUNCE_PID = """\
+import os
+import time
+
+def announce(path, pid):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write("%d\\n" % pid)
+    os.replace(tmp, path)
+
+"""
+
+_WHOLE_PID = re.compile(r"[0-9]+\n")
+
+
+def _announced_pid(path: Path) -> int | None:
+    """The reader half: the pid at ``path``, or ``None`` while it is not whole.
+
+    Only digits followed by the newline :data:`_ANNOUNCE_PID` ends with count,
+    so an absent, empty or half-written file is "not yet" — never a
+    ``ValueError`` and never a truncated pid — and it stays correct on its own
+    even against a writer that is not atomic. ``OSError`` and not only
+    ``FileNotFoundError``: on win32 a read that meets the ``os.replace``
+    (``MoveFileEx``) mid-flight can be refused with a sharing violation.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return int(text) if _WHOLE_PID.fullmatch(text) else None
+
+
+def test_the_pid_handover_is_whole_at_both_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each half of the handover closes the empty-file race on its own (#388).
+
+    WRITER: at the one ``os.replace`` the name does not exist yet and the source
+    already holds the whole line, in the same directory. READER: absent, empty,
+    unterminated and malformed are all "not yet"; only ``<digits>\\n`` is a pid.
+    Exercised in-process, so neither half needs the other to be correct.
+    """
+
+    seen: list[tuple[str, bool, str]] = []
+    real_replace = os.replace
+
+    def _recording_replace(src: str, dst: str) -> None:
+        source = Path(src)
+        seen.append((source.read_text(encoding="utf-8"), Path(dst).exists(), str(source.parent)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _recording_replace)
+    namespace: dict[str, Any] = {}
+    exec(_ANNOUNCE_PID, namespace)  # noqa: S102 — the child's own source, verbatim
+    target = tmp_path / "child.pid"
+    namespace["announce"](str(target), 4242)
+    assert seen == [("4242\n", False, str(tmp_path))]
+    assert _announced_pid(target) == 4242
+
+    # What a win32 child's text-mode write leaves on disk is ``\\r\\n``; read in
+    # universal-newline mode it is the same whole line.
+    target.write_text("4242\r\n", encoding="utf-8", newline="")
+    assert _announced_pid(target) == 4242
+    for text in ("", "4242", "42", "x\n", "\n"):
+        target.write_text(text, encoding="utf-8", newline="")
+        assert _announced_pid(target) is None, repr(text)
+    assert _announced_pid(tmp_path / "absent.pid") is None
+
+
+async def test_run_cancellable_cancellation_kills_child(tmp_path: Path) -> None:
     """After cancellation, the child process must be dead (not running).
 
-    Strategy: the child writes its PID to a temp file, then sleeps.  We cancel
+    Strategy: the child writes its PID to a marker file, then sleeps.  We cancel
     the task, then verify the process is not in a running state.
 
     Note: after SIGKILL the child becomes a zombie (state Z) until the parent
@@ -165,40 +241,48 @@ async def test_run_cancellable_cancellation_kills_child():
     passed no matter what the child was doing.  ``await_dead_or_zombie`` asks
     a real question on every platform and resolves "cannot tell" to ALIVE, so
     a surviving child now fails the assertion below everywhere.
-    """
-    import tempfile
 
-    pid_file = tempfile.mktemp(suffix=".pid")  # noqa: S306 — test-only
-    script = (
-        f"import os, time; "
-        f"open({pid_file!r}, 'w').write(str(os.getpid())); "
-        f"time.sleep(30)"
-    )
+    #388 — the pid used to come through ``open(p, 'w').write(str(pid))`` while
+    this case cancelled the moment ``os.path.exists`` was true. ``open``
+    creates the file EMPTY and the digits land only when the file object is
+    closed, so a cancel in between killed a child that had announced nothing
+    and the read below was ``int('')``. Both ends are fixed now, each on its
+    own (:data:`_ANNOUNCE_PID` and :func:`_announced_pid`): the file comes into
+    being whole, and only a whole line counts. The poll for it is bounded by
+    the registrar's own :data:`_ANNOUNCE_BOUND`, the bound the timeout leg's
+    gate and the cancel leg's registrar use, no longer a fixed 2.5 s of its own
+    that the child's start-up had to fit inside.
+    """
+
+    pid_file = tmp_path / "child.pid"
+    script = _ANNOUNCE_PID + f"announce({str(pid_file)!r}, os.getpid())\ntime.sleep(30)\n"
 
     async def _run():
         return await run_cancellable([sys.executable, "-c", script])
 
     task = asyncio.create_task(_run())
-    # Give the child time to write its PID.
-    for _ in range(50):
+    # Give the child time to announce its PID — a WHOLE pid, not a name — for
+    # as long as the other legs give theirs (#388 review): the registrar's
+    # ``_ANNOUNCE_BOUND``, past which an announcement is a premise failure.
+    child_pid: int | None = None
+    deadline = time.monotonic() + _ANNOUNCE_BOUND
+    while child_pid is None and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
-        if os.path.exists(pid_file):
-            break
+        child_pid = _announced_pid(pid_file)
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # Verify the child is dead (gone or zombie, not running/sleeping).
-    # A missing pid file is a spawn failure, not a pass — asserting it keeps
-    # the check below from being skipped into green.
-    assert os.path.exists(pid_file), "Child never wrote its PID — spawn failed?"
-    try:
-        with open(pid_file) as _pf:
-            child_pid = int(_pf.read().strip())
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(pid_file)
+    # A missing pid is a premise failure, not a pass — asserting it keeps the
+    # check below from being skipped into green, and naming it keeps it from
+    # reading as a kill that failed.
+    assert child_pid is not None, (
+        "PREMISE, NOT THE KILL: the child had not announced its pid "
+        f"{_ANNOUNCE_BOUND}s after the spawn, so the cancel had no started child to "
+        "end — the child's start-up on this runner (launch, interpreter, marker "
+        "write), not the kill (#388)"
+    )
 
     # Poll with a short timeout to avoid hanging: SIGKILL delivery + kernel
     # scheduling can take a few milliseconds.
@@ -375,10 +459,19 @@ class _AttachRecorder:
     asyncio's watcher may already have reaped.
     """
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, *, gate: threading.Event | None = None
+    ) -> None:
         self.trees: list[_TreeSpy] = []
         self.pgid_reads: list[tuple[str, int]] = []
         self.phase = "before-attach"
+        self._gate = gate
+        #: ``time.monotonic()`` as the real ``attach`` returned — the spawn, to
+        #: the resolution this case needs.
+        self.attached_at: float | None = None
+        #: ``time.monotonic()`` as this ``attach`` handed the tree back, i.e.
+        #: the instant the site's ``wait_for`` clock starts.
+        self.clock_started_at: float | None = None
         self._real_getpgid = getattr(os, "getpgid", None)
         if self._real_getpgid is not None:
             monkeypatch.setattr(os, "getpgid", self._recording_getpgid)
@@ -392,7 +485,21 @@ class _AttachRecorder:
     def attach(self, pid: int, **kwargs: Any) -> _TreeSpy:
         tree = _TreeSpy(ProcessTree.attach(pid, **kwargs))
         self.phase = "after-attach"
+        self.attached_at = time.monotonic()
         self.trees.append(tree)
+        if self._gate is not None:
+            # THE GATE (#388): hold the site between its attach and its
+            # ``wait_for`` until the child has announced, so the timeout's clock
+            # starts on a child that is already holding still. A BLOCKING wait on
+            # purpose — ``attach`` is synchronous at the site, and the site does
+            # nothing between it and the ``wait_for`` that could notice. AFTER
+            # the real attach, never before it: on win32 only descendants created
+            # after the assignment join the job (the site's own comment), so a
+            # gate in front of it would let the venv launcher's interpreter
+            # escape the very tree this case asserts on. Bounded by the
+            # registrar's own poll, past which an announcement cannot arrive.
+            self._gate.wait(_ANNOUNCE_BOUND)
+        self.clock_started_at = time.monotonic()
         return tree
 
     @property
@@ -453,40 +560,91 @@ async def test_the_timeout_leg_kills_through_the_tree_it_attached(
     already have reaped the child. The ``after-attach`` assertion is that
     difference; ``hard_kills == 1`` is that the kill went through the tree and
     not around it.
+
+    THE TIMEOUT'S CLOCK STARTS ON THE ANNOUNCEMENT (#388). ``run_cancellable``
+    starts its ``wait_for`` right after the attach, so with a 0.5 s timeout all
+    the child does before announcing used to sit INSIDE the timeout: on the
+    windows runner the venv launcher, the interpreter it starts (the announced
+    pid is that grandchild's, not ``proc.pid``) and the marker's file writes.
+    Measured on windows-latest over 7200 spawns (runs 38439273430 and
+    38440355388): launcher plus interpreter take a median 0.02-0.05 s (max
+    0.15 s, 0.21 s with ``-S``), but CREATING the marker's files stalls —
+    0.50-0.52 s in 5 spawns and 0.1-0.38 s in 14 more, often with the parent's
+    own poll frozen for the same interval. Once in CI (windows py3.12, run
+    37513810009) the leg returned after 0.687 s and failed "the child never
+    announced its pid" with every kill assertion above it green; that run kept
+    no stamps, so the cause is inferred, not measured — most likely such a
+    stall, which lets the kill land before the pid is written. The recorder's
+    gate now holds the site between its attach and its ``wait_for`` until the
+    child has announced, so the timeout cannot fire on a child that has not
+    started and the 0.5 s is the timeout's alone. A child that does not
+    announce at all within the registrar's poll is reported as what it is — a
+    PREMISE failure, not a kill failure.
     """
 
     marker = tmp_path / "child.pid"
-    registrar = _Registrar(marker, strays, fields=1)
-    registrar.start()
-    recorder = _AttachRecorder(monkeypatch)
+    announced_at: list[float] = []
+    announced = threading.Event()
 
-    started = time.monotonic()
+    def _on_announce(_pids: tuple[int, ...]) -> None:
+        announced_at.append(time.monotonic())
+        announced.set()
+
+    registrar = _Registrar(marker, strays, fields=1, on_announce=_on_announce)
+    registrar.start()
+    recorder = _AttachRecorder(monkeypatch, gate=announced)
+
     # ``+ 5.0`` on the WATCHDOG and not on the asserted elapsed, matching
     # ``test_bash_tool_containment.py``'s ``_bounded(task, _bound(x) + 5.0)``
     # (#222 review M-11). With the same value on both, the ``wait_for`` fires
     # first and the case dies as a ``TimeoutError`` — so ``elapsed <=
     # _bound(0.5)`` below could never be the thing that failed, and the timing
-    # assertion pinned nothing.
+    # assertion pinned nothing. ``+ _ANNOUNCE_BOUND`` for the gate, which can
+    # hold the call that long before its clock starts.
     result = await asyncio.wait_for(
         run_cancellable(_child_argv(marker, OUTLIVE), timeout=0.5),
-        timeout=_bound(0.5) + 5.0,
+        timeout=_bound(0.5) + 5.0 + _ANNOUNCE_BOUND,
     )
-    elapsed = time.monotonic() - started
-    warnings.warn(f"subprocess-helper timeout leg returned in {elapsed:.3f}s", stacklevel=1)
+    returned_at = time.monotonic()
 
     pids = registrar.settle()
     assert result is None
+    tree = recorder.tree
+    assert recorder.attached_at is not None and recorder.clock_started_at is not None
+    # THE PREMISE, named apart from the kill (#388): the child had announced
+    # before the timeout's clock started. Fails only if the gate ran out — the
+    # interpreter took longer than the registrar's whole poll to start — or if
+    # the gate is gone and a slow start let the 0.5 s run out first.
+    if announced_at:
+        announce = announced_at[0] - recorder.attached_at
+        when = f"it announced {announce:.3f}s after the attach"
+    else:
+        announce = float("nan")
+        when = f"it never announced within the registrar's {_ANNOUNCE_BOUND}s poll"
+    assert announced_at and announced_at[0] <= recorder.clock_started_at, (
+        "PREMISE, NOT THE KILL: the child had not announced its pid when the 0.5 s "
+        f"timeout's clock started ({when}) — the child's start-up on this runner "
+        "(launch, interpreter, marker write), not the tree kill (#388)"
+    )
+    elapsed = returned_at - recorder.clock_started_at
+    warnings.warn(
+        f"subprocess-helper timeout leg: announced {announce:.3f}s after the attach, "
+        f"returned {elapsed:.3f}s after the clock started",
+        stacklevel=1,
+    )
     # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it): the timeout
     # leg's latency, which the tree spy below cannot bound. It says so now.
+    # Measured from the clock's start since #388, so the start-up the gate
+    # waited out is no longer inside it.
     assert elapsed <= _bound(0.5), (
         f"the timeout leg returned after {elapsed:.3f}s, past its {_bound(0.5):.2f}s "
         "bound (0.5 s timeout + REAP_GUARD_SECONDS + 1.5 s, + 5 s on win32): the "
         "kill ladder waited longer than its guard — or the runner is loaded; "
         "rerun the file alone"
     )
-    assert recorder.tree.hard_kills == 1
-    assert recorder.tree.contained is True
-    assert recorder.tree.closed is True
+    assert tree.hard_kills == 1
+    assert tree.contained is True
+    assert tree.closed is True
     recorder.assert_captured_at_the_spawn()
 
     assert pids is not None, "the child never announced its pid — spawn failed?"
@@ -502,8 +660,11 @@ async def test_the_cancel_leg_kills_through_the_tree_it_attached(
     The cancel is fired on the child's own announcement rather than after a
     blind sleep — a cancel that beats the fork would leave the case asserting
     nothing (#221 review D.2.4 measured exactly that with an injected
-    interrupt), and on the windows runner a python child needs half a second to
-    reach its first statement.
+    interrupt). Measured on the windows runner (#388, 7200 spawns): a python
+    child reaches its first statement in a median 0.02-0.05 s (max 0.15 s,
+    0.21 s with ``-S``), but creating its marker file stalled 0.50-0.52 s in 5
+    of those spawns (the 4 the probe timed apart, inside the file's ``open()``)
+    — a rare stall a blind sleep would have to cover every time.
     """
 
     marker = tmp_path / "child.pid"
@@ -538,6 +699,14 @@ async def test_the_cancel_leg_kills_through_the_tree_it_attached(
     assert recorder.tree.closed is True
     recorder.assert_captured_at_the_spawn()
 
-    assert pids is not None, "the child never announced its pid — spawn failed?"
+    # The same premise the timeout leg names (#388): this leg cancels on the
+    # announcement, so a missing one means the cancel fired on a child that
+    # had not started — the child's start-up, not the kill under test.
+    assert pids is not None, (
+        "PREMISE, NOT THE KILL: the child never announced its pid within the "
+        f"registrar's {_ANNOUNCE_BOUND}s poll, so the cancel had no started child "
+        "to end — the child's start-up on this runner (launch, interpreter, "
+        "marker write), not the tree kill (#388)"
+    )
     state = await await_dead_or_zombie(pids[0], timeout=5.0)
     assert state in (STATE_GONE, STATE_ZOMBIE), f"child {pids[0]} still in state {state!r}"

@@ -302,6 +302,13 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Tests: the subprocess helper's timeout case no longer fails on a slow
+  Windows child start (#388).** Test-only; nothing users run changed. The case's
+  0.5 second timeout now starts once the child has announced its pid, and a
+  child that never announces is reported as a premise failure, not a failed
+  kill. The cancellation case's pid file is written atomically and read only
+  when whole.
+
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that
   prompt-toolkit treated as raw zero-width escapes. Width and filtering use that
