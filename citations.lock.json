@@ -2794,7 +2794,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:41-41": [
    "last_line_partial: bool = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1145-1147": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1149-1151": [
    "operations: BashOperations = opts.get(",
    "\"operations\"",
    ") or create_local_bash_operations(opts.get(\"shell_path\"))"
@@ -2811,7 +2811,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:346-346": [
    "**containment_spawn_kwargs(new_session=True),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:556-571": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:560-575": [
    "async def _watch_signal() -> None:",
    "\"\"\"End the tree when the abort signal fires.",
    "",
@@ -2824,7 +2824,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:64-64": [
    "# Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:916-916": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:920-920": [
    "def _format_truncation_notice("
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:312-312": [

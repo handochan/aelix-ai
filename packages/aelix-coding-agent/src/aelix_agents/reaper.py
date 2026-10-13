@@ -40,7 +40,7 @@ on POSIX — so a grandchild is the leader of its OWN group and ``killpg`` on th
 child's group cannot reach it. The descendant walk can.
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
-``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:556-571``
+``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:560-575``
 already reaps its grandchildren. That last hop was a ``_kill_group(proc.pid)``
 until #222 and is the bash tool's own ``ProcessTree`` now, so on Windows it
 reaches a grandchild whose intermediate parent already exited (a job does;

@@ -1569,7 +1569,7 @@ _PDEATH_CHILD = (
         def _bye(*_a):
             # What a REAL aelix child does on SIGTERM:
             # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
-            # abort watcher (bash.py:556-571), which since #222 ends a ProcessTree
+            # abort watcher (bash.py:560-575), which since #222 ends a ProcessTree
             # instead of calling the _kill_group this stub imitates. On POSIX that
             # is still killpg(pgid, SIGKILL), which is why the stub still stands.
             try:

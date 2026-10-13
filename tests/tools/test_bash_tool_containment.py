@@ -1896,6 +1896,34 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     held across the exit at four points, red on the base tree every run — is
     ``tests/tools/test_bash_drain_asks_the_pipe.py``; this case stays the
     natural-load half, byte for byte against ``subprocess.run``.
+
+    ITS BUDGET, ``DEADLINE * 4`` = 20 s, IS THE COMMAND'S ``timeout`` (#381).
+    One ``windows-latest`` py3.12 run hit it (``timed_out=True``) in a full
+    suite. Measured there with nothing else running, the case took 10-17 s on
+    py3.11/3.12 — not a stall: behind this case's ``_busy`` loop every GIL
+    release in the reader thread cost it a 6-10 ms re-take, and the win32
+    reader released it twice per ~5 KiB chunk, in its look and in ``read1``.
+    The look now keeps the GIL and the read still releases it (``_PipeReader``'s
+    class docstring; ``tests/process_tree/test_pipe_reader_held_look.py``), so
+    on win32 the case still pays one re-take per chunk. Over three measure
+    runs (38485362933, 38493087451, 38496608469: 600 rounds, no failure) the
+    call medians with nothing else running ranged 4.61-7.29 s on py3.11,
+    6.32-7.68 on py3.12 and 1.23-1.85 on py3.13, and 2.17-2.68 under three
+    busy processes; the worst call took 10.76 s (py3.12, its exec 10.42 s),
+    and 18 of the 240 no-load py3.11/3.12 execs took over 8 s. The base tree
+    took 11.98-14.21 s at the median on py3.11/3.12, 1.6-2.6x as long (1.7x
+    paired round by round on one machine). The ``_busy`` loop stays a
+    ``sleep(0)`` spin on purpose: its GIL pressure is the condition that
+    starved the reader in #260's six ubuntu losses. A loop that spins in 10 ms
+    bursts and idles between them took 2.87, 3.15 and 0.64 s at the median
+    (run 38485362933): that much of the time is the spin's pressure, and a
+    "realistic" loader would buy it back by taking away the pressure this
+    case exists to apply. The budget did not move either, so the worst call
+    sat about 1.86x under it. That margin is the accepted risk: a rule written
+    before the first run asked every median to stay 3x under the budget, at
+    6.7 s or less, and four of the six no-load py3.11/3.12 medians did not
+    (6.99-7.68 s). The time the exec took is in the warning below, so a
+    ``-q`` log says how near it a run came.
     """
 
     chatty = _script(tmp_path, "chatty.py", CHATTY)
@@ -1923,12 +1951,19 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     busy = asyncio.ensure_future(_busy())
     chunks: list[bytes] = []
     task = _exec_task(command, tmp_path, chunks, timeout=DEADLINE * 4)
+    started = time.monotonic()
     try:
         result = await _bounded(task, DEADLINE * 4 + 5.0, "delivery completeness")
     finally:
+        elapsed = time.monotonic() - started
         stop.set()
         await busy
 
+    warnings.warn(
+        f"delivery under a loaded loop: exec {elapsed:.3f}s of {DEADLINE * 4:.0f}s, "
+        f"{len(chunks)} chunks, on {sys.platform}",
+        stacklevel=1,
+    )
     assert result.exit_code == 0
     assert len(b"".join(chunks)) == len(reference.stdout)
     assert b"".join(chunks) == reference.stdout

@@ -100,7 +100,7 @@ def _truncation_notice(info: TruncationInfo) -> str:
     """The bracketed line that makes the cut VISIBLE in the record.
 
     Same shape as the model-facing bash tool's notice
-    (``tools/bash.py:916`` ``_format_truncation_notice``) and of pi's
+    (``tools/bash.py:920`` ``_format_truncation_notice``) and of pi's
     ``[Output truncated. Full output: …]``, with the one substitution this
     path forces: there is no ``fullOutputPath`` to cite, so the sentence names
     where the rest went instead. Silence here would be the defect #299 is

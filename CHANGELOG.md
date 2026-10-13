@@ -414,6 +414,24 @@ unwritten. Add them with the next release.
   extension wrote), which they used to clone on disk (pi refuses such an
   unsaved session).
 
+- **On Windows, a command's output reaches the agent faster while the event loop
+  is busy (#381).** The bash tool's reader thread released Python's lock twice
+  for every ~5 KiB it read (once to look at the pipe, once to read it), and
+  behind a busy event loop each release cost it 6-10 ms to get back: 2 MiB of
+  output took 9-14 s at the median on Python 3.11/3.12 instead of 0.3-0.5 s. The
+  look now keeps the lock: it is made on the reader's own handle to a pipe the
+  bash tool or a contained run has just spawned and that nothing else reads, and
+  such a look cannot wait. The read still releases it, because the bytes a look
+  counted can leave the pipe when the command writing them is killed, and a read
+  that kept the lock would then stop every thread. POSIX is unchanged, and so is
+  every drain and delivery guarantee. Tests: the delivery case that sat at
+  10-17 s of its 20 s budget on `windows-latest` with nothing else running now
+  takes 4.6-7.3 s (py3.11), 6.3-7.7 s (py3.12) and 1.2-1.8 s (py3.13) at the
+  median over three measure runs, and 10.8 s at worst, against 12.0-14.2 s at
+  the median on py3.11/3.12 for the old reader; paired round by round on one
+  machine, the old reader took 1.7x as long on py3.11/3.12 and 1.8x on py3.13.
+  The budget did not move, so the worst run kept about 1.86x headroom.
+
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that
   prompt-toolkit treated as raw zero-width escapes. Width and filtering use that

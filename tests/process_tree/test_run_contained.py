@@ -1262,9 +1262,9 @@ class _EofExplodes(_PipeReader):
     ``run_contained``. Everything else about the reader is the real one's.
     """
 
-    def __init__(self, stream: Any, state: _ReadState) -> None:
+    def __init__(self, stream: Any, state: _ReadState, **kwargs: Any) -> None:
         self._eof = False
-        super().__init__(stream, state)
+        super().__init__(stream, state, **kwargs)
 
     @property
     def eof(self) -> bool:

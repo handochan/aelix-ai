@@ -128,6 +128,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import functools
+import io
 import os
 import select
 import signal
@@ -1172,9 +1174,9 @@ class _PipeReader(threading.Thread):
       an empty ``FIONREAD`` taken by the ASKING thread is exact. On win32 the
       asking thread must never query the pipe (libuv's ``src/win/pipe.c``
       records that a query on a synchronous pipe handle blocks while another
-      thread's read is pending on it, which is where this thread parks; that
-      ``PeekNamedPipe`` does the same is inferred, not measured), so this
-      thread looks at its own handle before every blocking ``read1``
+      thread's read is pending on it, which is where this thread parks, and
+      ``PeekNamedPipe`` does the same, measured since #381: :class:`_HeldPipe`),
+      so this thread looks at its own handle before every blocking ``read1``
       (``PeekNamedPipe``) and "drained" is "even, and that look saw 0".
     * :meth:`caught_up` — for a helper that never lets the pipe empty. The
       drain asks for a pin (:meth:`pin_after`) — at the bash tool the stamp of
@@ -1207,7 +1209,33 @@ class _PipeReader(threading.Thread):
     lost SILENTLY if this thread is starved for one whole grace; at most what
     one read takes plus what the pipe holds. Closing it needs an overlapped read
     end (``asyncio.windows_utils.pipe``'s shape, and libuv's), not measured
-    here, and the per-read ``PeekNamedPipe`` is an unmeasured cost there.
+    here.
+
+    THE BLOCKING BRANCH LOOKS HOLDING THE GIL (#381). Every call that releases
+    the GIL costs this thread a whole re-take, and on ``windows-latest`` with
+    the loop thread busy (a coroutine that never awaits anything slower than
+    ``sleep(0)``) one re-take measured 6-10 ms: the loop thread drops the GIL in
+    every ``GetQueuedCompletionStatus(0)`` and takes it straight back. The
+    likely reading, not a measured fact, is that this thread waits out the 5 ms
+    switch interval rounded up by the 15.6 ms timer: ``timeBeginPeriod(1)`` cut
+    the exec to about 45-60%, while ``setswitchinterval(0.001)`` barely helped.
+    Until #381 this branch released it twice per chunk, in
+    ``_winapi.PeekNamedPipe`` and in ``read1``, and a chunk is at most what the
+    pipe holds (5 KiB there), so 2 MiB of output took 411 chunks and 9-12 s on
+    py3.11/3.12 (3.8 s on 3.13), against 0.3-0.5 s with the loop idle. So on
+    win32 a ``sole_reader``'s look, ``PeekNamedPipe`` on its own duplicate of
+    the pipe handle, keeps the GIL (:class:`_HeldPipe`, which states the
+    precondition that keeps it from waiting; a wait there would stop every
+    thread), and the read after a look that saw bytes asks ``read1`` for no
+    more than it saw. That read still releases the GIL, ONE re-take per chunk
+    instead of two: the bytes a look counted can leave the pipe (a writer that
+    dies with a write pending takes it back), and a read that held the GIL
+    would then wait with every thread stopped. Only a plain
+    ``io.BufferedReader`` over a plain ``io.FileIO`` gets the held look
+    (:func:`_held_pipe`): any other stream's ``read1`` is its own business, and
+    that is also what keeps the ``preread``/``inread`` holds on the residual
+    above exactly where they were. The numbers are in the commit that made
+    this change.
     """
 
     def __init__(
@@ -1218,6 +1246,7 @@ class _PipeReader(threading.Thread):
         on_chunk: Callable[[bytes], None] | None = None,
         on_eof: Callable[[], None] | None = None,
         platform: str | None = None,
+        sole_reader: bool = False,
     ) -> None:
         super().__init__(daemon=True)
         self._stream = stream
@@ -1276,6 +1305,26 @@ class _PipeReader(threading.Thread):
         #: with no probe). Decided HERE, on the caller's thread and before
         #: ``start``, so :meth:`drained` never sees the branch change under it.
         self._poll_fd, self._poller = _pollable(fd, self._probe, platform=platform)
+        blocking = self._poll_fd is None and self._probe is not None
+        #: win32's blocking branch: the reader's OWN handle to its pipe, looked
+        #: at holding the GIL (#381; :class:`_HeldPipe` states the precondition
+        #: that keeps that look from waiting), or ``None``. With one, the look is
+        #: its ``peek``, and the read after a look that saw bytes asks for no
+        #: more than it saw. Only for a ``sole_reader`` stream: the caller's word
+        #: that it hands over a FRESH stream (nothing read from it yet) that no
+        #: other thread will ever read, which is half of that precondition and
+        #: which no check can see. The bash tool and :func:`run_contained` give
+        #: it for the ``Popen`` pipe they have just made; every other caller
+        #: keeps the GIL-releasing look.
+        self._held = _held_pipe(stream, fd) if blocking and sole_reader else None
+        #: Closes :attr:`_held`'s handle once: called by :meth:`run` after its
+        #: read loop, or by the collector for a reader that never ran. Not at
+        #: exit, when a daemon reader may still be looking.
+        self._release_held: weakref.finalize | None = None
+        if self._held is not None:
+            self._probe = self._held.peek
+            self._release_held = weakref.finalize(self, self._held.close)
+            self._release_held.atexit = False
 
     def run(self) -> None:
         stream = self._stream
@@ -1311,6 +1360,7 @@ class _PipeReader(threading.Thread):
         # ``self.chunks.append`` and re-fill the list ``detach`` just emptied.
         has_on_chunk = self._on_chunk is not None
         poller = self._poller
+        bounded = self._held is not None
         try:
             while True:
                 if poll_fd is not None and poller is not None:
@@ -1322,7 +1372,15 @@ class _PipeReader(threading.Thread):
                     # below is as early as it can be — the class docstring's
                     # win32 residual is the gap between the two.
                     self._look(always=True)
-                    chunk = read(_READ_CHUNK_BYTES)
+                    # #381: after a held look that saw bytes, ask for no more
+                    # than it saw. Never for 0: ``read1(0)`` answers ``b""``,
+                    # which is this loop's EOF. Either way the read releases
+                    # the GIL, and only this thread waits if the bytes the look
+                    # counted have left the pipe (:class:`_HeldPipe`).
+                    seen = self._mark[3]
+                    chunk = read(
+                        min(seen, _READ_CHUNK_BYTES) if bounded and seen > 0 else _READ_CHUNK_BYTES
+                    )
                     self._flip(busy=True)
                 if not chunk:
                     self.eof = True
@@ -1364,6 +1422,11 @@ class _PipeReader(threading.Thread):
             # portable.
             with contextlib.suppress(Exception):
                 stream.close()
+            # The reader's own handle (#381), after the loop: no look can
+            # follow, on this thread or any other (:class:`_HeldPipe`).
+            if self._release_held is not None:
+                with contextlib.suppress(Exception):
+                    self._release_held()
             # ONE call site for the three exits, because the ``finally`` IS all
             # three: the EOF ``return``, the caught ``(OSError, ValueError)``
             # and anything else on its way out. After the close, so a waiter
@@ -1688,6 +1751,202 @@ def _pipe_probe(stream: Any) -> tuple[Callable[[], int] | None, int | None]:
         return None, fd
 
 
+@dataclass(frozen=True)
+class _HeldPipeApi:
+    """What :class:`_HeldPipe` calls — the real win32 set, or a test's (#381).
+
+    ``peek`` is ``kernel32``'s ``PeekNamedPipe`` through a prototype that KEEPS
+    the GIL (:func:`_held_pipe_api`), and it is the only such call. The rest run
+    on the caller's thread when a reader is built, or at its close, and release
+    the GIL as usual.
+    """
+
+    peek: Callable[..., int]
+    last_error: Callable[[], int]
+    osfhandle: Callable[[int], int]
+    duplicate: Callable[[int], int]
+    close: Callable[[int], None]
+
+
+@functools.cache
+def _held_pipe_api() -> _HeldPipeApi | None:
+    """The win32 :class:`_HeldPipeApi`, or ``None`` off win32 or when it cannot be built.
+
+    ``ctypes`` releases the GIL around a foreign call unless the function
+    carries ``FUNCFLAG_PYTHONAPI``, which is exactly what :class:`ctypes.PyDLL`
+    is; ``peek`` comes from ``WinDLL``'s stdcall with that flag added, so the
+    prototype is right on 32-bit Windows too, and ``use_last_error`` keeps the
+    code a failure is raised with. ``duplicate`` is the reader's own handle to
+    the same pipe: same access, NOT inheritable. Built once per process, and a
+    failure to build it is a cached ``None`` too: the reader then looks as it
+    did before #381, releasing the GIL, which costs only time.
+
+    NOTHING BUT :meth:`_HeldPipe.peek` MAY CALL ``peek``. A GIL-held call that
+    waited would stop every thread in the process with it; :class:`_HeldPipe`
+    states the precondition under which this one does not wait.
+    """
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import _ctypes
+        import _winapi
+        import msvcrt
+
+        class _GilHeldDLL(ctypes.WinDLL):
+            _func_flags_ = _ctypes.FUNCFLAG_STDCALL | _ctypes.FUNCFLAG_PYTHONAPI
+
+        peek = _GilHeldDLL("kernel32", use_last_error=True).PeekNamedPipe
+        peek.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        peek.restype = ctypes.c_int
+        me = _winapi.GetCurrentProcess()
+
+        def duplicate(handle: int) -> int:
+            return int(
+                _winapi.DuplicateHandle(me, handle, me, 0, False, _winapi.DUPLICATE_SAME_ACCESS)
+            )
+
+        return _HeldPipeApi(
+            peek=peek,
+            last_error=ctypes.get_last_error,
+            osfhandle=msvcrt.get_osfhandle,
+            duplicate=duplicate,
+            close=_winapi.CloseHandle,
+        )
+    except Exception:  # an ``ImportError``, an ``AttributeError``, an ``OSError``
+        return None
+
+
+class _HeldPipe:
+    """win32: the reader's OWN handle to its pipe, looked at holding the GIL (#381).
+
+    :meth:`peek` is the blocking branch's look, and the only call this object
+    makes holding the GIL (:func:`_held_pipe_api`): if it ever waited, every
+    thread in the process would wait with it, Ctrl+C included. The read that
+    follows the look is the stream's own ``read1``, which releases the GIL.
+
+    WHAT MAKES ``PeekNamedPipe`` WAIT, AND WHAT DOES NOT. It takes nothing and
+    never waits for data. It waits for the pipe's FILE OBJECT: a synchronous
+    handle lets one request at a time through its file object, so a look waits
+    out another thread's pending read on it. Measured on ``windows-latest``,
+    py3.11/3.12/3.13 alike (run 38464072421): a look made while another
+    thread's read was pending waited 1.500 s, until a write completed that
+    read, on the original handle AND on a duplicate, which shares the file
+    object; with the GIL held the whole process froze until it was killed. The
+    WRITER's side does not make it wait (run 38466171178): a writer's pending,
+    over-quota write is counted (a look counted 1 MiB on a 4 KiB pipe), and
+    when that writer dies with the write pending the write is cancelled and
+    its bytes leave the pipe: the held look after it answered 0 and the
+    process ran on; with no writer left it failed with ``ERROR_BROKEN_PIPE``.
+    That is also why only the look is held: a READ of what a look counted can
+    find those bytes gone and wait for the next write, and a GIL-held read
+    did, freezing the process (#381 review, round 2).
+
+    THE PRECONDITION, then: the look is made on a handle that names THIS pipe's
+    file object for the whole call, while no other request is pending on that
+    file object. Both halves, checked against every caller and every closer:
+
+    1. THE HANDLE. It is the reader's own duplicate of the stream's handle,
+       made on the constructing thread before the reader starts, not
+       inheritable, held by nothing outside this object, and closed only by
+       :meth:`close`, which marks it closed under the lock :meth:`peek` holds
+       and closes it once that lock is released. The mark waits for a look in
+       flight and every later look sees it, so no look starts on a closed
+       handle and no close lands inside a look. :meth:`close` is called by the
+       reader thread after its read loop (:meth:`_PipeReader.run`'s
+       ``finally``) or by the finalizer of a reader that never ran. A
+       ``stream.close()`` from any thread (none does today, but ``Popen``'s
+       ``stdout`` is public) closes the STREAM's handle, never this one, so a
+       handle value Windows hands out again, say to a pipe another thread is
+       blocked reading, never becomes the one looked at.
+       (Measured, run 38485362933: looking through the stream's own handle
+       instead, a look after that close and reuse froze the process.)
+    2. NOTHING ELSE IS PENDING ON THE FILE OBJECT. The pipe's only read is the
+       reader's own ``read1``, on this same thread, after the look has
+       returned, so it is never pending during one. That the stream has no
+       other reader is the ``sole_reader`` word (:class:`_PipeReader`), which no
+       check here can see; the two callers that give it, the bash tool's
+       ``exec`` and :func:`run_contained`'s ``_start_reader``, pass the ``Popen``
+       pipe they have just made and never read it themselves. The only other
+       code that consults the pipe, :meth:`_PipeReader.drained` and
+       :meth:`_PipeReader.pin_after`, reads the look's mark on this branch and
+       never queries it. Teardown, a cancel, :meth:`_PipeReader.detach`,
+       ``ProcessTree.close`` and the child's exit touch neither handle. No
+       other process shares the file object: ``Popen`` makes only the child's
+       end of the pipe inheritable, ``os.pipe``'s ends are not, and neither is
+       the duplicate.
+
+    Only a plain :class:`io.BufferedReader` over a plain :class:`io.FileIO`
+    gets one (:func:`_held_pipe`): its ``read1`` with an empty buffer is one
+    raw read of the size asked, on the calling thread, buffering nothing, so
+    the read stays on this thread and the look's count stays the pipe's.
+    COST: one more handle per reader, for the reader's life; a reader parked
+    for good on a holder's pipe keeps it with the stream's own.
+    """
+
+    def __init__(self, api: _HeldPipeApi, handle: int) -> None:
+        self._api = api
+        #: The reader's own handle, or ``None`` once :meth:`close` has begun.
+        self._handle: int | None = handle
+        #: Held across every look and across the close's mark (not its
+        #: ``CloseHandle``), so "closed" is one step.
+        self._lock = threading.Lock()
+
+    def peek(self) -> int:
+        """How many bytes the pipe holds. The look; raises ``OSError``/``ValueError``."""
+
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                raise ValueError("the reader's own pipe handle is closed")
+            avail = ctypes.c_uint32()
+            if not self._api.peek(handle, None, 0, None, ctypes.byref(avail), None):
+                code = self._api.last_error()
+                raise OSError(code, f"PeekNamedPipe failed (Windows error {code})")
+            return int(avail.value)
+
+    def close(self) -> None:
+        """Close the reader's own handle, once. Any thread; best effort."""
+
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                self._api.close(handle)
+
+
+def _held_pipe(stream: Any, fd: int | None) -> _HeldPipe | None:
+    """The blocking branch's :class:`_HeldPipe` on ``stream``, or ``None`` (#381).
+
+    Asked only for a ``sole_reader`` stream (:class:`_PipeReader`). ``None`` off
+    win32 (:func:`_held_pipe_api`); for anything but a plain
+    :class:`io.BufferedReader` over a plain :class:`io.FileIO`, whose ``read1``
+    is one raw read on the calling thread (any other stream's ``read1`` is its
+    own business, and the #260 ``preread``/``inread`` holds are such streams);
+    and when the duplicate cannot be made. The reader then looks as it did
+    before #381, releasing the GIL, which costs only time. NEVER raises.
+    """
+
+    if fd is None or type(stream) is not io.BufferedReader:
+        return None
+    if type(getattr(stream, "raw", None)) is not io.FileIO:
+        return None
+    api = _held_pipe_api()
+    if api is None:
+        return None
+    try:
+        return _HeldPipe(api, api.duplicate(api.osfhandle(fd)))
+    except Exception:  # a closed fd, an fd with no handle, a failed duplicate
+        return None
+
+
 def _pollable(
     fd: int | None, probe: Callable[[], int] | None, *, platform: str | None
 ) -> tuple[int | None, Any]:
@@ -1717,7 +1976,9 @@ def _start_reader(stream: IO[bytes] | None, state: _ReadState) -> _PipeReader | 
 
     if stream is None:  # pragma: no cover — both streams are always PIPE here
         return None
-    reader = _PipeReader(stream, state)
+    # ``sole_reader``: ``proc.stdout``/``stderr`` straight from the spawn, read by
+    # nothing but this reader (#381, :class:`_HeldPipe`).
+    reader = _PipeReader(stream, state, sole_reader=True)
     reader.start()
     return reader
 

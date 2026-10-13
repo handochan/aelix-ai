@@ -1255,8 +1255,11 @@ empty, so only the group kill of the paragraph below reaches anything there.
   that spot — all 1000 B came back, with the notice). On win32
   the drain must not query a pipe another thread is blocked reading (libuv's
   `src/win/pipe.c` records that a query on a synchronous pipe handle blocks
-  while another thread's read is pending on it; that `PeekNamedPipe` does the
-  same is inferred, not measured), so the proof there is the reader's own look
+  while another thread's read is pending on it; `PeekNamedPipe` does the same,
+  measured in #381's review on `windows-latest`: a look made while another
+  thread's read was pending waited 1.500 s, until a write completed that read,
+  on the original handle and on a duplicate, run 38464072421), so the proof
+  there is the reader's own look
   before each read, and the residual is bytes that arrive after its last empty
   look and are not handed on when the drain asks — still in the pipe, or inside
   a read — lost SILENTLY if the reader is starved for a whole grace. That

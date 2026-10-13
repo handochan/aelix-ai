@@ -439,11 +439,15 @@ class _LocalBashOperations:
             # unbounded ``_python_exit`` join. ``_wait`` below keeps its
             # ``to_thread`` because it blocks on the ROOT only, which the
             # ``proc.kill()`` belt in ``_end_the_tree`` always ends.
+            # ``sole_reader``: the pipe this spawn just made, read by nothing
+            # but this reader (#381: on win32 its look then keeps the GIL;
+            # ``_HeldPipe`` says why that look cannot wait).
             reader = _PipeReader(
                 proc.stdout,
                 state,
                 on_chunk=lambda chunk: _post(_deliver, chunk),
                 on_eof=lambda: _post(eof.set),
+                sole_reader=True,
             )
             reader.start()
         except BaseException:
