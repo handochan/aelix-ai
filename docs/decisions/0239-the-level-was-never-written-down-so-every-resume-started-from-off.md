@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -363,7 +363,9 @@ a local recorder; driver and outputs in `.omc/probes/376-live/impl/`):
 
 - **No `model_change` for the launch model.** pi writes one per new session;
   aelix reads the responses instead (decision 2), which also covers every
-  session written before this amendment.
+  session written before this amendment. *Retired 2026-10-14 by the #413
+  amendment below: a new session now records it; the responses still cover
+  older sessions.*
 - **An uncatalogued id can come back** (decision 4); pi's `getModel` knows none.
 - **The fallback is aelix's launch, not `findInitialModel`.** aelix's launch
   never auto-picks the first available model when no default is set; a resume
@@ -414,3 +416,215 @@ a local recorder; driver and outputs in `.omc/probes/376-live/impl/`):
   is superseded by this amendment. Its ordering note is kept: the model is
   resolved in the harness build, before `_seed_startup_state` and
   `_finish_session_replacement` clamp the level against it.
+
+## Amendment (2026-10-14, #413) — a new session records the model it starts on
+
+The #376 divergence "no `model_change` for the launch model" left a hole that
+amendment's decision 2 named: a session whose every answer carried no
+provenance had no record at all. An assistant message has no `provider`/`model` when the turn
+failed before any request — the harness's turn-failure message, e.g. an
+extension's `context` hook that raised.
+
+**Measured on `main` `7d163232`** (fake keys, `models.json` pointing anthropic
+at a local mock; driver and outputs in `.omc/probes/413-live/impl/`):
+
+- `-p hi`, `--mode json hi`, `--mode rpc` (`get_state`, quit) and RPC
+  `new_session`, each on `--provider anthropic --model claude-haiku-4-5`: the
+  session file held the header and the messages, never a `model_change`.
+- The issue's case: `-p hi -e <extension whose context hook raises>` wrote a
+  user message and an assistant failure with no `provider`/`model`; `aelix
+  --mode rpc --continue` with settings `defaultModel=claude-sonnet-4-5` and no
+  flags then reported `get_state` `anthropic/claude-sonnet-4-5` — the default,
+  not the model the session started and failed on.
+
+### Decision
+
+1. **A session created with no conversation records the model it starts on as a
+   `model_change`, when it is created** — as pi's `createAgentSession` does for
+   every session without messages (`core/sdk.ts:449-459` at `pi@3daa20280`):
+   before `bindExtensions` emits `session_start`, and on `newSession` before its
+   `setup` runs (pi's `createRuntime` precedes `options.setup`,
+   `agent-session-runtime.ts:226-262`). One CLI helper,
+   `cli.entry._record_session_start_model`, called at launch before
+   `create_agent_session_runtime` emits `session_start`, and for every rebuild
+   from the CLI harness factory, inside the runtime's `_apply` — before `setup`,
+   before the carried thinking level, before `session_start`: `/new`, `/fork`,
+   `/resume`, `/import`, `/reload`; RPC `new_session`, `fork`,
+   `switch_session`; an extension's `ctx.new_session` / `fork` /
+   `switch_session`. "No conversation" is pi's `hasExistingSession` —
+   `build_session_context(get_branch()).messages` is empty at creation — so a
+   resume, `--continue`, a fork or `/clone` that keeps messages writes nothing,
+   whatever model the run is on: its answers name theirs, and a `--model` for one
+   run is not a pick to remember before a prompt runs on it. A `/fork` before the
+   first user message (the empty branch) and `/new` record. Messages written
+   after creation — a `session_start` handler's triggered turn, awaited or not,
+   and `new_session`'s `setup` seed — land after the record and cannot suppress
+   it.
+2. **Where the model is known only after `session_start`, the record follows the
+   late-route decision** (ADR-0250 §2.11): #367's pending launch route (guard 2's
+   OpenRouter-as-written, an unresolved placeholder) and a rebuild — a `/new`,
+   fork, `switch_session`, `/import` or `/reload` in a session launched on such
+   a route —
+   that resolved to one or that the factory holds for a late provider. A provider
+   that `session_start` registers may still hold such a session: recorded at
+   creation, a rebuild whose own `session_start` registers the provider its
+   inputs name would have recorded the OpenRouter route it never runs on (verify
+   round 1, B2). A pending launch waits on the hold's placeholder under the turn
+   gate; a HELD rebuild gets the placeholder and the gate too, but a pending
+   rebuild that is not held gets neither (the factory calls `hold_turns` only
+   when it holds), so its `session_start` turn runs on the guard-2 route. Whether
+   it is a new session is the flag read when it was created empty, not the
+   messages at record time, so **in this case the record follows messages
+   written after creation** — `setup`'s seed, a handler's `trigger_turn` (on a
+   pending launch the one the turn gate refused and `_finish_refused_turns`
+   wrote). Two rules keep the reopen where pi's lands, as far as those messages
+   go: when any one of them names its model (an assistant message with
+   `provider` and `model`, such as the answer a handoff-style `setup` seeds —
+   also when a turn that failed before the request follows it), no record is
+   written — pi's record precedes that answer and its reopen lands on the
+   answer, which ours, written after it, would outrank (review rounds 3-4); when
+   none does (a turn that failed before the request), the record is written and
+   the reopen lands on it (`resolve_resumed_model` reads the latest). A
+   `model_change` entry that `setup` writes is not one of those messages: see the
+   known corners below. A launch the decision refuses
+   (print/json) or holds, and a rebuild left on the placeholder, record nothing:
+   the placeholder is never recorded.
+3. **The latest record decides a second line.** A record equal to the latest one
+   on the branch (`resolve_resumed_model`) is not written, so reopening an empty
+   session on the same model adds nothing. Reopened on another model it records
+   that one — no prompt ran on the first, and #376's decision 1 lets the launch
+   inputs decide an empty session's model — and back on an earlier model it
+   records it again (the latest, not any, record is compared). A
+   `session_start` handler's `set_model` records itself after the start record
+   (#376's decision 8), pi's order: the file then reads the launch model, then
+   the handler's. On a pending launch (decision 2) the handler runs under the
+   turn gate, so `AgentHarness._records_model` does not record its pick; the
+   deferred start record then names the handler's model, and the file holds that
+   one record — the reopen lands on the same model.
+4. **A credential is not asked.** pi records at creation whatever the auth state;
+   so does aelix: a resolved model is recorded with no key configured yet, so a
+   session launched before `/login` whose turn is written after `/login` and
+   fails before the request still reopens on it. A prompt refused for want of a
+   key (ADR-0263) writes nothing, so a session holding only that refusal is
+   still empty: its reopen follows the launch inputs (#376's decision 1) and
+   records the model it reopens on. Only a model no prompt could ever be sent to
+   is skipped:
+   `AgentHarness`'s placeholder rule (`api` `unknown` or empty, no provider or
+   id) and turns still held. ADR-0263 (#416) is about prompt records — a prompt
+   with no configured request auth is refused before its user message is
+   written — and is unchanged.
+5. **A storage failure on the record is a warning.** `read_only`
+   (`ReadOnlySessionStorage`, ADR-0244) is swallowed silently, as
+   `AgentHarness.set_model` swallows it. A failed append (`SessionError` code
+   `storage`: EACCES, ENOSPC, a read-only mount) prints `Warning: could not
+   record the model this session starts on …` on stderr and the session goes on:
+   before #413 such a file opened and its prompts ran, writing nothing and
+   saying nothing (`-p hi` and an RPC prompt on a 0444 file at `7d163232`: rc 0,
+   file unchanged, stderr empty; only `--thinking` failed on it, at launch with a
+   `SessionError` traceback, then as now — `.omc/probes/413-live/r3/rokit/`), and
+   a rebuild is already live on the new session by then (RPC `switch_session`
+   answers success). Any other code (a leaf missing from the tree, an entry that
+   cannot be serialized) is broken session state and propagates, as from every
+   other append. In the TUI the launch's warning is written before the chrome
+   paints and can be erased by it (the #98 note); the record is then missing,
+   as the line said.
+6. **When the file exists does not change.** aelix publishes a new session's
+   file at launch (header only) where pi defers it to the first message; the
+   record lands in a file that was already there. No session file is created to
+   hold the record.
+7. **Appended, never inserted.** A delegated child's file starts with
+   `aelix.child_origin` (ADR-0243 §2); the child's launch appends its record
+   after it, so the origin stays first and §8's warning still finds it.
+8. **A session with no conversation is not cloned.** `/clone` and RPC `clone`
+   refused a fresh session before #413 because it had no leaf; the start record
+   gives it one. They now ask for a conversation — a user or assistant message
+   anywhere in the file, pi's `SessionManager._hasConversation`
+   (`session-manager.ts:1166-1170`) — as well as a leaf, and refuse without one
+   in the words `7d163232` used: `Nothing to clone (session is empty).` and
+   `Cannot clone session: no current entry selected`, on disk and under
+   `--no-session`. pi's interactive guard is a leaf check
+   (`interactive-mode.ts:5554-5559`), but its runtime then refuses a persisted
+   session without a conversation — `SessionManager._persist` writes no file
+   before one (`session-manager.ts:1172-1186`), and `fork` throws `This session
+   has not been saved yet. Send a message before cloning or forking it.`
+   (`agent-session-runtime.ts:312-313`); only its in-memory (`--no-session`)
+   path clones such a session. Review round 2 said aelix's clone of a fresh
+   session "matches pi's leaf guard"; that read only the interactive guard and
+   was wrong (review round 4, cross F1). Measured
+   (`.omc/probes/413-live/r4/`): at `7d163232` a fresh session was refused on
+   both surfaces, on disk and under `--no-session`; at the round-3 commit it was
+   cloned on disk and, under `--no-session`, reached an older in-memory fork bug
+   (`'SessionMetadata' object has no attribute 'cwd'`), now refused again. One
+   change from `7d163232`: a session with no conversation but other entries
+   (only a name, a `/model` pick, `!cmd` output or a `custom_message` entry an
+   extension wrote - a leaf, but no user or assistant message) is now refused
+   where `7d163232` cloned it on disk (and hit that fork bug under
+   `--no-session`), as pi refuses it on disk.
+
+### Divergences from Pi (ADR-0235: recorded, not argued)
+
+- **The thinking level is not recorded beside it.** pi appends
+  `thinking_level_change` for every new session too (`sdk.ts:458`). Here `off`
+  is the kernel's unset sentinel, and writing it would turn every fresh
+  session's level into a decision that outranks `defaultThinkingLevel` on
+  resume (decisions 4-6 of this ADR); the levels already recorded (a `--thinking`
+  flag, a carried level on `/new`) are unchanged. Left to #286.
+- **A pending launch, and a pending or held rebuild, records after
+  `session_start`** (decision 2), so after the messages written by then, and not
+  at all when one of them names its model. pi has no late route: its model is
+  resolved before any handler runs.
+- **An empty session reopened on another model records that one**; pi never
+  reopens an empty session (it was never written to disk).
+- **A failed append is a warning.** pi writes the file lazily, so its record
+  cannot fail at creation.
+- **CLI only.** The record lives in the CLI (`cli/entry.py`), where the launch
+  route and the late-route rule are; `aelix-server`'s WS factory and an embedder
+  calling `create_agent_session_runtime` directly write none, as before.
+
+### Known corners (left to a follow-up issue)
+
+- **A deferred record outranks a `model_change` that a pending rebuild's
+  `setup` writes** when no later answer names its model (verify N1, review
+  round 3): a guard-2 launch, then an extension's `ctx.new_session` whose
+  `setup` writes `model_change` opus and a turn whose answer carries no
+  provenance leaves `[model_change opus, user, assistant, model_change
+  guard-2]`, which reopens on the guard-2 route; after a resolved launch, and in
+  pi (whose record precedes `setup`), the same flow reopens on opus. Decision 2's
+  check reads messages only.
+- **A pending rebuild whose `setup` raises never records** (cross F6, review
+  round 3): the exception propagates, but the runtime is already live on the new
+  session, unheld and on the guard-2 route; the deferred record waits for an
+  after-`session_start` callback that never runs, so after one turn that failed
+  before the request the reopen lands on the settings default — the #413
+  defect, in this corner. pi records in `createRuntime` before `options.setup`
+  (`agent-session-runtime.ts:246-257`). Not a regression: before #413 nothing
+  was recorded at all.
+
+### Consequences
+
+- A beta.2 reader opens these sessions unchanged (`model_change` was always a
+  known entry type): measured with a `v0.1.0-beta.2` worktree's kernel and CLI
+  on files this change wrote (`.omc/probes/413-live/impl/compat*.out`).
+- Sessions written before #413 keep restoring from their responses (#376's
+  decision 2); nothing is migrated.
+- A launch with no key now leaves a file holding the record, where it left the
+  header only.
+- The session viewer (#296) is not built; when it is, a session's first entry
+  (after a child's origin) names the model it started on.
+- `harness/core.py`'s `set_model` docstring still says aelix writes no
+  `model_change` for a launch model; it is owned by another change in this batch
+  and is corrected in a follow-up.
+- Review round 2 (2026-10-14) moved the record from after `session_start` to
+  creation (decisions 1-2), stopped asking a credential (4), turned a storage
+  failure into a warning (5) and recorded the `/clone` change (8); measured in
+  `.omc/probes/413-live/r2/`.
+- Review round 3 (2026-10-14) left the deferred record out when a message
+  written since names its model (decision 2) and corrected decision 2's account
+  of a pending rebuild, decision 3's pending launch, decision 4's no-key claim
+  and decision 5's read-only claim; measured in `.omc/probes/413-live/r3/`.
+- Review round 4 (2026-10-14) replaced decision 8 (a fresh session's clone is
+  refused again, as at `7d163232`; the "matches pi" claim was wrong),
+  clarified decision 2's wording (round 3 already read every message written
+  since creation; round 4 added the row that pins it) and named `/import`
+  among the pending rebuilds, and recorded the known corners above;
+  measured in `.omc/probes/413-live/r4/`.

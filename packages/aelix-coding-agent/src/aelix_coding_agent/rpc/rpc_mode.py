@@ -1591,6 +1591,26 @@ async def _handle_fork(
     )
 
 
+async def _has_conversation(session: Any) -> bool:
+    """#413 — does ``session`` hold a user or assistant message yet?
+
+    pi's ``SessionManager._hasConversation`` (``session-manager.ts:1166-1170``
+    at ``pi@3daa20280``), the test that decides whether pi has written the file:
+    pi's runtime refuses to clone or fork a persisted session without one
+    (``agent-session-runtime.ts:312-313``, "This session has not been saved
+    yet"). aelix refuses ``clone`` of such a session with the message it gave
+    before #413, when a new session had no entry and so no leaf; #413's start
+    record (``cli.entry._record_session_start_model``) gives it one. Read over
+    every entry of the file, not the branch, as pi reads ``fileEntries``.
+    """
+
+    return any(
+        entry.type == "message"
+        and getattr(entry.message, "role", None) in ("user", "assistant")
+        for entry in await session.get_entries()
+    )
+
+
 async def _handle_clone(
     runtime_host: AgentSessionRuntime,
     cmd: Any,  # ``RpcCommandClone``
@@ -1604,7 +1624,10 @@ async def _handle_clone(
          580 verbatim.
       2. Error envelope ``"Cannot clone session: no current entry
          selected"`` when ``leaf_id`` is :data:`None` (Pi parity
-         ``:582``).
+         ``:582``), and (#413) the same envelope when the session holds no
+         conversation yet: since #413 a new session's start record is a
+         leaf, and this keeps the refusal such a session got before it, on
+         disk and under ``--no-session`` alike (:func:`_has_conversation`).
       3. Delegate to :meth:`AgentSessionRuntime.fork` with
          ``position="at"`` — Pi line 584. The ``position="at"``
          differentiates clone from fork: clone forks AT the current leaf
@@ -1630,7 +1653,7 @@ async def _handle_clone(
             error="Cannot clone session: no current entry selected",
         )
     leaf_id = await session.get_leaf_id()
-    if leaf_id is None:
+    if leaf_id is None or not await _has_conversation(session):
         return RpcErrorResponse(
             id=cmd.id,
             command="clone",

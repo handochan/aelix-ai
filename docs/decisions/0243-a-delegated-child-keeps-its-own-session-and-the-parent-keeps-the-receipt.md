@@ -17,6 +17,9 @@ recorded in §9).
 **Amended 2026-10-07 (#354): the parent's thinking level now reaches a child
 that inherits the parent's model, by the same late-bound rule — see
 `## Amendment (2026-10-07, #354)`.**
+**Amended 2026-10-14 (#413): a child's own launch appends a `model_change`
+after `aelix.child_origin`, which stays the file's first entry — see
+`## Amendment (2026-10-14, #413)`.**
 Design spec: `.omc/specs/199-design-2026-09-19.md` (rev 1), with its critique
 (`199-design-critique-2026-09-19.md`) and research map
 (`199-surface-map-2026-09-19.md`) beside it.
@@ -638,3 +641,16 @@ before #354 and filed rather than fixed here:
 - #401 — a provider-only profile cannot run at all (the child CLI refuses
   `--provider` without `--model`), so the "provider without a model names a
   route" rule above has no live effect yet.
+
+## Amendment (2026-10-14, #413) — the child's file names its model after the origin
+
+ADR-0239's #413 amendment records the model a session with no conversation
+starts on. A child opens the file the parent published (§2) with `--session`,
+and that file holds the origin and no messages, so the child's launch now
+appends one `model_change` naming the model it starts on — after the origin,
+parented on it, before `session_start` and the child's first user message. The
+origin is still the first entry with `parentId: null` (§2), and §8's warning
+still finds it (`tests/cli/test_session_start_model_413.py`, the child row). A
+child on an unresolved model (a held launch's placeholder) appends nothing; a
+resolved one is recorded with or without a key (ADR-0239's #413 decision 4). The
+parent's `aelix.child_session` records are unchanged.

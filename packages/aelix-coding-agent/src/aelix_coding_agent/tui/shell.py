@@ -1229,12 +1229,23 @@ async def run_tui(
         # ``Session.get_leaf_id`` is the public accessor for the session tip
         # (Pi parity ``Session.get_leaf_id`` ``session.py:128``); degrades
         # silently when the session has no entries yet.
+        # #413 — a session with no user or assistant message yet is refused
+        # too, as before #413, when such a session had no entry and so no leaf:
+        # its start record now gives it one. pi refuses it on disk ("This
+        # session has not been saved yet", ``agent-session-runtime.ts:312-313``;
+        # its file waits for ``_hasConversation``); the RPC twin is
+        # ``rpc_mode._has_conversation``.
         try:
             leaf_id = await session.get_leaf_id()
+            has_conversation = any(
+                entry.type == "message"
+                and getattr(entry.message, "role", None) in ("user", "assistant")
+                for entry in await session.get_entries()
+            )
         except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
             _commit(Text(f"✖ clone failed: {exc}", style="bold red"))
             return
-        if not leaf_id:
+        if not leaf_id or not has_conversation:
             _commit(Text("Nothing to clone (session is empty).", style="yellow"))
             return
         try:
@@ -1802,7 +1813,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3794``) always passes one, so this is
+            # production caller (``entry.py:3973``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3582,11 +3593,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1413``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1534``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1396`` already printed at startup, and one that
+    #       what ``entry.py:1517`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4084,7 +4095,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:3725-3741 and
+            # Two audiences, discriminated exactly as entry.py:3904-3920 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

@@ -51,6 +51,7 @@ from aelix_agent_core.runtime.agent_session_runtime import (
 )
 from aelix_agent_core.session.context import (
     build_session_context,
+    resolve_resumed_model,
     resolve_resumed_thinking_level,
 )
 from aelix_agent_core.session.fs import LocalFileSystem
@@ -536,6 +537,126 @@ async def _seed_startup_state(
         return False
     harness.state.thinking_level = level
     return True
+
+
+async def _record_session_start_model(
+    harness: AgentHarness, *, created_empty: bool | None = None
+) -> bool:
+    """Record the model a NEW session starts on as a ``model_change`` (#413).
+
+    pi writes ``appendModelChange(model.provider, model.id)`` for every session
+    with no messages, inside ``createAgentSession`` (``core/sdk.ts:449-459`` at
+    ``pi@3daa20280``): before ``bindExtensions`` emits ``session_start``, and on
+    ``newSession`` before its ``setup`` runs (``agent-session-runtime.ts:226-262``).
+    Without it a session whose every answer failed without provenance (a hook that
+    raised before the request) held no model at all, and a reopen without
+    ``--model`` came back on whatever the launch inputs said
+    (``session.context.resolve_resumed_model``).
+
+    Called when the session is CREATED, as pi does: at launch before
+    ``create_agent_session_runtime`` emits ``session_start``, and for every
+    rebuild from the harness factory, before ``setup`` and ``session_start``. So
+    a message written there (a handler's triggered turn, ``setup``'s seed) lands
+    after the record and cannot suppress it. Where the model is not known until
+    after ``session_start`` — #367's pending launch route, and a rebuild that
+    resolved to one or that the factory holds — the caller records after the
+    late-route decision instead and passes ``created_empty``, read when the
+    session was created: messages ``session_start`` wrote since (a refused turn)
+    do not make it an existing session, and the record follows them.
+    ``created_empty=None`` reads the branch now. Returns whether it wrote.
+
+    A deferred record follows those messages, so it is not written when one of
+    them already names its model (an assistant message with a provider and a
+    model, such as the answer a handoff-style ``setup`` seeds): pi's record
+    comes before such a message and its reopen lands on the answer, and ours,
+    written after it, would outrank it. A turn refused before the request
+    names no model, so the #413 case still records (review round 3).
+
+    Nothing is written when:
+
+    * the session was not created empty (pi's ``hasExistingSession``): a resume,
+      ``--continue``, a fork or ``/clone`` with messages keeps its own record,
+      whatever model this run is on — its answers already name theirs;
+    * the LATEST record on the branch already names this model, so reopening an
+      empty session on the same model adds no second line;
+    * a message on the branch already names its model (only a deferred record
+      can meet one: see above);
+    * the model is not a resolved one: the late-provider hold's placeholder or an
+      unresolved route (``api`` ``unknown`` or empty), a model with no provider
+      or id (``AgentHarness._records_model``'s rule), or turns are still held.
+      A credential is NOT asked: pi records whatever the auth state, and a
+      session launched before ``/login`` must still reopen on its model;
+    * the storage refuses with ``read_only`` (``ReadOnlySessionStorage``,
+      ADR-0244): swallowed silently, as ``AgentHarness.set_model`` does;
+    * the append fails (``SessionError`` code ``storage``: EACCES, ENOSPC, a
+      read-only mount): a ``Warning:`` on stderr and the session goes on. Before
+      #413 such a file opened and its prompts ran, writing nothing and saying
+      nothing (``-p`` and an RPC prompt on a 0444 file, rc 0, at 7d163232); only
+      ``--thinking`` failed on it, at launch, then as now. And a rebuild is
+      already live on the new session by now. Every
+      other code (a leaf missing from the tree, an entry that cannot be
+      serialized) is broken session state and propagates, as from every other
+      append.
+
+    Appended, never inserted: a delegated child's file already starts with its
+    ``aelix.child_origin`` record (#199), which stays first.
+
+    The thinking level pi records beside it (``appendThinkingLevelChange``) is
+    not recorded here: ``off`` is aelix's unset sentinel, and writing it would
+    turn every fresh session's level into a decision that outranks
+    ``defaultThinkingLevel`` on resume (#198; left to #286).
+    """
+
+    session = harness.session
+    model = harness.current_model
+    if session is None or model is None or harness.turns_held is not None:
+        return False
+    provider = getattr(model, "provider", "") or ""
+    model_id = getattr(model, "id", "") or ""
+    if not provider or not model_id or getattr(model, "api", None) in (None, "", "unknown"):
+        return False
+    entries = await session.get_branch()
+    if created_empty is None:
+        created_empty = not build_session_context(entries).messages
+    if not created_empty:
+        return False
+    if resolve_resumed_model([e for e in entries if e.type == "message"]) is not None:
+        return False
+    if resolve_resumed_model(entries) == (provider, model_id):
+        return False
+    try:
+        await session.append_model_change(provider, model_id)
+    except SessionError as exc:
+        if exc.code == "read_only":
+            return False
+        if exc.code != "storage":
+            raise
+        print(
+            "Warning: could not record the model this session starts on "
+            f"({provider}/{model_id}); a reopen without --model may not come back "
+            f"on it: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+async def _created_empty(session: Session) -> bool:
+    """#413 — does ``session`` hold no conversation yet (pi's ``!hasExistingSession``)?"""
+
+    return not build_session_context(await session.get_branch()).messages
+
+
+def _route_pending(route: Any, model: Any) -> bool:
+    """#367 D4 — no registered provider claimed this route (guard 2, or a placeholder).
+
+    The launch's own test (``launch_pending``), asked of a build: a provider a
+    ``session_start`` registers may turn out to be where its inputs land, so the
+    model it runs on is known only after that ``session_start``'s late-route
+    decision.
+    """
+
+    return getattr(route, "kind", None) == "guard2" or getattr(model, "api", "") == "unknown"
 
 
 async def _run_export(
@@ -1688,6 +1809,10 @@ async def _build_harness_options(
             default_provider,
             typed_key=parsed.api_key is not None,
         )
+    if restore_report is not None:
+        # #413 — the route this build runs on (restored or resolved): the
+        # factory asks whether it is pending (``_route_pending``).
+        restore_report["built"] = route
     model = enrich_copilot_base_url(route.model, model_registry)
     if parsed.registration_route is not None and model_registry is not None:
         try:
@@ -3077,6 +3202,9 @@ async def _async_main(argv: list[str]) -> int:
     # block below reads the first build's; ``_settle_late_route`` reads each
     # rebuild's, and the runtime carries ``message`` for the TUI.
     session_model: dict[str, Any] = {"route": None, "message": None, "failed": None}
+    # #413 — a rebuild whose start record waits for its late-route decision:
+    # ``harness`` (the rebuild) and ``created_empty`` (read when it was built).
+    start_record: dict[str, Any] = {}
 
     def _fallback_message(active: Any) -> str | None:
         """pi's ``Could not restore model …`` for the latest build, naming ``active``.
@@ -3348,6 +3476,26 @@ async def _async_main(argv: list[str]) -> int:
             # a turn before ``_settle_late_route`` re-holds. No turn of any
             # kind starts until that callback re-applies the hold and lifts it.
             harness.hold_turns(f"{_SESSION_START_GATE} {held.reason}")
+        if live_runtime is not None:
+            # #413 — a REBUILD (/new, /fork, /resume, /import, /reload, RPC
+            # new_session, fork, switch_session) records the model it starts on
+            # here, when it is created: before ``setup`` and ``session_start``,
+            # as pi's ``createRuntime`` does, so their messages land after it.
+            # The launch's first build records in ``_async_main`` instead. A
+            # rebuild the factory holds, or one whose route is pending (guard 2,
+            # a placeholder), is decided only after its ``session_start``
+            # (``_settle_late_route``: a provider registered there may hold it);
+            # it records then, judged by what it was now. Only a HELD rebuild
+            # gets the placeholder and the turn gate above; a pending one that
+            # is not held runs its ``session_start`` turn on the guard-2 route.
+            start_record.clear()
+            if held is not None or _route_pending(
+                restore_report.get("built"), harness.current_model
+            ):
+                start_record["harness"] = harness
+                start_record["created_empty"] = await _created_empty(new_session)
+            else:
+                await _record_session_start_model(harness)
         # #367 — this build is done and its ``session_start`` is next: what the
         # registry gains between here and the after-``session_start`` check is
         # what that handler registered (``LateRoute``).
@@ -3509,6 +3657,15 @@ async def _async_main(argv: list[str]) -> int:
     # and start at thinking level ``off`` however the session was left. Seed now;
     # the return says whether a level was applied. It is read here, upstream of
     # the mode dispatch, so TUI / ``--print`` / ``--mode json`` / RPC share it.
+    # #413 — a new session records the model it starts on when it is created,
+    # as pi's ``createAgentSession`` does (``core/sdk.ts:449-459``): here,
+    # before ``session_start`` runs, so a message a handler writes there (a
+    # triggered turn) lands after the record. A PENDING launch's model is
+    # known only after the late-route decision below; it records there, for a
+    # session that is empty NOW (``launch_created_empty``).
+    launch_created_empty = await _created_empty(session)
+    if not launch_pending:
+        await _record_session_start_model(harness, created_empty=launch_created_empty)
     thinking_level_restored = await _seed_startup_state(
         harness, session, cli_level=parsed.thinking, read_only=session_read_only
     )
@@ -3673,7 +3830,20 @@ async def _async_main(argv: list[str]) -> int:
             session_model["message"] = _fallback_message(rebuilt.current_model)
             runtime.set_model_fallback_message(session_model["message"])
 
-    runtime.set_after_session_start(_settle_late_route)
+    async def _after_session_start(rebuilt: AgentHarness, reason: str) -> None:
+        await _settle_late_route(rebuilt, reason)
+        # #413 — the start record the factory deferred (a held or pending
+        # rebuild), now that the late-route decision is made: never the hold's
+        # placeholder, and for a session created empty even if this
+        # ``session_start`` (or ``setup``) wrote messages since — unless one of
+        # them already names its model, which pi's earlier record would not
+        # outrank (review round 3). Every other rebuild recorded in the factory.
+        deferred = dict(start_record)
+        start_record.clear()
+        if deferred.get("harness") is rebuilt and deferred.get("created_empty"):
+            await _record_session_start_model(rebuilt, created_empty=True)
+
+    runtime.set_after_session_start(_after_session_start)
     startup_model = harness.current_model
     # #367 Codex pass 7, C-P3 — the resolver's line describes the LAUNCH ROUTE;
     # it is printed only while the harness is still on it after
@@ -3705,6 +3875,15 @@ async def _async_main(argv: list[str]) -> int:
         # #376 — the TUI shows it in the transcript (``run_tui``): stderr written
         # before it paints is erased by the repaint (see the #98 gate below).
         print(f"Warning: {launch_fallback_message}", file=sys.stderr)
+    if launch_pending:
+        # #413 — a pending launch's start record, now that the late-route
+        # decision is made (it was deferred below ``launch_created_empty``). A
+        # refused or held launch records nothing: it sits on the hold's
+        # placeholder (print/json also keep its turn gate up). A launch the
+        # decision let stand records its route, after any turn its
+        # ``session_start`` triggered and the turn gate refused (unless a
+        # message written since already names its model: review round 3).
+        await _record_session_start_model(harness, created_empty=launch_created_empty)
 
     # === First-run onboarding gate (#23) ===
     # Judged HERE for the same reason as the #98 gate directly above: this is

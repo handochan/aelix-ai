@@ -349,7 +349,11 @@ class AgentSessionRuntime:
         handler is bound — with the NEW harness and the replace ``reason``, so
         a surface can re-apply a decision a handler's ``set_model`` would
         otherwise undo before any turn runs. The CLI's late-provider hold
-        (ADR-0250 §2.11) is the one user. A raising callback propagates: it is
+        (ADR-0250 §2.11) is one user; the CLI's record of the model a new
+        session starts on (#413) is the other, for the rebuilds whose model is
+        decided only by that hold (every other rebuild records it from the
+        factory, before ``setup`` and ``session_start``). A raising callback
+        propagates: it is
         the surface's own policy, not an extension's. The startup
         ``session_start`` is not covered — ``create_agent_session_runtime``
         emits it before this can be set, and its caller runs its own check

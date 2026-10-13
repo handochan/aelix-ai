@@ -257,12 +257,14 @@ def resolve_resumed_model(
     case to apply to here.
 
     The responses matter more in aelix than in pi: pi writes a ``model_change``
-    for the launch model of every new session (``sdk.ts:456``), aelix never
-    has, so a session that only ever ran on its ``--model`` holds no
+    for the launch model of every new session (``sdk.ts:456``), and aelix did
+    not until #413 (``cli.entry._record_session_start_model``), so a session
+    written before it that only ever ran on its ``--model`` holds no
     ``model_change`` at all and its responses are the whole record. An entry
     without both names is skipped rather than read as "no model" — an assistant
     message for a turn refused before any request carries none, and one failed
-    turn must not erase the record behind it.
+    turn must not erase the record behind it (since #413 the session's start
+    record is behind it).
 
     :func:`build_session_context`'s ``model`` fold reads ``model_change``
     entries only and is left as it is.

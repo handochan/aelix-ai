@@ -3,8 +3,10 @@
 :func:`resolve_resumed_model` is pi's ``getBranchSelection``
 (``core/virtual-models.ts:128-145`` at ``pi@1cedd3272``) without virtual models:
 walking back from the leaf, the first ``model_change`` or the first assistant
-message naming its provider and model. aelix never writes a ``model_change`` for
-a session's launch model, so the responses are most sessions' whole record.
+message naming its provider and model. Until #413 aelix wrote no ``model_change``
+for a session's launch model, so the responses are the whole record of every
+session written before it (since #413 a new session records its start model,
+``tests/cli/test_session_start_model_413.py``).
 
 And the one writer of ``model_change`` the harness has, an in-turn
 ``set_model``, recorded ``model.api`` as the provider (``anthropic-messages``), a

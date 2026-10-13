@@ -388,6 +388,32 @@ unwritten. Add them with the next release.
   `{"enabled": ...}`. The TUI countdown rounds up, as pi's does (a 500 ms wait
   shows `in 1s`). `retry.provider.*` is still not read.
 
+- **A new session records the model it starts on (#413).** Like pi, a session
+  created with no conversation — a launch, `/new`, a `/fork` before the first
+  message, a delegated child's first run — writes a `model_change` naming its
+  model when it is created: before the extensions' `session_start` handlers and
+  before `new_session`'s `setup`, so a turn a handler starts or a message
+  `setup` writes lands after it. A session whose answers all failed before
+  reaching a model (an extension hook that raised) now reopens on that model
+  instead of the settings default, also when it was launched with no key and
+  `/login` came later. Carve-outs: a launch whose route is decided only after
+  `session_start` (an id sent to OpenRouter as written, #367), and a `/new`,
+  fork, switch or reload in such a session, records once that decision is made,
+  after the messages written by then (a `setup` seed, a turn `session_start`
+  started — on such a launch one the turn gate refused) — and not at all when
+  one of them already names its model (a seeded answer), so the session reopens
+  on that answer as in pi; a held or refused model is never recorded; reopening
+  a session with a conversation writes nothing; an empty session reopened on
+  another model records that one; the thinking level is not recorded alongside
+  it (#286). A session file that cannot be written runs as before (its prompts
+  ran and wrote nothing) and now also prints a `Warning:` on stderr; with
+  `--thinking` it still exits 1, as before. `/clone` and RPC `clone` still
+  refuse a session with no conversation, in the same words, on disk and with
+  `--no-session` — now also one with no conversation but other entries (only
+  a name, a `/model` pick, `!cmd` output or a `custom_message` entry an
+  extension wrote), which they used to clone on disk (pi refuses such an
+  unsaved session).
+
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that
   prompt-toolkit treated as raw zero-width escapes. Width and filtering use that

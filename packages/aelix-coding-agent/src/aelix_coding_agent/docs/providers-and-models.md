@@ -59,7 +59,17 @@ Opening a session that already has a conversation — `--continue`, `--resume`,
 `/import` and `/reload` (RPC: `switch_session`, `fork`, `clone`) — puts you back
 on the model it last ran on: whichever the session recorded last, a `/model`
 pick or the model that wrote an answer. A pick is recorded when you make it, so
-`/model` then quitting comes back on that model. Your settings `defaultModel`
+`/model` then quitting comes back on that model. A new session records the model
+it starts on as well, as pi does — at launch, on `/new`, and on a `/fork` before
+the first message — when it is created, before the extensions' `session_start`
+handlers run, so a session whose answers all failed before reaching a model (an
+extension hook that raised, or a turn a handler started) still comes back on it,
+also when the key was added after launch. A launch whose route is decided only
+after `session_start` (an id sent to OpenRouter as written), and a `/new` or
+`/fork` in such a session, records once that is decided — after any message
+written by then, and not at all when one of them already names its model; a
+held model records nothing, and reopening a session that has a
+conversation adds no record. Your settings `defaultModel`
 does not override the session; it is for new sessions (`/new` starts on the
 launch model). `--model` / `--provider`, an agent profile that names a `model:`
 or `provider:`, or `--api-key` (typed for the launch model) win over the
