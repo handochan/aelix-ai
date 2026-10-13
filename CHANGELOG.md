@@ -361,6 +361,14 @@ unwritten. Add them with the next release.
   pytest steps have 20/45 minute limits. A test stuck for 240 seconds exits
   with a traceback; a separate 180 second watchdog covers interpreter exit
   after the test summary. Development now requires pytest 9.0 or newer.
+- **Tests: the hang-guard gate's child pytest no longer slows down late in the
+  suite (#448).** The child ran with the repository's pyproject, so pytest
+  collected every directory above the child's temporary directory, including
+  the parent run's basetemp with about 20,000 directories by then. On Windows
+  that collection took 5-20 s and the gate's 15 s budget was exceeded.
+  `--confcutdir` now stops the child at its own directory, and the gate runs in
+  1.7-2.1 s in the full Windows suite. A new test checks that the child collects
+  nothing above that directory. Users see no change.
 - **Quitting during file completion no longer leaves aelix running (#428).**
   The `@file` menu is collected in one background job, so repeated cancellation
   during shutdown cannot leave a second worker waiting forever on a queue.
