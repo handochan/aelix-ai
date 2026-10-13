@@ -1038,6 +1038,12 @@ decides on it. In aelix:
   and still fail on any refresh failure (they had no retry for a provider `502` either), and
   `settings.json`'s `retry.enabled` / `retry.maxRetries` are not read by the harness for any
   retry (module constants and `set_auto_retry` only) — both are follow-ups.
+  *(Amended 2026-10-14, #408: the second is closed. The turn auto-retry, this refresh retry
+  included, now reads `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` /
+  `retry.maxAgentDelayMs` from `settings.json` at each decision, and rpc `set_auto_retry`
+  writes `retry.enabled` there, as pi does - ADR-0128, amendment 2026-10-14. "The same
+  budget, backoff and `auto_retry_enabled`" above therefore means the configured ones; the
+  compaction and branch-summary retries stay #409.)*
 
 ### 12.4 Tests, sabotage and live runs
 

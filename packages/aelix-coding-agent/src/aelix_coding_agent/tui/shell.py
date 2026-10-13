@@ -2422,7 +2422,7 @@ async def run_tui(
             while remaining > 0:
                 if retry_countdown_ref["task"] is not current:
                     return  # superseded by a new ticker — exit cleanly
-                line = f"⟳ Retrying ({attempt}/{max_attempts}) in {int(remaining)}s… Esc to cancel"
+                line = f"⟳ Retrying ({attempt}/{max_attempts}) in {-int(-remaining // 1)}s… Esc to cancel"  # whole seconds rounded UP, as pi's Math.ceil (countdown-timer.ts:18); int() showed a 500 ms wait as "in 0s" (#408)
                 out_chrome.set_widget(_RETRY_WIDGET_KEY, [line], above=True)
                 step = min(1.0, remaining)
                 await asyncio.sleep(step)

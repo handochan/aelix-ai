@@ -381,7 +381,9 @@ the request that needs it. If that refresh fails because the token endpoint
 answered `429`, `500`, `502`, `503`, `504`, `520` or `524` (the statuses pi
 retries), or could not be reached (a dropped connection, a timeout, a proxy
 that refused the connection), the turn is retried the way a provider's `502`
-is: up to three retries, 2 s, 4 s and 8 s apart, shown as `Retrying…` in the
+is: by default up to three retries, 2 s, 4 s and 8 s apart (your
+`settings.json` `retry` block changes both, see
+[Automatic retry](#automatic-retry)), shown as `Retrying…` in the
 TUI and as `auto_retry_start` / `auto_retry_end` in `--mode json` and rpc, and
 a delegated agent's run retries the same way. The error then reads `OAuth
 refresh failed for <provider>: <cause>`, with no `/login` hint. While your
@@ -448,6 +450,77 @@ context-overflow compaction still read the whole error, so a
 as before. A token response that is
 missing a field is described by its keys, never by the tokens it did carry.
 The full body is not kept; if you need it, reproduce the request with `curl`.
+
+## Automatic retry
+
+When a model request fails on a cause that may pass - the provider is
+overloaded or rate-limits you (`429`), a `500`, `502`, `503` or `504`, a dropped
+or refused connection, a timeout - aelix waits and sends the turn again. The TUI
+shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
+`auto_retry_start` (`attempt`, `max_attempts`, `delay_ms`, `error_message`) and
+`auto_retry_end` (`success`, `attempt`, `final_error`). The keys are snake_case;
+pi's same events spell them `maxAttempts`, `delayMs`, `errorMessage` and
+`finalError`. A context overflow is not retried this way: it is compacted
+instead.
+
+The `retry` block of `settings.json` (`~/.aelix/agent/settings.json`; a trusted
+project's `.aelix/settings.json` overrides it key by key) sets how, with pi's
+keys and defaults:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `retry.enabled` | `true` | `false` ends the turn on the first failure. |
+| `retry.maxRetries` | `3` | Retries after the first attempt; `0` sends once. |
+| `retry.baseDelayMs` | `2000` | The first wait in milliseconds; each later one doubles. |
+| `retry.maxAgentDelayMs` | `60000` | The longest single wait. |
+
+```json
+{ "retry": { "maxRetries": 5, "baseDelayMs": 1000, "maxAgentDelayMs": 10000 } }
+```
+
+waits 1 s, 2 s, 4 s, 8 s and 10 s. The values are read each time a retry is
+decided, so a `/reload` after editing the file applies them to the next retry.
+The TUI, `-p`, `--mode json` and `--mode rpc` use them. A delegated agent's
+run uses the global file's values: the child is started with `--no-approve`
+whenever the project has a `.aelix/settings.json`, so a trusted project's
+`retry` block does not reach it.
+
+A value of the wrong type is ignored. In the global file, a string such as
+`"5"`, `null`, a list or a `retry` that is not an object leaves the default in
+force. In a trusted project's file, `null` is skipped when the two files are
+merged, so the global value applies (pi skips only a missing key, and its
+`?? 3` then gives the default); any other wrong-typed project value replaces the
+global one and the default applies, and a project `"retry": false` replaces
+the whole global block. A negative number counts as `0`. Each wait is rounded to
+whole milliseconds, half to even: `"baseDelayMs": 1.5` waits 2, 3 and 6 ms. An
+`abort`, an `abort_retry` or an extension's `ctx.abort()` ends the wait at once,
+however long it is, and the turn is not sent again; with a wait of `0`, one made
+while `auto_retry_start` is delivered to a subscriber still cancels the retry.
+The TUI's countdown rounds up to whole seconds, as pi's does: a 500 ms wait
+shows `in 1s`.
+
+rpc `set_auto_retry` sets `retry.enabled` in the global `settings.json`, as pi
+does, so it outlasts the session: `set_auto_retry false` sent for one rpc
+session also turns the retry off for later TUI, `-p` and rpc runs, until
+something sets it back. `get_state`'s `autoRetryEnabled` reports the value in
+force. A project `.aelix/settings.json` that sets `retry.enabled` itself still
+wins over it, in pi as here. The harness's own toggle is set as well, so
+`autoRetryEnabled` and the next turn follow `set_auto_retry` even when a
+trusted project's `"retry": false` hides the global block. A global `retry`
+that is not an object (`"retry": false`) is replaced by `{"enabled": ...}`.
+The file is written in the background after the answer. A write that fails
+is not reported: rpc still answers `success: true`, as pi does, and the
+setting holds for that session only - the next run reads the old value. A
+global `settings.json` that aelix cannot open read-write when it starts is
+reported once, at startup, as `Warning: settings (global): ...`; that file is
+then neither read nor written, so every retry key takes its default. Only an error raised before the write is
+queued answers `success: false`, and it leaves the retry as it was.
+
+Until this release none of these keys was read: every retry ran three times at
+2 s, 4 s and 8 s, and `"enabled": false` did not stop it (#408). The
+`aelix-server` WebSocket bridge has no settings file and keeps those defaults.
+`retry.provider.*` (the provider SDK's own retries and timeout) is still not
+read.
 
 ## Provider environment variables
 

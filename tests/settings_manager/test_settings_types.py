@@ -94,6 +94,7 @@ def test_nested_dataclass_defaults() -> None:
         max_retries=None,
         base_delay_ms=None,
         provider=None,
+        max_agent_delay_ms=None,
     )
     assert TerminalSettings() == TerminalSettings(
         show_images=None,

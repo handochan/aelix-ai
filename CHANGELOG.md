@@ -64,6 +64,18 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **rpc `set_auto_retry` now persists, and `settings.json` wins over the
+  in-memory toggle (#408) - a behaviour change for embedders.** As in pi,
+  `set_auto_retry` (and `AgentHarness.set_auto_retry_enabled` on any harness
+  with a settings manager, which is every harness the CLI builds) writes
+  `retry.enabled` into the global `settings.json`: `set_auto_retry false` sent
+  for one rpc session now also turns the retry off for every later TUI, `-p`
+  and rpc run under that account, until something sets it back. And when the
+  settings carry a boolean `retry.enabled`, it decides - an embedder that sets
+  `AgentState.auto_retry_enabled` directly is overridden; `get_state`'s
+  `autoRetryEnabled` reports the value in force. The `aelix-server` WebSocket
+  harness has no settings manager and keeps the in-memory toggle.
+
 - **Root commands accept a leading `--offline` without becoming agent prompts
   (#289).** `aelix --offline extension …`, `docs`, and `status` dispatch their
   commands. Other launch options before a command fail with exit 2; option
@@ -356,6 +368,25 @@ unwritten. Add them with the next release.
   `install.ps1` was executed in CI, and the 3.11–3.13 interpreter promise from
   #263 was checked on Windows only. The `install.ps1 e2e` jobs now have a 15-minute timeout,
   and every CI job is required to declare one.
+
+- **The automatic retry follows `settings.json`'s `retry` block (#408).**
+  `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and pi's
+  `retry.maxAgentDelayMs` (the longest wait, default 60 s) now apply to every
+  retried turn - a provider error and a `/login` refresh that failed on a
+  transient cause alike - in the TUI, `-p`, `--mode json`, `--mode rpc` and a
+  delegated agent's run (which reads the global file's values only), read at
+  each retry so `/reload` applies an edit. Until
+  now nothing read them: `"enabled": false` still retried, and every retry ran
+  three times at 2 s, 4 s and 8 s. No guide claimed these keys worked; the
+  providers guide now documents them. rpc `set_auto_retry` now writes
+  `retry.enabled` into the global `settings.json`, as pi does, and `get_state`
+  reports the value in force. With `maxRetries: 0` no `auto_retry_end` is sent.
+  An `abort`, `abort_retry` or an extension's `ctx.abort()` ends a wait of any
+  configured length at once, and a `0` ms wait still honours an abort made as
+  the retry starts; a float `baseDelayMs` never raises, however many retries;
+  `set_auto_retry` on a global `retry` that is not an object replaces it with
+  `{"enabled": ...}`. The TUI countdown rounds up, as pi's does (a 500 ms wait
+  shows `in 1s`). `retry.provider.*` is still not read.
 
 - **Picker caller text is safe before styling (#179).** Select option/detail and
   tab name/body/error controls are displayed by name, including SOH/STX that

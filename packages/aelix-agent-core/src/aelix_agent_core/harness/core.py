@@ -530,10 +530,10 @@ class _MessageQueue:
 _AUTO_COMPACT_RESERVE_TOKENS = 16384
 
 
-# pi parity (``settings-manager.ts:721-727 getRetrySettings``):
-# ``maxRetries=3``, ``baseDelayMs=2000`` (exponential backoff 2s / 4s / 8s).
-# Aelix has no SettingsManager in core → module constants (Sprint 6h₂₀,
-# ADR-0128).
+# pi ``SETTINGS_DEFAULTS.retry`` (``settings-defaults.ts:18-22`` @ 3daa20280): ``maxRetries=3``,
+# ``baseDelayMs=2000`` (2s / 4s / 8s). Since #408 the FALLBACKS for settings.json
+# ``retry.maxRetries`` / ``retry.baseDelayMs``, read at each retry decision
+# (``_auto_retry_policy`` and the ``maxAgentDelayMs`` fallback are at the end of this module).
 _AUTO_RETRY_MAX_ATTEMPTS = 3
 _AUTO_RETRY_BASE_DELAY_MS = 2000
 
@@ -1242,14 +1242,14 @@ class AgentHarness:
         """Pi parity: ``session.autoRetryEnabled``
         (``agent-session.ts:2536-2538``).
 
-        Sprint 6h₂ W6 (P-264 BLOCKING): real-source accessor symmetric
-        with :attr:`auto_compaction_enabled`. The RPC
-        :class:`RpcSessionState` wire surface gains
-        ``autoRetryEnabled`` this sprint so clients can observe the
-        toggle set via :meth:`set_auto_retry_enabled`.
+        #408: pi's getter IS ``settingsManager.getRetryEnabled()``, so with a
+        settings manager attached this is settings.json ``retry.enabled`` (the
+        merged view, as the manager holds it now); the harness's own toggle
+        (``AgentState.auto_retry_enabled``, :meth:`set_auto_retry_enabled`)
+        answers when there is no manager or no boolean there. RPC ``get_state``.
         """
 
-        return self._state.auto_retry_enabled
+        return _retry_enabled(_auto_retry_policy(self._settings_manager), self._state)
 
     # === Sprint 6h₁ (ADR-0069) — extension/template/skill aggregation ===
     # Pi parity: ``session.extensionRunner`` / ``session.promptTemplates`` /
@@ -2480,16 +2480,16 @@ class AgentHarness:
     async def _handle_retryable_error(self, message: Any) -> bool:
         """pi parity ``agent-session.ts:2432-2506`` ``_handleRetryableError``.
 
-        Emits ``auto_retry_start`` + sleeps with exponential backoff
-        (``base_delay * 2^(attempt-1)``, 2s/4s/8s) + supports mid-sleep
-        abort via :meth:`abort_retry`. On max-retries-exceeded or abort,
-        emits ``auto_retry_end {success: False}`` and returns False.
-        Returns True when the caller should re-run the turn.
+        Emits ``auto_retry_start`` + sleeps ``min(base * 2^(attempt-1), cap)``
+        (2s/4s/8s by default) + supports mid-sleep abort via :meth:`abort_retry`.
+        On max-retries-exceeded or abort, emits ``auto_retry_end {success: False}``
+        and returns False; True when the caller should re-run the turn. #408: the
+        values come from settings.json ``retry``, read now (``_auto_retry_policy``).
         """
 
         from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent
 
-        if not self._state.auto_retry_enabled:
+        if not _retry_enabled(policy := _auto_retry_policy(self._settings_manager), self._state):
             return False
 
         # W-review MEDIUM-1: clear the abort flag at retry entry so it tracks
@@ -2499,25 +2499,25 @@ class AgentHarness:
         self._state.retry_aborted = False
 
         self._retry_attempt += 1
-        if self._retry_attempt > _AUTO_RETRY_MAX_ATTEMPTS:
-            # pi ``:2447-2453``: max retries exceeded — emit final failure + reset.
-            attempt = self._retry_attempt - 1
-            self._retry_attempt = 0
-            await self._emit_to_subscribers(
-                AutoRetryEndEvent(
-                    success=False,
-                    attempt=attempt,
-                    final_error=getattr(message, "error_message", None),
+        if self._retry_attempt > policy.max_retries:
+            # pi ``:2447-2453``: max retries exceeded — emit final failure + reset. With
+            # ``maxRetries: 0`` no sequence started: no end (pi's needs ``_retryAttempt > 0``).
+            attempt, self._retry_attempt = self._retry_attempt - 1, 0
+            if attempt > 0:
+                await self._emit_to_subscribers(
+                    AutoRetryEndEvent(
+                        success=False, attempt=attempt,
+                        final_error=getattr(message, "error_message", None),
+                    )
                 )
-            )
             return False
 
-        # pi ``:2458``: ``delayMs = baseDelayMs * 2^(attempt-1)`` (2s/4s/8s).
-        delay_ms = _AUTO_RETRY_BASE_DELAY_MS * (2 ** (self._retry_attempt - 1))
+        # pi ``:2458``: ``delayMs = baseDelayMs * 2^(attempt-1)``, capped (``retryDelayMs``).
+        delay_ms = policy.delay_ms(self._retry_attempt)
         await self._emit_to_subscribers(
             AutoRetryStartEvent(
                 attempt=self._retry_attempt,
-                max_attempts=_AUTO_RETRY_MAX_ATTEMPTS,
+                max_attempts=policy.max_retries,
                 delay_ms=delay_ms,
                 error_message=getattr(message, "error_message", "") or "Unknown error",
             )
@@ -2531,8 +2531,8 @@ class AgentHarness:
             self._state.messages.pop()
 
         # pi ``:2479-2495``: ``await sleep(delayMs, abortSignal)``. asyncio
-        # equivalent: wait_for(abort_event.wait, timeout) — TimeoutError means
-        # the sleep completed normally; success means the abort fired.
+        # equivalent: ``_retry_backoff_aborted`` (wait on the abort event, then
+        # read it and the abort flag - True means this retry was cancelled).
         self._retry_abort_event = asyncio.Event()
         # #334 — an ``abort_retry()`` (or ``abort()``, which calls it) made
         # while the ``auto_retry_start`` emit above was awaiting an async
@@ -2544,12 +2544,12 @@ class AgentHarness:
         if self._state.retry_aborted:
             self._retry_abort_event.set()
         try:
-            await asyncio.wait_for(
-                self._retry_abort_event.wait(), timeout=delay_ms / 1000.0
+            # #408 review round 2: settings can now ask for a 0 ms wait, and
+            # ``wait_for(..., timeout=0)`` raised TimeoutError even with the
+            # event already set - the abort was lost and the turn sent again.
+            aborted = await _retry_backoff_aborted(
+                self, self._retry_abort_event, delay_ms
             )
-            aborted = True
-        except TimeoutError:
-            aborted = False
         finally:
             self._retry_abort_event = None
 
@@ -3055,11 +3055,11 @@ class AgentHarness:
         """Pi parity: ``session.setAutoRetryEnabled``
         (``rpc-mode.ts:525-528`` + ``agent-session.ts:2540-2545``).
 
-        Sprint 6h₂ (P-249): state-only setter — the retry loop itself
-        lands in Sprint 6h₃+. P-4 setter-no-emit.
+        #408: pi's is ``settingsManager.setRetryEnabled`` - it writes ``retry.enabled``
+        to the GLOBAL settings.json. Same when a manager is attached. P-4 no-emit.
         """
 
-        self._state.auto_retry_enabled = bool(enabled)
+        _set_retry_enabled(self._state, self._settings_manager, bool(enabled))
 
     def abort_retry(self) -> None:
         """Pi parity: ``session.abortRetry``
@@ -4421,7 +4421,7 @@ class AgentHarness:
         )
 
     def _mark_abort(self) -> None:
-        self._abort_requested = True
+        _mark_abort_and_wake_backoff(self)  # #408 review round 3
 
     def _current_system_prompt(self) -> str:
         """F-10: prefer per-turn snapshot, else fall back to long-lived state."""
@@ -5763,3 +5763,192 @@ __all__ = [
     "PendingSessionWrite",
     "PendingThinkingLevelChangeWrite",
 ]
+
+
+# === #408 — the turn auto-retry reads settings.json ``retry`` =================
+#
+# Kept at the end of the module on purpose: about a hundred gated citations across
+# the repo name lines of this file, and helpers inserted above them would move them.
+#
+# pi reads ``settingsManager.getRetrySettings()`` at every retry
+# (``_prepareRetry``, ``agent-session.ts:3792-3830`` @ 3daa20280) and its
+# ``autoRetryEnabled`` getter / ``setAutoRetryEnabled`` setter ARE
+# ``getRetryEnabled()`` / ``setRetryEnabled()`` (``:3846-3856``). Before #408
+# the harness used the module constants and its own toggle whatever the
+# settings said (ADR-0128, amendment 2026-10-14).
+
+
+# pi ``DEFAULT_MAX_AGENT_RETRY_DELAY_MS`` (``packages/ai/src/utils/retry.ts:127``): the
+# fallback for ``retry.maxAgentDelayMs``, the longest single backoff wait.
+_AUTO_RETRY_MAX_DELAY_MS = 60_000
+# pi ``retryDelayMs`` never returns more than ``Number.MAX_SAFE_INTEGER`` (``:131``).
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+@dataclass(frozen=True)
+class _AutoRetryPolicy:
+    """The ``retry.*`` values one retry decision runs on (#408).
+
+    ``enabled`` is ``None`` when the settings do not say (no manager, no
+    ``retry.enabled``, or a value that is not a boolean): the harness's own
+    toggle (:attr:`AgentState.auto_retry_enabled`) then answers.
+    """
+
+    enabled: bool | None
+    max_retries: int
+    base_delay_ms: float
+    max_delay_ms: float
+
+    def delay_ms(self, attempt: int) -> int:
+        """pi ``retryDelayMs`` (``packages/ai/src/utils/retry.ts:129-133``).
+
+        ``baseDelayMs * 2^(attempt-1)``, capped at ``maxAgentDelayMs``, rounded
+        to whole milliseconds half to even (Python ``round``: a base of 1.5
+        waits 2, 3, 6; 2.5 waits 2, 5, 10). pi sends a non-integer product to
+        the cap instead (its ``Number.isSafeInteger`` overflow guard); a
+        fractional ``baseDelayMs`` is not worth reproducing that for (ADR-0128
+        amendment). Never above pi's ``Number.MAX_SAFE_INTEGER`` either.
+
+        #408 review round 2: ``math.ldexp`` instead of ``base * 2 ** n`` - with
+        a float base (JSON ``1.0``) the product raised OverflowError inside the
+        turn after 1024 retries. A product too large for a float is past any
+        cap, so it is the cap.
+        """
+
+        import math  # here, not at the top: a new top line would move ~100 citations
+
+        try:
+            delay = math.ldexp(self.base_delay_ms, max(0, attempt - 1))
+        except OverflowError:
+            delay = math.inf
+        return round(min(delay, self.max_delay_ms, _MAX_SAFE_INTEGER))
+
+
+def _retry_number(value: object) -> float | None:
+    """A ``retry.*`` number from settings, or ``None`` to use the fallback.
+
+    The settings loader keeps whatever JSON the file holds, so a string, a
+    boolean, ``null``, a container or a non-finite number is ignored here (the
+    fallback applies) rather than raising inside the turn. A negative number
+    counts as ``0``: that is what pi ends up doing with it (no retry for
+    ``maxRetries``, no wait for a delay).
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):  # NaN, ±inf
+        return None
+    return max(0, value)
+
+
+def _auto_retry_policy(settings_manager: SettingsManager | None) -> _AutoRetryPolicy:
+    """Read settings.json's ``retry`` block for one retry decision (#408).
+
+    Read at the decision, as pi does, so a settings reload (``/reload`` runs
+    ``settings_manager.reload()``) applies to the next retry. A value the
+    settings do not carry falls back to the module constant as it is NOW - the
+    values equal ``get_retry_settings()``'s defaults, and a test that writes
+    ``{}`` and monkeypatches a constant keeps governing the retry. A ``retry``
+    that is not an object (``"retry": true``) is ignored as a whole.
+    """
+
+    retry: object = None
+    if settings_manager is not None:
+        retry = settings_manager.get_settings().retry
+    enabled = getattr(retry, "enabled", None)
+    max_retries = _retry_number(getattr(retry, "max_retries", None))
+    base_delay = _retry_number(getattr(retry, "base_delay_ms", None))
+    max_delay = _retry_number(getattr(retry, "max_agent_delay_ms", None))
+    return _AutoRetryPolicy(
+        enabled=enabled if isinstance(enabled, bool) else None,
+        # pi stops at ``attempt > maxRetries``; for a fractional value that is
+        # the same stop as its floor, which keeps ``max_attempts`` an int.
+        max_retries=(
+            int(max_retries // 1) if max_retries is not None else _AUTO_RETRY_MAX_ATTEMPTS
+        ),
+        base_delay_ms=(
+            base_delay if base_delay is not None else _AUTO_RETRY_BASE_DELAY_MS
+        ),
+        max_delay_ms=max_delay if max_delay is not None else _AUTO_RETRY_MAX_DELAY_MS,
+    )
+
+
+def _retry_enabled(policy: _AutoRetryPolicy, state: AgentState) -> bool:
+    """settings.json ``retry.enabled`` when it says, else the harness's toggle."""
+
+    if policy.enabled is not None:
+        return policy.enabled
+    return state.auto_retry_enabled
+
+
+def _set_retry_enabled(
+    state: AgentState, settings_manager: SettingsManager | None, enabled: bool
+) -> None:
+    """:meth:`AgentHarness.set_auto_retry_enabled` (rpc ``set_auto_retry``).
+
+    pi's setter is ``settingsManager.setRetryEnabled(enabled)``, which writes
+    ``retry.enabled`` into the GLOBAL settings.json - the toggle outlasts the
+    session. Same here when a manager is attached; the harness's own toggle is
+    set either way, for a harness without one. As in pi, a project
+    settings.json that sets ``retry.enabled`` itself still wins in the merged
+    view (:attr:`AgentHarness.auto_retry_enabled` reports what applies).
+
+    #408 review round 2: the settings write goes FIRST. When it raises, rpc
+    ``set_auto_retry`` answers ``success: false`` and the toggle has not moved -
+    a reply of "failed" with the retry already switched is the one outcome
+    that must not happen.
+    """
+
+    if settings_manager is not None:
+        settings_manager.set_retry_enabled(enabled)
+    state.auto_retry_enabled = enabled
+
+
+async def _retry_backoff_aborted(
+    harness: AgentHarness, event: asyncio.Event, delay_ms: float
+) -> bool:
+    """Wait ``delay_ms`` for the retry's abort event; True when the retry is cancelled.
+
+    #408 review round 2. ``asyncio.wait_for(event.wait(), timeout=0)`` cancels
+    the waiter before it runs and raises TimeoutError even when the event is
+    already set, so with a 0 ms wait (``baseDelayMs`` or ``maxAgentDelayMs`` 0,
+    or a negative one) an ``abort()`` / ``abort_retry()`` made while
+    ``auto_retry_start`` was emitted was lost and the turn was sent again. The
+    event is read here, not inferred from how the wait ended; a 0 ms wait
+    still yields once, so an abort already scheduled lands as it would in a
+    1 ms wait. Then, as pi re-checks ``_agentRunAbortRequested`` after
+    ``_prepareRetry`` (``agent-session.ts:1954-1957`` @ 3daa20280), an abort of
+    the turn that did not reach the event cancels the retry too: an extension's
+    ``ctx.abort()`` made while ``auto_retry_start`` was emitted, before the event
+    existed. One made during the wait sets the event (``_mark_abort``, review
+    round 3) and so ends the wait at once. Review round 4: the flag is read
+    before the wait as well, so that emit-window ``ctx.abort()`` also ends it
+    at once instead of after the whole configured delay (pi, whose emit is
+    sync, sleeps the full delay there before its ``:1954`` check).
+    """
+
+    if event.is_set() or harness._abort_requested:
+        return True
+    if delay_ms > 0:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(event.wait(), timeout=delay_ms / 1000.0)
+    else:
+        await asyncio.sleep(0)
+    return event.is_set() or harness._abort_requested
+
+
+def _mark_abort_and_wake_backoff(harness: AgentHarness) -> None:
+    """:meth:`AgentHarness._mark_abort` - an extension's ``ctx.abort()``.
+
+    #408 review round 3. It set only ``_abort_requested``, which
+    :func:`_retry_backoff_aborted` reads after the wait, so a ``ctx.abort()``
+    made during a backoff cancelled the retry only once the whole configured
+    wait (up to 2^53-1 ms) had run. In pi ``ctx.abort()`` is ``this.abort()``
+    (``agent-session.ts:3472-3478`` @ 3daa20280), whose ``abortRetry()`` wakes
+    the sleep (``:2464-2473``, ``:3837-3839``): here it sets the retry's abort
+    event while a backoff is in progress.
+    """
+
+    harness._abort_requested = True
+    if harness._retry_abort_event is not None:
+        harness._retry_abort_event.set()

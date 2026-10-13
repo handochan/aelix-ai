@@ -50,6 +50,12 @@ the following architecture per W5 audit corrections:
 - `set_auto_compaction_enabled(enabled)` /
   `set_auto_retry_enabled(enabled)` — state-only setters; the
   retry-loop port itself defers to Sprint 6h₃ per ADR-0072.
+  *Note (2026-10-14, #408):* `set_auto_retry_enabled` is no longer
+  state-only on a harness with a settings manager (every CLI harness):
+  it also writes `retry.enabled` to the GLOBAL `settings.json`, as pi's
+  `setAutoRetryEnabled` is `settingsManager.setRetryEnabled`, and
+  `auto_retry_enabled` reports that setting when it is a boolean. See
+  ADR-0128's 2026-10-14 amendment.
 - `abort_retry()` / `abort_bash()` — state-flag setters
   (`_state.retry_aborted` / `_state.bash_aborted`). The Pi retry
   loop + bash cancellation-token threading both defer to Sprint

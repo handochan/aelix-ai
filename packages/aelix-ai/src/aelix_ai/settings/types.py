@@ -107,6 +107,7 @@ class RetrySettings:
     max_retries: int | None = None
     base_delay_ms: int | None = None
     provider: ProviderRetrySettings | None = None
+    max_agent_delay_ms: int | None = None  # #408, pi @ 3daa20280: the backoff's cap
 
 
 @dataclass
@@ -455,6 +456,7 @@ NESTED_PY_TO_JSON: Final[dict[str, dict[str, str]]] = {
         "max_retries": "maxRetries",
         "base_delay_ms": "baseDelayMs",
         "provider": "provider",
+        "max_agent_delay_ms": "maxAgentDelayMs",
     },
     "TerminalSettings": {
         "show_images": "showImages",

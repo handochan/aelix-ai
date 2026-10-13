@@ -1333,26 +1333,26 @@ class SettingsManager:
         return r.enabled
 
     def set_retry_enabled(self, enabled: bool) -> None:
-        """Pi parity: ``settings-manager.ts::setRetryEnabled`` (line 712-719)."""
+        """Pi parity: ``setRetryEnabled`` (:712-719); a non-object ``retry`` is replaced (#408)."""
 
-        if self._global_settings.retry is None:
+        if not isinstance(self._global_settings.retry, RetrySettings):  # None, true, "off", []
             self._global_settings.retry = RetrySettings()
         self._global_settings.retry.enabled = enabled
         self._mark_modified("retry", "enabled")
         self._save()
 
     def get_retry_settings(self) -> dict[str, Any]:
-        """Pi parity: ``settings-manager.ts::getRetrySettings`` (line 721-727)."""
+        """Pi parity: ``getRetrySettings`` (``:721-727``; ``maxAgentDelayMs`` @ 3daa20280, #408)."""
 
         r = self._settings.retry
+        cap = r.max_agent_delay_ms if r is not None else None
         return {
             "enabled": self.get_retry_enabled(),
-            "maxRetries": (
-                r.max_retries if r is not None and r.max_retries is not None else 3
-            ),
+            "maxRetries": r.max_retries if r is not None and r.max_retries is not None else 3,
             "baseDelayMs": (
                 r.base_delay_ms if r is not None and r.base_delay_ms is not None else 2000
             ),
+            "maxAgentDelayMs": cap if cap is not None else 60000,
         }
 
     def get_provider_retry_settings(self) -> dict[str, Any]:

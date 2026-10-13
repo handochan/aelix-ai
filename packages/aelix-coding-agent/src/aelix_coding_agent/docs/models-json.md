@@ -342,7 +342,9 @@ Pi's order):
    Run /login to sign in to <provider> again.` When the refresh failed on a
    cause that may pass - the token endpoint answered `429`, `500`, `502`-`504`,
    `520` or `524` (pi's set), or could not be reached - the turn is retried as
-   a provider's `502` is (up to three retries, 2 s, 4 s and 8 s apart,
+   a provider's `502` is (by default up to three retries, 2 s, 4 s and 8 s
+   apart - `settings.json` `retry` changes both, see
+   [Automatic retry](providers-and-models.md#automatic-retry) -
    `Retrying…` in the TUI, `auto_retry_start` in `--mode json` and rpc; the
    message then has no `/login` hint), and while the login is stored each retry
    refreshes again; when it was refused (`400`, `401`, `403`: `invalid_grant`, a

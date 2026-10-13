@@ -1944,6 +1944,40 @@ async def test_run_tui_auto_retry_countdown_shows_and_clears_widget() -> None:
         await _quit_within(task)
 
 
+@pytest.mark.parametrize(
+    ("delay_ms", "label"),
+    [(500, "in 1s"), (1000, "in 1s"), (1500, "in 2s")],
+    ids=["500ms", "1000ms", "1500ms"],
+)
+async def test_run_tui_auto_retry_countdown_rounds_seconds_up(delay_ms: int, label: str) -> None:
+    """#408 review round 3: settings.json ``retry.baseDelayMs`` can ask for a
+    sub-second wait, which ``int(remaining)`` showed as "in 0s" (and 1.5 s as
+    "in 1s"). pi's countdown rounds up (``countdown-timer.ts:18``, Math.ceil)."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent
+
+    async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=1, max_attempts=3, delay_ms=delay_ms, error_message="overloaded"
+            )
+        )
+        await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+        assert chrome._widgets_above["__auto_retry__"] == [
+            f"⟳ Retrying (1/3) {label}… Esc to cancel"
+        ]
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="Retry cancelled"))
+        await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
 async def test_run_tui_auto_retry_esc_calls_abort_retry_not_abort() -> None:
     # Sprint 6h₂₂ — during the countdown, ``out_chrome.on_interrupt`` is
     # swapped to call ``harness.abort_retry()`` (Pi parity). ``abort()`` (which

@@ -125,6 +125,8 @@ def test_get_retry_settings_default(manager: SettingsManager) -> None:
         "enabled": True,
         "maxRetries": 3,
         "baseDelayMs": 2000,
+        # #408 — pi ``maxAgentDelayMs`` (``DEFAULT_MAX_AGENT_RETRY_DELAY_MS``).
+        "maxAgentDelayMs": 60000,
     }
 
 

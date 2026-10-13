@@ -98,8 +98,8 @@ class AgentState:
     # values match Pi ``rpc-types.ts:90-103``.
     steering_mode: str = "one-at-a-time"
     follow_up_mode: str = "one-at-a-time"
-    # Sprint 6h₂ (P-249): auto-mode flags. Pi default is ``True`` per
-    # fixture ``pi_rpc_mode_734e08e.json:rpc_session_state_shape``.
+    # Sprint 6h₂ (P-249): auto-mode flags, Pi default ``True``. #408: a settings.json
+    # ``retry.enabled`` boolean wins over ``auto_retry_enabled`` (pi reads only the setting).
     auto_compaction_enabled: bool = True
     auto_retry_enabled: bool = True
     # Sprint 6h₂ (P-250): best-effort cancellation flags. ``abort_retry``
