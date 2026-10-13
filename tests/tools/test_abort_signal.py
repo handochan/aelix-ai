@@ -25,6 +25,8 @@ import asyncio
 import contextlib
 import gc
 import os
+import pathlib
+import re
 import shlex
 import sys
 import time
@@ -138,9 +140,13 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     interpreter = (
         f'& "{sys.executable}"' if sys.platform == "win32" else shlex.quote(sys.executable)
     )
+    # The pid reaches the test WHOLE, from both ends (#406, the race that made
+    # tests/agents_ext/test_print_channel_spawn.py flaky): ``open(...).write``
+    # created the empty file before the digits, and ``exists()`` was true of it.
+    # The child runs :data:`_ANNOUNCE_OWN_PID` and the test waits for
+    # :func:`_whole_pid`, inside the same 10 s bound; both are pinned below.
     command = (
-        f'{interpreter} -c "import os, sys, time; '
-        f"open(sys.argv[1], 'w').write(str(os.getpid())); "
+        f'{interpreter} -c "import os, pathlib, sys, time; {_ANNOUNCE_OWN_PID}; '
         f'time.sleep(30)" "{pid_file}"'
     )
 
@@ -152,21 +158,21 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
         ops.exec(command, str(tmp_path), on_data=chunks.append, signal=sig)
     )
 
-    # Wait for the pid_file to appear (child is up and running). An anti-hang
-    # bound that names what it waited for (#330).
-    await wait_until(
-        lambda: os.path.exists(pid_file),
-        timeout=10.0,
-        what="the child to write its PID file (spawn failed?)",
-        interval=0.05,
-    )
-
+    # Wait for a whole pid in the pid_file (child is up and running). An
+    # anti-hang bound that names what it waited for (#330).
     try:
-        with open(pid_file) as _pf:
-            child_pid = int(_pf.read().strip())
+        await wait_until(
+            lambda: _whole_pid(pid_file) is not None,
+            timeout=10.0,
+            what="the child to write its PID file (spawn failed?)",
+            interval=0.05,
+        )
+        child_pid = _whole_pid(pid_file)
+        assert child_pid is not None
     finally:
-        with contextlib.suppress(OSError):
-            os.unlink(pid_file)
+        for leftover in (pid_file, pid_file + ".tmp"):
+            with contextlib.suppress(OSError):
+                os.unlink(leftover)
 
     # Fire the abort signal — must kill the process group.
     sig.abort()
@@ -190,6 +196,69 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
         f"after signal abort (expected {STATE_GONE}/{STATE_ZOMBIE} — "
         f"group kill failed?)"
     )
+
+
+#: How :func:`test_bash_exec_signal_abort_kills_process_group`'s child hands the
+#: test its pid (#406): a temp sibling in the same directory, then ``os.replace``,
+#: so the name appears only once it holds the whole line. ``chr(10)``, not a
+#: backslash escape, and no double quote, because it is spliced into a ``-c "..."``
+#: that passes through bash AND pwsh. It expects ``os``, ``pathlib`` and ``sys``.
+_ANNOUNCE_OWN_PID = (
+    "p = sys.argv[1]; "
+    "pathlib.Path(p + '.tmp').write_text(str(os.getpid()) + chr(10)); "
+    "os.replace(p + '.tmp', p)"
+)
+
+
+def _whole_pid(pid_file: str) -> int | None:
+    """The pid in ``pid_file``, or ``None`` while it is absent or not whole yet."""
+
+    try:
+        with open(pid_file, encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return None
+    return int(text) if re.fullmatch(r"[0-9]+\n", text) else None
+
+
+def test_the_abort_cases_pid_reaches_the_test_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both halves of the abort case's pid handover, each on its own (#406 review
+    round 2). With both in place each hides the other's regression: the case
+    itself stays green with a reader that takes ``'4'`` or a child back to a plain
+    ``open().write`` — so the reader's verdicts and the writer's one atomic
+    ``os.replace`` are pinned here, in-process, with no race and on every platform.
+    """
+
+    pid_file = str(tmp_path / "child.pid")
+    assert _whole_pid(pid_file) is None, "absent"
+    for partial in ("", "4", "42", "\n", "x42\n"):
+        Path(pid_file).write_text(partial, encoding="utf-8")
+        assert _whole_pid(pid_file) is None, repr(partial)
+    Path(pid_file).unlink()
+
+    seen: list[tuple[bool, bool, str]] = []
+    real_replace = os.replace
+
+    def _spy(src: str, dst: str) -> None:
+        seen.append(
+            (
+                Path(src).parent == Path(dst).parent,
+                Path(dst).exists(),
+                Path(src).read_text(encoding="utf-8"),
+            )
+        )
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _spy)
+    monkeypatch.setattr(sys, "argv", ["-c", pid_file])
+    exec(_ANNOUNCE_OWN_PID, {"os": os, "pathlib": pathlib, "sys": sys})
+    monkeypatch.undo()
+
+    assert seen == [(True, False, f"{os.getpid()}\n")], seen
+    assert _whole_pid(pid_file) == os.getpid()
+    assert [p.name for p in tmp_path.iterdir()] == ["child.pid"], "a temp file was left"
 
 
 #: A command that says it is running and then outlives the case using it. ``echo``

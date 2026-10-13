@@ -364,7 +364,7 @@ def _command(*args: str) -> str:
 
     pwsh needs the call operator to run a quoted path (``& "C:/…/python.exe"``)
     and bash needs ``shlex.quote``; both accept double-quoted arguments
-    (``test_abort_signal.py:128-137``). :data:`MARK` is appended to every argv
+    (``test_abort_signal.py:130-139``). :data:`MARK` is appended to every argv
     so that anything these cases leak is greppable.
     """
 

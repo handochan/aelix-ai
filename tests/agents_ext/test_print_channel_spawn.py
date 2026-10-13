@@ -34,12 +34,14 @@ selected" instead of reaching the network.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import ctypes
 import errno
 import json
 import os
+import re
 import select
 import shlex
 import signal
@@ -135,6 +137,50 @@ sigterm_ignoring_fixture_buildable = pytest.mark.skipif(
 
 # === Stub children ============================================================
 
+# HOW A CHILD HANDS THE TEST A PID (#406): ``announce`` in the child,
+# :func:`_announced_pid` in the test — and BOTH ends are fixed, because each
+# closes the race on its own and neither may lean on the other.
+#
+# The race: ``open(p, "w").write(str(pid))`` creates the EMPTY file first and
+# the digits land only when the file object is closed, while the cancel case
+# polled ``marker.exists()`` every 20 ms and read the moment it was true —
+# ``ValueError: invalid literal for int() with base 10: ''`` before
+# ``task.cancel()`` ever ran, 24 times in 5120 runs on main 6b5ffc81 and
+# e47f1101, and present since #220 (``.omc/probes/flake-print-channel-grandchild/``).
+#
+# * WRITER — the file appears only once it is complete: a temp sibling in the
+#   SAME directory (``os.replace`` is atomic within one filesystem only), then
+#   ``os.replace``. Every child in THIS file that hands the test a pid goes
+#   through it, and
+#   :func:`test_every_child_in_this_file_that_hands_over_a_pid_announces_it`
+#   holds each one to that. Nothing here claims more than this file.
+# * READER — only digits followed by the newline the writer ends with count, so
+#   an absent file, an empty one and a half-written one are all "not yet",
+#   never a ``ValueError`` and never a truncated pid. It waits inside the
+#   caller's existing deadline; no bound grew and no assertion is retried.
+_ANNOUNCE = textwrap.dedent(
+    """
+    def announce(path, pid):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write("%d\\n" % pid)
+        os.replace(tmp, path)
+    """
+)
+
+_ANNOUNCED = re.compile(r"[0-9]+\n")
+
+
+def _announced_pid(path: Path) -> int | None:
+    """The pid ``announce`` wrote to ``path``, or ``None`` while it is not whole yet."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return int(text) if _ANNOUNCED.fullmatch(text) else None
+
+
 _PRELUDE = textwrap.dedent(
     """
     import json, os, signal, subprocess, sys, time
@@ -161,7 +207,7 @@ _PRELUDE = textwrap.dedent(
     def done():
         emit({"type": "agent_end"})
     """
-)
+) + _ANNOUNCE
 
 
 def _stub(body: str) -> str:
@@ -318,7 +364,7 @@ def _pipe_holding_stub(marker: Path) -> str:
             [sys.executable, "-c", "import time; time.sleep(120)"],
             start_new_session=True,
         )
-        open({str(marker)!r}, "w").write(str(kid.pid))
+        announce({str(marker)!r}, kid.pid)
         start()
         say("the answer", input=5, output=2, total_tokens=7)
         done()
@@ -369,7 +415,7 @@ def _grandchild_stub(marker: Path) -> str:
             [sys.executable, "-c", "import time; time.sleep(120)"],
             start_new_session=True,
         )
-        open({str(marker)!r}, "w").write(str(kid.pid))
+        announce({str(marker)!r}, kid.pid)
         start()
         say("grandchild spawned")
         time.sleep(120)
@@ -402,7 +448,7 @@ def _nonsetsid_grandchild_stub(marker: Path) -> str:
         kid = subprocess.Popen(
             [sys.executable, "-c", {_GRANDCHILD_BODY!r}],
         )
-        open({str(marker)!r}, "w").write(str(kid.pid))
+        announce({str(marker)!r}, kid.pid)
         start()
         say("grandchild spawned")
         time.sleep(120)
@@ -1504,33 +1550,40 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     assert sig != signal.SIGKILL
 
 
-_PDEATH_CHILD = textwrap.dedent(
-    """
-    import os, signal, subprocess, sys, time
+# The marker is written through ``announce`` like every other pid in this file
+# (#406 review round 2). It was never a reachable race here — the child prints
+# READY only after the write has closed, and the test reads the marker only
+# after READY — but one convention per file is what lets the structural guard
+# below say "every child" and be true.
+_PDEATH_CHILD = (
+    "import os, signal, subprocess, sys, time\n"
+    + _ANNOUNCE
+    + textwrap.dedent(
+        """
+        kid = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            start_new_session=True,
+        )
+        announce(sys.argv[1], kid.pid)
 
-    kid = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)"],
-        start_new_session=True,
+        def _bye(*_a):
+            # What a REAL aelix child does on SIGTERM:
+            # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
+            # abort watcher (bash.py:556-571), which since #222 ends a ProcessTree
+            # instead of calling the _kill_group this stub imitates. On POSIX that
+            # is still killpg(pgid, SIGKILL), which is why the stub still stands.
+            try:
+                os.killpg(os.getpgid(kid.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            os._exit(0)
+
+        signal.signal(signal.SIGTERM, _bye)
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+        time.sleep(120)
+        """
     )
-    open(sys.argv[1], "w").write(str(kid.pid))
-
-    def _bye(*_a):
-        # What a REAL aelix child does on SIGTERM:
-        # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
-        # abort watcher (bash.py:556-571), which since #222 ends a ProcessTree
-        # instead of calling the _kill_group this stub imitates. On POSIX that
-        # is still killpg(pgid, SIGKILL), which is why the stub still stands.
-        try:
-            os.killpg(os.getpgid(kid.pid), signal.SIGKILL)
-        except Exception:
-            pass
-        os._exit(0)
-
-    signal.signal(signal.SIGTERM, _bye)
-    sys.stdout.write("READY\\n")
-    sys.stdout.flush()
-    time.sleep(120)
-    """
 )
 
 _PDEATH_PARENT = textwrap.dedent(
@@ -1612,7 +1665,8 @@ def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) ->
             # so both are already in place: no settle is needed (#330 removed a
             # 0.3 s one that was redundant by that ordering).
             kid = int(parent.stdout.readline().split()[1])
-            grandchild = int(marker.read_text())
+            grandchild = _announced_pid(marker)
+            assert grandchild is not None, f"READY came before a whole pid in {marker}"
             parent.kill()
             parent.wait(timeout=10)
             # WAIT FOR THE CHILD'S DEATH, the event both outcomes hang on (#330 —
@@ -1629,8 +1683,9 @@ def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) ->
                 )
             outcomes[name] = _alive(grandchild)
         finally:
-            with contextlib.suppress(Exception):
-                os.kill(int(marker.read_text()), signal.SIGKILL)
+            if (leaked := _announced_pid(marker)) is not None:
+                with contextlib.suppress(Exception):
+                    os.kill(leaked, signal.SIGKILL)
 
     assert outcomes["SIGTERM"] is False, (
         "the cooperative child must still reap its grandchild on parent death"
@@ -1764,6 +1819,27 @@ async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     assert await _await_death(grandchild, 5.0) < 5.0
 
 
+def _pdeathsig_helper(pidfile: Path) -> str:
+    """:func:`test_child_dies_with_parent`'s helper parent: arm PDEATHSIG, announce."""
+
+    return (
+        "import os\n"
+        + _ANNOUNCE
+        + textwrap.dedent(
+            f"""
+            import subprocess, sys, time
+            from aelix_agents.reaper import pdeathsig
+            kid = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(120)"],
+                preexec_fn=pdeathsig,
+            )
+            announce({str(pidfile)!r}, kid.pid)
+            time.sleep(120)
+            """
+        )
+    )
+
+
 @linux_only
 def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
@@ -1780,19 +1856,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """
 
     pidfile = tmp_path / "sleeper.pid"
-    helper = textwrap.dedent(
-        f"""
-        import subprocess, sys, time
-        from aelix_agents.reaper import pdeathsig
-        kid = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            preexec_fn=pdeathsig,
-        )
-        open({str(pidfile)!r}, "w").write(str(kid.pid))
-        time.sleep(120)
-        """
-    )
-    parent = subprocess.Popen([sys.executable, "-c", helper])
+    parent = subprocess.Popen([sys.executable, "-c", _pdeathsig_helper(pidfile)])
     try:
         # READINESS, NOT THE SUBJECT — so the budget is generous. The helper is
         # a cold interpreter that must import ``aelix_agents`` before it can
@@ -1805,14 +1869,17 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
         #
         # The ASSERTION below stays tight, because PDEATHSIG firing IS the
         # subject and a slow kill is a real defect.
+        #
+        # A WHOLE pid, not an existing file (#406): the helper used to write it
+        # with ``open(...).write(...)``, so ``exists()`` could be true of an
+        # empty file and ``int('')`` raised before the subject was reached.
         started = time.monotonic()
-        while time.monotonic() - started < 90 and not pidfile.exists():
+        while (sleeper := _announced_pid(pidfile)) is None and time.monotonic() - started < 90:
             time.sleep(0.05)
-        assert pidfile.exists(), (
-            f"the helper never wrote its child's pid: waited "
+        assert sleeper is not None, (
+            f"the helper never announced its child's pid: waited "
             f"{time.monotonic() - started:.2f}s of a 90s anti-hang bound for {pidfile}"
         )
-        sleeper = int(pidfile.read_text())
         assert _alive(sleeper), f"the helper's child {sleeper} was dead before the parent was"
         parent.kill()
         parent.wait(timeout=10)
@@ -3425,9 +3492,8 @@ async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) ->
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
-        if grandchild is None and marker.exists():
-            with contextlib.suppress(Exception):
-                grandchild = int(marker.read_text())
+        if grandchild is None:
+            grandchild = _announced_pid(marker)
         if grandchild is not None:
             # ``getattr``: ``signal.SIGKILL`` is an ``AttributeError`` on
             # Windows, which ``suppress`` would swallow into a leaked process.
@@ -3548,7 +3614,7 @@ def _pipe_holding_daemon_stub(marker: Path, pid_file: Path) -> str:
             _mid = os.fork()
             if _mid == 0:
                 if os.fork() == 0:
-                    open({str(pid_file)!r}, "w").write(str(os.getpid()))
+                    announce({str(pid_file)!r}, os.getpid())
                     [time.sleep(0.05) for _ in range(2400)]
                 os._exit(0)
             os.waitpid(_mid, 0)
@@ -3651,12 +3717,10 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
         # ``suppress`` would turn that into a leaked process. There is no
         # ``pid_file`` on win32 at all — the stub builds the window with a live
         # CHILD there, not with a holder (#220 review round 2, W32-3/posix2/P4).
-        if pid_file.exists():
+        holder = _announced_pid(pid_file)
+        if holder is not None:
             with contextlib.suppress(Exception):
-                os.kill(
-                    int(pid_file.read_text()),
-                    getattr(signal, "SIGKILL", signal.SIGTERM),
-                )
+                os.kill(holder, getattr(signal, "SIGKILL", signal.SIGTERM))
         task.cancel()
         with contextlib.suppress(BaseException):
             await task
@@ -3839,11 +3903,13 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
     )
     grandchild: int | None = None
     try:
+        # A WHOLE pid, not an existing file (#406): ``exists()`` was true of the
+        # empty file the stub's ``open(...)`` created, and ``int('')`` raised
+        # here, before the cancel under test ever ran.
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and not marker.exists():
+        while (grandchild := _announced_pid(marker)) is None and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
-        assert marker.exists(), "the stub never spawned its grandchild"
-        grandchild = int(marker.read_text())
+        assert grandchild is not None, "the stub never announced its grandchild"
         assert _alive(grandchild)
         assert row.reaper_task is None, (
             "this case is only the cancel path if no reaper was ever built"
@@ -4082,3 +4148,137 @@ async def test_a_real_print_child_reports_the_signal_exit_code(
         "0xC0000005",
     ):
         assert forbidden not in tail, f"{forbidden!r} on a cooperative exit: {detail}"
+
+
+# === #406 — a pid reaches the test whole, from both ends =======================
+#
+# The two cases that raced cannot show either half on its own: with both halves
+# in place, each hides the other's deletion (measured with the issue's kit, see
+# the #406 commit). So each half is pinned here, deterministically and on every
+# platform, with no child process and no race.
+
+
+def test_a_pid_is_read_only_once_its_announcement_is_whole(tmp_path: Path) -> None:
+    """The READER half: absent, empty and half-written are all "not yet".
+
+    ``exists()`` was the old test, and the empty file the stub's ``open()``
+    created satisfied it — ``int('')`` then raised before the case reached its
+    subject. ``"42"`` with no newline is the half-written shape: a reader that
+    took it would hand back a truncated pid, which is worse than a raise.
+    """
+
+    marker = tmp_path / "kid.pid"
+    assert _announced_pid(marker) is None, "absent"
+    for partial in ("", "4", "42", "\n", "x42\n"):
+        marker.write_text(partial, encoding="utf-8")
+        assert _announced_pid(marker) is None, repr(partial)
+    marker.write_text("4242\n", encoding="utf-8")
+    assert _announced_pid(marker) == 4242
+    # What ``announce``'s text-mode write puts on disk on win32.
+    marker.write_bytes(b"4242\r\n")
+    assert _announced_pid(marker) == 4242
+
+
+def test_announce_never_shows_an_incomplete_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The WRITER half: the marker comes into being whole, by one ``os.replace``.
+
+    The spy sees the state at the instant the name appears: the marker must not
+    exist yet (so nothing earlier exposed an empty or partial file under it),
+    the source must already hold the complete line, and both must sit in one
+    directory, because ``os.replace`` is atomic only within one filesystem.
+    """
+
+    marker = tmp_path / "kid.pid"
+    seen: list[tuple[bool, bool, str]] = []
+    real_replace = os.replace
+
+    def _spy(src: str, dst: str) -> None:
+        seen.append(
+            (
+                Path(src).parent == Path(dst).parent,
+                Path(dst).exists(),
+                Path(src).read_text(encoding="utf-8"),
+            )
+        )
+        real_replace(src, dst)
+
+    namespace: dict[str, Any] = {}
+    exec("import os\n" + _ANNOUNCE, namespace)
+    monkeypatch.setattr(os, "replace", _spy)
+    namespace["announce"](str(marker), 4242)
+    monkeypatch.undo()
+
+    assert seen == [(True, False, "4242\n")], seen
+    assert _announced_pid(marker) == 4242
+    assert [p.name for p in tmp_path.iterdir()] == ["kid.pid"], "a temp file was left"
+
+
+def _by_path(stub: Callable[[Path], str]) -> Callable[[Path], tuple[str, str]]:
+    """A child whose source names its pid file literally, as ``repr(str(path))``."""
+
+    return lambda pid_file: (stub(pid_file), repr(str(pid_file)))
+
+
+@pytest.mark.parametrize(
+    "child",
+    [
+        pytest.param(_by_path(_pipe_holding_stub), id="pipe-holding"),
+        pytest.param(_by_path(_grandchild_stub), id="setsid-grandchild"),
+        pytest.param(_by_path(_nonsetsid_grandchild_stub), id="non-setsid-grandchild"),
+        pytest.param(
+            _by_path(
+                lambda pid_file: _pipe_holding_daemon_stub(
+                    pid_file.with_suffix(".ready"), pid_file
+                )
+            ),
+            id="pipe-holding-daemon",
+        ),
+        pytest.param(_by_path(_pdeathsig_helper), id="pdeathsig-helper"),
+        # A script file that takes its marker as ``argv[1]`` (the test runs it
+        # twice, once per signal), so the path is that expression, not a literal.
+        pytest.param(lambda _pid_file: (_PDEATH_CHILD, "sys.argv[1]"), id="pdeath-child"),
+    ],
+)
+def test_every_child_in_this_file_that_hands_over_a_pid_announces_it(
+    tmp_path: Path, child: Callable[[Path], tuple[str, str]]
+) -> None:
+    """The call sites: a stub that went back to ``open(...).write`` loses the WRITER
+    half silently, because the reader still covers for it — so it is pinned here.
+
+    And the DEFINITION, on every platform (#406 review round 2): a source that
+    calls ``announce`` without carrying :data:`_ANNOUNCE` (and the ``os`` it
+    needs) compiles fine and fails only when it runs — for ``_pdeathsig_helper``
+    and ``_PDEATH_CHILD`` that is a linux-only case, after its 90 s bound or as
+    an unexplained missing READY. So the guard asserts the writer the
+    ``test_announce_never_shows_an_incomplete_file`` spy executes is the one
+    defined here, at module level, before anything calls it.
+    """
+
+    pid_file = tmp_path / "kid.pid"
+    text, path_expr = child(pid_file)
+    assert f"announce({path_expr}," in text
+    assert f"open({path_expr}" not in text
+    assert _ANNOUNCE in text, "the source does not carry the atomic writer it calls"
+    tree = ast.parse(text)
+    defined = [
+        node.lineno
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "announce"
+    ]
+    imports_os = [
+        node.lineno
+        for node in tree.body
+        if isinstance(node, ast.Import) and any(alias.name == "os" for alias in node.names)
+    ]
+    calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "announce"
+    ]
+    assert len(defined) == 1, f"announce defined {len(defined)} times at module level"
+    assert imports_os and min(imports_os) < defined[0], "announce needs os, imported first"
+    assert calls and defined[0] < min(calls), "announce is called before it is defined"
