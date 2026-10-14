@@ -3279,7 +3279,7 @@
   "tests/test_abort_cancels_in_flight_parallel.py:87-87": [
    "assert cancelled[\"hit\"] >= 1, ("
   ],
-  "tests/tools/test_abort_signal.py:130-139": [
+  "tests/tools/test_abort_signal.py:250-259": [
    "The child is ``sys.executable`` rather than ``sh -c 'echo $$ …'`` because",
    "``exec`` hands ``command`` to the resolved shell, which is pwsh on Windows",
    "— no ``sh`` and no ``$$``. The two shells quote a command differently:",

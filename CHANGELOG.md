@@ -339,6 +339,33 @@ unwritten. Add them with the next release.
   expired bound fails with the same timeline, through `tests/event_waits.within`,
   so a `TimeoutError` the call raises itself is still reported as one.
 
+- **Tests only: the bash abort cases get the same treatment, so a slow Windows
+  shell start no longer fails them either (#471).** Nothing changes for users.
+  `tests/tools/test_abort_signal.py` awaited its ordinary `echo` calls under a
+  bare 5 s `wait_for`, and twice on windows-latest that ran out inside
+  `proc.wait` with only a `TimeoutError` to show (py3.13, and py3.11 in the case
+  after it); its abort and cancel cases had 5 s after the abort or cancel and a
+  10 s wait for the shell to start. Those eight cases now go through #449's
+  `BashPhases`; the file's two #234 cases keep their own 60 s bounds without
+  it. An ordinary call, a cancelled one, the abort 0.2 s into `true` and every
+  wait for a start run under the 30 s hang guard. An aborted call keeps a
+  verdict bound and must return within 15 s of the abort, because an abort
+  that kills nothing returns ~30 s after it with `exit_code=None` all the same.
+  That bound checks the return, not that the command ended, which
+  `test_bash_tool_containment.py` checks. An abort up to ~15 s late now only
+  warns here, where the 5 s bound failed it: a working abort on windows-latest
+  once took 5.17 s. A bound that runs out names the phase in flight, and a
+  call or a start slower than 2 s warns with its timeline. The helper's start
+  wait can now wait for a case's own event (its `started` line reaching
+  `on_data`, a pid file), report up to it, and stop at once when the call has
+  already returned. An expired guard is now stamped when its bound fires, so
+  the kill its cancellation starts no longer takes the blame. On windows-latest
+  the old file and a pre-final version of the new one both passed 240 of 240
+  rounds (run 38502661220), the shell's start taking a median 0.38 s and at
+  most 2.48 s (old) and 1.55 s (new). In run 38508575549, on the version before
+  the review's helper fixes, an injected 5.5 s start, 5.5 s reap or 6 s
+  kill-ladder stall failed the old file in every job and the new one in none.
+
 - **`install.sh` finds the uv it just installed wherever uv put it (#279).**
   With uv absent, the installer bootstraps it with Astral's installer and then
   looked for it only in `$XDG_BIN_HOME` or `~/.local/bin`. Astral's installer

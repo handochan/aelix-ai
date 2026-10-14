@@ -50,17 +50,25 @@ timeout), the loop entering the drain, the return — and :meth:`BashPhases.guar
 every product call measured but the one 2.70 s stall), and in the failure message
 when its bound expires. Each report names the slowest gap, so the next stall
 says whether it was the shell, the kill, the reap or this process.
+
+#471 puts the abort, cancel and ordinary cases of
+``tests/tools/test_abort_signal.py`` under the same guards; that file's
+docstring names the two #234 cases it leaves outside them, and why. Its cases
+call ``_LocalBashOperations.exec`` directly, the call these stamps are installed
+on, and its cancel cases stamp ``cancel`` where an aborted case stamps
+``abort``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import threading
 import time
 import types
 import warnings
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 import aelix_coding_agent.tools.bash as bash_mod
@@ -71,8 +79,13 @@ from tests.event_waits import wait_until, within
 _T = TypeVar("_T")
 
 #: The bound on one RPC bash call in these cases, and on an aborted case's wait
-#: for its shell to start. A hang guard, not a budget: see the module docstring
-#: for the distribution it is sized from.
+#: for its shell to start. Since #471 it is also the bound on every call and
+#: start wait in ``tests/tools/test_abort_signal.py`` that runs under
+#: :class:`BashPhases`, except the 15 s verdict on its two aborted calls. That
+#: file's two #234 cases (the watcher-teardown cancel and the GC retrieval) run
+#: real shells WITHOUT these stamps, under their own 60 s bounds; its docstring
+#: says why. A hang guard, not a budget: see the module docstring for the
+#: distribution it is sized from.
 HANG_GUARD_SECONDS = 30.0
 
 #: From the abort to the call's return, for a ``sleep 30`` that was running when
@@ -118,7 +131,10 @@ _ENDS = {
     "kill marked": "_mark_the_kill stamping the kill instant after the ladder",
     "drain entered": "the loop resuming after proc.wait (after a kill: and the watcher's disarm)",
     "returned": "the post-exit drain and the return",
+    # After any stamp but "first output": see _RUNNING_AFTER_FIRST_OUTPUT.
+    "running": "the command starting, up to the case's own sign that it runs",
     "abort": "the case's own wait before it aborts",
+    "cancel": "the case's own wait before it cancels the task running the call",
     "(guard expired)": "the phase in flight when the bound expired",
 }
 
@@ -134,6 +150,27 @@ _IN_THE_LADDER = (
     "inside the kill ladder: hard_kill (on win32 a taskkill.exe spawn and run, "
     "and the job), proc.kill, the reap"
 )
+
+#: What the gap from "first output" to "running" covers (#471 review round 2).
+#: The reader stamps "first output" on its own thread when the shell's first
+#: bytes arrive. What comes after happens in THIS process: the loop hands the
+#: chunk to ``on_data``, and the start wait's next poll sees the case's sign.
+#: ``tests/tools/test_abort_signal.py``'s ``started`` line is the first output
+#: of ``echo started; sleep 30``, so a stall in that gap is the loop's, not the
+#: command's. Glossed as "the command starting", a loop held 3 s after the
+#: first byte was reported as a 3.009 s command start (darwin probe).
+_RUNNING_AFTER_FIRST_OUTPUT = (
+    "this process, after the shell's first output: the loop delivering it to "
+    "on_data and the poll that saw the case's sign (or more output, when the "
+    "first chunk did not hold the sign)"
+)
+
+#: How far ahead of :func:`tests.event_waits.within`'s own deadline
+#: :meth:`BashPhases.guard` arms the timer that stamps the expiry. asyncio's
+#: timer heap orders handles by deadline alone, so a strictly earlier deadline
+#: is what makes this timer run first when both fall due in the same loop
+#: iteration.
+_EXPIRY_LEAD_SECONDS = 1e-6
 
 #: Which product caller of ``_PipeReader.pin_after`` stamps what. Both call it on
 #: the loop thread, so the thread cannot tell them apart, and on the abort,
@@ -186,6 +223,15 @@ else:
 
     def _child_times(proc: Any) -> tuple[int | None, int | None]:
         return None, None
+
+
+def _outcome(call: asyncio.Future[Any]) -> str:
+    """How a finished call ended, for a start wait that it outran."""
+
+    if call.cancelled():
+        return "cancelled"
+    exc = call.exception()
+    return f"raised {exc!r}" if exc is not None else f"returned {call.result()!r}"
 
 
 class BashPhases:
@@ -312,14 +358,18 @@ class BashPhases:
                 stamps["child exited"] = exited
         if now is not None:
             stamps["(guard expired)"] = now
-        return sorted(stamps.items(), key=lambda item: item[1])
+        # On a tie the expiry sorts first: what the expiry starts (its
+        # cancellation's kill) is stamped after it, never before.
+        return sorted(stamps.items(), key=lambda item: (item[1], item[0] != "(guard expired)"))
 
     def gaps(self, *, now: int | None = None) -> list[tuple[str, str, int, str]]:
         """``(previous stamp, stamp, gap in ns, what the gap covers)``, in time order.
 
-        A gap is glossed by the stamp that ends it (:data:`_ENDS`), except one
-        that lies inside the kill ladder, which is glossed as the ladder
-        whatever stamp ends it (:data:`_IN_THE_LADDER`).
+        A gap is glossed by the stamp that ends it (:data:`_ENDS`), with two
+        exceptions. A gap that lies inside the kill ladder is glossed as the
+        ladder, whatever stamp ends it (:data:`_IN_THE_LADDER`). A gap from
+        "first output" to "running" is glossed as this process's delivery and
+        poll (:data:`_RUNNING_AFTER_FIRST_OUTPUT`).
         """
 
         ordered = self._ordered(now=now)
@@ -333,7 +383,12 @@ class BashPhases:
                 and t_prev >= ladder_from
                 and (ladder_to is None or t <= ladder_to)
             )
-            meaning = _IN_THE_LADDER if inside else _ENDS.get(name, name)
+            if inside:
+                meaning = _IN_THE_LADDER
+            elif prev == "first output" and name == "running":
+                meaning = _RUNNING_AFTER_FIRST_OUTPUT
+            else:
+                meaning = _ENDS.get(name, name)
             gaps.append((prev, name, t - t_prev, meaning))
         return gaps
 
@@ -360,6 +415,10 @@ class BashPhases:
         what: str = "waiting for the shell's first output before the abort",
         *,
         slow: float = SLOW_CALL_SECONDS,
+        until: Callable[[], object] | None = None,
+        detail: Callable[[], str] | None = None,
+        interval: float = 0.01,
+        call: asyncio.Future[Any] | None = None,
     ) -> None:
         """Wait, under the hang guard, until the shell has written its first output.
 
@@ -370,15 +429,65 @@ class BashPhases:
         ``slow`` is reported phase by phase as well: it is
         spent before the abort's own bound starts, and would otherwise say
         nothing.
+
+        ``until`` replaces the reader's stamp as the event, for a case whose
+        own event comes later than the shell's first byte, and ``detail`` is
+        put ahead of the timeline when the guard expires (#471: that file waits
+        for its ``started`` line to reach ``on_data``, with the output so far,
+        and its process-group case for the pid file the shell's child writes).
+        Such an event is stamped ``running`` once it holds, because no stamp of
+        the call's own marks it: a pid file's 5.5 s start was otherwise
+        reported as its slowest gap, ``spawn -> spawned (0.001s)``. An expired
+        guard's timeline ends at ``(guard expired)`` here too (#471), as
+        :meth:`guard`'s does, so the phase in flight is the one it names.
+        ``interval`` is the poll, for an event that costs something to ask (a
+        file to open).
+
+        ``call`` is the task running the call (#471 review round 2). Once it is
+        done and the event still does not hold, nothing is left in flight, and
+        the wait fails AT ONCE: the timeline ends at ``returned``, stamped when
+        the call finished, the message says how it ended, and ``detail`` comes
+        between them. Without it, a pid file that a missing interpreter never
+        wrote was waited for the whole 30 s guard after ``exec`` had returned
+        127 in 0.010 s, and the report then named ``drain entered -> (guard
+        expired)`` as "the phase in flight" (darwin probe).
         """
 
-        waited = await wait_until(
-            lambda: "first output" in self.stamps,
-            timeout=HANG_GUARD_SECONDS,
-            what=what,
-            detail=self._describe,
-            interval=0.01,
-        )
+        event = until if until is not None else (lambda: "first output" in self.stamps)
+
+        def _detail() -> str:
+            timeline = self._describe(now=_now_ns())
+            return timeline if detail is None else f"{detail()}\n{timeline}"
+
+        def _returned(_call: asyncio.Future[Any]) -> None:
+            # When the call finished, not when a poll noticed it: a stamp taken
+            # by the poll would add up to ``interval`` to the drain's gap.
+            self.stamps.setdefault("returned", _now_ns())
+
+        if call is not None:
+            call.add_done_callback(_returned)
+        try:
+            waited = await wait_until(
+                lambda: event() or (call is not None and call.done()),
+                timeout=HANG_GUARD_SECONDS,
+                what=what,
+                detail=_detail,
+                interval=interval,
+            )
+        finally:
+            if call is not None:
+                call.remove_done_callback(_returned)
+        if call is not None and call.done() and not event():
+            self.stamps.setdefault("returned", _now_ns())
+            message = (
+                f"{what}: the call returned before it held ({_outcome(call)}), "
+                f"{waited:.3f}s into the wait, so the wait stopped there"
+            )
+            if detail is not None:
+                message += f"\n{detail()}"
+            raise AssertionError(f"{message}\n{self._describe()}")
+        if until is not None:
+            self.stamp("running")
         if waited > slow:
             warnings.warn(
                 f"#449 {what} on {sys.platform} took {waited:.3f}s (slow above "
@@ -401,22 +510,41 @@ class BashPhases:
         The bound is :func:`tests.event_waits.within`'s (#330, ADR-0225), so a
         ``TimeoutError`` the CALL raises comes out as itself, and only the
         bound's own expiry fails as "did not finish within", with this call's
-        timeline appended. Its ``(guard expired)`` stamp is the expiry instant;
-        what the cancellation that follows did (the kill it runs) is stamped
-        after it.
+        timeline appended.
+
+        Its ``(guard expired)`` stamp is taken WHEN THE BOUND FIRES, by a timer
+        of this method's own that is due :data:`_EXPIRY_LEAD_SECONDS` before
+        ``within``'s, so it runs first. What the cancellation that follows does
+        (the kill it runs) is stamped after it. Until #471 review round 2 the
+        stamp was computed as the start plus the bound, on the wall clock,
+        while the bound fires on the loop's clock. asyncio runs a timer up to
+        the loop's clock resolution early (15.6 ms on windows py3.11 and
+        py3.12), so the kill could be stamped first and the report named
+        ``X -> kill started`` instead of the phase in flight: on windows-latest
+        4 of the 24 expired-guard reports of run 38502661220 (all py3.12) and
+        5 of the 54 of run 38508575549 (four py3.11, one py3.12).
         """
 
+        loop = asyncio.get_running_loop()
         started_ns = _now_ns()
         self.stamps.setdefault("call", started_ns)
-        expires_ns = started_ns + round(bound * 1e9)
-        started = time.monotonic()
-        result = await within(
-            awaitable,
-            bound=bound,
-            what=what,
-            kind=kind,
-            detail=lambda: self._describe(now=expires_ns),
+        expired: list[int] = []
+        expiry = loop.call_at(
+            loop.time() + bound - _EXPIRY_LEAD_SECONDS, lambda: expired.append(_now_ns())
         )
+        started = time.monotonic()
+        try:
+            result = await within(
+                awaitable,
+                bound=bound,
+                what=what,
+                kind=kind,
+                detail=lambda: self._describe(
+                    now=expired[0] if expired else started_ns + round(bound * 1e9)
+                ),
+            )
+        finally:
+            expiry.cancel()
         elapsed = time.monotonic() - started
         self.stamps.setdefault("returned", _now_ns())
         if elapsed > slow:

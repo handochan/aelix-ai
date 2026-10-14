@@ -3,20 +3,114 @@
 Covers:
 - :class:`~aelix_coding_agent.tools._abort.AbortSignal` API contract.
 - :meth:`~aelix_coding_agent.tools.bash._LocalBashOperations.exec` with
-  signal abort: the child's tree is killed and exit_code is None.
+  signal abort: the call returns within 15 s of the abort with exit_code None,
+  and the process-group case's child is gone or a zombie after it.
 - :meth:`~aelix_coding_agent.tools.bash._LocalBashOperations.exec` with
-  asyncio.CancelledError: the tree is killed and CancelledError propagates
-  (is NOT swallowed).
+  asyncio.CancelledError: CancelledError propagates (is NOT swallowed).
 - The same, for a cancellation that lands in the WATCHER TEARDOWN rather than
   in ``_wait`` — the window #234 closed, plus the explicit retrieval that keeps
   a watcher's own failure out of the loop's GC report.
 
+That an abort or a cancel kills the command's whole tree is asserted against
+real trees in ``test_bash_tool_containment.py``, not here (see below).
+
 Since #222 the kill at both legs is a :class:`~aelix_ai.utils._process_tree.ProcessTree`
 ladder rather than the pid-only ``_kill_group`` these cases were written
 against (that one-line delegate is deleted). The cases below are unchanged
-because their SUBJECT is unchanged — the abort ends the command and the label
-comes back right; what the ladder buys beyond the pid is asserted against real
-trees in ``test_bash_tool_containment.py``.
+because their SUBJECT is unchanged — the abort ends the call with the right
+label, and in the process-group case the child it handed the command to; what
+the ladder buys beyond the pid is asserted in ``test_bash_tool_containment.py``.
+
+THE BOUNDS ON A REAL SHELL (#471). The eight bash cases from
+``test_bash_exec_signal_abort_kills_child`` to
+``test_bash_exec_cancel_watcher_teardown_catches_exception`` run one (``pwsh``
+on windows-latest) under :class:`tests.rpc._bash_phases.BashPhases`, #449's
+phase instrumentation: a bound that expires fails with the call's timeline and
+names its slowest phase, and a call slower than 2 s warns with it. Each of
+their bounds is one of two kinds and says which:
+
+* A HANG GUARD, :data:`~tests.rpc._bash_phases.HANG_GUARD_SECONDS` (30 s), where
+  the case asserts a result, a ``CancelledError`` or "no exception" and nothing
+  about time: an ordinary call, a cancelled one, the abort 0.2 s into ``true``,
+  and the wait for a command to start before it is aborted or cancelled. The
+  number only has to stay out of a working call's reach.
+* A VERDICT bound where the time is the property: an aborted call must return
+  within :data:`~tests.rpc._bash_phases.ABORT_ENDS_CALL_SECONDS` (15 s) of the
+  ABORT. ``exit_code is None`` comes from ``_signal_aborted``, so it holds when
+  the kill does nothing, and an abort that kills nothing leaves the command to
+  run out its ``sleep 30`` and the call to return ~30 s later, which this bound
+  fails.
+
+What the verdict checks is that the CALL RETURNED, not that the command ended.
+An abort that kills only the shell returns at once with ``exit_code=None`` and
+passes it while the command keeps running wherever the shell forked it
+(review round 2, darwin ``/bin/bash`` 3.2, which forks the last command of
+``echo started; sleep 30``: both aborted cases passed, and that ``sleep 30``
+outlived the first). That the tree died is what
+``test_bash_tool_containment.py``'s
+``test_the_abort_signal_ends_a_tree_whose_middle_parent_already_exited``
+checks, and it failed under that kill. The process-group case here looks at its
+pid-file child too, but on POSIX the shell execs that single command, so the
+child IS the shell and a shell-only kill ends it.
+
+THE TRADE THE 15 s VERDICT MAKES, decided: an abort honoured up to ~15 s late
+now passes here, with a warning that names the slow phase, where the 5 s bound
+it replaced failed it. Measured on darwin: an abort whose kill started 12 s
+late passed both aborted cases here (a 12.007 s warning naming the kill) and
+failed both in the 529b997e file (review rounds 1 and 2); one that waited 9 s
+for a SIGINT first passed 6 runs in 6 here and failed 5 in 6 there (round 1).
+The reason is that a working abort on windows-latest needed more than 5 s
+once: 5.17 s, 5.08 s of it inside the kill ladder, whose ``taskkill.exe`` runs
+under a 5 s timeout (run 38508575549, py3.11 under load). The ladder's bounded
+parts alone add up to 6.35 s on win32, so a verdict under that fails working
+aborts on a slow runner, which is the flake #471 removes. Lateness is still
+bounded elsewhere: the containment case above asserts at most 2.5 s from the
+abort to the return (7.5 s on win32), and it failed the 9 s mutant 3 times in
+3 (round 1) and the 12 s one (round 2).
+
+TWO CASES RUN REAL SHELLS OUTSIDE BashPhases, deliberately:
+``test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed`` (three
+arms, one call each) and
+``test_a_signal_that_blows_up_while_being_cancelled_leaves_nothing_for_the_gc``
+(three calls in one case). #471 left their 60 s bounds as they were, twice the
+hang guard, over ``echo ok`` and over a python sleeper under a 0.3 s timeout.
+What they assert is which branch a cancellation takes inside the watcher
+teardown and what reaches the loop's GC handler, not how long a call takes.
+BashPhases also stamps only a case's FIRST spawn, so the GC case's second and
+third calls would carry no stamps. A stall past 60 s there fails without a
+timeline: "[arm] exec did not return within 60s" in the teardown case, and in
+the GC case "arm 2: exec did not return within 60s" or, for arms 1 and 3, a
+bare ``TimeoutError``.
+
+What the bounds are sized from, measured on windows-latest by #449: a bare
+``pwsh -NoProfile`` once took 5.97 s from process creation to its first
+statement, and one ``proc.wait`` returned 2.18 s after an ordinary exit (run
+38439411854). Product calls there had a median of 0.38-0.65 s and a max of
+2.70 s over 3000. An abort landing after the first output returned in a median
+0.063 s, p99 0.381 s, max 0.547 s (run 38453296707, 900 calls). So 30 s is 5x
+the worst stall and 11x the slowest call, and 15 s covers the kill ladder's
+bounded parts on win32 (6.35 s) plus one 5.97 s stall, at half a non-killing
+abort's ~30 s. The 5 s bounds these replaced failed twice on windows-latest with
+a bare ``TimeoutError`` from inside ``proc.wait`` (job 115589770821, py3.13;
+run 37942222504, py3.11).
+
+This file's own calls on windows-latest, before #471's review round 2 changed
+the helper's start wait and expiry stamp (py3.11-3.13, idle and under three
+busy loops; no case failed in the plain rounds of any of the three runs):
+
+* Run 38502661220: 40 rounds of the 529b997e file and of a pre-final version
+  of this one that polled the pid file every 0.01 s, 1920 case records each.
+  The shell's start (wait entered to first output): a median 0.38 s both, max
+  2.48 s (529b997e) and 1.55 s (this one). An ordinary call: at most 2.66 s
+  and 1.66 s. Abort of a running command to return: at most 0.38 s and
+  0.44 s. Cancel to return: at most 0.38 s here; the 529b997e file stamps no
+  cancel, and from its kill's start it was 0.95 s at most.
+* Run 38505018889: this file as first committed for #471, the same matrix,
+  1920 records. The start: at most 1.43 s. Abort to return: at most 0.43 s.
+  Cancel to return: at most 0.45 s.
+* Run 38508575549: the same version, 30 rounds per job, 1440 records. The
+  start: at most 3.71 s. An ordinary call: at most 3.58 s. Cancel to return:
+  at most 1.28 s. Abort to return: at most 5.17 s, the case above.
 """
 
 from __future__ import annotations
@@ -30,6 +124,7 @@ import re
 import shlex
 import sys
 import time
+import types
 import warnings
 import weakref
 from pathlib import Path
@@ -39,8 +134,18 @@ import pytest
 from aelix_coding_agent.tools._abort import AbortSignal
 from aelix_coding_agent.tools.bash import ExecExitResult, create_local_bash_operations
 
-from tests.event_waits import wait_until, within
+from tests import event_waits
 from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
+from tests.rpc import _bash_phases
+from tests.rpc._bash_phases import ABORT_ENDS_CALL_SECONDS, HANG_GUARD_SECONDS, BashPhases
+
+
+@pytest.fixture
+def phases(monkeypatch: pytest.MonkeyPatch) -> BashPhases:
+    """#449's stamps on the bash module, for a case that runs a real shell (#471)."""
+
+    return BashPhases().install(monkeypatch)
+
 
 # ---------------------------------------------------------------------------
 # AbortSignal unit tests
@@ -89,8 +194,13 @@ async def test_abort_signal_wait_woken_by_abort() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_bash_exec_signal_abort_kills_child(tmp_path: Path) -> None:
-    """Aborting via AbortSignal kills the subprocess group and returns exit_code=None."""
+async def test_bash_exec_signal_abort_kills_child(tmp_path: Path, phases: BashPhases) -> None:
+    """Aborting via AbortSignal kills the subprocess group and returns exit_code=None.
+
+    What this case checks is the label and the call's return within 15 s of
+    the abort. That the group died is checked by test_bash_tool_containment.py
+    (the module docstring says which case, and why the return cannot show it).
+    """
 
     ops = create_local_bash_operations()
     sig = AbortSignal()
@@ -104,17 +214,27 @@ async def test_bash_exec_signal_abort_kills_child(tmp_path: Path) -> None:
             signal=sig,
         )
 
+    phases.stamp("call")
     task = asyncio.create_task(_exec_task())
 
     # The command is running, observed; then abort.
-    await _await_started(chunks)
+    await _await_started(chunks, phases, task)
+    phases.stamp("abort")
     sig.abort()
 
-    result = await within(task, bound=5.0, what="exec to return after its abort signal")
+    # VERDICT, from the abort (#471): see _WHY_THE_ABORT_HAS_A_VERDICT.
+    result = await phases.guard(
+        task,
+        f"exec after its abort signal ({_WHY_THE_ABORT_HAS_A_VERDICT})",
+        bound=ABORT_ENDS_CALL_SECONDS,
+        kind="abort-to-return bound",
+    )
     assert result.exit_code is None, "Aborted exec must return exit_code=None"
 
 
-async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> None:
+async def test_bash_exec_signal_abort_kills_process_group(
+    tmp_path: Path, phases: BashPhases
+) -> None:
     """Signal abort kills the process the shell handed the command to.
 
     Strategy: the shell runs a Python child that writes its own PID to a file
@@ -144,7 +264,7 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     # tests/agents_ext/test_print_channel_spawn.py flaky): ``open(...).write``
     # created the empty file before the digits, and ``exists()`` was true of it.
     # The child runs :data:`_ANNOUNCE_OWN_PID` and the test waits for
-    # :func:`_whole_pid`, inside the same 10 s bound; both are pinned below.
+    # :func:`_whole_pid`, under the start's hang guard; both are pinned below.
     command = (
         f'{interpreter} -c "import os, pathlib, sys, time; {_ANNOUNCE_OWN_PID}; '
         f'time.sleep(30)" "{pid_file}"'
@@ -154,18 +274,27 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     sig = AbortSignal()
     chunks: list[bytes] = []
 
+    phases.stamp("call")
     task = asyncio.create_task(
         ops.exec(command, str(tmp_path), on_data=chunks.append, signal=sig)
     )
 
-    # Wait for a whole pid in the pid_file (child is up and running). An
-    # anti-hang bound that names what it waited for (#330).
+    # Wait for a whole pid in the pid_file (child is up and running). A HANG
+    # GUARD that names what it waited for (#330) and, since #471, the shell's
+    # phases: it holds pwsh's start-up and then python's, and was a 10 s bound
+    # over a pwsh start #449 measured at up to 5.97 s. Polled every 0.05 s, as
+    # #406 did: polled every 0.01 s on windows-latest, one open of the file
+    # just renamed into place failed with PermissionError (1 of 258 calls, run
+    # 38502661220), and none of 258 at 0.05 s. A call that returns before the
+    # file is whole (the interpreter did not start) fails the wait at once,
+    # with the shell's output.
     try:
-        await wait_until(
-            lambda: _whole_pid(pid_file) is not None,
-            timeout=10.0,
-            what="the child to write its PID file (spawn failed?)",
+        await phases.shell_started(
+            "the child to write its PID file (spawn failed?)",
+            until=lambda: _whole_pid(pid_file) is not None,
+            detail=lambda: f"output so far: {b''.join(chunks)!r}",
             interval=0.05,
+            call=task,
         )
         child_pid = _whole_pid(pid_file)
         assert child_pid is not None
@@ -174,9 +303,16 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
             with contextlib.suppress(OSError):
                 os.unlink(leftover)
 
-    # Fire the abort signal — must kill the process group.
+    # Fire the abort signal — must kill the process group. VERDICT, from the
+    # abort (#471): see _WHY_THE_ABORT_HAS_A_VERDICT.
+    phases.stamp("abort")
     sig.abort()
-    result = await within(task, bound=5.0, what="exec to return after its abort signal")
+    result = await phases.guard(
+        task,
+        f"exec after its abort signal ({_WHY_THE_ABORT_HAS_A_VERDICT})",
+        bound=ABORT_ENDS_CALL_SECONDS,
+        kind="abort-to-return bound",
+    )
     assert result.exit_code is None
 
     # Poll until the child is gone or a zombie.
@@ -273,14 +409,62 @@ def test_the_abort_cases_pid_reaches_the_test_whole(
 #: process-group case's docstring.
 _STARTED_THEN_SLEEPS = "echo started; sleep 30"
 
+#: Why an aborted case's bound is a VERDICT and not a hang guard, for its
+#: failure message (#471, #449's rule). ``exit_code is None`` comes from
+#: ``_signal_aborted`` and holds when the kill reached nothing; the command then
+#: runs out its own 30 s sleep and the call returns ~30 s after the abort, twice
+#: :data:`~tests.rpc._bash_phases.ABORT_ENDS_CALL_SECONDS`, while a working abort
+#: returned in at most 0.547 s on windows-latest (#449, 900 calls). The bound
+#: checks the RETURN, not that the command ended: see the module docstring.
+_WHY_THE_ABORT_HAS_A_VERDICT = (
+    "an abort that kills nothing returns ~30 s after it, when the command's own sleep ends"
+)
 
-async def _await_started(chunks: list[bytes]) -> None:
-    """Block until the command's ``started`` line has reached ``on_data``."""
 
-    await wait_until(
-        lambda: b"started" in b"".join(chunks),
-        what="the command's 'started' line to reach on_data",
+async def _await_started(
+    chunks: list[bytes], phases: BashPhases, task: asyncio.Task[ExecExitResult]
+) -> None:
+    """Block until the command's ``started`` line has reached ``on_data``.
+
+    A HANG GUARD with the call's phases (#471). It holds the shell's whole
+    start-up, which #449 measured at up to 5.97 s for a bare pwsh on
+    windows-latest, under what was a 10 s bound that could only say ``output so
+    far: b''``. A start slower than 2 s warns with the timeline: it is spent
+    before the abort's or the cancel's own bound starts, and would otherwise
+    say nothing. ``task`` is the call: if it returns before the line arrives,
+    the wait fails at once and says how it returned.
+    """
+
+    await phases.shell_started(
+        "the command's 'started' line to reach on_data",
+        until=lambda: b"started" in b"".join(chunks),
         detail=lambda: f"output so far: {b''.join(chunks)!r}",
+        call=task,
+    )
+
+
+async def _await_the_cancelled_call(
+    task: asyncio.Task[ExecExitResult], phases: BashPhases
+) -> None:
+    """Wait for an ``exec`` whose task was cancelled to come back, any way it does.
+
+    A HANG GUARD (#471), not a verdict: the cases assert the
+    ``CancelledError`` itself, and the time cannot decide it. The drain after
+    the cancel leg's kill ends on 0.1 s of silence and is capped at
+    ``KILL_DRAIN_SECONDS`` (1.0 s), so a cancel whose kill reached nothing
+    still comes back with its ``CancelledError``: 0.11 s on darwin with that
+    kill deleted, the command left running and its 30 s spent in the loop's
+    teardown instead. ``test_bash_tool_containment.py``'s cancel cases are the
+    ones that fail then. A cancellation that is swallowed comes back with a
+    result, or not before the guard. Through ``asyncio.wait``, which never
+    raises the task's outcome: the case reads it afterwards, and a slow return
+    still warns with the timeline (``guard`` reports only one that returns).
+    """
+
+    await phases.guard(
+        asyncio.wait([task]),
+        "the cancelled exec to come back",
+        bound=HANG_GUARD_SECONDS,
     )
 
 
@@ -289,64 +473,80 @@ async def _await_started(chunks: list[bytes]) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_bash_exec_cancel_propagates_cancelled_error(tmp_path: Path) -> None:
+async def test_bash_exec_cancel_propagates_cancelled_error(
+    tmp_path: Path, phases: BashPhases
+) -> None:
     """Cancelling the exec task must NOT swallow CancelledError."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
+    phases.stamp("call")
     task = asyncio.create_task(
         ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append)
     )
 
-    await _await_started(chunks)
+    await _await_started(chunks, phases, task)
+    phases.stamp("cancel")
     task.cancel()
 
+    await _await_the_cancelled_call(task, phases)
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        await task
 
 
-async def test_bash_exec_cancel_returns_none_exit_code(tmp_path: Path) -> None:
+async def test_bash_exec_cancel_returns_none_exit_code(tmp_path: Path, phases: BashPhases) -> None:
     """After cancel the task result (if collected) should have exit_code=None."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
+    phases.stamp("call")
     task = asyncio.create_task(
         ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append)
     )
 
-    await _await_started(chunks)
+    await _await_started(chunks, phases, task)
+    phases.stamp("cancel")
     task.cancel()
 
+    await _await_the_cancelled_call(task, phases)
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        await task
 
 
-async def test_bash_exec_normal_path_unaffected(tmp_path: Path) -> None:
+async def test_bash_exec_normal_path_unaffected(tmp_path: Path, phases: BashPhases) -> None:
     """The normal exec path (no signal, no cancel) must be byte-identical to before."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
-    result = await asyncio.wait_for(
+    # A HANG GUARD (#471), not a budget: this case asserts the output and the
+    # exit code, nothing about time. Its 5 s failed on windows-latest inside
+    # proc.wait (job 115589770821); 30 s is 5x the worst pwsh start #449
+    # measured there (5.97 s) and 11x its slowest product call (2.70 s).
+    result = await phases.guard(
         ops.exec("echo aelix-abort-test", str(tmp_path), on_data=chunks.append),
-        timeout=5.0,
+        "exec 'echo aelix-abort-test'",
+        bound=HANG_GUARD_SECONDS,
     )
     output = b"".join(chunks).decode()
     assert result.exit_code == 0
     assert "aelix-abort-test" in output
 
 
-async def test_bash_exec_no_signal_no_watcher(tmp_path: Path) -> None:
+async def test_bash_exec_no_signal_no_watcher(tmp_path: Path, phases: BashPhases) -> None:
     """Passing signal=None must not start a watcher — normal path unchanged."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
-    result = await asyncio.wait_for(
+    # A HANG GUARD (#471), sized as the case above: its 5 s failed the same way
+    # (run 37942222504, windows py3.11).
+    result = await phases.guard(
         ops.exec("echo ok", str(tmp_path), on_data=chunks.append, signal=None),
-        timeout=5.0,
+        "exec 'echo ok' with signal=None",
+        bound=HANG_GUARD_SECONDS,
     )
     assert result.exit_code == 0
 
@@ -359,16 +559,27 @@ async def test_bash_exec_no_signal_no_watcher(tmp_path: Path) -> None:
 async def test_bash_exec_abort_with_process_already_gone_still_returns(
     monkeypatch,
     tmp_path: Path,
+    phases: BashPhases,
 ) -> None:
     """If the kill lands on a process that already exited, exec() still returns.
 
-    This covers the ``suppress(OSError)`` around every rung of the ladder
+    Written to cover the ``suppress(OSError)`` around every rung of the ladder
     (``ProcessTree.hard_kill``, the ``proc.kill()`` belt, the bounded reap) —
     ``except (ProcessLookupError, PermissionError): return`` inside
-    ``_kill_group`` until #222.  We use a short-lived command (``true``) that
-    exits quickly, then fire the signal after a delay, so the kill has nothing
-    to reach.  exec() must return normally with exit_code=None (signal-aborted
-    path overrides the actual exit code) and must NOT raise.
+    ``_kill_group`` until #222.  It runs a short-lived command (``true``) and
+    fires the signal 0.2 s later, meaning the kill to find nothing to reach.
+    exec() must return with exit_code 0 or None and must NOT raise.
+
+    WHERE IT WAS MEASURED, IT NEVER MEETS A GONE COMMAND (#471 review round 2;
+    the case was the same before #471). On darwin ``exec`` has already
+    returned when the 0.2 s abort fires, so the watcher is disarmed and no
+    kill runs at all (20 replays of 20, exit_code 0). On windows-latest the
+    abort lands before the shell has produced any output (480 calls of 480,
+    run 38502661220), so the kill ends a shell that is still starting; and
+    ``true`` is not a pwsh command, so a pwsh that got to run it would exit 1,
+    which the assert below does not accept. What the ladder does with a
+    process that has already exited is not exercised here; a follow-up
+    carries it.
     """
     import aelix_coding_agent.tools.bash as _bash_mod
 
@@ -376,9 +587,10 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     sig = AbortSignal()
     chunks: list[bytes] = []
 
-    # Run a command that exits quickly; wait long enough for it to finish,
-    # then fire the signal.  The ladder will encounter ProcessLookupError
-    # (no process to kill) — must be silently ignored.
+    # Run a command that exits quickly, then fire the signal. Meant to make the
+    # ladder meet a process that is gone; the docstring says where the abort
+    # really lands.
+    phases.stamp("call")
     task = asyncio.create_task(
         ops.exec("true", str(tmp_path), on_data=chunks.append, signal=sig)
     )
@@ -388,17 +600,28 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     # path the kill takes, never turn the case red. ``exec`` exposes no exit
     # event to wait for before the abort short of its own return.
     await asyncio.sleep(0.2)
+    phases.stamp("abort")
     sig.abort()
 
     # exec() must return (not hang).  exit_code may be 0 (process already done)
-    # or None (signal path wins); either way no exception must escape.
-    result = await asyncio.wait_for(task, timeout=5.0)
+    # or None (signal path wins); either way no exception must escape. So a
+    # HANG GUARD (#471), not a verdict: the command ends by itself whatever the
+    # kill does. On windows-latest (run 38502661220, both versions of this
+    # file) abort to return took a median 0.10 s; at most 2.67 s in the
+    # 529b997e file, 2.59 s of it in the kill ladder, which is half of what was
+    # a 5 s bound, and at most 0.57 s in this one.
+    result = await phases.guard(
+        task,
+        "exec after an abort 0.2 s into 'true'",
+        bound=HANG_GUARD_SECONDS,
+    )
     assert result.exit_code in (0, None)
 
 
 async def test_bash_exec_cancel_watcher_teardown_catches_exception(
     monkeypatch,
     tmp_path: Path,
+    phases: BashPhases,
 ) -> None:
     """The watcher teardown contains the watcher's own outcome and masks nothing.
 
@@ -431,17 +654,20 @@ async def test_bash_exec_cancel_watcher_teardown_catches_exception(
     chunks: list[bytes] = []
 
     # Register a signal watcher so the watcher_task code path is exercised.
+    phases.stamp("call")
     task = asyncio.create_task(
         ops.exec(_STARTED_THEN_SLEEPS, str(tmp_path), on_data=chunks.append, signal=sig)
     )
-    await _await_started(chunks)
+    await _await_started(chunks, phases, task)
 
     # Cancel the outer task (Esc path) — the finally block cancels the watcher
     # task; any exception in the watcher teardown must be contained.
+    phases.stamp("cancel")
     task.cancel()
 
+    await _await_the_cancelled_call(task, phases)
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        await task
 
 
 # ---------------------------------------------------------------------------
@@ -811,3 +1037,291 @@ async def test_a_signal_that_blows_up_while_being_cancelled_leaves_nothing_for_t
         )
     finally:
         loop.set_exception_handler(saved)
+
+
+# ---------------------------------------------------------------------------
+# The start wait reports the case's own event (#471)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_slow_start_is_reported_up_to_the_cases_own_event() -> None:
+    """A start wait whose event no stamp marks still names the phase that took the time.
+
+    :func:`_await_started` and the process-group case wait for their own sign
+    that the command runs, a line on ``on_data`` or a pid file, through
+    ``BashPhases.shell_started(until=...)``. No stamp of the call marks a pid
+    file, so the wait stamps ``running`` when the sign holds; without it a
+    5.5 s start was reported with ``spawn -> spawned (0.001s)`` as its slowest
+    phase. In-process: the sign is a clock, and no shell runs.
+    """
+
+    phases = BashPhases()
+    phases.stamp("call")
+    ready = time.monotonic() + 0.4
+
+    with pytest.warns(UserWarning, match=r"^#449 a sign 0\.4 s away") as caught:
+        await phases.shell_started(
+            "a sign 0.4 s away", until=lambda: time.monotonic() >= ready, slow=0.2
+        )
+
+    (message,) = [str(w.message) for w in caught if str(w.message).startswith("#449")]
+    assert "slowest phase call -> running (" in message, message
+    assert "the command starting, up to the case's own sign that it runs" in message, message
+    # 0.4 s away; 0.35 leaves the poll and a 15.6 ms clock a margin.
+    assert phases.stamps["running"] - phases.stamps["call"] >= 350_000_000, message
+
+
+async def test_an_expired_start_wait_names_the_phase_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An expired start wait's timeline ends at ``(guard expired)``, as ``guard``'s does.
+
+    So the slowest phase it names is the one still running when the bound ran
+    out, not the largest gap before it, and the case's own detail (the output
+    so far) comes ahead of it. The bound is shortened here; the cases use the
+    hang guard.
+    """
+
+    monkeypatch.setattr(_bash_phases, "HANG_GUARD_SECONDS", 0.2)
+    phases = BashPhases()
+    phases.stamp("call")
+
+    with pytest.raises(AssertionError) as failed:
+        await phases.shell_started(
+            "a sign that never comes",
+            until=lambda: False,
+            detail=lambda: "output so far: b''",
+        )
+
+    message = str(failed.value)
+    assert "(bound 0.2s" in message and "for: a sign that never comes" in message, message
+    assert "\noutput so far: b''\nslowest phase call -> (guard expired) (" in message, message
+
+
+# ---------------------------------------------------------------------------
+# The start wait's end, its poll, and guard()'s expiry (#471 review round 2)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_start_wait_whose_call_returned_fails_at_once_naming_it(
+    tmp_path: Path, phases: BashPhases
+) -> None:
+    """A start wait stops as soon as the call it waits on has returned, and says so.
+
+    The process-group case's own "spawn failed?" shape: the interpreter does
+    not exist, so the pid file never appears and ``exec`` returns at once (127
+    from bash, an error exit from pwsh). Before review round 2 the wait ran out
+    the whole 30 s guard after that and then named ``drain entered -> (guard
+    expired)`` as "the phase in flight" (darwin: ``exec`` had returned 127 in
+    0.010 s). Now it fails when it sees the call done: no ``(guard expired)``,
+    a ``returned`` stamp, how the call ended and the shell's output. Asserted
+    on the message alone, so a slow runner cannot decide it: a wait that
+    ignored the call would fail only at the guard, and with the other text.
+    """
+
+    missing = tmp_path / "no-such-interpreter"
+    interpreter = f'& "{missing}"' if sys.platform == "win32" else shlex.quote(str(missing))
+    pid_file = str(tmp_path / "child.pid")
+    chunks: list[bytes] = []
+    phases.stamp("call")
+    task = asyncio.create_task(
+        create_local_bash_operations().exec(
+            f'{interpreter} -c "pass" "{pid_file}"', str(tmp_path), on_data=chunks.append
+        )
+    )
+
+    with pytest.raises(AssertionError) as failed:
+        await phases.shell_started(
+            "a pid file that a missing interpreter never writes",
+            until=lambda: _whole_pid(pid_file) is not None,
+            detail=lambda: f"output so far: {b''.join(chunks)!r}",
+            interval=0.05,
+            call=task,
+        )
+
+    message = str(failed.value)
+    assert task.done() and not task.cancelled(), message
+    assert message.startswith(
+        "a pid file that a missing interpreter never writes: the call returned before it "
+        f"held (returned {task.result()!r}), "
+    ), message
+    assert "(guard expired)" not in message, message
+    # pwsh quotes the missing term in single quotes, so its bytes repr as b"..."
+    assert re.search(r"\noutput so far: b['\"]", message), message
+    assert "returned" in phases.stamps, message
+    assert message.endswith(" returned"), message
+
+
+async def test_a_start_wait_stamps_returned_when_the_call_finished() -> None:
+    """The ``returned`` stamp is the call's end, not the poll that noticed it.
+
+    Stamped by the poll, it would add up to ``interval`` to the gap before it,
+    which is glossed as the post-exit drain. Ordering, not time: the case's
+    sign records the first poll that runs after the call is done, on the
+    stamps' own clock (``_bash_phases._now_ns``: GetSystemTimePreciseAsFileTime
+    on win32, ``time.time_ns`` elsewhere), and the stamp must come before
+    that poll. In-process: the
+    call is a future that a timer resolves 0.05 s into a 0.3 s poll.
+    """
+
+    loop = asyncio.get_running_loop()
+    call: asyncio.Future[str] = loop.create_future()
+    loop.call_later(0.05, call.set_result, "finished")
+    first_poll_after: list[int] = []
+
+    def never_holds() -> bool:
+        if call.done() and not first_poll_after:
+            first_poll_after.append(_bash_phases._now_ns())
+        return False
+
+    phases = BashPhases()
+    phases.stamp("call")
+    with pytest.raises(AssertionError, match="the call returned before it held"):
+        await phases.shell_started(
+            "a sign that never comes", until=never_holds, interval=0.3, call=call
+        )
+
+    (polled_ns,) = first_poll_after
+    assert phases.stamps["returned"] < polled_ns, phases.stamps
+
+
+async def test_a_start_wait_polls_at_the_interval_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shell_started(interval=...)`` is the poll the wait sleeps between its asks.
+
+    The process-group case passes 0.05 s because opening its pid file every
+    0.01 s hit a ``PermissionError`` on windows-latest (1 of 258 calls, run
+    38502661220). Read from the sleeps the wait arms, not from a clock: in
+    review round 1 a helper that dropped the argument and polled at 0.01 s
+    passed every other case. The sleeps are recorded through a view of
+    :mod:`asyncio` on :mod:`tests.event_waits` alone, as ``BashPhases.install``
+    views :mod:`subprocess` (``record_armed_waits`` cannot record that module:
+    its recorder calls ``asyncio.sleep`` through the same name).
+    """
+
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def recording_sleep(delay: float, result: Any = None) -> Any:
+        slept.append(delay)
+        return await real_sleep(delay, result)
+
+    view = types.SimpleNamespace(**vars(asyncio))
+    view.sleep = recording_sleep
+    monkeypatch.setattr(event_waits, "asyncio", view)
+    asked: list[None] = []
+
+    def third_ask() -> bool:
+        asked.append(None)
+        return len(asked) == 3
+
+    await BashPhases().shell_started("a sign on the third ask", until=third_ask, interval=0.05)
+
+    assert slept == [0.05, 0.05], slept
+
+
+async def test_a_late_delivery_after_the_first_output_is_glossed_as_this_process() -> None:
+    """The gap from the shell's first output to the case's sign is this process's.
+
+    :func:`_await_started`'s sign is the ``started`` line, which is the shell's
+    first output. The reader stamps that on its own thread; what follows is
+    the loop delivering it to ``on_data`` and the next poll. Glossed as "the
+    command starting", a loop held 3 s after the first byte read as a 3.009 s
+    command start (review round 2, darwin). In-process: the first output is
+    stamped by hand and the sign is a clock.
+    """
+
+    phases = BashPhases()
+    phases.stamp("call")
+    phases.stamp("first output")
+    ready = time.monotonic() + 0.4
+
+    with pytest.warns(UserWarning, match=r"^#449 a sign 0\.4 s after the first output") as caught:
+        await phases.shell_started(
+            "a sign 0.4 s after the first output",
+            until=lambda: time.monotonic() >= ready,
+            slow=0.2,
+        )
+
+    (message,) = [str(w.message) for w in caught if str(w.message).startswith("#449")]
+    assert "slowest phase first output -> running (" in message, message
+    assert (
+        "this process, after the shell's first output: the loop delivering it to on_data"
+        in message
+    ), message
+    assert "the command starting" not in message, message
+
+
+async def test_an_expiry_that_fires_early_is_stamped_before_the_kill_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``guard``'s ``(guard expired)`` is stamped when the bound fires, before its kill.
+
+    The bound fires on the loop's clock, and asyncio runs a timer up to the
+    loop's clock resolution early (15.6 ms on windows py3.11 and py3.12). The
+    stamp used to be the start plus the bound on the wall clock, so the kill
+    that the expiry's cancellation runs could be stamped FIRST and the report
+    named ``X -> kill started``: on windows-latest 4 of the 24 expired-guard
+    reports of run 38502661220 and 5 of the 54 of run 38508575549. Injected
+    here without a race: once the call starts, the loop's clock runs 0.05 s
+    ahead of the wall clock, so the 0.5 s bound fires 0.05 s early, and the
+    call stamps ``kill started`` first thing on its cancellation, as
+    ``exec``'s cancel leg does. A task that yields on every loop turn keeps
+    the loop out of its selector, so each timer runs on the first turn after
+    its deadline: left to sleep, the loop on darwin woke late enough that an
+    expiry timer due 1 ms AFTER ``within``'s still ran first 5 times in 6.
+    """
+
+    loop = asyncio.get_running_loop()
+    real_time = loop.time
+    ahead = [0.0]
+    phases = BashPhases()
+    phases.stamp("call")
+
+    async def never_returns() -> None:
+        ahead[0] = 0.05
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            phases.stamp("kill started")
+            raise
+
+    spinning = True
+
+    async def spin() -> None:
+        while spinning:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(loop, "time", lambda: real_time() + ahead[0])
+    spinner = asyncio.ensure_future(spin())
+    try:
+        with pytest.raises(AssertionError) as failed:
+            await phases.guard(never_returns(), "a call that never returns", bound=0.5)
+    finally:
+        spinning = False
+        await spinner
+        monkeypatch.undo()
+
+    message = str(failed.value)
+    assert "slowest phase call -> (guard expired) (" in message, message
+    timeline = message.split("timeline: ", 1)[1]
+    assert timeline.index("(guard expired)") < timeline.index("kill started"), message
+
+
+def test_an_expiry_tied_with_a_stamp_sorts_before_it() -> None:
+    """On one clock tick, ``(guard expired)`` sorts before the stamp it ties with.
+
+    What the expiry starts (its cancellation's kill) is stamped after it,
+    never before, so a tie is read that way; sorted by time alone, the stamp
+    taken first would win the tie and the report would name ``X -> kill
+    started``. In-process, on stamps set by hand.
+    """
+
+    phases = BashPhases()
+    phases.stamps.update({"call": 1_000, "kill started": 2_000})
+
+    timeline, slowest = phases.report(now=2_000)
+
+    assert slowest is not None and slowest.startswith("call -> (guard expired) ("), slowest
+    assert timeline.endswith("(guard expired) | +0.000s kill started"), timeline
