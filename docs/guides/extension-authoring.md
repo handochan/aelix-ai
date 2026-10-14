@@ -435,7 +435,15 @@ For a model in the URL, custom body fields or private-CA `httpx` client,
 register a **StreamFn** `(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]`
 with `register_api_adapter(api, stream_fn)`. A matching `Model.api` routes to it.
 Delegate to the built-in adapter with `replace(opts, client=...)` to reuse SSE
-parsing and event mapping:
+parsing and event mapping. Build that client with `create_async_client`: a bare
+`AsyncOpenAI` (openai 2.34+) merges `OPENAI_CUSTOM_HEADERS` over its key and
+refuses an empty one (#278). It waits for `Retry-After` up to 60 s unless built
+with another `max_retry_delay_ms`; `**sdk_retry_options(opts)` (same module)
+passes `opts`' own. `stream_simple` refuses a call with no key, so a keyless
+endpoint also passes `api_key=opts.api_key or "unused"` to `replace` and sends
+`Authorization: Bearer unused`; to send none, delegate to
+`stream_openai_completions` and add `"Authorization": openai.Omit()` to
+`params["extra_headers"]` in the payload hook when `opts.api_key` is empty:
 
 ```python
 import contextlib
@@ -443,7 +451,7 @@ import os
 import ssl
 from dataclasses import replace
 import httpx
-from openai import AsyncOpenAI
+from aelix_ai.providers._openai_client import create_async_client
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
 from aelix_ai.streaming import Model
 from aelix_coding_agent.model_registry import ProviderConfigInput
@@ -455,10 +463,10 @@ _CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
 async def selfhosted_stream(model, context, opts):
     ca_bundle = os.environ.get(_CA_BUNDLE_ENV)            # custom TLS; unset = verify=True
     verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
-    client = AsyncOpenAI(
+    client = create_async_client(
         http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # model baked into the URL
-        api_key=opts.api_key or "",
+        api_key=opts.api_key or "unused",
     )
     def payload(params, _m):
         # a non-OpenAI body field no config key can name (see extra_body, below)

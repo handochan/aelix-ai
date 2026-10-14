@@ -46,7 +46,7 @@ from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
 )
-from aelix_ai.providers._openai_client import create_async_client
+from aelix_ai.providers._openai_client import create_async_client, sdk_retry_options
 from aelix_ai.providers._openai_compat import (
     OpenAICompletionsCompat,
     get_compat,
@@ -1098,14 +1098,14 @@ async def stream_openai_completions(
         if opts.headers:
             default_headers.update(opts.headers)
 
-        # Build SDK client (or use injected ``options.client``).
-        owns_client = opts.client is None
+        owns_client = opts.client is None  # else the injected ``options.client`` is used
+        api_key, keyless_auth = _keyless_client_auth(owns_client, api_key, default_headers)
         client = opts.client or create_async_client(
             api_key=api_key,
             base_url=getattr(model, "base_url", "") or None,
             default_headers=default_headers or None,
             timeout_ms=opts.timeout_ms,
-            max_retries=opts.max_retries,
+            **sdk_retry_options(opts),  # max_retries, max_retry_delay_ms (#278)
         )
 
         # Assemble params + run on_payload callback (Pi parity ``:143-147``).
@@ -1118,7 +1118,7 @@ async def stream_openai_completions(
         # Pi parity gap (ADR-0114): relocate OpenRouter/provider extension
         # params into ``extra_body`` AFTER on_payload (the hook sees the
         # Pi-shaped flat params) so the Python SDK accepts the call.
-        params = _relocate_extra_body_params(params)
+        params = _keyless_request_auth(_relocate_extra_body_params(params), keyless_auth)
 
         # Pi parity (P-60): ``signal`` and ``max_retries`` are NOT valid
         # per-request kwargs on ``openai>=1.50`` SDK. ``max_retries`` is
@@ -1504,6 +1504,110 @@ def stream_simple_openai_completions(
     opts = replace(opts, reasoning_effort=reasoning_effort)
 
     return stream_openai_completions(model, context, opts)
+
+
+# === #278: a keyless request on openai 2.x ===
+#
+# Defined down here, after the code other modules cite by line number, so the
+# change does not move those citations.
+
+#: The key a KEYLESS request's own client is built with (#278). It never reaches
+#: the wire: see :func:`_keyless_client_auth`.
+_KEYLESS_PLACEHOLDER = "unused"
+
+
+def _keyless_client_auth(
+    owns_client: bool, api_key: str, headers: dict[str, str]
+) -> tuple[str, Literal["omit", "own"] | None]:
+    """``(key, keyless)`` for the client :func:`stream_openai_completions` builds.
+
+    ``keyless`` says how :func:`_keyless_request_auth` settles the request after
+    the payload hook: ``"omit"`` the SDK's ``Authorization`` (the request has
+    no ``Authorization`` of its own), or ``"own"`` (it has one, which replaces
+    the SDK's). ``None`` - a caller-supplied client, or a request with a key -
+    leaves both the client and the request exactly as they were.
+
+    WHY (#278). Until openai 2.x a missing key reached the SDK as ``""``, and
+    openai 1.x sent no ``Authorization`` of its own: the wire carried the
+    request's own auth header if it had one (a gateway's ``Authorization``, a
+    ``cf-aig-authorization``) and none otherwise. openai 2.34 and later refuse
+    ``""`` when the client is built ("Missing credentials ... OPENAI_API_KEY";
+    bisected: 2.33.0 accepts it, 2.34.0 raises) and refuse to send a request
+    with no ``Authorization`` unless it is omitted explicitly. So a keyless
+    client is built with :data:`_KEYLESS_PLACEHOLDER`, and
+
+    * a request with its own ``Authorization``, in any letter case, has it
+      collapsed to the SDK's spelling so it REPLACES the SDK's bearer: custom
+      headers merge after the SDK's, but by exact key, so ``authorization``
+      would ride BESIDE ``Authorization: Bearer unused`` (measured);
+    * any other request omits the SDK's ``Authorization``.
+
+    The wire is what openai 1.x sent for no header, ``Authorization``,
+    ``authorization`` and ``cf-aig-authorization``, for an ``Authorization``
+    the payload hook sets in ``extra_headers`` in the spelling of the request's
+    own (or with none of its own), and for a caller-supplied client with a key
+    of its own (``test_openai_sdk_wire_278.py`` holds these to the 1.109.1
+    recording). It differs where two spellings of ``Authorization`` meet:
+    ``model.headers`` and ``options.headers`` in different spellings, or a hook
+    spelling it differently from the request's own. openai 1.x sent two lines
+    there (it merged by exact key); one goes now, the value merged last - the
+    ``options.headers`` one over the model's, the hook's over both
+    (:func:`_keyless_request_auth`). Except when the hook's value is
+    ``openai.Omit()`` under a spelling the request's own ``Authorization`` does
+    not use: openai 1.x omitted only that exact key and sent the request's own
+    line; now no ``Authorization`` goes out, the hook's ``Omit()`` winning as
+    any value the hook sets does. A request with a key, or on a caller-supplied
+    client, is left alone, so there the two spellings still go out as two
+    lines, the key's first, as on 1.x. Pi's ``getClientApiKey``
+    (``packages/ai/src/api/openai-completions.ts`` at 3daa20280) throws instead
+    when there is neither a key nor an auth header; aelix keeps sending, as it
+    did. The agent loop's ``stream_simple`` refuses a keyless call anyway (#416).
+    """
+
+    if not owns_client or api_key:
+        return api_key, None
+    names = [name for name in headers if name.lower() == "authorization"]
+    if not names:
+        return _KEYLESS_PLACEHOLDER, "omit"
+    value = headers[names[-1]]
+    for name in names:
+        del headers[name]
+    headers["Authorization"] = value
+    return _KEYLESS_PLACEHOLDER, "own"
+
+
+def _keyless_request_auth(
+    params: dict[str, Any], keyless: Literal["omit", "own"] | None
+) -> dict[str, Any]:
+    """Settle a keyless request's ``Authorization`` after the payload hook (#278).
+
+    Per request, through ``extra_headers``. An ``Authorization`` the hook set
+    there, in any letter case, is collapsed to the SDK's spelling (the last one
+    set wins), so it REPLACES the client's - the request's own header or the
+    placeholder - and exactly one ``Authorization`` line goes out, the hook's.
+    Without one, ``"omit"`` omits the placeholder's ``Authorization``: openai
+    2.x requires that for a request with none, and openai 1.x honours it the
+    same way. ``None`` (a request with a key, or a caller-supplied client)
+    leaves the request as it was, as on openai 1.x.
+    """
+
+    if keyless is None:
+        return params
+    extra = dict(params.get("extra_headers") or {})
+    names = [name for name in extra if isinstance(name, str) and name.lower() == "authorization"]
+    if names:
+        value = extra[names[-1]]
+        for name in names:
+            del extra[name]
+        extra["Authorization"] = value
+    elif keyless == "omit":
+        from openai import Omit
+
+        extra = {"Authorization": Omit(), **extra}
+    else:
+        return params
+    params["extra_headers"] = extra
+    return params
 
 
 # === Provider registration ===

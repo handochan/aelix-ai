@@ -390,6 +390,11 @@ TUI, RPC, `-p` and json, next to any other `headers` the entry adds.
 A provider you define under any other name never
 gets those headers, and they never stand in for its key
 ([#374](https://github.com/handochan/aelix-ai/issues/374), ADR-0254).
+`OPENAI_CUSTOM_HEADERS` and `OPENAI_ADMIN_KEY`, which the OpenAI SDK reads for
+itself from 2.34 on, reach no provider at all, `openai` included: an
+`Authorization` in the first would otherwise replace the key of every
+`openai-completions` / `openai-responses` entry here
+([#278](https://github.com/handochan/aelix-ai/issues/278), ADR-0265).
 
 This applies to every provider, re-pointed or not: an `apiKey` here beats an
 exported vendor key. An extension that registers the same provider name changes

@@ -68,7 +68,7 @@ from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
 )
-from aelix_ai.providers._openai_client import create_async_client
+from aelix_ai.providers._openai_client import create_async_client, sdk_retry_options
 from aelix_ai.providers._openai_prompt_cache import clamp_openai_prompt_cache_key
 from aelix_ai.providers._openai_responses_compat import (
     OpenAIResponsesCompat,
@@ -460,7 +460,7 @@ async def stream_openai_responses(
             base_url=getattr(model, "base_url", "") or None,
             default_headers=default_headers or None,
             timeout_ms=opts.timeout_ms,
-            max_retries=opts.max_retries,
+            **sdk_retry_options(opts),  # max_retries, max_retry_delay_ms (#278)
         )
 
         params = build_params(model, context, opts)

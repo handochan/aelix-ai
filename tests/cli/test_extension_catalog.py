@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -718,17 +719,32 @@ def test_file_url_to_path_restores_a_windows_drive_letter(
 def test_file_url_to_path_keeps_a_malformed_url_inside_catalog_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``nturl2path`` raises ``OSError`` on a second colon; ``fetch_all``'s "never
-    raises for a single bad source" contract needs that to surface as
-    ``CatalogError`` rather than a traceback."""
+    """``fetch_all``'s "never raises for a single bad source" contract: a
+    ``file://`` URL with a second colon is one bad source, so it must surface as
+    ``CatalogError`` (an error row) rather than a traceback.
 
-    import nturl2path
+    Through Python 3.13 the Windows ``url2pathname`` (``nturl2path``) raised
+    ``OSError`` on that colon and ``_file_url_to_path`` turned it into
+    ``CatalogError("malformed file:// ...")``. From 3.14 it accepts the colon
+    and returns ``C:\\dir\\a:b\\catalog.json`` (measured on 3.14.5; the 3.14
+    Windows branch of ``urllib.request.url2pathname`` no longer checks it), a
+    path no file can have, and the read refuses it instead — as
+    ``CatalogError`` too (#278, found by the first 3.14 run)."""
+
     import urllib.request
 
+    url = "file:///C:/dir/a:b/catalog.json"
     if sys.platform != "win32":
+        with warnings.catch_warnings():
+            # 3.14 deprecates the module (removal slated for 3.19).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import nturl2path
         monkeypatch.setattr(urllib.request, "url2pathname", nturl2path.url2pathname)
-    with pytest.raises(ec.CatalogError, match="malformed file://"):
-        ec._file_url_to_path("file:///C:/dir/a:b/catalog.json")
+    if sys.version_info < (3, 14):
+        with pytest.raises(ec.CatalogError, match="malformed file://"):
+            ec._file_url_to_path(url)
+    [row] = ec.fetch_all([url])
+    assert row.entries == () and row.error, row
 
 
 def test_file_url_to_path_percent_decodes_and_round_trips_a_spaced_path(

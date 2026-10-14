@@ -263,7 +263,11 @@ pi's `_prepareRetry` (`agent-session.ts:3792-3830`) reads
   `sdk.ts:344-352`; aelix's adapters keep their SDK defaults, so an OpenAI-SDK
   provider still tries each attempt three times), the compaction and
   branch-summary retries (#409), and the `compaction.*` settings, which the
-  harness does not read either.
+  harness does not read either. *(2026-10-14, #278 / ADR-0265 Decision 9: the
+  two openai adapters now read the request's `max_retry_delay_ms` - the SDK's
+  own retries wait for a server-requested delay only up to it, 60 s when unset,
+  openai 1.x's rule, which openai 2.52 had widened to 120 s. The settings keys
+  themselves still reach no adapter; that is #470.)*
 
 ### Tests and sabotage
 
