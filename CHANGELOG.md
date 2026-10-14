@@ -584,6 +584,55 @@ unwritten. Add them with the next release.
   fires `thinking_level_select` for your default: the level is set before
   `session_start`, as a reopened session's level is, not selected.
 
+- **Tests only: the bash drain-cap case's deadline arm no longer fails when
+  Windows starts the shell too slowly to finish inside the deadline (#446).**
+  Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`
+  needs a root that exits inside its 2.0 s deadline. On windows-latest under
+  CPU load, PowerShell plus its Python child sometimes did not: 31 of 900
+  loaded runs timed out and 0 of 450 unloaded ones (run 38509857375). The
+  misses were mostly start-up waiting for a CPU (10 of 13 instrumented ones),
+  2 were PowerShell's teardown and 1 an exit at the deadline itself; none was
+  the product failing to see the exit. Such an attempt now runs again, but only
+  when the site's own timed wait was handed the caller's timeout and gave up
+  at its deadline - not before the caller's, and not more than half a second
+  past its own - on a root that had not exited. Anything else still fails at
+  once, each with its own message: a wait handed another timeout, one giving
+  up early, one giving up late against its own deadline, a timeout the wait
+  never raised, a root that had exited before the deadline, and a record that
+  cannot place the exit. A wait that began late is not judged for it. The
+  site counts the timeout from where its wait begins, after the spawn and the
+  start of the pipe reader and of the waiting worker thread, and on a loaded
+  Windows runner those starts wait for a CPU: up to 0.216 s after the spawn
+  under four busy loops (run 38509857375), and once a wait began 1.344 s after
+  the call in a CI run, which the previous revision of this change failed as
+  the site's fault. The record cannot tell that from a site that starts its
+  wait late, so this case does not catch a site that gives the shell longer
+  than the caller's timeout. On macOS the root's state comes from `ps`, so
+  with `ps` missing or hung an exited root reads as running and such an exit
+  would be taken as the premise. Whether the timeout's kill reaches the tree
+  is not this case's subject: the dedicated containment cases pin it. On a
+  premise attempt the case only checks, for up to two seconds from when the
+  call has come back and the announcement wait has settled, that the root and
+  the python root it announced are dead (on Windows also the holder, which
+  sits inside the job). That is a sanity check and proves nothing about the
+  kill: it passes a timeout leg that kills nothing when the root then exits by
+  itself, and any missed process that exits while it polls, and it never
+  looks at a process that did not announce. The drain-cap checks the case
+  exists for still run, on the attempt that measured. New cases drive this
+  path on every platform: one with a root still running at the deadline, and
+  two against a timeout leg that kills nothing and leaves the root running,
+  one of them with the site's wait started 1.5 s late. A larger deadline was
+  not taken: the measured exits spread wider than the window the arm needs.
+  The arm's floor now compares the product's own sum,
+  after a Python 3.12 Windows run failed `2.0 <= 1.9999999999999432` on a
+  rounding tie, and a call back at half the deadline is pinned to fail it.
+  Measured on windows-latest with an earlier revision of this change (run
+  38547416538, 100 rounds per Python version and load): 0 of 900 deadline-arm
+  runs failed; 10 attempts met a root still running at the deadline and ran
+  again. The old test failed 16 of 900 in an earlier run (38531413887).
+  A root that misses the deadline on all three attempts still fails the case,
+  which says so.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
