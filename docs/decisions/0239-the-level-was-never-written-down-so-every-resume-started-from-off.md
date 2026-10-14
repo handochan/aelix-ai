@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -680,3 +680,248 @@ session's model record:
 - The thinking level is not kept: a route-less use re-applies a level `--thinking` (or
   the profile's `thinking:`) names, reverting a `/thinking` pick, and records that as a
   `thinking_level_change` (ADR-0196's amendment, known corners).
+
+## Amendment (2026-10-14, #286; narrowed 2026-10-15) — every mode applies `defaultThinkingLevel`; what a launch records is unchanged but around a `session_start` handler
+
+Decision 3's ladder — `--thinking`/profile > the session's entry > the
+settings-default seed — held in the TUI only. The seed lived in `run_tui`
+(`tui/shell.py`), after the harness build, so `-p`, `--mode json` and
+`--mode rpc` never applied `defaultThinkingLevel`, and neither did a delegated
+child, which is a `--mode json -p` launch (ADR-0243). And it skipped, rather
+than clamped, a level the model does not list.
+
+**Measured on `529b997e`** (a local OpenRouter-format recorder with a fake key;
+drivers and outputs in `.omc/probes/286-live/impl/`): with
+`defaultThinkingLevel=high`, `-p hi`, `--mode json hi` and an RPC prompt each
+sent `"reasoning": {"effort": "none"}` and RPC `get_state` said `off`, while the
+TUI sent `high` (`base-1.out`, `base-tui.out`); a child whose profile names its
+own model and no `thinking:` sent `none` (`base-2.out`, `D[ownmodel]`); a TUI
+with `defaultThinkingLevel=xhigh` on a model that tops out at `high` sent `none`
+(`tui-xhigh.out`).
+
+### Decision
+
+1. **One ladder, before the mode dispatch, for every mode** — in `cli/entry.py`
+   beside `_seed_startup_state`: `--thinking` (and a profile's `thinking:`) >
+   the session's recorded level (decision 3, an explicit `off` included, with
+   or without a conversation) > `defaultThinkingLevel` > `off`. pi's
+   `createAgentSession` resolves the same order for every mode
+   (`core/sdk.ts:253-278` at `pi@3daa20280`), less a per-model override aelix
+   does not have, and with `medium` where aelix's bottom rung is `off`
+   (`core/defaults.ts:3`). It runs before `session_start`, as pi's does, so a
+   `session_start` handler sees the level the run starts at and can change it
+   — and what the handler does is judged against that level, not against
+   `off`, which it met while the default was applied only after it (in
+   `run_tui`) or not at all (decision 4's exceptions).
+   The seed left `run_tui`, and decision 5's `thinking_level_restored` signal
+   left with it: `_seed_startup_state`'s return now feeds
+   `_seed_default_thinking_level` directly. The level is assigned, not routed
+   through `set_thinking_level` — the restore's rule (no
+   `thinking_level_select` for a choice nobody made), and how pi sets its
+   initial level — so the TUI launch no longer fires the
+   `thinking_level_select` that `run_tui`'s seed fired for the default. A value
+   that is not a level (`settings.json` is not validated on load) seeds
+   nothing.
+2. **Every rung but `--thinking` is clamped to the model**, as pi clamps
+   whatever its ladder resolved (`sdk.ts:273-278`) and as decision 3's restore
+   does: `xhigh` on a `high`-max model starts at `high`, `high` on a model that
+   cannot reason at `off`, and `off` — the default's, or the bottom rung's with
+   no default set — on one that cannot switch reasoning off
+   (`thinkingLevelMap.off = null`) at its lowest level. The TUI's seed skipped
+   instead, which left those launches at `off`. `--thinking` is not clamped at
+   launch (the adapters clamp it at request build).
+3. **A pending launch is judged after the late-route decision** (#367, ADR-0250
+   §2.11). While `session_start` runs, its harness sits on `Model(id,
+   provider)` (`api 'unknown'`, which supports only `off`), and a provider
+   registered there may still hold the route. The session's level, the
+   default or the bottom rung's `off` is applied before `session_start` as
+   written, and clamped after the decision against the model the run is on —
+   the route, or a model a `session_start` handler moved to — unless a handler
+   set another level meanwhile. On the hold's placeholder nothing is clamped:
+   the adapters clamp at request build, and `/model`, which does not touch the
+   level, leaves the hold at the user's default instead of `off`. (The restore
+   had clamped a pending launch's recorded level against an unresolved
+   placeholder, so a recorded `high` ran as `off`; it waits for the decision
+   too now.)
+4. **What a launch records is unchanged** (owner decision 2026-10-15, review
+   round 3), **except where a `session_start` handler sets the level or the
+   model** (the last item). Otherwise a launch writes the
+   `thinking_level_change` entries it wrote on `529b997e`, and no others:
+   - `-p`, `--mode json` and `--mode rpc` record nothing for the default (they
+     never applied it). A session they start at the default takes whatever the
+     default is at its next launch.
+   - The TUI records the default where `run_tui`'s seed did, and under its
+     conditions: `_record_tui_default_level`, called right before `run_tui`
+     (after `session_start` and the late-route decision), appends it when no
+     flag or restored level applied, the model the run is on supports the
+     default as written (`get_supported_thinking_levels`, the seed's test: a
+     default the launch clamped, the bottom rung, a held placeholder and a run
+     with no model are not recorded), the default is not `off` (the seed's
+     `set_thinking_level("off")` over the unset `off` was no change), and the
+     live level still is the default (the seed, too, stood down over a level
+     other than `off`). A read-only session or a storage failure writes nothing
+     and says nothing, as the seed's `contextlib.suppress(Exception)` did.
+   - `--thinking` keeps decision 6's carry (`_seed_startup_state`): recorded
+     into a session with no level of its own, unless it is `off`. So a
+     `--continue` after a launch with `--thinking off` takes the default, in
+     every mode now as in the TUI before.
+   - In-session rebuilds keep decision 6's carry: `/new`, `/fork`, `/resume`
+     and RPC `new_session` carry the live level into a session with no level of
+     its own and record it unless it is `off`. The live level now starts at the
+     default in every mode, clamped, so such a session records it — a clamped
+     one too (a follow-up).
+   - **The exceptions: a `session_start` handler.** The seed ran after
+     `session_start` in the TUI (and not at all in the other modes); it now
+     runs before it (decision 1, pi's order). With no `--thinking` and no
+     restored level, a handler therefore meets the launch's start level, not
+     `off`, and the TUI's record comes after what it did. (With either, a
+     handler meets the level it met on `529b997e`, where the restore and the
+     flag were applied before `session_start` too — except a level restored
+     on a pending launch, which the restore had clamped against the
+     placeholder, decision 3.)
+     - Its `set_thinking_level` records when it changes the live level (#198),
+       as before, but the live level is the start level now. A level other
+       than the start level and `off` is recorded as before. `off` over a start
+       level other than `off` is now recorded, and the run stays at `off`;
+       on `529b997e` `-p`, json and RPC recorded nothing, and the TUI's seed
+       then set the default over it, ran at it and recorded it whenever the
+       model the run was on supported it. A start level other than `off`, set
+       again, is now no change and records nothing, where `529b997e` recorded
+       it (a change from `off`); the TUI's record still writes it when it is
+       the default as written, but not a default the launch clamped, nor the
+       lowest level a model that cannot switch reasoning off starts at with no
+       default.
+     - Its `set_model`, on a launch that is not pending, keeps the level the
+       launch fitted to its own model (decision 2): `set_model` keeps the live
+       level (the divergence "`/model` does not re-apply the default" below).
+       `run_tui`'s seed judged the default against the handler's model, so
+       where the launch's model could not take the default as written and the
+       handler's can, the TUI ran at the default and recorded it; it now runs
+       at the level fitted to the launch's model and records nothing — a
+       default of `high`, a launch on a model that cannot reason and a handler
+       moving to one that can run at `off`, one of `xhigh` on a `high`-max
+       launch model and a handler moving to an `xhigh` model at `high`. The
+       other modes recorded nothing before either; they now carry the
+       launch-fitted level onto the handler's model. A pending launch is not
+       affected (decision 3 settles it after the handler). pi re-applies the
+       default on every model switch (`_getThinkingLevelForModelSwitch`), a
+       handler's included; the `/model` follow-up covers this path too.
+
+     Measured (`.omc/probes/286-live/r4/n.{base,fix}.out`, the real CLI and
+     the real TUI in a pty, a local recorder, a fake key; `529b997e` →
+     this change; files as entries, `M` a model, `T` a level): default
+     `high`, handler `set_thinking_level("off")`: `-p` and RPC `[M, u, a]`
+     → `[M, T:off, u, a]` (both sent `none`), the TUI `[M, T:high, u, a]`
+     sent `high` → `[M, T:off, u, a]` sent `none`; handler
+     `set_thinking_level("high")`: `-p` and RPC `[M, T:high, u, a]` →
+     `[M, u, a]`, the TUI `[M, T:high, u, a]` in both; default `xhigh` on a
+     `high`-max model, handler `set_thinking_level("high")`: `[M, T:high, u,
+     a]` → `[M, u, a]` in every mode; handler `set_thinking_level("low")`:
+     `[M, T:low, u, a]` in both; default `high`, launch on a model that
+     cannot reason, handler `set_model` to one that can: TUI `[M, M,
+     T:high, u, a]` sent `high` → `[M, M, u, a]` sent `none`; default
+     `xhigh` on a `high`-max launch model, handler `set_model` to an `xhigh`
+     model: TUI `[M, M, T:xhigh, u, a]` sent `xhigh` → `[M, M, u, a]` sent
+     `high`, `-p` and RPC sent `none` → `high`, files `[M, M, u, a]` in both.
+
+   Rounds 1-2 of #286 recorded the start level at creation as pi does
+   (`sdk.ts:448-459`): every launch's (round 1), then only a level somebody
+   chose (round 2, with pi's `hasExistingSession` conjunct on the restore).
+   Both froze levels nobody chose over every later default, or lost a level a
+   user chose before quitting (review rounds 1-2, `.omc/probes/286-live/r2*`).
+   Measured after the narrowing (`.omc/probes/286-live/r3/rows.*.out`,
+   `tui.*.out`; the real CLI and the real TUI in a pty, a local recorder, a fake
+   key; rows without a `session_start` handler): what every launch row writes
+   equals `529b997e`'s, row for row (the
+   one file that differs is the session an RPC `new_session` made, which now
+   carries the level the launch applied) — a TUI default of `high` records
+   `thinking_level_change(high)`, one of `xhigh` on a `high`-max model (now
+   run at `high`) or `high` on a model that cannot reason records nothing;
+   `-p`, json and RPC at a default of `high`
+   send `high` and record nothing; a default of `high`, then `low`, then
+   `--continue -p` sends `low` (`3d1bc5fa`: `high`); an RPC
+   `set_thinking_level low` with no prompt, then `--continue -p`, sends `low`
+   (`3d1bc5fa`: `none`).
+
+### What this retires above
+
+- Decision 5 (the signal to `run_tui`): the seed is not there any more.
+- Consequences' "Restoration is not TUI-only" now holds for the default too.
+
+The divergence "No `messages.length > 0` conjunct" and the #413 divergence "The
+thinking level is not recorded beside it" stand.
+
+### Divergences from pi (ADR-0235: recorded, not argued)
+
+- **No creation-time record.** pi appends the level it resolved for every new
+  session right after the start model, and for a session with messages and no
+  level of its own (`sdk.ts:448-459`); aelix records only what it recorded
+  before (decision 4). Without that record, pi's `hasExistingSession` conjunct
+  on the restore is not adopted either. A follow-up: record a chosen start
+  level without freezing one nobody chose.
+- **`/model` does not re-apply the default.** pi's `setModel` re-applies it on
+  every model switch (`agent-session.ts:2699-2711`,
+  `_getThinkingLevelForModelSwitch`); aelix's `set_model` keeps the live level,
+  so a run that started on a model that cannot reason stays at `off` after
+  `/model` to one that can (the adapters clamp it at request build), and so
+  does one whose `session_start` handler switches the model (decision 4's
+  exception). A follow-up, in `harness/core.py`.
+- **The bottom rung is `off`, not `medium`, and there is no per-model
+  override.** pi reads `getModelThinkingLevel(provider, id)` before the
+  default and falls back to `DEFAULT_THINKING_LEVEL = "medium"`
+  (`core/defaults.ts:3`).
+- **`--thinking` is not clamped at launch** (the adapters clamp it at request
+  build); pi clamps every rung.
+- **A pending launch is judged after `session_start`** (decision 3 above); pi
+  has no late route. A launch with no model at all (no models, no keys) is
+  pending too and keeps the default as written (the TUI footer reads
+  `high (off)`), where pi starts at `off`.
+- **A delegated child reads the global default only** (ADR-0243's #286
+  amendment): an own-model child is started with `--no-approve` whenever the
+  project has a `.aelix/settings.json`, so a `defaultThinkingLevel` there does
+  not reach it, while the parent in a trusted project runs at it. A follow-up.
+
+### Known limits (follow-ups)
+
+- No creation-time record, and `/model` does not re-apply the default (the
+  divergences above) — nor does a `session_start` handler's `set_model`, so a
+  TUI launch whose model cannot take the default as written, moved by its
+  handler to one that can, runs at the level fitted to the launch's model and
+  records nothing, where `run_tui`'s seed ran at the default and recorded it
+  (decision 4's exception).
+- A level the launch clamped is carried by `/new`, `/fork`, `/resume`, RPC
+  `new_session` and `switch_session` into the next session and recorded there
+  (review round 2, cross F1: a default of `xhigh` run at `high` on a
+  `high`-max model leaves `high` in a session made by `/new`, whose next launch
+  on an `xhigh` model then runs at `high`).
+- `/reload` still drops the level to `--thinking`'s or `off` (this ADR's
+  consequence "`/reload` is a third rebuild seam and is untouched"): measured
+  in the TUI after this change exactly as before it (`fix-tui.out`,
+  `base-tui.out`: `/reload`, then a prompt sent `none`). pi keeps the live
+  level across a reload.
+- `/agents use` of a profile with `thinking:` still skips a level the model
+  does not list (`agents/service.py`), the rule decision 2 replaced for the
+  default, and its comment still names the TUI seed that is gone.
+- `aelix-server`'s WebSocket RPC builds a bare harness and reads no settings,
+  so it applies neither a default model nor a default level.
+- A project's `defaultThinkingLevel` does not reach an own-model delegated
+  child (the divergence above).
+
+### Review rounds 2 and 3
+
+Round 1 recorded every launch's start level, `off` included, and restored a
+session's level whether or not it had a conversation. Round 2 recorded only a
+level somebody chose and skipped the session rung without a conversation, as
+pi; its review found the record still freezing levels nobody chose (a bottom
+rung or clamped default written after a level the reopen ignored) and the
+conjunct losing a level chosen before quitting (`.omc/probes/286-live/r2verify/`,
+`r2cross-claude/`). Round 3 (owner decision 2026-10-15, "narrow the range and
+finish") dropped the record and the conjunct; decisions 1-3 are what rounds 1-2
+measured, decision 4 is `529b997e`'s recording. The rows are in
+`tests/cli/test_default_thinking_every_mode_286.py`. Round 3's verify
+(`.omc/probes/286-live/r3verify/`) found that recording differs where a
+`session_start` handler sets the level or the model, which the seed's move
+before `session_start` brings; the finish after it states those exceptions
+(decision 4) and the `thinking_level_select` the TUI launch no longer fires
+(decision 1), measured in `.omc/probes/286-live/r4/`, and changes no
+behaviour.

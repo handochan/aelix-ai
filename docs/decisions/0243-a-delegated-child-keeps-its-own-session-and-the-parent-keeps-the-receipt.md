@@ -1,6 +1,6 @@
 # 0243. A delegated child keeps its own session, and the parent keeps the receipt
 
-Status: Accepted (2026-09-19)
+Status: Accepted (2026-09-19) — amended 2026-10-14 (#286): a child whose profile names its own model or provider and no `thinking:` runs at the global settings default
 Date: 2026-09-19
 Supersedes/relates: ADR-0242 (the session record rules; this is their first
 consumer), ADR-0197 (the subagent-runtime seam; its one-shot argv carried
@@ -654,3 +654,58 @@ still finds it (`tests/cli/test_session_start_model_413.py`, the child row). A
 child on an unresolved model (a held launch's placeholder) appends nothing; a
 resolved one is recorded with or without a key (ADR-0239's #413 decision 4). The
 parent's `aelix.child_session` records are unchanged.
+
+## Amendment (2026-10-14, #286) — a child with its own model and no `thinking:` runs at the settings default
+
+#354's precedence ends at "then nothing": a profile that names its own `model`
+or `provider` and no `thinking:` gets no `--thinking`, and the child resolves
+its own level. That child is a `--mode json -p --session <file>` launch, and
+until #286 those modes never applied `defaultThinkingLevel`, so it ran at
+`off` — the "(reasoning `off`)" above. Measured on `529b997e`
+(`.omc/probes/286-live/impl/base-2.out`, a local OpenRouter-format recorder):
+with `defaultThinkingLevel=high` the parent and an own-model child each sent
+`"reasoning": {"effort": "none"}`, and a `general-purpose` child inherited the
+parent's `off`.
+
+**Decision** (owner, 2026-10-14, option (a) of
+`.omc/specs/b2-decision-286-evidence.md`): the child's own cascade, as for the
+model. ADR-0239's #286 amendment applies the default in every mode, so such a
+child now starts at the `defaultThinkingLevel` of its **global** settings
+(`AELIX_SETTINGS_PATH`, else the agent dir's `settings.json` — the file the
+parent's global layer reads), clamped to its own model, or at the bottom rung
+`off` (clamped too) when none is set. Not the project's: `child_trust_argv`
+passes `--no-approve` whenever the project has a `.aelix/settings.json`
+(ADR-0197 §(g), the #369 resource list), so the child never loads that layer.
+In a trusted project whose `.aelix/settings.json` sets the default, the parent
+runs at it and an own-model child does not (review round 2, cross F-project:
+parent `high`, child `none`; a follow-up — trust handling is not changed
+here). No argv changes: `inherit_thinking` and `resolver.profile_to_flags` are
+untouched, and `tests/agents_ext/test_child_thinking_inherit.py` still pins the
+argv.
+
+| rung | model | thinking |
+|---|---|---|
+| 1 | the profile's `model` / `provider` | the profile's `thinking:` |
+| 2 | the parent's live model (the profile names neither) | the parent's live level (the profile names neither) |
+| 3 | the child's own cascade: settings `defaultModel` | the child's own cascade: global settings `defaultThinkingLevel`, clamped; else `off`, clamped |
+
+The two effects the #354 amendment anticipated now hold: a fresh headless
+parent is at its seeded level, and a model-inheriting child inherits it; a
+child handed `--thinking off` (its parent at `off`) does not apply its own
+default, because the flag outranks it. The child's file records what it
+recorded before: its origin, its model, and a `--thinking` the parent handed it
+unless that is `off` (ADR-0239's decision 6 carry) — a model-inheriting child is
+now handed the parent's seeded level, so a `general-purpose` child of a parent
+at a default of `high` records `high`, where it was handed `off` and recorded
+nothing; the default an own-model child starts at is not recorded (ADR-0239's
+#286 decision 4, narrowed 2026-10-15; `.omc/probes/286-live/r3/children.*.out`).
+Measured after the change (`fix-1.out`): parent `high`; an own-model child
+with no `thinking:` `high`; a `thinking: low` profile `low`; `general-purpose`
+`high`.
+
+pi's own-model subagent child also runs at its own cascade
+(`createAgentSession`: a per-model setting, the default, then `medium`,
+clamped); aelix has neither the per-model setting nor the `medium` fallback
+(ADR-0239's #286 divergences). A profile on a model that cannot switch
+reasoning off still states `thinking:` unless the user's default gives the
+model a level it accepts.

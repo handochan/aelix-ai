@@ -536,6 +536,54 @@ unwritten. Add them with the next release.
   Folders that earlier runs left behind are not removed. Their names contain
   `pytest-of-`.
 
+- **`-p`, `--mode json`, `--mode rpc` and delegated agents now think at your
+  `defaultThinkingLevel` (#286).** The setting reached the interactive TUI only,
+  so the other modes asked for reasoning off with it set to `high` (an
+  openai-codex request went out with `reasoning: {"effort": "none"}`), and so
+  did a delegated agent whose profile names its own `model` or `provider` and no
+  `thinking:` — a delegation is a `--mode json` run, and it reads the default in
+  your global `settings.json` only (a project's `.aelix/settings.json` does not
+  reach it). Every mode now starts at, in order: `--thinking` (or the profile's
+  `thinking:`), the level the session you reopen recorded, `defaultThinkingLevel`,
+  then `off`; a `session_start` extension handler sees that level and can change
+  it. The level is fitted to the model instead of being dropped when the model
+  lacks it: `xhigh` on a model that tops out at `high` now runs at `high` (the
+  TUI used to fall back to `off`), a model that cannot reason runs at `off`, and
+  a model that cannot switch reasoning off runs at its lowest level, with a
+  default of `off` or none. A launch whose model is decided only after
+  `session_start` (an id sent to OpenRouter as written, #367) fits the level to
+  the model it ends on, and a launch held on a placeholder keeps your level
+  instead of `off` — also a resumed session's recorded level there, which used
+  to drop to `off`. What a session records is unchanged, except where a
+  `session_start` handler sets the level or the model (below): `-p`,
+  `--mode json` and `--mode rpc` write no level for your default, so such a
+  session takes the default you have when it is next launched; the TUI records
+  your default when it applies it exactly as set, as before; `--thinking` is
+  recorded as before, except `off` (a `--continue` after `--thinking off` takes
+  your default). `/new` (and RPC `new_session`) keeps the level you are at and
+  records it unless it is `off` — now the level your launch started at, in every
+  mode; `/model` does not apply your default to the new model; `/reload` still
+  goes back to `--thinking`'s level or `off` (follow-ups).
+
+  A `session_start` handler now runs after the level is applied, as in pi; the
+  TUI used to apply your default after it, and the other modes never did. With
+  no `--thinking` and no recorded level, what a handler does is therefore judged
+  against the level the launch started at (your default, fitted to the model)
+  instead of `off`. Its `set_thinking_level("off")` over a level other than
+  `off` is now recorded (it recorded nothing), and the TUI then runs at `off`,
+  where it used to apply your default over it and record that whenever the
+  model took the default as set. A start level other than `off`, set again, is
+  no change and records nothing, where it used to be recorded — the TUI still
+  records your default when that is the level as set, but not a default it
+  fitted to the model. Its `set_model` keeps the level the launch fitted to its
+  own model, as `/model` does: when that model could not take your default and
+  the handler's model can, the TUI no longer runs at your default nor records it
+  — a default of `high`, a launch on a model that cannot reason and a handler
+  that switches to one that can now run at `off` (pi applies the default again
+  on a model switch; a follow-up, with `/model`). And the TUI launch no longer
+  fires `thinking_level_select` for your default: the level is set before
+  `session_start`, as a reopened session's level is, not selected.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
@@ -654,9 +702,9 @@ unwritten. Add them with the next release.
   on that answer as in pi; a held or refused model is never recorded; reopening
   a session with a conversation writes nothing; an empty session reopened on
   another model records that one; the thinking level is not recorded alongside
-  it (#286). A session file that cannot be written runs as before (its prompts
-  ran and wrote nothing) and now also prints a `Warning:` on stderr; with
-  `--thinking` it still exits 1, as before. `/clone` and RPC `clone` still
+  it (#286 left that as it was). A session file that cannot be written runs as
+  before (its prompts ran and wrote nothing) and now also prints a `Warning:` on
+  stderr; with `--thinking` it still exits 1, as before. `/clone` and RPC `clone` still
   refuse a session with no conversation, in the same words, on disk and with
   `--no-session` — now also one with no conversation but other entries (only
   a name, a `/model` pick, `!cmd` output or a `custom_message` entry an
@@ -936,13 +984,13 @@ unwritten. Add them with the next release.
   its profile sets neither `model` nor `provider` — and whose profile sets no
   `thinking:` now also runs at your current level, whatever set it:
   `--thinking`, an `--agent` profile, a resumed session, `/thinking`, an RPC
-  `set_thinking_level`, or `defaultThinkingLevel` in the interactive TUI. `-p`,
-  `--mode json` and `--mode rpc` do not apply `defaultThinkingLevel` yet
-  (#286), so a fresh parent there with none of those set still hands its child
-  `off`, as before. A profile's own `thinking:` still wins. A profile that
-  names its own model or provider gets no level from you, as in pi: it runs at
-  its own `thinking:`, or with reasoning off as before — give it a `thinking:`
-  if its model cannot switch reasoning off.
+  `set_thinking_level`, or `defaultThinkingLevel` (in every mode since #286).
+  A profile's own `thinking:` still wins. A profile that names its own model or
+  provider gets no level from you, as in pi: it runs at its own `thinking:`, or
+  at the `defaultThinkingLevel` in your global `settings.json` fitted to its
+  model (#286; with none set, `off`, or the model's lowest level when it cannot
+  switch reasoning off) — give it a `thinking:` if your default does not give
+  its model the level it needs.
 - **A cloned repository's `.aelix/settings.json` no longer chooses where your
   prompt goes when you have not trusted it (#369, ADR-0252).** Its
   `defaultProvider`/`defaultModel` pair, with an `OPENAI_API_KEY` in its

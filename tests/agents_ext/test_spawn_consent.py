@@ -1315,7 +1315,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
 # (``tui/context.py:149-227``); and ``resolve_child_cwd``
-# (``print_channel.py:524``) validated only containment and is-a-directory,
+# (``print_channel.py:535``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a
 # wholly fabricated dialog. This door has no fit check at all, so there is

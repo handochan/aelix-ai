@@ -316,12 +316,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1508-1510`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1519-1521`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:1034-1042``,
+      it kills the child eagerly before re-raising (``print_channel.py:1045-1053``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -332,7 +332,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1102`` vs ``:1103``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1113`` vs ``:1114``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -478,7 +478,7 @@ async def _member(
                     _refusal_envelope(batch.resolved, _BATCH_BUDGET_EXHAUSTED)
                 )
             # THE PROFILE'S OWN BUDGET IS THE DEFAULT, NOT ``DEFAULT_TIMEOUT_MS``
-            # — this line mirrors ``print_channel.py:1065-1069`` exactly, and it
+            # — this line mirrors ``print_channel.py:1076-1080`` exactly, and it
             # must, because the executor is what makes ``plan.timeout_ms`` non-
             # ``None``. Substituting the module default here would mean the
             # channel's own ``profile.timeout_ms`` fallback is UNREACHABLE for

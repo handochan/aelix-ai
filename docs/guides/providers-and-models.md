@@ -681,10 +681,22 @@ opens at `high` on a model that tops out there rather than falling back to `off`
 An explicit `off` is a decision and is restored as `off`. `--thinking` (and an
 agent profile's `thinking:`) outranks the session at launch, and is itself
 recorded into a session that has not chosen a level yet — so the next
-`--continue` comes back at it. The session in turn outranks the
-`defaultThinkingLevel` setting. One exception to the ladder: after an in-session
+`--continue` comes back at it (`--thinking off` is not recorded). The session in
+turn outranks the `defaultThinkingLevel` setting. One exception to the ladder: after an in-session
 `/resume` the target session's own recorded level wins, launch flag included —
 you asked for that session, not for a re-run of the command line.
+
+`defaultThinkingLevel` applies in every mode, a delegated agent included (it
+reads only your global `settings.json`), when neither `--thinking` nor the
+session gives a level; unset, the level is `off`. It is fitted to the model:
+`xhigh` runs at `high` on a model that tops out there, a model that cannot
+reason runs at `off`, and `off` runs at the lowest level on one that cannot
+switch reasoning off. Only the TUI records it, and only as set (not `off`, not
+fitted), so a `-p`, `--mode json` or `--mode rpc` session takes the default of
+its next launch. A `session_start` extension handler sees the level: one it sets
+is recorded only if it changes it, and a model it switches to keeps it, as
+`/model` does. `/new` keeps the level and records it unless `off`; `/reload`
+goes back to `--thinking`'s level or `off`.
 
 What `xhigh` means depends on how the model thinks. On a model that takes a
 Claude-style token budget it sends a larger budget than `high` — 32768 against

@@ -668,7 +668,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2026-2043``) nor child (``modes/print_mode.py:160-219``)
+    (``tui/shell.py:1979-1996``) nor child (``modes/print_mode.py:160-219``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -1255,7 +1255,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1369-1376) and kills the tree.
+        # (print_channel.py:1380-1387) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -2092,7 +2092,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:984-988``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:995-999``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2144,7 +2144,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1102``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1113``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
