@@ -36,6 +36,26 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0264 — The model catalog refreshes from aelix's own published copy, as pi's does from pi.dev, without transport](0264-the-model-catalog-refreshes-from-aelixs-own-published-copy-without-transport.md)
+  (Accepted 2026-10-20 by the owner; rewritten 2026-10-15 on the owner's decision, revised after
+  review (r5-r11), the owner's decisions of 2026-10-16 to 2026-10-19 recorded; #172, #434, #450). A
+  scheduled job in its own repository, `handochan/aelix-catalog`, with no stored secret, runs
+  aelix's own generator (ADR-0232) on the newest `main` commit whose `ci.yml` push run passed, and
+  publishes content-addressed revisions to that repository's Pages only when their content changes.
+  New reasoning rows get a thinking map derived as pi derives one (models.dev's `reasoning_options`,
+  OpenRouter's supported efforts, provider rules), or none. A hold keeps a rollback or a withdrawal
+  in force for resolutions after each client's next check at pi's triggers, and a resumed session on
+  a model it removed falls back as pi's does, never to a removed id. The client overlays a revision
+  for every built-in provider, as pi overlays pi.dev, but only when its lineage (the digests of
+  `main`'s catalog history) holds the shipped catalog's digest, so older facts are never installed
+  as newer. A published row carries facts only: transport comes from the shipped catalog through
+  ADR-0232's ladder, run on the client, and a row that cannot inherit it is dropped. Published rows
+  route like shipped ones, as pi's overlay does, so a publication can move a typed string; each
+  revision's summary names the rows that can. OpenRouter's key-scoped list only narrows what is
+  offered, unlike pi's, never with a key only a project `.env` supplies. pi's triggers (start-up,
+  the `/model` and `/scoped-models` pickers, a `/model` miss, `/login`, `aelix update --models`);
+  `--list-models` reads the cache.
+
 - [0221 — Reasoning streams to a live window, and the renderer must give it back](0221-reasoning-streams-to-a-live-window-the-renderer-must-give-back.md)
   (amended 2026-10-14; #285). A text block that arrives whole (`text_start` → `text_end`, no
   delta) commits when it closes, reasoning first; one mark — "a reasoning flush closed the answer
