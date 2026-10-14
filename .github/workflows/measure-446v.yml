@@ -1,0 +1,131 @@
+name: measure-446-verify
+
+# Throwaway (never merges; ci.yml is removed on this branch only). The VERIFY pass for #446,
+# written independently of the lane. Product and test files are exactly fb5eae28's (the
+# identity step proves it); the sab job mutates the product at runtime, inert unless a row's
+# env asks for it.
+#   rounds: tests/tools/test_v446_probe.py drives the COMMITTED 8a case (both params), 100 rounds
+#           per python x load, one JSON line per run with every attempt's line, every premise line,
+#           the witness record (give-up and look vs the wait's deadline) and the root's first timed
+#           wait (how long it ran, whether it timed out). The whole test file runs once first on
+#           the unloaded cells.
+#   sab   : forced premise shapes, product defect classes and wrong implementations of the fix,
+#           each row once per python.
+
+on:
+  push:
+    branches: ["measure/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  rounds:
+    name: v446 rounds (py${{ matrix.python-version }}, load=${{ matrix.load }})
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        load: ["none", "cpu3", "cpu4"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+      - name: Identity
+        shell: bash
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; git log --oneline -2;
+            echo "product + test file vs fb5eae28:"; git diff --stat fb5eae287f0fd9d673134ee178df61052d91ec47 HEAD -- packages tests/tools/test_bash_tool_containment.py; echo "(end)";
+            sha256sum tests/tools/test_bash_tool_containment.py;
+            .venv/Scripts/python.exe -VV; echo "NUMBER_OF_PROCESSORS=$NUMBER_OF_PROCESSORS"; } | tee out/identity.txt
+      - name: Whole test file once (unloaded cells)
+        if: matrix.load == 'none'
+        shell: bash
+        run: |
+          export AELIX_CODING_AGENT_DIR="$RUNNER_TEMP/agentdir" AELIX_SETTINGS_PATH="$RUNNER_TEMP/settings.json" AELIX_CODING_AGENT_SESSION_DIR="$RUNNER_TEMP/sessions"
+          rc=0
+          timeout -k 10 1500 .venv/Scripts/python.exe -m pytest -p no:cacheprovider -q -rfE -W always::UserWarning tests/tools/test_bash_tool_containment.py > out/file.txt 2>&1 || rc=$?
+          echo "whole file rc=$rc :: $(tail -1 out/file.txt)" | tee out/file-rc.txt
+      - name: Rounds
+        shell: bash
+        env:
+          V446_ROUNDS: "100"
+          V446_PARAMS: both
+          V446_LOAD: ${{ matrix.load }}
+        run: |
+          export AELIX_CODING_AGENT_DIR="$RUNNER_TEMP/agentdir" AELIX_SETTINGS_PATH="$RUNNER_TEMP/settings.json" AELIX_CODING_AGENT_SESSION_DIR="$RUNNER_TEMP/sessions"
+          export V446_OUT="out/rounds.jsonl"
+          n=0
+          if [ "${{ matrix.load }}" = "cpu3" ]; then n=3; fi
+          if [ "${{ matrix.load }}" = "cpu4" ]; then n=4; fi
+          for k in $(seq 1 $n); do .venv/Scripts/python.exe -c "while True: pass" & done
+          if [ "$n" -gt 0 ]; then sleep 2; fi
+          rc=0
+          timeout -k 10 4800 .venv/Scripts/python.exe -m pytest -p no:cacheprovider -q -rfE -W always::UserWarning tests/tools/test_v446_probe.py > out/pytest.txt 2>&1 || rc=$?
+          echo "rounds rc=$rc :: $(tail -1 out/pytest.txt)" | tee out/rc.txt
+          LC_ALL=C grep -a -E '^(FAILED|ERROR) ' out/pytest.txt | cut -c1-300 | tee -a out/rc.txt || true
+          git status --short | tee out/status.txt
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v446-rounds-py${{ matrix.python-version }}-${{ matrix.load }}
+          path: out/
+          retention-days: 30
+
+  sab:
+    name: v446 sab (py${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+      - name: Rows
+        shell: bash
+        run: |
+          export AELIX_CODING_AGENT_DIR="$RUNNER_TEMP/agentdir" AELIX_SETTINGS_PATH="$RUNNER_TEMP/settings.json" AELIX_CODING_AGENT_SESSION_DIR="$RUNNER_TEMP/sessions"
+          mkdir -p out
+          git rev-parse HEAD | tee out/identity.txt
+          git show e24ea2e84a818e55c36ccbb839e279ea97220acb:tests/tools/test_bash_tool_containment.py > tests/tools/_v446_base.py
+          .venv/Scripts/python.exe .omc-446v/make_muts.py . | tee -a out/identity.txt
+          .venv/Scripts/python.exe .omc-446v/mutate_product.py . | tee -a out/identity.txt
+          bash .omc-446v/rows.sh out/rows .venv/Scripts/python.exe
+          for m in any nokillcheck alive anylook noearly slack nolabel failopen oldfloor nobranch; do
+            r=$(.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider "tests/tools/test_v446mut_$m.py::test_only_a_root_that_had_not_exited_by_the_deadline_is_8as_premise" 2>&1 | tail -1)
+            echo "rule rows under M_$m: $r" | tee -a out/rule-rows.txt
+          done
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v446-sab-py${{ matrix.python-version }}
+          path: out/
+          retention-days: 30
