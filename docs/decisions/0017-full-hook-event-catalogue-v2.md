@@ -1,6 +1,6 @@
 # 0017. Full Hook Event Catalogue v2
 
-Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e; Sprint 3d amendment: `tool_execution_update` + tool-result message emit sites landed — Phase 2.1.4; **Sprint 5a / Phase 3.1.1 amendment: 3 new own events registered — `input` / `user_bash` / `resources_discover` (P-24/P-25/P-26)**)
+Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e; Sprint 3d amendment: `tool_execution_update` + tool-result message emit sites landed — Phase 2.1.4; **Sprint 5a / Phase 3.1.1 amendment: 3 new own events registered — `input` / `user_bash` / `resources_discover` (P-24/P-25/P-26)**; **amended 2026-10-14 (#414): an assistant message whose stream never sent `start` gets `message_start` before its `message_end`, as pi's loop emits it - each such message, a later one in the same run too (review round 4, 2026-10-15)**)
 Supersedes: ADR-0011
 
 ## Context
@@ -342,3 +342,78 @@ Sprint 5a closure invariant — it asserts the 3 names are registered AND
 appear in `DEFERRED_ALLOWLIST` with the correct owner. ADR-0041
 (Phase 3.1 Extension API Full Surface Closure) is the parent closure
 ADR; this catalogue carries the event-catalogue-specific changes only.
+
+## Amendment (2026-10-14, #414) — a message whose stream never started still gets `message_start`
+
+Pi reference: `earendil-works/pi@3daa20280`, `packages/agent/src/agent-loop.ts:443-455`: when
+a `done` or `error` arrives with no partial, pi pushes the final message and emits
+`message_start` (a copy of it) right before `message_end` (`:451-453`).
+
+**Measured on `529b997e`.** Every built-in adapter yields `start` only once its stream is
+open (`anthropic.py`, `openai_completions.py`, `openai_responses.py`,
+`openai_codex_responses.py`, `google_generative_ai.py`, `google_vertex.py`), so a request
+that fails before that - an HTTP `502`, a refused key - yields `error` alone, and the loop
+emitted `message_end` with no `message_start`. A real `aelix --mode json` against a local
+server answering `502` (retry off; `.omc/probes/414-live/impl/logs/base_start_*.out`):
+anthropic, openai (openai-responses), an openai-completions provider and a
+google-generative-ai provider each printed `message_start(user)`, `message_end(user)`,
+`message_end(assistant)`. ADR-0251 §12.5 item 4 had given #379's setup error its own
+`start` and named this as a follow-up.
+
+**Decision.** `loop._stream_assistant_response` sends the events of its one assistant
+message through `_with_message_start`: a `message_end` with no `message_start` before it
+gets one first, carrying the same message object the `message_end` carries (frozen, so pi's
+copy is not needed), and the `message_end`'s return - a hook's replacement (ADR-0145) - is
+passed back unchanged. Every adapter is covered, and an extension's stream function too.
+After (`logs/tree_start.out`): the four print `…, message_start(assistant),
+message_end(assistant)`; a `200` still prints one `message_start` with the partial. It is a
+wrapper rather than an emit in each branch so the text and line numbers of the two terminal
+branches stay as they were: citations in `tui/render.py` and `tests/tui/test_event_renderer.py`
+point into them.
+
+**Consumers, checked for the new order.**
+
+| consumer | before | after |
+| --- | --- | --- |
+| TUI `EventRenderer` | `message_end` reported the error | `message_start` resets its per-message state first; the error is committed once, `take_reported_error` / `take_turn_ended_in_error` read as before (row) |
+| print mode, text | reads the final state | unchanged |
+| `--mode json`, `--mode rpc` | an assistant `message_end` with no start | a `message_start` they did not see before, then `message_end`: what pi prints for the same failure (its loop emits it, `:451-453`; its json and rpc modes print the session's events) (rows) |
+| `aelix_agents` print/rpc channels | `stream.py` folds `message_end`, `agent_*`, `turn_start`, `tool_execution_*` | unchanged: `message_start` is ignored |
+| session recording | `message_end` appends | unchanged: `message_start` writes nothing (row) |
+| compaction | reads messages, not events | unchanged |
+| extensions (hook bus) | no `message_start` for these messages | the observational `message_start` hook fires with the failed message (row) |
+| `aelix-server` | forwards rpc events | no consumer of `message_start` |
+
+No aelix document or test assumed the old order: ADR-0198 D7 pins that a json run's
+sequence contains `message_start` / `message_end` in order, which this keeps.
+pi's other no-partial path - a stream that ends with no terminal event (`:460-467`) - is
+still aelix's #189 raise.
+
+**Tests.** `tests/test_loop_message_start_414.py` (10 rows: `error`, `done` and legacy `end`
+with no `start`, a stray update before them dropped as pi drops it, a started message's one
+start, a `message_end` replacement, the real anthropic adapter's own `502` over
+`httpx.MockTransport`, and the consumers above). On `529b997e` 8 fail; the started-message
+row and the TUI renderer row pass there (controls). Mutations (`kit/sabotage_414.py`): no
+wrapper 8 red, the start after the end 9, a start before every end 2, the return dropped 1,
+an empty message in the start 6.
+
+**Review round 2 (2026-10-14).** The wrapper's latch is pinned: aelix's loop keeps reading
+after a terminal event (pi's returns), so a stream that yields two gets exactly one
+synthesized `message_start` (`test_two_terminal_events_get_one_message_start`, 11 rows now).
+The row passes on `08379e16` (round 1); with the latch removed it is red, and with the
+wrapper removed 9 rows are (`.omc/probes/414-live/r2/kit/sabotage_r2.py`,
+`r2/logs/sabotage_r2.out`). `loop.py` is unchanged in this round.
+
+**Review round 4 (2026-10-15).** The synthesized start is per message, not per run, as pi's
+is (`addedPartial` is local to each `streamAssistantResponse` call). Round 3's cross review
+showed an implementation with one latch per run - once any `message_start` was seen in a
+run, synthesize no other - passed every row: they all had one assistant message per run.
+`test_a_later_message_of_the_run_gets_its_own_message_start` (3 rows, `error`, `done`,
+`end`; 14 rows now) runs a first answer that streams and calls a tool, the tool, then a
+second answer with no `start`, and pins one `message_start` for that second message, the
+object its `message_end` carries. On `8298d176` the per-run latch survived all 711 rows
+of the loop, renderer, retry, #379 and rpc files (wrapped once in `_run_loop`, or keyed by
+the run's sink and set by an assistant start); with the new rows both are red (3 each). A
+latch that also counts the prompt's start was red before (9) and is now (12)
+(`.omc/probes/414-live/r4/kit/sabotage_r4.py`, `r4/logs/`). `loop.py` is unchanged in this
+round.
