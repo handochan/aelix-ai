@@ -501,6 +501,16 @@ deprecated `verify="/path/ca.pem"`. `verify=False` disables certificate checking
 and accepts any certificate; it does not trust an internal CA. This adds a trust
 anchor, not a pin: Aelix's startup truststore also loads platform default roots.
 
+**A text block may arrive whole.** An adapter that yields its own events, rather
+than a built-in adapter's, can send a text block as `text_start` and then a
+`text_end` carrying the text, with no `text_delta` in between: the TUI draws it
+when that `text_end` arrives, below any reasoning that came before it, exactly as
+it draws a streamed one. Give every event of a block its `content_index` — the
+block's position in the message's `content`, as the built-in adapters do: the TUI
+tells one reasoning block from the next by it. An answer's text does not depend
+on it, so a `text_delta` your adapter rebuilds from its text alone (index 0) is
+still drawn once.
+
 A complete worked example ships at
 `aelix_coding_agent/examples/selfhosted/selfhosted.py`. Load it like any extension —
 point `--extension` at the file, drop it in a project-local `.aelix/extensions/`,

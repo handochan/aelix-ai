@@ -409,6 +409,29 @@ unwritten. Add them with the next release.
   and a new check fails if the pin stops matching a guide or a guide is
   checked out with CRLF. The cap was not raised.
 
+- **The TUI shows an answer that arrives in one piece (#285).** A text block sent
+  without any streamed deltas — a Responses-compatible server that puts the text
+  only in its `output_item.done` event, or an extension's own stream adapter —
+  was saved to the session and shown by `/resume`, but never drawn while the turn
+  ran: a turn that said something and then called a tool showed only the tool.
+  And when such a block was followed by a streamed one, its text appeared in
+  front of the new block's live window and then vanished. It is now drawn when
+  it ends, below any reasoning before it and rendered as a streamed answer is,
+  so a turn whose events arrive in order looks live the way `/resume` draws it.
+  Not yet fixed: when the reasoning before an answer goes on streaming, or
+  arrives whole, after that answer has ended, the live screen still places it
+  differently from `/resume`, as it already did for a streamed answer; and
+  answers that end out of order (one ends while another is still streaming) can
+  be drawn in the wrong place, twice, or not at all. Some of those shapes were
+  drawn as `/resume` draws them before this change and are not now, mostly an
+  empty message that ends while another one is still streaming, whose answer is
+  then drawn twice. No server we know of sends them.
+  An openai-completions reasoning turn (the end events arrive after the answer
+  streamed) still prints its answer once, and so does an extension adapter that
+  wraps it and rebuilds its text deltas. The ChatGPT Codex backend sent deltas
+  in every run the issue measured, so it was not affected; `-p`, `--mode json`
+  and `--mode rpc` already showed the text.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
