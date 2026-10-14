@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""r2verify probe shell for #446 (darwin, never shipped).
+
+The FIRST root that finds $V446_ONCE consumes it; it reads '<mode> <seconds>':
+  pre S        sleep S, then exec /bin/bash (one process: root == python root)
+  childslow S  stay the root; run /bin/bash as a child whose python root sleeps S
+               in its start-up (kit/vsite/sitecustomize.py), the win32 pwsh shape
+  post S       run /bin/bash as a child, then linger S before exiting with its code
+Every other root execs /bin/bash at once. Each root logs one line to $V446_LOG.
+"""
+import os
+import subprocess
+import sys
+import time
+
+mode, seconds = "none", 0.0
+once = os.environ.get("V446_ONCE", "")
+if once:
+    try:
+        with open(once, encoding="utf-8") as handle:
+            mode, raw = handle.read().split()
+        os.remove(once)
+        seconds = float(raw)
+    except (FileNotFoundError, ValueError):
+        mode, seconds = "none", 0.0
+log = os.environ.get("V446_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(f"shell pid={os.getpid()} pgid={os.getpgid(0)} mode={mode} s={seconds} t={time.monotonic():.3f}\n")
+if mode == "pre":
+    time.sleep(seconds)
+elif mode == "childslow":
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vsite") + os.pathsep + env.get("PYTHONPATH", "")
+    env["V446_SITE_SLEEP"] = str(seconds)
+    sys.exit(subprocess.call(["/bin/bash", *sys.argv[1:]], env=env))
+elif mode == "post":
+    code = subprocess.call(["/bin/bash", *sys.argv[1:]])
+    time.sleep(seconds)
+    sys.exit(code)
+os.execv("/bin/bash", ["/bin/bash", *sys.argv[1:]])

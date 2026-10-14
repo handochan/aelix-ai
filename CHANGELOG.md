@@ -314,6 +314,36 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Tests only: the bash drain-cap case's deadline arm no longer fails when
+  Windows starts the shell too slowly to finish inside the deadline (#446).**
+  Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`
+  needs a root that exits inside its 2.0 s deadline. On windows-latest under
+  CPU load, PowerShell plus its Python child sometimes did not: 31 of 900
+  loaded runs timed out and 0 of 450 unloaded ones (run 38509857375). The
+  misses were mostly start-up waiting for a CPU (10 of 13 instrumented ones),
+  2 were PowerShell's teardown and 1 an exit at the deadline itself; none was
+  the product failing to see the exit. Such an attempt now runs again, but only
+  when the site's own timed wait was handed the caller's timeout and gave up
+  at that deadline on a root that had not exited, and only when the timeout's
+  kill is shown to have reached the tree: the root did not run on past the
+  kill and exit by itself, nothing announced the tree after the kill, and two
+  seconds after the kill the root and its Python child are dead (on Windows
+  the holder in the job too) and the root's process group (POSIX) or job
+  (Windows) holds no running process. Anything else still fails at once,
+  each with its own message: a wait handed another timeout or giving up early
+  or late, a timeout the wait never raised, a root that had exited before the
+  deadline, a record that cannot place the exit, and a kill that missed the
+  root or any process of its group or job. Two new cases drive this path on every
+  platform, one of them against a kill that ends nothing. A larger deadline was
+  not taken: the measured exits spread wider than the window the arm needs.
+  The arm's floor now compares the product's own sum, after a Python 3.12
+  Windows run failed `2.0 <= 1.9999999999999432` on a rounding tie. Measured
+  on windows-latest (run 38547416538, 100 rounds per Python version and load):
+  0 of 900 deadline-arm runs failed; 10 attempts met a root still running at
+  the deadline and ran again, and none was charged to the product. The old
+  test failed 16 of 900 in an earlier run (38531413887). A root that misses
+  the deadline on all three attempts still fails the case, which says so.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a

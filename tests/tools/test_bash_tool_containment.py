@@ -1461,10 +1461,10 @@ _A_KILL_TAKES = 0.25
 #: the target's to finish, and under load it waits for a CPU like anything
 #: else, and so does the thread that sees it: a wait on windows-latest saw
 #: pwsh's kernel exit up to 0.215 s late (run 38509857375). Two seconds is ten
-#: times that. What is
-#: still alive later than this was never reached: the check looks once at the
-#: call's end and polls only up to this instant, so a process the kill missed
-#: cannot slip through by exiting on its own while the check waits for it.
+#: times that. What is still alive later than this was never reached: the
+#: check looks once at the call's end and polls only up to this instant, so a
+#: process the kill missed cannot slip through by exiting on its own while the
+#: check waits for it.
 _A_KILLED_PROCESS_ENDS_WITHIN = 2.0
 
 
@@ -1807,9 +1807,13 @@ def _why_the_root_timed_out(
 
     - the label without the wait: ``timed_out=True`` while the timed wait never
       raised — "never raised";
-    - another deadline handed to ``proc.wait`` than the caller's — "was handed";
-    - a deadline handed short, or counted from an earlier origin: the wait gave
-      up before the caller's deadline — "before the caller's";
+    - any other timeout handed to ``proc.wait`` than the caller's — short,
+      long, or what is left of it (this case reads the wait's deadline as the
+      caller's, so a site that hands it anything else must be read again) —
+      "was handed";
+    - a wait handed the caller's timeout that still gave up before the
+      caller's deadline: counted from an earlier origin than the call, or not
+      honouring the deadline it was handed — "before the caller's";
     - a wait that does not honour its deadline: it gave up later than that —
       "past its own deadline";
     - a wait that does not see the root's exit: the root was already dead
@@ -1840,8 +1844,8 @@ def _why_the_root_timed_out(
     if gave_up < timeout - _EARLY_TIMEOUT_SLACK:
         return (
             f"the site's timed wait gave up {gave_up:.3f}s after the call, before the caller's "
-            f"{timeout}s deadline — a deadline handed to ``proc.wait`` short, or counted from an "
-            f"earlier origin"
+            f"{timeout}s deadline, the very timeout it got — a wait counted from an earlier "
+            f"origin than the call, or one that does not honour its deadline"
         )
     waited_at = witness.waited_at if witness.waited_at is not None else started
     deadline = waited_at + timeout
