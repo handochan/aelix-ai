@@ -405,7 +405,10 @@ checks again after `session_start`. `set_model` there cannot release the decisio
 - A launch served by an already registered builtin, JSON or setup provider stays
   there; handlers' turns may run there. Later rebuilds re-derive launch inputs
   and hold wherever they land on the late provider. This also covers the
-  post-login pick and `/agents use` of a profile naming neither model nor provider.
+  post-login pick and `/agents use` of a profile none of whose `model:` /
+  `provider:` applies (or `--none`) when it replaces a profile whose own `model:`
+  or `provider:` applied (any other such use keeps the current model and
+  re-derives nothing).
   `/model <name>/<id>` or a profile explicitly naming it can select it afterwards.
 
 `/model` records its choice. A rebuild restoring the session's runnable model

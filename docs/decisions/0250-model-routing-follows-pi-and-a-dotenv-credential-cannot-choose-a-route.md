@@ -577,7 +577,12 @@ there.
   scope-probe-before.txt`). Where the launch attached the key to `openrouter` (the routes
   above), a later
   guard-2 route in-session carries it there — the key is OpenRouter's by the user's
-  choice, their settings or pi's catalogue, not guard 2's.
+  choice, their settings or pi's catalogue, not guard 2's. *Narrowed 2026-10-14 by #412
+  (ADR-0196's amendment): only a use that drops the route of the profile it replaces
+  re-resolves the launch inputs, and that one is still told about the key and refuses
+  with the launch's text; `--none`, or a profile none of whose `model:`/`provider:`
+  applies, with no route to drop keeps the live model — after a not-found launch, the
+  placeholder — applies the profile and says why no prompt will be sent.*
 - `/agents use` and `/model`'s UNDECIDED fallback refuse with the route's error when a
   registry exists (without one the resolver sees no credential and no user-defined
   provider, so its "none authenticated" would be a claim about nothing).
@@ -1032,7 +1037,11 @@ continues, so providers registered there are available to startup model selectio
   **`/agents use`** of a profile whose own `model:` / `provider:` does not apply — one
   naming none, `--none`, or one a CLI `--model` overrides ("CLI flags override model") —
   which resets `parsed` to the CLI baseline and re-resolves it (verify round 1, B1, and
-  round 2's shapes); it keeps the placeholder and repeats the reason in its `Note:` lines;
+  round 2's shapes); it keeps the placeholder and repeats the reason in its `Note:` lines
+  (*narrowed 2026-10-14 by #412, ADR-0196's amendment: only such a use that drops the
+  route of the profile it replaces re-resolves and holds; one with no route to drop keeps
+  the live model and resolves nothing — on the placeholder it repeats the reason all the
+  same*);
   and **the TUI's post-`/login` pick** (§2.10), whose saved settings default can be the
   refused launch input — it never lands on a late provider: it asks again without the
   saved default, which picks the way a pick with no default does (in the measured row, a
@@ -1847,7 +1856,9 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   with a `session_start` provider serving `m1` too and settings `defaultProvider` naming
   it: the launch and its `session_start`'s turns run on the `setup()` provider, as in pi;
   `/new`, `/fork`, `/resume`, `/reload` and an implicit `/agents use` re-resolve the inputs
-  onto the late provider and are held until `/model` picks one. pi keeps the session model
+  onto the late provider and are held until `/model` picks one (*since #412, 2026-10-14, an
+  implicit `/agents use` does so only when it drops a profile's route; otherwise it keeps
+  the session where it is*). pi keeps the session model
   across a new session; aelix's rebuild re-derives it from the launch inputs, so the
   session the user started on stops at its first rebuild. Stated, not changed here.
   (Round 3 refused the launch itself instead — after its `session_start` had run turns on
@@ -1998,7 +2009,13 @@ Decided in this lane, each with the recommendation followed and put to the owner
    (`--none`, a profile with no `model:`/`provider:` of its own, or one an explicit flag
    beat); a profile's own route resolves as before #370 (round 2, the main loop's
    decision; alternative: round 1's every resolve, which refused a profile's own new pick
-   because of a key typed for the launch's provider).
+   because of a key typed for the launch's provider). *2026-10-14, #412:* such a use now
+   re-resolves the launch inputs only when it drops the route of the profile it replaces
+   (that profile's own `model:` or `provider:` applied) and the inputs name a model or
+   provider; any other one keeps the live model, resolves nothing and so asks no key —
+   after a launch held on the not-found placeholder, it keeps the placeholder and its
+   status says why no prompt will be sent ([ADR-0196](0196-agent-profile-format-and-single-agent-invoke.md)'s
+   #412 amendment).
 14. **`--provider` without `--model` is pi's usage error, in every mode, before MCP, the
    session's extensions or `session_start` run** (#368; owner direction on #362,
    2026-10-02 — pi — and the main loop's decisions of 2026-10-06 on the research's open

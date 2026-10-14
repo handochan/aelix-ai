@@ -50,7 +50,11 @@ from aelix_coding_agent.cli.runtime_bootstrap import (
     enrich_copilot_base_url,
     resolve_route,
 )
-from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
+from aelix_coding_agent.core.runnable_models import (
+    is_runnable,
+    turn_refusal,
+    unsupported_message,
+)
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 
 from .discovery import (
@@ -110,11 +114,16 @@ class AgentProfileService:
         reads). A profile whose own ``model:`` or ``provider:`` applies is an
         explicit pick and switches (``provider:`` alone names the route too),
         and marks the rule explicit so the rebuilds after it keep that choice.
-        Any other :meth:`use` — a profile naming no route, one a CLI flag
-        beats, ``--none`` — re-resolves the launch-derived baseline, an
-        implicit re-resolution: where it lands on a provider ``session_start``
-        registered after the launch, it holds the session instead of switching
-        there (round 3, D1).
+        Any other :meth:`use` — no ``model:``/``provider:`` of the profile
+        applies (none is named, or a typed CLI flag beats each one named), or
+        ``--none`` — clears the mark and, since #412, keeps the live model (see
+        :meth:`use`). Only when it drops the route of the profile it replaces
+        (that profile's ``model:`` or ``provider:`` applied) does it re-resolve
+        the launch-derived baseline, an implicit re-resolution: where that
+        lands on a provider ``session_start`` registered after the launch, it
+        holds the session instead of switching there (round 3, D1). A baseline
+        with no model and no provider (no ``--model``/``--provider``, no settings
+        default) has nothing to re-resolve: the dropped profile's model stays.
     """
 
     cwd: str
@@ -127,6 +136,75 @@ class AgentProfileService:
     active: AgentProfile | None = None
     confirm_project: Callable[[AgentProfile], Awaitable[bool]] | None = None
     late_route: LateRoute | None = None
+
+    def _route_applies(self, profile: AgentProfile | None) -> bool:
+        """Whether ``profile``'s own ``model:`` / ``provider:`` applies over the baseline (#412).
+
+        The question :meth:`use` asks of the profile it replaces: did that
+        profile put its own route on the live model? Answered by the SAME
+        overlay every application runs — the launch's ``--agent`` and each
+        :meth:`use` apply onto the baseline with the baseline's ``provided`` —
+        on a throwaway copy, so the answer cannot drift from what was applied.
+        A profile the overlay refuses (``--no-extensions`` against its
+        ``extensions:``) never applied, at launch or here: ``False``.
+        """
+
+        if profile is None:
+            return False
+        scratch = copy.deepcopy(self.baseline)
+        try:
+            application = apply_profile_to_args(scratch, profile, provided=scratch.provided)
+        except ProfileError:
+            return False
+        return bool({"model", "provider"} & set(application.applied))
+
+    def _live_model_notice(self, model: Any) -> str | None:
+        """Why prompts on the model a :meth:`use` keeps will be refused, or ``None`` (#412).
+
+        Asked wherever :meth:`use` leaves the live model in place: a use where
+        no route of the profile applies and none is dropped, and a use that
+        drops a route with nothing to re-resolve (an empty baseline). A
+        late-provider hold's placeholder gets its own notice back (#367), as
+        the re-resolve used to say it. Any other model with a provider is asked
+        what the CLI's prompt check asks before every prompt
+        (``cli/entry.py``'s ``_make_prompt_check``, which the harness factory
+        installs with ``set_prompt_check``): :func:`turn_refusal` — no turn can
+        run on the model at all (#370's not-found placeholder, ``api
+        'unknown'``; a base URL whose ``{ENV_VAR}`` placeholders are unfilled,
+        cloudflare's) — and then ``ModelRegistry.has_configured_auth``, so a
+        model with no credential source gets that check's "No API key found"
+        text. The note is that check's reason, not every surface's wording:
+        the TUI's prompt line refuses a model :func:`turn_refusal` refuses
+        BEFORE that check, with its own line (``tui/shell.py``, #189) — the
+        hold's notice, the same reason (``unsupported_message``) plus "Run
+        /model to select a working model." while any model is available, and
+        "No provider configured. Run
+        /login to add one." when none is. A service built without a registry
+        (an embedder's) asks :func:`turn_refusal` alone, the structural half
+        that needs none. The empty placeholder (no provider: nothing was ever
+        chosen) says nothing here, as before.
+        """
+
+        held = self.late_route.held(model) if self.late_route is not None else None
+        if held is not None:
+            return held.notice
+        if not getattr(model, "provider", ""):
+            return None
+        if self.model_registry is not None:
+            # Function-level import, as in :meth:`use`: ``cli/entry.py`` imports
+            # this package at module scope. The SAME composition the factory
+            # installs with ``set_prompt_check``, so the note gives the reason
+            # that check refuses with; the TUI prompt line's own gate (#189)
+            # refuses a structurally unrunnable model before it, in its words
+            # (see the docstring).
+            from aelix_coding_agent.cli.entry import _make_prompt_check
+
+            refusal = _make_prompt_check(self.model_registry)(model)
+        else:
+            refusal = turn_refusal(model)
+        if refusal is None:
+            return None
+        return f"{refusal} No prompt will be sent for it; run /model to select a working model."
 
     def list(self) -> ProfileDiscoveryResult:
         """Every discoverable profile plus the scan diagnostics (``/agents list``).
@@ -214,9 +292,37 @@ class AgentProfileService:
           cannot be unloaded in-session. Refusing it instead would refuse nearly
           every profile, since ``inherit_extensions`` defaults ``False``.
 
-        ``/model`` and ``/thinking`` chosen live are NOT reverted when the new
-        profile is silent about them — that is the deliberate difference from
-        the rejected rebuild option, which stomped both.
+        A ``/model`` choice is NOT reverted when no route of the new profile
+        applies — the deliberate difference from the rejected rebuild option,
+        which stomped it. #412 (owner decision 2026-10-14, option A): a use
+        where no ``model:``/``provider:`` of the profile applies (none is named,
+        or a typed CLI flag beats each one named), and ``--none``, keeps the
+        LIVE model, whatever put it there: the session's restored record
+        (#376), a ``/model`` pick, or the launch model. No resolve, no
+        ``set_model``, so no ``model_change`` is recorded and a reopen comes
+        back on the same model. A profile whose ``model:`` a typed ``--model``
+        beats but whose ``provider:`` applies DOES name a route: it re-resolves
+        (the typed model on the profile's provider) and switches, as before.
+        ``parsed`` still returns to the baseline, so ``/new`` follows the
+        launch inputs and ``/resume`` / ``/reload`` the session's record, as
+        before. The one exception is a use that DROPS a route — the profile it
+        replaces (the launch's ``--agent``, or an earlier use) had its own
+        ``model:``/``provider:`` applied: that model is the profile's, so the
+        baseline is re-resolved and set, held where it lands late (#367), as
+        before — resolved without the settings ``defaultProvider`` a rebuild
+        passes, so a bare ``--model`` id several providers serve can land
+        elsewhere than ``/new`` would. With an empty baseline (no
+        ``--model``/``--provider``, no settings default) there is nothing to
+        re-resolve and the dropped profile's model stays, as before; since
+        review round 3 that path asks for the same note as a kept model. The
+        ``--none`` status says "the model is unchanged" wherever the model was
+        left in place, and only "baseline CLI identity restored" where the drop
+        put a model on the session (its re-resolve, or a hold's placeholder).
+        ``/thinking`` is not covered: a level the baseline or the
+        profile names (``--thinking``, ``thinking:``) is re-applied below on
+        every path, and ``set_thinking_level`` records a
+        ``thinking_level_change`` when that moves the level (a ``/thinking``
+        pick reverted — a known corner left to a follow-up).
         """
 
         # Function-level import: ``cli/entry.py`` imports this package at module
@@ -289,6 +395,9 @@ class AgentProfileService:
         live_model = harness.state.model
         live_thinking = harness.state.thinking_level
         live_explicit = self.late_route.explicit if self.late_route is not None else False
+        # Whether this use put a model on the harness (a drop's re-resolve or
+        # hold) — the ``--none`` status says "the model is unchanged" otherwise.
+        model_set = False
 
         try:
             # === 2. Reset to the pristine CLI baseline ======================
@@ -296,8 +405,10 @@ class AgentProfileService:
 
             # === 3. Overlay (durable half) ==================================
             # #367 — whether the profile itself named the route (its ``model:``
-            # / ``provider:`` applied, not beaten by a CLI flag). When it did
-            # not, the model block below re-resolves the launch inputs.
+            # or ``provider:`` applied, not beaten by a CLI flag). When neither
+            # did, the model block below keeps the live model — unless this use
+            # drops the route of the profile it replaces, which re-resolves the
+            # launch inputs (#412).
             profile_named_route = False
             if profile is None:
                 self.active = None
@@ -406,21 +517,57 @@ class AgentProfileService:
                 ),
             )
 
+            # #412 (owner decision 2026-10-14, option A) — a use where no
+            # ``model:``/``provider:`` of the profile applies (none named, or a
+            # typed flag beats each one named; ``--none``) KEEPS the live model,
+            # unless it drops the route of the profile it replaces. The baseline
+            # carries the launch inputs (the settings pair is back-filled into
+            # it when no flag was typed, ``cli/entry.py``), and re-resolving it
+            # here moved a restored session (#376) off its record onto the
+            # settings model, recorded that move (``set_model`` appends
+            # ``model_change``), so the next reopen came back there too, and
+            # reverted a ``/model`` pick against ADR-0196 D8 (with a typed
+            # ``--model`` the baseline is that flag: the re-resolve reverted a
+            # pick to it and recorded it again). The profile being replaced is
+            # ``previous_active`` (the launch's ``--agent`` or an earlier use):
+            # when its own ``model:``/``provider:`` applied, the live model is
+            # the profile's and nothing else takes it away, so that use
+            # re-resolves the baseline below exactly as before.
+            keep_live = not profile_named_route and not self._route_applies(previous_active)
             held: LateRouteHold | None = None
             if self.late_route is not None:
                 # #367 round 3, D1 — the landing rule. A profile whose own route
                 # applied is the user's pick (and the rebuilds after it keep it);
-                # anything else re-resolves the launch-derived baseline, and
-                # where that lands on a late provider the session holds — asked
-                # with the settings ``defaultProvider`` as a rebuild resolves it,
-                # and once more below as this resolve does (without it).
+                # dropping a profile's route re-resolves the launch-derived
+                # baseline, and where that lands on a late provider the session
+                # holds — asked with the settings ``defaultProvider`` as a
+                # rebuild resolves it, and once more below as this resolve does
+                # (without it). A use that keeps the live model resolves nothing,
+                # so it asks nothing; it only clears the explicit mark, so the
+                # rebuilds after it hold where the launch inputs land, as before.
                 self.late_route.explicit = profile_named_route
-                held = self.late_route.hold_for(self.parsed.model, self.parsed.provider)
-                if held is None and not profile_named_route:
-                    held = self.late_route.hold_for(
-                        self.parsed.model, self.parsed.provider, use_default=False
-                    )
-            if held is not None:
+                if not keep_live:
+                    held = self.late_route.hold_for(self.parsed.model, self.parsed.provider)
+                    if held is None and not profile_named_route:
+                        held = self.late_route.hold_for(
+                            self.parsed.model, self.parsed.provider, use_default=False
+                        )
+            if keep_live:
+                # No model is resolved and none is set: the live model stays,
+                # and ``parsed.provider`` is not completed (``/new`` resolves the
+                # baseline exactly as the launch did). What the user still needs
+                # is a reason when the next prompt on that model will be refused
+                # — a launch held on a late provider's placeholder (#367: its
+                # notice again, as the re-resolve used to say it), one held on
+                # the placeholder of a route nothing places (#370's not-found,
+                # which the re-resolve used to refuse with, rolling the whole
+                # profile back), or a model the prompt check refuses for another
+                # reason (unfilled base URL, no credential source). The thinking
+                # block after this one still runs on this path.
+                notice = self._live_model_notice(harness.state.model)
+                if notice is not None:
+                    notices.append(notice)
+            elif held is not None:
                 # #367 verify round 1, B1 / round 2 — the reset above put back
                 # launch inputs that land on a provider ``session_start``
                 # registered; switching there would send the next prompt to it
@@ -440,9 +587,11 @@ class AgentProfileService:
                     refused = await held.apply(harness)
                     if refused is not None:
                         raise refused
+                    model_set = True
             elif self.parsed.model is not None or self.parsed.provider is not None:
                 # #370 — when this re-resolves the LAUNCH inputs (``--none``, or
-                # a profile whose ``model:``/``provider:`` did not apply), it is
+                # a profile whose ``model:``/``provider:`` did not apply, after
+                # one whose route did — #412 keeps the live model otherwise), it is
                 # told about ``--api-key`` as the launch and every rebuild's
                 # factory are (ADR-0250 §2.1 steps 2 and 3b): without it, a
                 # launch string no provider places (pi's not-found under
@@ -491,6 +640,19 @@ class AgentProfileService:
                     # rebuild cannot resolve a model without its provider (#98).
                     self.parsed.provider = model.provider
                     await harness.set_model(model)
+                    model_set = True
+            else:
+                # Review round 3 — a use that drops a route with an EMPTY baseline
+                # (no ``--model``/``--provider`` and no settings default, so
+                # neither ``parsed.model`` nor ``parsed.provider``): there is
+                # nothing to re-resolve, and the dropped profile's model stays
+                # live, as before #412. It is kept as the keep branch keeps one,
+                # so it gets the same note when its prompts will be refused
+                # (53ecb70b never asked here: a profile's model with no credential
+                # kept silently while the keep branch's twin said why).
+                notice = self._live_model_notice(harness.state.model)
+                if notice is not None:
+                    notices.append(notice)
 
             if self.parsed.thinking:
                 # Mirrors the TUI's own startup thinking seed in ``tui/shell.py``:
@@ -540,11 +702,19 @@ class AgentProfileService:
                 harness.set_skills(previous_skills.skills)
             raise
 
-        status = (
-            f"Agent profile: {self.active.name} ({self.active.scope})"
-            if self.active is not None
-            else "Agent profile cleared (baseline CLI identity restored)."
-        )
+        # Review round 3 (#412) — ``--none`` restores the baseline's prompt,
+        # tools and skills, but the model only where a dropped route was
+        # re-resolved or a hold applied; everywhere else the live model stays (a
+        # ``/model`` pick over a typed ``--model`` among them), and the line
+        # says so rather than claim the baseline identity whole.
+        if self.active is not None:
+            status = f"Agent profile: {self.active.name} ({self.active.scope})"
+        elif model_set:
+            status = "Agent profile cleared (baseline CLI identity restored)."
+        else:
+            status = (
+                "Agent profile cleared (baseline CLI identity restored; the model is unchanged)."
+            )
         if notices:
             return "\n".join([status, *(f"Note: {n}" for n in notices)])
         return status

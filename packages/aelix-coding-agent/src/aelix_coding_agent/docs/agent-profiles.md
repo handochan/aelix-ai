@@ -340,3 +340,27 @@ job is text.
   `--no-agents` — is decided when a delegation actually runs.
 - `--agent <name>` — launch as that identity yourself, which is the fastest way
   to find out whether the prompt and tool set do what you intended.
+- `/agents use <name>` — switch the running session to that identity without
+  restarting (`/agents use --none` drops it). A profile whose `model:` or
+  `provider:` applies — one you did not override with `--model` / `--provider`
+  — switches the model too; `provider:` alone is enough, so a profile whose
+  `model:` your `--model` overrides but whose `provider:` applies switches to
+  your `--model` on that provider. When nothing of it applies (the profile
+  names neither, or your flags override each one it names), and with `--none`,
+  you stay on the model you are on — the model a reopened session came back on,
+  a `/model` pick, or the launch model — and no model change is written into
+  the session; `--none` then reports "the model is unchanged". The exception
+  is replacing a profile whose own `model:` or `provider:` applied: that
+  re-derives the model from your launch flags or settings default. It is not
+  quite what `/new` does: it does not use your settings `defaultProvider` to
+  choose among providers that serve a bare `--model` id, so such an id can land
+  on a different provider; and with no `--model`/`--provider` and no settings
+  default there is nothing to re-derive, so the replaced profile's model stays
+  (where `/new` starts as a launch with no model would). A `thinking:` the
+  profile names, or your `--thinking`, is applied either way, so a `/thinking`
+  pick does not survive it yet. If the next prompt on the model you keep would
+  be refused (no API key, an id no provider serves, configuration missing), the
+  status line says why, with the reason the check before every prompt gives. In
+  the TUI, a model that cannot run at all (the last two) is refused before that
+  check: with the same reason while any model is available, and with "No
+  provider configured. Run /login to add one." when none is.

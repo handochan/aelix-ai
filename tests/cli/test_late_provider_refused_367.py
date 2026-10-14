@@ -474,9 +474,12 @@ async def test_agents_use_whose_model_a_cli_flag_overrides_keeps_the_hold(
     env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``--model sessext/m1`` beats a profile's ``model:`` ("CLI flags override
-    model"), so the model in effect after ``/agents use lateprof`` is the launch
-    input the launch refused, re-resolved — held, like a profile naming none.
-    On dcc78170 it switched to ``sessext``."""
+    model"), its only route, so nothing of ``lateprof`` applies and the session
+    stays held on the launch's placeholder, with the hold's reason in the
+    status — like a profile naming none. Since #412 the use keeps that live
+    placeholder and repeats the hold's notice; before, it re-resolved the
+    refused launch input and held it again. On dcc78170 it switched to
+    ``sessext``."""
 
     _openrouter(monkeypatch, env, "exported")
     _profiles(env)

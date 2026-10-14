@@ -256,7 +256,7 @@ class AgentsExtension:
     overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
     factory closed over. Probed on one object — ``apply_profile_to_args`` with
     a ``context_files: false`` profile flips it to ``True``, and
-    ``agents/service.py:295``'s ``__dict__.update`` reset flips it back — same
+    ``agents/service.py:404``'s ``__dict__.update`` reset flips it back — same
     ``id()`` throughout. A bool captured at construction would be stale in both
     directions.
 
@@ -1224,7 +1224,7 @@ class AgentsExtension:
         # are separated by the kernel's parallel execute phase, and the profile
         # search path is a directory the model's own tools can write. If the
         # name now resolves to a DIFFERENT file — a project-scoped profile that
-        # appeared and wins the collision (``agents/service.py:102-103``), a
+        # appeared and wins the collision (``agents/service.py:106-107``), a
         # user-scope file replaced by one somewhere else on the search path —
         # then what the human approved is not what would run.
         #

@@ -73,7 +73,20 @@ conversation adds no record. Your settings `defaultModel`
 does not override the session; it is for new sessions (`/new` starts on the
 launch model). `--model` / `--provider`, an agent profile that names a `model:`
 or `provider:`, or `--api-key` (typed for the launch model) win over the
-session, as in pi.
+session, as in pi. Switching identity inside the session does not move you off
+it: `/agents use` of a profile none of whose `model:` / `provider:` applies (it
+names neither, or your `--model` / `--provider` override each one it names), or
+`/agents use --none`, keeps the model you are on — the session's, a `/model`
+pick, or the launch model — and records no model change, so the next reopen
+comes back on the same model. A `provider:` that applies is a route of its own:
+a profile whose `model:` your `--model` overrides but whose `provider:` applies
+switches to your `--model` on that provider. Only such a use that replaces a
+profile whose own `model:` or `provider:` applied (`--agent` at launch, or an
+earlier `/agents use`) re-derives the model from your launch flags or settings
+default; with neither there is nothing to re-derive, and that profile's model
+stays.
+A thinking level the profile or `--thinking` names is still applied, and that
+change is recorded.
 
 The model comes back only if it can still run: it must be one this build or
 your `models.json` / an extension knows, with a key for its provider (from any
@@ -311,11 +324,13 @@ the session's own model (one of a session with no conversation yet, of a run
 whose model you named at launch, or whose recorded model cannot run — see "A
 resumed session keeps its model"; a rebuild that restores it is not held), also
 when a `session_start` handler of the rebuild sets a model; `/agents use`
-of a profile that names no model or provider of its own (or `--none`, or one whose
-`model:` your `--model` overrides) — also after a launch that went elsewhere, such
-as `--agent` with `provider: openrouter` and `--model <name>/<id>` — and the model
-picked for you after `/login`, which picks as it would with no saved default and
-never that provider.
+of a profile none of whose `model:` / `provider:` applies (it names neither, or your
+flags override each one it names; or `--none`) when it replaces a profile whose own
+`model:` or `provider:` applied — an earlier `/agents use`, or `--agent` at launch,
+also a launch that went elsewhere, such as `--agent` with `provider: openrouter` and
+`--model <name>/<id>` (any other such use keeps the model you are on, and on the
+held placeholder says why again) — and the model picked for you after `/login`,
+which picks as it would with no saved default and never that provider.
 For a refused launch nothing is sent in the meantime, whatever keys you hold:
 while the extensions' `session_start` handlers run, a launch model no registered
 provider has claimed is not runnable yet, and no turn starts at all — not even
@@ -335,9 +350,10 @@ the route too). A `/model` choice is recorded in the session, so a rebuild that
 restores the session's model (`/reload`, `/fork`, `/clone`, a `/resume` back to
 it) comes back on it and is not held; `/new`, and a rebuild that does not
 restore (as above), re-derive the launch model and hold again (pi keeps the
-session's model). A profile's choice lasts until an `/agents use` that names no
-route. `/model` also saves it as your default, so the next launch without
-`--model` reads it from `settings.json` and is refused the same way. The RPC mode
+session's model). A profile's choice lasts until an `/agents use` of a profile
+none of whose `model:` / `provider:` applies, or `--none`. `/model` also saves
+it as your default, so the next launch without `--model` reads it from
+`settings.json` and is refused the same way. The RPC mode
 starts held too but cannot pick another model (`aelix --mode rpc` has no model
 registry for `set_model`): restart it with another `--model`. Register providers
 in the extension's `setup()` and they work at launch. A provider the handler

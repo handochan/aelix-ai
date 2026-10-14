@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -407,7 +407,8 @@ a local recorder; driver and outputs in `.omc/probes/376-live/impl/`):
   launch or rebuild that falls back still goes through the hold exactly as before.
 - `/agents use` of a profile that names no model still re-resolves the launch
   inputs (ADR-0196), so in a restored session it moves off the restored model.
-  Unchanged here (a follow-up).
+  Unchanged here (a follow-up). *Resolved 2026-10-14 by #412 (the amendment
+  below): such a use keeps the live model and writes no `model_change`.*
 - `/agents use` of a profile whose model applies records it (decision 8). If the
   same `use` then fails after the switch (its thinking-level setter refused by a
   hook), the rollback restores the live model by assignment and the record keeps
@@ -628,3 +629,54 @@ at a local mock; driver and outputs in `.omc/probes/413-live/impl/`):
   since creation; round 4 added the row that pins it) and named `/import`
   among the pending rebuilds, and recorded the known corners above;
   measured in `.omc/probes/413-live/r4/`.
+
+## Amendment (2026-10-14, #412) — `/agents use` keeps the restored model
+
+The #376 amendment left one way out of a restored model open (its Consequences):
+`/agents use` of a profile that names no `model:` or `provider:` (or `--none`)
+re-resolved the launch inputs, and in a
+session reopened on its record that moved it onto the settings model. Measured on `main`
+`529b997e` in the real TUI (`.omc/probes/412-live/impl/`): a session that ran on
+`claude-haiku-4-5`, reopened with `--continue` under a settings pair
+`anthropic`/`claude-sonnet-4-5`, came back on haiku; `/agents use plain` moved it to
+sonnet, the next prompt was sent as sonnet, and — #376's decision 8 records every idle
+`set_model` — the file gained `model_change` sonnet, so the next reopen came back on
+sonnet too.
+
+### Decision
+
+The owner decided 2026-10-14 (option A) that a route-less use — no `model:`/`provider:`
+of the profile applies, or `--none` — keeps the live model; the decision is ADR-0196's
+(its D8, amended the same day), and this section records what it means for the
+session's model record:
+
+1. **A route-less `/agents use` writes no model record.** It resolves no model and calls
+   no `set_model` — a profile none of whose `model:`/`provider:` applies (none named, or
+   a typed CLI flag beat each one named), or `--none` — so a restored session stays on
+   its record and reopens on it again, and a fresh session keeps #413's one start record
+   instead of gaining a copy per use (#376's decision 8, not gated on a change, used to
+   append one). It can still write a `thinking_level_change`: the use re-applies a level
+   `--thinking` or the profile's `thinking:` names, and `set_thinking_level` records it
+   when that moves the level (ADR-0196's thinking corner, below).
+2. **Only dropping a profile's route moves the model.** When the profile being replaced
+   (the launch's `--agent` or an earlier use) applied its own `model:`/`provider:`, the use
+   re-resolves the launch inputs and records where it lands, as before. Launch inputs that
+   name no model and no provider (no `--model`/`--provider`, no settings default) leave
+   nothing to re-resolve: the dropped profile's model stays and nothing is recorded, as
+   before (since review round 3 its status notes a model whose prompts will be refused,
+   as a kept model's does).
+3. **Rebuilds are unchanged.** `/resume`, `/fork`, `/import` and `/reload` restore the
+   record as decision 1 of #376 says (an active profile that names no `model:` or
+   `provider:` counts as naming nothing there either; one whose route a typed flag beat
+   comes with that flag, which already turns the restore off); `/new` follows the launch
+   inputs.
+
+### Known corners (left to follow-up issues)
+
+- In a restored session, a profile whose `model:` or `provider:` applied and then
+  `--none` (or another route-less use) lands on the launch inputs — the settings model —
+  not on the record the session was restored on: the restore state lives in
+  `cli/entry.py`, which the service cannot read.
+- The thinking level is not kept: a route-less use re-applies a level `--thinking` (or
+  the profile's `thinking:`) names, reverting a `/thinking` pick, and records that as a
+  `thinking_level_change` (ADR-0196's amendment, known corners).

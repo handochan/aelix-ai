@@ -1723,11 +1723,11 @@
    "if oneshot and task:",
    "argv.append(f\"Task: {task}\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:102-103": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:106-107": [
    "a yes-once decision ancestors inherit and a project profile additionally",
    "WINS a ``name`` collision against the user's own; :meth:`use` resolves"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:246-262": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:352-368": [
    "if profile.scope == \"project\":",
    "# The per-identity consent ``--agent`` performs at startup. A",
    "# trusted DIRECTORY is not consent to a project-local identity",
@@ -1737,7 +1737,7 @@
    "confirmed = False",
    "if self.confirm_project is not None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:295-295": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:404-404": [
    "self.parsed.__dict__.update(copy.deepcopy(self.baseline).__dict__)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/bash_classifier.py:86-98": [

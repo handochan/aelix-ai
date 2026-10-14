@@ -248,13 +248,17 @@ the provider's models, so the catalog id is not found there.
 > re-resolver of the launch inputs: `/agents use` of a profile whose own `model:` does
 > not apply (none, `--none`, or one a CLI `--model` beats) reset `parsed` to the CLI
 > baseline and switched onto the provider; it now keeps the hold, as does the TUI's
-> post-`/login` pick. RPC's warning no longer says "run /model" (`aelix --mode rpc` has no
+> post-`/login` pick. (*2026-10-14, #412:* such a use now re-resolves nothing and keeps
+> the live model, unless it drops the route of the profile it replaces — that profile's
+> own `model:` or `provider:` applied — and the baseline names a model or provider; only
+> that use can still land here and be held. ADR-0196's #412 amendment.) RPC's warning no longer says "run /model" (`aelix --mode rpc` has no
 > model registry for `set_model`). **Round 3** (verify round 2 and Codex, of
 > `9e233be9`/`dcc78170`): the hold is where the inputs LAND, not the refused pair — a
 > provider is late when an extension registered it in `session_start` and it was not
 > registered when the launch route was chosen, and every implicit re-resolution of the
 > launch inputs (the launch, each rebuild, `/agents use` of a profile whose own `model:` /
-> `provider:` does not apply, the post-`/login` pick) that lands on one is held, while an
+> `provider:` does not apply — since #412, 2026-10-14, only one that drops such a route —
+> the post-`/login` pick) that lands on one is held, while an
 > explicit pick (`/model`, a profile whose `model:` or `provider:` applies) switches; the
 > launch is judged by its inputs over the registry after `session_start` (settings
 > `defaultProvider` included), not by a model a hook set; the hold is re-applied after

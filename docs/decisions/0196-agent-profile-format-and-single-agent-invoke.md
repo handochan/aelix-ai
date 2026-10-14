@@ -2,6 +2,9 @@
 
 Status: Accepted (2026-07-19) — owner-ratified architecture. Design record that
 lands with the P1 implementation (same pattern as ADR-0186/0187/0188/0189).
+Amended 2026-10-14 (#412): `/agents use` where no `model:`/`provider:` of the profile
+applies (or `--none`) keeps the live model (§D8; `## Amendment (2026-10-14, #412)` at
+the end).
 Date: 2026-07-19
 Amends: ADR-0008 (see its `Amendment (2026-07-19)` section — this ADR is the
 narrow amendment that clause points at)
@@ -396,6 +399,16 @@ every option from `parsed`. Options B and C fail the observability requirement
 above: a swap that `state` reports but `_action_get_system_prompt()` does not is
 a swap extensions cannot see.
 
+*Amended 2026-10-14 (#412):* the `/model` half of that promise did not hold for a
+use where no `model:`/`provider:` of the profile applied. `use` re-resolved the
+baseline and `set_model`-ed it for every such use — the settings pair when no model
+flag was typed (the baseline back-fill), the typed flags otherwise — so a `/model`
+pick — and, after #376, a restored session's model — was reverted and the move
+recorded. Such a use now keeps the live model unless it drops the route of the
+profile it replaces; see the amendment at the end of this record. The thinking half
+still does not hold when `--thinking` was typed: a profile silent about the level
+re-applies it over a `/thinking` pick (a known corner there).
+
 **Naming the two unrelated `reload` methods, once, unambiguously** (they have
 collided in review before):
 
@@ -527,3 +540,166 @@ is what bounds ADR-0197 §(g)'s accepted cost.** A profile's explicit
 `extensions:` list loads via loader tier 3, outside both discovery guards, so it
 still works under the child's `--no-approve` — and that bypass is user-scope-only
 precisely because this ADR forbade the field at project scope.
+
+## Amendment (2026-10-14, #412) — a route-less `/agents use` keeps the live model
+
+"Route-less" here: no `model:`/`provider:` of the profile applies — it names neither,
+or a typed CLI flag beat each one it names — or the use is `--none`.
+
+**Issue:** #412. **Owner decision 2026-10-14: option A** (keep the live model; decided from
+`.omc/specs/b2-decision-412-evidence.md`, which traced the code at `529b997e`).
+
+**Measured on `main` `529b997e`** — the real TUI in a pty (forkpty + pyte), fake keys,
+`models.json` pointing `anthropic` at a local mock, agent dir, settings, session dir and
+cwd isolated; driver and screens in `.omc/probes/412-live/impl/`:
+
+- A session that ran on `claude-haiku-4-5`, reopened with `--continue` under settings
+  `defaultProvider`/`defaultModel` = `anthropic`/`claude-sonnet-4-5`: the footer showed
+  haiku (ADR-0239's #376 restore). `/agents use plain` (a profile with no `model:` /
+  `provider:`) moved the footer to `claude-sonnet-4-5`, the `/model` picker marked sonnet
+  as current, the next prompt reached the mock as sonnet, the session file gained
+  `model_change` sonnet, and the next `--continue` came back on sonnet.
+- A fresh session on the settings pair: `/model claude-haiku-4-5`, then `/agents use plain`
+  — back on sonnet (`model_change` records sonnet, haiku, sonnet). This section's own
+  promise, that a mid-session `/model` survives a profile switch, did not hold.
+- A fresh session with no `/model`: every route-less use recorded the same model again
+  (sonnet three times after `/agents use plain` and `/agents use --none`).
+
+The cause was the review fix that back-fills the settings pair into the baseline when neither
+`--model` nor `--provider` was typed (`cli/entry.py`, the "BACK-FILL THE `/agents use` BASELINE"
+block). It was written for the DURABLE half — without it the next `/new` resolved no model at
+all, the #98 state — and the test that pins it reads only the next rebuild
+(`tests/cli/test_agent_flag_end_to_end.py::test_agents_use_keeps_the_persisted_default_model`).
+With the baseline filled, `use`'s model block ran for every route-less use: it
+re-resolved the launch inputs and called `set_model`, which moved the LIVE model and,
+since #376, recorded the move. (With `--model` typed, the baseline is that flag and
+no restore happens: the re-resolve reverted a `/model` pick to the flag and recorded the
+same model again — never the settings model.) #367 (the late-provider hold), #370 (`typed_key`) and #152
+(the runnable gate) were later built around that re-resolve.
+
+### Decision
+
+1. **A route-less use keeps the live model.** No `model:`/`provider:` of the profile
+   applies — none is named, or a typed CLI flag beat each one named ("CLI flags override
+   model, provider") — or it is `--none`. Whatever put the live model there stays: the
+   session's restored record, a `/model` pick, the launch model. No model is resolved
+   and `set_model` is not called, so no `model_change` is recorded and a reopen comes
+   back where it was; a fresh session keeps the one start record #413 wrote. (The
+   thinking block still runs on this path and records a `thinking_level_change` when it
+   moves the level — the thinking corner below.) A profile whose `model:` a typed
+   `--model` beat but whose `provider:` applied is NOT route-less: `use` resolves the
+   typed model on the profile's provider and switches there, as before — "applies" is
+   the overlay's own `applied`, the same set decision 2 asks of the profile being
+   replaced. `parsed` still returns to the baseline: `/new`
+   follows the launch inputs, and `/resume`, `/fork`, `/import` and `/reload` restore the
+   session's record — the factory's `_user_named_a_model` already counts an active
+   profile that names no `model:`/`provider:` as naming nothing, and one whose route a
+   typed flag beat comes with that flag, which already turns the restore off (ADR-0239,
+   #376 decision 1). `parsed.provider` is no
+   longer completed on this path, so `/new` resolves the baseline exactly as the launch
+   did.
+2. **A use that drops a route keeps the behaviour above it.** When the profile being
+   replaced — the launch's `--agent`, or an earlier use — applied its own `model:` or
+   `provider:`, the live model is that profile's and nothing else will take it away: the
+   use re-resolves the baseline and sets it, holds where that lands on a late provider
+   (ADR-0250 §2.11) and is told about `--api-key` (§2.7), as before. "Applied" is the
+   overlay's own answer: `AgentProfileService._route_applies` runs `apply_profile_to_args`
+   on a copy of the baseline with the baseline's `provided`, the same call the launch and
+   every use make, so a profile whose route a typed flag beat drops nothing — and only
+   `model` / `provider` in that answer count: a profile that applies other fields (the
+   `no_extensions` of one without `inherit_extensions: true`, a `thinking:`) drops no
+   route. The re-resolve is not quite `/new`'s: it passes no settings `defaultProvider`
+   (a rebuild does), so a bare `--model` id several providers serve can land elsewhere
+   (#398's drop-path corner below). With an EMPTY baseline — no `--model`/`--provider`
+   and no settings default — there is nothing to re-resolve and the dropped profile's model
+   stays, as before; since review round 3 that path asks for decision 3's note as a
+   kept model does (it used to keep a model whose prompts were refused in silence).
+   `--none`'s status line says which happened: "Agent profile cleared (baseline CLI
+   identity restored)." where the drop put a model on the session (its re-resolve, or a
+   hold's placeholder), and "… restored; the model is unchanged)." wherever the model was
+   left in place (review round 3: after a `/model` pick over a typed `--model`, the old
+   line claimed a baseline it no longer restored).
+3. **When prompts on the kept model will be refused, the status line says why.** A
+   late-provider hold's placeholder gets the hold's notice again, as the re-resolve used
+   to say it (ADR-0250 §2.11). Any other model with a provider gets the CLI prompt
+   check's own answer — `cli/entry.py`'s `_make_prompt_check`, the composition the
+   harness factory installs with `set_prompt_check`: `turn_refusal` (no turn can run on
+   it — #370's not-found placeholder is the one a launch leaves; a cloudflare base URL
+   whose `{ENV_VAR}` placeholders are unfilled), then `ModelRegistry.has_configured_auth`
+   (no credential source: pi's "No API key found" text) — followed by `No prompt will be
+   sent for it; run /model to select a working model.` The note is that check's reason,
+   which is not every surface's wording: the TUI's prompt line refuses a model
+   `turn_refusal` refuses BEFORE the check, with its own line (`tui/shell.py`, #189) —
+   the hold's notice; the same reason (`unsupported_message`) and "Run /model to select
+   a working model." while `get_available()` lists any model; and "No provider
+   configured. Run /login to add one." when it lists none, where `/model` has nothing
+   to offer (measured, review round 3: `.omc/probes/412-live/r3/live/`). A model the
+   check refuses only for its credential reaches the check, and the words match. A
+   service built without a registry (an embedder's) asks `turn_refusal` alone, the half
+   that needs none. The
+   profile applies. Before this amendment the not-found and cloudflare cases re-resolved
+   the launch inputs and refused the whole profile (the launch's not-found text, #152's
+   `unsupported_message`), as did a Vertex model on a typed `--api-key`, whose prompts
+   are sent (`is_runnable`'s environment-only Vertex arm); a model with no credential got
+   no word. The empty placeholder (nothing was ever chosen) gets no note, as before.
+4. **pi.** pi has no `/agents` command in core (`packages/coding-agent/src/core/
+   slash-commands.ts` at `pi@3daa20280`). Its nearest analogue, the subagent example
+   extension, inherits the dispatching session's LIVE model AND its LIVE thinking level
+   when a profile omits `model` (`examples/extensions/subagent/index.ts`:
+   `inheritsDispatchConfig = !agent.model`, then `--model` from `dispatchDefaults.model`
+   and `--thinking` from `dispatchDefaults.thinkingLevel`, both read from `ctx`; its
+   README: "When `model` is omitted, the subagent inherits the dispatching session's
+   active model and thinking level"; PR #7897). pi's subagent profiles have no
+   thinking field. aelix's own delegation already inherits both (`agents/resolver.py`
+   `inherits_parent_model`; `aelix_agents.print_channel.inherit_thinking`, #354).
+   `/agents use` now agrees with both on the MODEL. On the thinking level it does not
+   yet: a level `--thinking` names is re-applied over the live one (and a profile's own
+   `thinking:`, which pi's profiles cannot carry, is applied). That divergence is the
+   thinking corner below, left to a follow-up.
+
+### Known corners (left to follow-up issues)
+
+- **A `/model` pick made after a route profile is still reverted by a route-less use**:
+  the drop rule counts the live model as the profile's. A precise rule would re-resolve
+  only while the live model is still the one the profile set.
+- **In a restored session, `--none` after a profile whose `model:` or `provider:`
+  applied lands on the settings model, not the restored one.** Getting back to the record needs the restore
+  state, which lives in `cli/entry.py`.
+- **`/thinking` has the same shape**: a route-less use re-applies `--thinking` (or the
+  profile's `thinking:`) and reverts a `/thinking` pick, and `set_thinking_level`
+  records that move as a `thinking_level_change` — so "no record" in decision 1 is about
+  the model only. Pinned as it is today by
+  `test_a_route_less_use_keeps_the_model_but_still_applies_a_named_thinking_level`, whose
+  first row also guards the part that must stay: a profile's own `thinking:` still
+  applies on the keep path. The other direction is older: `--none` after a profile
+  whose `thinking:` applied leaves that level when the baseline names none (nothing
+  re-applies a level), and `--none`'s status line, which speaks for the model since
+  review round 3, says nothing about it.
+- **#398 remains on the drop path.** Its reported shape — `--model openrouter/auto`, a
+  route-less use, `/new` — now keeps id `auto`; with a provider-naming profile dropped
+  (`--agent` with `provider: openrouter`, or such a use, then a route-less use) the
+  re-resolve still completes `parsed.provider` and `/new` lands on the literal
+  `openrouter/auto` id (measured, `.omc/probes/412-live/impl/probe398.out`).
+
+### Consequences
+
+- The six tests that pinned the old behaviour now pin this one, with their guarantees
+  kept (#367, #370: nothing reaches the late provider, the typed key is attached
+  nowhere): `test_api_key_unknown_prefix_370.py`'s three `/agents use` rows (the profile
+  applies on the placeholder and says why), `test_late_provider_landing_367.py`'s two
+  "asks again" rows (the live `other` model stays; the second ask is pinned on the drop
+  path instead) and the `agents-use-after-model` hold row (its pick is now made under a
+  launch `--agent`; the old premise is a test of its own). New rows:
+  `tests/cli/test_agents_use_keeps_live_model_412.py` — among them (review round 2) the
+  applied-not-named rule (a beaten `model:` with an applying `provider:` switches; both
+  beaten, or a beaten `model:` alone, keeps), the note as the prompt check's own text
+  (no credential, an unfilled cloudflare base URL, no note for Vertex on a typed key,
+  `turn_refusal` alone without a registry) and the thinking level on the keep path;
+  (review round 3) the replaced profile's other applied fields and `thinking:` are no
+  route, the empty-baseline drop keeps the profile's model with the note and is not
+  `/new`, the `--none` status on both paths, and `--none` re-applying a typed
+  `--thinking`.
+- ADR-0239's #376 consequence ("`/agents use` of a profile that names no model still
+  re-resolves the launch inputs … a follow-up") is resolved by this amendment; ADR-0250's
+  §2.7 and §2.11 statements that every such use re-resolves the launch inputs are narrowed
+  to a use that drops a route (dated notes there).

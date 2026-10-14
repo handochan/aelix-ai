@@ -2414,8 +2414,8 @@ def late_registered_route(
     that resolved to a registered provider stays on it, as in pi (``main.ts``
     resolves the model before ``session_start``; a provider registered later
     does not move it), and its ``session_start`` may already have run turns
-    there. Every later implicit re-resolution (rebuilds, ``/agents use``
-    without a route, the post-``/login`` pick) asks whatever the launch was.
+    there. Every later implicit re-resolution (rebuilds, an ``/agents use``
+    dropping a route, #412; the post-``/login`` pick) asks whatever the launch was.
 
     A provider registered and then unregistered before ``session_start``
     returns is not in the registry as it is NOW, so the string stays where the
@@ -2625,8 +2625,8 @@ class LateRoute:
     route was pending (a launch on a registered provider stays there, as in pi
     — #367 verify round 3, B1), every rebuild (the harness factory before the rebuild's ``session_start``, and
     the runtime's after-``session_start`` callback so a hook's ``set_model``
-    cannot release it), ``/agents use`` of a profile whose own ``model:`` /
-    ``provider:`` does not apply (``--none`` included), and the TUI's
+    cannot release it), ``/agents use`` dropping a profile's ``model:`` /
+    ``provider:`` (#412; ``--none`` included), and the TUI's
     post-``/login`` pick (:meth:`lands`). An EXPLICIT pick switches: ``/model``,
     or ``/agents use`` of a profile whose ``model:`` or ``provider:`` applies —
     which sets :attr:`explicit`, so the rebuilds after it re-resolve the

@@ -868,7 +868,7 @@ def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
 
     Shown in the confirmation dialog because the PATH is the part a human can go
     and read; a bare name is exactly what a name collision weaponises (a project
-    profile WINS against the user's own of the same name — ``agents/service.py:102-103``).
+    profile WINS against the user's own of the same name — ``agents/service.py:106-107``).
     Resolved through the same listing ``/agents show`` uses, and ``None`` when no
     listing is wired, in which case the dialog says so rather than inventing one.
     """
@@ -1112,9 +1112,9 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
 
     - no arg / ``list`` — every discoverable profile + the scan diagnostics.
     - ``show <name>`` — the parsed fields and the dry-run flags/prompt.
-    - ``use <name>`` — swap the LIVE identity (prompt, skills, tools, model,
-      thinking) with no reload and no lost history.
-    - ``use --none`` — restore the identity the process was launched with.
+    - ``use <name>`` — swap the LIVE identity (prompt, skills, tools, thinking, and
+      the model where its route applies or it drops one: #412), no reload, history kept.
+    - ``use --none`` — restore the launch identity (the model only on a drop, #412).
     - ``run <name> <task>`` — delegate one task to a subagent (ADR-0197, P2).
 
     Both callbacks are optional: headless tests and any host that built no

@@ -539,7 +539,7 @@ async def test_the_prompt_names_the_file_the_user_would_have_to_read(
 
     A bare name is exactly what a project-vs-user collision weaponises: a repo's
     ``reviewer`` WINS against ``~/.aelix/agent/agents/reviewer.md``
-    (``agents/service.py:102-103``), so "reviewer" alone tells the human nothing
+    (``agents/service.py:106-107``), so "reviewer" alone tells the human nothing
     about which file they are about to run.
     """
 

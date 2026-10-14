@@ -775,6 +775,7 @@ _PROFILES = {
     "lateprof": "---\nname: lateprof\ndescription: p\nmodel: sessext/m1\n---\nlate\n",
     "provonly": "---\nname: provonly\ndescription: p\nprovider: sessext\n---\nprov\n",
     "orprof": "---\nname: orprof\ndescription: p\nprovider: openrouter\n---\nor\n",
+    "otherprof": "---\nname: otherprof\ndescription: p\nprovider: other\n---\nother\n",
 }
 
 
@@ -785,8 +786,10 @@ async def _session(
     steps: list[str],
     *,
     ext: str | None = None,
+    statuses: list[str] | None = None,
 ) -> list[tuple[str, tuple[str, str, str]]]:
-    """Launch interactive (the TUI stubbed), then ``/agents use <step>`` or ``/new``."""
+    """Launch interactive (the TUI stubbed), then ``/agents use <step>`` or ``/new``;
+    each use's status line is appended to ``statuses`` when one is passed."""
 
     import aelix_coding_agent.tui as tui_pkg
 
@@ -802,9 +805,11 @@ async def _session(
             if step == "new":
                 await runtime.new_session()
             else:
-                await kwargs["agent_service"].use(
+                status = await kwargs["agent_service"].use(
                     None if step == "--none" else step, harness=runtime.harness
                 )
+                if statuses is not None:
+                    statuses.append(status)
             seen.append((step, _route(runtime.harness.current_model)))
         return 0
 
@@ -863,6 +868,60 @@ async def test_a_launch_that_was_never_held_is_held_when_agents_use_lands_on_the
     )
     assert seen[0] == ("launch", ("openrouter", "sessext/m1", "openai-completions"))
     assert seen[1:] == [("--none", ("sessext", "m1", "unknown")), ("new", _HELD)]
+
+
+@pytest.mark.parametrize("openrouter", ["exported", "none"])
+@pytest.mark.parametrize(
+    ("settings", "argv", "launch", "head"),
+    [
+        (
+            {},
+            ["--agent", "orprof", "--model", "sessext/m1"],
+            ("openrouter", "sessext/m1", "openai-completions"),
+            "Agent profile cleared (baseline CLI identity restored).",
+        ),
+        (
+            {"defaultProvider": "sessext", "defaultModel": "m1"},
+            ["--agent", "lateprof"],
+            _HELD,
+            "Agent profile cleared (baseline CLI identity restored; the model is unchanged).",
+        ),
+    ],
+    ids=["the-drop-puts-the-hold-on", "the-hold-was-already-on"],
+)
+async def test_none_that_drops_a_route_onto_a_hold_says_whether_it_moved_the_model(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: _Wire,
+    openrouter: str,
+    settings: dict[str, str],
+    argv: list[str],
+    launch: tuple[str, str, str],
+    head: str,
+) -> None:
+    """#412 review round 4 (round 3 verify, NB 1). ``--none`` says "the model
+    is unchanged" unless the use put a model on the session, and a drop puts one
+    there two ways: its re-resolve's ``set_model``, or a hold it applies. Shape
+    (c) above is the hold: ``--agent orprof --model sessext/m1`` launches on
+    OpenRouter, ``--none`` drops ``provider: openrouter`` and the baseline lands
+    on ``sessext``, so the placeholder goes on — the model moved, and the line
+    says the baseline was restored, with the hold's notice. Shape (a) drops
+    ``lateprof``'s route onto the hold the launch already sits on: nothing is
+    put on, so the line says the model is unchanged, with the same notice. With
+    the hold's ``model_set`` removed every other row passed and shape (c) read
+    "the model is unchanged" (r3verify sabotage-hold.out). Nothing is sent."""
+
+    _openrouter(monkeypatch, env, openrouter)
+    (env / "agent" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    statuses: list[str] = []
+    seen = await _session(env, monkeypatch, argv, ["--none"], statuses=statuses)
+    assert seen == [("launch", launch), ("--none", _HELD)]
+    assert statuses == [
+        f"{head}\nNote: "
+        + _REFUSAL.format(subject="sessext/m1")
+        + " No prompt will be sent for it; run /model to select a model."
+    ]
+    assert wire == []
 
 
 async def test_a_profile_naming_only_the_provider_is_an_explicit_pick(
@@ -1122,24 +1181,52 @@ async def test_a_provider_first_registered_in_a_rebuild_session_start_is_late(
 
 
 @pytest.mark.parametrize("step", ["plainprof", "--none"])
+@pytest.mark.parametrize(
+    ("argv", "before", "expected"),
+    [
+        (["--model", "m1"], [], _ON_OTHER),
+        (["--agent", "otherprof", "--model", "m1"], [], _HELD),
+        (["--model", "m1"], ["otherprof"], _HELD),
+    ],
+    ids=["nothing-to-drop-keeps", "drops-the-launch-agent-route", "drops-an-earlier-use-route"],
+)
 async def test_agents_use_asks_again_without_the_settings_default(
-    env: Path, monkeypatch: pytest.MonkeyPatch, step: str
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: _Wire,
+    step: str,
+    argv: list[str],
+    before: list[str],
+    expected: tuple[str, str, str],
 ) -> None:
     """Verify round 4, B2(b). ``other`` (``setup()``, keyless) and ``sessext``
     (``session_start``, keyed) both serve ``m1``; settings ``defaultProvider``
-    is ``other``, so ``--model m1`` launches on ``other`` (registered). ``/agents
-    use`` of a profile naming no route (or ``--none``) resolves the baseline
-    WITHOUT the settings default, as ``use()``'s own resolve does — and that
-    lands on ``sessext``. The hold's second ask (``use_default=False``) holds
-    it; without that ask every test passed and the next prompt went to
-    ``sessext`` (g3-use-second-ask: "hi: /late/v1/chat/completions")."""
+    is ``other``, so ``--model m1`` launches on ``other`` (registered). A use
+    that re-resolves the baseline resolves it WITHOUT the settings default, as
+    ``use()``'s own resolve does — and that lands on ``sessext``. The hold's
+    second ask (``use_default=False``) holds it; without that ask every test
+    passed and the next prompt went to ``sessext`` (g3-use-second-ask: "hi:
+    /late/v1/chat/completions").
+
+    #412 (owner decision 2026-10-14): only a use that DROPS a profile's route
+    re-resolves now — ``otherprof`` (``provider: other``) applied at launch with
+    ``--agent``, or by an earlier use — and those rows keep the second ask
+    pinned. A use with nothing to drop keeps the live model: the session
+    stays on ``other``, where the launch put it (529b997e moved it to the
+    ``sessext`` placeholder: re-resolved, then held). Nothing reaches
+    ``sessext`` on any row."""
 
     ext = _write(env, "g3.py", _extension(setup_other=True, other_key=False))
     (env / "agent" / "settings.json").write_text(
         json.dumps({"defaultProvider": "other"}), encoding="utf-8"
     )
-    seen = await _session(env, monkeypatch, ["--model", "m1"], [step], ext=ext)
-    assert seen == [("launch", _ON_OTHER), (step, _HELD)]
+    seen = await _session(env, monkeypatch, argv, [*before, step], ext=ext)
+    assert seen == [
+        ("launch", _ON_OTHER),
+        *((name, _ON_OTHER) for name in before),
+        (step, expected),
+    ]
+    assert wire == []
 
 
 async def test_a_provider_a_reloaded_extension_registers_in_setup_is_not_late(
@@ -1575,7 +1662,10 @@ async def test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing
     and waits out the refused turn it produced: nothing is sent, the session
     ends on the placeholder, and what aelix then says ("No prompt will be
     sent for it") is true. (``apply`` also waits out the refused turn before
-    it lifts its gate - ``test_late_route_hold_apply_367.py`` pins that.)"""
+    it lifts its gate - ``test_late_route_hold_apply_367.py`` pins that.)
+    #412: a use naming no route applies a hold only where it drops a
+    profile's route, so ``agents-use-after-model`` now makes its pick under
+    ``--agent orprof``; its old premise is the next test's."""
 
     import aelix_coding_agent.tui as tui_pkg
     from aelix_ai.streaming import Model
@@ -1592,6 +1682,12 @@ async def test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing
     elif path == "agents-use":
         argv = ["--agent", "orprof", "--model", "sessext/m1"]
     elif path == "agents-use-after-model":
+        # #412: since a use naming no route keeps the live model, it applies a
+        # hold only where it drops a profile's route — so the explicit pick of
+        # ``other`` is made under the launch's ``--agent orprof`` here; from
+        # 343e75cd's premise (a held ``--model sessext/m1``) the pick now
+        # stays (``test_a_model_pick_survives_an_agents_use_naming_no_route``).
+        argv = ["--agent", "orprof", "--model", "sessext/m1"]
         kwargs["setup_other"] = True
     agents = env / "agent" / "agents"
     agents.mkdir(exist_ok=True)
@@ -1634,11 +1730,8 @@ async def test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing
     # the launch and a held rebuild answered with their caller's gate reason
     # ("... while this session's session_start handlers run. The launch route
     # is not decided yet ..."), stale once the hold was being applied.
-    # ``agents-use-after-model`` keeps the launch's harness, whose own hold
-    # refused the handler's first turn: two answers, both the hold's.
-    held_turns = 2 if path == "agents-use-after-model" else 1
     expected = f"{HOLD_GATE} " + _REFUSAL.format(subject="sessext/m1")
-    assert seen["answers"] == [expected] * held_turns
+    assert seen["answers"] == [expected]
     # #376 review round 3: the harness's prompt check refuses the placeholder
     # before the turn (``unsupported_message``); it used to be refused inside
     # it, ``No provider registered for api='unknown'``. Nothing sent either way.
@@ -1647,6 +1740,66 @@ async def test_a_model_select_handler_turn_while_a_hold_is_applied_sends_nothing
         assert "No prompt will be sent for it; run /model to select a model." in err
     if path.startswith("agents-use"):
         assert "No prompt will be sent for it; run /model to select a model." in seen["status"]
+
+
+async def test_a_model_pick_survives_an_agents_use_naming_no_route(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wire: _Wire,
+) -> None:
+    """#412 (owner decision 2026-10-14, option A), from verify round 6's
+    ``agents-use-after-model`` premise: ``--model sessext/m1`` is held at
+    launch (the ``model_select="trigger"`` handler's turn there is refused
+    under the launch's gate), the user picks ``other/m1`` explicitly, then
+    ``/agents use --none``. On 529b997e that use re-resolved the baseline
+    ``sessext/m1``, put the session back on the placeholder (the handler's
+    second turn refused under the hold's gate) and reverted the pick — against
+    ADR-0196 D8's promise that a ``/model`` choice survives a profile switch.
+    Now it keeps the pick: no hold is applied, so the handler never sees a
+    placeholder again, and the status names no hold. The guarantee of the row
+    it replaces stands: nothing reaches ``sessext`` — before the next prompt
+    and after it, which goes where the user pointed it (``other``)."""
+
+    import aelix_coding_agent.tui as tui_pkg
+    from aelix_ai.streaming import Model
+
+    _openrouter(monkeypatch, env, "exported")
+    ext = _write(env, "mspick.py", _extension(model_select="trigger", setup_other=True))
+    seen: dict[str, Any] = {}
+
+    async def _stub_run_tui(runtime: Any, **kw: Any) -> int:
+        seen["launch"] = _route(runtime.harness.current_model)
+        await runtime.harness.set_model(
+            Model(id="m1", provider="other", api="openai-completions", base_url=_OTHER)
+        )
+        seen["status"] = await kw["agent_service"].use(None, harness=runtime.harness)
+        seen["sent"] = list(wire)
+        seen["after"] = _route(runtime.harness.current_model)
+        seen["gate"] = runtime.harness.turns_held
+        await runtime.harness.wait_for_idle()
+        seen["answers"] = _gate_answers(runtime.harness)
+        seen["refused"] = await _prompt_refused(runtime.harness)
+        return 0
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+    code = await entry_mod._async_main(
+        ["--no-session", "-e", ext, "--approve", "--model", "sessext/m1"]
+    )
+    capsys.readouterr()
+    assert code == 0
+    assert seen["launch"] == _HELD
+    assert seen["status"] == (
+        "Agent profile cleared (baseline CLI identity restored; the model is unchanged)."
+    )
+    assert (seen["sent"], seen["after"], seen["gate"]) == ([], _ON_OTHER, None)
+    # Only the launch's hold refused a handler turn; the use applied none.
+    expected = f"{HOLD_GATE} " + _REFUSAL.format(subject="sessext/m1")
+    assert seen["answers"] == [expected]
+    assert seen["refused"] == ""
+    assert wire == [(f"{_OTHER}/chat/completions", "Bearer other-fake-literal")]
+    assert wire.models == ["m1"]
 
 
 # === Verify round 7 / Codex pass 7 — what a refused turn and the refusal say ====

@@ -291,55 +291,138 @@ async def test_interactive_and_rpc_hold_the_placeholder_and_send_nothing(
         assert "as written" not in err
 
 
-@pytest.mark.parametrize(
-    "profile",
-    ["nlprof", "plain", None],
-    ids=["profile-model-beaten-by-flag", "model-less-profile", "none"],
-)
-async def test_agents_use_refuses_the_launch_string_as_the_launch_did(
-    env: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    wire: list[tuple[str, str]],
-    attached: list[str],
-    profile: str | None,
-) -> None:
-    """The #370 sweep: ``/agents use`` re-resolves the launch inputs (a profile
-    with a ``model:`` of its own does not beat an explicit ``--model``), and it
-    was the one re-resolution not told about ``--api-key``. After a launch
-    held on the not-found placeholder it took guard 2 to OpenRouter on the
-    user's own key (measured on the fix before this line: "after /agents use
-    --none: route=(openrouter, newlab/model-x, ...) requests=[... OR_OWN]"),
-    and the next ``/new`` put the placeholder back. It now refuses with the
-    launch's text and rolls back, as the factory re-resolves — for ``--none``,
-    a profile with no ``model:``/``provider:`` (round 2), and one whose
-    ``model:`` the explicit ``--model`` beat: each re-resolves the launch
-    inputs. On 62e2238b all three went to OpenRouter on the user's own key."""
-
-    import aelix_coding_agent.tui as tui_pkg
-
-    _openrouter(monkeypatch, env, "exported")
+def _not_found_profiles(env: Path) -> None:
     agents = env / "agent" / "agents"
     agents.mkdir(exist_ok=True)
     (agents / "nlprof.md").write_text(
         "---\nname: nlprof\ndescription: p\nmodel: newlab/model-x\n---\nx\n", encoding="utf-8"
     )
     (agents / "plain.md").write_text("---\nname: plain\ndescription: p\n---\nx\n", encoding="utf-8")
-    seen: list[Any] = []
+    (agents / "orprof.md").write_text(
+        "---\nname: orprof\ndescription: p\nprovider: openrouter\n---\nx\n", encoding="utf-8"
+    )
+
+
+#: #412 — the reason a route-less ``/agents use`` attaches when it keeps a model
+#: whose prompts will be refused: the CLI prompt check's own text (its structural
+#: half, ``turn_refusal``, answers #370's not-found placeholder before any
+#: credential is asked), then the in-session remedy.
+_KEPT_NOT_FOUND = (
+    "model 'model-x' (provider 'newlab') could not be resolved to a known API protocol"
+)
+_KEPT_REMEDY = "No prompt will be sent for it; run /model to select a working model."
+
+
+@pytest.mark.parametrize(
+    ("profile", "status"),
+    [
+        ("nlprof", "Agent profile: nlprof (user)"),
+        ("plain", "Agent profile: plain (user)"),
+        (
+            None,
+            "Agent profile cleared (baseline CLI identity restored; the model is unchanged).",
+        ),
+    ],
+    ids=["profile-model-beaten-by-flag", "model-less-profile", "none"],
+)
+async def test_agents_use_naming_no_route_keeps_the_not_found_placeholder_and_says_why(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: list[tuple[str, str]],
+    attached: list[str],
+    profile: str | None,
+    status: str,
+) -> None:
+    """The #370 sweep, as #412 changed it. ``/agents use`` used to re-resolve the
+    launch inputs (a profile with a ``model:`` of its own does not beat an
+    explicit ``--model``), and it was the one re-resolution not told about
+    ``--api-key``: after a launch held on the not-found placeholder it took
+    guard 2 to OpenRouter on the user's own key (62e2238b: "after /agents use
+    --none: route=(openrouter, newlab/model-x, ...) requests=[... OR_OWN]"), and
+    the next ``/new`` put the placeholder back. #370 made it refuse with the
+    launch's text and roll the whole profile back. #412 (owner decision
+    2026-10-14, option A): a use where no ``model:``/``provider:`` of the
+    profile applies — ``--none``, a profile with neither, ``nlprof`` whose only
+    route (``model:``) the explicit ``--model`` beat — no longer re-resolves
+    anything, so guard 2 is not even
+    asked: the profile applies, the session stays on the placeholder, and the
+    status says why no prompt will be sent. The guarantee is #370's: nothing
+    is sent and the typed key is attached nowhere, through the next ``/new``
+    too. On 529b997e all three raised the not-found text and rolled back."""
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    _openrouter(monkeypatch, env, "exported")
+    _not_found_profiles(env)
+    seen: dict[str, Any] = {}
 
     async def _stub_run_tui(runtime: Any, **kwargs: Any) -> int:
-        try:
-            await kwargs["agent_service"].use(profile, harness=runtime.harness)
-        except Exception as exc:  # noqa: BLE001 — the refusal is the subject
-            seen.append(str(exc))
-        seen.append(_l367._route(runtime.harness.current_model))
-        seen.append(bool(await _l367._prompt_refused(runtime.harness)))
+        seen["status"] = await kwargs["agent_service"].use(profile, harness=runtime.harness)
+        seen["use"] = _l367._route(runtime.harness.current_model)
+        seen["refused"] = await _l367._prompt_refused(runtime.harness)
+        await runtime.new_session()
+        seen["new"] = _l367._route(runtime.harness.current_model)
+        seen["refused-new"] = await _l367._prompt_refused(runtime.harness)
         return 0
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
     monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
     code = await entry_mod._async_main([*_args(["--model", "newlab/model-x"], session=True)])
     assert code == 0
-    assert seen == [_typed_not_found("newlab/model-x"), _PLACEHOLDER, True]
+    lines = seen["status"].splitlines()
+    assert lines[0] == status
+    assert f"Note: {_KEPT_NOT_FOUND}" in seen["status"]
+    assert seen["status"].endswith(_KEPT_REMEDY)
+    assert ("CLI flags override model" in seen["status"]) is (profile == "nlprof")
+    assert (seen["use"], seen["new"]) == (_PLACEHOLDER, _PLACEHOLDER)
+    assert _KEPT_NOT_FOUND in seen["refused"]
+    assert _KEPT_NOT_FOUND in seen["refused-new"]
+    assert (attached, wire) == ([], [])
+
+
+async def test_agents_use_that_drops_a_profile_route_still_refuses_the_launch_string(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: list[tuple[str, str]],
+    attached: list[str],
+) -> None:
+    """#412 keeps the re-resolve where a route is DROPPED, and with it #370's
+    guard: from the same not-found launch, ``/agents use orprof``
+    (``provider: openrouter``) is the user's pick — OpenRouter as written, on
+    their own key — and a following ``/agents use plain`` drops that route, so
+    it re-resolves the launch string, told about ``--api-key`` as the launch
+    was: pi's not-found text, and the switch is rolled back (still on
+    ``orprof``'s route). Without ``typed_key`` that re-resolve took guard 2 to
+    OpenRouter on the user's own key (the #370 defect, on this path)."""
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    _openrouter(monkeypatch, env, "exported")
+    _not_found_profiles(env)
+    seen: list[Any] = []
+
+    async def _stub_run_tui(runtime: Any, **kwargs: Any) -> int:
+        service = kwargs["agent_service"]
+        seen.append((await service.use("orprof", harness=runtime.harness)).splitlines()[0])
+        seen.append(_l367._route(runtime.harness.current_model))
+        try:
+            await service.use("plain", harness=runtime.harness)
+        except Exception as exc:  # noqa: BLE001 — the refusal is the subject
+            seen.append(str(exc))
+        seen.append((_l367._route(runtime.harness.current_model), service.active.name))
+        return 0
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+    code = await entry_mod._async_main([*_args(["--model", "newlab/model-x"], session=True)])
+    on_openrouter = ("openrouter", "newlab/model-x", "openai-completions")
+    assert code == 0
+    assert seen == [
+        "Agent profile: orprof (user)",
+        on_openrouter,
+        _typed_not_found("newlab/model-x"),
+        (on_openrouter, "orprof"),
+    ]
     assert (attached, wire) == ([], [])
 
 

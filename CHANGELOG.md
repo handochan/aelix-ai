@@ -242,6 +242,11 @@ unwritten. Add them with the next release.
   with the one-line note). `/agents use` now re-resolves the launch model with
   the key in view too, so it refuses such a launch string instead of sending it
   to OpenRouter on your own key; a profile's own `model:` is resolved as before.
+  (Since #412 an `/agents use` none of whose profile's `model:` / `provider:`
+  applies, or `--none`, re-resolves the launch model only when it replaces a
+  profile whose own `model:` or `provider:` applied; otherwise it keeps the
+  model you are on — after such a launch, the placeholder — and says why no
+  prompt will be sent.)
   A nested id (`newlab/org/model-x`) is refused the same way; an id with an empty
   segment (`newlab//model-x`) gets the plain not-found text, without the
   OpenRouter routes.
@@ -337,6 +342,38 @@ unwritten. Add them with the next release.
   has one line, can now show it; the highlighted option, the `(n/N)` counter,
   every hold, and the rows under a question taller than the dialog. A label
   wider than the dialog is still cut at its right edge.
+
+- **`/agents use` of a profile that names no model or provider keeps the model
+  you are on (#412).** In a session reopened on the model it last ran on, `/agents use
+  <profile>` with a profile that has no `model:` or `provider:` (also
+  `/agents use --none`) switched to your settings default model: the next
+  prompt went there, the switch was written into the session, and the next
+  `--continue` came back on the default too. In any session such a switch also
+  undid a `/model` pick — back to your `--model`, or to the settings default
+  without one — and wrote the model into the session again; so did a profile
+  whose `model:` / `provider:` your typed `--model` / `--provider` all
+  override. Such a switch now keeps the model — the one the session was
+  reopened on, your `/model` pick, or the one you launched with — and writes
+  no model change into the session; `/new` still starts on the launch model,
+  and `/agents use --none` now says "the model is unchanged" when it keeps it.
+  A profile whose `model:` your `--model` overrides but whose `provider:`
+  applies still switches, to your `--model` on that provider, and replacing a
+  profile whose own `model:` or `provider:` applied (with `--agent` or an
+  earlier `/agents use`) still re-derives the model from your launch flags or
+  settings default, as before; with neither there is nothing to re-derive and
+  that profile's model stays. Replacing one your flags overrode entirely does
+  not re-derive. The thinking level is not covered yet: a level `--thinking`
+  or the profile's `thinking:` names is still re-applied, which undoes a
+  `/thinking` pick and writes that change into the session. When prompts on
+  the model you keep will be refused — an id no provider places; a Cloudflare
+  AI Gateway model whose account or gateway id is unset; a model with no API
+  key or login — the status line says why, with the reason the check before
+  every prompt gives. In the TUI the first two are refused before that check:
+  with the same reason while any model is available, and with "No provider
+  configured. Run /login to add one." when none is. The first two used to
+  refuse the whole switch, as did a Vertex model given `--api-key` with no
+  Google Cloud environment set, whose prompts are sent; that one now switches
+  with no note.
 
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
@@ -889,7 +926,9 @@ unwritten. Add them with the next release.
   since aelix rebuilds from the launch inputs where pi keeps the session's
   model: `/new` and the other rebuilds, `/agents use` of a profile
   that names no model or provider of its own (or `--none` — also after a launch
-  through `--agent`, or one that went to OpenRouter), and the model picked for
+  through `--agent`, or one that went to OpenRouter; since #412 only when it
+  replaces a profile whose own `model:` or `provider:` applied — otherwise it
+  keeps the model you are on), and the model picked for
   you after `/login`, which picks as it would with no saved default and never
   that provider. A `set_model` in
   the extension's own `session_start` handler does not make a refused launch
