@@ -1,0 +1,77 @@
+name: measure-446-r1
+
+# Throwaway measurement for #446 (never merges; ci.yml is removed on this branch only).
+# Product and test files are exactly e24ea2e8's (the identity step proves it). Kit: tests/tools/test_measure_446.py
+# (an instrumented twin of test_a_holder_that_never_falls_idle_hits_the_drain_cap plus the REAL test body, both params,
+# interleaved round by round) and .omc-446/pwsh_startup.py (what one pwsh root costs here).
+#   load none : the runner as CI gets it
+#   load cpu3 : three busy python loops (the #381 load: 1 of 4 vCPUs left)
+#   load cpu4 : four busy loops (every vCPU busy) - to get enough misses to say WHY they happen
+
+on:
+  push:
+    branches: ["measure/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: m446 (py${{ matrix.python-version }}, load=${{ matrix.load }})
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        load: ["none", "cpu3", "cpu4"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+      - name: Identity
+        shell: bash
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; git log --oneline -2;
+            echo "diff vs e24ea2e8 outside .github, .omc-446 and the twin:";
+            git diff --stat e24ea2e84a818e55c36ccbb839e279ea97220acb HEAD -- . ':!.github' ':!.omc-446' ':!tests/tools/test_measure_446.py'; echo "(end)";
+            .venv/Scripts/python.exe -VV; echo "NUMBER_OF_PROCESSORS=$NUMBER_OF_PROCESSORS";
+            pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString(); "profile: " + $PROFILE + " exists=" + (Test-Path $PROFILE)'; } | tee out/identity.txt
+      - name: Rounds (twin + real, both params, interleaved) and the pwsh probe
+        shell: bash
+        env:
+          M446_ROUNDS: "75"
+          M446_LOAD: ${{ matrix.load }}
+        run: |
+          export M446_OUT="$PWD/out/m446.jsonl"
+          n=0
+          if [ "${{ matrix.load }}" = "cpu3" ]; then n=3; fi
+          if [ "${{ matrix.load }}" = "cpu4" ]; then n=4; fi
+          for k in $(seq 1 $n); do .venv/Scripts/python.exe -c "while True: pass" & done
+          if [ "$n" -gt 0 ]; then sleep 2; fi
+          rc=0
+          timeout -k 10 4800 .venv/Scripts/python.exe -m pytest -p no:cacheprovider -q -rfE -W always::UserWarning tests/tools/test_measure_446.py > out/pytest.txt 2>&1 || rc=$?
+          echo "pytest rc=$rc :: $(tail -1 out/pytest.txt)" | tee out/rc.txt
+          LC_ALL=C grep -a -E '^(FAILED|ERROR) ' out/pytest.txt | tee -a out/rc.txt || true
+          rc=0
+          timeout -k 10 900 .venv/Scripts/python.exe .omc-446/pwsh_startup.py 20 > out/pwsh_startup.txt 2>&1 || rc=$?
+          echo "pwsh probe rc=$rc" >> out/pwsh_startup.txt; cat out/pwsh_startup.txt
+          git status --short | tee out/status.txt
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m446-py${{ matrix.python-version }}-${{ matrix.load }}
+          path: out/
+          retention-days: 30
