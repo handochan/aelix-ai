@@ -1,6 +1,6 @@
 # 0253. The permission gate treats any tool it does not know as mutating
 
-Status: Accepted (2026-10-06); amended 2026-10-07 (#389, §11: every approval prompt holds Yes); amended 2026-10-08 (#389 review rounds 2 and 3, §11.1 and §11.2: nothing in aelix's approval prompt is cut, §8's value bound included; an extension's `select` / `confirm` is not covered and is #399); amended 2026-10-08 (#399, §11.3: an extension's `select` / `confirm`, the spawn-consent dialog and the permission gate's `ctx.ui.select` fallback wrap, and hold a title taller than the modal; aelix's own pickers stay as they were)
+Status: Accepted (2026-10-06); amended 2026-10-07 (#389, §11: every approval prompt holds Yes); amended 2026-10-08 (#389 review rounds 2 and 3, §11.1 and §11.2: nothing in aelix's approval prompt is cut, §8's value bound included; an extension's `select` / `confirm` is not covered and is #399); amended 2026-10-08 (#399, §11.3: an extension's `select` / `confirm`, the spawn-consent dialog and the permission gate's `ctx.ui.select` fallback wrap, and hold a title taller than the modal; aelix's own pickers stay as they were); amended 2026-10-14 (#424, §11.3: a label of several lines that does not fit an extension's `select` options window is drawn from its first line and cut, `⋮` under it, instead of being left out with its rows blank)
 Date: 2026-10-06
 Amends: **ADR-0157** ("mutating" is no longer a name set, so PLAN's guarantee and the
 AUTO_ACCEPT / AUTO auto-allow now reach every tool), **ADR-0197** §(e) (the child's
@@ -651,9 +651,52 @@ owner did not decide round 1's layout, which round 2 reverses):
   are now displayed by name before owned styles (ADR-0227's #179 amendment).
   `own=True` keeps this section's layout/key namespace, not caller text trust.
   Original values/indices/cancel identity and all first-paint/title hold behavior
-  remain; newline option rows remain rows. Option wrapping/viewport is still #424; a
+  remain; newline option rows remain rows. The option viewport is the #424 amendment
+  below; option wrapping is not part of it. A
   batch member is still one row of up to 72 characters (`BATCH_TASK_PREVIEW_CHARS`), the
   row `batch_dialog_fits` counts.
+- **Amended 2026-10-14 (#424): a label that does not fit is cut, not left out.** The
+  options window took only the options whose WHOLE label fit, so a label of several lines
+  beside a short highlighted option was dropped with all its rows: `Cancel` highlighted over
+  an eight-line `Deploy staging` option and a third one drew `▸ Cancel`, `⋮` and `(1/3)`
+  and left the rest of the modal blank (one row at 80x10, four at 80x13, seven at 120x16),
+  where main drew the label's first lines and cut them at the modal's foot; the same with
+  the label above the highlighted option. Reproduced on `529b997e` in-process and live.
+  Decision: the window is still the fullest that fits with every label whole
+  (`tui/context.py`'s `_option_window`), and the rows it leaves blank go to the options next
+  to it that main's own window shows (up to 8 around the highlighted one; `_grown`): first
+  the labels under it, top-down, the one that does not fit drawn from its first line and
+  cut, `⋮` under it, as main cuts the modal's foot; then, once main's window is drawn to its
+  foot, the labels above it, nearest first, the one that does not fit drawn from its first
+  line and cut, `⋮` under it. A `⋮` row stays wherever something is hidden; in a window
+  that grows, one that would hide only a one-line option of main's window draws that option
+  instead (80x10, the third option highlighted: `Cancel`, `⋮`, `▸ Third option`).
+  Elsewhere (review round 2) a `⋮` can still stand for a single one-line option: past main's
+  window, in a select of 9 or more options (`Option 3` of eight lines, `Option 4`
+  highlighted, 80x13: `⋮`, `▸ Option 4` to `Option 7`, and a `⋮` for `Option 8` alone), and
+  in a window #399 already filled, as `529b997e` draws it (the tall label above `▸ Cancel`
+  and a one-line option under it, 80x10: `⋮`, `▸ Cancel`, `⋮`). The rows drawn above a cut
+  are main's, cell for cell. Unchanged: a window that leaves no row blank (with one-line
+  labels every window but main's own, so spawn consent and the permission fallback draw as
+  before). On screen a dialog #399 drew full can still change in one way: `select` draws
+  the fullest window that fits the modal, and a larger room's grown window can fill the
+  same rows, so a `⋮` under the options that hid only the last option, of one line, shows
+  that option. Unchanged too: the highlighted label whole, cut only by review round 4's
+  last resort; the counter; every hold; and the rows under a scrolling title, where no row
+  is blank (the title takes what the options leave) and growing the options would cut the
+  title's page to four rows, so more PgDn before an answer. Under a title of two or more
+  rows drawn whole the options grow as under a one-row title. pi's
+  `ExtensionSelectorComponent` has no window: it draws every option whole, in a terminal
+  that scrolls (`extension-selector.ts`, `updateList`); aelix's modal has a height, so it
+  keeps main's window. Residuals: one row stays blank
+  when the label nearest above the window needs a `⋮` on each side of its first line (two
+  two-line labels above the highlighted option in a three-row window); the last resort
+  still draws the highlighted label alone, so the issue's `Deploy staging` highlighted at
+  120x16 shows its eight lines and `(2/3)` with one row blank and no `⋮` for `Cancel` above
+  or the third option below (one row cannot mark both, and #399 keeps the counter and the
+  highlighted label first), and #399 review round 4's dialog at a ten-row modal still shows
+  `(1/2)` where main showed `Cancel`; a label wider than the window is not wrapped but cut at
+  its right edge, as main and #179 draw it (pi wraps it).
 
 Residuals:
 
@@ -684,6 +727,18 @@ the mutants that stayed green in round 2 (`out/sabotage*.txt`).
 Review round 4 (`.omc/probes/399-live/r4/`): the rows red before the fix
 (`out/red_on_ab7d.txt`), the mutants of verify round 3 and Codex round 3
 (`out/sabotage.txt`), and the live kit with the multi-line option scenario (`kit/`).
+#424 (`.omc/probes/424-live/impl/`): the real TUI in a pty on `529b997e`, on the fix and on
+main `6b5ffc81` at 80x10, 80x13, 80x15, 120x16 and 120x30 (`out/{before,after,main6b5}/`,
+frames as text beside the cells, `out/cmp-*.txt`), the in-process paints, the rows red on
+`529b997e` (`out/red_on_529b997e.txt`) and the mutants (`out/sabotage.txt`); the rows are
+`tests/tui/test_select_title_held.py`'s #424 section.
+#424 review round 2 (`.omc/probes/424-live/r2/`): the screens of the two text corrections
+above (`out/repro-*.txt`); over 127194 painted screens a tree (600 random shapes, every
+highlight, modal heights 2 to 30), every `⋮` that hides a single one-line option is past
+main's window or on a screen `529b997e` drew too, and every screen full on `529b997e` that
+changed is a `⋮` under the options turned into the last option (`out/single-marker-*.txt`);
+the rows a title of two or more rows drawn whole and a typed filter get, red on `529b997e`
+and under the mutants they name (`out/sabotage.txt`).
 
 
 ### 11.4 Select-only hosts cannot approve built-in file changes (#395, 2026-10-12)

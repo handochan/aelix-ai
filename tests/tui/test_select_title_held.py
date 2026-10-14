@@ -1532,3 +1532,396 @@ async def test_a_tall_option_under_a_scrolling_title_is_cut_to_the_rows_that_lea
     assert "Enter held" in rows[title_rows], rows
     assert rows[title_rows + 1 :] == ["▸ " + label[0], *label[1:label_rows]], rows
     await dialog.close()
+
+
+# === #424: an option label that does not fit is cut, not left out ===============
+#
+# #399's options window took only the options whose WHOLE label fit, so a label
+# of several lines beside a short highlighted option was left out with all its
+# rows: "▸ Cancel / ⋮ / (1/3)" and the rest of the modal blank, where main drew
+# the label's first lines and cut them at the modal's foot (issue 424; live at
+# 80x10 and 80x13, .omc/probes/399-live/main-live/RESULT-ext.txt, deploymid).
+
+#: The issue's dialog: Cancel, an eight-line option and a third one.
+_THREE = ["Cancel", _DEPLOY[0], "Third option"]
+
+
+@pytest.mark.parametrize(
+    ("options", "downs", "height", "rows", "main_rows"),
+    [
+        # The issue's frames: an 80x10 terminal gives a five-row modal, 80x13 eight.
+        (_THREE, 0, 5, ["▸ Cancel", "  Deploy staging", "  ⋮", "  (1/3)"], 3),
+        (
+            _THREE,
+            0,
+            8,
+            [
+                "▸ Cancel",
+                "  Deploy staging",
+                "  detail 1",
+                "  detail 2",
+                "  detail 3",
+                "  ⋮",
+                "  (1/3)",
+            ],
+            6,
+        ),
+        # The label ABOVE the highlighted option: drawn from its first line, cut,
+        # ⋮ under it; at five rows Cancel takes the row a ⋮ for it alone would.
+        (_THREE, 2, 5, ["  Cancel", "  ⋮", "▸ Third option", "  (3/3)"], 2),
+        (
+            _THREE,
+            2,
+            8,
+            [
+                "  Cancel",
+                "  Deploy staging",
+                "  detail 1",
+                "  detail 2",
+                "  ⋮",
+                "▸ Third option",
+                "  (3/3)",
+            ],
+            5,
+        ),
+        # #399 review round 4's dialog, Cancel highlighted under the tall label.
+        (_DEPLOY, 1, 5, ["  Deploy staging", "  ⋮", "▸ Cancel", "  (2/2)"], 2),
+        (
+            _DEPLOY,
+            1,
+            8,
+            [
+                "  Deploy staging",
+                "  detail 1",
+                "  detail 2",
+                "  detail 3",
+                "  ⋮",
+                "▸ Cancel",
+                "  (2/2)",
+            ],
+            5,
+        ),
+    ],
+)
+async def test_a_label_that_does_not_fit_is_drawn_from_its_first_line_and_cut(
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    downs: int,
+    height: int,
+    rows: list[str],
+    main_rows: int,
+) -> None:
+    """Issue 424: every row of the modal is drawn, a cut label is followed by
+    ``⋮``, the counter stays, and the title and the rows main draws above the
+    cut are main's cell for cell. Nothing is held: Enter answers at once."""
+
+    dialog = _Dialog(monkeypatch)
+    await dialog.open(dialog.ctx.select("Deploy?", options))
+    for _ in range(downs):
+        dialog.press("down")
+    screen = dialog.paint(80, height).splitlines()
+    assert screen[0].startswith("── Deploy? ──"), screen
+    assert screen[1:] == rows, screen
+    assert "held" not in "\n".join(screen)
+    if downs == 0:
+        # Main drew the same rows down to its cut at the modal's foot.
+        main = _paint_legacy(_main_render("Deploy?", options, 0, []), 80, height)
+        assert dialog.cells()[:main_rows] == main[:main_rows]
+    dialog.press("enter")
+    assert await dialog.answer() == options[downs]
+
+
+async def test_a_scrolling_title_keeps_its_rows_over_the_issue_s_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under a title taller than the modal no row is left blank: the title
+    takes what the options leave, as on 529b997e, and its page is not cut to
+    four rows for a label's lines (that would mean more PgDn before Enter is
+    taken). Every option still waits until the whole title has been drawn."""
+
+    dialog = _Dialog(monkeypatch)
+    await dialog.open(dialog.ctx.select(_TALL_TITLE, _THREE))
+    rows = dialog.paint(80, 10).splitlines()
+    assert rows[:6] == [f"T{i:02d}" for i in range(6)], rows
+    assert "Enter held" in rows[6], rows
+    assert rows[7:] == ["▸ Cancel", "  ⋮", "  (1/3)"], rows
+    dialog.press("enter")
+    assert not dialog.answered
+    dialog.page_until_released(80, 10, "Enter")
+    assert any("TAIL_SECRET" in s for s in dialog.screens)
+    dialog.press("enter")
+    assert await dialog.answer() == "Cancel"
+
+
+#: The issue's options under a one-row title, in four and seven rows.
+_UNDER_THE_TITLE = {
+    4: ["▸ Cancel", "  Deploy staging", "  ⋮", "  (1/3)"],
+    7: [
+        "▸ Cancel",
+        "  Deploy staging",
+        "  detail 1",
+        "  detail 2",
+        "  detail 3",
+        "  ⋮",
+        "  (1/3)",
+    ],
+}
+
+
+@pytest.mark.parametrize("under", sorted(_UNDER_THE_TITLE))
+@pytest.mark.parametrize(
+    ("title", "title_rows"),
+    [
+        # A question of two rows, and of three: a newline in it.
+        ("Deploy to which\nenvironment?", ["Deploy to which", "environment?"]),
+        ("Deploy\nto which\nenvironment?", ["Deploy", "to which", "environment?"]),
+        # A question of one line that wraps at the terminal's 80 columns, as a
+        # question the model asks often does.
+        (
+            "Deploy the build that just passed every check to which environment, staging or prod?",
+            [
+                "Deploy the build that just passed every check to which environment, staging or",
+                "prod?",
+            ],
+        ),
+    ],
+    ids=["two-rows", "three-rows", "wraps-at-80"],
+)
+async def test_a_title_of_several_rows_drawn_whole_fills_the_rows_as_a_one_row_title_does(
+    monkeypatch: pytest.MonkeyPatch, title: str, title_rows: list[str], under: int
+) -> None:
+    """Issue 424, review round 2 (cross m7): a question of two or more rows
+    that is drawn whole (not scrolling) gets the rows a one-row ``Deploy?``
+    gets under it, cell for cell: the label under ``Cancel`` from its first
+    line, cut, ``⋮`` under it, and no blank row. A window grown only under a
+    one-row title left ``▸ Cancel / ⋮ / (1/3)`` over blank rows here."""
+
+    one_row = _Dialog(monkeypatch)
+    await one_row.open(one_row.ctx.select("Deploy?", _THREE))
+    expected = one_row.paint(80, 1 + under).splitlines()[1:]
+    expected_cells = one_row.cells()[1:]
+    await one_row.close()
+    assert expected == _UNDER_THE_TITLE[under], expected
+
+    dialog = _Dialog(monkeypatch)
+    await dialog.open(dialog.ctx.select(title, _THREE))
+    screen = dialog.paint(80, len(title_rows) + under).splitlines()
+    assert screen == [*title_rows, *expected], screen
+    assert dialog.cells()[len(title_rows) :] == expected_cells
+    assert "held" not in "\n".join(screen)
+    dialog.press("enter")
+    assert await dialog.answer() == "Cancel"
+
+
+@pytest.mark.parametrize(
+    ("options", "typed", "height", "rows", "answer"),
+    [
+        # "t" leaves Deploy staging (eight lines) and Third option: the
+        # highlighted label is drawn whole, as on 529b997e.
+        (
+            _THREE,
+            "t",
+            11,
+            [
+                "▸ Deploy staging",
+                *(f"  detail {k}" for k in range(1, 8)),
+                "  Third option",
+                "  (1/2)  ·  Filter: t",
+            ],
+            _THREE[1],
+        ),
+        # "a" leaves Cancel and Deploy staging, the second and the third
+        # option: the label under the highlighted Cancel is the eight-line one,
+        # drawn from its first line and cut, ⋮ under it.
+        (
+            ["Third option", "Cancel", _THREE[1]],
+            "a",
+            8,
+            [
+                "▸ Cancel",
+                "  Deploy staging",
+                "  detail 1",
+                "  detail 2",
+                "  detail 3",
+                "  ⋮",
+                "  (1/2)  ·  Filter: a",
+            ],
+            "Cancel",
+        ),
+    ],
+    ids=["t-deploy-highlighted", "a-cancel-over-deploy"],
+)
+async def test_a_filtered_list_draws_the_rows_of_the_labels_it_shows(
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    typed: str,
+    height: int,
+    rows: list[str],
+    answer: str,
+) -> None:
+    """Issue 424, review round 2 (cross m4): with a filter typed, each label
+    takes the rows of its own lines, not those of the option at its position
+    in the unfiltered list (which cut the highlighted label to one line with
+    no ``⋮``, or drew a cut label with no ``⋮`` under it)."""
+
+    dialog = _Dialog(monkeypatch)
+    await dialog.open(dialog.ctx.select("Deploy?", options))
+    dialog.type_text(typed)
+    screen = dialog.paint(80, height).splitlines()
+    assert screen[0].startswith("── Deploy? ──"), screen
+    assert screen[1:] == rows, screen
+    dialog.press("enter")
+    assert await dialog.answer() == answer
+
+
+@pytest.mark.parametrize(
+    ("heights", "idx", "room", "plan"),
+    [
+        # The issue's dialog in three and six rows: the label under Cancel is
+        # drawn from its first line and cut at the window's foot.
+        ([1, 8, 1], 0, 3, [(0, 1), (1, 1), (-1, 0)]),
+        ([1, 8, 1], 0, 6, [(0, 1), (1, 4), (-1, 0)]),
+        # Above the highlighted option: cut after its first lines, ⋮ under it.
+        # A ⋮ that would hide only option 0 (one line) draws it instead.
+        ([1, 8, 1], 2, 6, [(0, 1), (1, 3), (-1, 0), (2, 1)]),
+        ([1, 8, 1], 2, 3, [(0, 1), (-1, 0), (2, 1)]),
+        ([1, 1, 8, 1], 3, 4, [(-1, 0), (2, 1), (-1, 0), (3, 1)]),
+        # Under the window first, as main draws: the one-line option below is
+        # drawn whole before the label above takes what is left.
+        ([8, 1, 1], 1, 6, [(0, 3), (-1, 0), (1, 1), (2, 1)]),
+        # The label under the window is cut, and option 0 (one line) takes the
+        # row its ⋮ would have taken above the window.
+        ([1, 1, 1, 8], 2, 6, [(0, 1), (1, 1), (2, 1), (3, 2), (-1, 0)]),
+        # The highlighted label is never cut here: #399 review round 4 cuts it
+        # at the modal when it alone does not fit.
+        ([1, 8, 1], 1, 9, [(1, 8)]),
+        # One-line labels: #399's windows.
+        ([1] * 12, 6, 5, [(-1, 0), (5, 1), (6, 1), (7, 1), (-1, 0)]),
+        # Rows go only to options main's own window (8 options) shows: here
+        # options 1 to 8, so option 1's lines and not option 9.
+        (
+            [1, 8, 5, 3, 5, 5, 1, 2, 1, 1, 1, 1],
+            5,
+            29,
+            [
+                (-1, 0),
+                (1, 4),
+                (-1, 0),
+                (2, 5),
+                (3, 3),
+                (4, 5),
+                (5, 5),
+                (6, 1),
+                (7, 2),
+                (8, 1),
+                (-1, 0),
+            ],
+        ),
+    ],
+)
+def test_the_option_window_plan(
+    heights: list[int], idx: int, room: int, plan: list[tuple[int, int]]
+) -> None:
+    from aelix_coding_agent.tui.context import _MORE, _option_window
+
+    assert _MORE == -1
+    assert _option_window(heights, idx, 8, room) == plan
+
+
+def _window_399(heights: list[int], idx: int, room: int) -> list[tuple[int, int]]:
+    """#399's options window (529b997e's ``option_rows``), as the oracle."""
+
+    n = len(heights)
+    for shown in range(min(8, n), 0, -1):
+        start = max(0, min(idx - shown // 2, n - shown))
+        end = min(n, start + shown)
+        if sum(heights[start:end]) + (start > 0) + (end < n) <= room:
+            return [
+                *([(-1, 0)] if start > 0 else []),
+                *((i, heights[i]) for i in range(start, end)),
+                *([(-1, 0)] if end < n else []),
+            ]
+    return [(idx, heights[idx])]
+
+
+def test_every_option_window_keeps_399_s_guarantees_and_fills_its_rows() -> None:
+    """Every shape of up to five labels of 1, 2, 3 or 8 lines, every highlight
+    and every room of 1 to 15 rows, and ten labels of 1 or 3 lines:
+
+    * the highlighted label is drawn whole (or alone, #399's last resort);
+    * each label drawn keeps its first line, in order, at most 8 options;
+    * a ``⋮`` row is exactly where something is hidden (options skipped, or
+      the rest of a cut label), never twice in a row, and a grown window never
+      spends one on a single one-line option of main's window;
+    * a window #399 drew with no blank row (one-line labels always) is drawn
+      as #399 drew it, and no window takes fewer rows than #399's or more
+      than its room; under a scrolling title (``grow=False``) every window is
+      #399's;
+    * in the rooms ``select`` asks for (fewer rows than main's whole window),
+      a blank row is left only when the label nearest above needs a ``⋮`` on
+      each side of its first line: one row, never more.
+    """
+
+    import itertools
+
+    from aelix_coding_agent.tui.context import _option_window
+
+    def rows_of(plan: list[tuple[int, int]]) -> int:
+        return sum(1 if i == -1 else k for i, k in plan)
+
+    shapes = [list(h) for n in range(1, 6) for h in itertools.product([1, 2, 3, 8], repeat=n)] + [
+        list(h) for h in itertools.product([1, 3], repeat=10)
+    ]
+    checked = 0
+    for heights in shapes:
+        n = len(heights)
+        for idx in range(n):
+            for room in range(1, 16):
+                plan = _option_window(heights, idx, 8, room)
+                old = _window_399(heights, idx, room)
+                case = (heights, idx, room, plan, old)
+                # Under a scrolling title: #399's windows, every one.
+                assert _option_window(heights, idx, 8, room, grow=False) == old, case
+                assert (idx, heights[idx]) in plan, case
+                alone = heights[idx] + (idx > 0) + (idx < n - 1) > room
+                if alone and old == [(idx, heights[idx])]:
+                    assert plan == old, case
+                    continue
+                drawn = [(i, k) for i, k in plan if i != -1]
+                assert all(1 <= k <= heights[i] for i, k in drawn), case
+                assert [i for i, _ in drawn] == sorted({i for i, _ in drawn}), case
+                assert len(drawn) <= 8, case
+                expect: list[tuple[int, int]] = []
+                hidden, nxt = False, 0
+                for i, k in drawn:
+                    if hidden or i > nxt:
+                        expect.append((-1, 0))
+                    expect.append((i, k))
+                    hidden, nxt = k < heights[i], i + 1
+                if hidden or nxt < n:
+                    expect.append((-1, 0))
+                assert plan == expect, case
+                if rows_of(old) == room or all(h == 1 for h in heights):
+                    assert plan == old, case
+                assert rows_of(old) <= rows_of(plan) <= room, case
+                if plan != old:
+                    # A grown window draws a one-line option of main's window
+                    # in the row of a ⋮ that would hide only that option.
+                    lo = max(0, min(idx - 4, n - 8))
+                    for pos, (i, _k) in enumerate(plan):
+                        if i != -1:
+                            continue
+                        prev = plan[pos - 1] if pos else None
+                        if prev is not None and prev[1] < heights[prev[0]]:
+                            continue  # it hides the rest of a cut label
+                        first = 0 if prev is None else prev[0] + 1
+                        last = plan[pos + 1][0] - 1 if pos + 1 < len(plan) else n - 1
+                        assert not (
+                            first == last and heights[first] == 1 and lo <= first < lo + 8
+                        ), case
+                # ``select`` asks for fewer rows than main's whole window takes.
+                full = rows_of(_option_window(heights, idx, 8, None))
+                if room < full and rows_of(plan) < room:
+                    assert rows_of(plan) == room - 1 and plan[0] == (-1, 0), case
+                checked += 1
+    assert checked > 100_000

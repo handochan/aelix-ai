@@ -382,7 +382,10 @@ class _TitleHeldControl(UIControl):
     title is drawn whole, and the rows used when it scrolls. For ``select``
     both are its rule, option rows, counter, detail, rule and hint, and the
     smaller ones scroll the OPTION rows in fewer rows (the highlighted one
-    always among them, with the counter while there is room for it).
+    always among them, with the counter while there is room for it). #424:
+    under a title drawn whole, the rows an options window would leave blank
+    go to the next labels, from their first lines (:func:`_option_window`);
+    under a scrolling one the title takes them, as before.
 
     * A title drawn whole is never held. It is drawn whole whenever it fits
       the modal with at least the FIRST row of the highlighted option under
@@ -565,6 +568,107 @@ def _rows(lines: list[str]) -> list[StyleAndTextTuples]:
     return list(split_lines(to_formatted_text(ANSI("\n".join(lines)))))
 
 
+#: A ``⋮`` row in a plan from :func:`_option_window`.
+_MORE = -1
+
+
+def _option_window(
+    heights: list[int], idx: int, viewport: int, room: int | None, *, grow: bool = True
+) -> list[tuple[int, int]]:
+    """The option rows of an extension's or the model's ``select`` in *room* rows.
+
+    *heights* are the labels' line counts, *idx* the highlighted one, *room*
+    ``None`` for as many as main shows. Returns the rows from the top as
+    ``(option, lines)``, the label's first *lines* lines, or ``(_MORE, 0)``
+    for a ``⋮`` row.
+
+    #399: the window is main's (up to *viewport* options around the
+    highlighted one), the fullest that fits with every label whole, ``⋮``
+    where options are hidden; when none fits, the highlighted label alone.
+
+    #424: a label that did not fit whole was left out with all its rows, so
+    a label of eight lines under a highlighted ``Cancel`` became a ``⋮`` and
+    the rows under it stayed blank, where main drew its first lines. Rows a
+    window leaves blank now go to the labels next to it that main's window
+    shows (:func:`_grown`), unless *grow* is false: under a scrolling title
+    the title takes them. A window that leaves none is #399's, unchanged;
+    with one-line labels only main's own window can leave any.
+    """
+
+    n = len(heights)
+    lo = max(0, min(idx - viewport // 2, n - viewport))  # main's window
+    hi = min(n, lo + viewport)
+    for shown in range(min(viewport, n), 0, -1):
+        start = max(0, min(idx - shown // 2, n - shown))
+        end = min(n, start + shown)
+        rows = sum(heights[start:end]) + (start > 0) + (end < n)
+        if grow and room is not None and rows < room:
+            return _grown(heights, start, end, room - rows, lo, hi)
+        if room is None or rows <= room:
+            return [
+                *([(_MORE, 0)] if start > 0 else []),
+                *((i, heights[i]) for i in range(start, end)),
+                *([(_MORE, 0)] if end < n else []),
+            ]
+    return [(idx, heights[idx])]
+
+
+def _grown(
+    heights: list[int], start: int, end: int, spare: int, lo: int, hi: int
+) -> list[tuple[int, int]]:
+    """Options *start* to *end* whole, grown into *spare* blank rows (#424).
+
+    The rows go to the options of main's window (*lo* to *hi*) next to
+    these. First the labels under them, top-down, one that does not fit
+    drawn from its first line and cut, ``⋮`` under it (main's rows there,
+    cut as main cuts the modal's foot). Rows still left once main's window
+    is drawn to its foot go to the labels above, nearest first, cut the
+    same way, except that one row stays blank when that label needs a ``⋮``
+    on each side of its first line and only two rows are left. A ``⋮`` row
+    stays wherever something is hidden; one that would hide only a one-line
+    option of main's window draws that option instead (above the window
+    that is only ever option 0, in the top ``⋮``'s row: a label there that
+    fits whole would have fitted the next fuller window).
+    """
+
+    n = len(heights)
+    plan = [(i, heights[i]) for i in range(start, end)]
+    room = spare + (end < n)  # the blank rows and the bottom ⋮'s row
+    below = end
+    while below < hi and heights[below] + (below + 1 < n) <= room:
+        plan.append((below, heights[below]))
+        room -= heights[below]
+        below += 1
+    if below < hi:
+        # A label under them does not fit whole: it takes what is left.
+        if room >= 2:
+            plan.append((below, room - 1))
+        plan.append((_MORE, 0))
+        room = 0
+    elif below < n:
+        plan.append((_MORE, 0))  # the options past main's window
+        room -= 1
+    room += start > 0  # the top ⋮'s row
+    top = start - 1
+    while top >= lo and heights[top] + (top > 0) <= room:
+        plan.insert(0, (top, heights[top]))
+        room -= heights[top]
+        top -= 1
+    if top >= 0:
+        # Option ``top`` does not fit whole: its first lines and ⋮, under the
+        # ⋮ of the options above it, or under option 0 itself when that is
+        # all that ⋮ would hide and it has one line.
+        one = top == 1 and lo == 0 and heights[0] == 1
+        lead = [] if not top else [(0, 1)] if one else [(_MORE, 0)]
+        if top >= lo and room - len(lead) >= 2:
+            plan[:0] = [*lead, (top, room - len(lead) - 1), (_MORE, 0)]
+        elif one and room >= 2:
+            plan[:0] = [(0, 1), (_MORE, 0)]
+        else:
+            plan.insert(0, (_MORE, 0))
+    return plan
+
+
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
     if not future.done():
         future.set_result(value)
@@ -728,8 +832,10 @@ class AelixTUIContext:
           spawn-consent dialog. Its title wraps like pi's and names its control
           characters (:func:`_title_rows`). A title that fits the modal with its
           highlighted option is drawn whole and never held; the option rows
-          scroll in what room is left. Only a title taller than that scrolls,
-          and then EVERY option waits until all of it has been drawn
+          scroll in what room is left, and a label of several lines that does
+          not fit there is drawn from its first line and cut, ``⋮`` under it
+          (#424; one row can stay blank: :func:`_grown`). Only a title taller than that
+          scrolls, and then EVERY option waits until all of it has been drawn
           (:class:`_TitleHeldControl`), except a row named in
           ``cancel_options`` (the dialog's own Cancel, which aelix passes for
           spawn consent and the permission fallback's No rows). An Enter typed
@@ -828,32 +934,34 @@ class AelixTUIContext:
                 body.append(f"{_PICK_DIM}{d}{_PICK_RST}")
             return _picker_frame(title, body, hint, width)
 
-        def option_rows(items: list[tuple[int, str]], idx: int, room: int | None) -> list[str]:
+        def option_rows(
+            items: list[tuple[int, str]], idx: int, room: int | None, grow: bool = True
+        ) -> list[str]:
             # #399: the option rows in at most ``room`` rows (``None``: as many
             # as ``render`` shows), the highlighted one always among them, with
             # ⋮ markers while they fit. Each row is drawn exactly as ``render``
             # draws it (#179 owns option rows), so a label with a newline in it
-            # takes as many screen rows as it has lines (review round 3).
-            n = len(items)
-            for shown in range(min(viewport, n), 0, -1):
-                start = max(0, min(idx - shown // 2, n - shown))
-                end = min(n, start + shown)
-                above, below = start > 0, end < n
-                lines = sum(1 + items[i][1].count("\n") for i in range(start, end))
-                if room is not None and lines + above + below > room:
-                    continue
-                rows = [f"{_PICK_DIM}  ⋮{_PICK_RST}"] if above else []
-                for i in range(start, end):
-                    text = items[i][1]
-                    rows.append(f"{_PICK_SEL}▸ {text}{_PICK_RST}" if i == idx else f"  {text}")
-                if below:
+            # takes as many screen rows as it has lines (review round 3). #424:
+            # a label that does not fit is drawn from its first line and cut,
+            # ⋮ under it (_option_window), not left out with its rows blank.
+            heights = [1 + text.count("\n") for _i, text in items]
+            rows: list[str] = []
+            for i, keep in _option_window(heights, idx, viewport, room, grow=grow):
+                if i == _MORE:
                     rows.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
-                return rows
-            return [f"{_PICK_SEL}▸ {items[idx][1]}{_PICK_RST}"]
+                    continue
+                # Cut between lines: #179 names a label line by line, and the
+                # ⋮ row that follows every cut label sets its own style.
+                text = "\n".join(items[i][1].split("\n")[:keep])
+                rows.append(f"{_PICK_SEL}▸ {text}{_PICK_RST}" if i == idx else f"  {text}")
+            return rows
 
-        def parts(screen_width: int) -> tuple[list[str], list[list[str]]]:
+        def parts(screen_width: int) -> tuple[list[str], list[list[str]], list[list[str]]]:
             # #399, an extension's or the model's question: the title rows, and
-            # the rows that can go under them from the fullest to the smallest.
+            # the rows that can go under them from the fullest to the smallest,
+            # under a title drawn whole and under a scrolling one. #424: only
+            # the first fill the rows an options window leaves blank; under a
+            # scrolling title the title takes them, as #399 drew it.
             title_rows = _title_rows(title, screen_width)
             items = filtered()
             if not items:
@@ -861,12 +969,8 @@ class AelixTUIContext:
                 body = [f"{_PICK_DIM}(no matches){_PICK_RST}", _filter_line(state["filter"])]
                 hint = f"{_PICK_DIM}Backspace to clear · Esc to cancel{_PICK_RST}"
                 lead = [rule] if len(head) > 1 else []
-                return head[: len(head) - len(lead)], [
-                    [*lead, *body, rule, hint],
-                    [*lead, *body],
-                    body,
-                    body[:1],
-                ]
+                bodies = [[*lead, *body, rule, hint], [*lead, *body], body, body[:1]]
+                return head[: len(head) - len(lead)], bodies, bodies
             idx = max(0, min(state["idx"], len(items) - 1))
             state["idx"] = idx
             detail_lines: list[str] = []
@@ -895,12 +999,16 @@ class AelixTUIContext:
                 [*full, count],
             ]
             # Rooms in screen rows: a label with a newline is a row per line.
-            full_rows = sum(1 + row.count("\n") for row in full)
-            unders += [
-                [*option_rows(items, idx, room), count] for room in range(full_rows - 1, 0, -1)
-            ]
-            unders.append(option_rows(items, idx, 1))
-            return head[: len(head) - len(lead)], unders
+            rooms = range(sum(1 + row.count("\n") for row in full) - 1, 0, -1)
+
+            def shrinking(grow: bool) -> list[list[str]]:
+                return [
+                    *unders,
+                    *([*option_rows(items, idx, room, grow), count] for room in rooms),
+                    option_rows(items, idx, 1, grow),
+                ]
+
+            return head[: len(head) - len(lead)], shrinking(True), shrinking(False)
 
         # The rows of one paint, parsed once: prompt-toolkit asks for the height
         # and then for the content, and ``detail`` ran once a paint before, as
@@ -914,9 +1022,16 @@ class AelixTUIContext:
         ]:
             key = (get_app().render_counter, screen_width, state["idx"], state["filter"])
             if drawn["key"] != key:
-                title_rows, unders = parts(screen_width)
-                rows = [_rows(under) for under in unders]
-                drawn["frame"] = ([_row(r) for r in title_rows], rows, rows)
+                title_rows, whole, scrolled = parts(screen_width)
+                parsed: dict[tuple[str, ...], list[StyleAndTextTuples]] = {}
+                for under in (*whole, *scrolled):
+                    if tuple(under) not in parsed:
+                        parsed[tuple(under)] = _rows(under)
+                drawn["frame"] = (
+                    [_row(r) for r in title_rows],
+                    [parsed[tuple(under)] for under in whole],
+                    [parsed[tuple(under)] for under in scrolled],
+                )
                 drawn["key"] = key
             return cast(
                 "tuple[list[StyleAndTextTuples], list[list[StyleAndTextTuples]], list[list[StyleAndTextTuples]]]",

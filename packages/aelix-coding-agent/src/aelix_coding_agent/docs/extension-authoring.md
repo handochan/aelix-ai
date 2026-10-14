@@ -130,8 +130,11 @@ emoji in a six-column row) is cut by character. A control character in them is d
 reverse video (`^M`, `^[`, `<U+202E>`), never obeyed and never dropped. A question that fits the
 dialog with the first row of its highlighted option is drawn whole and answers at once; the
 options scroll under it when they do not all fit (the highlighted one is
-always on screen, a label of several lines cut from the bottom when there is
-no room for all of it). A question taller than that scrolls (PgUp/PgDn), and **no
+always on screen, and a label of several lines is drawn from its first line and
+cut from the bottom when there is no room for all of it, a `⋮` row marking the
+rest while there is a row for it: #424; one row can stay blank instead, that
+label left behind a `⋮`, when it is the nearest label above and would need a
+`⋮` on each side of its first line). A question taller than that scrolls (PgUp/PgDn), and **no
 option is taken** (Enter, Space or Ctrl+J in `select`, `y` in `confirm`) until
 every row of it has been drawn; Esc and Ctrl+C always answer, and so does `n`
 in `confirm` (in `select`, `n` types into the filter). An Enter or

@@ -314,6 +314,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An extension's `select` draws a label of several lines that does not fit
+  from its first line, not as a `⋮` over blank rows (#424, ADR-0253 §11.3).**
+  With `Cancel` highlighted over an option of eight lines (`Deploy staging` and
+  seven detail lines) and a third option, the dialog drew `▸ Cancel`, `⋮` and
+  `(1/3)` and left the rest of it blank: one row at 80x10, four at 80x13, seven
+  at 120x16, where aelix showed the label's first lines before #399. Those rows
+  now show the label from its first line, as before #399, with a `⋮` under the
+  last one for the rest; a label above the highlighted option is drawn the same
+  way. In those rows a `⋮` that would hide a single one-line option shows that
+  option instead, among the up to 8 options around the highlighted one (every
+  option of a dialog of 8 or fewer). Elsewhere such a `⋮` can stay: past those
+  8 in a dialog of 9 or more options, and where #399 already filled the dialog
+  (the tall label above `▸ Cancel` and a one-line option under it, at 80x10:
+  `⋮`, `▸ Cancel`, `⋮`). One row can still stay blank: when the nearest label
+  above would need a `⋮` on each side of its first line, and, as before, when
+  the highlighted label is drawn alone, with no `⋮` for the options around it,
+  because it does not fit with one on each side. Unchanged: every
+  dialog of one-line options (spawn consent and the permission gate's fallback
+  among them); a dialog of longer labels that left no row blank, except that
+  the `⋮` under its options, when it hid only the last option and that option
+  has one line, can now show it; the highlighted option, the `(n/N)` counter,
+  every hold, and the rows under a question taller than the dialog. A label
+  wider than the dialog is still cut at its right edge.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a

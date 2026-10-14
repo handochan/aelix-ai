@@ -453,7 +453,8 @@ Decision:
   their owned styles. No public UI protocol or production dependency is added.
 - #399's title naming/wrapping, first-paint/all-seen hold, dialog cancel, Esc/Ctrl+C
   and own picker namespace remain. This does not redesign option clipping/viewport
-  (#424), multiselect preview styling, authentication or model selection.
+  (#424, since amended in ADR-0253 §11.3: a label that does not fit is drawn from its
+  first line and cut), multiselect preview styling, authentication or model selection.
 
 Latest Pi was checked before implementation at
 [`cd8bdf7`](https://github.com/earendil-works/pi/tree/cd8bdf7518c0f9a381deef49bff95163bff127d8):

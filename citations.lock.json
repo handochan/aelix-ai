@@ -2985,7 +2985,12 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2182-2182": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1278-1278": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1081-1083": [
+   "kb.add(\"space\")(_confirm)",
+   "kb.add(\"escape\")(lambda _e: _resolve(result, None))",
+   "kb.add(\"c-c\")(lambda _e: _resolve(result, None))"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1393-1393": [
    "_orig_idx, (oid, label, _desc) = opts[vi]"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:149-227": [
@@ -2998,7 +3003,7 @@
    "",
    "GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1581-1596": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1696-1711": [
    "def set_widget(",
    "self,",
    "key: str,",
@@ -3008,7 +3013,7 @@
    "above = (options.placement if options else \"above_editor\") == \"above_editor\"",
    "if content is None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:681-690": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:785-794": [
    "async def select(",
    "self,",
    "title: str,",
@@ -3018,19 +3023,14 @@
    "initial_index: int = 0,",
    "*,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:760-760": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:866-866": [
    "state: dict[str, Any] = {"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:818-821": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:924-927": [
    "for i in range(start, end):",
    "text = items[i][1]",
    "if i == idx:",
    "body.append(f\"{_PICK_SEL}▸ {text}{_PICK_RST}\")"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:966-968": [
-   "kb.add(\"space\")(_confirm)",
-   "kb.add(\"escape\")(lambda _e: _resolve(result, None))",
-   "kb.add(\"c-c\")(lambda _e: _resolve(result, None))"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/extension_manager.py:52-54": [
    "# measurement rather than tidiness: ``cli/status.py`` needs the same list, and",
