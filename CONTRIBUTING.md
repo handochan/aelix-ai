@@ -111,6 +111,30 @@ behaviour change without one will be asked for one. Make it a real test: revert
 your production hunk and confirm the test goes red. A test that passes with and
 without your change is documentation, not a gate.
 
+**Keep tests out of your home's sessions.** `tests/conftest.py` gives every
+test its own `AELIX_CODING_AGENT_SESSION_DIR`, unless a module-, class- or
+session-scoped fixture has set the variable to a non-empty value: that value
+then reaches its tests, and stays in effect until the fixture is torn down. For
+a session-scoped fixture that is not autouse, that is every test that runs
+after it until the run ends, whether or not the test requests it. An empty
+value is replaced like an unset one, since the CLI reads it as unset. Code in
+the test process that reads the variable, and every child built from
+`os.environ`, uses it. A `JsonlSessionRepo` built without `sessions_root` does
+not read it. For that case a guard watches the test process: a write-mode open,
+`mkdir`, rename, remove, `rmdir`, `chmod`, link, symlink, truncate or `rmtree`
+under `~/.aelix/sessions` is blocked, and the test fails with a `#458` message.
+Fix it by passing `sessions_root` or by sandboxing the home
+(`tests/env_sandbox.py` `sandbox_home`). Do not turn the guard off. It is best
+effort, not a proof: it does not see a rename of `~/.aelix` or the home or, on
+POSIX, an `rmtree` of either, `touch` or `utime`, `chflags`, `mkfifo`,
+`sqlite3`, sockets, paths relative to a directory descriptor, or a symlink into
+the root from outside it (`tests/session_root_guard.py` lists what it judges
+and what it misses).
+Children are not checked. A child whose environment you build by hand must
+sandbox the home (`child_env`) or pass `--session-dir`. A shell, `env` or
+`uv run` wrapper that drops the variable, and an `aelix-server` child (its
+`/rpc` ignores the variable), would write to the real root unchecked.
+
 Some paths cannot be unit-tested and have to be exercised for real:
 
 - **TUI changes** — run `uv run aelix` and look at it. Rendering, colour,

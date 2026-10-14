@@ -3247,7 +3247,7 @@
   "tests/cli/test_pipe_robustness.py:500-500": [
    "proc = subprocess.run("
   ],
-  "tests/conftest.py:50-59": [
+  "tests/conftest.py:111-120": [
    "@pytest.fixture(autouse=True)",
    "def _no_real_tool_downloads(tmp_path_factory, monkeypatch):",
    "bin_dir = tmp_path_factory.mktemp(\"aelix_bin\")",

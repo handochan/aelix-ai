@@ -508,6 +508,34 @@ unwritten. Add them with the next release.
   in every run the issue measured, so it was not affected; `-p`, `--mode json`
   and `--mode rpc` already showed the text.
 
+- **Tests: running the suite no longer writes into your `~/.aelix/sessions`
+  (#458).** This changes only the tests, not anything users run. The suite never
+  set `AELIX_CODING_AGENT_SESSION_DIR`, and isolating the agent directory moves
+  settings and auth but not sessions. So each test that ran the CLI without also
+  sandboxing HOME left a `--<pytest temp path>--` folder in the developer's real
+  session root. One machine had about 7,450 of them, and the stats dashboard
+  counted each one as a project. Measured with a scratch HOME, one full run left
+  six, all from `tests/cli/test_tools_flag_validation.py`. Now `tests/conftest.py`
+  gives every test its own session root, unless a module-, class- or
+  session-scoped fixture has set the variable to a non-empty value, which then
+  reaches its tests. That value stays in effect until the fixture is torn down:
+  for a session-scoped fixture that is not autouse, every test that runs after
+  it until the run ends. An empty value is replaced like an unset one, since the
+  CLI reads it as unset. Code in the test process that reads the variable, and
+  every child that inherits the test's environment, uses it, and a full run
+  leaves no folder there. A best-effort guard also blocks the common writes
+  under the real root in the test process itself (a write-mode open, `mkdir`,
+  rename, remove, `rmdir`, `chmod`, link, symlink, truncate, or an `rmtree` of
+  the root) and fails the test. It never reads that directory. It does not see a
+  rename of `~/.aelix` or the home or, on POSIX, an `rmtree` of either, `touch`
+  or `utime` of an existing file, `chflags`, `mkfifo`, `sqlite3`, sockets, paths
+  relative to a directory descriptor, or a symlink into the root from outside
+  it. Not covered at all: a child given a hand-built environment without the
+  variable, a child started through a shell, `env` or `uv run` wrapper that
+  drops it, and an `aelix-server` child, whose `/rpc` ignores the variable.
+  Folders that earlier runs left behind are not removed. Their names contain
+  `pytest-of-`.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
