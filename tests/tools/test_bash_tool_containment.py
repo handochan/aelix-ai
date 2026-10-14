@@ -42,12 +42,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import warnings
+import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -69,7 +73,7 @@ from aelix_coding_agent.tools.bash import (
 )
 from aelix_coding_agent.util.shell_env import get_shell_env
 
-from tests.process_probe import STATE_ALIVE, probe_state
+from tests.process_probe import STATE_ALIVE, STATE_GONE, STATE_ZOMBIE, probe_state
 from tests.process_tree.test_process_tree_real_processes import DEADLINE, _await_dead, _reap
 from tests.process_tree.test_run_contained_real_processes import (
     OUTLIVE,
@@ -450,7 +454,12 @@ def _holder_command(
 #: rule's input (a reader that never stamps ``last_chunk_at`` ends every drain
 #: there) or a host that stalls every run, and the message says which numbers
 #: to read. Not a skip: every attempt runs the whole case, and the pins are
-#: asserted on the one that measured.
+#: asserted on the one that measured. 8a's attempts can fail their premise two
+#: more ways, each said and run again within the same three: a drain the
+#: runner held away from its own rule (#341, :func:`_judged_on_its_record`)
+#: and, on its deadline arm, a root that had not exited by the caller's
+#: deadline (#446, :func:`_why_the_root_timed_out` and
+#: :func:`_the_timeout_leg_left`).
 ATTEMPTS = 3
 
 
@@ -780,8 +789,27 @@ def _premise_stalled(what: str, stall: str) -> str:
 
 
 def _every_attempt_failed_its_premise(
-    what: str, lines: list[str], measured: str = "the cap", *, stalls: bool = False
+    what: str,
+    lines: list[str],
+    measured: str = "the cap",
+    *,
+    stalls: bool = False,
+    deadline: bool = False,
 ) -> str:
+    if deadline:
+        # #446: 8a's deadline arm, whose attempts can also meet a root still
+        # running at the caller's deadline (:func:`_why_the_root_timed_out`).
+        return (
+            f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule, had a record that "
+            f"shows the drain held away from its rule, or met a root still running at the "
+            f"caller's deadline, so the case never measured {measured}. Once is a stalled or "
+            f"slow runner; every time is the idle rule's input broken (a reader that no longer "
+            f"stamps ``last_chunk_at`` on a hand-over ends every drain there), a drain that waits "
+            f"before it looks or holds its caller after its last look, a root that starts slower "
+            f"than the arm on this host every time (size ``_DEADLINE_ARM_SECONDS`` again from a "
+            f"measured distribution of the root's exit), or a host stalling every run — read the "
+            f"drains: " + " | ".join(lines)
+        )
     if not stalls:
         return (
             f"{what}: every one of {ATTEMPTS} attempts ended on the idle rule, so the case never "
@@ -1349,7 +1377,709 @@ async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
 #: had — so until #341 the DISCRIMINATION was the POSIX arm's alone. Since
 #: #341 it is read off the drain on both platforms: the soft cap it was handed
 #: is below the flat one.
+#:
+#: THE RULE FOR SIZING IT, AND WHY 2.0 S STAYS (#446). The arm measures only
+#: when ``exit < timeout`` (the root exits on its own, so the exit path's drain
+#: runs) and ``timeout < exit + DRAIN_CAP_SECONDS`` (the deadline, not the flat
+#: cap, is the soft cap the drain is handed). Measured on windows-latest (run
+#: 38509857375, 75 rounds per cell, py3.11/3.12/3.13, with no load and with
+#: three or four busy loops on the four vCPUs), the root's exit after the call
+#: ran from 0.528 s to 1.70 s with no load — 0 of 450 deadline-arm runs timed
+#: out — and up to 2.16 s under three loops and 4.25 s under four, where 0-8 of
+#: 150 runs per cell timed out (31 of 900). That spread is wider than the 2.0 s
+#: window the two conditions leave, so no single value covers it: 2.0 s holds
+#: the unloaded maximum with 0.3 s to spare and stays 0.53 s under the unloaded
+#: minimum plus the cap, while anything that covered the loaded tail (over
+#: 4.25 s) would hand an unloaded root the flat cap and the arm would measure
+#: nothing. The loaded tail is the case's premise failing, which the case says
+#: and runs again (:func:`_why_the_root_timed_out`), instead of a larger number.
 _DEADLINE_ARM_SECONDS = 2.0 if sys.platform == "win32" else 1.0
+
+#: How much EARLIER than the caller's deadline the site's timed wait may give
+#: up, on this case's clock, and still be that deadline (#446). A correct site
+#: never gives up early: the case reads ``started`` before ``exec`` takes its
+#: own ``started_at``, and the worker calls ``proc.wait(timeout)`` later still.
+#: But both readings are ``time.monotonic``, which steps 15.625 ms on win32 up
+#: to py3.12, and a win32 timer can fire a tick early (ADR-0238's #330
+#: amendment says so of asyncio's). Three ticks: a site that gives up earlier
+#: than this is caught by :func:`_why_the_root_timed_out`; one that gives up
+#: less than this early is not. The same three ticks are the clock grain
+#: wherever else the record is placed against an instant: the window an alive
+#: look must fall in, how far before the deadline a dead look must be to name
+#: an exit the wait did not see, and the announcement's file time against the
+#: kill (:func:`_the_timeout_leg_left`). The rule table pins it from both sides:
+#: a give-up 0.04 s before the caller's deadline is the deadline, 0.06 s is not.
+_EARLY_TIMEOUT_SLACK = 0.05
+
+#: How much LATER than its own deadline the site's timed wait may give up and
+#: still have given up AT it (#446 review round 2). The give-up is stamped on
+#: the worker after ``proc.wait`` raises, so it carries the worker's resume:
+#: 0.000-0.033 s past the wait's deadline in 38 timed-out attempts on
+#: windows-latest under load (run 38538998280), and a worker resumed at most
+#: 0.067 s late under four busy loops (run 38509857375). Half a second is seven
+#: times that. A wait that gives up later does not honour the deadline it was
+#: handed, and a wait handed another deadline than the caller's is caught
+#: before this is asked (:func:`_why_the_root_timed_out`). The rule table pins
+#: it from both sides (0.45 s past is the deadline, 0.55 s is not).
+_LATE_TIMEOUT_SLACK = 0.5
+
+#: How long before the deadline the site's timed wait was handed
+#: :class:`_TimeoutWitness` looks at the root once more (#446). A root found
+#: dead when the wait gave up is either an exit the wait did not see — a defect
+#: — or an exit AT the deadline that the wait's own timeout beat: a dead heat,
+#: measured twice in 13 misses on windows-latest (run 38509857375; pwsh's
+#: kernel exit time, to its ~16 ms grain, 0.003 s before and 0.045 s after the
+#: wait's deadline, and the worker resumed 0.020 s and 0.036 s past it). The
+#: look tells them apart: alive this long before the deadline is the dead heat.
+#: An alive look counts only when it BEGAN no earlier than this plus
+#: :data:`_EARLY_TIMEOUT_SLACK` before the deadline (review round 2): an
+#: earlier one — a look scheduled from the wrong end of the wait, or run at
+#: once — leaves the exit anywhere after it, and the rule fails closed on it.
+#: 0.25 s because the worker that resumes after a timed wait ran up to 0.067 s
+#: late there, under four busy loops, and a look as late as that is still clear
+#: of the deadline; the last quarter second before a deadline is the window the
+#: record does not judge, and an exit the wait cannot see is missed on every
+#: attempt, whose roots exit well before it (0.53-1.70 s against 2.0 s with no
+#: load).
+_LOOK_BEFORE_THE_DEADLINE = 0.25
+
+#: How long after the timeout leg's kill went out a root that exits 0 may still
+#: be reaped and count as the kill's (#446 review round 2). Returncode 0 alone
+#: cannot say the kill missed the root: one already inside its own exit when
+#: the kill landed can still report its own status. How long it ran on after
+#: the kill had gone out can — a root the kill reached is reaped as soon as the
+#: waiting thread wakes, and on windows-latest a wait woke at most 0.215 s after
+#: pwsh's kernel exit (run 38509857375, every cell; 0.010-0.029 s at the
+#: median). A root still running a quarter second after the kill, that then
+#: exits 0 by itself, was never reached.
+_A_KILL_TAKES = 0.25
+
+#: How long after the timeout leg's kill went out a process it reached may
+#: still look alive (#446 review round 2). The kill itself is a ``SIGKILL`` to
+#: the group or a ``TerminateJobObject`` and lands in milliseconds — the reap of
+#: a killed root came back 0.003-0.004 s after it on darwin — but termination is
+#: the target's to finish, and under load it waits for a CPU like anything
+#: else, and so does the thread that sees it: a wait on windows-latest saw
+#: pwsh's kernel exit up to 0.215 s late (run 38509857375). Two seconds is ten
+#: times that. What is
+#: still alive later than this was never reached: the check looks once at the
+#: call's end and polls only up to this instant, so a process the kill missed
+#: cannot slip through by exiting on its own while the check waits for it.
+_A_KILLED_PROCESS_ENDS_WITHIN = 2.0
+
+
+class _TimeoutWitness:
+    """The site's timed ``proc.wait``, the root around its deadline, and what the kill had to end (#446).
+
+    Installed as the site's ``_retained_handle``, which ``exec`` calls once,
+    right after the spawn and before anything waits: it records the root's pid
+    and ``proc`` — and, on POSIX, the root's process group when the root leads
+    its own (``setsid``) — and wraps THAT ``proc``'s ``wait`` for the call.
+    Installed over ``ProcessTree.attach`` as well, which ``exec`` calls with the
+    retained handle next: on win32 it keeps a handle of its own on the job the
+    site put the root in (``DuplicateHandle``; the site closes its own when the
+    call ends), so the job can still be asked what is in it after the call.
+
+    Two waits are recorded. The site's first timed wait — the worker's
+    ``proc.wait(timeout)``: when it began, the timeout it was handed and, if it
+    raised ``TimeoutExpired``, when, with the root's state then
+    (:func:`probe_state`, which reaps nothing). And, once that wait has given
+    up, the next timed wait on the root — the timeout leg's reap in
+    ``_end_the_tree``, which the site makes after its kill has gone out: the
+    root's state just before it, when it began (also as wall time, to place the
+    announcement's file time against), and when it came back. A thread started
+    by :meth:`install` — before the call, so nothing is started between the
+    spawn and the job's assignment — looks at the root once more
+    :data:`_LOOK_BEFORE_THE_DEADLINE` before the first wait's deadline, unless
+    the wait came back first, and records when the look began and ended.
+
+    The wrappers call straight through and re-raise; what they add is time:
+    :func:`probe_state` on the worker after the timed wait gives up and on the
+    loop before the reap — on macOS each runs ``ps``, a few ms — and on win32 a
+    ``DuplicateHandle`` after the job's assignment.
+
+    WHY. A root that has not exited by the caller's deadline is timed out and
+    its tree killed, and the call comes back ``exit_code=None, timed_out=True``
+    without ever reaching the exit path's drain — correctly. On win32 that root
+    is a pwsh start plus a python child, and on a loaded runner it missed the
+    2.0 s deadline (job 114898865326, ``elapsed=2.266s ticks=1
+    end=no-exit-drain``). Measured on windows-latest (run 38509857375: 13
+    misses in 450 instrumented deadline-arm runs under load, 0 in 225 without):
+    10 were start-up — the python root had not finished by the deadline, and 8
+    of those had not got past ``aelix_ai``'s import; pwsh's creation-to-python
+    was 0.27-0.33 s at the median unloaded, 1.0-1.1 s under four busy loops
+    and up to 2.94 s, while pwsh's own CPU stayed 0.27-0.94 s in every cell, so
+    it WAITED for a CPU rather than did more — 2 were pwsh's teardown after a
+    python root that had ended (0.26-0.27 s against a 0.06-0.08 s unloaded
+    median), and in 1 pwsh exited at the wait's deadline itself; in 2 of the
+    13 the root was already gone when the worker resumed from the timeout.
+    Seeing the exit was never the cause: pwsh's kernel exit to the wait's
+    return was 0.010-0.029 s at the median and at most 0.215 s. That is the
+    case's premise failing, not the product, but ``timed_out=True`` alone cannot
+    say so: a site that hands ``proc.wait`` another deadline, whose wait does
+    not see the root's exit, or whose kill misses the tree, reports exactly the
+    same. This record is what tells them apart
+    (:func:`_why_the_root_timed_out`, :func:`_the_timeout_leg_left`).
+    """
+
+    def __init__(self) -> None:
+        #: ``proc.pid`` of the root the site waits on (pwsh on win32), once spawned.
+        self.root: int | None = None
+        #: The root's ``Popen``, for the returncode the timeout leg's reap left on it.
+        self.proc: Any | None = None
+        #: POSIX: the root's process group, when the root leads its own.
+        self.group: int | None = None
+        #: win32: our own handle on the job the site attached the root to.
+        self.job: int | None = None
+        #: When the site's first timed wait began, and the timeout it was handed.
+        self.waited_at: float | None = None
+        self.waited_for: float | None = None
+        #: When that wait raised ``TimeoutExpired``; ``None`` if it never did.
+        self.timed_out_at: float | None = None
+        #: :func:`probe_state` of the root at that instant.
+        self.root_then: str | None = None
+        #: The look before the deadline: when it began, what it found, and the
+        #: instant after it found it — so a root it found alive was alive at
+        #: ``look_began``, and one it found dead had exited by ``looked_at``.
+        #: ``None`` when the wait came back first, or the look never ran.
+        self.look_began: float | None = None
+        self.looked_at: float | None = None
+        self.looked_saw: str | None = None
+        #: The timeout leg's reap: the root's state just before it, when it
+        #: began (monotonic and wall), and when it came back.
+        self.root_at_reap: str | None = None
+        self.reap_began: float | None = None
+        self.reap_began_wall: float | None = None
+        self.reap_back: float | None = None
+        #: Wall time when :meth:`settle` ran, after the call came back.
+        self.settled_wall: float | None = None
+        self._job_closer: Callable[[], Any] | None = None
+        self._armed = threading.Event()
+        self._back = threading.Event()
+        self._looker = threading.Thread(target=self._look, daemon=True)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        witness = self
+
+        def retained(proc: Any) -> int | None:
+            witness.root, witness.proc = proc.pid, proc
+            if sys.platform != "win32":
+                with contextlib.suppress(OSError):
+                    if os.getpgid(proc.pid) == proc.pid:
+                        witness.group = proc.pid
+            wait = proc.wait
+
+            def timed(timeout: float | None = None) -> Any:
+                first = timeout is not None and witness.waited_at is None
+                reap = (
+                    not first
+                    and timeout is not None
+                    and witness.timed_out_at is not None
+                    and witness.reap_began is None
+                )
+                if first:
+                    witness.waited_at, witness.waited_for = time.monotonic(), timeout
+                    witness._armed.set()
+                if reap:
+                    witness.root_at_reap = probe_state(proc.pid)
+                    witness.reap_began, witness.reap_began_wall = time.monotonic(), time.time()
+                try:
+                    return wait(timeout)
+                except subprocess.TimeoutExpired:
+                    if first:
+                        witness.timed_out_at = time.monotonic()
+                        witness.root_then = probe_state(proc.pid)
+                    raise
+                finally:
+                    if first:
+                        witness._back.set()
+                    if reap:
+                        witness.reap_back = time.monotonic()
+
+            proc.wait = timed
+            return _REAL_RETAINED_HANDLE(proc)
+
+        def attach(pid: int, **kwargs: Any) -> Any:
+            tree = _REAL_ATTACH(pid, **kwargs)
+            if pid == witness.root:
+                witness._keep_the_job(tree)
+            return tree
+
+        monkeypatch.setattr(bash_module, "_retained_handle", retained)
+        monkeypatch.setattr(ProcessTree, "attach", staticmethod(attach))
+        self._looker.start()
+
+    def _keep_the_job(self, tree: Any) -> None:
+        job = _a_handle_of_our_own_on(getattr(tree, "_job", None))
+        if job is not None:
+            self.job = job
+            self._job_closer = weakref.finalize(self, _close_the_handle, job)
+
+    def _look(self) -> None:
+        # Bounded only so a witness nobody settles cannot outlive its case by
+        # much; :meth:`settle` sets both events.
+        if not self._armed.wait(OUTLIVE):
+            return
+        waited_at, waited_for, root = self.waited_at, self.waited_for, self.root
+        if waited_at is None or waited_for is None or root is None:
+            return
+        due = waited_at + waited_for - _LOOK_BEFORE_THE_DEADLINE
+        if self._back.wait(max(0.0, due - time.monotonic())):
+            return
+        began = time.monotonic()
+        state = probe_state(root)
+        self.look_began, self.looked_at, self.looked_saw = began, time.monotonic(), state
+
+    def settle(self) -> None:
+        """Stop the look (the call is back) and wait for it — before the record is read."""
+
+        self.settled_wall = time.time()
+        self._back.set()
+        self._armed.set()
+        self._looker.join(DEADLINE)
+
+    def release(self) -> None:
+        """Close our handle on the job, if we took one. Idempotent."""
+
+        if self._job_closer is not None:
+            self._job_closer()
+
+
+#: The site's ``_retained_handle`` as imported, before any witness wraps it.
+_REAL_RETAINED_HANDLE = bash_module._retained_handle
+#: ``ProcessTree.attach`` as imported, before any witness wraps it.
+_REAL_ATTACH = ProcessTree.attach
+
+#: ``DUPLICATE_SAME_ACCESS`` and ``JobObjectBasicProcessIdList``.
+_DUPLICATE_SAME_ACCESS = 0x2
+_JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
+
+
+def _kernel32() -> Any:
+    """``kernel32`` with the four signatures the witness's job handle needs (win32 only)."""
+
+    import ctypes
+
+    # ``WinDLL`` exists only on windows; every caller is behind a
+    # ``sys.platform`` guard pyright cannot carry into this function.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
+    handle = ctypes.c_void_p
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = handle
+    kernel32.DuplicateHandle.argtypes = [
+        handle,
+        handle,
+        handle,
+        ctypes.POINTER(handle),
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_uint32,
+    ]
+    kernel32.DuplicateHandle.restype = ctypes.c_int
+    kernel32.QueryInformationJobObject.argtypes = [
+        handle,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.QueryInformationJobObject.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [handle]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    return kernel32
+
+
+def _a_handle_of_our_own_on(job: int | None) -> int | None:
+    """win32: a duplicate of the site's job handle, ours to query after the call; else ``None``."""
+
+    if sys.platform != "win32":
+        return None
+    if job is None:
+        return None
+    import ctypes
+
+    kernel32 = _kernel32()
+    me = kernel32.GetCurrentProcess()
+    ours = ctypes.c_void_p()
+    if not kernel32.DuplicateHandle(me, job, me, ctypes.byref(ours), 0, 0, _DUPLICATE_SAME_ACCESS):
+        return None
+    return ours.value
+
+
+def _close_the_handle(handle: int) -> None:
+    if sys.platform == "win32":
+        _kernel32().CloseHandle(handle)
+
+
+def _what_the_job_holds(job: int) -> list[int] | None:
+    """win32: the pids still in ``job`` (``JobObjectBasicProcessIdList``); ``None`` if it cannot say."""
+
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    class _Ids(ctypes.Structure):
+        _fields_ = [
+            ("assigned", ctypes.c_uint32),
+            ("listed", ctypes.c_uint32),
+            ("ids", ctypes.c_size_t * 64),
+        ]
+
+    ids = _Ids()
+    if not _kernel32().QueryInformationJobObject(
+        job, _JOB_OBJECT_BASIC_PROCESS_ID_LIST, ctypes.byref(ids), ctypes.sizeof(ids), None
+    ):
+        return None
+    return [int(ids.ids[index]) for index in range(ids.listed)]
+
+
+def _what_the_group_holds(group: int) -> list[int] | None:
+    """POSIX: the pids in process group ``group`` that are not zombies; ``None`` if it cannot say.
+
+    ``os.killpg(group, 0)`` first, which signals nothing and answers
+    ``ProcessLookupError`` only when the group has no member at all. A member
+    is there otherwise, alive or a zombie its parent has not reaped yet, and
+    ``ps`` says which; with no ``ps`` this cannot tell, and says so rather than
+    read the silence as empty (``tests/process_probe``'s rule).
+    """
+
+    if sys.platform == "win32":
+        return None
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return []
+    except PermissionError:
+        pass
+    ps = shutil.which("ps")
+    if ps is None:
+        return None
+    try:
+        listing = subprocess.run(
+            [ps, "-A", "-o", "pid=,pgid=,stat="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    held = []
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == str(group) and not fields[2].startswith("Z"):
+            held.append(int(fields[0]))
+    return held
+
+
+#: What :func:`_why_the_root_timed_out` names, one phrase per verdict, each in
+#: exactly one of its answers — the rule table asserts the one it expects and
+#: none of the others.
+_VERDICTS = (
+    "never raised",
+    "was handed",
+    "before the caller's",
+    "past its own deadline",
+    "does not see the root's exit",
+    "the look never ran",
+    "too early to place",
+    "too late to place",
+)
+
+
+def _why_the_root_timed_out(
+    witness: _TimeoutWitness, *, started: float, timeout: float
+) -> str | None:
+    """``None`` when a timed-out attempt is the PREMISE failing; otherwise the defect (#446).
+
+    The deadline arm's premise is that the root exits inside the caller's
+    deadline. Only the runner breaks it that way, and the record shows it: the
+    site's own timed wait was handed the caller's timeout and gave up AT that
+    deadline — no earlier than :data:`_EARLY_TIMEOUT_SLACK` before it on the
+    case's clock, no later than :data:`_LATE_TIMEOUT_SLACK` past the wait's own
+    — on a root that had not exited: still running when the wait gave up, or
+    still running at a look that began inside the last
+    :data:`_LOOK_BEFORE_THE_DEADLINE` (plus the clock grain) before the wait's
+    deadline and gone by the time it gave up (a dead heat: the exit and the
+    wait's timeout landed together). Every other way to reach
+    ``timed_out=True`` here is the site's, and each one is named by its own
+    phrase (:data:`_VERDICTS`):
+
+    - the label without the wait: ``timed_out=True`` while the timed wait never
+      raised — "never raised";
+    - another deadline handed to ``proc.wait`` than the caller's — "was handed";
+    - a deadline handed short, or counted from an earlier origin: the wait gave
+      up before the caller's deadline — "before the caller's";
+    - a wait that does not honour its deadline: it gave up later than that —
+      "past its own deadline";
+    - a wait that does not see the root's exit: the root was already dead
+      (``zombie`` on POSIX, ``gone`` on win32) at a look that ended more than
+      the clock grain before the wait's deadline — "does not see the root's
+      exit";
+    - and, failing closed, a root dead when the wait gave up that no look
+      placed at the deadline: the look never ran — "the look never ran"; it saw
+      the root alive but began too early to place the exit inside the last
+      quarter second — "too early to place"; or it saw the root dead but ended
+      too close to, or past, the deadline to place the exit before it — "too
+      late to place".
+
+    The kill that follows is checked separately (:func:`_the_timeout_leg_left`).
+    """
+
+    if witness.timed_out_at is None:
+        return (
+            "the call reported timed_out=True, but the site's timed ``proc.wait`` never raised "
+            "``TimeoutExpired`` — the label did not come from the deadline"
+        )
+    gave_up = witness.timed_out_at - started
+    if witness.waited_for != timeout:
+        return (
+            f"the site's timed wait was handed {witness.waited_for}s, not the caller's {timeout}s "
+            f"— it gave up {gave_up:.3f}s after the call on a deadline the caller never set"
+        )
+    if gave_up < timeout - _EARLY_TIMEOUT_SLACK:
+        return (
+            f"the site's timed wait gave up {gave_up:.3f}s after the call, before the caller's "
+            f"{timeout}s deadline — a deadline handed to ``proc.wait`` short, or counted from an "
+            f"earlier origin"
+        )
+    waited_at = witness.waited_at if witness.waited_at is not None else started
+    deadline = waited_at + timeout
+    late = witness.timed_out_at - deadline
+    if late > _LATE_TIMEOUT_SLACK:
+        return (
+            f"the site's timed wait gave up {late:.3f}s past its own deadline ({gave_up:.3f}s "
+            f"after the call) — a wait that does not honour the deadline it waited for"
+        )
+    if witness.root_then == STATE_ALIVE:
+        return None
+    if witness.look_began is None or witness.looked_at is None or witness.looked_saw is None:
+        return (
+            f"the root was already {witness.root_then} when the site's timed wait gave up "
+            f"{gave_up:.3f}s after the call, and the look never ran — nothing on the record "
+            f"places the root's exit at the deadline, so the case fails closed"
+        )
+    if witness.looked_saw == STATE_ALIVE:
+        early = deadline - witness.look_began
+        if early <= _LOOK_BEFORE_THE_DEADLINE + _EARLY_TIMEOUT_SLACK:
+            return None
+        return (
+            f"the root was alive at a look that began {early:.3f}s before the wait's deadline and "
+            f"{witness.root_then} when the wait gave up {gave_up:.3f}s after the call — a look "
+            f"too early to place its exit inside the last {_LOOK_BEFORE_THE_DEADLINE}s, so the "
+            f"case fails closed"
+        )
+    ahead = deadline - witness.looked_at
+    if ahead > _EARLY_TIMEOUT_SLACK:
+        return (
+            f"the root was already {witness.looked_saw} {ahead:.3f}s before the wait's own "
+            f"deadline, and the wait still gave up, {gave_up:.3f}s after the call — a wait that "
+            f"does not see the root's exit"
+        )
+    return (
+        f"the root was {witness.looked_saw} at a look that ended {-ahead:+.3f}s from the "
+        f"wait's deadline, and when the wait gave up {gave_up:.3f}s after the call — a look too "
+        f"late to place its exit before the deadline, so the case fails closed"
+    )
+
+
+def _the_timeout_leg_left(
+    witness: _TimeoutWitness,
+    pids: tuple[int, ...] | None,
+    marker: Path,
+    strays: list[int],
+) -> tuple[list[str], list[str]]:
+    """What the timeout leg's kill missed, each by name, and what it was checked for (#446).
+
+    Asked only of an attempt :func:`_why_the_root_timed_out` found to be the
+    premise, so the kill went out while something of the tree may still have
+    been running. Four checks, each with its own message:
+
+    - THE ROOT EXITED 0 ON ITS OWN after the kill had gone out: still running
+      just before the timeout leg's reap, and reaped more than
+      :data:`_A_KILL_TAKES` later with returncode 0 — a kill that never
+      reached it (one that did leaves ``-SIGKILL`` on POSIX and 1 on win32). A
+      root already dead before the reap exited before the kill could reach it,
+      which says nothing about the kill.
+    - THE TREE WAS ANNOUNCED AFTER THE KILL: the marker the python root writes
+      once it has spawned the holder has a file time later than the reap began
+      (wall clock, :data:`_EARLY_TIMEOUT_SLACK` of grain) — a process the kill
+      missed went on running. A marker that appeared only after the registrar
+      stopped polling counts too, and its pids are registered for cleanup.
+    - AN ANNOUNCED PROCESS OUTLIVED THE KILL: the root, the python root, and on
+      win32 the escaped holder (the job reaches it there; on POSIX it is
+      OUTSIDE the group by construction,
+      :func:`test_a_holder_outside_the_tree_does_not_hang_the_call`'s
+      asymmetry), still alive :data:`_A_KILLED_PROCESS_ENDS_WITHIN` after the
+      kill went out.
+    - THE TREE STILL HELD A PROCESS: the root's process group on POSIX (when
+      the root leads it), its job on win32 (when the site had one), still
+      holding a process that is not a zombie that long after the kill —
+      whether or not it ever announced, which is the python root the kill
+      missed while it was still starting. Those pids are registered for
+      cleanup.
+
+    The last two look once when this is asked — after the call came back and
+    the registrar settled — and poll only up to that instant past the kill, so
+    a process the kill missed cannot pass by exiting on its own while the check
+    waits for it. What none of this can see: a root that exited 0 within
+    :data:`_A_KILL_TAKES` of the kill (the kill and the exit are one instant to
+    the record), a process the kill missed that ended on its own before the
+    check looked and never announced after the kill, and a process outside the
+    root's group and job that never announced.
+    """
+
+    left: list[str] = []
+    checked: list[str] = []
+    try:
+        code = None if witness.proc is None else witness.proc.returncode
+        ran_on = (
+            None
+            if witness.reap_began is None or witness.reap_back is None
+            else witness.reap_back - witness.reap_began
+        )
+        if (
+            code == 0
+            and witness.root_at_reap == STATE_ALIVE
+            and ran_on is not None
+            and ran_on > _A_KILL_TAKES
+        ):
+            left.append(
+                f"the root {witness.root} was still running after the kill had gone out and "
+                f"exited 0 on its own {ran_on:.3f}s later — a kill that never reached it"
+            )
+        elif code == 0 and witness.root_at_reap != STATE_ALIVE:
+            checked.append("the root had exited 0 on its own before the kill went out")
+        elif code == 0:
+            checked.append(
+                f"the root exited 0 within {_A_KILL_TAKES}s of the kill going out, one instant "
+                f"with it to this record"
+            )
+        elif code is not None:
+            checked.append(f"the root ended by the kill (returncode {code})")
+
+        kill_wall = (
+            witness.reap_began_wall if witness.reap_began_wall is not None else witness.settled_wall
+        )
+        try:
+            written = marker.stat().st_mtime
+        except OSError:
+            written = None
+        if pids is None and written is not None:
+            with contextlib.suppress(OSError, ValueError):
+                pids = tuple(int(pid) for pid in marker.read_text(encoding="utf-8").split())
+                strays.extend(pids)
+        if written is not None and kill_wall is not None:
+            after = written - kill_wall
+            if after > _EARLY_TIMEOUT_SLACK:
+                left.append(
+                    f"the python root announced its tree {after:.3f}s after the timeout leg's "
+                    f"kill went out — a process the kill missed went on running"
+                )
+            else:
+                checked.append(f"its tree announced {-after:.3f}s before the kill went out")
+        else:
+            checked.append("no tree announced")
+
+        owed: dict[int, str] = {}
+        if witness.root is not None:
+            owed[witness.root] = "the root"
+        if pids:
+            owed.setdefault(pids[0], "the python root")
+            if sys.platform == "win32" and len(pids) > 1:
+                owed.setdefault(pids[1], "the holder, inside the job")
+        if witness.group is not None:
+            tree, held_by = "process group", witness.group
+        elif witness.job is not None:
+            tree, held_by = "job", witness.job
+        else:
+            tree, held_by = None, None
+
+        def held() -> list[int] | None:
+            if held_by is None:
+                return []
+            if tree == "job":
+                return _what_the_job_holds(held_by)
+            return _what_the_group_holds(held_by)
+
+        kill_at = witness.reap_began if witness.reap_began is not None else time.monotonic()
+        limit = kill_at + _A_KILLED_PROCESS_ENDS_WITHIN
+        while True:
+            alive = [pid for pid in owed if probe_state(pid) == STATE_ALIVE]
+            still = held()
+            if (not alive and still == []) or time.monotonic() >= limit:
+                break
+            time.sleep(0.05)
+        looked = time.monotonic() - kill_at
+        for pid in alive:
+            left.append(f"{pid} ({owed[pid]}) was still alive {looked:.3f}s after the kill")
+        if still is None:
+            left.append(f"the root's {tree} still answers, and nothing here could list it")
+        elif still:
+            strays.extend(still)
+            left.append(f"the root's {tree} still held {still} {looked:.3f}s after the kill")
+        if not alive:
+            checked.append(f"dead after it: {', '.join(owed.values())}")
+        if still == [] and tree is not None:
+            checked.append(f"nothing left in the root's {tree}")
+        return left, checked
+    finally:
+        witness.release()
+
+
+def _premise_missed_the_deadline(
+    what: str,
+    witness: _TimeoutWitness,
+    *,
+    started: float,
+    timeout: float,
+    announced: bool,
+    checked: list[str],
+) -> str:
+    """The line an attempt whose root had not exited by the deadline leaves (#446)."""
+
+    gave_up = (witness.timed_out_at or started) - started
+    if witness.root_then == STATE_ALIVE:
+        when = f"still running when the site's wait gave up, {gave_up:.3f}s after the call"
+    else:
+        waited_at = witness.waited_at if witness.waited_at is not None else started
+        before = waited_at + timeout - (witness.look_began or waited_at)
+        when = (
+            f"still running at a look {before:.3f}s before the wait's deadline and "
+            f"{witness.root_then} when the wait gave up {gave_up:.3f}s after the call — a dead "
+            f"heat between the root's exit and the wait's timeout"
+        )
+    stage = (
+        "after its python child had announced its tree"
+        if announced
+        else "before its python child announced its tree — a start-up the deadline came first for"
+    )
+    return (
+        f"{what}: THE PREMISE FAILED, NOT THE CASE — the root had not exited by the caller's "
+        f"{timeout}s deadline: {when}, {stage}. The deadline arm needs a root that exits inside "
+        f"its deadline, and on win32 that root is a pwsh start plus a python child; the site "
+        f"answered as a timeout does (``exit_code=None, timed_out=True``) and its kill was "
+        f"checked ({'; '.join(checked)}), and the exit path's drain, which is what this case "
+        f"measures, never ran, so the case runs again"
+    )
+
+
+def _the_call_came_back_at_or_past(started: float, timeout: float, returned: float) -> bool:
+    """8a's floor as the product's own sum (#446), never as ``timeout <= returned - started``.
+
+    The drain ended on a look at or past ``started_at + timeout`` and the case
+    read ``started`` before ``exec`` took ``started_at``, so ``started +
+    timeout <= returned`` holds exactly, while the subtraction can land an ulp
+    under ``timeout``. On win32 up to py3.12 ``time.monotonic`` steps 15.625 ms,
+    so ``started`` and ``started_at`` can be one reading and the look that ends
+    the drain can read the soft cap itself; when ``started + timeout`` crosses a
+    power of two it rounds down, and the look's reading minus the start is then
+    one ulp short: ``assert 2.0 <= 1.9999999999999432`` on windows-latest
+    py3.12 (run 38509857375, once in 675 deadline-arm runs).
+    :func:`test_the_deadline_arms_floor_holds_on_a_rounding_tie` pins it.
+    """
+
+    return started + timeout <= returned
 
 
 @pytest.mark.parametrize(
@@ -1433,6 +2163,49 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     ceiling discriminates, on win32 too: the soft cap it was handed is below
     the flat one — the caller's deadline, not ``DRAIN_CAP_SECONDS`` past the
     exit.
+
+    A ROOT THAT HAD NOT EXITED BY THE DEADLINE IS THE PREMISE FAILING SINCE
+    #446, ON THE WITNESS'S RECORD AND NOWHERE ELSE. The deadline arm measures
+    the exit path's drain, so it needs a root that exits inside its deadline;
+    on win32 that root is a pwsh start plus a python child, and on a loaded
+    windows runner it missed the 2.0 s deadline (job 114898865326, and 31 of
+    900 loaded runs in run 38509857375 — 0 of 450 unloaded), took the timeout
+    leg correctly and failed here at ``assert result.exit_code == 0``. Raising
+    the deadline cannot cover that tail (:data:`_DEADLINE_ARM_SECONDS` says
+    why), so such an attempt runs again — but only when
+    :func:`_why_the_root_timed_out` reads it off the site's own timed wait
+    (:class:`_TimeoutWitness`) as a wait handed the caller's timeout that gave
+    up AT that deadline, from either side, on a root that had not exited, and
+    only when :func:`_the_timeout_leg_left` finds that the timeout leg's kill
+    reached the tree: the root did not run on to exit 0 by itself, nothing
+    announced its tree after the kill went out, and within
+    :data:`_A_KILLED_PROCESS_ENDS_WITHIN` of the kill every announced process
+    it owes is dead and the root's process group (POSIX) or job (win32) holds
+    nothing that is not a zombie. Each other shape fails the attempt it
+    happens on, by its own name; every attempt timing out fails as the
+    premise failing every time. :func:`test_8a_runs_again_after_a_root_that_had_not_exited_by_its_deadline`
+    and :func:`test_8a_fails_a_timeout_leg_whose_kill_never_reached_the_root`
+    drive that branch on every leg. The floor, on the attempt that measured,
+    is the product's own sum (:func:`_the_call_came_back_at_or_past`), for the
+    same reason as the soft cap.
+    """
+
+    await _the_drain_cap_case(tmp_path, strays, monkeypatch, timeout)
+
+
+async def _the_drain_cap_case(
+    tmp_path: Path,
+    strays: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    timeout: float | None,
+    *,
+    first_root_holds: float = 0.0,
+) -> list[str]:
+    """8a's procedure; returns the premise lines the attempts it ran again left.
+
+    ``first_root_holds`` is how long attempt 1's python root sleeps after it
+    has announced its tree — ``0.0`` in 8a itself, and past the deadline in the
+    rows that drive the deadline premise on every leg (#446 review round 2).
     """
 
     what = f"a holder that never falls idle (timeout={timeout})"
@@ -1443,12 +2216,15 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         registrar = _registrar(marker, strays)
         record = _DrainRecord()
         record.install(monkeypatch)
+        witness = _TimeoutWitness()
+        witness.install(monkeypatch)
         chunks: list[bytes] = []
         # ``hold`` is the ROOT's own sleep, so ``hold=0.0`` is what makes the
         # root exit at once and arms the drain immediately; ``tick`` is the
         # HOLDER's, and 50 ms against a 100 ms grace is what keeps the window
         # open — while the reader keeps up (:class:`_DrainRecord`).
-        command = _holder_command(marker.parent, marker, tick=0.05, hold=0.0)
+        hold = first_root_holds if attempt == 1 else 0.0
+        command = _holder_command(marker.parent, marker, tick=0.05, hold=hold)
         task = _exec_task(command, marker.parent, chunks, timeout=timeout)
         started = time.monotonic()
 
@@ -1457,6 +2233,7 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         finally:
             returned = time.monotonic()
             elapsed = returned - started
+            witness.settle()
             pids = registrar.settle()
             end = record.end()
             warnings.warn(
@@ -1466,10 +2243,42 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
                 stacklevel=1,
             )
         if end.kind == "idle":
+            witness.release()
             premise_failures.append(_premise_failed(f"attempt {attempt}", end))
+        elif (
+            end.kind == "no-exit-drain"
+            and timeout is not None
+            and result.timed_out
+            and result.exit_code is None
+        ):
+            # #446: the call took the timeout leg — the premise failing only
+            # on the witness's record (the root had not exited by the
+            # deadline), and only once that leg's kill is found to have reached
+            # the tree. Anything else fails here, on this attempt, by name.
+            defect = _why_the_root_timed_out(witness, started=started, timeout=timeout)
+            checked: list[str] = []
+            if defect is None:
+                left, checked = _the_timeout_leg_left(witness, pids, marker, strays)
+                if left:
+                    defect = f"the timeout leg's kill missed: {'; '.join(left)}"
+            witness.release()
+            if defect is not None:
+                pytest.fail(f"{what}, attempt {attempt}: {defect} ({end.summary})")
+            premise_failures.append(
+                _premise_missed_the_deadline(
+                    f"attempt {attempt}",
+                    witness,
+                    started=started,
+                    timeout=timeout,
+                    announced=pids is not None,
+                    checked=checked,
+                )
+            )
         elif end.kind != "cap":
+            witness.release()
             break
         else:
+            witness.release()
             stall = _judged_on_its_record(record, returned=returned, what=what)
             if stall is None:
                 break
@@ -1480,7 +2289,11 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         for pid in pids or ():
             _reap(pid)
     else:
-        pytest.fail(_every_attempt_failed_its_premise(what, premise_failures, stalls=True))
+        pytest.fail(
+            _every_attempt_failed_its_premise(
+                what, premise_failures, stalls=True, deadline=timeout is not None
+            )
+        )
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     assert result.exit_code == 0
@@ -1516,7 +2329,13 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
         ceiling = (
             timeout + KILL_DRAIN_SECONDS + SLACK if sys.platform == "win32" else DRAIN_CAP_SECONDS
         )
-        assert timeout <= elapsed < ceiling, (
+        # The floor as the product's own sum (#446), never as ``timeout <=
+        # elapsed`` — :func:`_the_call_came_back_at_or_past` says why.
+        assert _the_call_came_back_at_or_past(started, timeout, returned), (
+            f"elapsed={elapsed!r}s — the call came back before the caller's own deadline of "
+            f"{timeout}s, which the drain was handed as its soft cap ({end.summary})"
+        )
+        assert elapsed < ceiling, (
             f"elapsed={elapsed:.3f}s — the caller's own deadline of {timeout}s did not bound "
             f"the exit drain (ceiling {ceiling:.1f}s)"
         )
@@ -1530,6 +2349,251 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     # about it. The notice is for the command's own bytes; on every command
     # that backgrounds something chatty it would be noise.
     assert result.output_unconfirmed is False
+    return premise_failures
+
+
+#: How long past the deadline arm's deadline attempt 1's python root sleeps in
+#: the two rows that drive 8a's deadline premise (#446 review round 2): long
+#: enough to be running when the timeout leg's kill goes out on any runner, and
+#: short enough that a kill which never reaches it sees it exit 0 by itself a
+#: second after the deadline, well past :data:`_A_KILL_TAKES`.
+_HELD_PAST_THE_DEADLINE = 1.0
+
+
+async def test_8a_runs_again_after_a_root_that_had_not_exited_by_its_deadline(
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """8a's deadline premise, driven on every leg (#446 review round 2).
+
+    The real miss is rare and windows-only (a loaded runner, a pwsh start), so
+    without this row the branch, the kill check and the retry ran only when a
+    runner happened to be slow. Here attempt 1's python root announces its tree
+    and then sleeps past the deadline: the site's timed wait gives up AT the
+    deadline on a running root and the timeout leg kills the tree, which the
+    case must say as its premise failing — with the kill checked — and then
+    measure the cap on attempt 2. A case that trusted no timeout (the branch
+    gone) fails here at ``assert result.exit_code == 0``.
+    """
+
+    lines = await _the_drain_cap_case(
+        tmp_path,
+        strays,
+        monkeypatch,
+        _DEADLINE_ARM_SECONDS,
+        first_root_holds=_DEADLINE_ARM_SECONDS + _HELD_PAST_THE_DEADLINE,
+    )
+    assert lines, "attempt 1's root held past the deadline, and no attempt said so"
+    first = lines[0]
+    assert first.startswith("attempt 1: THE PREMISE FAILED"), first
+    assert "had not exited by the caller's" in first, first
+    assert "still running when the site's wait gave up" in first, first
+    assert "its kill was checked (" in first, first
+
+
+async def test_8a_fails_a_timeout_leg_whose_kill_never_reached_the_root(
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same premise shape with a timeout leg that kills nothing fails 8a by name (#446 review round 2).
+
+    The site's ``_end_the_tree`` is replaced, for this row only, by its reap
+    alone: no tree kill and no belt, so attempt 1's held root runs on and exits
+    0 by itself a second after the deadline. The rule alone reads that attempt
+    as the premise (the wait gave up AT the deadline on a running root); what
+    must fail it is :func:`_the_timeout_leg_left` — "exited 0 on its own", and
+    on win32 also the escaped holder, inside the job, outliving it. A case that
+    trusted any timeout, or dropped the kill check, passes here instead.
+    """
+
+    def ends_nothing(tree: ProcessTree, proc: subprocess.Popen[bytes], *, reap: float) -> None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=reap)
+
+    monkeypatch.setattr(bash_module, "_end_the_tree", ends_nothing)
+    with pytest.raises(pytest.fail.Exception) as failed:
+        await _the_drain_cap_case(
+            tmp_path,
+            strays,
+            monkeypatch,
+            _DEADLINE_ARM_SECONDS,
+            first_root_holds=_DEADLINE_ARM_SECONDS + _HELD_PAST_THE_DEADLINE,
+        )
+    message = str(failed.value)
+    assert "attempt 1: the timeout leg's kill missed:" in message, message
+    assert "exited 0 on its own" in message, message
+
+
+@pytest.mark.parametrize(
+    ("gave_up", "root_then", "look", "waited_for", "verdict"),
+    [
+        (0.016, STATE_ALIVE, None, None, None),
+        (-0.07, STATE_ALIVE, None, None, None),
+        (-0.09, STATE_ALIVE, None, None, "before the caller's"),
+        (-0.5, STATE_ALIVE, None, None, "before the caller's"),
+        (0.45, STATE_ALIVE, None, None, None),
+        (0.55, STATE_ALIVE, None, None, "past its own deadline"),
+        (3.0, STATE_ALIVE, None, None, "past its own deadline"),
+        (0.016, STATE_ALIVE, None, 5.0, "was handed"),
+        (0.016, STATE_ALIVE, None, -0.5, "was handed"),
+        (0.016, STATE_ZOMBIE, (-0.25, -0.24, STATE_ALIVE), None, None),
+        (0.036, STATE_GONE, (-0.18, -0.17, STATE_ALIVE), None, None),
+        (0.016, STATE_ZOMBIE, (-0.29, -0.28, STATE_ALIVE), None, None),
+        (0.016, STATE_ZOMBIE, (-0.31, -0.30, STATE_ALIVE), None, "too early to place"),
+        (0.016, STATE_ZOMBIE, (-0.6, -0.59, STATE_ALIVE), None, "too early to place"),
+        (0.016, STATE_ZOMBIE, (-1.0, -0.99, STATE_ALIVE), None, "too early to place"),
+        (0.016, STATE_ZOMBIE, (-0.25, -0.24, STATE_ZOMBIE), None, "does not see the root's exit"),
+        (0.016, STATE_GONE, (-0.25, -0.24, STATE_GONE), None, "does not see the root's exit"),
+        (0.016, STATE_GONE, (-0.07, -0.06, STATE_GONE), None, "does not see the root's exit"),
+        (0.016, STATE_GONE, (-0.05, -0.04, STATE_GONE), None, "too late to place"),
+        (0.09, STATE_GONE, (0.06, 0.07, STATE_GONE), None, "too late to place"),
+        (0.016, STATE_GONE, None, None, "the look never ran"),
+        (0.016, STATE_ZOMBIE, None, None, "the look never ran"),
+        (None, None, None, None, "never raised"),
+    ],
+    ids=[
+        "alive-past-the-deadline",
+        "alive-0.04s-before-the-callers-deadline",
+        "gave-up-0.06s-before-the-callers-deadline",
+        "gave-up-half-a-second-early",
+        "alive-0.45s-past-the-waits-deadline",
+        "gave-up-0.55s-past-the-waits-deadline",
+        "gave-up-3s-late",
+        "handed-the-reap-grace-on-top",
+        "handed-half-a-second-less",
+        "a-dead-heat-posix",
+        "a-dead-heat-win32-late-look",
+        "alive-at-a-look-0.29s-before",
+        "alive-at-a-look-0.31s-before",
+        "alive-at-a-look-0.6s-before",
+        "alive-at-a-look-as-the-wait-began",
+        "exited-unseen-posix",
+        "exited-unseen-win32",
+        "dead-at-a-look-that-ended-0.06s-before",
+        "dead-at-a-look-that-ended-0.04s-before",
+        "dead-at-a-look-past-the-deadline",
+        "gone-and-never-looked-at",
+        "a-zombie-never-looked-at",
+        "a-label-without-the-wait",
+    ],
+)
+def test_only_a_root_that_had_not_exited_by_the_deadline_is_8as_premise(
+    gave_up: float | None,
+    root_then: str | None,
+    look: tuple[float, float, str] | None,
+    waited_for: float | None,
+    verdict: str | None,
+) -> None:
+    """:func:`_why_the_root_timed_out`, row by row, without a process (#446).
+
+    8a retries a timed-out attempt only on this verdict, and on the windows leg
+    the real one is rare (a loaded runner, a pwsh start), so the rule is pinned
+    here where every row runs on every leg. Every instant is relative to the
+    WAIT'S deadline: the site's wait began 0.03 s after the case's start, so
+    the caller's deadline is 0.03 s before it. ``look`` is when the look began
+    and ended and what it saw; ``waited_for``, when given, is added to the
+    caller's timeout to make the one the wait was handed.
+
+    The premise: a wait handed the caller's timeout that gave up AT that
+    deadline — 0.04 s before the caller's is inside the clock's grain, 0.06 s
+    is not; 0.45 s past the wait's own is inside :data:`_LATE_TIMEOUT_SLACK`,
+    0.55 s is not — on a root still running then, or still running at a look
+    that began inside the last :data:`_LOOK_BEFORE_THE_DEADLINE` plus the grain
+    and dead when the wait gave up (the dead heat windows-latest measured twice
+    in 13 misses; the win32 row's look runs 0.07 s late, as late as that
+    runner's worker ever resumed). A look 0.29 s before is inside, 0.31 s is
+    not. The site's defect, failing 8a at once: a wait handed another timeout,
+    one that gave up early or late, a root already dead at a look that ended
+    0.06 s before the deadline (0.04 s is the grain, and fails closed), a
+    ``timed_out=True`` the wait never raised — and, failing closed, a root dead
+    when the wait gave up that no look placed at the deadline: none ran, it saw
+    the root alive too early, or it saw it dead too late. Each verdict is its
+    own phrase (:data:`_VERDICTS`) and a row asserts the one it expects and
+    none of the others, so a rule that dropped any one check, merged two of
+    them, or moved a slack past its pair of rows turns a row red.
+    """
+
+    started, timeout = 100.0, _DEADLINE_ARM_SECONDS
+    witness = _TimeoutWitness()
+    witness.waited_at = started + 0.03
+    witness.waited_for = timeout + (waited_for or 0.0)
+    deadline = witness.waited_at + witness.waited_for
+    if gave_up is not None:
+        witness.timed_out_at = deadline + gave_up
+        witness.root_then = root_then
+    if look is not None:
+        witness.look_began = deadline + look[0]
+        witness.looked_at = deadline + look[1]
+        witness.looked_saw = look[2]
+    answer = _why_the_root_timed_out(witness, started=started, timeout=timeout)
+    if verdict is None:
+        assert answer is None, answer
+        return
+    assert answer is not None, f"the rule took this row as the premise; expected {verdict!r}"
+    named = [phrase for phrase in _VERDICTS if phrase in answer]
+    assert named == [verdict], answer
+
+
+def test_the_witness_looks_a_quarter_second_before_the_waits_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """:class:`_TimeoutWitness`'s look runs where the rule expects it (#446 review round 2).
+
+    The rule takes a look that saw the root alive as a dead heat only when it
+    began inside the last :data:`_LOOK_BEFORE_THE_DEADLINE` plus the clock
+    grain, so the look's own schedule is pinned here, with a stand-in for the
+    site's ``proc``: a root that never exits (this process) and a timed wait
+    that gives up at its deadline — held open, past it, until the witness has
+    looked, so a starved look thread delays the row instead of failing it. A
+    look scheduled from the wrong end of the wait (``waited_at + 0.25``) or run
+    at once begins a second or three quarters of one before the deadline and
+    fails here.
+    """
+
+    timeout = 1.0
+    witness = _TimeoutWitness()
+    witness.install(monkeypatch)
+
+    class _NeverExits:
+        pid = os.getpid()
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            time.sleep(timeout)
+            held_until = time.monotonic() + DEADLINE
+            while witness.looked_at is None and time.monotonic() < held_until:
+                time.sleep(0.01)
+            raise subprocess.TimeoutExpired("the root", timeout)
+
+    proc = _NeverExits()
+    bash_module._retained_handle(proc)  # what ``exec`` does right after the spawn
+    with pytest.raises(subprocess.TimeoutExpired):
+        proc.wait(timeout)
+    witness.settle()
+    assert witness.waited_at is not None and witness.look_began is not None, (
+        "the witness never looked before the wait's deadline"
+    )
+    early = witness.waited_at + timeout - witness.look_began
+    assert early <= _LOOK_BEFORE_THE_DEADLINE + _EARLY_TIMEOUT_SLACK, (
+        f"the look began {early:.3f}s before the wait's deadline, not inside the last "
+        f"{_LOOK_BEFORE_THE_DEADLINE}s"
+    )
+    assert witness.looked_saw == STATE_ALIVE
+
+
+def test_the_deadline_arms_floor_holds_on_a_rounding_tie() -> None:
+    """8a's floor holds where the subtraction lands an ulp short (#446).
+
+    ``started`` a whole-millisecond reading in ``[510, 512)`` and the drain's
+    last look reading the soft cap itself, ``started + timeout``: the sum
+    crosses 512 and rounds, so ``returned - started`` is
+    ``1.9999999999999432`` — the windows-latest py3.12 failure — while the
+    product's own sum holds exactly.
+    """
+
+    started, timeout = 510.002, 2.0
+    returned = started + timeout
+    assert returned - started < timeout, "not a rounding tie: the row measures nothing"
+    assert _the_call_came_back_at_or_past(started, timeout, returned)
+
 
 # === 8b: an abort that lands in the exit-path drain =========================
 
