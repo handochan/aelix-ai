@@ -314,6 +314,27 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Tests only: the bash drain-cap case's deadline arm no longer fails when
+  Windows starts the shell too slowly to finish inside the deadline (#446).**
+  Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`
+  needs a root that exits inside its 2.0 s deadline. On windows-latest under
+  CPU load, PowerShell plus its Python child sometimes did not: 31 of 900
+  loaded runs timed out and 0 of 450 unloaded ones (run 38509857375). The time
+  went to start-up waiting for a CPU, not to the product seeing the exit. Such
+  an attempt now runs again, but only when the site's own timed wait shows the
+  root had not exited when the wait gave up at the deadline, and only after the
+  timeout's kill has ended every process it owes. A wait that gave up early, a
+  timeout the wait never raised, a root that had exited before the deadline, or
+  a kill that left the tree running still fails at once. A larger deadline was
+  not taken: the measured exits spread wider than the window the arm needs.
+  The arm's floor now compares the product's own sum, after a Python 3.12
+  Windows run failed `2.0 <= 1.9999999999999432` on a rounding tie. Measured
+  with the old and new test interleaved in the same jobs (run 38531413887, 100
+  rounds per Python version and load): 6 of 900 deadline-arm runs failed
+  against 16 of 900 for the old test, and 0 of 300 either way without load.
+  Each remaining failure is three attempts in a row whose root had not exited
+  in time, and the case now says so.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
