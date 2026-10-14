@@ -1,0 +1,2757 @@
+{
+ "meta": {
+  "openai": "1.109.1",
+  "python": "3.13.13"
+ },
+ "scenarios": {
+  "comp-connect-error": {
+   "events": [
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [],
+      "error_message": "Connection error. \u2014 refused",
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "error",
+      "usage": null
+     },
+     "reason": "error",
+     "type": "AssistantErrorEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-env-exported": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ],
+      [
+       "openai-organization",
+       "org-env-fake"
+      ],
+      [
+       "openai-project",
+       "proj-env-fake"
+      ],
+      [
+       "x-team",
+       "t1"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-http-400": {
+   "events": [
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [],
+      "error_message": "Error code: 400 - {'error': {'message': 'bad thing', 'type': 'invalid_request_error', 'code': 'bad'}}",
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "error",
+      "usage": null
+     },
+     "reason": "error",
+     "type": "AssistantErrorEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-http-429": {
+   "events": [
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [],
+      "error_message": "Error code: 429 - {'error': {'message': 'slow down', 'type': 'rate_limit'}}",
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "error",
+      "usage": null
+     },
+     "reason": "error",
+     "type": "AssistantErrorEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-caller-client": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-caller-client-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-env-exported": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ],
+      [
+       "openai-organization",
+       "org-env-fake"
+      ],
+      [
+       "openai-project",
+       "proj-env-fake"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-header-Authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-header-authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-header-cf-aig-authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "cf-aig-authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-keyless-hook-extra-headers": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-hook-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-openai-cache-long": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "gpt-4o-mini",
+      "prompt_cache_key": "sess-1",
+      "prompt_cache_retention": "24h",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      },
+      "tools": [
+       {
+        "function": {
+         "description": "Read a file",
+         "name": "read",
+         "parameters": {
+          "properties": {
+           "path": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "path"
+          ],
+          "type": "object"
+         },
+         "strict": false
+        },
+        "type": "function"
+       }
+      ]
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "api.openai.com"
+      ],
+      [
+       "x-team",
+       "t1"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-text": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "input": 7,
+       "input_tokens": 7,
+       "output": 2,
+       "output_tokens": 2,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      }
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "comp-tool": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "ThinkingStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "think",
+     "type": "ThinkingDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "type": "ToolCallStartEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": "",
+     "tool_call_id": "call_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": "{\"path\":",
+     "tool_call_id": "call_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": " \"a.txt\"}",
+     "tool_call_id": "call_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content": "think",
+     "content_index": 0,
+     "type": "ThinkingEndEvent"
+    },
+    {
+     "content_index": 1,
+     "tool_call": {
+      "input": {
+       "path": "a.txt"
+      },
+      "thought_signature": "",
+      "tool_call_id": "call_1",
+      "tool_name": "read",
+      "type": "toolCall"
+     },
+     "type": "ToolCallEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-completions",
+      "content": [
+       {
+        "redacted": false,
+        "thinking": "think",
+        "thinking_signature": "reasoning_content",
+        "type": "thinking"
+       },
+       {
+        "input": {
+         "path": "a.txt"
+        },
+        "thought_signature": "",
+        "tool_call_id": "call_1",
+        "tool_name": "read",
+        "type": "toolCall"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "toolUse",
+      "usage": null
+     },
+     "reason": "toolUse",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "messages": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       },
+       {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"path\": \"x\"}",
+           "name": "read"
+          },
+          "id": "call_0",
+          "type": "function"
+         }
+        ]
+       },
+       {
+        "content": "file body",
+        "role": "tool",
+        "tool_call_id": "call_0"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "stream_options": {
+       "include_usage": true
+      },
+      "tools": [
+       {
+        "function": {
+         "description": "Read a file",
+         "name": "read",
+         "parameters": {
+          "properties": {
+           "path": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "path"
+          ],
+          "type": "object"
+         },
+         "strict": false
+        },
+        "type": "function"
+       }
+      ]
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/chat/completions"
+    }
+   ]
+  },
+  "resp-compat-reasoning-text": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "ThinkingStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "plan",
+     "type": "ThinkingDeltaEvent"
+    },
+    {
+     "content": "plan",
+     "content_index": 0,
+     "type": "ThinkingEndEvent"
+    },
+    {
+     "content_index": 1,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 1,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "redacted": false,
+        "thinking": "plan",
+        "thinking_signature": "{\"id\": \"rs_1\", \"summary\": [{\"text\": \"plan\", \"type\": \"summary_text\"}], \"type\": \"reasoning\"}",
+        "type": "thinking"
+       },
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-compat-text": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-compat-tool": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "ToolCallStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "{\"path\":",
+     "tool_call_id": "call_1|fc_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": " \"a.txt\"}",
+     "tool_call_id": "call_1|fc_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "tool_call": {
+      "input": {
+       "path": "a.txt"
+      },
+      "thought_signature": "",
+      "tool_call_id": "call_1|fc_1",
+      "tool_name": "read",
+      "type": "toolCall"
+     },
+     "type": "ToolCallEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "input": {
+         "path": "a.txt"
+        },
+        "thought_signature": "",
+        "tool_call_id": "call_1|fc_1",
+        "tool_name": "read",
+        "type": "toolCall"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "toolUse",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "toolUse",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "arguments": "{\"path\": \"x\"}",
+        "call_id": "call_0",
+        "name": "read",
+        "type": "function_call"
+       },
+       {
+        "call_id": "call_0",
+        "output": "file body",
+        "type": "function_call_output"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true,
+      "tools": [
+       {
+        "description": "Read a file",
+        "name": "read",
+        "parameters": {
+         "properties": {
+          "path": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       }
+      ]
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-connect-error": {
+   "events": [
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [],
+      "error_message": "Connection error. \u2014 refused",
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "error",
+      "usage": null
+     },
+     "reason": "error",
+     "type": "AssistantErrorEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-env-exported": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ],
+      [
+       "openai-organization",
+       "org-env-fake"
+      ],
+      [
+       "openai-project",
+       "proj-env-fake"
+      ],
+      [
+       "x-team",
+       "t1"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-http-400": {
+   "events": [
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [],
+      "error_message": "Error code: 400 - {'error': {'message': 'bad thing', 'type': 'invalid_request_error'}}",
+      "model": "m",
+      "provider": "p",
+      "response_id": null,
+      "role": "assistant",
+      "stop_reason": "error",
+      "usage": null
+     },
+     "reason": "error",
+     "type": "AssistantErrorEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-keyless-header-Authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-keyless-header-authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "authorization",
+       "Bearer unused"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-keyless-header-cf-aig-authorization": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer unused"
+      ],
+      [
+       "cf-aig-authorization",
+       "Bearer gw-header-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-strict-text": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "TextStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "Hel",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "lo",
+     "type": "TextDeltaEvent"
+    },
+    {
+     "content": "Hello",
+     "content_index": 0,
+     "type": "TextEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "text": "Hello",
+        "text_signature": "{\"v\":1,\"id\":\"msg_1\"}",
+        "type": "text"
+       }
+      ],
+      "error_message": null,
+      "model": "m",
+      "provider": "p",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "stop",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "stop",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "input": [
+       {
+        "content": "be terse",
+        "role": "system"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       }
+      ],
+      "model": "m",
+      "store": false,
+      "stream": true
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "fake.invalid"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  },
+  "resp-strict-tool-reasoning": {
+   "events": [
+    {
+     "type": "AssistantStartEvent"
+    },
+    {
+     "content_index": 0,
+     "type": "ThinkingStartEvent"
+    },
+    {
+     "content_index": 0,
+     "delta": "plan",
+     "type": "ThinkingDeltaEvent"
+    },
+    {
+     "content": "plan",
+     "content_index": 0,
+     "type": "ThinkingEndEvent"
+    },
+    {
+     "content_index": 1,
+     "type": "ToolCallStartEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": "{\"path\":",
+     "tool_call_id": "call_1|fc_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "delta": " \"a.txt\"}",
+     "tool_call_id": "call_1|fc_1",
+     "tool_name": "read",
+     "type": "ToolCallDeltaEvent"
+    },
+    {
+     "content_index": 1,
+     "tool_call": {
+      "input": {
+       "path": "a.txt"
+      },
+      "thought_signature": "",
+      "tool_call_id": "call_1|fc_1",
+      "tool_name": "read",
+      "type": "toolCall"
+     },
+     "type": "ToolCallEndEvent"
+    },
+    {
+     "message": {
+      "api": "openai-responses",
+      "content": [
+       {
+        "redacted": false,
+        "thinking": "plan",
+        "thinking_signature": "{\"id\": \"rs_1\", \"summary\": [{\"text\": \"plan\", \"type\": \"summary_text\"}], \"type\": \"reasoning\"}",
+        "type": "thinking"
+       },
+       {
+        "input": {
+         "path": "a.txt"
+        },
+        "thought_signature": "",
+        "tool_call_id": "call_1|fc_1",
+        "tool_name": "read",
+        "type": "toolCall"
+       }
+      ],
+      "error_message": null,
+      "model": "gpt-5",
+      "provider": "openai",
+      "response_id": "resp_1",
+      "role": "assistant",
+      "stop_reason": "toolUse",
+      "usage": {
+       "cache_read": 3,
+       "cache_write": 0,
+       "input": 4,
+       "input_tokens": 4,
+       "output": 2,
+       "output_tokens": 2,
+       "reasoning": 1,
+       "total_tokens": 9
+      }
+     },
+     "reason": "toolUse",
+     "type": "AssistantDoneEvent"
+    }
+   ],
+   "requests": [
+    {
+     "body": {
+      "include": [
+       "reasoning.encrypted_content"
+      ],
+      "input": [
+       {
+        "content": "be terse",
+        "role": "developer"
+       },
+       {
+        "content": [
+         {
+          "text": "hi",
+          "type": "input_text"
+         }
+        ],
+        "role": "user"
+       },
+       {
+        "arguments": "{\"path\": \"x\"}",
+        "call_id": "call_0",
+        "name": "read",
+        "type": "function_call"
+       },
+       {
+        "call_id": "call_0",
+        "output": "file body",
+        "type": "function_call_output"
+       }
+      ],
+      "model": "gpt-5",
+      "prompt_cache_key": "sess-2",
+      "prompt_cache_retention": "24h",
+      "reasoning": {
+       "effort": "high",
+       "summary": "auto"
+      },
+      "store": false,
+      "stream": true,
+      "tools": [
+       {
+        "description": "Read a file",
+        "name": "read",
+        "parameters": {
+         "properties": {
+          "path": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "strict": false,
+        "type": "function"
+       }
+      ]
+     },
+     "headers": [
+      [
+       "accept",
+       "application/json"
+      ],
+      [
+       "accept-encoding",
+       "gzip, deflate"
+      ],
+      [
+       "authorization",
+       "Bearer sk-fake"
+      ],
+      [
+       "connection",
+       "keep-alive"
+      ],
+      [
+       "content-type",
+       "application/json"
+      ],
+      [
+       "host",
+       "api.openai.com"
+      ],
+      [
+       "session_id",
+       "sess-2"
+      ],
+      [
+       "x-client-request-id",
+       "sess-2"
+      ]
+     ],
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   ]
+  }
+ }
+}

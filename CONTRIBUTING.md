@@ -42,9 +42,11 @@ CI runs `uv sync --all-packages`, a superset that is still safe to use.
 The rule that replaces it: **a new workspace member nothing depends on goes in
 that `dev` group**, or the next fresh checkout will be missing it.
 
-Python 3.11+ is required; CI runs 3.11, 3.12 and 3.13 on Ubuntu and Windows —
-every interpreter the installers can give a user (`tests/test_ci_python_matrix.py`
-holds the matrix equal to their range).
+Python 3.11+ is required; CI runs 3.11, 3.12, 3.13 and 3.14 on Ubuntu and
+Windows — every interpreter the installers can give a user of 0.1.0b3 or later
+(`tests/test_ci_python_matrix.py` holds the matrix equal to that range,
+`>=3.11,<3.15`). For 0.1.0b2 and earlier, which pin `openai<2.0`, the installers
+keep `>=3.11,<3.14` (#278, ADR-0265).
 
 ## The gates your PR has to pass
 

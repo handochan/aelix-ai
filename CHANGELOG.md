@@ -23,6 +23,46 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Python 3.14 is supported (#278, ADR-0265).** `aelix-ai` now requires
+  `openai>=2.7.2,<3` (was `>=1.66,<2.0`). Python 3.14 made `typing.Union[...]`
+  slotted, and every openai before 2.7.2 assigns `__discriminator__` onto it
+  whenever a streamed event fails its validation, so on 3.14 a real turn died
+  with `'typing.Union' object has no attribute '__discriminator__'` (#262) while
+  a one-line prompt still worked. Measured on 3.14.5 with a tool round trip
+  against a local OpenAI-compatible server: the old pin exits 1 when the
+  server's Responses events omit `sequence_number` and `logprobs`, as many
+  compatible servers do, and exits 0 when they carry them; the new one exits 0
+  either way, and on chat completions. CI's test matrix runs 3.14 on Ubuntu
+  and Windows, and the packages list the 3.13 and 3.14 classifiers. The ceiling
+  is `<3`: openai 3.0 replaced httpx with HTTPX2 and stopped installing
+  `certifi`, which aelix's TLS handling is written against. What aelix sends
+  and emits is what it was on openai 1.109.1, with two exceptions below:
+  `tests/providers/test_openai_sdk_wire_278.py` holds every CI leg to 25
+  scenarios recorded on 1.109.1 through the adapters' own client (text, tool
+  calls, reasoning, prompt caching, HTTP 400 and 429, a refused connection,
+  keyless calls, and the variables below exported). Three changes in openai
+  2.x are undone. openai 2.34 refuses an empty key, so a
+  keyless openai-completions call builds its client with a placeholder that
+  never reaches the wire (the request's own `Authorization` replaces it, and
+  without one the SDK's is omitted). openai 2.34 also reads
+  `OPENAI_CUSTOM_HEADERS`, whose lines replaced any openai-compatible
+  provider's key with an exported `Authorization`, and `OPENAI_ADMIN_KEY`;
+  aelix's client keeps neither, for every provider, as openai 1.x read
+  neither; the shipped `examples/selfhosted` extension and the
+  extension-authoring guide's snippet now build their client with it too
+  (`create_async_client` takes an `http_client` for their private CA). And
+  openai 2.52 waits up to 120 s for a `Retry-After` on its own
+  retries and stops retrying above that (measured: a `Retry-After: 61` made
+  `aelix -p` take 504 s instead of 20 s); aelix's client waits for one only up to
+  the request's `max_retry_delay_ms` (pi's `maxRetryDelayMs`, 60 s when unset,
+  which is 1.x's rule) and otherwise backs off and retries as 1.x did. The
+  exceptions: a keyless openai-completions request whose headers spell
+  `Authorization` both ways (`model.headers` and `options.headers`) sends one
+  line, the `options.headers` value, where 1.x sent both; and a
+  `max_retry_delay_ms` that an extension or embedder sets now moves that 60 s
+  limit (1.x ignored it). Nothing in the CLI sets it until
+  `retry.provider.maxRetryDelayMs` is read (#470), so there it is the default.
+
 - **Configured authentication is checked before recording a prompt (#416).**
   TUI, RPC, print and json check after input hooks, accepting request-supported
   model/provider/registration headers, Anthropic tokens/custom headers and Vertex
@@ -63,6 +103,18 @@ unwritten. Add them with the next release.
   ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
 
 ### Changed
+
+- **The installers choose the interpreter range from the release they install
+  (#278, ADR-0265).** `install.sh` and `install.ps1` now default
+  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0-beta.3` and later and keep
+  `>=3.11,<3.14` for `v0.1.0-beta.2` and earlier, which pin `openai<2.0`; a
+  version they cannot parse gets the older range. A default that simply widened
+  would have put an `AELIX_VERSION=v0.1.0-beta.2` install on 3.14 and the crash
+  above. The log names the request it chose. Both e2e jobs gained a pass that
+  pins `v0.1.0-beta.2` with 3.14 on the runner and requires the environment to
+  land below 3.14, and their post-conditions derive the range they expect from
+  the release they resolved. Until `v0.1.0-beta.3` is published, keep
+  upgrading through the install line rather than `uv tool install aelix@latest`.
 
 - **rpc `set_auto_retry` now persists, and `settings.json` wins over the
   in-memory toggle (#408) - a behaviour change for embedders.** As in pi,

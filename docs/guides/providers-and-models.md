@@ -613,7 +613,10 @@ For that provider an auth header in the variable (`X-Api-Key`, `Authorization`
 or `cf-aig-authorization`, any letter case, with a non-blank value) is enough on
 its own, so a proxy you authenticate that way works in the TUI and
 `--mode rpc`; `-p` and `--mode json` do not read the variable and still ask for
-a key ("No API key found"), as before.
+a key ("No API key found"), as before. The OpenAI SDK's own
+`OPENAI_CUSTOM_HEADERS` and `OPENAI_ADMIN_KEY` (read from openai 2.34 on) are
+used for no provider, `openai` included
+([#278](https://github.com/handochan/aelix-ai/issues/278)).
 
 ## When no key is found
 

@@ -106,7 +106,7 @@ jobs:
           # this step loudly instead of installing an unchecked uv.
           version: "0.12.23"
           checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
-          # 3.12 and NOT the 3.11-3.13 matrix ci.yml tests on (#192), on
+          # 3.12 and NOT the 3.11-3.14 matrix ci.yml tests on (#192, #278), on
           # purpose: this job builds and publishes, it runs no tests. Every
           # wheel is pure `py3-none-any`, and the interpreter that runs
           # hatchling does not reach the bytes - measured at 8f7d98aa with

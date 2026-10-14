@@ -429,7 +429,11 @@ For a model in the URL, custom body fields or private-CA `httpx` client,
 register a **StreamFn** `(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]`
 with `register_api_adapter(api, stream_fn)`. A matching `Model.api` routes to it.
 Delegate to the built-in adapter with `replace(opts, client=...)` to reuse SSE
-parsing and event mapping:
+parsing and event mapping. Build that client with aelix's `create_async_client`
+rather than a bare `AsyncOpenAI`: from openai 2.34 a bare client merges
+`OPENAI_CUSTOM_HEADERS` from the environment over its key, and refuses an empty
+key; aelix's keeps neither variable and waits for a `Retry-After` as the built-in
+adapters do ([#278](https://github.com/handochan/aelix-ai/issues/278)):
 
 ```python
 import contextlib
@@ -437,7 +441,7 @@ import os
 import ssl
 from dataclasses import replace
 import httpx
-from openai import AsyncOpenAI
+from aelix_ai.providers._openai_client import create_async_client
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
 from aelix_ai.streaming import Model
 from aelix_coding_agent.model_registry import ProviderConfigInput
@@ -449,10 +453,10 @@ _CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
 async def selfhosted_stream(model, context, opts):
     ca_bundle = os.environ.get(_CA_BUNDLE_ENV)            # custom TLS; unset = verify=True
     verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
-    client = AsyncOpenAI(
+    client = create_async_client(
         http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # model baked into the URL
-        api_key=opts.api_key or "",
+        api_key=opts.api_key or "unused",                 # "" is refused (openai 2.34+)
     )
     def payload(params, _m):
         # a non-OpenAI body field no config key can name (see extra_body, below)
@@ -466,7 +470,7 @@ async def selfhosted_stream(model, context, opts):
             yield ev
     finally:
         with contextlib.suppress(Exception):   # you built it, you close it
-            await client.close()               # AsyncOpenAI: close(), not aclose()
+            await client.close()               # an openai client: close(), not aclose()
 
 def setup(aelix):
     aelix.register_api_adapter("selfhosted-openai", selfhosted_stream)
