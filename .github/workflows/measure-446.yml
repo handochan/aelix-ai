@@ -1,0 +1,103 @@
+name: measure-446-r2
+
+# Throwaway measurement for #446 (never merges; ci.yml is removed on this branch only).
+# Product files are exactly e24ea2e8's (the identity step proves it); the test file is the fix.
+#   ab  : per round, interleaved, e24ea2e8's test (tests/tools/_m446_before.py, verbatim) and the fixed
+#         test, both params, under load none / cpu3 (three busy loops) / cpu4 (four, every vCPU busy).
+#   sab : the defect classes the fix's retry must not hide, on win32, each row three times.
+
+on:
+  push:
+    branches: ["measure/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: ab446 (py${{ matrix.python-version }}, load=${{ matrix.load }})
+    runs-on: windows-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        load: ["none", "cpu3", "cpu4"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+      - name: Identity
+        shell: bash
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; git log --oneline -2;
+            echo "diff vs e24ea2e8 outside .github, .omc-446, the A/B driver and the before copy:";
+            git diff --stat e24ea2e84a818e55c36ccbb839e279ea97220acb HEAD -- . ':!.github' ':!.omc-446' ':!tests/tools/test_measure_446_ab.py' ':!tests/tools/_m446_before.py'; echo "(end)";
+            echo "before copy == e24ea2e8's test:"; git show e24ea2e84a818e55c36ccbb839e279ea97220acb:tests/tools/test_bash_tool_containment.py | cmp - tests/tools/_m446_before.py && echo identical;
+            sha256sum tests/tools/test_bash_tool_containment.py;
+            .venv/Scripts/python.exe -VV; echo "NUMBER_OF_PROCESSORS=$NUMBER_OF_PROCESSORS"; } | tee out/identity.txt
+      - name: A/B rounds
+        shell: bash
+        env:
+          M446_ROUNDS: "100"
+          M446_LOAD: ${{ matrix.load }}
+        run: |
+          export M446_OUT="$PWD/out/ab.jsonl"
+          n=0
+          if [ "${{ matrix.load }}" = "cpu3" ]; then n=3; fi
+          if [ "${{ matrix.load }}" = "cpu4" ]; then n=4; fi
+          for k in $(seq 1 $n); do .venv/Scripts/python.exe -c "while True: pass" & done
+          if [ "$n" -gt 0 ]; then sleep 2; fi
+          rc=0
+          timeout -k 10 5400 .venv/Scripts/python.exe -m pytest -p no:cacheprovider -q -rfE -W always::UserWarning tests/tools/test_measure_446_ab.py > out/pytest.txt 2>&1 || rc=$?
+          echo "pytest rc=$rc :: $(tail -1 out/pytest.txt)" | tee out/rc.txt
+          LC_ALL=C grep -a -E '^(FAILED|ERROR) ' out/pytest.txt | cut -c1-400 | tee -a out/rc.txt || true
+          git status --short | tee out/status.txt
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: m446ab-py${{ matrix.python-version }}-${{ matrix.load }}
+          path: out/
+          retention-days: 30
+
+  sab:
+    name: sab446 (py3.12, win32 defect rows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.12.23"
+          checksum: "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+      - name: Rows
+        shell: bash
+        run: |
+          mkdir -p out
+          git rev-parse HEAD | tee out/identity.txt
+          bash .omc-446/sab_win.sh
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sab446-py3.12
+          path: out/
+          retention-days: 30
