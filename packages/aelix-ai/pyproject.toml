@@ -20,6 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -39,7 +41,18 @@ dependencies = [
     # types + ``client.responses.create``) is guaranteed present. The
     # shared engine consumes duck-typed SSE event objects, but the thin
     # adapter that follows needs the SDK surface.
-    "openai>=1.66,<2.0",
+    #
+    # #278 (Python 3.14, ADR-0265): the floor is 2.7.2, the first release
+    # that does not assign ``__discriminator__`` onto a ``typing.Union``.
+    # 3.14 made that object slotted, so every 1.x and 2.0-2.7.1 raises
+    # ``AttributeError: 'typing.Union' object has no attribute
+    # '__discriminator__'`` from ``construct_type`` the moment a streamed
+    # Responses event fails pydantic validation (#262); 2.7.2 caches it in a
+    # WeakKeyDictionary instead. The ceiling is ``<3``: openai 3.0.0 swapped
+    # its transport to HTTPX2 and stopped installing ``httpx`` and
+    # ``certifi`` (OS trust store by default), and aelix's TLS diagnostics and
+    # every ``httpx.MockTransport`` test are written against httpx 0.x.
+    "openai>=2.7.2,<3",
     # Sprint 6c (Phase 4.3, ADR-0052) — direct httpx use for OAuth
     # token exchange + refresh (Pi anthropic.ts uses ``fetch`` for
     # the token endpoint, not the SDK). httpx is already a transitive

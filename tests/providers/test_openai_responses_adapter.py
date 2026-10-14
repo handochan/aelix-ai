@@ -548,7 +548,9 @@ async def test_adapter_passes_input_not_messages_to_sdk() -> None:
 
 
 def test_installed_sdk_responses_create_accepts_adapter_kwargs() -> None:
+    import openai
     from openai.resources.responses import AsyncResponses
+    from packaging.version import Version
 
     sig = inspect.signature(AsyncResponses.create)
     params = set(sig.parameters)
@@ -567,9 +569,14 @@ def test_installed_sdk_responses_create_accepts_adapter_kwargs() -> None:
         "extra_body",
     ):
         assert kw in params, f"SDK responses.create missing kwarg: {kw}"
-    # prompt_cache_retention is NOT native — must ride extra_body, which is
-    # exactly why _EXTRA_BODY_PARAM_KEYS relocates it.
-    assert "prompt_cache_retention" not in params
+    # prompt_cache_retention rides extra_body, which is why
+    # _EXTRA_BODY_PARAM_KEYS relocates it. It became a native keyword in openai
+    # 2.8.0, and the body the SDK sends is the same either way (#278 measured
+    # the requests byte for byte, tests/providers/test_openai_sdk_wire_278.py),
+    # but aelix-ai's floor is 2.7.2 (ADR-0265), which does NOT have it: a native
+    # keyword there raises TypeError before anything reaches the wire.
+    if Version(openai.__version__) < Version("2.8.0"):
+        assert "prompt_cache_retention" not in params
 
 
 # === dormancy guard ===

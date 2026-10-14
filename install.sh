@@ -21,12 +21,14 @@
 #                  Default `tui` (interactive terminal UI), or empty for the
 #                  bare CLI.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
-#   AELIX_PYTHON   uv interpreter request for the tool environment. Default
-#                  `>=3.11,<3.14` — the range the pinned openai<2.0 survives,
-#                  and since #192 also the range CI runs: 3.11, 3.12 and 3.13
-#                  are each a test leg on ubuntu and windows, and
-#                  tests/test_ci_python_matrix.py holds the matrix equal to
-#                  this default. See Step 5 for the ceiling.
+#   AELIX_PYTHON   uv interpreter request for the tool environment. Default:
+#                  chosen from the release being installed (Step 5, #278) —
+#                  `>=3.11,<3.15` for 0.1.0b3 and later, which pin
+#                  openai>=2.7.2 and run on 3.14; `>=3.11,<3.14` for 0.1.0b2
+#                  and earlier, whose pinned openai<2.0 dies mid-turn on 3.14
+#                  (#262). CI runs 3.11 through 3.14, each a test leg on ubuntu
+#                  and windows, and tests/test_ci_python_matrix.py holds the
+#                  matrix equal to the newer range.
 #                  Set it to override, e.g. AELIX_PYTHON=3.12. An EMPTY
 #                  value means the default, not "no constraint" — see
 #                  Step 0. Widen it explicitly: AELIX_PYTHON='>=3.11'.
@@ -40,17 +42,26 @@ set -eu
 AELIX_VERSION="${AELIX_VERSION-}"
 AELIX_EXTRAS="${AELIX_EXTRAS-tui}"
 AELIX_REPO="${AELIX_REPO-handochan/aelix-ai}"
-# `:-`, NOT `-`, and this is the one place in this file where that matters.
-# `uv tool install --python ""` does not fail — uv IGNORES an empty request
-# and goes back to picking the newest interpreter (measured: exit 0, and the
-# environment lands on 3.14.5, the exact state Step 5 exists to prevent). The
-# sibling knobs use `-` because a set-but-empty value is MEANINGFUL for them
-# (`AELIX_EXTRAS=` installs the bare CLI, and the README teaches that spelling),
-# so anyone copying that habit onto this variable would silently disarm the
-# gate. `:-` makes empty mean the default, which is also what install.ps1
-# already does — `if ($env:AELIX_PYTHON)` is false for an empty string. To
-# genuinely widen the range, say so: AELIX_PYTHON='>=3.11'.
-AELIX_PYTHON="${AELIX_PYTHON:->=3.11,<3.14}"
+# EMPTY MEANS THE DEFAULT for this one knob, and this is the one place in this
+# file where that matters. `uv tool install --python ""` does not fail — uv
+# IGNORES an empty request and goes back to picking the newest interpreter
+# (measured: exit 0, and the environment lands on 3.14.5, which for a release
+# before 0.1.0b3 is the exact state Step 5 exists to prevent). The sibling knobs
+# keep a set-but-empty value because it is MEANINGFUL for them (`AELIX_EXTRAS=`
+# installs the bare CLI, and the README teaches that spelling), so anyone
+# copying that habit onto this variable would silently disarm the gate. Until
+# #278 this line was `${AELIX_PYTHON:->=3.11,<3.14}`; the default now depends on
+# the release, which is not known until Step 4, so this line only reads the
+# knob and Step 5's `[ -n "$AELIX_PYTHON" ] ||` fills an unset OR empty value.
+# That is also what install.ps1 does — `if ($env:AELIX_PYTHON)` is false for an
+# empty string. To genuinely widen the range, say so: AELIX_PYTHON='>=3.11'.
+AELIX_PYTHON="${AELIX_PYTHON-}"
+# The two default requests Step 5 chooses between (#278, ADR-0265). Releases
+# from 0.1.0b3 on pin openai>=2.7.2,<3 and run on 3.11 through 3.14, each a CI
+# leg. 0.1.0b2 and earlier pin openai<2.0, which dies mid-turn on 3.14 (#262),
+# and AELIX_VERSION can still install them.
+py_supported='>=3.11,<3.15'
+py_before_b3='>=3.11,<3.14'
 UV_VERSION="${UV_VERSION-}"
 GITHUB_TOKEN="${GITHUB_TOKEN-}"
 
@@ -103,6 +114,35 @@ sha_check_stdin() {
   else
     ( cd "$tmp" && shasum -a 256 -c - )
   fi
+}
+
+# python_request_for <version>: the default interpreter request for the aelix
+# release <version> (the PEP 440 string Step 5 reads from the verified
+# SHA256SUMS, e.g. 0.1.0b3). The wider range only for a version this can PROVE
+# is 0.1.0b3 or later — N.N.N with an optional aN / bN / rcN, compared as
+# numbers, so 0.1.0b10 is after 0.1.0b3. Anything else (a dev or post release,
+# a local version, a typo) keeps the older range, which every release ever
+# published runs on: failing closed costs 3.14, failing open costs #262.
+python_request_for() {
+  printf '%s\n' "$1" | awk -v new="$py_supported" -v old="$py_before_b3" '
+    $0 !~ /^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$/ { print old; exit }
+    {
+      split($0, f, ".")
+      match(f[3], /^[0-9]+/)
+      patch = substr(f[3], 1, RLENGTH)
+      pre = substr(f[3], RLENGTH + 1)
+      kind = 3; num = 0
+      if (pre ~ /^a/) { kind = 0; num = substr(pre, 2) }
+      if (pre ~ /^b/) { kind = 1; num = substr(pre, 2) }
+      if (pre ~ /^rc/) { kind = 2; num = substr(pre, 3) }
+      split(f[1] " " f[2] " " patch " " kind " " num, got, " ")
+      split("0 1 0 1 3", want, " ")
+      for (i = 1; i <= 5; i++) {
+        if (got[i] + 0 > want[i] + 0) { print new; exit }
+        if (got[i] + 0 < want[i] + 0) { print old; exit }
+      }
+      print new
+    }'
 }
 
 # ── Step 1: prerequisites ───────────────────────────────────────────────────
@@ -234,7 +274,12 @@ else
   target="aelix==$version"
 fi
 
+# The interpreter request: AELIX_PYTHON when it is set and non-empty, else the
+# default for THIS release (see WHICH RANGE below).
+[ -n "$AELIX_PYTHON" ] || AELIX_PYTHON="$(python_request_for "$version")"
+
 log "installing $target with uv (version pinned from the verified SHA256SUMS)..."
+log "interpreter request: $AELIX_PYTHON"
 # --find-links ADDS the four checksum-verified local wheels as candidates; the
 # default PyPI index stays enabled so third-party dependencies resolve. Never
 # use --no-index (it would make transitive deps unresolvable). --force makes
@@ -258,7 +303,8 @@ log "installing $target with uv (version pinned from the verified SHA256SUMS)...
 #
 # A RANGE, not `--python 3.13`: a single version forces a download even on a
 # box where 3.12 is installed and fine. With the range uv takes any local
-# 3.11-3.13, and downloads only when it has none (measured both ways).
+# interpreter inside it, and downloads only when it has none (measured both
+# ways, on the 3.11-3.13 range).
 #
 # THIS FLAG IS PERMANENT, NOT A STOPGAP. An earlier draft of this comment said
 # the opposite — that #192's `requires-python` bound would retire it — and that
@@ -280,15 +326,17 @@ log "installing $target with uv (version pinned from the verified SHA256SUMS)...
 # instead of breaking later; #192 left it to #278 — but it does not retire
 # this flag.
 #
-# WIDENING IS NOT A ONE-LINE EDIT. When 3.14 becomes supported (#262: the floor
-# is openai>=2.7.2), raising the default here reaches EVERY release this script
-# can install, and AELIX_VERSION pins arbitrarily old tags — 0.1.0b2 will still
-# carry openai<2.0 forever. So the default can only widen once no installable
-# release breaks on the wider range, or once the request is derived from the
-# release being installed. Widening on the day the fix ships would hand a
-# pinning user exactly the crash this ceiling was added to stop.
+# WHICH RANGE (#278, ADR-0265). 3.14 is supported from 0.1.0b3 on: that release
+# pins openai>=2.7.2, the first openai that does not write onto typing.Union, and
+# CI runs 3.14 on ubuntu and windows. But this script installs whatever
+# AELIX_VERSION names, and 0.1.0b2 carries openai<2.0 forever — a default that
+# simply widened would hand a pinned AELIX_VERSION=v0.1.0-beta.2 install exactly
+# the crash this flag was added to stop. So the request is derived from the
+# release being installed: python_request_for gives `>=3.11,<3.15` to 0.1.0b3
+# and later and keeps `>=3.11,<3.14` for anything older or unparseable. The
+# version is the one parsed above from the VERIFIED manifest, never the tag.
 uv tool install --force --find-links "$tmp" --python "$AELIX_PYTHON" "$target" \
-  || die "uv tool install failed for '$target' (interpreter request: '$AELIX_PYTHON'). If uv reported no interpreter for that range, this machine has no Python 3.11-3.13 and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON — but read Step 5 first, widening past 3.13 is not free."
+  || die "uv tool install failed for '$target' (interpreter request: '$AELIX_PYTHON'). If uv reported no interpreter for that range, this machine has none inside it and managed downloads are off (UV_PYTHON_DOWNLOADS=never): install one, or set AELIX_PYTHON — but read Step 5 first: a release before 0.1.0b3 pins openai<2.0, which dies mid-turn on 3.14 (#262)."
 
 # ── Step 6: post-install smoke + PATH hint ──────────────────────────────────
 if have aelix; then

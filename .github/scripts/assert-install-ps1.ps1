@@ -36,9 +36,15 @@ function Assert-Fail {
 # this assertion compare two different releases.
 $repo = 'handochan/aelix-ai'
 
-$tag = (& gh api "repos/$repo/releases" --jq '.[0].tag_name' | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $tag) {
-    Assert-Fail "could not resolve the newest release tag for '$repo' (gh exit $LASTEXITCODE)."
+# E2E_EXPECT_TAG (#278): the tag a pass pinned with AELIX_VERSION, in which case
+# install.ps1 skipped the API (Step 3). Unset means the newest release.
+if ($env:E2E_EXPECT_TAG) {
+    $tag = $env:E2E_EXPECT_TAG
+} else {
+    $tag = (& gh api "repos/$repo/releases" --jq '.[0].tag_name' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $tag) {
+        Assert-Fail "could not resolve the newest release tag for '$repo' (gh exit $LASTEXITCODE)."
+    }
 }
 
 # -OutFile, not .Content. GitHub serves release assets as
@@ -68,6 +74,27 @@ if (-not $m.Success) {
 }
 $expected = $m.Groups[1].Value
 Write-Host "expected version (from $tag SHA256SUMS): $expected"
+
+# The default interpreter request install.ps1 owes THIS release (#278,
+# ADR-0265). 0.1.0b3 and later pin openai>=2.7.2 and run on 3.14; the two
+# releases published before #278, v0.1.0-beta.1 and v0.1.0-beta.2, pin
+# openai<2.0, which dies mid-turn on 3.14 (#262), and keep the older range.
+# Named here rather than compared the way install.ps1 compares versions, so a
+# wrong comparison there surfaces as a disagreement. The ranges are the same
+# two values as install.ps1's $PySupported / $PyBeforeB3;
+# tests/packaging_gate/test_install_ps1_parity.py holds all of them together.
+if ($expected -ceq '0.1.0b1' -or $expected -ceq '0.1.0b2') {
+    $pyRequest = '>=3.11,<3.14'
+    $pyFloor = 11
+    $pyCeiling = 13
+    $pyWhy = "on 3.14 the openai<2.0 that $expected pins dies mid-turn (#262, #263)"
+} else {
+    $pyRequest = '>=3.11,<3.15'
+    $pyFloor = 11
+    $pyCeiling = 14
+    $pyWhy = 'no CI leg has executed an interpreter outside it (#278)'
+}
+Write-Host "default interpreter request for ${expected}: $pyRequest"
 
 # -- (1) The launcher is where Step 6 says it is ------------------------------
 $binDir = (& uv tool dir --bin | Out-String).Trim()
@@ -120,11 +147,12 @@ if ($tools -notmatch "(?m)^aelix v$([regex]::Escape($expected))\b") {
 }
 
 # -- (3) The interpreter is one CI has actually executed ----------------------
-# install.ps1 Step 5 passes `--python $AelixPython` (default `>=3.11,<3.14`),
-# because `uv tool install` otherwise resolves an interpreter fresh and takes
-# the NEWEST one on the box. Measured on a dev machine carrying 3.11 through
-# 3.14, the unflagged command built the environment on 3.14.5, where the pinned
-# `openai<2.0` raises "'typing.Union' object has no attribute
+# install.ps1 Step 5 passes `--python $AelixPython` (default: $pyRequest above,
+# chosen from the release), because `uv tool install` otherwise resolves an
+# interpreter fresh and takes the NEWEST one on the box. Measured on a dev
+# machine carrying 3.11 through 3.14, the unflagged command built the
+# environment on 3.14.5, where a release before 0.1.0b3 - pinned to
+# `openai<2.0` - raises "'typing.Union' object has no attribute
 # '__discriminator__'" in the middle of a turn (#262, #263).
 #
 # That is a post-condition now, so it is asserted HERE -- on the one host this
@@ -148,10 +176,10 @@ if (-not $vm.Success) {
 }
 $pyMajor = [int]$vm.Groups[1].Value
 $pyMinor = [int]$vm.Groups[2].Value
-if ($pyMajor -ne 3 -or $pyMinor -lt 11 -or $pyMinor -gt 13) {
-    Assert-Fail "the tool environment is on Python $pyMajor.$pyMinor; install.ps1 Step 5 requests '>=3.11,<3.14'. Outside that range nothing in CI has executed the interpreter, and on 3.14 the pinned openai<2.0 dies mid-turn (#262, #263)."
+if ($pyMajor -ne 3 -or $pyMinor -lt $pyFloor -or $pyMinor -gt $pyCeiling) {
+    Assert-Fail "the tool environment is on Python $pyMajor.$pyMinor; install.ps1 Step 5 requests '$pyRequest' by default for $expected, and outside that range $pyWhy."
 }
-Write-Host "tool interpreter: Python $pyMajor.$pyMinor (inside >=3.11,<3.14)"
+Write-Host "tool interpreter: Python $pyMajor.$pyMinor (inside $pyRequest)"
 
 # -- (4) The temp dir was cleaned ---------------------------------------------
 # install.ps1 creates `aelix-install-<guid>` under GetTempPath() before Step 1,
