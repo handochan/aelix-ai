@@ -52,11 +52,19 @@ jobs:
     # dropping a leg, goes red. Windows 3.13 is not just one more version: its
     # time.monotonic() is QueryPerformanceCounter, where 3.11/3.12 tick
     # GetTickCount64's ~15.6 ms, so the ordering tests must hold on both clocks.
+    #
+    # #278: 3.14 since 2026-10-14, on BOTH runners (ADR-0265). Releases from
+    # 0.1.0b3 pin openai>=2.7.2 - the first openai that does not assign
+    # `__discriminator__` onto a typing.Union, which 3.14 made slotted (#262) -
+    # and the installers hand those releases '>=3.11,<3.15'. The matrix test
+    # reads that range (`py_supported` in install.sh), so the two still move
+    # together. The new check names are `lint + test (ubuntu-latest, py3.14)`
+    # and `lint + test (windows-latest, py3.14)`.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -253,6 +261,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: '& ./.github/scripts/assert-install-ps1.ps1'
 
+      # #278: the installer's default interpreter range comes from the release
+      # it installs - '>=3.11,<3.15' from 0.1.0b3, '>=3.11,<3.14' before, because
+      # 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262). This pass
+      # pins that old release with 3.14 on the box, which uv would otherwise
+      # take: the environment must still land below 3.14. Today v0.1.0-beta.2 is
+      # also the newest release; once b3 is published the passes above take the
+      # wide range and this one keeps the narrow one honest. uv is on PATH here
+      # (pass 1's bootstrap appended it to GITHUB_PATH).
+      - name: "Put Python 3.14 on the box (the #262 trap the pinned pass needs)"
+        # Outside the checkout: `uv python find` honours the repo's
+        # .python-version (3.12) and would answer that instead of the newest
+        # interpreter (`uv tool install` reads no .python-version, ADR-0241).
+        # The first run of this step (38503137529) ran in the checkout.
+        # `--version` rather than a `-c` program: Windows PowerShell 5.1 mangles
+        # double quotes in a native command's arguments.
+        working-directory: ${{ runner.temp }}
+        run: |
+          & uv python install 3.14
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $unrequested = (& uv python find | Out-String).Trim()
+          $version = (& $unrequested --version | Out-String).Trim()
+          Write-Host "uv with no interpreter request picks $unrequested ($version)"
+          if ($version -notmatch '^Python 3\.14\.') {
+            Write-Host "::error::uv with no request picks $version, not 3.14: the pinned pass below could not tell the old range from no range."
+            exit 1
+          }
+
+      - name: Install (pass 3 - AELIX_VERSION=v0.1.0-beta.2 pinned, 3.14 present)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AELIX_VERSION: v0.1.0-beta.2
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+
+      - name: Assert what the script promised (pass 3)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_EXPECT_TAG: v0.1.0-beta.2
+        run: '& ./.github/scripts/assert-install-ps1.ps1'
+
   # install.sh had no coverage that executes it (#279) - the line the README
   # leads with, and the one users actually run. Its only gate was the same
   # regex parity test, and #263's interpreter promise (the tool environment is
@@ -295,10 +342,10 @@ jobs:
   install-sh-e2e:
     name: install.sh e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Five installs plus up to three interpreter downloads (3.14 for the trap;
+    # Six installs plus up to three interpreter downloads (3.14 for the trap;
     # 3.13 and 3.11 where the runner has none in range). Bounded like every job
-    # here (#429). The same steps took about 40 s locally on a fresh uv cache
-    # with no interpreter download (macOS 26.6.2, 2026-10-14).
+    # here (#429). The first five steps took about 40 s locally on a fresh uv
+    # cache with no interpreter download (macOS 26.6.2, 2026-10-14).
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -428,4 +475,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           E2E_ARM: pass 5 - AELIX_PYTHON=3.11 set
           E2E_EXPECT_PYTHON: "3.11"
+        run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"
+
+      # #278: the default interpreter range comes from the release being
+      # installed - '>=3.11,<3.15' from 0.1.0b3, '>=3.11,<3.14' before, because
+      # 0.1.0b2 pins openai<2.0, which dies mid-turn on 3.14 (#262). 3.14 is on
+      # the box (the trap step above), so a default that widened for every
+      # release would land this pinned old one on it. Today v0.1.0-beta.2 is
+      # also the newest release, so this pass adds the AELIX_VERSION arm (Step
+      # 3 skips the API); once b3 is published, passes 1-5 take the wide range
+      # and this one keeps the narrow one honest.
+      - name: Install (pass 6 - AELIX_VERSION=v0.1.0-beta.2 pinned)
+        working-directory: ${{ runner.temp }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: AELIX_VERSION=v0.1.0-beta.2 sh -c "$(curl -fsSL "file://$GITHUB_WORKSPACE/install.sh")"
+
+      - name: Assert what the script promised (pass 6 - AELIX_VERSION=v0.1.0-beta.2 pinned)
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          E2E_ARM: pass 6 - AELIX_VERSION=v0.1.0-beta.2 pinned
+          E2E_EXPECT_TAG: v0.1.0-beta.2
         run: sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"

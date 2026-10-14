@@ -756,21 +756,74 @@ async def test_openai_sends_the_given_key_not_an_exported_one(
 async def test_a_keyless_openai_completions_turn_never_sends_openai_api_key(
     env: Any, any_wire: _Wire
 ) -> None:
-    """``stream_openai_completions`` builds its client with ``""`` when no key
-    resolved; the ``openai`` SDK treats ``""`` as given, and ``None`` would read
-    ``OPENAI_API_KEY`` (round-1 fix sabotage S43 survived without this row)."""
+    """The client factory hands the SDK ``""`` for a missing key, never ``None``:
+    ``None`` makes the SDK read ``OPENAI_API_KEY`` (round-1 fix sabotage S43
+    survived without this row).
 
+    #278: openai 2.34 and later refuse ``""`` outright ("Missing credentials ...
+    OPENAI_API_KEY") and will not send a request with no ``Authorization``
+    unless it is omitted explicitly, so the adapter no longer hands its own
+    client an empty key (``_settle_keyless_auth``). The wire is what openai
+    1.109.1 sent: the request goes out, with no ``Authorization`` at all."""
+
+    import openai
     from aelix_ai.providers._openai_client import create_async_client as openai_factory
     from aelix_ai.providers.openai_completions import stream_openai_completions
 
     _export_vendor_keys(env)
-    assert openai_factory(api_key=None, base_url=_GW).api_key == ""
+    # Both SDK behaviours inside aelix-ai's range keep the exported key out:
+    # up to 2.33 the client carries "", from 2.34 the SDK refuses to build it.
+    # A factory that passed None through builds one carrying OPENAI_API_KEY.
+    try:
+        client = openai_factory(api_key=None, base_url=_GW)
+    except openai.OpenAIError:
+        pass
+    else:
+        assert client.api_key == ""
     ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
     async for _ in stream_openai_completions(
         _sibling("openai-completions"), ctx, SimpleStreamOptions()
     ):
         pass
-    assert any_wire.hits and all("authorization=OPENAI_API_KEY" not in h for h in any_wire.hits)
+    assert any_wire.sent, "the keyless request never left (openai>=2.34 refused to build it)"
+    assert all(h == [] for h in any_wire.hits), any_wire.hits
+    assert all(s["authorization"] is None for s in any_wire.sent), any_wire.sent
+
+
+@pytest.mark.parametrize(
+    ("header", "cf_aig"),
+    [
+        ("Authorization", None),
+        ("authorization", None),
+        ("cf-aig-authorization", "gw-header"),
+    ],
+)
+async def test_a_keyless_openai_completions_call_sends_only_its_own_auth_header(
+    env: Any, any_wire: _Wire, header: str, cf_aig: str | None
+) -> None:
+    """#278: a keyless call with an auth header of its own sends exactly that
+    header, as openai 1.109.1 did. The adapter's client is built with a
+    placeholder key on openai 2.x, and that placeholder must never reach the
+    wire: an ``Authorization`` in any letter case replaces the SDK's bearer
+    (the SDK merges custom headers by exact key, so a lowercase one would
+    otherwise ride BESIDE ``Authorization: Bearer unused``, measured), and a
+    gateway authenticated by ``cf-aig-authorization`` alone gets no
+    ``Authorization`` at all."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers={header: "Bearer gw-header-fake"})
+    async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+        pass
+    assert any_wire.sent, "the request never left"
+    # httpx joins repeated header lines, so a placeholder riding beside the
+    # real header reads "Bearer unused, Bearer gw-header-fake" here: "other".
+    want_authorization = None if cf_aig else "gw-header"
+    for sent in any_wire.sent:
+        assert sent["authorization"] == want_authorization, sent
+        assert sent["cf-aig-authorization"] == cf_aig, sent
 
 
 # ================================================================ review round 2

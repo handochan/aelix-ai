@@ -17,8 +17,11 @@ since #279, by the ``install.sh e2e`` jobs on ubuntu and macOS.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -61,10 +64,85 @@ _ENV_VARS = [
     "GITHUB_TOKEN",
 ]
 
-# The interpreter range both installers request. Kept here as ONE constant so a
-# drift between the two scripts fails as a parity error rather than as a user
-# report from whichever platform was edited second (#263).
-_PY_REQUEST = ">=3.11,<3.14"
+# The two interpreter ranges both installers choose their default between, by
+# the release being installed (#278, ADR-0265). Kept here as ONE pair so a
+# drift between the two scripts - or between a script and the post-condition
+# that checks it - fails as a parity error rather than as a user report from
+# whichever platform was edited second (#263).
+_PY_SUPPORTED = ">=3.11,<3.15"  # 0.1.0b3 and later pin openai>=2.7.2; 3.14 runs
+_PY_BEFORE_B3 = ">=3.11,<3.14"  # 0.1.0b2 and earlier pin openai<2.0 (#262)
+
+#: (version, the default both installers must derive from it). Every row is a
+#: reason: the two releases published before #278, the first that may use 3.14,
+#: a two-digit pre-release a text comparison would put before b3, the final and
+#: later releases, and the shapes the parser must refuse - a dev or post release,
+#: a local version, a tag instead of a version, other case, garbage. Refusing
+#: means the older range, which every published release runs on.
+_VERSION_TABLE = [
+    ("0.1.0b1", _PY_BEFORE_B3),
+    ("0.1.0b2", _PY_BEFORE_B3),
+    ("0.1.0a9", _PY_BEFORE_B3),
+    ("0.0.9", _PY_BEFORE_B3),
+    ("0.1.0b3", _PY_SUPPORTED),
+    ("0.1.0b4", _PY_SUPPORTED),
+    ("0.1.0b10", _PY_SUPPORTED),
+    ("0.1.0rc1", _PY_SUPPORTED),
+    ("0.1.0", _PY_SUPPORTED),
+    ("0.1.1", _PY_SUPPORTED),
+    ("0.2.0a1", _PY_SUPPORTED),
+    ("1.0.0", _PY_SUPPORTED),
+    ("10.0.0", _PY_SUPPORTED),
+    ("0.1.0b2.post1", _PY_BEFORE_B3),
+    ("0.1.0b3.dev1", _PY_BEFORE_B3),
+    ("0.1.0.post1", _PY_BEFORE_B3),
+    ("0.1.0b3+local", _PY_BEFORE_B3),
+    ("v0.1.0-beta.3", _PY_BEFORE_B3),
+    ("0.1.0B3", _PY_BEFORE_B3),
+    ("0.1", _PY_BEFORE_B3),
+    ("abc", _PY_BEFORE_B3),
+]
+
+#: The releases the post-condition scripts NAME as pre-#278. They compare
+#: nothing, so they can disagree with an installer whose comparison is wrong.
+_RELEASES_BEFORE_B3 = ("0.1.0b1", "0.1.0b2")
+
+
+def _lf(text: str) -> str:
+    """A Windows checkout may carry CRLF; ``sh`` and these regexes want LF."""
+
+    return "\n".join(text.splitlines())
+
+
+def _sh_derivation(sh: str) -> str:
+    """install.sh's two ranges and ``python_request_for``, in file order."""
+
+    text = _lf(sh)
+    ranges = [ln for ln in text.splitlines() if ln.startswith(("py_supported=", "py_before_b3="))]
+    fn = re.findall(r"^python_request_for\(\) \{\n.*?^\}$", text, re.MULTILINE | re.DOTALL)
+    assert len(ranges) == 2 and len(fn) == 1, (ranges, fn)
+    return "\n".join([*ranges, fn[0]])
+
+
+def _sh_default_snippet(sh: str) -> str:
+    """The lines of install.sh that decide the interpreter request: Step 0's
+    read of the knob, the derivation and Step 5's fill-in. Executed, never
+    pattern-matched alone."""
+
+    text = _lf(sh)
+    step0 = [ln for ln in text.splitlines() if ln.startswith("AELIX_PYTHON=")]
+    fill = [ln for ln in text.splitlines() if ln.startswith('[ -n "$AELIX_PYTHON" ] || AELIX_PYTHON=')]
+    assert len(step0) == 1 and len(fill) == 1, (step0, fill)
+    return "\n".join([step0[0], _sh_derivation(sh), fill[0]])
+
+
+def _ps1_default_block(ps1: str) -> str:
+    """install.ps1's two ranges and ``Get-PythonRequest``, as one block."""
+
+    m = re.search(
+        r"^\$PySupported = .*?^function Get-PythonRequest \{\n.*?^\}$", _lf(ps1), re.MULTILINE | re.DOTALL
+    )
+    assert m, "install.ps1 no longer defines $PySupported ... Get-PythonRequest as one block"
+    return m.group(0)
 
 
 @pytest.mark.parametrize("name", _ENV_VARS)
@@ -190,85 +268,177 @@ def test_both_installers_constrain_the_interpreter(sh: str, ps1: str) -> None:
 def test_an_empty_python_request_does_not_disarm_the_gate(sh: str, ps1: str) -> None:
     """``uv tool install --python ""`` does NOT fail. uv ignores an empty request
     and goes back to the newest interpreter -- measured: exit 0, environment on
-    3.14.5, which is the state #263 exists to prevent.
+    3.14.5, which for a release before 0.1.0b3 is the state #263 exists to
+    prevent.
 
     That is reachable by accident rather than by malice: the sibling knobs use
     ``${VAR-default}`` because a set-but-empty value is meaningful for them
     (``AELIX_EXTRAS=`` installs the bare CLI, and the README teaches that
     spelling), so the same habit applied here would silently turn the gate off.
 
+    Since #278 the default depends on the release, so it is filled in at Step 5
+    rather than at Step 0: both halves are executed together, for an unset, an
+    empty and a set knob, against an old and a new release.
+
     Asserted by EXECUTION, not by substring: the shell is the thing that has to
-    agree. install.ps1 gets the substring form because ``if ($env:X)`` is already
-    false for an empty string and there is no pwsh on every runner.
+    agree. install.ps1 gets the substring form here because ``if ($env:X)`` is
+    already false for an empty string; its derivation is executed in the next
+    test wherever pwsh exists.
     """
 
-    import subprocess
+    snippet = _sh_default_snippet(sh)
+    for version, default in (("0.1.0b2", _PY_BEFORE_B3), ("0.1.0b3", _PY_SUPPORTED)):
+        for value, expected in ((None, default), ("", default), ("3.12", "3.12")):
+            env = {"PATH": os.environ.get("PATH", "")}
+            if value is not None:
+                env["AELIX_PYTHON"] = value
+            out = subprocess.run(
+                ["sh", "-c", f'version={version}\n{snippet}\nprintf "%s" "$AELIX_PYTHON"'],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=env,
+                check=True,
+            ).stdout
+            assert out == expected, f"{version} with AELIX_PYTHON={value!r} resolved to {out!r}"
 
-    line = next(
-        ln for ln in sh.splitlines() if ln.startswith("AELIX_PYTHON=")
-    )
-    for value, expected in ((None, _PY_REQUEST), ("", _PY_REQUEST), ("3.12", "3.12")):
-        env = {"PATH": os.environ.get("PATH", "")}
-        if value is not None:
-            env["AELIX_PYTHON"] = value
-        out = subprocess.run(
-            ["sh", "-c", f'{line}; printf "%s" "$AELIX_PYTHON"'],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=True,
-        ).stdout
-        assert out == expected, f"AELIX_PYTHON={value!r} resolved to {out!r}"
-
-    # ps1 gets a regex rather than an execution because this file is designed to
-    # run where there is no PowerShell at all (see the module docstring). It ties
-    # BOTH halves: the truthiness test, which is what makes empty behave like
-    # unset there, AND the literal it falls back to. A cross-review caught the
-    # first version of this assertion checking only `if ($env:AELIX_PYTHON)` --
-    # with that alone, changing the ps1 default to `3.14` still passed, which is
-    # the precise drift this file exists to catch.
+    # ps1 gets a regex: the truthiness test that makes empty behave like unset
+    # there, an empty placeholder at Step 0 (a literal there would win over the
+    # release's default), and the Step 5 fill-in that calls the derivation. A
+    # cross-review caught the first version of this assertion checking only
+    # `if ($env:AELIX_PYTHON)` -- with that alone, changing the ps1 default to
+    # `3.14` still passed, which is the precise drift this file exists to catch.
+    text = _lf(ps1)
     assert re.search(
-        r"\$env:AELIX_PYTHON\s*\)\s*\{\s*\$env:AELIX_PYTHON\s*\}\s*else\s*\{\s*"
-        + re.escape(repr(_PY_REQUEST).replace('"', "'"))
-        + r"\s*\}",
-        ps1,
-    ), f"install.ps1 must fall back to {_PY_REQUEST!r} when AELIX_PYTHON is unset or empty"
+        r"^\$AelixPython\s*=\s*if \(\$env:AELIX_PYTHON\)\s*\{\s*\$env:AELIX_PYTHON\s*\}\s*else\s*\{\s*''\s*\}\s*$",
+        text,
+        re.MULTILINE,
+    ), "install.ps1 Step 0 must leave $AelixPython empty when AELIX_PYTHON is unset or empty"
+    fill = [ln.strip() for ln in _code_lines(text) if "Get-PythonRequest $version" in ln]
+    assert fill == ["if (-not $AelixPython) { $AelixPython = Get-PythonRequest $version }"], fill
 
 
-def test_the_windows_postcondition_asserts_the_same_range() -> None:
-    """The range literal lives in FOUR places, not the two the ADR used to claim:
-    both installers, ``_PY_REQUEST`` here, and -- since the Windows e2e grew an
-    interpreter post-condition -- ``assert-install-ps1.ps1`` twice, once as the
-    numeric bounds it compares and once as the literal in its failure message.
+def test_both_installers_derive_the_same_default_from_the_version(sh: str, ps1: str) -> None:
+    """#278: the default interpreter request comes from the release being
+    installed, and the two scripts compute it independently - awk in one,
+    a .NET regex in the other. Both are EXECUTED over the same table.
 
-    A review flagged that as a maintenance trap: move the ceiling and the next
-    editor is sent to two of four sites. It fails CLOSED (a stale post-condition
-    rejects a now-valid interpreter rather than accepting a broken one), so it is
-    a cost rather than a hazard -- but a checked invariant costs less than a
-    comment asking people to remember.
+    SABOTAGE this goes red on: a text comparison (``0.1.0b10`` sorts before
+    ``0.1.0b3``), an open parser that hands 3.14 to a dev/post/local version,
+    either range literal changed in one script, the comparison's floor moved
+    to b2 or b4.
     """
 
-    text = (_REPO_ROOT / ".github" / "scripts" / "assert-install-ps1.ps1").read_text()
+    versions = [v for v, _ in _VERSION_TABLE]
+    want = [expected for _, expected in _VERSION_TABLE]
 
-    m = re.fullmatch(r">=3\.(\d+),<3\.(\d+)", _PY_REQUEST)
-    assert m, f"_PY_REQUEST is not the shape this test knows how to check: {_PY_REQUEST!r}"
-    lo, hi = int(m.group(1)), int(m.group(2)) - 1
+    loop = 'for v in "$@"; do printf \'%s\\n\' "$(python_request_for "$v")"; done'
+    out = subprocess.run(
+        ["sh", "-c", f"{_sh_derivation(sh)}\n{loop}", "sh", *versions],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={"PATH": os.environ.get("PATH", "")},
+        check=True,
+    ).stdout.splitlines()
+    assert list(zip(versions, out, strict=True)) == list(zip(versions, want, strict=True))
 
-    assert f"-lt {lo}" in text, f"post-condition floor is not {lo} (from {_PY_REQUEST!r})"
-    assert f"-gt {hi}" in text, f"post-condition ceiling is not {hi} (from {_PY_REQUEST!r})"
-    assert _PY_REQUEST in text, "the post-condition's failure message must name the request it enforces"
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is not installed on this host; install.ps1's half runs where it is (CI's ubuntu and windows images carry it)")
+    ps_versions = ", ".join("'" + v.replace("'", "''") + "'" for v in versions)
+    command = "\n".join(
+        [
+            "Set-StrictMode -Version Latest",
+            "$ErrorActionPreference = 'Stop'",
+            _ps1_default_block(ps1),
+            f"foreach ($v in @({ps_versions})) {{ Write-Output (Get-PythonRequest $v) }}",
+        ]
+    )
+    # -EncodedCommand (base64 of UTF-16LE): no script file for an execution
+    # policy to judge, and no line-at-a-time stdin parse to split the function.
+    # No wall-clock bound beyond a generous timeout: pwsh's own start was
+    # measured at up to 5.97 s on the windows runners.
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+    out = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        check=True,
+    ).stdout.splitlines()
+    assert list(zip(versions, out, strict=True)) == list(zip(versions, want, strict=True))
 
 
-def test_the_posix_postcondition_asserts_the_same_range() -> None:
-    """The fifth site (#279): ``assert-install-sh.sh`` keeps the range as ONE
-    named value and derives its floor and ceiling from it, so one equality is
+def test_both_installers_name_the_same_two_ranges(sh: str, ps1: str) -> None:
+    text = _lf(sh)
+    assert f"py_supported='{_PY_SUPPORTED}'" in text.splitlines()
+    assert f"py_before_b3='{_PY_BEFORE_B3}'" in text.splitlines()
+    block = _ps1_default_block(ps1)
+    assert f"$PySupported = '{_PY_SUPPORTED}'" in block
+    assert f"$PyBeforeB3  = '{_PY_BEFORE_B3}'" in block
+
+
+def test_the_old_range_is_inside_the_new_one() -> None:
+    """CI runs the newer range (tests/test_ci_python_matrix.py), so every minor
+    the older range can hand a user must be one of its legs too."""
+
+    from packaging.specifiers import SpecifierSet
+
+    old = [f"3.{n}" for n in range(0, 40) if SpecifierSet(_PY_BEFORE_B3).contains(f"3.{n}")]
+    new = [f"3.{n}" for n in range(0, 40) if SpecifierSet(_PY_SUPPORTED).contains(f"3.{n}")]
+    assert old and set(old) < set(new), (old, new)
+
+
+def test_the_windows_postcondition_asserts_the_same_ranges() -> None:
+    """The ranges live in the Windows post-condition too: as the request it
+    names and as the numeric bounds it compares, once per release class. Since
+    #278 it chooses between them by NAMING the releases before 0.1.0b3, so a
+    wrong comparison in install.ps1 shows up as a disagreement.
+
+    A review flagged the duplicated literals as a maintenance trap: move a
+    ceiling and the next editor is sent to some of the sites. It fails CLOSED (a
+    stale post-condition rejects a now-valid interpreter rather than accepting a
+    broken one), so it is a cost rather than a hazard -- but a checked invariant
+    costs less than a comment asking people to remember.
+    """
+
+    text = _lf((_REPO_ROOT / ".github" / "scripts" / "assert-install-ps1.ps1").read_text(encoding="utf-8"))
+    found = re.findall(
+        r"\$pyRequest = '(>=3\.(\d+),<3\.(\d+))'\n\s*\$pyFloor = (\d+)\n\s*\$pyCeiling = (\d+)", text
+    )
+    assert {f[0] for f in found} == {_PY_SUPPORTED, _PY_BEFORE_B3}, found
+    for request, lo, hi, floor, ceiling in found:
+        assert (int(floor), int(ceiling)) == (int(lo), int(hi) - 1), request
+    assert "-lt $pyFloor" in text and "-gt $pyCeiling" in text
+    names = re.search(r"if \(\$expected -ceq '([^']+)' -or \$expected -ceq '([^']+)'\)", text)
+    assert names and names.groups() == _RELEASES_BEFORE_B3, names and names.groups()
+
+
+def test_the_posix_postcondition_asserts_the_same_ranges() -> None:
+    """``assert-install-sh.sh`` (#279) keeps each range as ONE named value and
+    derives its floor and ceiling from whichever applies, so the equalities are
     the whole check. It fails closed like the Windows one, and it is the only
     thing that proves install.sh's default did something on a POSIX host."""
 
-    text = (_REPO_ROOT / ".github" / "scripts" / "assert-install-sh.sh").read_text(encoding="utf-8")
-    m = re.search(r"^INSTALLER_PY_REQUEST='([^']*)'\s*$", text, re.MULTILINE)
-    assert m, "assert-install-sh.sh no longer names INSTALLER_PY_REQUEST"
-    assert m.group(1) == _PY_REQUEST, (m.group(1), _PY_REQUEST)
+    text = _lf((_REPO_ROOT / ".github" / "scripts" / "assert-install-sh.sh").read_text(encoding="utf-8"))
+    for name, want in (("INSTALLER_PY_SUPPORTED", _PY_SUPPORTED), ("INSTALLER_PY_BEFORE_B3", _PY_BEFORE_B3)):
+        m = re.search(rf"^{name}='([^']*)'\s*$", text, re.MULTILINE)
+        assert m, f"assert-install-sh.sh no longer names {name}"
+        assert m.group(1) == want, (name, m.group(1), want)
+    case = re.search(r'^case "\$expected" in\n\s*([^)]+)\)\n\s*INSTALLER_PY_REQUEST="\$INSTALLER_PY_BEFORE_B3"', text, re.MULTILINE)
+    assert case and tuple(case.group(1).split("|")) == _RELEASES_BEFORE_B3, case and case.group(1)
+
+
+def test_the_postconditions_and_the_installers_agree_on_the_published_releases(sh: str) -> None:
+    """The installers compare; the post-conditions name. On every release
+    published before #278, and on the first one after, they must say the same."""
+
+    by_version = dict(_VERSION_TABLE)
+    for version in (*_RELEASES_BEFORE_B3, "0.1.0b3"):
+        named = _PY_BEFORE_B3 if version in _RELEASES_BEFORE_B3 else _PY_SUPPORTED
+        assert by_version[version] == named, version
 
 
 def test_both_installers_pin_the_exact_version(sh: str, ps1: str) -> None:

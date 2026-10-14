@@ -23,6 +23,28 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Python 3.14 is supported (#278, ADR-0265).** `aelix-ai` now requires
+  `openai>=2.7.2,<3` (was `>=1.66,<2.0`). Python 3.14 made `typing.Union[...]`
+  slotted, and every openai before 2.7.2 assigns `__discriminator__` onto it
+  whenever a streamed event fails its validation, so on 3.14 a real turn died
+  with `'typing.Union' object has no attribute '__discriminator__'` (#262) while
+  a one-line prompt still worked. Measured on 3.14.5 with a tool round trip
+  against a local OpenAI-compatible server: the old pin exits 1 when the
+  server's Responses events omit `sequence_number` and `logprobs`, as many
+  compatible servers do, and exits 0 when they carry them; the new one exits 0
+  either way, and on chat completions. CI's test matrix runs 3.14 on Ubuntu
+  and Windows, and the packages list the 3.13 and 3.14 classifiers. The ceiling
+  is `<3`: openai 3.0 replaced httpx with HTTPX2 and stopped installing
+  `certifi`, which aelix's TLS handling is written against. What aelix sends
+  and emits is unchanged: thirteen recorded scenarios (text, tool calls,
+  reasoning, prompt caching, HTTP 400 and 429, a refused connection) give the
+  same requests and the same events on openai 1.109.1, 2.7.2 and 2.54.0, and
+  `tests/providers/test_openai_sdk_wire_278.py` holds every CI leg to that
+  recording. A keyless openai-completions call keeps its old wire too: openai
+  2.34 and later refuse an empty key, so the adapter builds its client with a
+  placeholder that never reaches the wire (the request's own `Authorization`
+  replaces it, and without one the SDK's is omitted).
+
 - **Configured authentication is checked before recording a prompt (#416).**
   TUI, RPC, print and json check after input hooks, accepting request-supported
   model/provider/registration headers, Anthropic tokens/custom headers and Vertex
@@ -63,6 +85,18 @@ unwritten. Add them with the next release.
   ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
 
 ### Changed
+
+- **The installers choose the interpreter range from the release they install
+  (#278, ADR-0265).** `install.sh` and `install.ps1` now default
+  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0-beta.3` and later and keep
+  `>=3.11,<3.14` for `v0.1.0-beta.2` and earlier, which pin `openai<2.0`; a
+  version they cannot parse gets the older range. A default that simply widened
+  would have put an `AELIX_VERSION=v0.1.0-beta.2` install on 3.14 and the crash
+  above. The log names the request it chose. Both e2e jobs gained a pass that
+  pins `v0.1.0-beta.2` with 3.14 on the runner and requires the environment to
+  land below 3.14, and their post-conditions derive the range they expect from
+  the release they resolved. Until `v0.1.0-beta.3` is published, keep
+  upgrading through the install line rather than `uv tool install aelix@latest`.
 
 - **rpc `set_auto_retry` now persists, and `settings.json` wins over the
   in-memory toggle (#408) - a behaviour change for embedders.** As in pi,

@@ -2,8 +2,10 @@
 
 Pi parity: ``providers/openai-completions.ts:443-496`` ``createClient``
 uses the official ``openai`` npm package. The Aelix port targets the
-official ``openai`` Python SDK (``>=1.50,<2.0``) wrapped behind this
-module so a future ``httpx`` swap does not ripple through every caller.
+official ``openai`` Python SDK wrapped behind this module so a future
+``httpx`` swap does not ripple through every caller. The range is
+``>=2.7.2,<3`` since #278 (ADR-0265): 2.7.2 is the first release that runs on
+Python 3.14 (#262), and 3.0 moved to HTTPX2.
 
 The OAuth-flow questions Pi answers in ``providers/anthropic.ts`` do not
 apply here — every supported provider in Sprint 6b authenticates via a
@@ -28,10 +30,14 @@ def create_async_client(
 ) -> AsyncOpenAI:
     """Build an :class:`openai.AsyncOpenAI` client.
 
-    Pi parity: ``createClient`` (``openai-completions.ts:443``). ``api_key``
-    is required by the SDK constructor, so when it's ``None`` we pass
-    ``""`` — callers MUST surface a meaningful error before reaching the
-    network (the Sprint 6b adapter checks for an empty key upstream).
+    Pi parity: ``createClient`` (``openai-completions.ts:443``). A ``None``
+    ``api_key`` is passed on as ``""``, never as ``None``: given ``None`` the
+    SDK reads ``OPENAI_API_KEY`` from the environment and would send the
+    user's OpenAI key to any provider (#374). From openai 2.34 the SDK
+    refuses ``""`` outright ("Missing credentials"), so callers MUST settle a
+    keyless request before calling this; both adapters do (Responses raises
+    ``No API key`` or uses ``"unused"`` beside an auth header; completions
+    builds with a placeholder that never reaches the wire, #278).
 
     Args:
         api_key: bearer / API key. The SDK injects it as
