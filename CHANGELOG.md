@@ -398,6 +398,17 @@ unwritten. Add them with the next release.
   more event for such a failure, and an extension's `message_start` hook fires
   for it. The TUI shows the failure as before, and the session records it once.
 
+- **The bundled guides keep LF line endings on every checkout, so they stay
+  under `read`'s cap on Windows too (#485).** Nothing users install changed:
+  the wheel is built on Linux and carries LF. A Windows checkout turns LF into
+  CRLF by default, one byte more per line, and `read`'s 51200-byte cap is
+  measured on the file on disk, so with #285's edit `extension-authoring.md`
+  was 51326 bytes there - over the cap on every Windows test leg of PR #484 -
+  and 50418 on Ubuntu.
+  `.gitattributes` now pins `docs/guides/*.md` and the bundled copies to LF,
+  and a new check fails if the pin stops matching a guide or a guide is
+  checked out with CRLF. The cap was not raised.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
