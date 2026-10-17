@@ -511,7 +511,6 @@ async def run_tui(
     agent_service: AgentProfileService | None = None,
     late_route: LateRoute | None = None,
     first_run_login: bool = False,
-    thinking_level_restored: bool = False,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
     read_only: bool = False,
@@ -579,14 +578,6 @@ async def run_tui(
         it can only be judged after the harness build (extension-registered
         providers land on the registry there) — and because the stdout-TTY arm
         of that predicate is False under a headless test output.
-    :param thinking_level_restored: issue #198 — ``True`` when entry.py already
-        applied a thinking level (``--thinking`` / a profile's ``thinking:`` /
-        the resumed session's recorded level). The ``defaultThinkingLevel`` seed
-        below then stands down. It is passed in rather than derived here because
-        the seed's ADR-0196 guard sniffs ``state.thinking_level`` for "unset",
-        and a restored explicit ``off`` is indistinguishable from unset by value
-        — since #198 an idle ``set_thinking_level`` WRITES to the session, so
-        seeding over it would overwrite the user's ``off`` permanently.
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -833,11 +824,11 @@ async def run_tui(
 
     # Issue #50 — seed the live thinking settings from the persisted store at
     # startup (mirror of the WP-2/ADR-0160 theme + default-model seeds above).
-    # Without this the /settings → "Show thinking" + "Default thinking level"
-    # choices were write-only across launches: the renderer started on its
-    # hardcoded default and the harness on ``off``, so the user had to re-toggle
-    # them every session. Both seeds are guarded so a malformed settings file
-    # never blocks launch.
+    # Without this the /settings → "Show thinking" choice was write-only across
+    # launches: the renderer started on its hardcoded default, so the user had
+    # to re-toggle it every session. Each seed is guarded so a malformed
+    # settings file never blocks launch. ("Default thinking level" is seeded by
+    # ``cli/entry.py`` for every mode since #286: see (b).)
     if settings_manager is not None:
         # (a) thinking-block VISIBILITY → the renderer flag. ``get_hide_thinking_
         # block`` defaults to False (visible, pi parity) which now also matches
@@ -858,53 +849,15 @@ async def run_tui(
         # mode as (a2) if omitted: the setting persists and does nothing.
         with contextlib.suppress(Exception):
             render_width_cap["value"] = settings_manager.get_render_max_width()
-        # (b) default THINKING LEVEL → the live harness. SKIP when the current
-        # model does not support the stored level (a reasoning-off model collapses
-        # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
-        # preserves the default ``off`` — nothing to apply. Runs pre-bootstrap;
-        # ``bootstrap`` only discovers resources, it never resets thinking_level.
-        #
-        # ADR-0196 — and SKIP entirely when the level is already set. This seed
-        # runs AFTER the harness is built, so before the guard below a persisted
-        # ``defaultThinkingLevel`` silently overrode an explicit ``--thinking``
-        # (now wired into ``AgentHarnessOptions.thinking_level``) or a profile's
-        # ``thinking:``. CLI/profile wins; the settings default still fills the
-        # untouched case, which is the whole point of a *default*. ``"off"`` is
-        # the kernel's unset sentinel (``types.py:84``); ``None``/``""`` cover
-        # the test doubles that model "unset" differently.
-        #
-        # #198 — that value-sniffing guard was written for two sources and now
-        # has a third: the resumed session's own level, which may legitimately be
-        # an explicit ``off`` and is then indistinguishable from unset by value.
-        # Since #198 an idle ``set_thinking_level`` writes to the session, so an
-        # unguarded seed would not merely shadow that ``off`` for the session, it
-        # would overwrite it in the file. ``entry.py`` supplies the positive
-        # signal instead (ADR-0196 D6.3, amended by ADR-0239).
-        with contextlib.suppress(Exception):
-            seed_level = settings_manager.get_default_thinking_level()
-            # ``state`` is the public property on a real harness; the TUI's
-            # FakeHarness doubles expose only ``_state`` (the same fallback
-            # ``_thinking_handler`` uses), so read through both.
-            seed_state = getattr(runtime_host.harness, "state", None)
-            if seed_state is None:
-                seed_state = getattr(runtime_host.harness, "_state", None)
-            if (
-                seed_level
-                and not thinking_level_restored
-                and getattr(seed_state, "thinking_level", None)
-                in (
-                    None,
-                    "",
-                    "off",
-                )
-            ):
-                from aelix_ai.models import get_supported_thinking_levels
-
-                seed_model = getattr(runtime_host.harness, "current_model", None)
-                if seed_model is not None and seed_level in get_supported_thinking_levels(
-                    seed_model
-                ):
-                    await runtime_host.harness.set_thinking_level(seed_level)
+        # (b) The default THINKING LEVEL is no longer seeded here (#286). This
+        # seed ran in the TUI only, so ``-p``, ``--mode json``, ``--mode rpc``
+        # and every delegated child ignored ``defaultThinkingLevel`` and asked
+        # for ``off``; and it SKIPPED a level the model did not list, leaving a
+        # default above the model's top level at ``off``. ``cli/entry.py``'s
+        # launch ladder (``_seed_default_thinking_level``) now applies it for
+        # every mode before ``session_start``, clamped to the model, after
+        # ``--thinking`` and the resumed session's level (#198) — which also
+        # retires the ``thinking_level_restored`` signal this seed needed.
 
     # WP-8 (Feature 2) — the TUI-side session activity tracker. The harness
     # SessionStats carries no per-tool success/failure split, no per-model
@@ -1813,7 +1766,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:3973``) always passes one, so this is
+            # production caller (``entry.py:4232``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2613,7 +2566,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:972``), so anything reaching this line already has it.
+            # (``render.py:1011``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
@@ -3593,11 +3546,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1534``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1756``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1517`` already printed at startup, and one that
+    #       what ``entry.py:1739`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4095,7 +4048,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:3904-3920 and
+            # Two audiences, discriminated exactly as entry.py:4163-4179 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

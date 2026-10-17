@@ -6,8 +6,9 @@ resumed session's ``thinking_level_change`` entries: measured on ``main``, a
 session whose context said ``high`` produced a harness reporting ``off``.
 ``entry._seed_startup_state`` (the #122 message seed, widened) now restores the
 level from the same single ``get_branch()`` read, clamped to the resumed model,
-and reports whether a level was applied so the TUI's ``defaultThinkingLevel``
-seed knows not to fire over it.
+and reports whether a level was applied so the ``defaultThinkingLevel`` seed
+(``entry._seed_default_thinking_level``, every mode since #286) knows not to fire
+over it.
 
 Modelled on ``tests/cli/test_startup_resume_stats_122.py`` (real
 ``JsonlSessionRepo`` under ``tmp_path``).
@@ -124,7 +125,7 @@ async def test_cli_thinking_wins_over_session(tmp_path: Path) -> None:
     restored = await _seed_startup_state(harness, session, cli_level="low")
 
     assert harness.state.thinking_level == "low"
-    # True so the TUI settings seed does not overwrite the CLI level either.
+    # True so the settings seed does not overwrite the CLI level either.
     assert restored is True
 
 
@@ -148,9 +149,31 @@ async def test_no_entry_leaves_state_untouched(tmp_path: Path) -> None:
     assert restored is False
 
 
+async def test_a_session_with_no_conversation_still_restores_its_level(
+    tmp_path: Path,
+) -> None:
+    """A level set before the first prompt is still a decision (ADR-0239): a session
+    left without a prompt — ``/thinking low`` in a TUI opened and quit, an RPC
+    ``set_thinking_level`` with no prompt — comes back at it. pi restores a level
+    only ``if hasExistingSession`` (``sdk.ts:209-212,251-258`` at ``pi@3daa20280``);
+    #286's review round 2 adopted that conjunct and lost such a level, and round 3
+    took it out again with the creation-time record it existed for (owner decision
+    2026-10-15)."""
+
+    repo = JsonlSessionRepo(fs=LocalFileSystem(), sessions_root=str(tmp_path))
+    session = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    await session.append_thinking_level_change("high")
+    harness = _startup_harness(session, model=_REASONING_MODEL)
+
+    restored = await _seed_startup_state(harness, session, cli_level=None)
+
+    assert restored is True
+    assert harness.state.thinking_level == "high"
+
+
 async def test_startup_restores_explicit_off(tmp_path: Path) -> None:
     """A session last set to ``off`` reports ``restored=True`` even though the
-    assignment is a no-op — that boolean is what stops the TUI's
+    assignment is a no-op — that boolean is what stops the
     ``defaultThinkingLevel`` seed refilling a level the user turned off."""
 
     repo = JsonlSessionRepo(fs=LocalFileSystem(), sessions_root=str(tmp_path))
@@ -252,3 +275,21 @@ async def test_cli_thinking_off_writes_nothing(tmp_path: Path) -> None:
     await _seed_startup_state(harness, session, cli_level="off")
 
     assert await _levels_on(await repo.open(meta)) == []
+
+
+async def test_a_pending_launch_restores_the_level_unjudged(tmp_path: Path) -> None:
+    """#286 — ``clamp=False`` (a pending launch, #367) restores the recorded level as
+    written: until the late-route decision the harness may sit on an unresolved
+    ``api='unknown'`` placeholder, which supports only ``off``, so a clamp then
+    turned a recorded ``high`` into ``off`` for the run. ``_settle_start_level``
+    judges it after the decision."""
+
+    repo = JsonlSessionRepo(fs=LocalFileSystem(), sessions_root=str(tmp_path))
+    session = await _session_at(repo, str(tmp_path), "xhigh")
+    placeholder = Model(id="m1", provider="late")  # api 'unknown', reasoning False
+    harness = _startup_harness(session, model=placeholder)
+
+    restored = await _seed_startup_state(harness, session, cli_level=None, clamp=False)
+
+    assert restored is True
+    assert harness.state.thinking_level == "xhigh"

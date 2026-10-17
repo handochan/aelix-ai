@@ -12,10 +12,14 @@ OpenAI in three ways an OpenAI-compatible config can't express:
   3. TLS against a PRIVATE CA bundle, which no config key can point httpx at
      (``SELFHOSTED_CA_BUNDLE=/path/ca.pem``; unset means ordinary system trust).
 
-The key move: a small CUSTOM StreamFn builds its own ``openai.AsyncOpenAI`` (with
-its own http client — private CA bundle + per-model ``base_url``) and DELEGATES to
-the built-in openai-completions provider via ``replace(opts, client=...)`` — reusing
-all of aelix's SSE parsing / event mapping / param assembly. Three pieces:
+The key move: a small CUSTOM StreamFn builds its own openai client (with its own
+http client — private CA bundle + per-model ``base_url``) and DELEGATES to the
+built-in openai-completions provider via ``replace(opts, client=...)`` — reusing
+all of aelix's SSE parsing / event mapping / param assembly. It builds that client
+with aelix's ``create_async_client``, not a bare ``openai.AsyncOpenAI``: from
+openai 2.34 a bare client merges ``OPENAI_CUSTOM_HEADERS`` from the environment
+over its key and refuses an empty key; aelix's keeps neither variable (#278,
+ADR-0265). Three pieces:
 
 - ``register_api_adapter(api, stream_fn)`` — the custom wire adapter (this file).
 - ``register_provider(name, ProviderConfigInput(models=...))`` — the Models that
@@ -69,14 +73,14 @@ async def _selfhosted_stream(model: Model, context: Any, opts: Any) -> AsyncIter
     """Custom wire adapter: private-CA client + model-in-URL + an extra body field.
 
     Delegates the actual streaming to the built-in openai-completions provider by
-    injecting a custom ``AsyncOpenAI`` (so all SSE/event logic is reused), and
+    injecting a client of its own (so all SSE/event logic is reused), and
     closes that client in a ``finally`` because it built it (#174 — see the
     module docstring).
     """
 
     import httpx
+    from aelix_ai.providers._openai_client import create_async_client
     from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
-    from openai import AsyncOpenAI
 
     # The access token is what the /login flow stored as the credential, so it
     # arrives as opts.api_key. A real deployment might mint a short-lived token
@@ -104,7 +108,7 @@ async def _selfhosted_stream(model: Model, context: Any, opts: Any) -> AsyncIter
     ca_bundle = os.environ.get(_CA_BUNDLE_ENV)
     verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
 
-    client = AsyncOpenAI(
+    client = create_async_client(
         http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # (1) model is in the URL
         api_key=access_token or "unused",

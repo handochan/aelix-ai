@@ -407,7 +407,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1369-1376``); this channel
+            # ``_eager_abort`` (``print_channel.py:1380-1387``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

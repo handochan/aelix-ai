@@ -1,6 +1,7 @@
 # 0221. Reasoning streams to a live window, and the renderer must give it back
 
-Status: Accepted (2026-08-15).
+Status: Accepted (2026-08-15). Amended 2026-10-14 (#285): a block that arrives whole commits when
+it closes, and one mark keeps a block a reasoning flush already committed from printing twice.
 Date: 2026-08-15
 Relates: ADR-0104 / ADR-0105 (Sprint 6h₁₀a/b, where `StreamRenderer` and the sink-based live
 region were built — this reuses that window for a second producer), ADR-0115 (why a thinking
@@ -182,3 +183,270 @@ so this ran on the prompt-toolkit loop. The answer path has had an adaptive gove
 - #168 (`toolResult` loses `details`) is open by design and unrelated.
 - `_THINKING_LIVE_WINDOW = 12` is inherited from `StreamRenderer`'s live window and was not
   re-derived.
+
+## Amendment (2026-10-14, #285) — an answer block that never streamed still commits, once
+
+Pi reference: `earendil-works/pi@3daa20280`.
+
+### What was measured on `529b997e`
+
+The answer half of `EventRenderer` opened its stream on the first `text_delta`, and `text_end`
+committed only through a stream that was already open. A block that arrives WHOLE —
+`text_start` → `text_end(content)`, no delta — never had one. `process_responses_stream` produces
+exactly that when a server puts the text only in `response.output_item.done` (the slot is created
+there), and an extension's stream adapter can do the same. Wire events through the real engine
+into the real renderer (`.omc/probes/285-live/impl/probe_285.py`):
+
+| wire | committed live | `replay` of the final message |
+|---|---|---|
+| message `output_item.done` only, then a `read` call | `● read(a.py)` | the answer, `● read(a.py)` |
+| message `added` → `done`, no delta, then a `read` call | `● read(a.py)` | the answer, `● read(a.py)` |
+| control: two `output_text.delta` | the answer, `● read(a.py)` | the same |
+| done-only `AAAA`, then a streamed `BBBB` | `BBBB` (tail frames `AAAABBBB`, empty) | `AAAA`, `BBBB` |
+| reasoning streaming, a done-only message, the reasoning's `done` last | `REASON` | `REASON`, the answer |
+
+The text the renderer parked in `_text_accum` for the whole block was what led the next block's
+live window. The real `aelix` TUI in a pty, against a local fake Responses server, showed the same
+on screen: every done-only answer was missing live and present once `--session` reopened the file,
+and mid-stream the second block's window read `AAAA first block, sent whole.BBBB second block,`.
+Print mode, `--mode json` and `--mode rpc` showed the answer already (the first prints the final
+message, the other two forward `text_end` and `message_end` as they are).
+
+### Decision
+
+1. **A text block is committed when it closes, whether or not it streamed.** A `text_end` that
+   finds no stream open and carries text that renders to something (decision 5) opens one and
+   closes it in a single final frame — the delta path's commit, so what it commits is what a
+   one-delta stream and `replay` commit: the same Markdown rendering, wrapping and styles. Rows
+   compare the styled spans, not only the characters, since review round 2 measured that a raw
+   `Text` of the content (raw `**`, backticks, `-` bullets, an unwrapped long line) passed every
+   row that compared `.plain` of one line of prose.
+2. **Reasoning first**, as ADR-0115 put it for the first delta: opening that stream commits the
+   buffered reasoning above it. Measured without it: reasoning still streaming when a done-only
+   message overtakes it (the engine routes by `output_index`, pi #6009) committed BELOW the answer.
+3. **One mark: "a reasoning flush closed the open answer stream early."** `_text_closed_early` is
+   a boolean. `_flush_thinking` closes an open answer stream through
+   `_finalize_text(by_flush=True)`, which sets it if that stream drew something; the next
+   `text_end` that finds no stream open and whose text renders to something (decision 5) spends it
+   and draws nothing; `message_start` clears it, since a turn aborted or failed between
+   the flush and that late end never sends the end. A stream closed any other way — by its own
+   `text_end`, `message_end`, `turn_end`, an `error` or `done` — sets nothing. This is what makes 1
+   safe. openai-completions sends its end events at end-of-stream in block order, so the
+   reasoning's `thinking_end` (block 0) arrives first — late: the reasoning was committed at the
+   answer's first delta — and still runs `_flush_thinking`, whose first act, `_finalize_text`,
+   closes the answer stream before the answer's own `text_end` (block 1) arrives. The fix the issue
+   proposed, as written (commit at every stream-less `text_end`), printed that answer twice:
+   `['think hard', 'the answer', 'the answer']` through the real adapter, and `COMPLETIONS-ANSWER:
+   said exactly once.` on two rows of the real TUI against a fake chat-completions server. Every
+   reasoning turn on an openai-completions route (OpenRouter's, for one) takes that path. Set only
+   by a flush, not at every close: a block closed by its own `text_end` has no end still to come,
+   and a mark it left would be spent by the next whole block of the message, which would then draw
+   nothing. Measured with the mark set at every close, an in-order Responses message that streams
+   and the next one arriving whole commit `['AAAA']` against `replay`'s `['AAAA', 'BBBB']` (review
+   round 3's verify; a row through the real engine pins it since review round 4). And set only
+   when the stream it closes drew something (review round 4): a stream whose text renders to
+   nothing (a streamed `' '`, out of scope below) has nothing in scrollback to repeat, and its own
+   late end renders to nothing too and so does nothing (decision 5). With decision 5's order and a
+   mark set for such a stream too, the mark waited for the next stream-less end, the next whole
+   block of the message, and dropped it: `['R']` against `['R', 'second']` on `replay`, where
+   review round 3's cut, whose late end spent the mark, drew `second`.
+
+   **The mark reads no `content_index`.** Review round 2 keyed it on the index (`_text_index`, the
+   block the open stream rendered, and a set of blocks closed early); review round 3 measured what
+   that cost. An extension adapter that wraps the built-in openai-completions adapter — as
+   `examples/selfhosted` wraps its `stream_simple` — and rebuilds each `text_delta` from its text (a
+   redaction, say) leaves the rebuilt event at the class default `content_index=0`, while
+   `text_start` and `text_end` pass through with 1. The flush marked block 0, the answer's own end
+   came as block 1, found no mark, and drew the answer again from its copy: `['think hard', 'the
+   ****** answer', 'the secret answer']` where `529b997e` draws one answer, and two
+   `WRAPPED-ANSWER` rows in the real TUI (`.omc/probes/285-live/r2cross-claude/`,
+   `.omc/probes/285-live/r3/`). The boolean draws it once. What the index bought was out-of-order
+   input only: P2 under out of scope, and one interleaved sequence of the 4000 fuzzed there, match
+   `replay` with it and not with the boolean; no in-order sequence does.
+4. **`_text_accum` is written only while a stream is open**, and every close clears it, so nothing
+   can be left there for the next block. The separate reset at `text_start` the issue also proposed
+   was not added: with this rule in place it cannot change any outcome, so no test can tell it from
+   its absence; and with a stream still open — a shape no server we measured sends, though
+   `process_responses_stream` passes interleaved items through — it would empty that block's live
+   window.
+5. **A `text_end` with no stream open whose text renders to nothing does nothing**: it draws
+   nothing, and it neither spends nor sets the mark of decision 3. Opening a stream for it would
+   commit the reasoning still streaming around it, and the rest of that reasoning block would then
+   commit a second time, whole, at its own `thinking_end`. The test comes before the mark (review
+   round 4). Looked at after it, such an end spent the mark, and the late end of the block the
+   flush had closed then drew that block a second time: reasoning that finishes while message 1
+   streams, then an empty or HTML-comment message 2 arriving whole, then message 1's own end,
+   committed `['REASON', answer, answer]` through the real `process_responses_stream` where
+   `529b997e` and `replay` draw the answer once (the round-3 cross-review's E2 and E3,
+   `.omc/probes/285-live/r3cross-claude/`); in the real TUI two `E2-ANSWER` and two `E3-ANSWER`
+   rows on review round 3's cut, one each now (`.omc/probes/285-live/r4/tui/`). "Renders to
+   nothing" is decided the way the renderer decides it: `markdown_lines(_safe_prose(content),
+   width)` is empty — the test `replay` applies to a stored block. The first cut tested only for
+   the empty string, so a space, two newlines or an HTML comment, sent whole inside streaming
+   reasoning, committed `['R1', 'R1 R2']` where `529b997e` and `replay` show `['R1 R2']` (review
+   round 2, `.omc/probes/285-live/cross-claude/`). `content.strip()` is not enough either: an HTML
+   comment and a link-reference definition are non-blank and render to nothing. Nor is
+   `markdown_lines(content)` without the strip: a block made only of characters `_safe_prose`
+   deletes renders to a line before the strip and to nothing after it, and that gate cut the
+   reasoning around it the same way (review round 3; the four rows that pin it, BEL, RLO, ZWSP and
+   a lone ESC, were added then, until which that gate passed every row). Those characters are
+   exactly C0 other than tab and newline, DEL, C1, U+061C, U+200B, U+200E-U+200F, U+2028-U+202E,
+   U+2066-U+2069 and U+FEFF; of the code points the strip keeps, only space, tab, newline and `>`
+   render to nothing on their own (every code point U+0000-U+2FFFF scanned,
+   `.omc/probes/285-live/r5/out/scan_draws_nothing.txt`). So the only whitespace that the strip
+   keeps and that renders to nothing is space, tab and newline: NBSP and the other Unicode spaces
+   (U+1680, U+2000-U+200A, U+202F, U+205F, U+3000) draw two rows, and ZWJ, ZWNJ, SHY and WJ
+   (format characters the strip keeps) and an entity Markdown decodes after the strip
+   (`&#8238;`) draw one, live and in `replay` alike
+   (`.omc/probes/285-live/r5verify/space_row_counts.txt`), so such a block is drawn
+   (`.omc/probes/285-live/r4/out/draws_nothing_table.txt`,
+   `.omc/probes/285-live/r5/out/probe_blank_rows.txt`). Nor is blank text the only Markdown that
+   renders to nothing: so do, for example, a lone `>`, a raw HTML block such as `<br>` or
+   `<div></div>`, an HTML comment and a link-reference definition. The cost is one extra Markdown
+   render per stream-less `text_end`, and one per flush that closes an answer stream.
+
+### Choices made under the decision (ADR-0235)
+
+- **The `text_end` copy still wins over the deltas.** The final message holds it, and pi renders
+  the message. Where aelix cannot follow is scrollback: it commits to the host terminal's
+  scrollback (ADR-0105, `full_screen=False`), which is not rewritten, so the lines of a long block
+  that already left the 12-line live window stay as they streamed. Measured: a 20-line answer whose
+  `done` copy differs in line 1 keeps the streamed line 1 on screen, while `replay` shows the `done`
+  copy. Unchanged by this amendment.
+- **pi has nothing to port here.** It re-renders the whole assistant message from the snapshot on
+  every `message_update` and again at `message_end` (`interactive-mode.ts:3524-3527`, `:3560-3573`;
+  `AssistantMessageComponent.updateContent`, `components/assistant-message.ts:91-175`), so it has no
+  block lifecycle in which to lose a block. That is also the pi reading this ADR's header said a
+  later sync should bring: pi shows reasoning the same way, re-rendering each `thinking` block of
+  the snapshot as Markdown on every update.
+
+### Rejected alternatives
+
+- **The issue's proposal as written** — decision 3 above.
+- **Not closing the answer stream on a late `thinking_end`** (a block already in `_thinking_done`),
+  so the completions answer meets its own `text_end` with the stream still open. It fixes the plain
+  completions order and not reasoning that resumes after answer text: openai-completions replays
+  that on the same thinking index, decision 8 un-retires it, its `thinking_end` is no longer late,
+  and the answer is closed early anyway. Measured, that change together with the proposal as
+  written: the plain order commits the answer once, the resumed one `['R1', 'A1 A2', 'R1 R2',
+  'A1 A2']`.
+
+### Out of scope, recorded
+
+- **Reasoning that resumes after answer text commits its first part twice** on openai-completions:
+  `['R1', 'A1 A2', 'R1 R2']` live against `['R1 R2', 'A1 A2']` on `replay`, on `529b997e` and
+  after this change alike — the decision-8 un-retire commits the whole block again at
+  `thinking_end`. Same family (live ≠ replay), reasoning side; a follow-up, not this issue.
+- **Reasoning that finishes after the message it preceded, on the Responses path.** Decision 1
+  makes in-order flows match `replay`; it does not reorder blocks that arrive out of order. Two
+  shapes, measured through the real `process_responses_stream` (review round 2,
+  `.omc/probes/285-live/cross-claude/out/probe_shapes.txt`, rerun after the fix in
+  `.omc/probes/285-live/r2/`): **A** — a reasoning delta arrives after the whole message:
+  `['R1', 'THE-ANSWER', 'R1 R2']` live against `['R1 R2', 'THE-ANSWER']` on `replay` (two
+  `💭 Thinking…` placeholders under `hide_thinking`); **D** — the reasoning summary arrives whole
+  after the message: `['THE-ANSWER', 'REASON']` against `['REASON', 'THE-ANSWER']`. A STREAMED
+  answer gives the same on `529b997e` and after this change, so this is the decision-8 family
+  reached through reasoning-first (decision 2), not something the whole-block path added; on
+  `529b997e` the whole answer was simply missing. Both need a reasoning item that finishes after
+  the message item behind it — the out-of-order finish pi #6009 handled in pi's engine; no run
+  recorded here has shown a summary delta arriving after that message's `done` (shape A). A
+  follow-up, together with the openai-completions case above and the answer blocks below.
+- **Answer blocks that finish out of order, on the Responses path.** The renderer has one answer
+  stream, and a `text_end` that arrives while it is open closes it, whichever block that end
+  belongs to (review round 2's cross-review, F1): the other block's copy replaces the open one's
+  text in its final frame, and the open block's own end then arrives with no stream open. Measured
+  through the real engine (`.omc/probes/285-live/r3/out/`): **P1** — message 0 streaming, message 1
+  done whole, then message 0's `done`: `['BBBB…']` live on `529b997e` and on review round 2's cut,
+  and now `['BBBB…', 'AAAA…']` (the late end of message 0 is drawn whole, below) against
+  `['AAAA…', 'BBBB…']` on `replay`; with a 20-paragraph message 0 (P1b) message 1 is never drawn
+  and the four lines of message 0 already in scrollback are drawn again with the whole block
+  (`529b997e` and round 2's cut draw those four lines and nothing else).
+  **P2** — reasoning that finishes after message 1 began streaming (its flush sets the mark), then
+  message 2 whole, then message 1's `done`: the whole message 2 spends the mark and draws nothing,
+  and message 1's late end draws it a second time, `['REASON', 'AAAA…', 'AAAA…']` against
+  `['REASON', 'AAAA…', 'BBBB…']`; `529b997e` gives `['REASON', 'AAAA…']`, and the index-keyed mark
+  of review round 2 matched `replay` there.
+  **E1** — messages 0 and 1 announced, message 1 streaming, message 0 ending EMPTY, then message
+  1's `done`: `['THE-ANSWER drawn once.', 'THE-ANSWER drawn once.']` live against one on `replay`
+  and on `529b997e`, through the real engine (`.omc/probes/285-live/r4/out/probe_E_3renderers.txt`),
+  and two `E1-ANSWER` rows in the real TUI, one after the `--session` reopen
+  (`.omc/probes/285-live/r4/tui/`). The empty end closes message 1's stream, and message 1's own
+  end then finds none and draws its block whole. Review round 4's order (decision 5) does not
+  reach it: that end arrives while a stream is open. So some interleaved shapes that `529b997e`
+  drew as `replay` does now draw an answer twice; the round-3 verify's seed 2069 is this one.
+  A differential fuzz, the round-2 cross-review's generator run against the renderers
+  (`.omc/probes/285-live/r3/fuzz/`; 4000 wire sequences: Responses in order and interleaved, the
+  real completions adapter, synthetic adapters; and 2000 more with every `text_delta` rebuilt
+  without its index), found no case where `529b997e` matches `replay` and review round 3's cut
+  does not, every in-order Responses case matching, two interleaved cases (P1 and P2 shapes)
+  committing an answer twice that review round 2's cut committed once, and the 156 rebuilt-delta
+  completions cases that cut drew twice matching again. That held for that generator only: the
+  round-3 cross-review's and verify's own generators found 75 of 6000 and 10 of 6000 such
+  sequences, every one interleaved or with deferred ends. Review round 4 ran all three generators
+  (and the cross-review's second, 8000 sequences with an all-index-0 adapter) against `529b997e`,
+  review round 3's cut and this change (`.omc/probes/285-live/r4/fuzz/`). In-order sequences match
+  `replay` exactly where they did on round 3's cut (every in-order Responses one). 43 of the
+  6000, 55 of the 8000 and 5 of the verify's 6000 match on `529b997e` and not here (75, 98 and 10
+  on round 3's cut): 94 of the cross-review's 98 and all 5 of the verify's are E1 (a block's end
+  landing on another block's open stream), the other 4 a whole answer that ends before reasoning
+  that precedes it (A and D). Against round 3's cut, 138 of the cross-review's sequences and 15 of
+  the verify's match that did not, and 2 stop matching (seed 5885 in both of the cross-review's
+  generators, an E1 shape that cut matched by accident); the lane's 6000 give what they gave. No
+  server we measured sends interleaved items, but
+  `process_responses_stream` routes by `output_index` (pi #6009) and passes them through. A
+  follow-up with A and D: what it needs is a stream per block, or the index the deltas carry —
+  which an adapter is free to leave at 0.
+- **A STREAMED block that renders to nothing still cuts the reasoning around it.** Decision 5 is
+  the whole-block path's rule; the delta path opens the answer stream on its first `text_delta`
+  whatever that carries, as it did before this amendment. A `' '` or `'\n\n'` block streamed
+  inside streaming reasoning commits `['R1', 'R1 R2']` against `['R1 R2']` on `replay`, on
+  `529b997e` and after this change alike (review round 2, `.omc/probes/285-live/r2/`). A flush
+  that closes such a stream sets no mark (decision 3), so the block's own end, which does nothing,
+  leaves nothing pending. Same family; a follow-up.
+- **Two answer blocks interleaving** (a second streaming while the first is still open) share the
+  one live window; no server we measured sends that, though `process_responses_stream` passes
+  interleaved items through. Both streaming (P1c) commits what `replay` does, unless one of them
+  ends empty while the other streams (E1 above); one of them whole is the out-of-order case
+  above.
+
+### Verification
+
+`tests/tui/test_text_block_without_deltas_285.py` (45 rows: the issue's three wire shapes and the
+residue through the real `process_responses_stream`, a streamed message then a whole one, the
+completions order through the real
+adapter, the same adapter wrapped by an extension that rebuilds its deltas without their index
+(as is and redacted) and that shape with bare events, the mark's lifecycle — the late end, an
+index-0 adapter, an abort between the flush and the late end — the reasoning orders, nine whole
+blocks that draw nothing inside streaming reasoning (empty, a space, two newlines, an HTML comment,
+a mix with a link-reference definition, BEL, RLO, ZWSP, a lone ESC), the same nine arriving whole
+between a flush and the late end it marked (E2 and E3), five streams that drew nothing before a
+whole block (empty, a space, BEL, an HTML comment, a link-reference definition), four Markdown
+blocks whose styled commit must equal a one-delta stream's and `replay`'s (a list, emphasis, a
+fenced code block, a 199-cell line of forty `word` that wraps), a 99-cell line of twenty `word` at
+50 and at 120 columns, and one through the real `run_tui` chrome read back by `pyte`) plus a `#177`
+row in `test_render_terminal_safety_177.py` for the new commit path. Twenty-three of the forty-six
+are red on `529b997e`; the other twenty-three are the control, the completions guard, the three
+rebuilt-delta rows and the eighteen draw-nothing rows, which `529b997e` passes by drawing no
+stream-less block at all. The three rebuilt-delta rows are red on review round 2's cut, which
+passes the rest, and the nine E2 and E3 rows on review round 3's. Twenty-two sabotages, each
+turning at least one row red: review round 4's three (the mark looked at before the
+renders-to-nothing test, a whole block laid out at 80 columns, `StreamRenderer`'s default and the
+width of every other row, and the mark set by a flush whatever the stream drew), its verify's
+mutant (a flush's "drew something" tested by `.strip()`, red on the HTML-comment and
+link-reference streams only, `.omc/probes/285-live/r5/out/sabotage_r5.txt`), review round 3's
+six that still apply (round 2's index-keyed mark, the gate without `_safe_prose`, the mark set at
+every close, no mark set by the flush, no reset per message, a late end that does not spend it;
+its seventh, the mark looked at only once the stream was open, has no place in round 4's order),
+and rounds 1 and 2's twelve that still apply (the proposal as written, no whole-block commit, no
+reasoning-first, every
+stream-less end opening a stream, no `_safe_prose` on the copy, the copy written before deciding,
+an accumulator kept across a close, the first cut's non-empty gate, a `.strip()` gate, a raw
+`Text` commit, plain wrapped lines, styles dropped). Live: `aelix`
+in a pty against local fake servers, frames in `.omc/probes/285-live/impl/`; for round 2
+(draw-nothing blocks inside streaming reasoning; a whole Markdown answer against the same answer
+streamed and against the `--session` reopen, cell attributes included) in
+`.omc/probes/285-live/r2/`; and for round 3 (a done-only answer, the delta control, a whole block
+before a streamed one, a lead text before a tool card, the completions order, and the
+rebuilt-delta extension: one `WRAPPED-ANSWER` row where round 2's cut drew two) in
+`.omc/probes/285-live/r3/`; for round 4 (E1, E2 and E3 against round 3's cut, with the round-3
+shapes and the completions order again) in `.omc/probes/285-live/r4/tui/`.

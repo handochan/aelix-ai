@@ -215,7 +215,6 @@ def _launch(
     chrome: AelixChrome,
     *,
     settings_manager: object | None = None,
-    thinking_level_restored: bool = False,
 ) -> asyncio.Task[int]:
     return asyncio.ensure_future(
         run_tui(
@@ -224,7 +223,6 @@ def _launch(
             chrome=chrome,
             install_signal_handlers=False,
             settings_manager=settings_manager,  # type: ignore[arg-type]
-            thinking_level_restored=thinking_level_restored,
         )
     )
 
@@ -1577,7 +1575,8 @@ async def test_run_tui_seeds_hidden_thinking_from_persisted_setting(
 
 class _ThinkingSeedHarness(FakeHarness):
     """FakeHarness exposing a fixed ``current_model`` + recording
-    ``set_thinking_level`` so the issue #50 (b) startup seed is observable."""
+    ``set_thinking_level`` so any thinking-level write ``run_tui`` makes at
+    startup is observable."""
 
     def __init__(self, model: object) -> None:
         super().__init__()
@@ -1585,7 +1584,7 @@ class _ThinkingSeedHarness(FakeHarness):
 
         self._model = model
         self.level_set: list[str] = []
-        self._state = SimpleNamespace(thinking_level=None)
+        self._state = SimpleNamespace(thinking_level="off")
 
     @property
     def current_model(self) -> object:
@@ -1596,39 +1595,23 @@ class _ThinkingSeedHarness(FakeHarness):
         self._state.thinking_level = level
 
 
-async def test_run_tui_seeds_default_thinking_level_when_supported() -> None:
-    # Issue #50 (b): a persisted defaultThinkingLevel the current model supports
-    # is applied to the live harness at startup (mirror of the default-model seed).
-    from aelix_ai.models import Model
-    from aelix_ai.settings import SettingsManager
+@pytest.mark.parametrize("default", ["medium", "high"])
+async def test_run_tui_leaves_the_thinking_level_to_the_launch(default: str) -> None:
+    """#286 — ``run_tui`` no longer seeds ``defaultThinkingLevel``.
 
-    model = Model(
-        id="m",
-        api="anthropic",
-        reasoning=True,
-        thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
-    )
-    harness = _ThinkingSeedHarness(model)
-    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
-    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(runtime, chrome, settings_manager=sm)
-        await _wait(lambda: chrome.app.is_running)
-        await _wait(lambda: harness.level_set == ["medium"])
-        pipe.send_text("/quit\n")
-        await _quit_within(task)
-    assert harness.level_set == ["medium"]
-
-
-async def test_run_tui_settings_seed_skips_when_level_was_restored() -> None:
-    """Issue #198 — the ``defaultThinkingLevel`` seed must not fire over a level
-    the resume already applied.
-
-    The harness sits at ``"off"`` here on purpose: that is a session whose last
-    recorded level was an explicit ``off``, and the ADR-0196 guard sniffs the
-    value, so it cannot tell that apart from "never set". Since #198 makes an
-    idle ``set_thinking_level`` WRITE to the session, an unguarded seed would
-    overwrite the user's ``off`` in the transcript on first launch — permanently.
-    ``entry.py`` supplies the positive signal instead.
+    Issue #50 (b) put that seed here, after the harness build, so it reached the
+    TUI only: ``-p``, ``--mode json``, ``--mode rpc`` and every delegated child
+    asked for ``off`` whatever the setting said, and it SKIPPED a level the model
+    did not list (``high`` on a non-reasoning model, ``xhigh`` on a ``high``-max
+    one) instead of clamping it. ``cli/entry.py``'s launch ladder applies it now,
+    for every mode, before ``session_start``, and entry.py also makes the record
+    this seed made (``_record_tui_default_level``, right before ``run_tui``)
+    (``tests/cli/test_default_thinking_every_mode_286.py``). A second seed here
+    would write the default over a level a ``session_start`` handler set to
+    ``off``, and over a session's recorded ``off`` — the #198 overwrite the
+    removed ``thinking_level_restored`` signal existed to stop. The harness sits
+    at ``off`` on a model that supports the default: the old seed's exact
+    trigger.
     """
 
     from aelix_ai.models import Model
@@ -1641,64 +1624,25 @@ async def test_run_tui_settings_seed_skips_when_level_was_restored() -> None:
         thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
     )
     harness = _ThinkingSeedHarness(model)
-    harness._state.thinking_level = "off"
-    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
+    sm = SettingsManager.in_memory({"defaultThinkingLevel": default})
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(
-            runtime, chrome, settings_manager=sm, thinking_level_restored=True
-        )
+        task = _launch(runtime, chrome, settings_manager=sm)
         await _wait(lambda: chrome.app.is_running)
-        pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
+        pipe.send_text("hi\n")  # barrier: the startup seeds already ran before this
         await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
         pipe.send_text("/quit\n")
         await _quit_within(task)
     assert harness.level_set == []
+    assert harness._state.thinking_level == "off"
 
 
-async def test_run_tui_seed_still_fills_untouched_case() -> None:
-    """The #198 signal is a skip, not a kill switch: with nothing restored the
-    ADR-0196 settings seed still fills a session that has no level of its own."""
+def test_run_tui_takes_no_thinking_level_signal() -> None:
+    """#286 — the #198 ``thinking_level_restored`` keyword is gone with the seed it
+    guarded; entry.py passes nothing in its place."""
 
-    from aelix_ai.models import Model
-    from aelix_ai.settings import SettingsManager
+    import inspect
 
-    model = Model(
-        id="m",
-        api="anthropic",
-        reasoning=True,
-        thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
-    )
-    harness = _ThinkingSeedHarness(model)
-    harness._state.thinking_level = "off"
-    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
-    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(
-            runtime, chrome, settings_manager=sm, thinking_level_restored=False
-        )
-        await _wait(lambda: chrome.app.is_running)
-        await _wait(lambda: harness.level_set == ["medium"])
-        pipe.send_text("/quit\n")
-        await _quit_within(task)
-    assert harness.level_set == ["medium"]
-
-
-async def test_run_tui_skips_default_thinking_level_when_unsupported() -> None:
-    # Issue #50 (b): a non-reasoning model supports only "off"; a persisted
-    # "high" is NOT applied (the seed validates via get_supported_thinking_levels).
-    from aelix_ai.models import Model
-    from aelix_ai.settings import SettingsManager
-
-    model = Model(id="m", api="anthropic", reasoning=False)
-    harness = _ThinkingSeedHarness(model)
-    sm = SettingsManager.in_memory({"defaultThinkingLevel": "high"})
-    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(runtime, chrome, settings_manager=sm)
-        await _wait(lambda: chrome.app.is_running)
-        pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
-        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
-        pipe.send_text("/quit\n")
-        await _quit_within(task)
-    assert harness.level_set == []  # unsupported level was skipped
+    assert "thinking_level_restored" not in inspect.signature(run_tui).parameters
 
 
 async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(

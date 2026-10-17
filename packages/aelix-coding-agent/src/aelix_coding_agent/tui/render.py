@@ -829,7 +829,28 @@ class EventRenderer:
         # guarantee every other terminal program offers.
         self._width_of: Callable[[], int] = width if callable(width) else (lambda: width)
         self._text_stream: StreamRenderer | None = None
+        # Written only while ``_text_stream`` is open, and cleared when it
+        # closes (#285): text left here with no stream to commit it was printed
+        # in front of the NEXT block's live tail and then dropped.
         self._text_accum: str = ""
+        # #285 — "a reasoning flush closed the open answer stream early". A
+        # ``text_end`` with no stream open is either the late end of that block
+        # (in scrollback already: draw nothing) or a block that arrived WHOLE
+        # (``text_start`` -> ``text_end``, no delta: commit it). The first is
+        # ordinary: openai-completions sends its end events in block order at
+        # end-of-stream, so the reasoning's ``thinking_end`` runs
+        # ``_flush_thinking``, which closes the answer stream before the
+        # answer's own ``text_end`` arrives — committing at that one prints the
+        # answer twice. Set by ``_finalize_text`` when a flush closes a stream
+        # that drew something, spent by the next stream-less ``text_end`` whose
+        # text renders to something, cleared at ``message_start``. Only a flush
+        # sets it: a block closed by its own ``text_end`` has no end still to
+        # come, and a mark it left would swallow the next whole block of the
+        # message (a streamed Responses message, then one that arrives whole).
+        # Not keyed on ``content_index``: an adapter may rebuild ``text_delta``
+        # without its index (it defaults to 0) while ``text_start``/``text_end``
+        # carry the real one (review round 3).
+        self._text_closed_early: bool = False
         self._thinking_accum: str = ""
         # Issue #170 — reasoning STREAMS to the live tail as it arrives instead
         # of appearing all at once when the block closes. Every shipping adapter
@@ -937,7 +958,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:738, 1051, 2151) — without asking each to remember.
+        # (shell.py:729, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -1021,17 +1042,54 @@ class EventRenderer:
 
     def _on_stream_event(self, sev: AssistantMessageEvent) -> None:
         if sev.type == "text_delta":
-            if self._text_stream is None:
-                # Render buffered reasoning ABOVE the answer it preceded.
-                self._flush_thinking(self._thinking_accum)
-                self._text_stream = self._new_stream()
+            stream = self._text_stream
+            if stream is None:
+                stream = self._open_text_stream()
             # #177 — the answer is model prose; stripped per DELTA, which
             # :func:`_safe_prose` guarantees equals stripping the whole text, so
             # ``text_end``'s replacement below cannot disagree with the prefix
             # the stream already committed.
             self._text_accum += _safe_prose(sev.delta)
-            self._text_stream.update(self._text_accum)
+            stream.update(self._text_accum)
         elif sev.type == "text_end":
+            if self._text_stream is None:
+                if not markdown_lines(_safe_prose(sev.content or ""), self._width_of()):
+                    # #285 — no stream open, and a text that renders to nothing
+                    # by the test ``replay`` applies to a stored block: this end
+                    # does nothing at all. Opening a stream would commit the
+                    # reasoning still streaming around it (the rest of that block
+                    # would commit again at its ``thinking_end``). Tested BEFORE
+                    # the mark, which it neither spends nor sets: spending it let
+                    # the late end of the block the flush closed draw that block
+                    # a second time (review round 4). Texts that render to
+                    # nothing, for example: only spaces, tabs and newlines; a
+                    # lone ``>``; a raw HTML block such as ``<br>`` or
+                    # ``<div></div>``; an HTML comment; a link-reference
+                    # definition; only characters ``_safe_prose`` deletes, which
+                    # are exactly C0 but tab and newline, DEL, C1, U+061C,
+                    # U+200B, U+200E-U+200F, U+2028-U+202E, U+2066-U+2069 and
+                    # U+FEFF. Of the whitespace the strip keeps, only space, tab
+                    # and newline render to nothing: NBSP and the other Unicode
+                    # spaces (U+1680, U+2000-U+200A, U+202F, U+205F, U+3000)
+                    # draw two rows, and ZWJ, ZWNJ, SHY and WJ (format
+                    # characters the strip keeps) and an entity Markdown decodes
+                    # after the strip (``&#8238;``) draw one, here and in
+                    # ``replay`` alike.
+                    return
+                if self._text_closed_early:
+                    # The late end of the block a reasoning flush closed (see
+                    # ``_text_closed_early``): its text is in scrollback already.
+                    self._text_closed_early = False
+                    return
+                # #285 — the block arrived whole: ``text_start`` -> ``text_end``
+                # with no delta (a Responses server that puts the text only in
+                # ``output_item.done``, or an extension adapter). It gets the
+                # delta path's commit: reasoning above it, then one final frame.
+                # The cost is one extra Markdown render per stream-less end.
+                self._open_text_stream()
+            # The end event's copy wins over the deltas, as it does in the final
+            # message (pi re-renders that message; scrollback that a long stream
+            # already committed stays as it streamed).
             if sev.content:
                 self._text_accum = _safe_prose(sev.content)
             self._finalize_text()
@@ -1123,6 +1181,18 @@ class EventRenderer:
             width=self._width_of(),
         )
 
+    def _open_text_stream(self) -> StreamRenderer:
+        """Open the answer stream.
+
+        Buffered reasoning is committed FIRST so it lands above the answer it
+        preceded (ADR-0115) — for a block that streams and, since #285, for one
+        that arrives whole at its ``text_end``.
+        """
+
+        self._flush_thinking(self._thinking_accum)
+        stream = self._text_stream = self._new_stream()
+        return stream
+
     def _reset_message_state(self) -> None:
         self._finalize_text()
         # Belt and braces: every terminal path already closes the reasoning
@@ -1131,6 +1201,10 @@ class EventRenderer:
         # cannot tell from a hang.
         self._clear_thinking_tail()
         self._text_accum = ""
+        # Per message: a turn aborted or failed between the flush and the late
+        # ``text_end`` never sends the end that would spend the mark, and left
+        # set it would swallow the next message's first whole block.
+        self._text_closed_early = False
         self._thinking_accum = ""
         self._thinking_index = None
         # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
@@ -1151,11 +1225,21 @@ class EventRenderer:
         self._reported_error = None
         self._turn_ended_in_error = False
 
-    def _finalize_text(self) -> None:
+    def _finalize_text(self, *, by_flush: bool = False) -> None:
         if self._text_stream is not None:
             self._text_stream.update(self._text_accum, final=True)
+            drew = by_flush and bool(markdown_lines(self._text_accum, self._width_of()))
             self._text_stream = None
             self._text_accum = ""
+            if drew:
+                # #285 — a reasoning flush closed the answer before its own
+                # ``text_end``: that end is still to come, and must not draw
+                # the block a second time. Only if the block drew something: a
+                # stream whose text renders to nothing has nothing to repeat,
+                # and its own end, rendering to nothing too, does nothing, so a
+                # mark left here would take the next whole block of the message
+                # for that end and drop it (review round 4).
+                self._text_closed_early = True
 
     def _render_message_error(self, message: object) -> None:
         if isinstance(message, AssistantMessage) and message.stop_reason in (
@@ -1343,7 +1427,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3495). A provider
+            # write the same last-writer-wins sink (shell.py:3448). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.
@@ -1417,7 +1501,9 @@ class EventRenderer:
         could not tell those apart and dropped the second one (#169).
         """
 
-        self._finalize_text()
+        # #285 — an answer still open is closed EARLY: its own ``text_end`` is
+        # yet to come (``_text_closed_early``).
+        self._finalize_text(by_flush=True)
         # #177 — ``content`` is either the accumulator (already stripped) or the
         # ``thinking_end`` event's own copy of the block, which is not.
         text = _safe_prose(content).strip()

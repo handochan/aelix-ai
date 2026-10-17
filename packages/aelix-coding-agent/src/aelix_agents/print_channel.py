@@ -470,9 +470,9 @@ def inherit_thinking(profile: AgentProfile, parent_thinking: str | None) -> Agen
     THE BUG THIS CLOSES. A child's thinking level came from its profile's
     ``thinking:`` and nowhere else: neither argv builder emitted ``--thinking``
     for any parent state, and a headless child (``--mode json -p`` / ``--mode
-    rpc``) does not seed ``defaultThinkingLevel`` either (#286). So every child
-    of a bundled profile — none of which declares ``thinking:`` — started at
-    ``off``. On a model whose endpoint refuses to switch reasoning off
+    rpc``) did not seed ``defaultThinkingLevel`` either (#286, since fixed). So
+    every child of a bundled profile — none of which declares ``thinking:`` —
+    started at ``off``. On a model whose endpoint refuses to switch reasoning off
     (``openrouter/z-ai/glm-5.3-flash``, measured 2026-09-25) every delegation
     then died on its first request with ``400 Reasoning is mandatory for this
     endpoint and cannot be disabled``, while the parent, on the same model at
@@ -487,19 +487,30 @@ def inherit_thinking(profile: AgentProfile, parent_thinking: str | None) -> Agen
        also inherits the parent's model, i.e. the profile names neither
        ``model`` nor ``provider`` (:func:`~aelix_coding_agent.agents.resolver
        .inherits_parent_model`, the gate ``child_model_flags`` reads);
-    3. nothing — ``None`` keeps the pre-#354 argv, so the child's own default
-       (``off`` today) applies.
+    3. nothing — ``None`` keeps the pre-#354 argv, so the child resolves its
+       own level: the ``defaultThinkingLevel`` of its GLOBAL settings, clamped
+       to its model, or the bottom rung ``off`` (clamped too) when that is unset
+       (#286). The child is a ``--mode json -p`` launch, and every mode applies
+       the setting since #286. Not a project's: :func:`~aelix_agents.trust
+       .child_trust_argv` passes ``--no-approve`` whenever the project has a
+       ``.aelix/settings.json``, so the child never loads that layer, and a
+       ``defaultThinkingLevel`` there — which a parent in a trusted project runs
+       at — does not reach it (a follow-up).
 
     The level travels WITH the model, as in pi's subagent example
     (``examples/extensions/subagent/index.ts``: ``inheritsDispatchConfig =
     !agent.model``, then ``--thinking ctx.thinkingLevel``). A level is a
     statement about a model — ``high`` on the parent's reasoning model says
     nothing about a profile's own non-reasoning or differently-priced one — so
-    a profile that names its own model or provider and wants a level states
-    ``thinking:`` itself; without one it runs as before #354.
+    a profile that names its own model or provider gets no level from the
+    parent. Without a ``thinking:`` of its own it runs at the global settings
+    default clamped to its own model (#286), as a child of pi's subagent example
+    runs at its own settings default (``createAgentSession``: per-model setting,
+    then the default); a profile that wants another level states ``thinking:``.
 
     ``off`` is a level, not "unset": a parent at ``off`` hands its child
-    ``--thinking off``, which pi does too (its ``"off"`` is a truthy string).
+    ``--thinking off``, which pi does too (its ``"off"`` is a truthy string), and
+    an explicit flag outranks the child's own settings default.
 
     WHY HERE, THE SAME WAY AS :func:`narrow_context_files`:
     ``resolver.profile_to_flags`` stays the ONE place a profile becomes
@@ -1141,7 +1152,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2026-2043``) nor child
+                    # neither parent (``tui/shell.py:1979-1996``) nor child
                     # (``modes/print_mode.py:160-219``) installs a SIGINT
                     # handler to convert that into a result.
                     #

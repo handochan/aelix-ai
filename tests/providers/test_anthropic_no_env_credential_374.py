@@ -60,6 +60,8 @@ _TAGS = {
     "goog-env-fake": "GOOGLE_API_KEY",
     "gemini-env-fake": "GEMINI_API_KEY",
     "openai-env-fake": "OPENAI_API_KEY",
+    "openai-custom-fake": "OPENAI_CUSTOM_HEADERS",
+    "openai-admin-fake": "OPENAI_ADMIN_KEY",
 }
 
 
@@ -87,10 +89,15 @@ class _Wire:
         self.hits: list[list[str]] = []
         # A non-secret header a models.json override adds (review round 3).
         self.x_team: list[str | None] = []
+        # Every ``Authorization`` line, any spelling, as sent (#278 review round 3).
+        self.authorization_lines: list[list[str]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.hits.append(_hits(request.headers))
         self.x_team.append(request.headers.get("x-team"))
+        self.authorization_lines.append(
+            [value for name, value in request.headers.multi_items() if name.lower() == "authorization"]
+        )
         self.sent.append(
             {
                 "host": request.url.host,
@@ -111,7 +118,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
     for name in list(os.environ):
         if re.search(r"(_API_KEY|_KEY|_TOKEN|_SECRET)$", name) or name.startswith(
-            ("ANTHROPIC_", "AELIX_")
+            ("ANTHROPIC_", "AELIX_", "OPENAI_")
         ):
             monkeypatch.delenv(name)
     sandbox_home(monkeypatch, tmp_path / "home")
@@ -756,21 +763,470 @@ async def test_openai_sends_the_given_key_not_an_exported_one(
 async def test_a_keyless_openai_completions_turn_never_sends_openai_api_key(
     env: Any, any_wire: _Wire
 ) -> None:
-    """``stream_openai_completions`` builds its client with ``""`` when no key
-    resolved; the ``openai`` SDK treats ``""`` as given, and ``None`` would read
-    ``OPENAI_API_KEY`` (round-1 fix sabotage S43 survived without this row)."""
+    """The client factory hands the SDK ``""`` for a missing key, never ``None``:
+    ``None`` makes the SDK read ``OPENAI_API_KEY`` (round-1 fix sabotage S43
+    survived without this row).
 
+    #278: openai 2.34 and later refuse ``""`` outright ("Missing credentials ...
+    OPENAI_API_KEY") and will not send a request with no ``Authorization``
+    unless it is omitted explicitly, so the adapter no longer hands its own
+    client an empty key (``_keyless_client_auth``). The wire is what openai
+    1.109.1 sent: the request goes out, with no ``Authorization`` at all."""
+
+    import openai
     from aelix_ai.providers._openai_client import create_async_client as openai_factory
     from aelix_ai.providers.openai_completions import stream_openai_completions
 
     _export_vendor_keys(env)
-    assert openai_factory(api_key=None, base_url=_GW).api_key == ""
+    # Both SDK behaviours inside aelix-ai's range keep the exported key out:
+    # up to 2.33 the client carries "", from 2.34 the SDK refuses to build it.
+    # A factory that passed None through builds one carrying OPENAI_API_KEY.
+    try:
+        client = openai_factory(api_key=None, base_url=_GW)
+    except openai.OpenAIError:
+        pass
+    else:
+        assert client.api_key == ""
     ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
     async for _ in stream_openai_completions(
         _sibling("openai-completions"), ctx, SimpleStreamOptions()
     ):
         pass
-    assert any_wire.hits and all("authorization=OPENAI_API_KEY" not in h for h in any_wire.hits)
+    assert any_wire.sent, "the keyless request never left (openai>=2.34 refused to build it)"
+    assert all(h == [] for h in any_wire.hits), any_wire.hits
+    assert all(s["authorization"] is None for s in any_wire.sent), any_wire.sent
+
+
+@pytest.mark.parametrize(
+    ("header", "cf_aig"),
+    [
+        ("Authorization", None),
+        ("authorization", None),
+        ("cf-aig-authorization", "gw-header"),
+    ],
+)
+async def test_a_keyless_openai_completions_call_sends_only_its_own_auth_header(
+    env: Any, any_wire: _Wire, header: str, cf_aig: str | None
+) -> None:
+    """#278: a keyless call with an auth header of its own sends exactly that
+    header, as openai 1.109.1 did. The adapter's client is built with a
+    placeholder key on openai 2.x, and that placeholder must never reach the
+    wire: an ``Authorization`` in any letter case replaces the SDK's bearer
+    (the SDK merges custom headers by exact key, so a lowercase one would
+    otherwise ride BESIDE ``Authorization: Bearer unused``, measured), and a
+    gateway authenticated by ``cf-aig-authorization`` alone gets no
+    ``Authorization`` at all."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers={header: "Bearer gw-header-fake"})
+    async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+        pass
+    assert any_wire.sent, "the request never left"
+    # httpx joins repeated header lines, so a placeholder riding beside the
+    # real header reads "Bearer unused, Bearer gw-header-fake" here: "other".
+    want_authorization = None if cf_aig else "gw-header"
+    for sent in any_wire.sent:
+        assert sent["authorization"] == want_authorization, sent
+        assert sent["cf-aig-authorization"] == cf_aig, sent
+
+
+# ====================================== #278 review round 2: openai 2.x's own reads
+#
+# openai 2.34.0 started reading two variables in ``AsyncOpenAI.__init__``:
+# ``OPENAI_CUSTOM_HEADERS`` (merged AFTER the auth header, so an exported
+# ``Authorization`` replaced every openai-compatible provider's key) and
+# ``OPENAI_ADMIN_KEY``. openai 1.x read neither; the client
+# ``_openai_client.create_async_client`` builds keeps neither, for any provider
+# (ADR-0254 §2.3). And three keyless contracts of ``_keyless_client_auth`` /
+# ``_keyless_request_auth`` that no row held (review round 1 sabotage S07, S08,
+# and the first-spelling-wins variant).
+
+_OPENAI_CUSTOM = "Authorization: Bearer openai-custom-fake\nX-Openai-Custom: openai-custom-fake"
+
+
+def _export_openai_reads(env: pytest.MonkeyPatch) -> None:
+    _export_vendor_keys(env)
+    env.setenv("OPENAI_CUSTOM_HEADERS", _OPENAI_CUSTOM)
+    env.setenv("OPENAI_ADMIN_KEY", "openai-admin-fake")
+
+
+@pytest.mark.parametrize("api", ["openai-completions", "openai-responses"])
+async def test_openai_custom_headers_and_admin_key_never_reach_a_provider(
+    env: Any, any_wire: _Wire, api: str
+) -> None:
+    """2.54 on e3744bf1: ``authorization=OPENAI_CUSTOM_HEADERS`` plus
+    ``x-openai-custom=OPENAI_CUSTOM_HEADERS`` instead of the given key."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+    from aelix_ai.providers.openai_responses import stream_openai_responses
+
+    fn = stream_openai_completions if api == "openai-completions" else stream_openai_responses
+    _export_openai_reads(env)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    async for _ in fn(_sibling(api), ctx, SimpleStreamOptions(api_key="given-key-fake")):
+        pass
+    assert any_wire.hits and all(h == ["authorization=given"] for h in any_wire.hits), any_wire.hits
+
+
+@pytest.mark.parametrize(
+    "headers", [{}, {"Authorization": "Bearer gw-header-fake"}, {"cf-aig-authorization": "gw-header-fake"}]
+)
+async def test_a_keyless_openai_completions_call_sends_nothing_from_openai_custom_headers(
+    env: Any, any_wire: _Wire, headers: dict[str, str]
+) -> None:
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_openai_reads(env)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers=headers)
+    async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+        pass
+    want = sorted(f"{name.lower()}=gw-header" for name in headers)
+    assert any_wire.sent and all(h == want for h in any_wire.hits), any_wire.hits
+
+
+def test_the_openai_factory_keeps_only_the_callers_headers_and_no_admin_key(env: Any) -> None:
+    """Also through ``copy()`` / ``with_options()``, which rebuild the client."""
+
+    from aelix_ai.providers._openai_client import create_async_client as openai_factory
+
+    _export_openai_reads(env)
+    client: Any = openai_factory(api_key="given-key-fake", base_url=_GW, default_headers={"x-team": "t"})
+    for built in (client, client.copy(), client.with_options(max_retries=0)):
+        assert dict(built._custom_headers) == {"x-team": "t"}
+        assert getattr(built, "admin_api_key", None) is None
+        assert built.api_key == "given-key-fake"
+
+
+async def test_the_two_openai_reads_are_dropped_without_touching_os_environ(
+    env: Any, any_wire: _Wire
+) -> None:
+    """Review round 3 (verify E5/E6, cross M3): the client drops ITS copy of
+    ``OPENAI_CUSTOM_HEADERS`` / ``OPENAI_ADMIN_KEY`` and leaves ``os.environ``
+    alone. Popping them from ``os.environ`` keeps this wire just as clean, and
+    passed every other row, but takes them from everything else in the process
+    for the rest of the run: the bash tool's children, extensions, an
+    embedder's own clients.
+
+    Nor while a client is being built (narrow finish, verify V1): popping them
+    around the SDK's constructor and restoring them after it leaves
+    ``os.environ`` as it was between steps, so it passed the checks below, yet
+    anything that reads the environment meanwhile - another thread, the bash
+    tool starting a child - finds them gone. The SDK's ``__init__`` is wrapped
+    to look at ``os.environ`` as it starts and as it returns."""
+
+    import openai
+    from aelix_ai.providers._openai_client import DROPPED_ENV_VARIABLES
+    from aelix_ai.providers._openai_client import create_async_client as openai_factory
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    def openai_environment() -> dict[str, str]:
+        return {name: value for name, value in os.environ.items() if name.startswith("OPENAI_")}
+
+    _export_openai_reads(env)
+    exported = openai_environment()
+    assert {name: exported.get(name) for name in DROPPED_ENV_VARIABLES} == {
+        "OPENAI_CUSTOM_HEADERS": _OPENAI_CUSTOM,
+        "OPENAI_ADMIN_KEY": "openai-admin-fake",
+    }
+
+    during_init: list[dict[str, str]] = []
+    real_init = openai.AsyncOpenAI.__init__
+
+    def watching_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        during_init.append(openai_environment())
+        try:
+            real_init(self, *args, **kwargs)
+        finally:
+            during_init.append(openai_environment())
+
+    env.setattr(openai.AsyncOpenAI, "__init__", watching_init)
+
+    client: Any = openai_factory(api_key="given-key-fake", base_url=_GW, max_retries=0)
+    copies = [client.copy(), client.with_options(max_retries=0)]
+    assert openai_environment() == exported
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    turns: list[tuple[str, SimpleStreamOptions, list[str]]] = [
+        ("keyed", SimpleStreamOptions(api_key="given-key-fake"), ["authorization=given"]),
+        ("keyless", SimpleStreamOptions(), []),
+        ("a copy", SimpleStreamOptions(client=copies[1]), ["authorization=given"]),
+    ]
+    for label, opts, want in turns:
+        before = len(any_wire.hits)
+        async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+            pass
+        assert any_wire.hits[before:] and all(h == want for h in any_wire.hits[before:]), (
+            label,
+            any_wire.hits,
+        )
+        assert openai_environment() == exported, label
+    for built in (client, *copies):
+        await built.close()
+    # Five constructions - the factory's client, its two copies, the keyed and
+    # the keyless turn's own clients - each seen as it starts and returns.
+    assert len(during_init) == 10, during_init
+    assert all(seen == exported for seen in during_init), during_init
+
+
+async def test_a_keyless_call_on_a_caller_supplied_client_keeps_its_key(
+    env: Any, any_wire: _Wire
+) -> None:
+    """S07: the keyless settling is for the adapter's OWN client. A client the
+    caller hands in authenticates with its own key, as on openai 1.x."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+    from openai import AsyncOpenAI
+
+    _export_vendor_keys(env)
+    client = AsyncOpenAI(api_key="given-key-fake", base_url=_GW, max_retries=0)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    async for _ in stream_openai_completions(
+        _sibling("openai-completions"), ctx, SimpleStreamOptions(client=client)
+    ):
+        pass
+    await client.close()
+    assert any_wire.sent and all(s["authorization"] == "given" for s in any_wire.sent), any_wire.sent
+
+
+async def test_a_keyless_call_whose_payload_hook_sets_authorization_sends_it(
+    env: Any, any_wire: _Wire
+) -> None:
+    """S08: an ``extra_headers`` ``Authorization`` the payload hook sets wins
+    over the omitted placeholder, as it went out on openai 1.x."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+
+    def hook(params: dict[str, Any], _model: Any) -> dict[str, Any]:
+        return {**params, "extra_headers": {"Authorization": "Bearer gw-header-fake"}}
+
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    async for _ in stream_openai_completions(
+        _sibling("openai-completions"), ctx, SimpleStreamOptions(on_payload=hook)
+    ):
+        pass
+    assert any_wire.sent and all(s["authorization"] == "gw-header" for s in any_wire.sent), any_wire.sent
+
+
+@pytest.mark.parametrize(
+    ("own", "hook_name"),
+    [
+        # 1.109.1 sent the hook's line alone; dd8b86aa sent the own one too.
+        ({"model": "authorization"}, "authorization"),
+        ({"options": "authorization"}, "authorization"),
+        # 1.109.1 sent both lines here (it merged by exact key); now one.
+        ({"model": "Authorization"}, "authorization"),
+        ({"options": "Authorization"}, "authorization"),
+        ({"model": "authorization"}, "Authorization"),
+        # The same spelling, and no auth header of the request's own.
+        ({"model": "Authorization"}, "Authorization"),
+        ({}, "authorization"),
+        ({}, "AUTHORIZATION"),
+        ({"model": "cf-aig-authorization"}, "authorization"),
+    ],
+    ids=lambda value: (
+        "+".join(f"{where}-{name}" for where, name in value.items()) or "no-own"
+        if isinstance(value, dict)
+        else f"hook-{value}"
+    ),
+)
+async def test_a_keyless_call_whose_payload_hook_sets_authorization_sends_one_line_the_hooks(
+    env: Any, any_wire: _Wire, own: dict[str, str], hook_name: str
+) -> None:
+    """Review round 3 (cross F1): a keyless call whose payload hook sets an
+    ``extra_headers`` ``Authorization`` in any spelling sends exactly one
+    ``Authorization`` line, the hook's, whatever the request carried itself.
+    The SDK merges ``extra_headers`` by exact key and the adapter's client
+    holds the request's own header as ``Authorization``, so a hook's
+    ``authorization`` rode BESIDE it and the server read the stale token."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+    model = _sibling("openai-completions")
+    if "model" in own:
+        model = replace(model, headers={own["model"]: "Bearer given-key-fake"})
+    opts_headers = {own["options"]: "Bearer given-key-fake"} if "options" in own else None
+
+    def hook(params: dict[str, Any], _model: Any) -> dict[str, Any]:
+        return {**params, "extra_headers": {hook_name: "Bearer gw-header-fake"}}
+
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers=opts_headers, on_payload=hook)
+    async for _ in stream_openai_completions(model, ctx, opts):
+        pass
+    assert any_wire.sent, "the request never left"
+    assert all(lines == ["Bearer gw-header-fake"] for lines in any_wire.authorization_lines), (
+        any_wire.authorization_lines
+    )
+    cf_aig = ["cf-aig-authorization=given"] if own.get("model") == "cf-aig-authorization" else []
+    assert all(h == sorted(["authorization=gw-header", *cf_aig]) for h in any_wire.hits), any_wire.hits
+
+
+@pytest.mark.parametrize("own", [None, "authorization"])
+async def test_a_hook_that_sets_both_spellings_sends_the_later_one(
+    env: Any, any_wire: _Wire, own: str | None
+) -> None:
+    """Two spellings in the hook's own ``extra_headers``: one line, the one set
+    last, as for the request's own headers (review round 3 sabotage F1b)."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+
+    def hook(params: dict[str, Any], _model: Any) -> dict[str, Any]:
+        extra = {"Authorization": "Bearer given-key-fake", "authorization": "Bearer gw-header-fake"}
+        return {**params, "extra_headers": extra}
+
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers={own: "Bearer copilot-fake"} if own else None, on_payload=hook)
+    async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+        pass
+    assert any_wire.sent and all(
+        lines == ["Bearer gw-header-fake"] for lines in any_wire.authorization_lines
+    ), any_wire.authorization_lines
+
+
+async def test_a_keyless_call_with_both_spellings_sends_the_options_one_once(
+    env: Any, any_wire: _Wire
+) -> None:
+    """A keyless case whose wire changed on purpose: ``model.headers``
+    ``Authorization`` and ``options.headers`` ``authorization`` went out as two
+    lines on openai 1.x. Now one goes, the later-merged ``options.headers`` value
+    (``options.headers`` override the model's, as for every other header). The
+    other: a payload hook spelling it differently from the request's own (the
+    row above)."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+
+    _export_vendor_keys(env)
+    model = replace(_sibling("openai-completions"), headers={"Authorization": "Bearer given-key-fake"})
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers={"authorization": "Bearer gw-header-fake"})
+    async for _ in stream_openai_completions(model, ctx, opts):
+        pass
+    assert any_wire.sent and all(h == ["authorization=gw-header"] for h in any_wire.hits), any_wire.hits
+
+
+@pytest.mark.parametrize(
+    ("own", "hook_name"),
+    [
+        # 1.109.1 omitted only the hook's exact spelling and sent the own line
+        # (the model's ``Authorization`` in the third case).
+        ({"model": "authorization"}, "Authorization"),
+        ({"options": "authorization"}, "Authorization"),
+        ({"model": "Authorization", "options": "authorization"}, "authorization"),
+        # The same spelling: 1.109.1 sent none either.
+        ({"model": "Authorization"}, "Authorization"),
+    ],
+    ids=lambda value: (
+        "+".join(f"{where}-{name}" for where, name in value.items())
+        if isinstance(value, dict)
+        else f"hook-omit-{value}"
+    ),
+)
+async def test_a_keyless_call_whose_payload_hook_omits_authorization_sends_none(
+    env: Any, any_wire: _Wire, own: dict[str, str], hook_name: str
+) -> None:
+    """The exception to "1.x sent both lines, one goes now" (narrow finish,
+    verify item 2): a payload hook that sets ``Authorization`` to
+    ``openai.Omit()`` in a spelling the request's own header does not use.
+    openai 1.109.1 merged by exact key, so the ``Omit()`` removed only that
+    spelling and the request's own line went out; now the hook's ``Omit()``
+    wins as any value the hook sets does, and no ``Authorization`` goes out
+    (``.omc/probes/278-live/r3verify/out/cmp_matrix2.out``)."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+    from openai import Omit
+
+    _export_vendor_keys(env)
+    model = _sibling("openai-completions")
+    if "model" in own:
+        model = replace(model, headers={own["model"]: "Bearer given-key-fake"})
+    opts_headers = {own["options"]: "Bearer gw-header-fake"} if "options" in own else None
+
+    def hook(params: dict[str, Any], _model: Any) -> dict[str, Any]:
+        return {**params, "extra_headers": {hook_name: Omit()}}
+
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    opts = SimpleStreamOptions(headers=opts_headers, on_payload=hook)
+    async for _ in stream_openai_completions(model, ctx, opts):
+        pass
+    assert any_wire.sent, "the request never left"
+    assert all(lines == [] for lines in any_wire.authorization_lines), any_wire.authorization_lines
+
+
+@pytest.mark.parametrize("who", ["keyed", "caller-supplied client"])
+async def test_a_hook_authorization_beside_a_key_sends_both_lines_as_on_1x(
+    env: Any, any_wire: _Wire, who: str
+) -> None:
+    """Narrow finish (verify V2): the collapse is for the KEYLESS request on the
+    adapter's own client only. With a key, or on a client the caller hands in,
+    a hook's lowercase ``authorization`` rides beside the SDK's
+    ``Authorization: Bearer <key>``, the key's line first - two lines, what
+    openai 1.109.1 sent (the golden's ``comp-keyed-hook-*`` and
+    ``comp-caller-client-hook-*`` scenarios hold the same requests to the
+    recording). A pre-existing wire, kept here; ADR-0265 "What this does NOT
+    close"."""
+
+    from aelix_ai.providers.openai_completions import stream_openai_completions
+    from openai import AsyncOpenAI
+
+    _export_vendor_keys(env)
+
+    def hook(params: dict[str, Any], _model: Any) -> dict[str, Any]:
+        return {**params, "extra_headers": {"authorization": "Bearer gw-header-fake"}}
+
+    client = None
+    if who == "keyed":
+        opts = SimpleStreamOptions(api_key="given-key-fake", on_payload=hook)
+    else:
+        client = AsyncOpenAI(api_key="given-key-fake", base_url=_GW, max_retries=0)
+        opts = SimpleStreamOptions(client=client, on_payload=hook)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    async for _ in stream_openai_completions(_sibling("openai-completions"), ctx, opts):
+        pass
+    if client is not None:
+        await client.close()
+    assert any_wire.sent, "the request never left"
+    assert all(
+        lines == ["Bearer given-key-fake", "Bearer gw-header-fake"] for lines in any_wire.authorization_lines
+    ), any_wire.authorization_lines
+
+
+async def test_the_shipped_selfhosted_example_sends_its_token_not_openai_custom_headers(
+    env: Any, any_wire: _Wire
+) -> None:
+    """``examples/selfhosted`` builds its own client (a private CA). Built as a
+    bare ``AsyncOpenAI`` on openai 2.34+, it sent ``OPENAI_CUSTOM_HEADERS``'
+    ``Authorization`` instead of the ``/login`` access token; it uses aelix's
+    factory now, and the factory closes the httpx client it was handed."""
+
+    from aelix_coding_agent.examples.selfhosted import selfhosted
+
+    _export_openai_reads(env)
+    built: list[Any] = []
+
+    from aelix_ai.providers import _openai_client
+
+    real = _openai_client.create_async_client
+
+    def _spy(**kwargs: Any) -> Any:
+        client = real(**kwargs)
+        built.append(kwargs["http_client"])
+        return client
+
+    env.setattr(_openai_client, "create_async_client", _spy)
+    model = Model(id="m1", name="M1", api="selfhosted-openai", provider="selfhosted", base_url=_GW)
+    ctx = Context(messages=[UserMessage(content=[TextContent(text="hi")])])
+    async for _ in selfhosted._selfhosted_stream(model, ctx, SimpleStreamOptions(api_key="given-key-fake")):
+        pass
+    assert any_wire.hits and all(h == ["authorization=given"] for h in any_wire.hits), any_wire.hits
+    assert len(built) == 1 and built[0].is_closed
 
 
 # ================================================================ review round 2

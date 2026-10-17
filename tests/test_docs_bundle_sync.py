@@ -30,6 +30,7 @@ from __future__ import annotations
 import fnmatch
 import importlib.util
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,37 @@ def test_every_guide_has_a_byte_equal_bundled_copy() -> None:
         assert bundled.read_bytes() == (GUIDES / name).read_bytes(), (
             f"{bundled} has drifted from docs/guides/{name}. The wheel copy is "
             f"what users read, so this is a shipped-wrong-docs bug. Fix: {_RESYNC}"
+        )
+
+
+def test_every_guide_is_checked_out_with_lf_line_endings() -> None:
+    """``read``'s byte cap is measured on the file as it sits on disk (#485).
+
+    A Windows checkout turns LF into CRLF by default (``core.autocrlf``), one
+    byte more per line: ``extension-authoring.md`` was 51326B there against the
+    51200B cap, on all three Windows legs, and 50418B everywhere else.
+    ``.gitattributes`` pins both copies to LF. ``git check-attr`` proves the
+    patterns still match every guide on any checkout; the bytes prove the pin
+    took effect, which only a Windows checkout can show.
+    """
+    assert BUNDLED_DOCS, _EMPTY
+    paths = [GUIDES / n for n in SOURCE_GUIDES] + [BUNDLED / n for n in BUNDLED_DOCS]
+    out = subprocess.run(
+        ["git", "check-attr", "eol", "--", *(str(p.relative_to(REPO)) for p in paths)],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert len(out) == len(paths), out
+    for line in out:
+        assert line.endswith(": eol: lf"), (
+            f"{line!r}: .gitattributes no longer pins this guide to LF (#485)"
+        )
+    for path in paths:
+        assert b"\r\n" not in path.read_bytes(), (
+            f"{path} was checked out with CRLF line endings, so `read` measures it "
+            f"one byte per line larger than the wheel ships it (#485)"
         )
 
 

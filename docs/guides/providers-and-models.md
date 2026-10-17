@@ -480,8 +480,12 @@ The full body is not kept; if you need it, reproduce the request with `curl`.
 ## Automatic retry
 
 When a model request fails on a cause that may pass - the provider is
-overloaded or rate-limits you (`429`), a `500`, `502`, `503` or `504`, a dropped
-or refused connection, a timeout - aelix waits and sends the turn again. The TUI
+overloaded or rate-limits you (`429`), a `500`, `502`, `503`, `504`, `520` or
+`524` (the statuses pi retries), a dropped or refused connection, a timeout -
+aelix waits and sends the turn again (`520` and `524` since #414). As in pi,
+a status counts wherever its digits appear in the error text, so an error that
+only contains them - `max_tokens: 25000` (its `500`), a message index such as
+`messages.520`, a request id - is retried too, until the retries run out. The TUI
 shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
 `auto_retry_start` (`attempt`, `max_attempts`, `delay_ms`, `error_message`) and
 `auto_retry_end` (`success`, `attempt`, `final_error`). The keys are snake_case;
@@ -629,7 +633,10 @@ For that provider an auth header in the variable (`X-Api-Key`, `Authorization`
 or `cf-aig-authorization`, any letter case, with a non-blank value) is enough on
 its own, so a proxy you authenticate that way works in the TUI and
 `--mode rpc`; `-p` and `--mode json` do not read the variable and still ask for
-a key ("No API key found"), as before.
+a key ("No API key found"), as before. The OpenAI SDK's own
+`OPENAI_CUSTOM_HEADERS` and `OPENAI_ADMIN_KEY` (read from openai 2.34 on) are
+used for no provider, `openai` included
+([#278](https://github.com/handochan/aelix-ai/issues/278)).
 
 ## When no key is found
 
@@ -674,10 +681,22 @@ opens at `high` on a model that tops out there rather than falling back to `off`
 An explicit `off` is a decision and is restored as `off`. `--thinking` (and an
 agent profile's `thinking:`) outranks the session at launch, and is itself
 recorded into a session that has not chosen a level yet — so the next
-`--continue` comes back at it. The session in turn outranks the
-`defaultThinkingLevel` setting. One exception to the ladder: after an in-session
+`--continue` comes back at it (`--thinking off` is not recorded). The session in
+turn outranks the `defaultThinkingLevel` setting. One exception to the ladder: after an in-session
 `/resume` the target session's own recorded level wins, launch flag included —
 you asked for that session, not for a re-run of the command line.
+
+`defaultThinkingLevel` applies in every mode, a delegated agent included (it
+reads only your global `settings.json`), when neither `--thinking` nor the
+session gives a level; unset, the level is `off`. It is fitted to the model:
+`xhigh` runs at `high` on a model that tops out there, a model that cannot
+reason runs at `off`, and `off` runs at the lowest level on one that cannot
+switch reasoning off. Only the TUI records it, and only as set (not `off`, not
+fitted), so a `-p`, `--mode json` or `--mode rpc` session takes the default of
+its next launch. A `session_start` extension handler sees the level: one it sets
+is recorded only if it changes it, and a model it switches to keeps it, as
+`/model` does. `/new` keeps the level and records it unless `off`; `/reload`
+goes back to `--thinking`'s level or `off`.
 
 What `xhigh` means depends on how the model thinks. On a model that takes a
 Claude-style token budget it sends a larger budget than `high` — 32768 against

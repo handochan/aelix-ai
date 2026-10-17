@@ -342,8 +342,8 @@ class SubagentHost:
     ``provider``) and declares no ``thinking:`` (#354).
 
     The model's sibling, and late-bound for the same reason: ``/thinking`` (and
-    the TUI's ``defaultThinkingLevel`` seed, and ``/agents use``) move it
-    mid-session without firing any hook the delegation extension sees. The
+    the launch's ``defaultThinkingLevel`` seed, and ``/agents use``) move it
+    without firing any hook the delegation extension sees. The
     bundled host answers it from the runtime host's CURRENT harness
     (``state.thinking_level``) through a getter ``cli/entry.py`` wires, exactly
     like :attr:`model`.
@@ -353,12 +353,12 @@ class SubagentHost:
     profile's ``thinking:``, a resumed session's recorded level
     (``--continue``/``--resume``/``--session``/``--fork``, #198, seeded before
     the mode dispatch, so in every mode), ``/thinking``, ``/agents use``, an rpc
-    client's ``set_thinking_level``/``cycle_thinking_level``, and in the TUI the
-    ``defaultThinkingLevel`` seed when none of those set one. Only a fresh,
-    otherwise-unset headless parent (``-p`` / ``--mode json`` / ``--mode rpc``)
-    is at the kernel's ``"off"``, because those modes do not apply
-    ``defaultThinkingLevel`` (#286, open); it hands its child ``off``, which is
-    also what that child ran with before this field existed.
+    client's ``set_thinking_level``/``cycle_thinking_level``, and the
+    ``defaultThinkingLevel`` seed when none of those set one — in every mode
+    since #286, clamped to the parent's model. A parent at the kernel's
+    ``"off"`` (its ladder ended at ``off``, its model cannot reason, or a level
+    was set to ``off``) hands its child ``off``, and that explicit flag outranks
+    the child's own default.
 
     Read ONCE per spawn, into :attr:`~aelix_agents.print_channel.SpawnPlan
     .parent_thinking`, and guarded there: an unreadable level is "no evidence",
@@ -428,7 +428,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:731``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:742``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -1057,7 +1057,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1102-1103``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1113-1114``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

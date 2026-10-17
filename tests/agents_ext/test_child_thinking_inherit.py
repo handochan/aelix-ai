@@ -237,11 +237,14 @@ def test_the_thinking_gate_is_the_model_gate() -> None:
 
 def test_a_parent_at_off_hands_its_child_off() -> None:
     """``off`` is a level, not "unset". A parent is at ``off`` when it set it
-    (``--thinking off``, ``/thinking off``) or when nothing set any level: a
-    fresh headless parent with no ``--thinking``, no ``--agent`` ``thinking:``,
-    no resumed level and no rpc ``set_thinking_level`` (#286 keeps
-    ``defaultThinkingLevel`` out of ``-p``). Its child then gets ``--thinking
-    off``, whose wire is identical to the pre-#354 child's. pi forwards ``off``
+    (``--thinking off``, ``/thinking off``) or when nothing set any level: no
+    ``--thinking``, no ``--agent`` ``thinking:``, no resumed level, no rpc
+    ``set_thinking_level`` and no ``defaultThinkingLevel`` (which every mode
+    applies since #286; one its model clamps to ``off`` lands here too), on a
+    model that can switch reasoning off (one that cannot starts at its lowest
+    level, #286 review round 2). Its
+    child then gets ``--thinking off``, which outranks the child's own settings
+    default, so the child runs at ``off`` like its parent. pi forwards ``off``
     too."""
 
     assert inherit_thinking(_profile(), "off").thinking == "off"
