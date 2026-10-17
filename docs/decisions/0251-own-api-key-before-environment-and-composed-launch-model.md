@@ -1280,7 +1280,10 @@ outliving its attempt (a session rebuild that put the same message object back l
 hygiene, stated here. Follow-ups, not changed: the stale "remove the entry" advice after another
 process's logout; the harness's model-error `_RETRYABLE_ERROR_PATTERN` has no `520`/`524`; the
 anthropic adapter's own model `502` emits `message_end` without `message_start`; an unexpired
-cached token is still sent after another process logs out.
+cached token is still sent after another process logs out. *(#414, 2026-10-15: the second and
+the third are fixed by ADR-0128's and ADR-0017's #414 amendments; the first and the fourth,
+another aelix's logout reaching a running session, are split off into an issue of their own,
+and this ADR's text on them stands.)*
 
 ### 12.7 Review round 4 (2026-10-08)
 

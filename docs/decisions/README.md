@@ -37,10 +37,14 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 ## Index
 
 - [0128 — Auto-retry with exponential backoff](0128-sprint-6h20-auto-retry.md)
-  (amended 2026-10-14; #408). The retry reads `settings.json` `retry.enabled` /
+  (amended 2026-10-14; #408, #414). The retry reads `settings.json` `retry.enabled` /
   `maxRetries` / `baseDelayMs` / `maxAgentDelayMs` at each decision (pi's cap
   included); rpc `set_auto_retry` writes `retry.enabled` globally as pi does;
   module constants remain the fallback. ADR-0251 §12.3's follow-up note amended.
+  #414: a model error's `520` and `524` are retried (pi's seven statuses), matched
+  as pi matches them, anywhere in the error text - so digits that contain one
+  (`max_tokens: 25000`, `messages.520`, a request id) retry too, as they did for the
+  other five (review round 2 dropped round 1's whole-number rule; a follow-up).
 
 - [0263 — Configured request auth before new prompt records](0263-configured-request-auth-before-new-prompt-records.md)
   (Accepted, 2026-10-12; #416). Request-supported headers/token/Vertex source
@@ -79,7 +83,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 | 0013 | [message_end Reducer Policy — Observational in Phase 1.2](0013-message-end-observational-in-1-2.md)                                                    | Accepted (Phase 1.2 임시 결정 — Sprint 3b 재확정: message_end는 영구 observational)      | Phase 1.2의 `message_end`는 observational only. Sprint 3b P-3 verdict로 영구 확정(ADR-0018 Deprecated, Pi has no replacement reducer @ SHA 734e08e). |
 | 0014 | [Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log](0014-hook-error-policy.md)                                       | Superseded by ADR-0019              | (Phase 1.2 임시 결정) — Sprint 3a에서 ADR-0019 v3로 대체됨.                                                                                          |
 | 0015 | [Monorepo Layout — uv Workspaces](0015-monorepo-layout-uv-workspaces.md)                                                                               | Accepted (Phase 1.3 shipped)        | Phase 1.3 경계에서 uv workspaces 마이그레이션. Pi `packages/*` 구조와 1:1 매핑.                                                                    |
-| 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Accepted (Sprint 3a / Phase 2.1.1 shipped) | Pi-verified 28 hook events (10 loop + 18 harness own). 7 wishlist events dropped per W1 Finding P-1. ADR-0011 대체.                                |
+| 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Accepted (Sprint 3a / Phase 2.1.1 shipped) — **2026-10-14 개정(#414): 스트림이 `start` 없이 끝난 어시스턴트 메시지(어댑터의 HTTP `502` 등)도 `message_end` 직전에 `message_start`(같은 메시지) — pi 루프 `agent-loop.ts:451-453`; json·rpc 클라이언트가 이 실패에서 전에 없던 `message_start`를 받음(pi와 같음); 리뷰 4차(2026-10-15): 한 실행의 뒤 메시지(도구 호출 다음 답)도 자기 `message_start`를 한 번 받음 — 실행당 래치 하나인 구현을 행이 잡음** | Pi-verified 28 hook events (10 loop + 18 harness own). 7 wishlist events dropped per W1 Finding P-1. ADR-0011 대체.                                |
 | 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Deprecated (Sprint 3b — superseded by P-3 verdict)                   | **Deprecated** — Pi has no message_end reducer at SHA 734e08e. Sprint 3b §0 verdict: keep `message_end` observational, no replacement reducer.       |
 | 0019 | [Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in](0019-hook-error-policy-v2-pi-continue-default.md) | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe) | Pi-parity `"throw"` default (matches Pi `normalizeHookError`) + Aelix additive `error_mode="continue"` opt-in. v3 reframe per W1 Finding P-2. ADR-0014 대체. |
 | 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Accepted (Sprint 6d / Phase 4.4 / W6 shipped) | `aelix --mode rpc` JSONL stdin/stdout protocol. Sprint 6d shipped 9 supported + 20 deferred (ADR-0058). Sub-sprints 6e/6f close the remaining surface.                                                     |

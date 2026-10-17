@@ -157,7 +157,8 @@ async def test_an_idle_set_model_records_a_model_change() -> None:
 
     await h.set_model(_SONNET_MODEL)
     # Re-picking the live model is recorded too: it may be one the session
-    # never recorded (no model_change is written for a launch model).
+    # never recorded (AgentHarness writes no model_change for a launch model;
+    # the CLI records a new session's, _record_session_start_model, #413).
     await h.set_model(_SONNET_MODEL)
 
     assert await _model_changes(session) == [("anthropic", "claude-sonnet-4-5")] * 2
