@@ -36,17 +36,20 @@ Three environment variables configure it:
   GitHub API.
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
 - `AELIX_PYTHON` — the interpreter uv builds the tool environment on, as a uv
-  Python request. Default `>=3.11,<3.14` — the range the pinned OpenAI SDK
-  survives, and it is also the range CI runs: since #192 the full suite runs on
-  3.11, 3.12 and 3.13, on Ubuntu and on Windows, so on Linux and Windows
-  whichever of them uv picks for you has been tested. The test suite has no
-  macOS leg; the installer does — CI runs this script on macOS and checks the
-  environment lands inside the range with Homebrew's Python 3.14 on the box
-  (see *What CI measures* below).
+  Python request. By default it is the range the release being installed runs
+  on (#278): `>=3.11,<3.15` for `v0.1.0-beta.3` and later, `>=3.11,<3.14` for
+  `v0.1.0-beta.2` and earlier. Those older releases pin `openai<2.0`, which on
+  Python 3.14 raises `'typing.Union' object has no attribute
+  '__discriminator__'` in the middle of a turn (#262, #263), and `AELIX_VERSION`
+  can still install them, so the installer reads the version out of the
+  verified `SHA256SUMS` before it chooses. The newer range is also the range CI
+  runs: the full suite runs on 3.11, 3.12, 3.13 and 3.14, on Ubuntu and on
+  Windows, so on Linux and Windows whichever of them uv picks for you has been
+  tested. The test suite has no macOS leg; the installer does — CI runs this
+  script on macOS and checks the environment lands inside the range with
+  Homebrew's Python 3.14 on the box (see *What CI measures* below).
   `uv tool install` reads neither `.python-version` nor `uv.lock`; left to
-  itself it takes the newest interpreter on the machine, and on Python 3.14
-  `openai<2.0` raises `'typing.Union' object has no attribute
-  '__discriminator__'` in the middle of a turn (#262, #263). Override it if you
+  itself it takes the newest interpreter on the machine. Override it if you
   need a specific one, e.g. `AELIX_PYTHON=3.12`.
 
   Unlike `AELIX_EXTRAS`, **an empty value is not "no constraint"** — it falls
@@ -57,9 +60,11 @@ Three environment variables configure it:
 
   **The knob only covers this script.** `uv tool install aelix@latest` — which
   `uv tool upgrade aelix` suggests by itself — rebuilds the environment on the
-  newest Python on the machine and today lands on 3.14. Measured: it overwrites
-  an environment this installer had correctly built on 3.13. Upgrade by
-  re-running the install line.
+  newest Python on the machine. With `v0.1.0-beta.2` that lands on 3.14 and the
+  crash above; measured, it overwrites an environment this installer had
+  correctly built on 3.13. From `v0.1.0-beta.3`, 3.14 is supported and that
+  command no longer breaks aelix, but re-running the install line is still the
+  way to upgrade: it is the one that checks the wheels.
 
 Pass them **through the pipe**, not in front of `curl`. A `VAR=x curl … | sh`
 prefix sets the variable for `curl` only; the `sh` on the other side of the pipe
@@ -78,12 +83,14 @@ uv present (the re-run that upgrades). Three more passes use the
 `sh -c "$(curl …)"` form just above: with `AELIX_EXTRAS=`, with `AELIX_PYTHON=`
 empty and with `AELIX_PYTHON=3.11`. Python 3.14 is put on the box before
 the third pass, so the last three run with it present (on macOS, Homebrew's
-3.14 is already on `PATH` for all five). After every pass a separate step
+3.14 is already on `PATH` for all five). A sixth pass pins
+`AELIX_VERSION=v0.1.0-beta.2` with 3.14 present, and must still land below 3.14
+(#278). After every pass a separate step
 (`.github/scripts/assert-install-sh.sh`) checks what the script promises: the
 `aelix` launcher is in uv's tool bin and is the `aelix` on `PATH`,
 `aelix --version` is the version the verified `SHA256SUMS` named, the
-interpreter and extras are the ones asked for, and the download directory was
-removed. Each pass is one of those two forms with only the URL changed, to the
+interpreter and extras are the ones asked for — by default, the range the
+installed release is owed — and the download directory was removed. Each pass is one of those two forms with only the URL changed, to the
 **checked-out** script; the fetch from raw.githubusercontent.com is not part of that
 measurement, and neither is the `uv tool update-shell` branch — on these
 runners `aelix` is already on the script's own `PATH` when it finishes.
@@ -158,15 +165,16 @@ indistinguishable from unset and falls back to `tui`. For the bare CLI, run
 `uv tool install --force --find-links <dir> aelix` yourself.
 
 **What is measured, and by whom.** CI runs the full test suite on
-`windows-latest` under Python 3.11, 3.12 and 3.13, and a red leg fails the run on every branch;
+`windows-latest` under Python 3.11, 3.12, 3.13 and 3.14, and a red leg fails the run on every branch;
 it also runs `install.ps1` end to end there, under both pwsh 7 and Windows
 PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)`
 jobs in `.github/workflows/ci.yml`). CI drives the **checked-out** script
 through the same `| iex` path; the fetch from raw.githubusercontent.com and the
 `-ExecutionPolicy Bypass` flag above are not part of that measurement. What that
-job asserts is the launcher and `aelix --version`, and it says so in its own
-header (`.github/scripts/assert-install-ps1.ps1`): no release is gated on a
-Windows runtime check.
+job asserts is the launcher, `aelix --version` and the interpreter, and it
+says so in its own header (`.github/scripts/assert-install-ps1.ps1`); a third
+pass pins `v0.1.0-beta.2` with Python 3.14 on the runner and checks it still
+lands below 3.14 (#278). No release is gated on a Windows runtime check.
 
 On a real Windows host the maintainer checked this release by hand on
 2026-09-09: a `bash` tool call that prints Korean renders as Korean rather than

@@ -699,6 +699,9 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
         # how it is built, installed and released
         ".github",
         ".gitignore",
+        # #485: pins the guides to LF; a consumer who unpacks the sdist into a
+        # checkout gets the same line endings `read`'s cap is measured on
+        ".gitattributes",
         "install.sh",
         "install.ps1",
         "scripts",

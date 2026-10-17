@@ -2613,7 +2613,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:972``), so anything reaching this line already has it.
+            # (``render.py:1011``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":

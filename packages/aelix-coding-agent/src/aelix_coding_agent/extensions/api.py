@@ -2014,9 +2014,20 @@ class ExtensionAPI:
         baked into the URL, or non-OpenAI fields — supply a :data:`StreamFn`
         ``(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]``. A
         ``Model`` whose ``api`` equals this id then routes to your stream_fn.
-        The easiest stream_fn builds a custom ``openai.AsyncOpenAI`` (with its own
+        The easiest stream_fn builds its client with aelix's
+        ``aelix_ai.providers._openai_client.create_async_client`` (with its own
         ``http_client``) and delegates to ``OPENAI_COMPLETIONS_PROVIDER.stream_simple``
-        via ``replace(opts, client=...)``, reusing all the SSE/event logic.
+        via ``replace(opts, client=...)``, reusing all the SSE/event logic. Not a
+        bare ``openai.AsyncOpenAI``: from openai 2.34 one merges
+        ``OPENAI_CUSTOM_HEADERS`` from the environment over its key and refuses an
+        empty key ("Missing credentials"); build it with ``"unused"`` when there
+        is no key. ``stream_simple`` itself refuses a call with no key before
+        sending anything ("No API key for provider: ..."), so a keyless endpoint
+        passes the placeholder as the options' key too and is sent
+        ``Authorization: Bearer unused``; to send no ``Authorization``, delegate
+        to ``stream_openai_completions`` instead, which asks for no key, and set
+        ``"Authorization": openai.Omit()`` in ``extra_headers`` from the payload
+        hook (#278, ``aelix docs extension-authoring``).
 
         CLOSE THE CLIENT YOU BUILD (#174). A stream_fn runs once per request, so a
         client built inside one is built once per turn, and the built-in adapter

@@ -16,10 +16,15 @@
 #   E2E_ARM              which install pass this is, named in every failure.
 #   E2E_EXPECT_EXTRAS    the extras the pass asked for. Default `tui` (install.sh
 #                        Step 0's default); set-but-empty means the bare CLI.
+#   E2E_EXPECT_TAG       the release tag the pass pinned with AELIX_VERSION
+#                        (#278). Unset means the newest release, resolved
+#                        through `gh api` as install.sh's Step 3 resolves it.
 #   E2E_EXPECT_PYTHON    the interpreter request the pass made. Empty or unset
-#                        means install.sh's default, INSTALLER_PY_REQUEST below,
-#                        and then the interpreter must be inside its range. A
-#                        bare minor such as `3.11` means exactly that minor.
+#                        means install.sh's default FOR THE RELEASE INSTALLED
+#                        (INSTALLER_PY_SUPPORTED or INSTALLER_PY_BEFORE_B3
+#                        below), and then the interpreter must be inside that
+#                        range. A bare minor such as `3.11` means exactly that
+#                        minor.
 #   E2E_STATE_DIR        where the "an install ran since the last assert"
 #                        marker lives. Default $RUNNER_TEMP, else $TMPDIR, else /tmp.
 #   GH_TOKEN             for `gh api` (the expected version is resolved through
@@ -27,15 +32,20 @@
 
 set -eu
 
-# The range install.sh Step 0 defaults AELIX_PYTHON to, and the range the
-# INSTALLED release survives: the published 0.1.0b2 pins openai<2.0, which dies
-# mid-turn on 3.14 (#262). #278 widens the range for b3+ releases only, so this
-# moves when install.sh's default moves and not before.
-# tests/packaging_gate/test_install_ps1_parity.py holds it equal to
-# install.sh's default, as it does for assert-install-ps1.ps1.
-INSTALLER_PY_REQUEST='>=3.11,<3.14'
+# The two ranges install.sh Step 5 chooses its default between, by the release
+# it installs (#278, ADR-0265). 0.1.0b3 and later pin openai>=2.7.2 and run on
+# 3.14; the two releases published before #278, v0.1.0-beta.1 and
+# v0.1.0-beta.2, pin openai<2.0, which dies mid-turn on 3.14 (#262), and keep
+# the older range. This script NAMES those two releases below instead of
+# comparing versions the way install.sh does, so a wrong comparison there
+# surfaces as a disagreement here rather than as two copies of one bug.
+# tests/packaging_gate/test_install_ps1_parity.py holds both values equal to
+# install.sh's, as it does for assert-install-ps1.ps1.
+INSTALLER_PY_SUPPORTED='>=3.11,<3.15'
+INSTALLER_PY_BEFORE_B3='>=3.11,<3.14'
 
 ARM="${E2E_ARM:-unnamed pass}"
+EXPECT_TAG="${E2E_EXPECT_TAG:-}"
 EXPECT_EXTRAS="${E2E_EXPECT_EXTRAS-tui}"
 EXPECT_PYTHON="${E2E_EXPECT_PYTHON:-}"
 STATE_DIR="${E2E_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
@@ -88,9 +98,14 @@ fi
 # The repo is hard-coded, not $GITHUB_REPOSITORY: the install step leaves
 # AELIX_REPO unset, so install.sh used its own default. On a fork the two differ.
 repo='handochan/aelix-ai'
-tag="$(gh api "repos/$repo/releases" --jq '.[0].tag_name')" \
-  || fail 2 "could not resolve the newest release tag for '$repo' through gh api."
-[ -n "$tag" ] || fail 2 "gh api returned no release tag for '$repo'."
+if [ -n "$EXPECT_TAG" ]; then
+  # The pass pinned AELIX_VERSION, so install.sh skipped the API (Step 3).
+  tag="$EXPECT_TAG"
+else
+  tag="$(gh api "repos/$repo/releases" --jq '.[0].tag_name')" \
+    || fail 2 "could not resolve the newest release tag for '$repo' through gh api."
+  [ -n "$tag" ] || fail 2 "gh api returned no release tag for '$repo'."
+fi
 sums="$(curl -fsSL "https://github.com/$repo/releases/download/$tag/SHA256SUMS")" \
   || fail 2 "could not download SHA256SUMS for '$tag'."
 # Same anchor as install.sh Step 5: the meta-package is the only `aelix-` entry
@@ -101,6 +116,17 @@ expected="$(printf '%s\n' "$sums" \
   | head -n 1)"
 [ -n "$expected" ] || fail 2 "no 'aelix-<version>-py3-none-any.whl' entry in SHA256SUMS for '$tag'."
 ok "expected version (from $tag SHA256SUMS): $expected"
+
+# The default interpreter request install.sh owes THIS release (#278).
+case "$expected" in
+  0.1.0b1|0.1.0b2)
+    INSTALLER_PY_REQUEST="$INSTALLER_PY_BEFORE_B3"
+    why="on 3.14 the openai<2.0 that $expected pins dies mid-turn (#262, #263)" ;;
+  *)
+    INSTALLER_PY_REQUEST="$INSTALLER_PY_SUPPORTED"
+    why="no CI leg has executed an interpreter outside it (#278)" ;;
+esac
+ok "default interpreter request for $expected: $INSTALLER_PY_REQUEST"
 
 # -- (1) The launcher is where Step 6 says it is ------------------------------
 launcher="$bin_dir/aelix"
@@ -132,9 +158,10 @@ uv tool list 2>/dev/null | grep -q "^aelix v$expected\$" \
 
 # -- (3) The interpreter is the one the pass asked for ------------------------
 # install.sh Step 5 passes `--python "$AELIX_PYTHON"`, because `uv tool
-# install` otherwise takes the NEWEST interpreter on the box, and on 3.14 the
-# pinned openai<2.0 dies mid-turn (#262, #263). pyvenv.cfg rather than running
-# the environment's python: the value uv wrote IS the fact being asserted.
+# install` otherwise takes the NEWEST interpreter on the box, and for a release
+# before 0.1.0b3 that is 3.14, where the pinned openai<2.0 dies mid-turn (#262,
+# #263). pyvenv.cfg rather than running the environment's python: the value uv
+# wrote IS the fact being asserted.
 cfg="$env_dir/pyvenv.cfg"
 [ -f "$cfg" ] || fail 3 "no pyvenv.cfg at '$cfg'; cannot tell which interpreter the tool environment was built on."
 py="$(sed -n 's/^[[:space:]]*version_info[[:space:]]*=[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$cfg" | head -n 1)"
@@ -151,7 +178,7 @@ else
   { [ -n "$floor" ] && [ -n "$ceiling" ]; } \
     || fail 3 "INSTALLER_PY_REQUEST '$INSTALLER_PY_REQUEST' is not the '>=3.N,<3.M' shape this script checks."
   if [ "$py_major" -ne 3 ] || [ "$py_minor" -lt "$floor" ] || [ "$py_minor" -ge "$ceiling" ]; then
-    fail 3 "the tool environment is on Python $py; install.sh requests '$INSTALLER_PY_REQUEST' by default. Outside that range nothing in CI has executed the interpreter, and on 3.14 the pinned openai<2.0 dies mid-turn (#262, #263)."
+    fail 3 "the tool environment is on Python $py; install.sh requests '$INSTALLER_PY_REQUEST' by default for $expected, and outside that range $why."
   fi
   request="$INSTALLER_PY_REQUEST"
 fi

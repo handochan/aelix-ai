@@ -483,13 +483,16 @@ PR 검토 순서는 제품 목표 적합성 → 패키지/확장 경계 → 안�
 - fork PR 실행과 release 권한을 분리한다. 외부 코드 실행에 지속적인 개인 머신·비밀정보를 주지 않는다.
 - dependency·secret 검사, manifest·패키징·문서 계약 검사와 재현 가능한 CI를 점검한다.
 - CI의 실제 Python/OS와 사용자 설치 경로를 맞춘다. 현재 CI는 Ubuntu/Windows,
-  Python 3.11/3.12/3.13이다(#192, 2026-10-08 — 설치기 범위 `>=3.11,<3.14` 전체이고
-  `tests/test_ci_python_matrix.py`가 둘을 묶는다). install.sh E2E는 #279(2026-10-14)로
+  Python 3.11/3.12/3.13/3.14다(#192 2026-10-08에 3.13, #278 2026-10-14에 3.14 —
+  `tests/test_ci_python_matrix.py`가 설치기의 새 범위 `>=3.11,<3.15`와 매트릭스를 묶는다).
+  #278(ADR-0265)로 3.14를 지원한다: `openai>=2.7.2,<3`(2.7.2가 `typing.Union`에 쓰지 않는
+  첫 릴리즈, #262), 설치기는 설치하는 릴리즈에서 범위를 정한다(b3 이상 `<3.15`, b2 이하
+  `<3.14`). `requires-python`에는 상한을 두지 않는다. install.sh E2E는 #279(2026-10-14)로
   생겼다 — `install.sh e2e` 잡이 ubuntu(dash)·macOS(bash POSIX sh)에서 체크아웃의
-  install.sh를 다섯 번 돌린다. 1·2회(uv 부트스트랩·uv 있음)는 README의 `curl … | sh` 형태,
-  3~5회(`AELIX_EXTRAS=`·`AELIX_PYTHON=` 빈 값·`AELIX_PYTHON=3.11`)는 가이드의
+  install.sh를 여섯 번 돌린다. 1·2회(uv 부트스트랩·uv 있음)는 README의 `curl … | sh` 형태,
+  3~5회(`AELIX_EXTRAS=`·`AELIX_PYTHON=` 빈 값·`AELIX_PYTHON=3.11`)와 6회(#278,
+  `AELIX_VERSION=v0.1.0-beta.2`를 3.14가 있는 머신에서)는 가이드의
   `VAR=… sh -c "$(curl …)"` 형태이고, 매번 별도 스텝이 사후 조건을 확인한다.
-  `requires-python` 상한(#278)은 아직 열려 있다.
 - 릴리스에는 candidate artifact 자체의 설치/업그레이드 검증, 알려진 문제,
   이전 버전으로 돌아갈 수 있는 범위와 세션 마이그레이션 방침을 포함한다.
 
