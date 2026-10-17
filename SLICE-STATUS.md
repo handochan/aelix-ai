@@ -229,6 +229,15 @@ fixed in `install.sh` in the same change. `install.ps1` has the same hard-coded
 `~\.local\bin` and is left to a follow-up: the Windows job cannot reach it
 without a custom-directory pass, and nothing here measured it.
 
+**Python 3.14 (2026-10-14, #278).** Both installers now choose the default
+interpreter range from the release they install (`>=3.11,<3.15` for 0.1.0b3
+and later, `>=3.11,<3.14` before; ADR-0265), and both e2e jobs gained a pass
+that pins `AELIX_VERSION=v0.1.0-beta.2` with Python 3.14 on the runner: a sixth
+on ubuntu and macOS, a third on each Windows host. The post-condition scripts
+derive the range they expect from the version they resolved, by naming the two
+releases published before #278. Until b3 is published those passes install the
+same release as the others; after that they are the only ones on the old range.
+
 **CLOSED — the unpinned-version hole.** This slice originally shipped
 `install.ps1` reproducing `install.sh`'s lack of a package-version pin, flagged
 as a shared risk to be fixed in both files at once. The release-and-honesty

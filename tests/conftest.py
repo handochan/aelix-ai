@@ -19,11 +19,72 @@ function-scoped ``monkeypatch``, last write wins).
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from aelix_coding_agent.cli.config import ENV_SESSION_DIR
 from aelix_coding_agent.util import tools_manager as _tm
+
+from tests import session_root_guard
+
+# Before any test runs, so the protected roots are the developer's, not a sandbox's.
+session_root_guard.install()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_session_root(
+    monkeypatch: pytest.MonkeyPatch, _run_session_root: str
+) -> Iterator[None]:
+    """Pin a session root per test, and run the in-process guard around it (#458).
+
+    The suite never set ``AELIX_CODING_AGENT_SESSION_DIR``, so a test that ran
+    the CLI with only ``AELIX_CODING_AGENT_DIR`` isolated wrote its session into
+    the developer's ``~/.aelix/sessions`` (about 7,450 on the owner's machine).
+    The pin covers in-process code that reads the variable and every child that
+    inherits the test's environment. It is a default: it applies only when, at
+    the test's start, the variable is unset, empty (``get_session_dir`` reads
+    ``''`` as unset, so its callers use ``~/.aelix/sessions``) or still the run's
+    own root. So a module-, class- or session-scoped fixture that set the
+    variable to a value reaches its tests and their children. That value stays
+    in effect until the fixture is torn down: for the rest of its module or
+    class, and for a session-scoped fixture (not autouse) for every test that
+    runs after it, until the run ends, whether or not that test requests it. A
+    test that sets the variable itself wins (same ``monkeypatch``, last write
+    wins; ``test_child_session_records.py``). The guard is a best-effort net: in
+    this process it blocks the operations ``tests/session_root_guard.py`` lists,
+    under a protected root, and fails the test in teardown. It misses others (a
+    rename of ``~/.aelix`` or the home and, on POSIX, an ``rmtree`` of either
+    among them, listed there), and judges no child.
+    """
+
+    current = os.environ.get(ENV_SESSION_DIR)
+    if not current or current == _run_session_root:
+        monkeypatch.setenv(ENV_SESSION_DIR, str(session_root_guard.next_session_root()))
+    with session_root_guard.guard() as violations:
+        yield
+    if violations:
+        pytest.fail(session_root_guard.describe(violations), pytrace=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _run_session_root() -> Iterator[str]:
+    """Give the run a session root too, and delete every root when the run ends.
+
+    A module- or session-scoped fixture is set up before any test's own pin.
+    Measured with a scratch HOME, the packaging gate's wheel builds start
+    children at that point, and a child started from ``os.environ`` gets this
+    root (the guard runs per test and does not watch such fixtures). The value
+    is what ``_isolated_session_root`` compares against to tell a wider
+    fixture's own value from this default. The roots sit in the system temp
+    dir, so every one is removed here.
+    """
+
+    root = str(session_root_guard.next_session_root())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(ENV_SESSION_DIR, root)
+        yield root
+    session_root_guard.remove_session_roots()
 
 
 @pytest.fixture(autouse=True)

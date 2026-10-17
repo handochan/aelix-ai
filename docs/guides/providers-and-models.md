@@ -480,8 +480,12 @@ The full body is not kept; if you need it, reproduce the request with `curl`.
 ## Automatic retry
 
 When a model request fails on a cause that may pass - the provider is
-overloaded or rate-limits you (`429`), a `500`, `502`, `503` or `504`, a dropped
-or refused connection, a timeout - aelix waits and sends the turn again. The TUI
+overloaded or rate-limits you (`429`), a `500`, `502`, `503`, `504`, `520` or
+`524` (the statuses pi retries), a dropped or refused connection, a timeout -
+aelix waits and sends the turn again (`520` and `524` since #414). As in pi,
+a status counts wherever its digits appear in the error text, so an error that
+only contains them - `max_tokens: 25000` (its `500`), a message index such as
+`messages.520`, a request id - is retried too, until the retries run out. The TUI
 shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
 `auto_retry_start` (`attempt`, `max_attempts`, `delay_ms`, `error_message`) and
 `auto_retry_end` (`success`, `attempt`, `final_error`). The keys are snake_case;
@@ -629,7 +633,10 @@ For that provider an auth header in the variable (`X-Api-Key`, `Authorization`
 or `cf-aig-authorization`, any letter case, with a non-blank value) is enough on
 its own, so a proxy you authenticate that way works in the TUI and
 `--mode rpc`; `-p` and `--mode json` do not read the variable and still ask for
-a key ("No API key found"), as before.
+a key ("No API key found"), as before. The OpenAI SDK's own
+`OPENAI_CUSTOM_HEADERS` and `OPENAI_ADMIN_KEY` (read from openai 2.34 on) are
+used for no provider, `openai` included
+([#278](https://github.com/handochan/aelix-ai/issues/278)).
 
 ## When no key is found
 

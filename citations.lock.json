@@ -3077,10 +3077,23 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/overlay.py:60-60": [
    "_MODAL_MIN_HEIGHT = 3"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1520-1520": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1001-1033": [
+   "def on_agent_event(self, event: AgentEvent) -> None:",
+   "if event.type == \"message_start\":",
+   "self._reset_message_state()",
+   "elif event.type == \"message_update\":",
+   "self._on_stream_event(event.assistant_message_event)",
+   "elif event.type == \"message_end\":",
+   "# Terminal failures arrive here as a MessageEndEvent whose message",
+   "# carries stop_reason ∈ {\"error\",\"aborted\"} (loop.py:390-415)."
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1011-1011": [
+   "self._render_message_error(event.message)"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1606-1606": [
    "max_lines=40 if is_error else self.tool_card_max_lines,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1817-1833": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:1903-1919": [
    "content = getattr(msg, \"content\", None)",
    "text = content if isinstance(content, str) else _join_text(content or [])",
    "# #177 — both halves are the extension's (and, on replay, the session",
@@ -3108,19 +3121,6 @@
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:341-341": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:972-972": [
-   "self._hide_thinking = value"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:973-1005": [
-   "if turning_on:",
-   "# Ctrl+T is most naturally pressed WHILE reasoning is scrolling by —",
-   "# that is the moment it becomes noise. Honour it immediately instead",
-   "# of at block close: the window comes down now, and the block still",
-   "# commits as the collapsed placeholder when it ends.",
-   "self._clear_thinking_tail()",
-   "",
-   "def on_agent_event(self, event: AgentEvent) -> None:"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1208-1208": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
@@ -3247,7 +3247,7 @@
   "tests/cli/test_pipe_robustness.py:500-500": [
    "proc = subprocess.run("
   ],
-  "tests/conftest.py:50-59": [
+  "tests/conftest.py:111-120": [
    "@pytest.fixture(autouse=True)",
    "def _no_real_tool_downloads(tmp_path_factory, monkeypatch):",
    "bin_dir = tmp_path_factory.mktemp(\"aelix_bin\")",

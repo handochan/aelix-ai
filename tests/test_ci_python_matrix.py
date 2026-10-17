@@ -1,24 +1,27 @@
 """#192 — CI runs every interpreter the installers can hand a user, on both runners.
 
 THE GAP THIS CLOSES. ``install.sh`` and ``install.ps1`` build the tool
-environment with ``uv tool install --python '>=3.11,<3.14'`` (ADR-0241), and uv
-takes the NEWEST interpreter in that range — 3.13 on any machine that has it or
-can download it. Until 2026-10-08 the test matrix was 3.11 and 3.12, so the
-interpreter users were actually given had never been executed by CI. It cost a
-real user first: 3.13 turns on ``X509_V_FLAG_X509_STRICT``, and aelix's TLS
-remedy on a strict interpreter told every non-strict failure (an untrusted
-root, a bad signature) that it was a strict-only rejection. At 8f7d98aa a 3.13
-run failed eleven tests no 3.11 or 3.12 leg could see: nine on that remedy,
-and two guards in test_tls_strict.py that asserted a pre-3.13 interpreter.
+environment with ``uv tool install --python <range>`` (ADR-0241), and uv takes
+the NEWEST interpreter in that range. Until 2026-10-08 the test matrix was 3.11
+and 3.12 while the range reached 3.13, so the interpreter users were actually
+given had never been executed by CI. It cost a real user first: 3.13 turns on
+``X509_V_FLAG_X509_STRICT``, and aelix's TLS remedy on a strict interpreter told
+every non-strict failure (an untrusted root, a bad signature) that it was a
+strict-only rejection. At 8f7d98aa a 3.13 run failed eleven tests no 3.11 or
+3.12 leg could see: nine on that remedy, and two guards in test_tls_strict.py
+that asserted a pre-3.13 interpreter.
 
 So the matrix is not a list someone remembers to bump. It is DERIVED from the
 installer's default request here: every minor version that request admits must
 be a leg, on every runner, and nothing outside it may pose as coverage. Widening
 the installer without adding the leg goes red, and so does dropping a leg.
 
-The interpreter request is read from ``install.sh``'s assignment line;
-``tests/packaging_gate/test_install_ps1_parity.py`` already holds
-``install.ps1`` to the same value.
+Since #278 (ADR-0265) the installers choose their default by the release they
+install: ``>=3.11,<3.15`` for 0.1.0b3 and later, ``>=3.11,<3.14`` for older
+releases. The range read here is the newer one, ``py_supported`` in
+``install.sh`` — the one a build of this tree is installed with — and
+``tests/packaging_gate/test_install_ps1_parity.py`` holds ``install.ps1`` to the
+same pair and the older range inside the newer one.
 """
 
 from __future__ import annotations
@@ -53,8 +56,8 @@ def _installer_request() -> str:
     text = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     # ``\s*$``, not ``$``: a windows checkout may carry CRLF, and ``$`` stops
     # before ``\n`` only, so the ``\r`` would hide the line on that leg.
-    match = re.search(r'^AELIX_PYTHON="\$\{AELIX_PYTHON:-([^}]*)\}"\s*$', text, re.MULTILINE)
-    assert match, "install.sh no longer assigns AELIX_PYTHON with a ':-' default"
+    match = re.search(r"^py_supported='([^']*)'\s*$", text, re.MULTILINE)
+    assert match, "install.sh no longer names the interpreter range of a current release (py_supported)"
     return match[1]
 
 
@@ -67,12 +70,12 @@ def _minors(spec: str) -> list[str]:
 
 
 def test_the_installer_range_is_what_it_is_today() -> None:
-    """Guard on the derivation itself: 3.11, 3.12 and 3.13, nothing else.
+    """Guard on the derivation itself: 3.11 through 3.14, nothing else (#278).
 
     If this goes red the installer moved; the matrix row below then says what
     the matrix has to become."""
 
-    assert _minors(_installer_request()) == ["3.11", "3.12", "3.13"]
+    assert _minors(_installer_request()) == ["3.11", "3.12", "3.13", "3.14"]
 
 
 def test_the_matrix_is_exactly_the_installer_range() -> None:
@@ -91,7 +94,8 @@ def test_every_version_runs_on_both_runners() -> None:
     """No ``include`` / ``exclude`` may carve a version off one runner.
 
     Windows 3.13 is the leg most likely to differ (``time.monotonic`` changes
-    clock there), so "3.13 on ubuntu only" must not read as 3.13 covered."""
+    clock there), so "3.13 on ubuntu only" must not read as 3.13 covered; the
+    same goes for 3.14 (#278)."""
 
     job = _test_job()
     assert job["runs-on"] == "${{ matrix.os }}"

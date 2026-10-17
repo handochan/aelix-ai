@@ -1,6 +1,6 @@
 # 0047. OpenAI Completions Adapter (+ Compat Detection)
 
-Status: Accepted (Sprint 6b / Phase 4.2 shipped)
+Status: Accepted (Sprint 6b / Phase 4.2 shipped) — the `openai` range amended by ADR-0265 (2026-10-14, #278)
 
 ## Context
 
@@ -129,6 +129,10 @@ def _map_stop_reason(reason: str | None) -> tuple[str, str | None]:
   `COMPAT_DEFERRED_ALLOWLIST` plus 2 thinking-format detection paths
   (qwen / qwen-chat-template) — owning ADR-0050 §J.
 - `openai>=1.50,<2.0` becomes a direct dependency of `aelix-ai`.
+  *Amended by ADR-0265 (2026-10-14, #278): `openai>=2.7.2,<3` (the floor was
+  `>=1.66` since #15). 2.7.2 is the first openai that runs on Python 3.14
+  (#262); 3.0 replaced httpx with HTTPX2. A keyless request keeps the wire it
+  had on 1.x (ADR-0265 decision 2).*
 
 ## Alternatives considered
 

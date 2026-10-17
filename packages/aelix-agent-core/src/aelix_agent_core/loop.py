@@ -318,7 +318,7 @@ async def _stream_assistant_response(
     )
 
     fn = stream_fn or _resolve_stream_simple()
-
+    emit = _with_message_start(emit)  # a message its stream never started gets one (#414)
     partial: AssistantMessage | None = None
     partial_index: int | None = None
     final: AssistantMessage | None = None
@@ -1017,6 +1017,41 @@ def _resolve_stream_simple() -> StreamFn:
             yield event
 
     return _adapter
+
+
+def _with_message_start(emit: AgentEventSink) -> AgentEventSink:
+    """``emit`` for one assistant message, giving it a ``message_start`` first (#414).
+
+    pi's loop emits ``message_start`` for a message whose stream sent no
+    ``start`` - the ``done`` or ``error`` arrives with no partial - right before
+    its ``message_end``, carrying the final message
+    (``packages/agent/src/agent-loop.ts:451-453`` @ 3daa20280). Every built-in
+    adapter sends ``start`` only once its stream is open (``anthropic.py``,
+    ``openai_completions.py``, ``openai_responses.py``,
+    ``openai_codex_responses.py``, ``google_generative_ai.py``,
+    ``google_vertex.py``), so a request that failed before that - a ``502``, a
+    refused key - ended with ``message_end`` alone: a TUI, ``--mode json`` or
+    rpc client, or a ``message_start`` hook saw an end with no start.
+
+    :func:`_stream_assistant_response` sends every event of its message through
+    this wrapper, so an extension's stream function is covered too. The wrapped
+    ``message_start`` carries the same object as the ``message_end`` that
+    follows (a frozen dataclass), and what ``message_end`` returns (a hook's
+    replacement) is returned unchanged.
+    """
+
+    started = False
+
+    async def sink(event: AgentEvent) -> AgentMessage | None:
+        nonlocal started
+        if event.type == "message_start":
+            started = True
+        elif event.type == "message_end" and not started:
+            started = True
+            await emit(MessageStartEvent(message=event.message))
+        return await emit(event)
+
+    return sink
 
 
 __all__ = [

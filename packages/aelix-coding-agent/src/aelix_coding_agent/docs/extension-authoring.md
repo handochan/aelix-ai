@@ -435,7 +435,15 @@ For a model in the URL, custom body fields or private-CA `httpx` client,
 register a **StreamFn** `(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]`
 with `register_api_adapter(api, stream_fn)`. A matching `Model.api` routes to it.
 Delegate to the built-in adapter with `replace(opts, client=...)` to reuse SSE
-parsing and event mapping:
+parsing and event mapping. Build that client with `create_async_client`: a bare
+`AsyncOpenAI` (openai 2.34+) merges `OPENAI_CUSTOM_HEADERS` over its key and
+refuses an empty one (#278). It waits for `Retry-After` up to 60 s unless built
+with another `max_retry_delay_ms`; `**sdk_retry_options(opts)` (same module)
+passes `opts`' own. `stream_simple` refuses a call with no key, so a keyless
+endpoint also passes `api_key=opts.api_key or "unused"` to `replace` and sends
+`Authorization: Bearer unused`; to send none, delegate to
+`stream_openai_completions` and add `"Authorization": openai.Omit()` to
+`params["extra_headers"]` in the payload hook when `opts.api_key` is empty:
 
 ```python
 import contextlib
@@ -443,7 +451,7 @@ import os
 import ssl
 from dataclasses import replace
 import httpx
-from openai import AsyncOpenAI
+from aelix_ai.providers._openai_client import create_async_client
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
 from aelix_ai.streaming import Model
 from aelix_coding_agent.model_registry import ProviderConfigInput
@@ -455,10 +463,10 @@ _CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
 async def selfhosted_stream(model, context, opts):
     ca_bundle = os.environ.get(_CA_BUNDLE_ENV)            # custom TLS; unset = verify=True
     verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
-    client = AsyncOpenAI(
+    client = create_async_client(
         http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # model baked into the URL
-        api_key=opts.api_key or "",
+        api_key=opts.api_key or "unused",
     )
     def payload(params, _m):
         # a non-OpenAI body field no config key can name (see extra_body, below)
@@ -500,6 +508,16 @@ should use system trust (`verify=True`). The context replaces httpx 0.28's
 deprecated `verify="/path/ca.pem"`. `verify=False` disables certificate checking
 and accepts any certificate; it does not trust an internal CA. This adds a trust
 anchor, not a pin: Aelix's startup truststore also loads platform default roots.
+
+**A text block may arrive whole.** An adapter that yields its own events, rather
+than a built-in adapter's, can send a text block as `text_start` and then a
+`text_end` carrying the text, with no `text_delta` in between: the TUI draws it
+when that `text_end` arrives, below any reasoning that came before it, exactly as
+it draws a streamed one. Give every event of a block its `content_index` — the
+block's position in the message's `content`, as the built-in adapters do: the TUI
+tells one reasoning block from the next by it. An answer's text does not depend
+on it, so a `text_delta` your adapter rebuilds from its text alone (index 0) is
+still drawn once.
 
 A complete worked example ships at
 `aelix_coding_agent/examples/selfhosted/selfhosted.py`. Load it like any extension —

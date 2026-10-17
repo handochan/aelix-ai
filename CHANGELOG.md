@@ -23,6 +23,52 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Python 3.14 is supported (#278, ADR-0265).** `aelix-ai` now requires
+  `openai>=2.7.2,<3` (was `>=1.66,<2.0`). Python 3.14 made `typing.Union[...]`
+  slotted, and every openai before 2.7.2 assigns `__discriminator__` onto it
+  whenever a streamed event fails its validation, so on 3.14 a real turn died
+  with `'typing.Union' object has no attribute '__discriminator__'` (#262) while
+  a one-line prompt still worked. Measured on 3.14.5 with a tool round trip
+  against a local OpenAI-compatible server: the old pin exits 1 when the
+  server's Responses events omit `sequence_number` and `logprobs`, as many
+  compatible servers do, and exits 0 when they carry them; the new one exits 0
+  either way, and on chat completions. CI's test matrix runs 3.14 on Ubuntu
+  and Windows, and the packages list the 3.13 and 3.14 classifiers. The ceiling
+  is `<3`: openai 3.0 replaced httpx with HTTPX2 and stopped installing
+  `certifi`, which aelix's TLS handling is written against. What aelix sends
+  and emits is what it was on openai 1.109.1, with two exceptions below:
+  `tests/providers/test_openai_sdk_wire_278.py` holds every CI leg to 29
+  scenarios recorded on 1.109.1 through the adapters' own client (text, tool
+  calls, reasoning, prompt caching, HTTP 400 and 429, a refused connection,
+  keyless calls, and the variables below exported). Three changes in openai
+  2.x are undone. openai 2.34 refuses an empty key, so a
+  keyless openai-completions call builds its client with a placeholder that
+  never reaches the wire (the request's own `Authorization` replaces it, and
+  without one the SDK's is omitted; an `Authorization` a payload hook sets in
+  `extra_headers`, in any letter case, replaces either, so one line goes
+  out). openai 2.34 also reads `OPENAI_CUSTOM_HEADERS`, whose lines replaced
+  any openai-compatible provider's key with an exported `Authorization`, and
+  `OPENAI_ADMIN_KEY`; aelix's client keeps neither, for every provider, as
+  openai 1.x read neither, and leaves `os.environ` as it was; the shipped `examples/selfhosted` extension and the
+  extension-authoring guide's snippet now build their client with it too
+  (`create_async_client` takes an `http_client` for their private CA). And
+  openai 2.52 waits up to 120 s for a `Retry-After` on its own
+  retries and stops retrying above that (measured: a `Retry-After: 61` made
+  `aelix -p` take 504 s instead of 20 s); aelix's client waits for one only up to
+  the request's `max_retry_delay_ms` (pi's `maxRetryDelayMs`, 60 s when unset,
+  which is 1.x's rule) and otherwise backs off and retries as 1.x did; a
+  `Retry-After` of zero or less, a date in the past or `inf` is not a wait to
+  honour, as on 1.x. The exceptions: a keyless openai-completions request where
+  two different spellings of `Authorization` meet (`model.headers` against
+  `options.headers`, or a payload hook's `extra_headers` against the
+  request's own) sends one line, the later one - the `options.headers` value
+  over the model's, the hook's over both - where 1.x sent both, and sends none
+  when the hook's value is `openai.Omit()` under a spelling the request's own
+  header does not use, where 1.x sent the request's own line; and a
+  `max_retry_delay_ms` that an extension or embedder sets now moves that 60 s
+  limit (1.x ignored it). Nothing in the CLI sets it until
+  `retry.provider.maxRetryDelayMs` is read (#470), so there it is the default.
+
 - **Configured authentication is checked before recording a prompt (#416).**
   TUI, RPC, print and json check after input hooks, accepting request-supported
   model/provider/registration headers, Anthropic tokens/custom headers and Vertex
@@ -63,6 +109,36 @@ unwritten. Add them with the next release.
   ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
 
 ### Changed
+
+- **Keyless OpenAI clients that extensions and embedders build need a
+  placeholder key (#278, ADR-0265) - a migration.** On openai 2.34 and later,
+  which `openai>=2.7.2,<3` resolves to today, `AsyncOpenAI(api_key="")` (the
+  extension-authoring guide's snippet before this change) and aelix's
+  `create_async_client(api_key=None)` or `api_key=""` raise
+  `openai.OpenAIError: Missing credentials ...` when the client is built; with
+  `OPENAI_ADMIN_KEY` exported the client builds and every request fails before
+  it is sent (`Could not resolve authentication method`). On openai 1.x both
+  sent the request with no `Authorization`. Write
+  `create_async_client(api_key=opts.api_key or "unused", ...)` instead: the
+  endpoint then sees `Authorization: Bearer unused`. To send no
+  `Authorization`, as before, add `"Authorization": openai.Omit()` to the
+  request's `extra_headers` when there is no key - in an adapter that delegates
+  to `stream_openai_completions` with its own client, from its `on_payload`
+  hook. Both lines of that advice measured the same on openai 1.109.1, 2.7.2,
+  2.33.0, 2.34.0 and 2.54.0. aelix's own adapters need nothing: a keyless openai-completions call settles
+  this itself (above).
+
+- **The installers choose the interpreter range from the release they install
+  (#278, ADR-0265).** `install.sh` and `install.ps1` now default
+  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0-beta.3` and later and keep
+  `>=3.11,<3.14` for `v0.1.0-beta.2` and earlier, which pin `openai<2.0`; a
+  version they cannot parse gets the older range. A default that simply widened
+  would have put an `AELIX_VERSION=v0.1.0-beta.2` install on 3.14 and the crash
+  above. The log names the request it chose. Both e2e jobs gained a pass that
+  pins `v0.1.0-beta.2` with 3.14 on the runner and requires the environment to
+  land below 3.14, and their post-conditions derive the range they expect from
+  the release they resolved. Until `v0.1.0-beta.3` is published, keep
+  upgrading through the install line rather than `uv tool install aelix@latest`.
 
 - **rpc `set_auto_retry` now persists, and `settings.json` wins over the
   in-memory toggle (#408) - a behaviour change for embedders.** As in pi,
@@ -374,6 +450,91 @@ unwritten. Add them with the next release.
   refuse the whole switch, as did a Vertex model given `--api-key` with no
   Google Cloud environment set, whose prompts are sent; that one now switches
   with no note.
+
+- **A model error with status `520` or `524` is retried (#414).** The automatic
+  retry now covers pi's seven statuses - `429`, `500`, `502`, `503`, `504`,
+  `520`, `524` - for a model request as it already did for an OAuth refresh
+  (#379): a Cloudflare-style `520` or `524` from a provider or gateway is sent
+  again instead of ending the turn. For the Anthropic and OpenAI SDK providers
+  the SDK first sends it again twice itself, as it does a `502`; the turn is
+  retried once those three requests have failed. The statuses match as pi
+  matches them, anywhere in the error text, so digits that merely contain one
+  make an error retryable too - `max_tokens: 25000` (its `500`), a message
+  index such as `messages.520`, a request id - as they already did for the
+  other five. The `settings.json` `retry` block governs the new statuses like
+  the others.
+
+- **An answer that fails before it starts now has a `message_start` (#414).**
+  When a request failed before the provider's stream opened - an HTTP `502`, a
+  refused key - the assistant message ended with `message_end` and no
+  `message_start`, for every built-in provider and for an extension's own stream.
+  It now gets `message_start` (the same message) right before its `message_end`,
+  as pi's loop emits it - each such answer once, a later one in the same run too
+  (the answer after a tool ran, say) - so `--mode json` and rpc clients see one
+  more event for such a failure, and an extension's `message_start` hook fires
+  for it. The TUI shows the failure as before, and the session records it once.
+
+- **The bundled guides keep LF line endings on every checkout, so they stay
+  under `read`'s cap on Windows too (#485).** Nothing users install changed:
+  the wheel is built on Linux and carries LF. A Windows checkout turns LF into
+  CRLF by default, one byte more per line, and `read`'s 51200-byte cap is
+  measured on the file on disk, so with #285's edit `extension-authoring.md`
+  was 51326 bytes there - over the cap on every Windows test leg of PR #484 -
+  and 50418 on Ubuntu.
+  `.gitattributes` now pins `docs/guides/*.md` and the bundled copies to LF,
+  and a new check fails if the pin stops matching a guide or a guide is
+  checked out with CRLF. The cap was not raised.
+
+- **The TUI shows an answer that arrives in one piece (#285).** A text block sent
+  without any streamed deltas — a Responses-compatible server that puts the text
+  only in its `output_item.done` event, or an extension's own stream adapter —
+  was saved to the session and shown by `/resume`, but never drawn while the turn
+  ran: a turn that said something and then called a tool showed only the tool.
+  And when such a block was followed by a streamed one, its text appeared in
+  front of the new block's live window and then vanished. It is now drawn when
+  it ends, below any reasoning before it and rendered as a streamed answer is,
+  so a turn whose events arrive in order looks live the way `/resume` draws it.
+  Not yet fixed: when the reasoning before an answer goes on streaming, or
+  arrives whole, after that answer has ended, the live screen still places it
+  differently from `/resume`, as it already did for a streamed answer; and
+  answers that end out of order (one ends while another is still streaming) can
+  be drawn in the wrong place, twice, or not at all. Some of those shapes were
+  drawn as `/resume` draws them before this change and are not now, mostly an
+  empty message that ends while another one is still streaming, whose answer is
+  then drawn twice. No server we know of sends them.
+  An openai-completions reasoning turn (the end events arrive after the answer
+  streamed) still prints its answer once, and so does an extension adapter that
+  wraps it and rebuilds its text deltas. The ChatGPT Codex backend sent deltas
+  in every run the issue measured, so it was not affected; `-p`, `--mode json`
+  and `--mode rpc` already showed the text.
+
+- **Tests: running the suite no longer writes into your `~/.aelix/sessions`
+  (#458).** This changes only the tests, not anything users run. The suite never
+  set `AELIX_CODING_AGENT_SESSION_DIR`, and isolating the agent directory moves
+  settings and auth but not sessions. So each test that ran the CLI without also
+  sandboxing HOME left a `--<pytest temp path>--` folder in the developer's real
+  session root. One machine had about 7,450 of them, and the stats dashboard
+  counted each one as a project. Measured with a scratch HOME, one full run left
+  six, all from `tests/cli/test_tools_flag_validation.py`. Now `tests/conftest.py`
+  gives every test its own session root, unless a module-, class- or
+  session-scoped fixture has set the variable to a non-empty value, which then
+  reaches its tests. That value stays in effect until the fixture is torn down:
+  for a session-scoped fixture that is not autouse, every test that runs after
+  it until the run ends. An empty value is replaced like an unset one, since the
+  CLI reads it as unset. Code in the test process that reads the variable, and
+  every child that inherits the test's environment, uses it, and a full run
+  leaves no folder there. A best-effort guard also blocks the common writes
+  under the real root in the test process itself (a write-mode open, `mkdir`,
+  rename, remove, `rmdir`, `chmod`, link, symlink, truncate, or an `rmtree` of
+  the root) and fails the test. It never reads that directory. It does not see a
+  rename of `~/.aelix` or the home or, on POSIX, an `rmtree` of either, `touch`
+  or `utime` of an existing file, `chflags`, `mkfifo`, `sqlite3`, sockets, paths
+  relative to a directory descriptor, or a symlink into the root from outside
+  it. Not covered at all: a child given a hand-built environment without the
+  variable, a child started through a shell, `env` or `uv run` wrapper that
+  drops it, and an `aelix-server` child, whose `/rpc` ignores the variable.
+  Folders that earlier runs left behind are not removed. Their names contain
+  `pytest-of-`.
 
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
