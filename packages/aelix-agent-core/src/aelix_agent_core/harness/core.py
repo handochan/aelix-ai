@@ -537,17 +537,17 @@ _AUTO_COMPACT_RESERVE_TOKENS = 16384
 _AUTO_RETRY_MAX_ATTEMPTS = 3
 _AUTO_RETRY_BASE_DELAY_MS = 2000
 
-# pi parity (``agent-session.ts:2414-2426`` ``_isRetryableError``): verbatim
-# case-insensitive regex over ``AssistantMessage.error_message``. ``.?`` matches
-# the same single-char OR empty separator pi's JS regex matches (e.g. "rate
-# limit" / "rate-limit" / "ratelimit"). Context-overflow exclusion is enforced
-# explicitly in :meth:`_is_retryable_error` (pi ``:2486`` short-circuits
-# ``isContextOverflow`` before this regex) — a provider can wrap an overflow in a
-# retryable-looking envelope (e.g. "provider returned error: ...maximum context
-# length is 200000 tokens") that this regex WOULD otherwise match.
+# pi parity (``isRetryableAssistantError``, ``packages/ai/src/utils/retry.ts`` @ 3daa20280, what
+# ``_isRetryableError`` calls): a case-insensitive regex over the error text; ``.?`` is pi's one-
+# or-no separator ("rate limit" / "rate-limit" / "ratelimit"). The statuses are pi's seven, ``520``
+# and ``524`` added by #414, matched as pi matches them: anywhere, so digits that contain one
+# ("max_tokens: 25000", "messages.520", a request id) retry too (ADR-0128, #414 amendment).
+# Context overflow is excluded first, in :meth:`_is_retryable_error` (pi ``isContextOverflow``):
+# a provider can wrap an overflow in a retryable-looking envelope (e.g. "provider returned error:
+# ...maximum context length is 200000 tokens") that this regex WOULD otherwise match.
 _RETRYABLE_ERROR_PATTERN = re.compile(
     r"overloaded|provider.?returned.?error|rate.?limit|too many requests|"
-    r"429|500|502|503|504|service.?unavailable|server.?error|internal.?error|"
+    r"429|500|502|503|504|520|524|service.?unavailable|server.?error|internal.?error|"
     r"network.?error|connection.?error|connection.?refused|connection.?lost|"
     r"websocket.?closed|websocket.?error|other side closed|fetch failed|"
     r"upstream.?connect|reset before headers|socket hang up|ended without|"
@@ -2796,13 +2796,13 @@ class AgentHarness:
         an extension's ``setModel`` between turns) runs idle — so ``/model X``
         then quitting reopened on the model the session's last answer named.
         :meth:`_records_model` keeps placeholders out, in a turn too. Unlike the
-        thinking level it is not gated on a change: the live model can be one
-        the session never recorded (aelix writes no ``model_change`` for a
-        launch model), and re-picking it is what makes it the record. The idle
-        append runs after the emit and only while the state still holds
-        ``model``: a ``model_select`` handler that refuses it (the raise) or
-        answers with a ``set_model`` of its own (which records that one) leaves
-        no record of it.
+        thinking level it is not gated on a change: the live model can be one the
+        session never recorded (this class writes no ``model_change`` for a launch
+        model; the CLI records a new session's, ``cli/entry.py``
+        ``_record_session_start_model``, #413), and re-picking it makes it the
+        record. The idle append runs after the emit and only while the state still
+        holds ``model``: a ``model_select`` handler that refuses it (the raise) or
+        answers with a ``set_model`` of its own (which records that one) leaves none.
         """
 
         previous = self._state.model

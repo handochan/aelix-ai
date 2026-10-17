@@ -375,6 +375,40 @@ unwritten. Add them with the next release.
   Google Cloud environment set, whose prompts are sent; that one now switches
   with no note.
 
+- **A model error with status `520` or `524` is retried (#414).** The automatic
+  retry now covers pi's seven statuses - `429`, `500`, `502`, `503`, `504`,
+  `520`, `524` - for a model request as it already did for an OAuth refresh
+  (#379): a Cloudflare-style `520` or `524` from a provider or gateway is sent
+  again instead of ending the turn. For the Anthropic and OpenAI SDK providers
+  the SDK first sends it again twice itself, as it does a `502`; the turn is
+  retried once those three requests have failed. The statuses match as pi
+  matches them, anywhere in the error text, so digits that merely contain one
+  make an error retryable too - `max_tokens: 25000` (its `500`), a message
+  index such as `messages.520`, a request id - as they already did for the
+  other five. The `settings.json` `retry` block governs the new statuses like
+  the others.
+
+- **An answer that fails before it starts now has a `message_start` (#414).**
+  When a request failed before the provider's stream opened - an HTTP `502`, a
+  refused key - the assistant message ended with `message_end` and no
+  `message_start`, for every built-in provider and for an extension's own stream.
+  It now gets `message_start` (the same message) right before its `message_end`,
+  as pi's loop emits it - each such answer once, a later one in the same run too
+  (the answer after a tool ran, say) - so `--mode json` and rpc clients see one
+  more event for such a failure, and an extension's `message_start` hook fires
+  for it. The TUI shows the failure as before, and the session records it once.
+
+- **The bundled guides keep LF line endings on every checkout, so they stay
+  under `read`'s cap on Windows too (#485).** Nothing users install changed:
+  the wheel is built on Linux and carries LF. A Windows checkout turns LF into
+  CRLF by default, one byte more per line, and `read`'s 51200-byte cap is
+  measured on the file on disk, so with #285's edit `extension-authoring.md`
+  was 51326 bytes there - over the cap on every Windows test leg of PR #484 -
+  and 50418 on Ubuntu.
+  `.gitattributes` now pins `docs/guides/*.md` and the bundled copies to LF,
+  and a new check fails if the pin stops matching a guide or a guide is
+  checked out with CRLF. The cap was not raised.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
