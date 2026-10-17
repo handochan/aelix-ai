@@ -375,6 +375,63 @@ unwritten. Add them with the next release.
   Google Cloud environment set, whose prompts are sent; that one now switches
   with no note.
 
+- **A model error with status `520` or `524` is retried (#414).** The automatic
+  retry now covers pi's seven statuses - `429`, `500`, `502`, `503`, `504`,
+  `520`, `524` - for a model request as it already did for an OAuth refresh
+  (#379): a Cloudflare-style `520` or `524` from a provider or gateway is sent
+  again instead of ending the turn. For the Anthropic and OpenAI SDK providers
+  the SDK first sends it again twice itself, as it does a `502`; the turn is
+  retried once those three requests have failed. The statuses match as pi
+  matches them, anywhere in the error text, so digits that merely contain one
+  make an error retryable too - `max_tokens: 25000` (its `500`), a message
+  index such as `messages.520`, a request id - as they already did for the
+  other five. The `settings.json` `retry` block governs the new statuses like
+  the others.
+
+- **An answer that fails before it starts now has a `message_start` (#414).**
+  When a request failed before the provider's stream opened - an HTTP `502`, a
+  refused key - the assistant message ended with `message_end` and no
+  `message_start`, for every built-in provider and for an extension's own stream.
+  It now gets `message_start` (the same message) right before its `message_end`,
+  as pi's loop emits it - each such answer once, a later one in the same run too
+  (the answer after a tool ran, say) - so `--mode json` and rpc clients see one
+  more event for such a failure, and an extension's `message_start` hook fires
+  for it. The TUI shows the failure as before, and the session records it once.
+
+- **The bundled guides keep LF line endings on every checkout, so they stay
+  under `read`'s cap on Windows too (#485).** Nothing users install changed:
+  the wheel is built on Linux and carries LF. A Windows checkout turns LF into
+  CRLF by default, one byte more per line, and `read`'s 51200-byte cap is
+  measured on the file on disk, so with #285's edit `extension-authoring.md`
+  was 51326 bytes there - over the cap on every Windows test leg of PR #484 -
+  and 50418 on Ubuntu.
+  `.gitattributes` now pins `docs/guides/*.md` and the bundled copies to LF,
+  and a new check fails if the pin stops matching a guide or a guide is
+  checked out with CRLF. The cap was not raised.
+
+- **The TUI shows an answer that arrives in one piece (#285).** A text block sent
+  without any streamed deltas — a Responses-compatible server that puts the text
+  only in its `output_item.done` event, or an extension's own stream adapter —
+  was saved to the session and shown by `/resume`, but never drawn while the turn
+  ran: a turn that said something and then called a tool showed only the tool.
+  And when such a block was followed by a streamed one, its text appeared in
+  front of the new block's live window and then vanished. It is now drawn when
+  it ends, below any reasoning before it and rendered as a streamed answer is,
+  so a turn whose events arrive in order looks live the way `/resume` draws it.
+  Not yet fixed: when the reasoning before an answer goes on streaming, or
+  arrives whole, after that answer has ended, the live screen still places it
+  differently from `/resume`, as it already did for a streamed answer; and
+  answers that end out of order (one ends while another is still streaming) can
+  be drawn in the wrong place, twice, or not at all. Some of those shapes were
+  drawn as `/resume` draws them before this change and are not now, mostly an
+  empty message that ends while another one is still streaming, whose answer is
+  then drawn twice. No server we know of sends them.
+  An openai-completions reasoning turn (the end events arrive after the answer
+  streamed) still prints its answer once, and so does an extension adapter that
+  wraps it and rebuilds its text deltas. The ChatGPT Codex backend sent deltas
+  in every run the issue measured, so it was not affected; `-p`, `--mode json`
+  and `--mode rpc` already showed the text.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a

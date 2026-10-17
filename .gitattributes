@@ -1,0 +1,8 @@
+# The bundled guides are package data that `read` must return whole, and its
+# byte cap is measured on the file as it sits on disk. A Windows checkout turns
+# LF into CRLF by default (core.autocrlf), one byte more per line, which put
+# extension-authoring.md over the cap on every Windows leg (#485). Pin both the
+# docs/guides sources and the bundled copies, which tests/test_docs_bundle_sync.py
+# compares byte for byte, to LF on every checkout.
+docs/guides/*.md text eol=lf
+packages/aelix-coding-agent/src/aelix_coding_agent/docs/*.md text eol=lf
