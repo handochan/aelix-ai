@@ -332,6 +332,18 @@ cannot see it (a restored explicit `off` is indistinguishable from unset by
 value), so `run_tui` takes a derived `thinking_level_restored: bool` and the seed
 stands down when it is set. Still not `parsed`.
 
+*Amended by ADR-0239 (#286, 2026-10-14)* — the settings seed is no longer in the
+TUI. It ran there only, so `-p`, `--mode json`, `--mode rpc` and every delegated
+child ignored `defaultThinkingLevel`. `cli/entry.py` now applies the whole
+ladder (CLI/profile > the resumed session > the settings default > `off`)
+before the mode dispatch, for every mode, every rung but the CLI's clamped to
+the model rather than skipped; `run_tui` no longer takes
+`thinking_level_restored`. The order above is unchanged, and so is what a launch
+records: the TUI still records the default its seed recorded, now from
+`cli/entry.py` right before `run_tui` — except where a `session_start` handler
+sets the level or the model, since it now meets the applied level instead of
+`off` (ADR-0239's #286 decision 4).
+
 Shipping `thinking:` as a validated-looking field that provably does nothing —
 and rendering `--thinking high` in `/agents show` — is not acceptable. This is
 the same class as spec §5's own **FIX (honor)** row for `--no-builtin-tools`.

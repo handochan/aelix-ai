@@ -104,7 +104,7 @@ from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
 from aelix_coding_agent.util.stdio import harden_stdio, read_all_text
 
 from .agent_context import build_system_prompt, discover_context_files
-from .args import Args, parse_args, print_help
+from .args import VALID_THINKING_LEVELS, Args, parse_args, print_help
 from .auth_guidance import (
     format_no_api_key_found_message,
     format_no_model_selected_message,
@@ -462,6 +462,7 @@ async def _seed_startup_state(
     *,
     cli_level: str | None,
     read_only: bool = False,
+    clamp: bool = True,
 ) -> bool:
     """Seed a startup harness's live transcript AND thinking level from its
     resumed session. Returns whether a thinking level was applied.
@@ -487,10 +488,22 @@ async def _seed_startup_state(
     ``AgentHarnessOptions.thinking_level``, and it outranks the session — so a
     non-``None`` ``cli_level`` short-circuits the restore and still returns
     ``True``. It is also carried into a session that has no level of its own,
-    so the *next* launch of that session remembers it (see the comment below). That return value is the positive signal ``run_tui`` needs: its
-    ``defaultThinkingLevel`` seed sniffs ``state.thinking_level`` for "unset" and
-    therefore cannot tell a restored explicit ``off`` from one, which since #198
-    would overwrite it in the session file.
+    so the *next* launch of that session remembers it (see the comment below).
+    That return value is the positive signal the ``defaultThinkingLevel`` seed
+    (:func:`_seed_default_thinking_level`, #286) needs: a restored explicit
+    ``off`` is indistinguishable from "never set" by value.
+
+    ``clamp=False`` restores the recorded level as written. A pending launch
+    (#367) passes it: its model is settled only by the late-route decision after
+    ``session_start`` (until then it can be an unresolved ``api='unknown'``
+    placeholder, which supports nothing but ``off``), and
+    :func:`_settle_start_level` clamps the level then (#286).
+
+    The session's level is restored whether or not the session has a
+    conversation (a level set before the first prompt is still a decision,
+    ADR-0239); pi asks for one (``hasExistingSession``, ``core/sdk.ts:209-212,
+    251-258`` at ``pi@3daa20280``). #286 kept aelix's rule: pi's conjunct comes
+    with its creation-time level record, which aelix does not write.
 
     A fresh / ``--no-session`` / empty session yields no messages and no level, so
     this stays a no-op for a normal cold start.
@@ -509,11 +522,11 @@ async def _seed_startup_state(
         # does (``agent_session_runtime._finish_session_replacement``), under the
         # same two conditions. Without it ``aelix --thinking high`` then
         # ``--continue`` came back at ``off``, the exact shape of #198, while the
-        # WEAKER ``defaultThinkingLevel`` seed persisted (it routes through
-        # ``set_thinking_level``, which appends since #198). A session that
-        # already recorded a level keeps its own: the flag outranks it for this
-        # process only. ``off`` is the kernel's unset sentinel, so a launch at
-        # ``off`` leaves a fresh session clean.
+        # WEAKER ``defaultThinkingLevel`` seed persisted (in the TUI it is
+        # recorded, ``_record_tui_default_level``). A session that already
+        # recorded a level keeps its own: the flag outranks it for this process
+        # only. ``off`` is the kernel's unset sentinel, so a launch at ``off``
+        # leaves a fresh session clean.
         #
         # #137 — ``read_only`` suppresses the RECORD, not the flag. A viewer
         # of someone else's session still runs at the level they asked for;
@@ -531,11 +544,217 @@ async def _seed_startup_state(
             await session.append_thinking_level_change(cli_level)
         return True
     level = resolve_resumed_thinking_level(
-        entries, harness.current_model, fallback=None
+        entries, harness.current_model if clamp else None, fallback=None
     )
     if level is None:
         return False
     harness.state.thinking_level = level
+    return True
+
+
+def _settled_model(model: Any) -> bool:
+    """#286 — is ``model`` one a level can be judged against?
+
+    ``AgentHarness._records_model``'s placeholder rule (the one
+    :func:`_record_session_start_model` applies), without its turn gate: a model
+    whose resolution named no protocol (``api`` ``unknown`` or empty — the
+    late-provider hold's ``Model(id, provider)``, an unresolved route), or one
+    with no provider or id, is not. Such a model "supports" only ``off``
+    (``reasoning`` defaults to ``False``), which says nothing about the model the
+    run ends on, so no level is clamped against it.
+    """
+
+    return (
+        model is not None
+        and getattr(model, "api", None) not in (None, "", "unknown")
+        and bool(getattr(model, "provider", ""))
+        and bool(getattr(model, "id", ""))
+    )
+
+
+def _settings_thinking_default(settings_manager: SettingsManager | None) -> str | None:
+    """#286 — ``defaultThinkingLevel`` when it names a level, else ``None``.
+
+    Guarded as the TUI's seed was: a settings object that cannot answer, or a
+    value that is not one of :data:`VALID_THINKING_LEVELS` (the file is not
+    validated on load), seeds nothing.
+    """
+
+    if settings_manager is None:
+        return None
+    try:
+        level = settings_manager.get_default_thinking_level()
+    except Exception:  # noqa: BLE001 — a malformed settings file never blocks a launch
+        return None
+    return level if isinstance(level, str) and level in VALID_THINKING_LEVELS else None
+
+
+def _seed_default_thinking_level(
+    harness: AgentHarness,
+    default_level: str | None,
+    *,
+    restored: bool,
+    clamp: bool = True,
+) -> str | None:
+    """#286 — the ladder's last two rungs: ``defaultThinkingLevel``, else ``off``.
+
+    The launch ladder, as pi's ``createAgentSession`` (``core/sdk.ts:253-278`` at
+    ``pi@3daa20280``) has it for every mode: ``--thinking`` (and a profile's
+    ``thinking:``) > the session's recorded level (#198) > this default >
+    ``off``. The default used to be applied in ``run_tui`` only, so ``-p``,
+    ``--mode json`` and ``--mode rpc`` — a delegated child among them — ran at
+    ``off`` whatever the setting said (#286).
+    Called before the mode dispatch, once per launch; in-session rebuilds keep
+    the live level (ADR-0239's carry). ``default_level`` is
+    :func:`_settings_thinking_default`'s answer (``None``: unset, or not a
+    level); the bottom rung is ``off``, where pi's is ``medium``
+    (``core/defaults.ts:3``).
+
+    Stands down when ``restored`` (``_seed_startup_state``'s answer: a flag or a
+    recorded level was applied, a restored explicit ``off`` included), and when
+    the live level is no longer the kernel's unset ``off`` without ``restored``
+    saying why. Nothing in a launch reaches that second guard today: only the
+    harness options set a level before this runs, and they carry ``--thinking``,
+    which ``restored`` reports (an extension cannot: ``aelix.set_thinking_level``
+    inside ``setup()`` raises before the harness is bound, and the extension
+    fails to load). It keeps a caller that did not report its level from having
+    it overwritten.
+
+    EVERY rung it applies is CLAMPED to the model, as pi clamps whatever its
+    ladder resolved (``sdk.ts:273-278``) and as the resume restore does:
+    ``xhigh`` on a ``high``-max model starts at ``high``, ``high`` on a model that
+    cannot reason at ``off``, and ``off`` (set, or the bottom rung) on a model that
+    cannot switch reasoning off (``thinkingLevelMap.off = null``) at its lowest
+    level. The TUI's seed SKIPPED a level its model did not list, so those
+    launches stayed at ``off``. ``clamp=False`` (a pending launch, #367) and a
+    model that is not settled (a held launch's placeholder; a launch with no
+    model at all, where pi starts at ``off``) apply it as written; every adapter
+    clamps again at request build, so an unclamped level never reaches the wire.
+
+    Assigned, not ``set_thinking_level``: as for the restore (ADR-0239), a
+    ``thinking_level_select`` would report a choice nobody made, and pi sets its
+    initial level the same way. Nothing is RECORDED here (owner decision
+    2026-10-15): what a launch writes into its session is what it wrote before
+    #286 — ``-p``, ``--mode json`` and ``--mode rpc`` never recorded the default,
+    and the TUI records it where its old seed did, under that seed's conditions
+    (:func:`_record_tui_default_level`) — except where a ``session_start``
+    handler sets the level or the model: the handler now meets the level applied
+    here instead of ``off`` (ADR-0239 decision 4; the cases are in
+    :func:`_record_tui_default_level`). Returns the level applied, or ``None``
+    when it stood down.
+    """
+
+    if restored:
+        return None
+    if harness.state.thinking_level not in (None, "", "off"):
+        return None
+    model = harness.current_model
+    level = default_level if default_level is not None else "off"
+    if clamp and model is not None and _settled_model(model):
+        from aelix_ai.models import clamp_thinking_level
+
+        level = clamp_thinking_level(model, level) or level
+    harness.state.thinking_level = level
+    return level
+
+
+def _settle_start_level(harness: AgentHarness, level: str | None) -> None:
+    """#286 — clamp a pending launch's start level once its model is settled.
+
+    A pending launch (#367: guard 2's OpenRouter-as-written, an unresolved
+    placeholder) applies the session's recorded level, ``defaultThinkingLevel``
+    or the bottom rung's ``off`` before ``session_start`` without judging it
+    (``clamp=False``): the harness then sits on a route a provider registered in
+    ``session_start`` may still hold, and during ``session_start`` on a bare
+    placeholder. After the late-route decision ``level`` (what was applied, or
+    ``None`` for ``--thinking``, which is not clamped at launch) is clamped
+    against the model the run is on — unless a ``session_start`` handler set
+    another level meanwhile (its choice stands), and not on the hold's
+    placeholder (the adapters clamp at request build).
+    """
+
+    if level is None or harness.state.thinking_level != level:
+        return
+    model = harness.current_model
+    if model is not None and _settled_model(model):
+        from aelix_ai.models import clamp_thinking_level
+
+        harness.state.thinking_level = clamp_thinking_level(model, level) or level
+
+
+async def _record_tui_default_level(
+    harness: AgentHarness, default_level: str | None, *, restored: bool
+) -> bool:
+    """#286 — the TUI launch's record of ``defaultThinkingLevel``, as on ``529b997e``.
+
+    Until #286 the default was seeded inside ``run_tui`` (issue #50 (b)), through
+    ``set_thinking_level``, which appends a ``thinking_level_change`` for a change
+    (#198). #286 moved the seed before the mode dispatch for every mode and
+    ASSIGNS the level (:func:`_seed_default_thinking_level`), but what a session
+    records stays as it was (owner decision 2026-10-15): ``-p``, ``--mode json``
+    and ``--mode rpc`` record nothing for the default, as they never applied it,
+    and the TUI records what that seed recorded — but where a ``session_start``
+    handler set the level or the model (below). This is that record, called
+    right before ``run_tui`` — where the seed ran, after ``session_start`` and
+    the late-route decision — under the seed's own conditions:
+
+    * no ``--thinking`` (a profile's ``thinking:``) and no restored session level
+      (``restored``, :func:`_seed_startup_state`'s answer), as the seed stood
+      down on #198's ``thinking_level_restored``;
+    * a ``defaultThinkingLevel`` that the model the run is on SUPPORTS as written
+      (``get_supported_thinking_levels``, the seed's test): a default the launch
+      had to clamp (``xhigh`` on a ``high``-max model, ``high`` on a model that
+      cannot reason, ``off`` on one that cannot switch reasoning off), the bottom
+      rung (no default) and a run with no model or on a held placeholder are not
+      recorded, as the seed skipped them;
+    * not ``off``: the seed's ``set_thinking_level("off")`` over the unset
+      ``off`` was no change, and nothing was appended;
+    * the live level still is that default (the seed, too, stood down over a
+      level other than ``off``).
+
+    Where a ``session_start`` handler acted, the record differs from the seed's
+    (ADR-0239 decision 4's exceptions): the seed ran after the handler, which had
+    met ``off``; the level is now applied before it, as pi applies it. With no
+    flag and no restored level:
+
+    * a handler's ``set_thinking_level("off")`` over an applied level other than
+      ``off`` is a change the harness records, and it stands; the seed then set
+      the default over it and recorded that, where the model supported it;
+    * a handler that sets the applied level again (not ``off``) changes nothing
+      and the harness records nothing, where it recorded that level on
+      ``529b997e``; this record still writes it when it is the default as
+      written, but not a default the launch clamped, nor a model's lowest level
+      applied with no default;
+    * a handler's ``set_model`` on a launch that is not pending keeps the level
+      the launch clamped against its own model, so where that model could not
+      take the default as written and the handler's can, the live level is not
+      the default and nothing is written; the seed judged the default against
+      the handler's model, ran at it and recorded it. pi re-applies the default
+      in ``setModel`` (``_getThinkingLevelForModelSwitch``): the ``/model``
+      follow-up covers this path too.
+
+    A read-only session and a storage failure write nothing and say nothing, as
+    the seed's ``contextlib.suppress(Exception)`` did. Unlike the seed it fires
+    no ``thinking_level_select`` (the level was assigned at launch), so a TUI
+    launch no longer reports one for the default. Returns whether it wrote.
+    """
+
+    if restored or default_level is None or default_level == "off":
+        return False
+    if harness.state.thinking_level != default_level:
+        return False
+    model = harness.current_model
+    session = harness.session
+    if model is None or session is None:
+        return False
+    from aelix_ai.models import get_supported_thinking_levels
+
+    if default_level not in get_supported_thinking_levels(model):
+        return False
+    try:
+        await session.append_thinking_level_change(default_level)
+    except SessionError:
+        return False
     return True
 
 
@@ -604,7 +823,10 @@ async def _record_session_start_model(
     The thinking level pi records beside it (``appendThinkingLevelChange``) is
     not recorded here: ``off`` is aelix's unset sentinel, and writing it would
     turn every fresh session's level into a decision that outranks
-    ``defaultThinkingLevel`` on resume (#198; left to #286).
+    ``defaultThinkingLevel`` on resume (#198). #286 applies the default in every
+    mode and still records no start level (owner decision 2026-10-15, a
+    follow-up): only ``--thinking``'s carry and the TUI's default record
+    (:func:`_record_tui_default_level`) write one at launch, as before.
     """
 
     session = harness.session
@@ -3552,9 +3774,11 @@ async def _async_main(argv: list[str]) -> int:
             model_registry=model_registry,
             active=active_profile,
             confirm_project=_confirm_project_agent_in_session,
-            # #367 — ``use`` resets ``parsed`` to the CLI baseline and
-            # re-resolves it when the profile names no route of its own; where
-            # that lands on a late provider it holds instead (round 3, D1).
+            # #367 — ``use`` resets ``parsed`` to the CLI baseline; since #412 it
+            # re-resolves the model only when it drops the route of the profile
+            # it replaces (that profile's ``model:``/``provider:`` applied) — any
+            # other route-less use keeps the live model — and where that
+            # re-resolve lands on a late provider it holds instead (round 3, D1).
             late_route=late_rule,
         )
     # Forwarded to ``run_tui`` as a kwarg only when it exists: the TUI half of
@@ -3666,16 +3890,49 @@ async def _async_main(argv: list[str]) -> int:
     launch_created_empty = await _created_empty(session)
     if not launch_pending:
         await _record_session_start_model(harness, created_empty=launch_created_empty)
+    # #286 — the whole launch ladder, here and for every mode: ``--thinking`` (a
+    # profile's ``thinking:``) > the session's recorded level (#198) >
+    # ``defaultThinkingLevel`` > ``off``, clamped to the model, as pi's
+    # ``createAgentSession`` resolves it (``core/sdk.ts:253-278``) before
+    # ``session_start``. The settings rung used to run inside ``run_tui`` only,
+    # so ``-p``, ``--mode json``, ``--mode rpc`` and every delegated child asked
+    # for ``off`` (an openai-codex body carried ``reasoning: {"effort":
+    # "none"}`` with the setting at ``high``). A PENDING launch's model is
+    # settled only by the late-route decision after ``session_start``, so there
+    # the level is applied unjudged and clamped after that decision
+    # (``_settle_start_level``). What the session RECORDS is unchanged by #286:
+    # nothing here, and in the TUI the default's record right before
+    # ``run_tui`` (``_record_tui_default_level``), where its old seed made it —
+    # but a ``session_start`` handler that sets the level or the model now meets
+    # this level instead of ``off`` (ADR-0239 decision 4's exceptions).
     thinking_level_restored = await _seed_startup_state(
-        harness, session, cli_level=parsed.thinking, read_only=session_read_only
+        harness,
+        session,
+        cli_level=parsed.thinking,
+        read_only=session_read_only,
+        clamp=not launch_pending,
     )
+    restored_level = (
+        harness.state.thinking_level
+        if thinking_level_restored and parsed.thinking is None
+        else None
+    )
+    default_thinking_level = _settings_thinking_default(settings_manager)
+    seeded_level = _seed_default_thinking_level(
+        harness,
+        default_thinking_level,
+        restored=thinking_level_restored,
+        clamp=not launch_pending,
+    )
+    start_level = restored_level if restored_level is not None else seeded_level
     from aelix_ai import streaming
 
     pending_model: Any = None
     if launch_pending and launch_model is not None:
         # Assigned, not ``set_model``: no ``model_select`` is fired for a model
         # nobody selected, and the restore below is as quiet (D4). After the
-        # startup seed, which clamps the thinking level against the real route.
+        # startup seed, which on a pending launch judges no level against
+        # either model (#286: ``_settle_start_level`` does, after the decision).
         pending_model = streaming.Model(id=launch_model.id, provider=launch_model.provider)
         harness.state.model = pending_model
     # #376 — pi's ``modelFallbackMessage``: why this run is not on the model
@@ -3884,6 +4141,8 @@ async def _async_main(argv: list[str]) -> int:
         # ``session_start`` triggered and the turn gate refused (unless a
         # message written since already names its model: review round 3).
         await _record_session_start_model(harness, created_empty=launch_created_empty)
+        # #286 — and its start level, judged against the model it settled on.
+        _settle_start_level(harness, start_level)
 
     # === First-run onboarding gate (#23) ===
     # Judged HERE for the same reason as the #98 gate directly above: this is
@@ -3979,6 +4238,15 @@ async def _async_main(argv: list[str]) -> int:
                 )
                 return 1
 
+            # #286 — the TUI's record of ``defaultThinkingLevel``, here, where
+            # ``run_tui``'s seed made it before #286 (after ``session_start`` and
+            # the late-route decision), under that seed's conditions: what a
+            # TUI launch records is unchanged but where a ``session_start``
+            # handler set the level or the model (ADR-0239 decision 4). The
+            # level was applied above.
+            await _record_tui_default_level(
+                runtime.harness, default_thinking_level, restored=thinking_level_restored
+            )
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
@@ -3995,11 +4263,10 @@ async def _async_main(argv: list[str]) -> int:
                 permission_ext=permission_ext,
                 permission_posture=permission_posture,
                 settings_manager=settings_manager,
-                # #198 — a level came from --thinking / a profile / the resumed
-                # session, so the settings-default seed inside run_tui must not
-                # fire over it. It cannot work this out by sniffing the value: a
-                # restored explicit ``off`` looks exactly like "never set".
-                thinking_level_restored=thinking_level_restored,
+                # #286 — no thinking-level signal any more: the
+                # ``defaultThinkingLevel`` seed that needed #198's
+                # ``thinking_level_restored`` moved out of ``run_tui`` to the
+                # launch ladder above, which every mode shares.
                 # #112 (pi parity) — the /reload tail that records an implicit
                 # project trust once it has actually been used.
                 save_implicit_trust_after_reload=_save_implicit_trust_after_reload,
@@ -4295,19 +4562,21 @@ def _live_thinking_of(host: dict[str, Any]) -> str | None:
     """#354 — the runtime host's CURRENT thinking level, or ``None`` before it exists.
 
     The thinking sibling of :func:`_live_model_of`, reading the same holder and
-    for the same reason: ``/thinking`` and the TUI's ``defaultThinkingLevel``
-    seed write ``_state.thinking_level`` on the live harness
-    (``set_thinking_level``) and fire no hook the delegation extension sees.
+    for the same reason: ``/thinking`` and the launch's ``defaultThinkingLevel``
+    seed write ``_state.thinking_level`` on the live harness and fire no hook the
+    delegation extension sees.
 
     What it answers is the level the parent's own next request asks for,
     whatever last set it: ``--thinking``, an ``--agent`` profile's
     ``thinking:``, a resumed session's recorded level (#198,
     ``_seed_startup_state``, before the mode dispatch), ``/thinking``,
     ``/agents use``, an rpc ``set_thinking_level``/``cycle_thinking_level``, and
-    in the TUI the ``defaultThinkingLevel`` seed when nothing else set one. A
-    fresh, otherwise-unset ``-p`` / ``--mode json`` / ``--mode rpc`` parent is
-    at ``"off"`` — those modes do not apply ``defaultThinkingLevel`` (#286,
-    open) — and ``"off"`` is then genuinely what it runs at.
+    the ``defaultThinkingLevel`` seed when nothing else set one — in every mode
+    since #286 (``_seed_default_thinking_level``, also before the mode dispatch).
+    A parent at ``"off"`` is one whose ladder ended at ``off`` (no default, or a
+    default of ``off``, on a model that can switch reasoning off), whose model
+    cannot reason, or that was set to ``off``; ``"off"`` is then genuinely what
+    it runs at.
 
     ``None`` before the runtime exists, which leaves the extension on its live
     ``ExtensionAPI`` fallback.

@@ -1,6 +1,10 @@
 # 0241. The installer chooses the interpreter, because uv chooses the newest one
 
-Status: Accepted (2026-09-13) — Amended 2026-10-08 (#192: CI runs the whole range); 2026-10-14 (#279: CI executes install.sh)
+Status: Accepted (2026-09-13) — Amended 2026-10-08 (#192: CI runs the whole range); 2026-10-14 (#279: CI executes install.sh); superseded in part 2026-10-14 (#278)
+Superseded in part by: [ADR-0265](0265-python-3-14-is-supported-and-the-installer-asks-for-the-range-of-the-release-it-installs.md)
+— the fixed default `>=3.11,<3.14`, "Widening is not a one-line edit" and the
+runtime guard "What this does NOT close" proposed. The flag itself, the
+empty-means-default rule and the post-conditions stand.
 Date: 2026-09-13
 Supersedes/relates: ADR-0192 (GitHub Release as the checksum channel; `install.sh`
 as the documented install path) — this constrains the last step of that path and
@@ -412,3 +416,23 @@ row and, like macOS's, ignores `TMPDIR`: so a check that scanned `$TMPDIR`
 goes red on the Ubuntu test legs too (GNU mktemp honours `TMPDIR` and would
 hide it), and a concurrent install.sh elsewhere on the machine is never taken
 for a leftover.
+
+## Superseded in part (2026-10-14, #278) — 3.14 is supported, and the default follows the release
+
+ADR-0265 records the decision; this section only says which parts of this ADR
+it replaces. The owner chose to support Python 3.14 rather than build the
+startup guard "What this does NOT close" proposed. `aelix-ai` pins
+`openai>=2.7.2,<3`, 2.7.2 being the first openai that does not write onto
+`typing.Union`, and CI runs 3.14 on Ubuntu and Windows.
+
+"Widening is not a one-line edit" said the default could widen only once the
+request was derived from the release being installed, and that is what both
+installers do now: `>=3.11,<3.15` for 0.1.0b3 and later, `>=3.11,<3.14` for
+0.1.0b2 and earlier (which pin `openai<2.0` for good), and the older range for
+any version they cannot parse. So "Decision"'s single default and the four- and
+five-place literal it describes are now two named ranges in each installer,
+`_PY_SUPPORTED` / `_PY_BEFORE_B3` in the parity test, and two ranges in each
+post-condition script, which choose between them by naming 0.1.0b1 and 0.1.0b2.
+`tests/test_ci_python_matrix.py` reads the newer range. Everything else here
+stands: the flag is still permanent, an empty `AELIX_PYTHON` still means the
+default, and the measurements are still the reason.

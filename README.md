@@ -62,20 +62,25 @@ none of this works. Scope and evidence: [Platform support](#platform-support).
 
 Both read the same environment variables: `AELIX_VERSION` pins a release tag
 (`vX.Y.Z-beta.N`), `AELIX_EXTRAS` picks extras (default `tui`; empty installs the
-headless CLI, POSIX only), `AELIX_PYTHON` requests the interpreter (default
-`>=3.11,<3.14`, the range the pinned OpenAI SDK survives — left alone,
-`uv tool install` takes the newest interpreter on the machine, and on 3.14 the
-OpenAI Responses path dies mid-turn), `GITHUB_TOKEN` lifts the anonymous GitHub API rate limit. Each has to reach the shell on the *far* side of the pipe, which is what
+headless CLI, POSIX only), `AELIX_PYTHON` requests the interpreter (by default
+the range the release being installed runs on: `>=3.11,<3.15` from
+`v0.1.0-beta.3`, `>=3.11,<3.14` before it, whose pinned OpenAI SDK dies mid-turn
+on 3.14 — left alone, `uv tool install` takes the newest interpreter on the
+machine), `GITHUB_TOKEN` lifts the anonymous GitHub API rate limit. Each has to reach the shell on the *far* side of the pipe, which is what
 makes the obvious spelling wrong on both platforms — `VAR=x curl … | sh` sets it
 for `curl` alone, and from a PowerShell prompt `powershell -c "$env:VAR=…"` is
 expanded by the outer shell before the child sees it (measured on pwsh 7.6). The
 [getting-started guide](docs/guides/getting-started.md#windows) gives the form
 that works on each. Re-run the same line to upgrade; on a `PATH` miss both
 installers now run `uv tool update-shell` for you instead of printing it.
-**Upgrade through that line, not through `uv tool install aelix@latest`** — uv
-suggests the latter itself, and it rebuilds the environment on the newest Python
-on the machine, which today means 3.14 and a mid-turn crash (#262). Measured: it
-overwrites a correct 3.13 install.
+**Up to `v0.1.0-beta.2`, upgrade through that line, not through
+`uv tool install aelix@latest`** — uv suggests the latter itself, and it rebuilds
+the environment on the newest Python on the machine, which for beta.2 means 3.14
+and a mid-turn crash (#262). Measured: it overwrites a correct 3.13 install.
+From `v0.1.0-beta.3` aelix supports Python 3.14 (#278): its OpenAI SDK floor is
+the first release that runs there, and CI tests 3.14 on Ubuntu and Windows. The
+install line stays the recommended path, since it is the one that checks
+`SHA256SUMS`.
 `uv tool uninstall aelix` removes it.
 
 > **PyPI carries a placeholder until `0.1.0b2`.** Today all four names hold a
@@ -93,10 +98,10 @@ overwrites a correct 3.13 install.
 ## Platform support
 
 macOS, Linux and Windows. On macOS and Linux CI runs `install.sh` end to end
-(`ubuntu-latest` and `macos-latest`, five passes each, #279); the test suite
+(`ubuntu-latest` and `macos-latest`, six passes each, #279, #278); the test suite
 itself runs on Ubuntu and Windows. Windows became usable in `v0.1.0-beta.2` and has the
 thinnest evidence of the three: CI runs the full suite on `ubuntu-latest` and
-`windows-latest` under Python 3.11, 3.12 and 3.13 and runs `install.ps1` end to end
+`windows-latest` under Python 3.11, 3.12, 3.13 and 3.14 and runs `install.ps1` end to end
 under both pwsh and Windows PowerShell 5.1, and on 2026-09-09 one person drove
 this candidate on one Windows machine — a `bash` call's Korean output came back
 as Korean, the model reported it was on PowerShell and used PowerShell syntax

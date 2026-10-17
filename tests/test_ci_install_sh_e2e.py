@@ -17,7 +17,11 @@ file holds the ``install-sh-e2e`` job to the docs and to the arms it claims:
   red run names the arm;
 * the post-condition script (``.github/scripts/assert-install-sh.sh``) is
   executed here against a stub tool environment, and each post-condition is
-  shown to FIRE — a checker that cannot fail would make the job a green light.
+  shown to FIRE — a checker that cannot fail would make the job a green light;
+* since #278 the default interpreter range depends on the release installed
+  (``>=3.11,<3.15`` from 0.1.0b3, ``>=3.11,<3.14`` before), so a sixth pass pins
+  ``AELIX_VERSION=v0.1.0-beta.2`` with 3.14 on the runner, and the post-condition
+  derives the range it expects from the version it resolved itself.
 """
 
 from __future__ import annotations
@@ -109,9 +113,18 @@ def test_the_bootstrap_pass_and_the_rerun_are_the_readme_line() -> None:
         assert step["run"].strip() == want, step["name"]
 
 
+#: The release the pinned pass installs: the newest one that pins openai<2.0.
+PINNED_OLD_TAG = "v0.1.0-beta.2"
+
+
 @pytest.mark.parametrize(
     ("prefix", "arm"),
-    [("AELIX_EXTRAS=''", "bare CLI"), ("AELIX_PYTHON=''", "empty"), ("AELIX_PYTHON=3.11", "set")],
+    [
+        ("AELIX_EXTRAS=''", "bare CLI"),
+        ("AELIX_PYTHON=''", "empty"),
+        ("AELIX_PYTHON=3.11", "set"),
+        (f"AELIX_VERSION={PINNED_OLD_TAG}", "pinned"),
+    ],
 )
 def test_the_knob_passes_are_the_guides_form(prefix: str, arm: str) -> None:
     """``VAR=x curl ... | sh`` reaches curl only; the guide teaches
@@ -150,31 +163,60 @@ def test_every_install_is_followed_by_its_own_assert() -> None:
         assert nxt["run"].strip() == 'sh "$GITHUB_WORKSPACE/.github/scripts/assert-install-sh.sh"'
         assert nxt["env"]["E2E_ARM"].split(" - ")[0] == arm.group(1).split(" - ")[0], (step["name"], nxt["env"])
         arms.append(nxt["env"])
-    assert len(arms) == 5
-    assert len({a["E2E_ARM"] for a in arms}) == 5, "two passes share an arm name"
+    assert len(arms) == 6
+    assert len({a["E2E_ARM"] for a in arms}) == 6, "two passes share an arm name"
     # The knobs the asserts expect match what the passes set.
     by_arm = {a["E2E_ARM"]: a for a in arms}
     bare = next(a for k, a in by_arm.items() if "AELIX_EXTRAS=" in k)
     assert bare["E2E_EXPECT_EXTRAS"] == ""
     pinned = next(a for k, a in by_arm.items() if "AELIX_PYTHON=3.11" in k)
     assert pinned["E2E_EXPECT_PYTHON"] == "3.11"
+    old_release = next(a for k, a in by_arm.items() if "AELIX_VERSION=" in k)
+    assert old_release["E2E_EXPECT_TAG"] == PINNED_OLD_TAG
     for k, a in by_arm.items():
         if a is not bare:
             assert "E2E_EXPECT_EXTRAS" not in a, k
         if a is not pinned:
             assert "E2E_EXPECT_PYTHON" not in a, k
+        if a is not old_release:
+            assert "E2E_EXPECT_TAG" not in a, k
 
 
 def test_the_empty_python_pass_runs_with_the_trap_armed() -> None:
     """An ignored ``--python ""`` and the default agree on a box whose newest
-    interpreter is inside the range; 3.14 must be on the box first."""
+    interpreter is inside the range; 3.14 must be on the box first. The pinned
+    old release (#278) needs the same trap: without 3.14 on the box, a default
+    that widened for every release would still land it below 3.14."""
 
     names = [s.get("name", "") for s in _steps()]
     arm = next(i for i, n in enumerate(names) if n.startswith("Put Python 3.14 on the box"))
     empty = next(i for i, n in enumerate(names) if n.startswith("Install (pass 4 - AELIX_PYTHON="))
-    assert arm < empty
+    old_release = next(i for i, n in enumerate(names) if n.startswith("Install (pass 6 - AELIX_VERSION="))
+    assert arm < empty < old_release
     assert "uv python install 3.14" in _steps()[arm]["run"]
     assert '!= "3.14"' in _steps()[arm]["run"] and "exit 1" in _steps()[arm]["run"]
+
+
+def test_the_windows_job_pins_the_old_release_with_the_trap_armed() -> None:
+    """install.ps1's twin of pass 6 (#278): the same pinned tag, after 3.14 is
+    on the runner, asserted from a separate step that knows which tag to
+    expect."""
+
+    steps = _jobs()["install-ps1-e2e"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    arm = next(i for i, n in enumerate(names) if n.startswith("Put Python 3.14 on the box"))
+    pinned = next(i for i, n in enumerate(names) if n.startswith("Install (pass 3 - AELIX_VERSION="))
+    assert arm < pinned
+    assert "uv python install 3.14" in steps[arm]["run"] and "exit 1" in steps[arm]["run"]
+    # In the checkout, `uv python find` answers the repo's .python-version
+    # (3.12), and the premise check fails on a box that has 3.14 (run
+    # 38503137529); the POSIX job's trap step runs in runner.temp too.
+    assert steps[arm].get("working-directory") == "${{ runner.temp }}", steps[arm]
+    assert steps[pinned]["env"]["AELIX_VERSION"] == PINNED_OLD_TAG
+    assert steps[pinned]["run"].strip() == "Get-Content -Raw install.ps1 | Invoke-Expression"
+    check = steps[pinned + 1]
+    assert check["name"].startswith("Assert what the script promised")
+    assert check["env"]["E2E_EXPECT_TAG"] == PINNED_OLD_TAG
 
 
 def test_installs_run_outside_the_checkout_under_pipefail() -> None:
@@ -205,10 +247,17 @@ def test_no_setup_uv_and_every_action_pinned_by_sha() -> None:
 _SHELLS = [s for s in ("sh", "dash") if shutil.which(s)]
 
 _VERSION = "0.1.0b2"
-_SUMS = (
-    f"{'a' * 64}  aelix-{_VERSION}-py3-none-any.whl\n"
-    f"{'b' * 64}  aelix_ai-{_VERSION}-py3-none-any.whl\n"
-)
+#: The first release whose default interpreter range includes 3.14 (#278).
+_NEW_VERSION = "0.1.0b3"
+_OLD_RANGE = '">=3.11, <3.14"'
+_NEW_RANGE = '">=3.11, <3.15"'
+
+
+def _sums(version: str) -> str:
+    return (
+        f"{'a' * 64}  aelix-{version}-py3-none-any.whl\n"
+        f"{'b' * 64}  aelix_ai-{version}-py3-none-any.whl\n"
+    )
 
 
 def _write_exe(path: Path, body: str) -> None:
@@ -220,8 +269,9 @@ def _write_exe(path: Path, body: str) -> None:
 class _Box:
     """A stub of what install.sh leaves behind: uv, gh, curl, the tool env."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, release: str = _VERSION) -> None:
         self.root = root
+        self.release = release
         self.stub_bin = root / "stubs"
         self.tool_dir = root / "tools"
         self.bin_dir = root / "toolbin"
@@ -249,11 +299,12 @@ class _Box:
             f'  *) exit 2 ;;\n'
             f'esac\n',
         )
-        _write_exe(self.stub_bin / "gh", "echo v0.1.0-beta.2\n")
-        (root / "sums").write_text(_SUMS, encoding="utf-8")
-        _write_exe(self.stub_bin / "curl", f'cat "{root}/sums"\n')
-        self.set_version(_VERSION)
-        self.set_python("3.13.13", '">=3.11, <3.14"')
+        _write_exe(self.stub_bin / "gh", f'echo "$*" >> "{root}/gh-calls"\necho v0.1.0-beta.2\n')
+        (root / "sums").write_text(_sums(release), encoding="utf-8")
+        # The URL the post-condition fetched SHA256SUMS from, for the pinned-tag rows.
+        _write_exe(self.stub_bin / "curl", f'echo "$*" >> "{root}/curl-calls"\ncat "{root}/sums"\n')
+        self.set_version(release)
+        self.set_python("3.13.13", _OLD_RANGE if release == _VERSION else _NEW_RANGE)
         self.set_extras(tui=True)
 
     def set_version(self, version: str, *, listed: str | None = None) -> None:
@@ -272,9 +323,9 @@ class _Box:
 
     def set_extras(self, *, tui: bool, importable: bool | None = None) -> None:
         self._req = (
-            f'requirements = [{{ name = "aelix", extras = ["tui"], specifier = "=={_VERSION}" }}]\n'
+            f'requirements = [{{ name = "aelix", extras = ["tui"], specifier = "=={self.release}" }}]\n'
             if tui
-            else f'requirements = [{{ name = "aelix", specifier = "=={_VERSION}" }}]\n'
+            else f'requirements = [{{ name = "aelix", specifier = "=={self.release}" }}]\n'
         )
         importable = tui if importable is None else importable
         _write_exe(self.env_dir / "bin" / "python", "exit 0\n" if importable else "exit 1\n")
@@ -403,18 +454,80 @@ def test_each_post_condition_fires(tmp_path: Path, shell: str) -> None:
 
 @pytestmark_posix
 @pytest.mark.parametrize("shell", _SHELLS)
-@pytest.mark.parametrize("version_info", ["3.11.15", "3.12.12", "3.13.13"])
-def test_every_minor_inside_the_default_range_passes(tmp_path: Path, shell: str, version_info: str) -> None:
-    """Both ends of ``>=3.11,<3.14`` under the default request. The floor and
-    the ceiling are each compared once; an off-by-one in the floor (``-le``
-    for ``-lt``) would reject 3.11, the range's own first minor, and turn a
-    good install red."""
+@pytest.mark.parametrize(
+    ("release", "version_info", "recorded"),
+    [
+        (_VERSION, "3.11.15", _OLD_RANGE),
+        (_VERSION, "3.12.12", _OLD_RANGE),
+        (_VERSION, "3.13.13", _OLD_RANGE),
+        (_NEW_VERSION, "3.11.15", _NEW_RANGE),
+        (_NEW_VERSION, "3.13.13", _NEW_RANGE),
+        (_NEW_VERSION, "3.14.5", _NEW_RANGE),
+    ],
+)
+def test_every_minor_inside_the_default_range_passes(
+    tmp_path: Path, shell: str, release: str, version_info: str, recorded: str
+) -> None:
+    """Both ends of each default range: ``>=3.11,<3.14`` for 0.1.0b2 and
+    ``>=3.11,<3.15`` for 0.1.0b3 (#278). The floor and the ceiling are each
+    compared once; an off-by-one in the floor (``-le`` for ``-lt``) would reject
+    3.11, the range's own first minor, and turn a good install red."""
 
-    box = _Box(tmp_path)
-    box.set_python(version_info, '">=3.11, <3.14"')
+    box = _Box(tmp_path, release=release)
+    box.set_python(version_info, recorded)
     result = box.run(shell)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"tool interpreter: Python {version_info.rsplit('.', 1)[0]}" in result.stdout
+
+
+@pytestmark_posix
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_the_range_follows_the_release_installed(tmp_path: Path, shell: str) -> None:
+    """#278: the post-condition expects the range the installer owes the
+    release it resolved, by naming the two releases before 0.1.0b3."""
+
+    # 0.1.0b3 on 3.15: past the new range too.
+    box = _Box(tmp_path / "b3-315", release=_NEW_VERSION)
+    box.set_python("3.15.0", _NEW_RANGE)
+    assert _failed(box.run(shell), "3")
+
+    # 0.1.0b3 built with the OLD request: an installer that never widened.
+    box = _Box(tmp_path / "b3-old", release=_NEW_VERSION)
+    box.set_python("3.13.13", _OLD_RANGE)
+    assert _failed(box.run(shell), "3")
+
+    # 0.1.0b2 built with the NEW request, landing on 3.13 by luck: the
+    # recorded request is what gives an installer that widened for every
+    # release away, on a box whose newest interpreter is not 3.14.
+    box = _Box(tmp_path / "b2-new", release=_VERSION)
+    box.set_python("3.13.13", _NEW_RANGE)
+    assert _failed(box.run(shell), "3")
+
+    # 0.1.0b2 on 3.14: the #262 crash, named as such.
+    box = _Box(tmp_path / "b2-314", release=_VERSION)
+    box.set_python("3.14.5", _OLD_RANGE)
+    result = box.run(shell)
+    assert _failed(result, "3")
+    assert "openai<2.0" in result.stdout and "#262" in result.stdout
+
+
+@pytestmark_posix
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_a_pinned_pass_resolves_its_own_tag(tmp_path: Path, shell: str) -> None:
+    """``E2E_EXPECT_TAG`` (#278): the pinned pass's install skipped the API, so
+    its assert must not ask the API either - it fetches that tag's SHA256SUMS."""
+
+    box = _Box(tmp_path)
+    result = box.run(shell, E2E_EXPECT_TAG="v0.1.0-beta.2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "gh-calls").exists(), (tmp_path / "gh-calls").read_text(encoding="utf-8")
+    calls = (tmp_path / "curl-calls").read_text(encoding="utf-8")
+    assert "/releases/download/v0.1.0-beta.2/SHA256SUMS" in calls, calls
+
+    # Without the knob it is the newest release, through gh.
+    box = _Box(tmp_path / "unpinned")
+    assert box.run(shell).returncode == 0
+    assert "releases" in (tmp_path / "unpinned" / "gh-calls").read_text(encoding="utf-8")
 
 
 @pytestmark_posix

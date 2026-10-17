@@ -381,7 +381,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:524-574``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:535-585``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two

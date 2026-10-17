@@ -434,6 +434,18 @@ def test_a_text_end_that_carries_its_own_copy_is_inert() -> None:
         _assert_inert(_bytes(c), "text_end content")
 
 
+def test_a_text_end_that_arrives_with_no_delta_is_inert() -> None:
+    """#285 — a block that never streamed is committed from its ``text_end``
+    copy alone, through the same strip as a streamed one."""
+
+    r, commits, tails = _renderer()
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_update(TextEndEvent(content=f"whole {HOSTILE}")))
+    assert commits and "whole" in _bytes(commits[0])
+    for out in (*tails, *(_bytes(c) for c in commits)):
+        _assert_inert(out, "whole text_end content")
+
+
 def test_a_sequence_split_across_deltas_strips_exactly_like_the_whole_text() -> None:
     """Per-delta stripping must equal stripping the finished text, or the stream's
     committed prefix disagrees with its final frame. Character-wise stripping

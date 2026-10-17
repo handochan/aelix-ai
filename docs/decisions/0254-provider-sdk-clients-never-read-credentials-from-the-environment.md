@@ -4,7 +4,10 @@ Status: Accepted (2026-10-06); review round 1 (2026-10-07, §2.1, §3, §4, §7)
 (2026-10-07, §2.1-§2.3, §3, §8); review round 3 (2026-10-07, §2.2, §5, §6, §9)
 Date: 2026-10-06
 Amended by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
-(2026-10-12, #416: header/token auth works in print/json too).
+(2026-10-12, #416: header/token auth works in print/json too);
+[ADR-0265](0265-python-3-14-is-supported-and-the-installer-asks-for-the-range-of-the-release-it-installs.md)
+(2026-10-14, #278: `openai>=2.7.2,<3` - the OpenAI client's empty key and the two
+variables openai 2.34 reads, §2.3 and §3 notes).
 Amends: **ADR-0045** §A.4 (the `_anthropic_client` wrapper now owns the "no credential of
 its own" rule), **ADR-0052** (the OAuth branch's blank `api_key` becomes no `api_key`),
 **ADR-0251** §2.1 step 4 (the anthropic adapter's environment step, stated; dated note
@@ -143,6 +146,22 @@ The OpenAI factory (`_openai_client.create_async_client`) always passes `api_key
 OPENAI_API_KEY`), so no OpenAI client reads `OPENAI_API_KEY` on its own. What each adapter
 does with no key (the caller's, else the provider's own variable), unchanged by this ADR:
 
+> **#278 (2026-10-14, ADR-0265).** `openai` is `>=2.7.2,<3` now. From 2.34.0 the SDK
+> refuses `""` when it builds the client ("Missing credentials"; with `OPENAI_ADMIN_KEY`
+> exported it builds one and refuses the request instead) and refuses a request with no
+> `Authorization` unless it is omitted. The factory still never passes `None`.
+> `stream_openai_completions` builds its own client for a keyless call with a placeholder
+> key (`"unused"`) that never reaches the wire - the request's own `Authorization`, in
+> any letter case, replaces it, and without one the SDK's is omitted per request - so
+> the second bullet's wire is unchanged: no `Authorization` at all, or the request's own
+> (ADR-0265 Decision 2; where two spellings meet - in the headers, or a payload hook's
+> `extra_headers` against the request's own - one line goes now, the later one, the
+> hook's over both; none when the hook's value is `openai.Omit()` under another spelling
+> than the request's own, where 1.x sent the request's own line). 2.34.0 also reads `OPENAI_CUSTOM_HEADERS` (merged over the auth header) and
+> `OPENAI_ADMIN_KEY` in the constructor; the client the factory builds
+> (`AelixAsyncOpenAI`) keeps neither, for every provider (ADR-0265 Decision 8), so §2's
+> rule holds for the OpenAI client too.
+
 - `openai_responses`: `"unused"` when an `authorization` / `cf-aig-authorization` header
   is present, else `No API key for provider: <p>` before any client
   (`_resolve_client_api_key`).
@@ -171,14 +190,14 @@ round 2).
 | `anthropic.py` API-key branch → `create_async_client` | **Yes**: `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / SDK chain for every `anthropic-messages` provider (R01-R04) | No; provider-keyed env only; no-auth → `No API key` |
 | `anthropic.py` OAuth branch | No key leak (explicit `""`), but an empty `x-api-key` beside the bearer (L14) | Bearer only |
 | `anthropic.py` Copilot branch | Same empty `x-api-key`; `Bearer None` with no token | Bearer only; no `Bearer None` |
-| `openai_completions.py` → `_openai_client.create_async_client` | No: `opts.api_key or get_env_api_key(model.provider)`; `stream_simple_openai_completions` raises with neither, `stream_openai_completions` builds the client with `""` and sends no key; the SDK gets `api_key or ""` either way | Unchanged; a positive row pins the given key against `OPENAI_API_KEY` |
-| `openai_responses.py` → same factory | No: `_resolve_client_api_key` (provider-keyed, `"unused"` with a header, else raise) | Unchanged; positive row as above |
+| `openai_completions.py` → `_openai_client.create_async_client` | No: `opts.api_key or get_env_api_key(model.provider)`; `stream_simple_openai_completions` raises with neither, `stream_openai_completions` builds the client with `""` and sends no key; the SDK gets `api_key or ""` either way | Unchanged; a positive row pins the given key against `OPENAI_API_KEY`. #278: a keyless own client is built with a placeholder that never reaches the wire (§2.3 note); `OPENAI_CUSTOM_HEADERS` / `OPENAI_ADMIN_KEY` (openai 2.34+) dropped by the factory, rows with both exported |
+| `openai_responses.py` → same factory | No: `_resolve_client_api_key` (provider-keyed, `"unused"` with a header, else raise) | Unchanged; positive row as above. #278: the factory drops the two 2.34+ variables here too |
 | `openai_codex_responses.py` (`httpx`, bearer by hand) | No: no OAuth token → "No OAuth token for openai-codex" | Unchanged |
 | `google_generative_ai.py` → `_google_client.create_client` | No in practice (`_resolve_api_key` is provider-keyed or raises); **latent**: the factory reads `GOOGLE_API_KEY` / `GEMINI_API_KEY` when given no key (probe S7) | Factory refuses a keyless call; a positive row pins the given key on the wire against both variables (round 1: dropping it passed every touched file) |
 | `google_vertex.py` API-key path → `create_vertex_client` | No: `opts.api_key or get_env_api_key(model.provider)` | Unchanged; positive wire row as for Gemini |
 | `google_vertex.py` ADC path | Ambient by design: ADC (`google.auth.default()`, incl. `GOOGLE_APPLICATION_CREDENTIALS`) for ANY provider with `api: google-vertex`, to its `baseUrl`; the env API key is dropped because project+location are explicit (probe S8) | Unchanged (§5.1); factory refuses neither-project-nor-location |
 | Bedrock / Azure / Mistral | No adapter in this build (`providers-and-models.md`, "Adapter coverage") | — |
-| `examples/selfhosted/selfhosted.py` (`AsyncOpenAI(api_key=access_token or "unused")`) | No: always explicit | Unchanged |
+| `examples/selfhosted/selfhosted.py` (`AsyncOpenAI(api_key=access_token or "unused")`) | No: always explicit | Unchanged. #278: on openai 2.34+ a bare `AsyncOpenAI` merges `OPENAI_CUSTOM_HEADERS` over the token, so the example builds through `create_async_client` (which passes its private-CA `http_client` through) |
 
 Variables the three SDK clients aelix builds (`AsyncAnthropic`, `AsyncOpenAI`,
 google-genai `Client`) still read for themselves, sorted (re-checked in review round 1;
@@ -191,7 +210,11 @@ ADC chain reads more than the one variable named below.
 - **Can carry a credential, handled:** `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`
   and the chain's variables (§2.1), `ANTHROPIC_CUSTOM_HEADERS` (§2.1, `anthropic`
   only), `GOOGLE_API_KEY` / `GEMINI_API_KEY` (an explicit key or a refusal),
-  `OPENAI_API_KEY` (always an explicit argument).
+  `OPENAI_API_KEY` (always an explicit argument), and since #278 (openai 2.34+,
+  ADR-0265 Decision 8) `OPENAI_CUSTOM_HEADERS` (headers merged over the auth header,
+  so an `Authorization` in it replaced any provider's key) and `OPENAI_ADMIN_KEY` (the
+  admin endpoints' bearer): the OpenAI client keeps neither, for every provider,
+  `openai` included - openai 1.x read neither.
 - **Can carry a credential, kept on purpose:** Google ADC (`google.auth.default()`),
   including `GOOGLE_APPLICATION_CREDENTIALS`, for a provider with `api: google-vertex` and no
   key (§5.1).
@@ -209,7 +232,10 @@ ADC chain reads more than the one variable named below.
 
 A project `.env` cannot set `ANTHROPIC_CUSTOM_HEADERS`, the base-URL variables,
 `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` or the `GOOGLE_GENAI_USE_*` switches (ADR-0203;
-measured, `fix2/dotenv_refused.out`); the credential variables it can.
+measured, `fix2/dotenv_refused.out`); the credential variables it can. (#278: nor
+`OPENAI_CUSTOM_HEADERS`, which has no credential suffix; `OPENAI_ADMIN_KEY` it can, and
+the OpenAI client drops it - `_dotenv_key_allowed`, measured in
+`.omc/probes/278-live/r2/dotenv_admission_openai_vars.out`.)
 
 ## 4. Before and after
 

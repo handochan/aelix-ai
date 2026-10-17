@@ -62,10 +62,10 @@ Windows 수정이 전부 들어간 릴리즈가 `v0.1.0-beta.2`이고, 설치 �
 
 둘 다 같은 환경 변수를 읽습니다. `AELIX_VERSION`은 릴리즈 태그를 고정하고
 (`vX.Y.Z-beta.N`), `AELIX_EXTRAS`는 extras를 고르며(기본값 `tui`, 빈 값이면 헤드리스
-CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요청하고(기본값
-`>=3.11,<3.14`, 고정된 OpenAI SDK가 견디는 범위 — 두면 `uv tool install`이 그
-머신에서 가장 새 인터프리터를 집고, 3.14에서는 OpenAI Responses 경로가 턴 도중에
-죽습니다),
+CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요청하고(기본값은
+설치하는 릴리즈가 도는 범위입니다. `v0.1.0-beta.3`부터는 `>=3.11,<3.15`, 그 전
+릴리즈는 `>=3.11,<3.14` — 그 릴리즈들이 고정한 OpenAI SDK는 3.14에서 턴 도중에
+죽습니다. 두면 `uv tool install`이 그 머신에서 가장 새 인터프리터를 집습니다),
 `GITHUB_TOKEN`은 익명 GitHub API 요청 한도를 올립니다.
 다만 파이프 *건너편* 셸까지 값이 닿아야 해서, 가장 먼저 떠오르는 표기가 양쪽 다
 틀립니다 — `VAR=x curl … | sh`는 `curl`에만 설정하고, PowerShell 프롬프트에서
@@ -74,10 +74,13 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 가이드](docs/guides/getting-started.md#windows)에 있습니다. 업그레이드는 같은 줄을 다시
 실행하면 되고, `PATH`에 잡히지 않을 때는 두 설치 스크립트 모두 안내만 하는 대신
 `uv tool update-shell`을 직접 실행합니다. 제거는 `uv tool uninstall aelix`입니다.
-**업그레이드는 그 줄로 하세요. `uv tool install aelix@latest`로 하지 마세요** — uv가
-직접 그 명령을 안내하지만, 그건 그 머신에서 가장 새 Python으로 환경을 다시 만들고
-오늘 기준 그건 3.14, 즉 턴 도중 크래시입니다(#262). 실측: 올바르게 깔린 3.13 설치를
-덮어씁니다.
+**`v0.1.0-beta.2`까지는 업그레이드를 그 줄로 하세요. `uv tool install aelix@latest`로
+하지 마세요** — uv가 직접 그 명령을 안내하지만, 그건 그 머신에서 가장 새 Python으로
+환경을 다시 만들고 beta.2에서 그건 3.14, 즉 턴 도중 크래시입니다(#262). 실측: 올바르게
+깔린 3.13 설치를 덮어씁니다. `v0.1.0-beta.3`부터 aelix는 Python 3.14를 지원합니다
+(#278): OpenAI SDK 하한이 3.14에서 도는 첫 릴리즈이고, CI가 Ubuntu와 Windows에서
+3.14를 테스트합니다. 그래도 권장 경로는 설치 스크립트입니다 — `SHA256SUMS`를 검사하는
+것은 그것뿐입니다.
 
 > **`0.1.0b2` 전까지 PyPI에는 플레이스홀더가 올라가 있습니다.** 지금은 네 이름 모두
 > 메타데이터만 있는 `0.0.0a0` 선점본이라, `pip install aelix`는 **exit 0으로 끝나면서
@@ -94,9 +97,9 @@ CLI만 — POSIX에서만 됩니다), `AELIX_PYTHON`은 인터프리터를 요�
 ## 플랫폼 지원
 
 macOS, Linux, Windows. macOS와 Linux에서는 CI가 `install.sh`를 end to end로
-실행합니다(`ubuntu-latest`·`macos-latest`, 각 다섯 번, #279). 테스트 스위트 자체는
+실행합니다(`ubuntu-latest`·`macos-latest`, 각 여섯 번, #279·#278). 테스트 스위트 자체는
 Ubuntu와 Windows에서 돕니다. Windows는 `v0.1.0-beta.2`에서 쓸 수 있게 됐고, 셋 중 근거가
-가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12/3.13으로 전체
+가장 얇습니다. CI가 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12/3.13/3.14로 전체
 스위트를 돌리고 `install.ps1`을 pwsh와 Windows PowerShell 5.1 양쪽에서 end to end로
 실행하며, 2026-09-09에 사람 한 명이 이 후보를 Windows 머신 한 대에서 직접 돌렸습니다 —
 `bash` 호출이 낸 한국어 출력이 한국어로 나왔고, 모델은 자기가 PowerShell 위에 있다고

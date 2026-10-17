@@ -23,6 +23,52 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Python 3.14 is supported (#278, ADR-0265).** `aelix-ai` now requires
+  `openai>=2.7.2,<3` (was `>=1.66,<2.0`). Python 3.14 made `typing.Union[...]`
+  slotted, and every openai before 2.7.2 assigns `__discriminator__` onto it
+  whenever a streamed event fails its validation, so on 3.14 a real turn died
+  with `'typing.Union' object has no attribute '__discriminator__'` (#262) while
+  a one-line prompt still worked. Measured on 3.14.5 with a tool round trip
+  against a local OpenAI-compatible server: the old pin exits 1 when the
+  server's Responses events omit `sequence_number` and `logprobs`, as many
+  compatible servers do, and exits 0 when they carry them; the new one exits 0
+  either way, and on chat completions. CI's test matrix runs 3.14 on Ubuntu
+  and Windows, and the packages list the 3.13 and 3.14 classifiers. The ceiling
+  is `<3`: openai 3.0 replaced httpx with HTTPX2 and stopped installing
+  `certifi`, which aelix's TLS handling is written against. What aelix sends
+  and emits is what it was on openai 1.109.1, with two exceptions below:
+  `tests/providers/test_openai_sdk_wire_278.py` holds every CI leg to 29
+  scenarios recorded on 1.109.1 through the adapters' own client (text, tool
+  calls, reasoning, prompt caching, HTTP 400 and 429, a refused connection,
+  keyless calls, and the variables below exported). Three changes in openai
+  2.x are undone. openai 2.34 refuses an empty key, so a
+  keyless openai-completions call builds its client with a placeholder that
+  never reaches the wire (the request's own `Authorization` replaces it, and
+  without one the SDK's is omitted; an `Authorization` a payload hook sets in
+  `extra_headers`, in any letter case, replaces either, so one line goes
+  out). openai 2.34 also reads `OPENAI_CUSTOM_HEADERS`, whose lines replaced
+  any openai-compatible provider's key with an exported `Authorization`, and
+  `OPENAI_ADMIN_KEY`; aelix's client keeps neither, for every provider, as
+  openai 1.x read neither, and leaves `os.environ` as it was; the shipped `examples/selfhosted` extension and the
+  extension-authoring guide's snippet now build their client with it too
+  (`create_async_client` takes an `http_client` for their private CA). And
+  openai 2.52 waits up to 120 s for a `Retry-After` on its own
+  retries and stops retrying above that (measured: a `Retry-After: 61` made
+  `aelix -p` take 504 s instead of 20 s); aelix's client waits for one only up to
+  the request's `max_retry_delay_ms` (pi's `maxRetryDelayMs`, 60 s when unset,
+  which is 1.x's rule) and otherwise backs off and retries as 1.x did; a
+  `Retry-After` of zero or less, a date in the past or `inf` is not a wait to
+  honour, as on 1.x. The exceptions: a keyless openai-completions request where
+  two different spellings of `Authorization` meet (`model.headers` against
+  `options.headers`, or a payload hook's `extra_headers` against the
+  request's own) sends one line, the later one - the `options.headers` value
+  over the model's, the hook's over both - where 1.x sent both, and sends none
+  when the hook's value is `openai.Omit()` under a spelling the request's own
+  header does not use, where 1.x sent the request's own line; and a
+  `max_retry_delay_ms` that an extension or embedder sets now moves that 60 s
+  limit (1.x ignored it). Nothing in the CLI sets it until
+  `retry.provider.maxRetryDelayMs` is read (#470), so there it is the default.
+
 - **Configured authentication is checked before recording a prompt (#416).**
   TUI, RPC, print and json check after input hooks, accepting request-supported
   model/provider/registration headers, Anthropic tokens/custom headers and Vertex
@@ -63,6 +109,36 @@ unwritten. Add them with the next release.
   ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
 
 ### Changed
+
+- **Keyless OpenAI clients that extensions and embedders build need a
+  placeholder key (#278, ADR-0265) - a migration.** On openai 2.34 and later,
+  which `openai>=2.7.2,<3` resolves to today, `AsyncOpenAI(api_key="")` (the
+  extension-authoring guide's snippet before this change) and aelix's
+  `create_async_client(api_key=None)` or `api_key=""` raise
+  `openai.OpenAIError: Missing credentials ...` when the client is built; with
+  `OPENAI_ADMIN_KEY` exported the client builds and every request fails before
+  it is sent (`Could not resolve authentication method`). On openai 1.x both
+  sent the request with no `Authorization`. Write
+  `create_async_client(api_key=opts.api_key or "unused", ...)` instead: the
+  endpoint then sees `Authorization: Bearer unused`. To send no
+  `Authorization`, as before, add `"Authorization": openai.Omit()` to the
+  request's `extra_headers` when there is no key - in an adapter that delegates
+  to `stream_openai_completions` with its own client, from its `on_payload`
+  hook. Both lines of that advice measured the same on openai 1.109.1, 2.7.2,
+  2.33.0, 2.34.0 and 2.54.0. aelix's own adapters need nothing: a keyless openai-completions call settles
+  this itself (above).
+
+- **The installers choose the interpreter range from the release they install
+  (#278, ADR-0265).** `install.sh` and `install.ps1` now default
+  `AELIX_PYTHON` to `>=3.11,<3.15` for `v0.1.0-beta.3` and later and keep
+  `>=3.11,<3.14` for `v0.1.0-beta.2` and earlier, which pin `openai<2.0`; a
+  version they cannot parse gets the older range. A default that simply widened
+  would have put an `AELIX_VERSION=v0.1.0-beta.2` install on 3.14 and the crash
+  above. The log names the request it chose. Both e2e jobs gained a pass that
+  pins `v0.1.0-beta.2` with 3.14 on the runner and requires the environment to
+  land below 3.14, and their post-conditions derive the range they expect from
+  the release they resolved. Until `v0.1.0-beta.3` is published, keep
+  upgrading through the install line rather than `uv tool install aelix@latest`.
 
 - **rpc `set_auto_retry` now persists, and `settings.json` wins over the
   in-memory toggle (#408) - a behaviour change for embedders.** As in pi,
@@ -375,6 +451,188 @@ unwritten. Add them with the next release.
   Google Cloud environment set, whose prompts are sent; that one now switches
   with no note.
 
+- **A model error with status `520` or `524` is retried (#414).** The automatic
+  retry now covers pi's seven statuses - `429`, `500`, `502`, `503`, `504`,
+  `520`, `524` - for a model request as it already did for an OAuth refresh
+  (#379): a Cloudflare-style `520` or `524` from a provider or gateway is sent
+  again instead of ending the turn. For the Anthropic and OpenAI SDK providers
+  the SDK first sends it again twice itself, as it does a `502`; the turn is
+  retried once those three requests have failed. The statuses match as pi
+  matches them, anywhere in the error text, so digits that merely contain one
+  make an error retryable too - `max_tokens: 25000` (its `500`), a message
+  index such as `messages.520`, a request id - as they already did for the
+  other five. The `settings.json` `retry` block governs the new statuses like
+  the others.
+
+- **An answer that fails before it starts now has a `message_start` (#414).**
+  When a request failed before the provider's stream opened - an HTTP `502`, a
+  refused key - the assistant message ended with `message_end` and no
+  `message_start`, for every built-in provider and for an extension's own stream.
+  It now gets `message_start` (the same message) right before its `message_end`,
+  as pi's loop emits it - each such answer once, a later one in the same run too
+  (the answer after a tool ran, say) - so `--mode json` and rpc clients see one
+  more event for such a failure, and an extension's `message_start` hook fires
+  for it. The TUI shows the failure as before, and the session records it once.
+
+- **The bundled guides keep LF line endings on every checkout, so they stay
+  under `read`'s cap on Windows too (#485).** Nothing users install changed:
+  the wheel is built on Linux and carries LF. A Windows checkout turns LF into
+  CRLF by default, one byte more per line, and `read`'s 51200-byte cap is
+  measured on the file on disk, so with #285's edit `extension-authoring.md`
+  was 51326 bytes there - over the cap on every Windows test leg of PR #484 -
+  and 50418 on Ubuntu.
+  `.gitattributes` now pins `docs/guides/*.md` and the bundled copies to LF,
+  and a new check fails if the pin stops matching a guide or a guide is
+  checked out with CRLF. The cap was not raised.
+
+- **The TUI shows an answer that arrives in one piece (#285).** A text block sent
+  without any streamed deltas — a Responses-compatible server that puts the text
+  only in its `output_item.done` event, or an extension's own stream adapter —
+  was saved to the session and shown by `/resume`, but never drawn while the turn
+  ran: a turn that said something and then called a tool showed only the tool.
+  And when such a block was followed by a streamed one, its text appeared in
+  front of the new block's live window and then vanished. It is now drawn when
+  it ends, below any reasoning before it and rendered as a streamed answer is,
+  so a turn whose events arrive in order looks live the way `/resume` draws it.
+  Not yet fixed: when the reasoning before an answer goes on streaming, or
+  arrives whole, after that answer has ended, the live screen still places it
+  differently from `/resume`, as it already did for a streamed answer; and
+  answers that end out of order (one ends while another is still streaming) can
+  be drawn in the wrong place, twice, or not at all. Some of those shapes were
+  drawn as `/resume` draws them before this change and are not now, mostly an
+  empty message that ends while another one is still streaming, whose answer is
+  then drawn twice. No server we know of sends them.
+  An openai-completions reasoning turn (the end events arrive after the answer
+  streamed) still prints its answer once, and so does an extension adapter that
+  wraps it and rebuilds its text deltas. The ChatGPT Codex backend sent deltas
+  in every run the issue measured, so it was not affected; `-p`, `--mode json`
+  and `--mode rpc` already showed the text.
+
+- **Tests: running the suite no longer writes into your `~/.aelix/sessions`
+  (#458).** This changes only the tests, not anything users run. The suite never
+  set `AELIX_CODING_AGENT_SESSION_DIR`, and isolating the agent directory moves
+  settings and auth but not sessions. So each test that ran the CLI without also
+  sandboxing HOME left a `--<pytest temp path>--` folder in the developer's real
+  session root. One machine had about 7,450 of them, and the stats dashboard
+  counted each one as a project. Measured with a scratch HOME, one full run left
+  six, all from `tests/cli/test_tools_flag_validation.py`. Now `tests/conftest.py`
+  gives every test its own session root, unless a module-, class- or
+  session-scoped fixture has set the variable to a non-empty value, which then
+  reaches its tests. That value stays in effect until the fixture is torn down:
+  for a session-scoped fixture that is not autouse, every test that runs after
+  it until the run ends. An empty value is replaced like an unset one, since the
+  CLI reads it as unset. Code in the test process that reads the variable, and
+  every child that inherits the test's environment, uses it, and a full run
+  leaves no folder there. A best-effort guard also blocks the common writes
+  under the real root in the test process itself (a write-mode open, `mkdir`,
+  rename, remove, `rmdir`, `chmod`, link, symlink, truncate, or an `rmtree` of
+  the root) and fails the test. It never reads that directory. It does not see a
+  rename of `~/.aelix` or the home or, on POSIX, an `rmtree` of either, `touch`
+  or `utime` of an existing file, `chflags`, `mkfifo`, `sqlite3`, sockets, paths
+  relative to a directory descriptor, or a symlink into the root from outside
+  it. Not covered at all: a child given a hand-built environment without the
+  variable, a child started through a shell, `env` or `uv run` wrapper that
+  drops it, and an `aelix-server` child, whose `/rpc` ignores the variable.
+  Folders that earlier runs left behind are not removed. Their names contain
+  `pytest-of-`.
+
+- **`-p`, `--mode json`, `--mode rpc` and delegated agents now think at your
+  `defaultThinkingLevel` (#286).** The setting reached the interactive TUI only,
+  so the other modes asked for reasoning off with it set to `high` (an
+  openai-codex request went out with `reasoning: {"effort": "none"}`), and so
+  did a delegated agent whose profile names its own `model` or `provider` and no
+  `thinking:` — a delegation is a `--mode json` run, and it reads the default in
+  your global `settings.json` only (a project's `.aelix/settings.json` does not
+  reach it). Every mode now starts at, in order: `--thinking` (or the profile's
+  `thinking:`), the level the session you reopen recorded, `defaultThinkingLevel`,
+  then `off`; a `session_start` extension handler sees that level and can change
+  it. The level is fitted to the model instead of being dropped when the model
+  lacks it: `xhigh` on a model that tops out at `high` now runs at `high` (the
+  TUI used to fall back to `off`), a model that cannot reason runs at `off`, and
+  a model that cannot switch reasoning off runs at its lowest level, with a
+  default of `off` or none. A launch whose model is decided only after
+  `session_start` (an id sent to OpenRouter as written, #367) fits the level to
+  the model it ends on, and a launch held on a placeholder keeps your level
+  instead of `off` — also a resumed session's recorded level there, which used
+  to drop to `off`. What a session records is unchanged, except where a
+  `session_start` handler sets the level or the model (below): `-p`,
+  `--mode json` and `--mode rpc` write no level for your default, so such a
+  session takes the default you have when it is next launched; the TUI records
+  your default when it applies it exactly as set, as before; `--thinking` is
+  recorded as before, except `off` (a `--continue` after `--thinking off` takes
+  your default). `/new` (and RPC `new_session`) keeps the level you are at and
+  records it unless it is `off` — now the level your launch started at, in every
+  mode; `/model` does not apply your default to the new model; `/reload` still
+  goes back to `--thinking`'s level or `off` (follow-ups).
+
+  A `session_start` handler now runs after the level is applied, as in pi; the
+  TUI used to apply your default after it, and the other modes never did. With
+  no `--thinking` and no recorded level, what a handler does is therefore judged
+  against the level the launch started at (your default, fitted to the model)
+  instead of `off`. Its `set_thinking_level("off")` over a level other than
+  `off` is now recorded (it recorded nothing), and the TUI then runs at `off`,
+  where it used to apply your default over it and record that whenever the
+  model took the default as set. A start level other than `off`, set again, is
+  no change and records nothing, where it used to be recorded — the TUI still
+  records your default when that is the level as set, but not a default it
+  fitted to the model. Its `set_model` keeps the level the launch fitted to its
+  own model, as `/model` does: when that model could not take your default and
+  the handler's model can, the TUI no longer runs at your default nor records it
+  — a default of `high`, a launch on a model that cannot reason and a handler
+  that switches to one that can now run at `off` (pi applies the default again
+  on a model switch; a follow-up, with `/model`). And the TUI launch no longer
+  fires `thinking_level_select` for your default: the level is set before
+  `session_start`, as a reopened session's level is, not selected.
+
+- **Tests only: the bash drain-cap case's deadline arm no longer fails when
+  Windows starts the shell too slowly to finish inside the deadline (#446).**
+  Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`
+  needs a root that exits inside its 2.0 s deadline. On windows-latest under
+  CPU load, PowerShell plus its Python child sometimes did not: 31 of 900
+  loaded runs timed out and 0 of 450 unloaded ones (run 38509857375). The
+  misses were mostly start-up waiting for a CPU (10 of 13 instrumented ones),
+  2 were PowerShell's teardown and 1 an exit at the deadline itself; none was
+  the product failing to see the exit. Such an attempt now runs again, but only
+  when the site's own timed wait was handed the caller's timeout and gave up
+  at its deadline - not before the caller's, and not more than half a second
+  past its own - on a root that had not exited. Anything else still fails at
+  once, each with its own message: a wait handed another timeout, one giving
+  up early, one giving up late against its own deadline, a timeout the wait
+  never raised, a root that had exited before the deadline, and a record that
+  cannot place the exit. A wait that began late is not judged for it. The
+  site counts the timeout from where its wait begins, after the spawn and the
+  start of the pipe reader and of the waiting worker thread, and on a loaded
+  Windows runner those starts wait for a CPU: up to 0.216 s after the spawn
+  under four busy loops (run 38509857375), and once a wait began 1.344 s after
+  the call in a CI run, which the previous revision of this change failed as
+  the site's fault. The record cannot tell that from a site that starts its
+  wait late, so this case does not catch a site that gives the shell longer
+  than the caller's timeout. On macOS the root's state comes from `ps`, so
+  with `ps` missing or hung an exited root reads as running and such an exit
+  would be taken as the premise. Whether the timeout's kill reaches the tree
+  is not this case's subject: the dedicated containment cases pin it. On a
+  premise attempt the case only checks, for up to two seconds from when the
+  call has come back and the announcement wait has settled, that the root and
+  the python root it announced are dead (on Windows also the holder, which
+  sits inside the job). That is a sanity check and proves nothing about the
+  kill: it passes a timeout leg that kills nothing when the root then exits by
+  itself, and any missed process that exits while it polls, and it never
+  looks at a process that did not announce. The drain-cap checks the case
+  exists for still run, on the attempt that measured. New cases drive this
+  path on every platform: one with a root still running at the deadline, and
+  two against a timeout leg that kills nothing and leaves the root running,
+  one of them with the site's wait started 1.5 s late. A larger deadline was
+  not taken: the measured exits spread wider than the window the arm needs.
+  The arm's floor now compares the product's own sum,
+  after a Python 3.12 Windows run failed `2.0 <= 1.9999999999999432` on a
+  rounding tie, and a call back at half the deadline is pinned to fail it.
+  Measured on windows-latest with an earlier revision of this change (run
+  38547416538, 100 rounds per Python version and load): 0 of 900 deadline-arm
+  runs failed; 10 attempts met a root still running at the deadline and ran
+  again. The old test failed 16 of 900 in an earlier run (38531413887).
+  A root that misses the deadline on all three attempts still fails the case,
+  which says so.
+
 - **Tests: the subprocess helper's timeout case no longer fails on a slow
   Windows child start (#388).** Test-only; nothing users run changed. The case's
   0.5 second timeout now starts once the child has announced its pid, and a
@@ -493,9 +751,9 @@ unwritten. Add them with the next release.
   on that answer as in pi; a held or refused model is never recorded; reopening
   a session with a conversation writes nothing; an empty session reopened on
   another model records that one; the thinking level is not recorded alongside
-  it (#286). A session file that cannot be written runs as before (its prompts
-  ran and wrote nothing) and now also prints a `Warning:` on stderr; with
-  `--thinking` it still exits 1, as before. `/clone` and RPC `clone` still
+  it (#286 left that as it was). A session file that cannot be written runs as
+  before (its prompts ran and wrote nothing) and now also prints a `Warning:` on
+  stderr; with `--thinking` it still exits 1, as before. `/clone` and RPC `clone` still
   refuse a session with no conversation, in the same words, on disk and with
   `--no-session` — now also one with no conversation but other entries (only
   a name, a `/model` pick, `!cmd` output or a `custom_message` entry an
@@ -775,13 +1033,13 @@ unwritten. Add them with the next release.
   its profile sets neither `model` nor `provider` — and whose profile sets no
   `thinking:` now also runs at your current level, whatever set it:
   `--thinking`, an `--agent` profile, a resumed session, `/thinking`, an RPC
-  `set_thinking_level`, or `defaultThinkingLevel` in the interactive TUI. `-p`,
-  `--mode json` and `--mode rpc` do not apply `defaultThinkingLevel` yet
-  (#286), so a fresh parent there with none of those set still hands its child
-  `off`, as before. A profile's own `thinking:` still wins. A profile that
-  names its own model or provider gets no level from you, as in pi: it runs at
-  its own `thinking:`, or with reasoning off as before — give it a `thinking:`
-  if its model cannot switch reasoning off.
+  `set_thinking_level`, or `defaultThinkingLevel` (in every mode since #286).
+  A profile's own `thinking:` still wins. A profile that names its own model or
+  provider gets no level from you, as in pi: it runs at its own `thinking:`, or
+  at the `defaultThinkingLevel` in your global `settings.json` fitted to its
+  model (#286; with none set, `off`, or the model's lowest level when it cannot
+  switch reasoning off) — give it a `thinking:` if your default does not give
+  its model the level it needs.
 - **A cloned repository's `.aelix/settings.json` no longer chooses where your
   prompt goes when you have not trusted it (#369, ADR-0252).** Its
   `defaultProvider`/`defaultModel` pair, with an `OPENAI_API_KEY` in its

@@ -1,6 +1,6 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
-Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block
+Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them
 Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
 for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
@@ -263,7 +263,11 @@ pi's `_prepareRetry` (`agent-session.ts:3792-3830`) reads
   `sdk.ts:344-352`; aelix's adapters keep their SDK defaults, so an OpenAI-SDK
   provider still tries each attempt three times), the compaction and
   branch-summary retries (#409), and the `compaction.*` settings, which the
-  harness does not read either.
+  harness does not read either. *(2026-10-14, #278 / ADR-0265 Decision 9: the
+  two openai adapters now read the request's `max_retry_delay_ms` - the SDK's
+  own retries wait for a server-requested delay only up to it, 60 s when unset,
+  openai 1.x's rule, which openai 2.52 had widened to 120 s. The settings keys
+  themselves still reach no adapter; that is #470.)*
 
 ### Tests and sabotage
 
@@ -407,3 +411,91 @@ within `wait_for` 10 s). Both fail on the round-3 commit and with the pre-wait
 read of the flag removed, on Python 3.12 and 3.11. The round-3 mutant that read
 the flag only before the wait is now part of the product (it reads it before
 and after).
+
+## Amendment (2026-10-14, #414) — `520` and `524` are retried, matched as pi matches them
+
+Pi reference: `earendil-works/pi@3daa20280` (`packages/ai/src/utils/retry.ts`,
+`RETRYABLE_PROVIDER_ERROR_PATTERN` and `isRetryableAssistantError`, which pi's
+`_isRetryableError` calls, `agent-session.ts:3736-3743`).
+
+### What was measured on `529b997e`
+
+A real `aelix --mode json` against a local server (fake keys, `retry.baseDelayMs: 10`;
+kits and outputs: `.omc/probes/414-live/impl/`, `logs/base_retry.out`). That server sent
+`x-should-retry: false` with every error, so the SDKs' own retries were off and each
+answer below is one request:
+
+- anthropic answering `520` then `200`: one model request, no `auto_retry_start`, the
+  turn ended on `Error code: 520 - …`; the same for `524`, and for an openai-completions
+  provider answering `520`. pi's pattern has `520` and `524`, and #379 had already given the
+  OAuth refresh retry pi's seven statuses (ADR-0251 §12.5 item 3); the model-error pattern
+  had five.
+- a `400` whose body reads `max_tokens: 25000 > 8192, which is the maximum allowed number of
+  output tokens …` was retried (`auto_retry_start (1, 3, 10)`): its `25000` holds `500`.
+
+With the SDKs' retries on - a plain `520` with no such header, as a real gateway sends it -
+the Anthropic and OpenAI SDKs first send the request twice more themselves (their default
+`max_retries` of 2, which covers any status of 500 or above). Measured by review round 1
+(`.omc/probes/414-live/verify/logs/probe_retry.out`): `529b997e` made three requests (`520`,
+`520`, `520`) and ended the turn, for anthropic and an openai-completions provider.
+
+### Decision
+
+The statuses are pi's seven: `429`, `500`, `502`, `503`, `504`, `520`, `524`, matched as pi
+matches them - as bare alternatives of the case-insensitive pattern, anywhere in the error
+text (`…|429|500|502|503|504|520|524|…`). The rest of the pattern is unchanged, and so is
+#408's settings-driven policy (a `520` follows `retry.maxRetries`/`baseDelayMs`/`enabled`
+like a `502`). After, the real CLI (`.omc/probes/414-live/r2/kit/probe_retry.py`,
+`r2/logs/probe_retry.out`): a plain `520` or `524` makes the SDK's three requests, then the
+harness retries, `auto_retry_start (1, 3, 10)`, and the `200` answers, `auto_retry_end
+(True, 1)` - for anthropic and an openai-completions provider; with `x-should-retry:
+false`, one request, the retry and the `200`.
+
+**Digits that contain a status make an error retryable, as in pi and as on `529b997e`.**
+`max_tokens: 25000` holds `500`, Anthropic's `messages.520: …` names a message index, and a
+request id, a duration or a token count can hold any of the seven. Each such `400` is sent
+again until the budget runs out - measured with the real CLI (`r2/logs/probe_retry.out`):
+the `max_tokens: 25000` `400`, the `messages.520` `400`, and a `400` naming
+`req_8f524e1c`, `15240 ms` and `15200 tokens` each made 4 requests, `auto_retry_start`
+`(1, 3, 10)`, `(2, 3, 20)`, `(3, 3, 40)`, `auto_retry_end (False, 3)`. Whether aelix should
+stop retrying these is a follow-up issue, not this change.
+
+### Review round 2: round 1's whole-number rule is dropped
+
+Review round 1's version matched a status only as a whole number (no ASCII letter, digit
+or `_` next to it), a divergence from pi. Its review showed the rule neither held what it
+claimed nor matched pi: `messages.520`, `messages[524]`, `1,520 tokens`, `0.524 s` and
+`req-520-abc` still retried (`r2/logs/probe_retry.out`: round 1's CLI sent the
+`max_tokens: 25000` and the request-id `400`s once but the `messages.520` one four times),
+and seven other boundary forms passed all its rows. Review round 2 narrowed the change to pi's semantics; the
+digits question is the follow-up above. The statement that a "token count, duration or
+request id holding `520`/`524` is not retried" is withdrawn everywhere it was made.
+
+### Not changed (follow-up)
+
+pi's pattern has grown since this ADR's pin: `server_busy`, `servers are currently busy`,
+`currently experiencing high demand`, `model is at capacity`, `exceeded request buffer
+limit while retrying upstream`, `getaddrinfo`, `ENOTFOUND`, `EAI_AGAIN`, `socket connection
+was closed`, `stream ended before a terminal response event`, `pending stream has been
+canceled`, the retry-guidance texts (`you can retry your request`, …), `ResourceExhausted`
+and `subscription_sharing_usage_unavailable` / `_user_unavailable`; and it tests a
+non-retryable pattern first (quota and billing: `insufficient_quota`, `quota exceeded`,
+`billing`, `GoUsageLimitError`, `subscription_sharing_usage_limit_exceeded`, …), so a `429`
+for an exhausted quota is not retried there - aelix retries it three times. The OpenAI
+Codex adapter's own transport retry (`openai_codex_responses._RETRYABLE_STATUS`, before
+the stream opens) is a separate layer and keeps its set.
+
+### Tests and sabotage
+
+`tests/test_auto_retry_520_524_414.py` (46 rows): the texts each SDK writes for each status
+(13), the digit-holding texts pi retries (17, among them review round 1's `messages.520`,
+`messages[524]`, `1,520 tokens`, `0.524 s`, `req-520-abc` and the inputs its surviving
+boundary forms differ on), other statuses not retried (8), the harness classifier, the
+`retry` settings policy with `520`/`524`, `retry.enabled: false`, the `25000` turn retried
+to the end of its budget, and the real anthropic adapter over `httpx.MockTransport`
+answering `520` then `200`. On `08379e16` (round 1) 14 fail: the 12 digit-holding texts its
+rule did not retry and the two `25000` rows (`r2/logs/red_on_08379e16.out`). Mutations in a
+throwaway worktree (`r2/kit/sabotage_r2.py`, `r2/logs/sabotage_r2.out`; 1008 passed
+unmutated over the auth, retry, loop and renderer rows): no `520` 16 red, no `524` 10,
+`529b997e`'s five 26, round 1's whole-number rule 14, digit-only boundaries 8, `\b` 15, the
+lookbehind alone 12, the lookahead alone 11, a `[0-9a-z]` class without `_` 13; 0 survive.
