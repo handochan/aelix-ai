@@ -426,6 +426,32 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **After an `/agents use` that switches the model, `/new` stays on that model:
+  OpenRouter's `auto` no longer turns into `openrouter/auto` (#398, ADR-0196).**
+  Three cases moved, each measured against a local server standing in for
+  OpenRouter and for a `models.json` provider. Launched with
+  `--model openrouter/auto`, a use that replaces a profile whose own
+  `provider: openrouter` applied (the launch's `--agent`, or an earlier use)
+  goes back to your launch model and sent its next prompt as `auto`, but after
+  `/new` the prompts went out as OpenRouter's other model id,
+  `openrouter/auto`. Launched without `--model`, a profile with
+  `model: openrouter/auto` ran `auto`, then `openrouter/auto` after `/new`. And
+  with a `models.json` provider `mygw` that lists both `gpt` and `mygw/gpt`, a
+  profile with `model: mygw/gpt` ran `gpt`, then `mygw/gpt` after `/new`.
+  `/fork`, `/resume` and `/reload` did the same wherever they do not bring back
+  a session's own model. Each now stays on the model the use set. Unchanged: a
+  profile with `provider: openrouter` over a typed `--model openrouter/auto`
+  runs the literal `openrouter/auto` from the use on, as
+  `--provider openrouter --model openrouter/auto` does, and keeps it through
+  `/new`; and a typed `--model` still beats a profile's `model:`. Two corners
+  stay as they were, both from a `models.json` or extension provider (one you
+  defined in `models.json`, or one an extension registered with
+  `register_provider`): if such a provider's name differs from a built-in one
+  only in case (`OpenAI` beside `openai`), a use that lands on the built-in one
+  has `/new` start on yours; and if such a provider lists both `mygw/x` and
+  `mygw/mygw/x`, a profile with `model: mygw/mygw/x` runs `mygw/x`, then
+  `mygw/mygw/x` after `/new`.
+
 - **An extension's `select` draws a label of several lines that does not fit
   from its first line, not as a `⋮` over blank rows (#424, ADR-0253 §11.3).**
   With `Cancel` highlighted over an option of eight lines (`Deploy staging` and

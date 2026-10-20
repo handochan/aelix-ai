@@ -812,7 +812,9 @@ The cause is not the base URL. `agents/service.py` completes the launch pair as
 rebuild resolves `("openrouter/auto", "openrouter")`, and the explicit-provider route finds
 the literal catalog id `openrouter/auto`; the launch had stripped the prefix to `auto`.
 `openrouter/auto` is the only catalog id where `<provider>/<id>` is itself an id of that
-provider (`impl/probe/auto_carry.402a8013.out`). Filed as a follow-up.
+provider (`impl/probe/auto_carry.402a8013.out`). Filed as a follow-up. *(2026-10-20: fixed
+by #398 — `use` now writes back both halves of the model it set; ADR-0196's #398
+amendment. Since #412 the route-less shape had already held.)*
 
 **Review round 2 (2026-10-07).** The round-1 verify and Codex found no routing defect left,
 and three things wrong around it. Kit `.omc/probes/375-live/r2/`.

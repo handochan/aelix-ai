@@ -637,7 +637,17 @@ class AgentProfileService:
                     if not is_runnable(model):
                         raise ProfileError(unsupported_message(model))
                     # Complete the pair on ``parsed`` so a later /new or /fork
-                    # rebuild cannot resolve a model without its provider (#98).
+                    # rebuild cannot resolve a model without its provider (#98)
+                    # — BOTH halves, as the model this use set (#398). The
+                    # rebuild reads them as ``--provider`` and ``--model``, and
+                    # beside a provider the string as typed can name another
+                    # id: ``openrouter/auto`` resolved without one is
+                    # OpenRouter's ``auto``, with ``openrouter`` the catalogue's
+                    # literal ``openrouter/auto``. pi, too, names a session's
+                    # model by this pair (``restoreModelFromSession`` reads it
+                    # back with ``getModel(provider, id)``).
+                    if model.id:
+                        self.parsed.model = _pinned_model_spelling(model)
                     self.parsed.provider = model.provider
                     await harness.set_model(model)
                     model_set = True
@@ -718,6 +728,49 @@ class AgentProfileService:
         if notices:
             return "\n".join([status, *(f"Note: {n}" for n in notices)])
         return status
+
+
+def _pinned_model_spelling(model: Any) -> str:
+    """The ``--model`` string meant to name exactly ``model.id`` under ``--provider model.provider``.
+
+    #398 — :meth:`AgentProfileService.use` writes the pair it put on the session
+    back onto ``parsed``, so that a later rebuild that resolves ``parsed``
+    (``/new``; ``/fork``, ``/resume`` and ``/reload`` where they do not restore
+    the session's own record) lands on the same model. It hands that pair to
+    ``resolve_route``'s explicit-provider branch (its step E), which looks the
+    string up as an id of the provider first, then (not found) strips one
+    ``<provider>/`` — case-insensitively, pi's ``resolveCliModel`` strip — and
+    then builds a custom id. So the id itself is the spelling, except for an
+    id that begins with its own provider's prefix: a custom ``mygw/x`` under
+    ``mygw`` would lose that prefix to the strip, so it is spelled
+    ``mygw/mygw/x``, which strips back to it. A catalogued id of that shape
+    gets the prefixed spelling too (``openrouter/openrouter/auto`` is no id, so
+    it strips back to ``openrouter/auto``), and the rule takes no registry.
+
+    That costs one corner (ADR-0196's #398 Known corners, review round 2): a
+    provider that also lists the prefixed spelling as an id of its own —
+    ``mygw/x`` beside ``mygw/mygw/x`` in a models.json — has step E find that
+    other id before any strip, so ``/new`` moves to ``mygw/mygw/x``, as it did
+    before #398. A lookup (the bare id when step E finds it as itself, else this
+    form) would close it. The provider half has a corner of its own: step E
+    reads the provider through ``_named_provider``, which takes a user-defined
+    provider equal to it up to case first, so a use that landed on the
+    catalogue's ``openai`` beside a models.json ``OpenAI`` is rebuilt on
+    ``OpenAI`` — no string written here names the catalogue's one then.
+
+    The string as typed is NOT the spelling. Without ``--provider``, the launch
+    reads ``openrouter/auto`` as the prefix ``openrouter`` and the id ``auto``;
+    beside ``--provider openrouter`` the same string is the catalogue's literal
+    id ``openrouter/auto`` (ADR-0250 §2). Writing the typed string back with the
+    provider therefore moved ``/new`` from ``auto`` to ``openrouter/auto`` — and
+    from a models.json ``mygw`` model ``gpt`` to that provider's ``mygw/gpt``.
+    """
+
+    provider = str(getattr(model, "provider", "") or "")
+    model_id = str(getattr(model, "id", "") or "")
+    if provider and model_id.lower().startswith(f"{provider.lower()}/"):
+        return f"{provider}/{model_id}"
+    return model_id
 
 
 __all__ = ["AgentProfileService"]

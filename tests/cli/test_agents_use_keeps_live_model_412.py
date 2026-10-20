@@ -535,8 +535,9 @@ async def test_new_after_a_route_less_agents_use_resolves_the_launch_string_as_t
     rebuild resolved ``('openrouter/auto', 'openrouter')`` and landed on the
     catalogue's literal ``openrouter/auto`` id. A route-less use resolves
     nothing now and leaves ``parsed`` at the baseline, so ``/new`` resolves the
-    string exactly as the launch did. (#398 stays open for a use that drops a
-    profile's route, which still completes the pair.)"""
+    string exactly as the launch did. (A use that drops a profile's route still
+    completes the pair — since #398 with the id it resolved, not the string as
+    typed: ``test_agents_use_pins_the_resolved_pair_398.py``.)"""
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-fake")
     seen = await _tui(

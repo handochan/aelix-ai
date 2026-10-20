@@ -900,7 +900,8 @@ the result goes does not: the served list only (§4.4). The earlier revisions' s
 - Catalogue rows the list lacks are hidden. Ids the list holds that the catalog lacks are ignored,
   so narrowing adds nothing.
 - An empty result falls back to the catalog. A bad number keeps the catalog's value for that field.
-  A source may keep a static row it never lists (`auto`; #398 decides that id).
+  A source may keep a static row it never lists (`auto`; #398 decides that id — 2026-10-20: it
+  stays, the id a provider-less `--model openrouter/auto` names; ADR-0196's #398 amendment).
 - The request: `GET {base}/models/user` with the key, no `offset` or `limit`, a 15 s total timeout,
   and no redirect followed with the key.
   - `{base}` comes from `with_openrouter_base_url` over the composed row. So `OPENROUTER_BASE_URL`

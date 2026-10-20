@@ -5,6 +5,10 @@ lands with the P1 implementation (same pattern as ADR-0186/0187/0188/0189).
 Amended 2026-10-14 (#412): `/agents use` where no `model:`/`provider:` of the profile
 applies (or `--none`) keeps the live model (§D8; `## Amendment (2026-10-14, #412)` at
 the end).
+Amended 2026-10-20 (#398): a use that sets a model writes BOTH halves of it back onto
+`parsed`, so `/new`, `/fork`, `/resume` and `/reload` land on the same provider and id,
+but for two corners from a `models.json` or extension provider that its Known corners
+list (`## Amendment (2026-10-20, #398)` at the end).
 Date: 2026-07-19
 Amends: ADR-0008 (see its `Amendment (2026-07-19)` section — this ADR is the
 narrow amendment that clause points at)
@@ -692,6 +696,7 @@ same model again — never the settings model.) #367 (the late-provider hold), #
   (`--agent` with `provider: openrouter`, or such a use, then a route-less use) the
   re-resolve still completes `parsed.provider` and `/new` lands on the literal
   `openrouter/auto` id (measured, `.omc/probes/412-live/impl/probe398.out`).
+  *(2026-10-20: resolved — the amendment below.)*
 
 ### Consequences
 
@@ -715,3 +720,148 @@ same model again — never the settings model.) #367 (the late-provider hold), #
   re-resolves the launch inputs … a follow-up") is resolved by this amendment; ADR-0250's
   §2.7 and §2.11 statements that every such use re-resolves the launch inputs are narrowed
   to a use that drops a route (dated notes there).
+
+## Amendment (2026-10-20, #398) — a use that sets a model writes back both halves of it
+
+**Issue:** #398 (a #375 follow-up: ADR-0251 §11, "Seen alongside, not this seam"). The
+issue named two directions; both were measured (below), and the one that keeps the
+existing pin was taken. No owner decision was asked.
+
+**Measured on `main` `7faf4b9a`** — the real TUI in a pty (forkpty + pyte), a fake
+OpenRouter key, `OPENROUTER_BASE_URL` and a `models.json` provider `mygw` (listing `gpt`
+and `mygw/gpt`) at a local mock that logs each request's `model`, HTTPS through a CONNECT
+recorder that refuses everything; agent dir, settings, session dir, home and cwd
+isolated; driver, screens and outputs in `.omc/probes/398-live/impl/`:
+
+- `aelix --model openrouter/auto`, `hi`, `/agents use orprof` (`provider: openrouter`),
+  `/agents use plain` (drops that route: the launch inputs are re-resolved), `hi`,
+  `/new`, `hi` — the mock received `model=auto`, `auto`, then `openrouter/auto`.
+- On the settings pair `mygw`/`gpt`: `/agents use autoprof` (`model: openrouter/auto`),
+  `hi`, `/new`, `hi` — `auto`, then `openrouter/auto`.
+- On the settings pair `openrouter`/`auto`: `/agents use gwprof` (`model: mygw/gpt`),
+  `hi`, `/new`, `hi` — `gpt`, then `mygw/gpt`.
+
+The cause was `use`'s completion of the pair for #98: `parsed.provider = model.provider`,
+with `parsed.model` left the string as typed. Every rebuild resolves `parsed` as
+`--model` beside `--provider` — `resolve_route`'s step E: the string as an id of that
+provider, else one `<provider>/` stripped (case-insensitively, pi's strip), else a custom
+id — and beside a provider the typed string can name another id. Without one,
+`openrouter/auto` is the prefix `openrouter` and OpenRouter's `auto` (ADR-0250 §2, pi's
+alias); beside `openrouter` it is the catalogue's literal `openrouter/auto`. In the
+catalogue that is the only id whose prefixed spelling is also an id of its own provider;
+a `models.json` provider can list more (`mygw/gpt` beside `gpt`). The #412 keep path
+writes nothing, so the reported shape (a route-less use) already held since #412; what
+remained was every use whose own route applied and every use that drops one.
+
+### Decision
+
+1. **A use that sets a model writes both halves of it back onto `parsed`**:
+   `parsed.provider` = its provider and `parsed.model` = the string step E reads back as
+   exactly its id (`agents/service.py` `_pinned_model_spelling`) — the id, or
+   `<provider>/<id>` for an id that begins with its own provider's prefix, which step E
+   strips once: a custom `mygw/custom-x` under `mygw` written as the bare id came back as
+   `custom-x`, and the catalogued `openrouter/auto` is written `openrouter/openrouter/auto`
+   and found again. So `/new` lands on the provider and id the use set, and so do
+   `/fork`, `/resume` and `/reload` wherever they resolve `parsed` rather than restore
+   the session's record — after a use whose own route applied, or under a typed
+   `--model`/`--provider` (ADR-0239, #376 decision 1) — except in the first two Known
+   corners below (a user-defined provider named like a catalogue one up to case; a
+   provider that also lists an id's prefixed spelling). pi names a session's model by the
+   same pair (`restoreModelFromSession`: `getModel(provider, id)`). The held branch and
+   the keep path still write nothing; the use's own resolve is unchanged.
+2. **Not taken: leaving `parsed.provider` unwritten** (the issue's other direction). The
+   pin is load-bearing. The use resolves with other inputs than a rebuild — a profile's
+   own route without `--api-key`'s rule (ADR-0250 §2.7, #370 round 2), and never with
+   the settings `defaultProvider` — so unpinned, `/new` re-resolves the string under the
+   rebuild's inputs. Measured with that variant: every shape above lands where it
+   should (`.omc/probes/398-live/impl/runs/probe398-variant-b.out`), and over the tests
+   `tests/cli`, `tests/agents`, `tests/agents_ext` and `tests/tui` held before this
+   amendment's own file (9460 collected) one row goes red (9426 pass, 33 skipped),
+   `tests/cli/test_api_key_unknown_prefix_370.py::test_agents_use_of_a_profiles_own_model_resolves_as_before_api_key`
+   — after `/agents use nlown` (`model: newlab/model-x`) under a typed
+   `--api-key`, `/new` lands on #370's not-found placeholder (`newlab`/`model-x`,
+   `api='unknown'`) instead of staying on the OpenRouter route the use took.
+3. **The ids are unchanged.** A provider-less `--model openrouter/auto` still names
+   `auto` and `--provider openrouter --model openrouter/auto` the literal id (ADR-0250
+   §2); both catalogue rows stay. This is the answer ADR-0264 §4.5 deferred to #398
+   ("`auto`; #398 decides that id"): `auto` stays an id aelix resolves to.
+
+### Known corners (left to follow-up issues)
+
+- **The provider half, beside a user-defined provider named like a catalogue one up to
+  case** (cross review, review round 2). Step E reads `parsed.provider` through
+  `_named_provider`, which takes a user-defined provider equal to the name up to case
+  before the catalogue (the F1 shadowing rule, ADR-0250). A use that lands on the
+  catalogue's `openai` while a `models.json` or extension provider is named `OpenAI`
+  (`models.json` defines it, or an extension's `register_provider` registers it: both
+  count as user-defined, `ModelRegistry.get_user_defined_providers`) is rebuilt on the
+  user's `OpenAI` — the profile path (`/agents use gptprof`, `model: gpt-4o-mini`) and
+  the drop path alike — while an `--agent gptprof` launch, which pins no provider, stays
+  on the catalogue's `openai` through `/new`. Measured (with the `models.json` provider)
+  the same on `7faf4b9a` and with this amendment's code: in-process
+  `.omc/probes/398-live/r2/runs/inprocess-cases.out` (cases c2, c2b, c2c), and live in
+  a pty (`r2/runs/live-all.out`, scenario `case`: the use's prompt went to
+  `api.openai.com`, refused at the CONNECT recorder, the one after `/new` to the user's
+  `OpenAI` endpoint). No `--provider` spelling names the catalogue's `openai` once a
+  user-defined `OpenAI` exists, so `service.py` cannot write one that round-trips; a fix
+  needs step E's provider rule or a pin of another shape.
+- **An id whose prefixed spelling its provider also lists** (verify, review round 2).
+  `_pinned_model_spelling` takes no registry: an id that begins with its provider's prefix
+  is written `<provider>/<id>`. When that string is itself an id of the provider —
+  `mygw/x` and `mygw/mygw/x` both listed by a `models.json` or extension provider `mygw`
+  (step E's `_find_in` reads an extension registration's own models first) — step E
+  finds it before any strip, so a use on `mygw/x` (`model: mygw/mygw/x`) has `/new` move
+  to `mygw/mygw/x`, as on `7faf4b9a` (measured with a `models.json` `mygw`: in-process
+  c7, live scenario `thrice`, same kit). The shipped catalogue has no such pair: none of
+  its 22 ids that begin with their own provider's prefix is listed doubled
+  (`.omc/probes/398-live/cross-claude/out/catalog_twins.out`). Once ADR-0264's
+  catalogue refresh lands, a published revision could add one: its new ids route like
+  shipped ones (ADR-0264 §4.1, §4.4); only §4.5's OpenRouter narrowing adds no ids. A
+  spelling that asks the registry — the bare id when step E finds it as itself, else the
+  prefixed form — would close it.
+- **The same pair-to-flags spelling outside `parsed`.** A delegated child inherits the
+  parent's model as `--model <id> --provider <provider>` (`agents/resolver.py`
+  `parent_model_flags`; `_pin_route` for a user-defined route), and the settings pair
+  `/model` saves is seeded as `--model`/`--provider` (`cli/entry.py`). Both pass through
+  step E, so a custom id that begins with its own provider's prefix loses it: a parent on
+  `mygw`/`mygw/custom-x` gives a child `custom-x`, and settings `defaultProvider: mygw`,
+  `defaultModel: mygw/custom-x` launch on `custom-x` (measured,
+  `.omc/probes/398-live/impl/runs/corner.out`, `seed.out`). Catalogued ids are unaffected
+  (`openrouter/auto` beside `openrouter` is found as itself), so #398's ids never reach
+  this. `_pinned_model_spelling` is the spelling both need.
+- **`use` resolves without the settings `defaultProvider`** (decision 2 of the #412
+  amendment). A bare id no catalogue lists, which `--agent` homes under the settings
+  `defaultProvider`, is refused by `/agents use` ("Model … not found") — measured
+  `.omc/probes/398-live/impl/runs/probe398-inputs.out` row Y2, unchanged by this
+  amendment.
+- **A pin outlives a credential change, a launch does not.** After `/agents use` of a
+  profile whose `model: anthropic/claude-haiku-4-5` went to OpenRouter (guard 2, only an
+  OpenRouter key), an Anthropic key that appears later does not move `/new`; the same
+  profile at launch (`--agent`) re-resolves on `/new` and reaches Anthropic (row Y1). The
+  pin predates #398 and decision 2 keeps it.
+
+### Consequences
+
+- New rows: `tests/cli/test_agents_use_pins_the_resolved_pair_398.py` — the three defect
+  shapes (a dropped launch `--agent`, a dropped earlier use, a profile's own
+  `model: openrouter/auto`), the `models.json` twin on both paths, `/resume` + `/fork` +
+  `/reload` after the use, the rows that held on `7faf4b9a` and must keep holding (the
+  literal `openrouter/auto` a profile's `provider:` names, OpenRouter's vendor id, a
+  custom id with its own provider's prefix), a slash id whose prefixed twin the provider
+  also lists (`org/m1` beside `mygw/org/m1`: moved on `7faf4b9a`, and red under a
+  spelling that qualifies every slash id — review round 2), and the spelling read back
+  through `resolve_route` for fourteen pairs.
+- The bullet "#398 remains on the drop path" above is resolved.
+
+**Review round 2 (2026-10-21).** No behaviour change (one docstring); kit
+`.omc/probes/398-live/r2/`. The
+CHANGELOG entry's first sentence listed "a profile whose own `model:` or `provider:`
+applies" among the uses that moved under a typed `--model openrouter/auto`; a typed
+`--model` beats a profile's `model:`, and a profile's `provider: openrouter` there runs
+the literal `openrouter/auto` from the use on, on `7faf4b9a` and on this amendment alike
+(live, scenario `literal`: `auto`, `openrouter/auto`, `openrouter/auto`). The entry now
+names each case that moved — the drop path under `--model openrouter/auto`, a profile's
+own `model: openrouter/auto` with no `--model` typed, the `models.json` twin — and the
+entry, the guide, decision 1 and the first two Known corners above (new) state where
+`/new` still moves. The slash row now has its prefixed twin listed, and one spelling
+row was added (above).

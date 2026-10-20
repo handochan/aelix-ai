@@ -352,16 +352,31 @@ job is text.
   `provider:` applies — one you did not override with `--model` / `--provider`
   — switches the model too; `provider:` alone is enough, so a profile whose
   `model:` your `--model` overrides but whose `provider:` applies switches to
-  your `--model` on that provider. When nothing of it applies (the profile
-  names neither, or your flags override each one it names), and with `--none`,
+  your `--model` on that provider. When a use switches the model, `/new`
+  after it starts on that same provider and model, and so do `/fork`,
+  `/resume` and `/reload` where they do not bring back a session's own model:
+  a profile's `model: openrouter/auto` stays OpenRouter's `auto`, not its other
+  id `openrouter/auto` (that one is what `provider: openrouter` beside your
+  `--model openrouter/auto` names, as `--provider openrouter` does). Two
+  corners, both from a `models.json` or extension provider (one you defined in
+  `models.json`, or one an extension registered with `register_provider`),
+  where `/new` moves anyway: such a provider whose name differs from a
+  built-in one only in case (`OpenAI` beside `openai`) is the one `/new`
+  starts on after a use that landed on the built-in one, since a named
+  provider means yours first (as `--provider openai` does); and such a
+  provider listing both `mygw/x` and `mygw/mygw/x` runs `mygw/x` for
+  `model: mygw/mygw/x`, then `mygw/mygw/x` after `/new`. When
+  nothing of it applies (the profile names neither, or your flags override
+  each one it names), and with `--none`,
   you stay on the model you are on — the model a reopened session came back on,
   a `/model` pick, or the launch model — and no model change is written into
   the session; `--none` then reports "the model is unchanged". The exception
   is replacing a profile whose own `model:` or `provider:` applied: that
   re-derives the model from your launch flags or settings default. It is not
-  quite what `/new` does: it does not use your settings `defaultProvider` to
-  choose among providers that serve a bare `--model` id, so such an id can land
-  on a different provider; and with no `--model`/`--provider` and no settings
+  quite what a launch with those flags does: it does not use your settings
+  `defaultProvider` to choose among providers that serve a bare `--model` id,
+  so such an id can land on a different provider (and `/new` after it stays
+  on that one); and with no `--model`/`--provider` and no settings
   default there is nothing to re-derive, so the replaced profile's model stays
   (where `/new` starts as a launch with no model would). A `thinking:` the
   profile names, or your `--thinking`, is applied either way, so a `/thinking`
