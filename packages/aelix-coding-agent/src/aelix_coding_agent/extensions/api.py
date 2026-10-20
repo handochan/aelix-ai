@@ -2027,7 +2027,7 @@ class ExtensionAPI:
         ``Authorization: Bearer unused``; to send no ``Authorization``, delegate
         to ``stream_openai_completions`` instead, which asks for no key, and set
         ``"Authorization": openai.Omit()`` in ``extra_headers`` from the payload
-        hook (#278, ``aelix docs extension-authoring``).
+        hook (#278, ``aelix docs extension-providers``).
 
         CLOSE THE CLIENT YOU BUILD (#174). A stream_fn runs once per request, so a
         client built inside one is built once per turn, and the built-in adapter
@@ -2042,7 +2042,7 @@ class ExtensionAPI:
         ``aclose()`` only, and ``google.genai.Client`` needs ``client.aio.aclose()``
         (its plain ``close()`` is sync and leaves the async pool open). Worked
         example: ``aelix_coding_agent/examples/selfhosted/selfhosted.py``; prose:
-        ``aelix docs extension-authoring``.
+        ``aelix docs extension-providers``.
 
         Queued + fanned out to the process-global api registry now, and REPLAYED
         on every harness (re)build via :meth:`_ExtensionRuntime.bind_api_adapters`

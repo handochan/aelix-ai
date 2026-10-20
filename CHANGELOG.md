@@ -219,6 +219,28 @@ unwritten. Add them with the next release.
   uv the installers bootstrap. CI and the release build now run uv 0.12.23
   (was 0.11.14), with each runner's archive checksum pinned, so the Windows test
   leg installs such a source for real.
+
+- **Provider keys and provider extensions have guides of their own, so the two
+  bundled guides nearest `read`'s cap have room for the edits coming (#490,
+  ADR-0218).** The system prompt tells the model each bundled guide is small
+  enough for `read` to return whole, and `read` cuts a file at 51200 bytes.
+  Every guide still fit, but `extension-authoring.md` had 84 bytes left and
+  `providers-and-models.md` 808, so one more paragraph in either would have
+  failed the check that keeps that promise, and pending changes add 1396 bytes
+  to the second. Where a key comes from (an environment variable, `--api-key`,
+  `models.json`, `/login` and its token refresh), each provider's variable and
+  what happens with no key are now `credentials.md`: `aelix docs credentials`,
+  and `aelix docs auth`, `login`, `api-key` and `api-keys` open it. A provider
+  from an extension (`register_provider`, its own `/login` method, launch and
+  rebuilds, a custom wire adapter) is now `extension-providers.md`. The text
+  moved as it was, and links into it point at its new place. Each trimmed guide
+  keeps the first moved heading (`Providing an API key`, `Custom providers with
+  their own /login method`) over a pointer to the new guide, and `aelix docs
+  providers` now points there for the environment-variable table. Left:
+  `providers-and-models.md` 11424 bytes, `extension-authoring.md` 13588. A new
+  check fails when a link's `#section` names no heading of its guide; it found
+  one in `tls-and-corporate-ca.md`, now fixed. The cap was not raised.
+
 - **Packaging: the `aelix` sdist no longer carries the demo recording, and the
   README's demo image now shows on PyPI (#387).** `docs/assets/demo.gif`
   (2.3 MB, about 40% of the tarball) and the three files that produce it

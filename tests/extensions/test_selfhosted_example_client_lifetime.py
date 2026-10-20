@@ -2,7 +2,7 @@
 
 WHY A TEST FOR AN EXAMPLE. ``examples/selfhosted/selfhosted.py`` is the
 repository's worked answer to "how do I point aelix at an OpenAI-compatible
-endpoint I run myself", and the extension-authoring guide reproduces it almost
+endpoint I run myself", and the extension-providers guide reproduces it almost
 line for line. Before this file it demonstrated the exact defect #174 is about:
 a fresh ``AsyncOpenAI`` (wrapping a fresh ``httpx.AsyncClient``) per request,
 handed to the built-in adapter through ``replace(opts, client=...)`` and never

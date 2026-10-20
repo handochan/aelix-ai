@@ -39,7 +39,7 @@ enough.
 | `not-attempted` | Nothing injected a trust store in this process. Normal when you are embedding the library rather than running the CLI. |
 
 **`RFC 5280 strict`** is the one that surprises people. See
-[Python 3.13 rejects certificates 3.12 accepts](#python-313-rejects-certificates-312-accepts).
+[Python 3.13 rejects certificates 3.12 accepts](#4-python-313-rejects-certificates-312-accepts).
 
 ## The four causes, and how to tell them apart
 
@@ -199,7 +199,7 @@ when it happened. Neither contains credentials.
 
 ## See also
 
-- [providers-and-models.md](providers-and-models.md) — provider keys and
+- [credentials.md](credentials.md) — provider keys and
   environment variables.
 - [models-json.md](models-json.md) — custom `baseUrl`s, which is where
   hostname-mismatch failures usually come from.

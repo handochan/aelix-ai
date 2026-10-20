@@ -1,6 +1,7 @@
 # 0218. The guides ship inside the wheel, the prompt names them, and the runtime answers for itself
 
-Status: Accepted (2026-08-14).
+Status: Accepted (2026-08-14). Amended 2026-10-21 (#490): `credentials.md` and
+`extension-providers.md` are split out of two guides that had reached `read`'s cap.
 Date: 2026-08-14
 Relates: ADR-0206 (the `_ManifestEntry` repr redaction — §5 reuses its pattern one object
 further along), ADR-0197 §(a) (the band table that decided where `aelix_status` lives, and
@@ -559,3 +560,100 @@ anything #101 built. So:
 
 Given this repo's record of false greens on prompt, render and hook paths specifically, that
 distinction is the reason it is written down here rather than left implied.
+
+## Amendment (2026-10-21, #490) — the two guides nearest `read`'s cap are split, to make room for the edits coming
+
+**The promise in §2 was one paragraph from false.** Measured on `7faf4b9a` as bytes on disk,
+against `DEFAULT_MAX_BYTES = 51200` (`tests/cli/test_docs_signpost.py::test_every_bundled_guide_fits_in_one_read`
+asserts `size < DEFAULT_MAX_BYTES`):
+
+| Guide                     | Bytes  | Left |
+| ------------------------- | ------ | ---- |
+| `extension-authoring.md`  | 51 116 | 84   |
+| `providers-and-models.md` | 50 392 | 808  |
+
+Every guide still fit on `7faf4b9a`; the problem was the next edits. Four changes in flight add
+1 396 bytes to `providers-and-models.md` (#371 709 at its head `658050d1`, #433 323, #409 236, #410
+128; #371's earlier `31a75411` added 728). Their guide diffs, merged three-way onto `7faf4b9a` (#409
+and #410 overlap in `## Automatic retry`, on either tree, and both sides are kept), put it at 51 797
+bytes, and the cap test failed with `providers-and-models.md is 51797B, over the read cap`. 85 more
+bytes in `extension-authoring.md` failed it the same way (51 201 B). The test's own docstring says
+what to do: split the guide or drop the promise, not raise the cap. Both guides are split to make
+room for those edits and the ones after them; the cap and every assertion stay as they were.
+
+1. **`credentials.md` (`# Provider Credentials`)** takes, from `providers-and-models.md`,
+   `## Providing an API key` (the four key sources, the `/login` token refresh and its error text),
+   `## Provider environment variables` and `## When no key is found`, 10 952 bytes in all.
+   The two per-variable paragraphs that sat at the end of `## Adapter coverage` (the
+   `ANTHROPIC_*` precedence and "Each variable belongs to its provider only") go with the table:
+   they followed it until `682f44a6` inserted the adapter-coverage section between them, and they
+   are about variables, not adapters. These sections were chosen because no change in flight edits
+   them. Those changes edit `## Selecting a model`, `### How a --model string becomes a provider`,
+   `## Automatic retry` and `## Reasoning / thinking level`; none of those moved, and the four
+   changes' `providers-and-models.md` diffs apply to the split tree without a conflict. pi divides the
+   subject the same way: its `providers.md` is authentication, its `models.md` is selection
+   (`packages/coding-agent/docs/` at pi `fdce48eb4`).
+2. **`extension-providers.md` (`# Writing a Provider Extension`)** takes, from
+   `extension-authoring.md`, `## Custom providers with their own /login method`,
+   `### Launch and rebuilds` and `### When config isn't enough — a custom wire adapter`, which is
+   the split the issue proposed (13 984 bytes). pi keeps the same subject in its own guide too
+   (`custom-provider.md`, beside `extensions.md`). `Manifest contributions`, `Capabilities` and
+   `Publishing` stay, so §2's highlight clause stays true of the guide it names. This is the one
+   moved text a change in flight edits: #371 rewrites two lines of `### Launch and rebuilds` (that
+   CLI RPC has no model registry for `set_model`), so its diff conflicts in both copies of
+   `extension-authoring.md`. The same hunk applies cleanly to `extension-providers.md` and has to be
+   carried there when #371 is rebased; a resolution that keeps the split side passes every docs
+   gate and leaves the old sentence in place.
+3. **The text moved as it was.** Only links changed: in the moved text, the ones that pointed back
+   into the guide it left (`#loading-an-extension`, `#automatic-retry`, and "the OpenRouter guard
+   below", now a link to the routing rules); elsewhere, every link into a moved section
+   (`extension-authoring.md` "Other `ExtensionAPI` surface" and the status table,
+   `providers-and-models.md`'s link to the custom-provider notes, `getting-started.md`,
+   `tls-and-corporate-ca.md`, the guides index, both READMEs, `register_api_adapter`'s docstring,
+   the `extending-aelix` skill and the examples index). Each trimmed guide keeps the first moved
+   heading over one sentence that names the new guide, so `#providing-an-api-key` and
+   `#custom-providers-with-their-own-login-method` still resolve in their old guides. Three tests
+   in `tests/test_docs_bundle_sync.py` pin the split: the moved sections are no longer in the guide
+   they left, the two kept headings still lead to the new guides, and the links without a
+   `#fragment` that send a reader to the moved text (`getting-started.md`, the TLS guide's See also,
+   the guides index, the two `ExtensionAPI` rows, the providers guide's opening sentence) name the
+   new guides.
+4. **`aelix docs auth` and `aelix docs login` open `credentials`** (they opened
+   `providers-and-models` because the key section lived there); `api-key` and `api-keys` are new
+   aliases for it. `providers` and `models` stay on `providers-and-models`, the model selection and
+   routing they are named for (pinned in `tests/help/test_help_registry.py`). That is a choice with
+   a cost: `aelix docs providers` no longer prints the environment-variable table, so the guide's
+   opening sentence names `credentials.md` for keys and that table. pi's `providers.md` is its key
+   guide, so there the name points the other way. `extension-providers` is reached by its name.
+5. **§2's block lists eleven names.** Its prose is 611 characters, up from 577, and
+   `test_the_block_prose_stays_within_its_measured_budget` asserts prose < 640. Each name is added
+   with `, ` before it, so the next guide name can be at most 26 characters (measured: a bundled
+   guide whose name is 26 characters passes, 27 fails). No highlight was added.
+6. **A new check, `tests/test_docs_bundle_sync.py::test_every_fragment_link_in_a_bundled_doc_names_a_heading_there`.**
+   The existing link test proves only that the file a link names exists, and a split moves
+   sections between files that all exist. The new one requires every `#fragment` to be an anchor a
+   heading of its target defines. It failed on `7faf4b9a` for one link nobody had moved:
+   `tls-and-corporate-ca.md` linked `#python-313-rejects-certificates-312-accepts` while its heading
+   is `### 4. Python 3.13 rejects certificates 3.12 accepts`. That link is fixed here.
+
+Every bundled guide after the split (bytes on disk; all under both caps):
+
+| Guide                     | Bytes  | Left   | Lines |
+| ------------------------- | ------ | ------ | ----- |
+| `providers-and-models.md` | 39 776 | 11 424 | 618   |
+| `extension-authoring.md`  | 37 612 | 13 588 | 689   |
+| `private-catalog.md`      | 36 681 | 14 519 | 583   |
+| `models-json.md`          | 26 818 | 24 382 | 504   |
+| `agent-profiles.md`       | 22 650 | 28 550 | 373   |
+| `getting-started.md`      | 20 904 | 30 296 | 409   |
+| `project-trust.md`        | 19 273 | 31 927 | 343   |
+| `extension-providers.md`  | 14 521 | 36 679 | 244   |
+| `credentials.md`          | 11 448 | 39 752 | 181   |
+| `tls-and-corporate-ca.md` |  9 362 | 41 838 | 207   |
+| `README.md`               |  2 245 | 48 955 | 37    |
+
+With the four changes' current guide diffs stacked on the split (#371's hunk carried to
+`extension-providers.md`), `providers-and-models.md` is 41 181 bytes, 10 019 under the cap.
+
+Not done here: no minimum headroom is asserted. The test still fails only at the cap, so the next
+guide that nears it is found the same way these two were.

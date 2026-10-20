@@ -323,3 +323,203 @@ def test_every_relative_link_in_a_bundled_doc_resolves_to_a_bundled_doc() -> Non
         "https://github.com/handochan/aelix-ai/blob/main/… URL for anything "
         "outside docs/guides/."
     )
+
+
+#: A heading line outside a fenced block. A ``#`` line inside a fence is a shell
+#: or Python comment, and a heading may not be indented past three spaces.
+_HEADING = re.compile(r"^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+
+
+def _anchor(heading: str) -> str:
+    """The anchor GitHub gives a heading: lower-case, every character that is
+    not a word character, a space or a hyphen removed, then each space turned
+    into a hyphen. Nothing is collapsed, so an em dash between two spaces
+    leaves two hyphens (``capabilities--three-are-gates-six-are-documentation``,
+    which the extension guide links to and GitHub resolves)."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def _sections(text: str) -> dict[str, str]:
+    """Every anchor a document's headings define, in order, mapped to the text
+    under that heading up to the next one. A repeated heading gets ``-1``,
+    ``-2`` and so on, as on GitHub."""
+    sections: dict[str, list[str]] = {}
+    seen: dict[str, int] = {}
+    in_fence = False
+    body: list[str] | None = None
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif not in_fence and (match := _HEADING.match(line)):
+            base = _anchor(match.group(1))
+            count = seen.get(base, 0)
+            seen[base] = count + 1
+            body = sections.setdefault(base if count == 0 else f"{base}-{count}", [])
+            continue
+        if body is not None:
+            body.append(line)
+    return {anchor: "\n".join(lines).strip() for anchor, lines in sections.items()}
+
+
+def _anchors(text: str) -> set[str]:
+    """Every anchor a document's headings define."""
+    return set(_sections(text))
+
+
+def _fragment_links(text: str) -> list[tuple[str, str]]:
+    """``(file, fragment)`` for every link with a ``#`` in it that stays inside
+    the bundled docs; ``file`` is ``""`` for a link to the same document."""
+    out = []
+    for raw in _LINK.findall(text):
+        if raw.startswith(("http://", "https://", "mailto:")) or "#" not in raw:
+            continue
+        target, fragment = raw.split("#", 1)
+        out.append((target, fragment))
+    return out
+
+
+def test_the_anchor_rule_matches_anchors_github_resolves() -> None:
+    """Guards the guard below. Each pair is a heading in these guides and the
+    anchor a link elsewhere in them already uses, so the rule is checked
+    against what GitHub produced rather than against itself."""
+    assert _anchor("How a `--model` string becomes a provider") == (
+        "how-a---model-string-becomes-a-provider"
+    )
+    assert _anchor("Capabilities — three are gates, six are documentation") == (
+        "capabilities--three-are-gates-six-are-documentation"
+    )
+    assert _anchor("Custom providers with their own `/login` method") == (
+        "custom-providers-with-their-own-login-method"
+    )
+    assert _anchor("Descriptors (runtime-emitted, not manifest)") == (
+        "descriptors-runtime-emitted-not-manifest"
+    )
+    # A fenced comment is not a heading, and a repeated heading is numbered.
+    text = "# Title\n\n```bash\n# not a heading\n```\n\n## Notes\n\n## Notes\n"
+    assert _anchors(text) == {"title", "notes", "notes-1"}
+
+
+def test_every_fragment_link_in_a_bundled_doc_names_a_heading_there() -> None:
+    """#490 split two guides that had reached ``read``'s byte cap, so whole
+    sections changed files. The test above only proves that the FILE a link
+    names exists: a link whose section moved still names a file that is there,
+    and lands at the top of the wrong guide. So every ``#fragment`` must be an
+    anchor that a heading of its target defines.
+
+    It found one already broken on the tree before the split (7faf4b9a):
+    ``tls-and-corporate-ca.md`` linked ``#python-313-rejects-certificates-312-accepts``
+    while the heading is ``### 4. Python 3.13 rejects certificates 3.12 accepts``,
+    whose anchor starts with ``4-``.
+    """
+    assert BUNDLED_DOCS, _EMPTY
+    checked = 0
+    broken: list[str] = []
+    for name in BUNDLED_DOCS:
+        doc = BUNDLED / name
+        for target, fragment in _fragment_links(doc.read_text(encoding="utf-8")):
+            path = doc if not target else doc.parent / target
+            if not path.is_file():
+                continue  # the relative-link test above reports a missing file
+            checked += 1
+            if fragment not in _anchors(path.read_text(encoding="utf-8")):
+                broken.append(f"{name} -> {target}#{fragment}")
+    # Guards the guard: these guides carry dozens of fragment links, and a
+    # scanner that found none would pass over a directory of broken ones.
+    assert checked >= 20, f"fragment scanner found only {checked} links"
+    assert broken == [], (
+        "fragment links in the BUNDLED docs that name no heading of their "
+        "target:\n  " + "\n  ".join(broken) + "\nPoint each one at the section "
+        "where it lives now (`<guide>.md#<anchor>`)."
+    )
+
+
+#: #490 split the two guides nearest ``read``'s byte cap: ``(old guide, new
+#: guide, anchor of the first moved heading)``. The old guide keeps that heading
+#: over one paragraph that names the new guide, so links to it still land.
+_SPLIT_490 = (
+    ("providers-and-models.md", "credentials.md", "providing-an-api-key"),
+    (
+        "extension-authoring.md",
+        "extension-providers.md",
+        "custom-providers-with-their-own-login-method",
+    ),
+)
+
+
+def _bundled(name: str) -> str:
+    return (BUNDLED / name).read_text(encoding="utf-8")
+
+
+def test_the_sections_490_moved_are_no_longer_in_the_guide_they_left() -> None:
+    """A copy is not a move. A split that copied the sections into the new
+    guide and left them in the old one frees no bytes, and the cap test stays
+    green until that guide reaches the cap again. Checked on headings, not on
+    a byte count against the pre-split sizes: the trimmed guides are meant to
+    grow back into the room the split made."""
+    assert BUNDLED_DOCS, _EMPTY
+    for old, new, stub in _SPLIT_490:
+        new_anchors = list(_sections(_bundled(new)))
+        moved = set(new_anchors[1:]) - {stub}  # [0] is the new guide's title
+        assert moved, f"{new} has no sections besides its title and #{stub}"
+        left = sorted(moved & _anchors(_bundled(old)))
+        assert left == [], f"{old} still has the sections {new} took: {left}"
+
+
+def test_the_old_anchors_490_kept_lead_to_the_new_guides() -> None:
+    """``#providing-an-api-key`` and ``#custom-providers-with-their-own-login-method``
+    were linked from outside the bundle before #490 (issues, branches, other
+    READMEs). No guide links to them now, so the fragment test cannot see them
+    go: each must stay a heading of its old guide, over one paragraph that
+    links to the guide the text moved to."""
+    assert BUNDLED_DOCS, _EMPTY
+    for old, new, stub in _SPLIT_490:
+        sections = _sections(_bundled(old))
+        assert stub in sections, f"{old} lost the #{stub} heading"
+        pointer = sections[stub]
+        assert f"]({new})" in pointer or f"]({new}#" in pointer, (old, stub, pointer)
+        assert "\n\n" not in pointer, f"{old}#{stub} should be one pointer paragraph"
+
+
+#: Prose that sends a reader to text #490 moved by a link with no ``#fragment``,
+#: which the fragment test cannot check: ``(guide, words in the paragraph or
+#: table row, the guide that paragraph must link to)``.
+_POINTERS_490 = (
+    ("getting-started.md", "For provider keys see", "credentials.md"),
+    ("getting-started.md", "for the full list of providers", "credentials.md"),
+    ("tls-and-corporate-ca.md", "provider keys and environment variables", "credentials.md"),
+    ("providers-and-models.md", "How to pick a model", "credentials.md"),
+    ("extension-authoring.md", "`register_login_provider(provider)`", "extension-providers.md"),
+    ("extension-authoring.md", "`register_api_adapter(api, stream_fn)`", "extension-providers.md"),
+)
+
+
+def _blocks_with(text: str, words: str) -> list[str]:
+    """The paragraphs, or for a table its rows, that contain ``words``, with
+    whitespace collapsed so a rewrapped line does not hide them."""
+    blocks: list[str] = []
+    for paragraph in text.split("\n\n"):
+        rows = [line for line in paragraph.splitlines() if line.startswith("|")]
+        blocks.extend(rows or [paragraph])
+    flat = (" ".join(block.split()) for block in blocks)
+    return [block for block in flat if words in block]
+
+
+def test_the_prose_that_points_at_490s_moved_text_names_the_new_guides() -> None:
+    """A link to the old guide with no ``#fragment`` still resolves, so neither
+    link test fails when it is left behind; the reader lands on a guide that no
+    longer has the text the sentence promises."""
+    assert BUNDLED_DOCS, _EMPTY
+    wrong: list[str] = []
+    for guide, words, target in _POINTERS_490:
+        blocks = _blocks_with(_bundled(guide), words)
+        assert len(blocks) == 1, f"{guide}: {len(blocks)} blocks contain {words!r}"
+        if f"]({target}" not in blocks[0]:
+            wrong.append(f"{guide}: {words!r} does not link to {target}")
+    # The guides index lists every guide, so the two new ones too.
+    index = _bundled("README.md")
+    wrong += [
+        f"README.md does not list {name}"
+        for name in BUNDLED_DOCS
+        if f"]({name})" not in index and name != "README.md"
+    ]
+    assert wrong == [], "\n".join(wrong)

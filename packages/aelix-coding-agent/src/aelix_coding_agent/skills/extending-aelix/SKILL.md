@@ -41,6 +41,7 @@ network:
 ```
 aelix docs                              # list every guide
 aelix docs extension-authoring          # the one for this skill
+aelix docs extension-providers          # a model provider, its /login, a wire adapter
 aelix docs --search capabilities        # grep all of them
 ```
 

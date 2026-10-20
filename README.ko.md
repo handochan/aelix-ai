@@ -131,7 +131,7 @@ aelix docs                                       # 휠에 함께 실린 가이�
 프로바이더 자격증명이 필요합니다: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `OPENROUTER_API_KEY`를 설정하거나, TUI 안에서 `/login`(Copilot·구독 OAuth)을 실행하거나,
 `--api-key`를 넘기거나, `~/.aelix/agent/models.json`을 구성하세요.
-[프로바이더 가이드](docs/guides/providers-and-models.md)를 참고하세요.
+[자격증명 가이드](docs/guides/credentials.md)를 참고하세요.
 
 `grep`이나 `find`를 처음 쓸 때 Aelix는 `ripgrep`과 `fd`를 `~/.aelix/agent/bin`에
 내려받습니다(둘 다 `.gitignore`를 존중하게 하려고). 런타임에 받아오는 바이너리는 이 둘뿐이고,
@@ -334,9 +334,11 @@ Windows에서는 job object의 `kill_on_close`이고, macOS는 둘 다 없어서
 
 [시작하기](docs/guides/getting-started.md) ·
 [프로바이더와 모델](docs/guides/providers-and-models.md) ·
+[자격증명](docs/guides/credentials.md) ·
 [커스텀 모델](docs/guides/models-json.md) ·
 [에이전트 프로필](docs/guides/agent-profiles.md) ·
 [확장 작성](docs/guides/extension-authoring.md) ·
+[프로바이더 확장](docs/guides/extension-providers.md) ·
 [프로젝트 신뢰](docs/guides/project-trust.md) ·
 [프라이빗 카탈로그](docs/guides/private-catalog.md) ·
 [릴리즈](RELEASING.md)

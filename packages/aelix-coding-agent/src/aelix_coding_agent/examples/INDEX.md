@@ -114,5 +114,8 @@ already a complete extension.
 
 - [`../docs/extension-authoring.md`](../docs/extension-authoring.md) — the full
   authoring guide, also readable as `aelix docs extension`.
+- [`../docs/extension-providers.md`](../docs/extension-providers.md) — a model
+  provider, its `/login` method and a custom wire adapter (`selfhosted/`
+  above), also readable as `aelix docs extension-providers`.
 - `extensions/api.py` — `ExtensionAPI`, the object your `setup` receives.
 - `docs/decisions/0096-*.md` — the manifest v1 decision record.

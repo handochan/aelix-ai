@@ -97,6 +97,13 @@ class Topic:
 #: all — it lives in `aelix --help` under `--tools` — so a `tools` topic
 #: promising otherwise would be the invented document this module refuses to
 #: create.
+#:
+#: `auth` and `login` follow the text they name. They meant the providers guide
+#: while it held "Providing an API key"; #490 moved that section (the four key
+#: sources, the `/login` token refresh, the environment variables) into
+#: `credentials`, so they point there now. `providers` and `models` stay on
+#: `providers-and-models`, which keeps model selection and routing. An
+#: extension's own `/login` METHOD is in `extension-providers`, reached by name.
 ALIASES: dict[str, str] = {
     "extension": "extension-authoring",
     "extension-api": "extension-authoring",
@@ -112,8 +119,10 @@ ALIASES: dict[str, str] = {
     "trust": "project-trust",
     "models": "providers-and-models",
     "providers": "providers-and-models",
-    "auth": "providers-and-models",
-    "login": "providers-and-models",
+    "auth": "credentials",
+    "login": "credentials",
+    "api-key": "credentials",
+    "api-keys": "credentials",
     "models.json": "models-json",
     "custom-models": "models-json",
     "catalog": "private-catalog",

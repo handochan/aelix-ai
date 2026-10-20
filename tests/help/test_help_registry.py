@@ -160,6 +160,32 @@ def test_the_issue_five_names_are_all_accounted_for() -> None:
     assert "skills" in NEAR_MISSES
 
 
+def test_auth_and_login_open_the_guide_that_holds_the_key_sources() -> None:
+    """An alias is a claim about a guide's content, and #490 moved the content
+    `auth` and `login` were about: the four key sources and the `/login` token
+    refresh went from `providers-and-models` to `credentials`, and
+    `providers-and-models` kept only a pointer under the old heading. Checked on
+    the text the alias prints, not on the alias table, so the next move of that
+    section fails here instead of leaving `aelix docs login` on the pointer."""
+    for name in ("auth", "login", "api-key", "api-keys"):
+        topic = resolve_topic(name)
+        assert topic is not None, name
+        text = read_topic(topic)
+        assert "A credential can come from four places" in text, (name, topic.name)
+        assert "A `/login` subscription's access token expires" in text, (name, topic.name)
+
+
+def test_providers_and_models_stay_on_the_guide_named_for_them() -> None:
+    """#490 moved the key sections out of `providers-and-models` but kept model
+    selection and routing there, so `providers` and `models` were left on it
+    (ADR-0218's #490 amendment); its opening sentence names `credentials` for
+    keys and the environment-variable table."""
+    for name in ("providers", "models"):
+        topic = resolve_topic(name)
+        assert topic is not None, name
+        assert topic.name == "providers-and-models", (name, topic.name)
+
+
 def test_aliases_and_near_misses_do_not_overlap() -> None:
     """A name in both would resolve, so its NEAR_MISSES text would be dead
     prose that nobody ever sees."""

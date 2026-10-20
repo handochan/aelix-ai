@@ -2,10 +2,11 @@
 
 Status: Accepted
 
-This guide gets you from zero to a running `aelix` agent. For provider keys and
-model selection see [providers-and-models.md](providers-and-models.md); for
-custom models see [models-json.md](models-json.md); for writing your own tools
-see [extension-authoring.md](extension-authoring.md).
+This guide gets you from zero to a running `aelix` agent. For provider keys see
+[credentials.md](credentials.md); for model selection see
+[providers-and-models.md](providers-and-models.md); for custom models see
+[models-json.md](models-json.md); for writing your own tools see
+[extension-authoring.md](extension-authoring.md).
 
 ## Install
 
@@ -209,7 +210,7 @@ WSL2 remains a fine alternative — install there exactly as you would on Linux.
 export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY / ...
 ```
 
-See [providers-and-models.md](providers-and-models.md) for the full list of
+See [credentials.md](credentials.md) for the full list of
 providers and their environment variables, plus the `--api-key` flag and the
 `models.json` `apiKey` field as alternatives.
 

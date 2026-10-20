@@ -389,10 +389,10 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     and it is the claim most likely to rot. ``read`` truncates when EITHER
     binds — ``truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
     max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:225-227`` — so both are
-    pinned by ``tests/cli/test_docs_signpost.py``. Widest guide on this tree::
+    pinned by ``tests/cli/test_docs_signpost.py``. Widest after #490's split::
 
-        extension-authoring.md   33620 bytes   (DEFAULT_MAX_BYTES = 51200)
-        extension-authoring.md     668 lines   (DEFAULT_MAX_LINES =  2000)
+        providers-and-models.md  39776 bytes   (DEFAULT_MAX_BYTES = 51200)
+        extension-authoring.md     689 lines   (DEFAULT_MAX_LINES =  2000)
 
     Asserting the byte cap ALONE was the #101 L2 finding: a 2603-line /
     33834-byte guide passes it and ``read`` truncates anyway, reporting
@@ -414,14 +414,14 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     both are closed by that one function, which is the point — fixing one site
     is how the two rules diverged in the first place.
 
-    BYTE COST. 555 chars of prose plus the install-dependent directory path —
-    643 emitted on this checkout, where that path is 88 — which is why the test
+    BYTE COST. 611 chars of prose (eleven guides, #490) plus the install path —
+    686 emitted on this checkout, where that path is 75 — which is why the test
     budgets the PROSE and not the block. The percentage was quoted here as if it
     were a property of the block; it is not. ``tools`` has been REQUIRED since
     #120, so what this is a percentage *of* depends on the active set. With the
-    seven built-ins and ``cwd = /some/project`` it takes the prompt from 4074 to
-    4717 on this checkout, +15.8%. Both endpoints move with the install path
-    (:func:`_extension_signpost` emits two more absolute paths), so 555 is the
+    seven built-ins and ``cwd = /some/project`` it takes the prompt from 4050 to
+    4736 on this checkout, +16.9%. Both endpoints move with the install path
+    (:func:`_extension_signpost` emits two more absolute paths), so 611 is the
     only environment-independent number here. It is paid on EVERY turn, which is why
     the scope clause is the first thing in it: unconditional "here is the
     documentation" biases the model toward reading docs when the user asked for

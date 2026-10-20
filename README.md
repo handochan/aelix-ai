@@ -133,7 +133,7 @@ aelix docs                                       # the guides, bundled in the wh
 Aelix needs a provider credential: set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `OPENROUTER_API_KEY`, run `/login` inside the TUI (Copilot / subscription OAuth), pass
 `--api-key`, or configure `~/.aelix/agent/models.json`. See the
-[providers guide](docs/guides/providers-and-models.md).
+[credentials guide](docs/guides/credentials.md).
 
 On first use of `grep` or `find`, Aelix downloads `ripgrep` and `fd` into
 `~/.aelix/agent/bin` so both honour `.gitignore`. These are the only binaries fetched at
@@ -341,9 +341,11 @@ than core; an explicit hook bus for auditability. Full rationale in [`docs/`](do
 
 [Getting started](docs/guides/getting-started.md) ·
 [Providers & models](docs/guides/providers-and-models.md) ·
+[Credentials](docs/guides/credentials.md) ·
 [Custom models](docs/guides/models-json.md) ·
 [Agent profiles](docs/guides/agent-profiles.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·
+[Provider extensions](docs/guides/extension-providers.md) ·
 [Project trust](docs/guides/project-trust.md) ·
 [Private catalog](docs/guides/private-catalog.md) ·
 [Releasing](RELEASING.md)

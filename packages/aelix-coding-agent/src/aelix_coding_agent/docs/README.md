@@ -12,13 +12,19 @@ prints one. That is why every cross-directory link here is an absolute URL —
 
 - [getting-started.md](getting-started.md) — install, set a key, run, modes,
   common flags, and the interactive TUI.
-- [providers-and-models.md](providers-and-models.md) — provider API keys,
-  environment variables, selecting and switching models.
+- [providers-and-models.md](providers-and-models.md) — selecting and
+  switching models, how a `--model` string finds its provider, automatic
+  retry, thinking levels, and what this build can run.
+- [credentials.md](credentials.md) — provider API keys: the environment
+  variables, `--api-key`, a `models.json` `apiKey`, and `/login`.
 - [models-json.md](models-json.md) — `~/.aelix/agent/models.json`: add custom
   providers/models, headers, Bearer auth, and built-in overrides.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
   (tools, slash commands, hooks, flags).
+- [extension-providers.md](extension-providers.md) — a model provider from an
+  extension: `register_provider`, its own `/login` method, and a custom wire
+  adapter.
 - [project-trust.md](project-trust.md) — the gate in front of a cloned repo's
   `.aelix/` resources: what it covers, what it deliberately does not
   (`AGENTS.md`), `--approve` / `--no-approve`, `/trust`, and where the answer is
