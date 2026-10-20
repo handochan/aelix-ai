@@ -361,7 +361,7 @@ class RpcChannel:
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:443-447``) is NOT gated on the caller's
+            # disjunct (``envelope.py:448-452``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:

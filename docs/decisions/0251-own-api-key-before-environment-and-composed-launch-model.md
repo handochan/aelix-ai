@@ -1036,6 +1036,12 @@ decides on it. In aelix:
 - **`--mode json` exits 0 when every retry fails**, with the refresh's error in the last
   message — what it does when a model's `502` outlasts its retries (#363 verify round 2's
   `server-529` control: `rc=0`); before, the raise made it `rc=1`. Text `-p` exits 1 either way.
+
+  *(Amended 2026-10-21 by [ADR-0268](0268-json-mode-exits-1-when-the-last-answer-failed.md),
+  [#410](https://github.com/handochan/aelix-ai/issues/410): no longer true. `--mode json`
+  now exits 1 when the answer the run produced failed, as `-p` does, so a refresh whose
+  retries all fail exits 1 in both modes; the stream and the empty stderr are unchanged.)*
+
 - Not covered, and unchanged: the compaction and branch summaries call the callback themselves
   and still fail on any refresh failure (they had no retry for a provider `502` either), and
   `settings.json`'s `retry.enabled` / `retry.maxRetries` are not read by the harness for any
@@ -1131,6 +1137,10 @@ reproduced on `a46092fd` first.
    `Retry failed after N attempts: <finalError>`). `--mode json`: rc 0 with the error in the last
    message, as for every turn that ends on an error message; text `-p`: the same stderr line as a
    first-attempt refusal, rc 1 (`logs/live_json_r2.out`, `logs/live_text_r2.out`).
+
+   *(Amended 2026-10-21 by ADR-0268, #410: that json rc 0 is now rc 1, the same as text `-p`;
+   the json stream is unchanged. `tests/cli/test_refresh_retry_379.py`'s refused-retry row pins
+   rc 1.)*
 2. **A logout while a retry waits** (Codex cat1/cat2). Another process empties `auth.json` while
    the `502` is pending; the failed refresh re-reads the store (pi parity, P-142), and the retry
    then resolves what a new turn after that logout resolves — the exported key. **Kept**: there is

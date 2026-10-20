@@ -399,7 +399,8 @@ shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
 `auto_retry_end` (`success`, `attempt`, `final_error`). The keys are snake_case;
 pi's same events spell them `maxAttempts`, `delayMs`, `errorMessage` and
 `finalError`. A context overflow is not retried this way: it is compacted
-instead.
+instead. When the retries run out on the run's last prompt, `-p` and
+`--mode json` exit 1 ([exit codes](getting-started.md#exit-codes)).
 
 The `retry` block of `settings.json` (`~/.aelix/agent/settings.json`; a trusted
 project's `.aelix/settings.json` overrides it key by key) sets how, with pi's

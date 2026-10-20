@@ -195,9 +195,12 @@ be one. That is the decision this ADR records.
 - **Other renderers of a persisted transcript.** Neither `export_to_html` nor
   the print/json modes is touched. The export does NOT double — it shows the
   `content` copy and only that (measured, §Consequences); its problem is the
-  opposite one and is its own issue. `modes/print_mode.py:329-332` does not
-  double either: on `error`/`aborted` it prints `error_message` to stderr and
-  skips the content blocks entirely. Read, not measured by a probe.
+  opposite one and is its own issue. `modes/print_mode.py:409-426` does not
+  double either: on `error`/`aborted` it prints `error_message` to stderr (the
+  text `_final_failure` returns, `print_mode.py:174`) and skips the content
+  blocks entirely. Read, not measured by a probe. *(Citation re-pointed
+  2026-10-21, #410: the text branch moved into `_final_failure` and step 8,
+  which since #410 also print nothing for a failed answer an earlier run left.)*
 
 ## Tests
 

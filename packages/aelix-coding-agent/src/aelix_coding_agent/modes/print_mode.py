@@ -4,19 +4,45 @@ Sprint 6h₆ (Phase 5a-ii, ADR-0089, P-389). Lifecycle mirrors Pi:
 
 1. ``registerSignalHandlers`` (SIGTERM / SIGHUP on POSIX, SIGBREAK on
    Windows — #220).
-2. ``setRebindSession`` so JSON-mode subscribe survives session swaps.
-3. JSON-mode header emit (session metadata).
-4. Initial rebind (binds subscribe to the live harness).
-5. Initial-message prompt (if non-:data:`None`).
-6. Residual-messages loop (``parsed.messages`` after :func:`build_initial_message`'s ``.shift()``).
-7. Text-mode terminal printout (only TextContent blocks of the last
-   assistant message; if ``stop_reason`` is ``"error"`` / ``"aborted"``
-   emit the error message to stderr and return exit-code 1).
-8. Cleanup (unsubscribe + signal handler removal + harness dispose).
+2. ``setRebindSession`` (the rebind closure) so JSON-mode subscribe survives
+   session swaps.
+3. The subscribe itself (JSON mode: one event per stdout line), re-attached
+   by every rebind.
+4. JSON-mode header emit (session metadata).
+5. Initial rebind (binds subscribe to the live harness).
+6. Initial-message prompt (if non-:data:`None`). Just before it, the
+   messages the session already holds are noted (#410): they are not this
+   run's, so step 8 never judges them.
+7. Residual-messages loop (``parsed.messages`` after :func:`build_initial_message`'s ``.shift()``).
+8. The run's verdict (:func:`_final_failure`): if the session's last message
+   is an assistant message THIS RUN appended whose ``stop_reason`` is
+   ``"error"`` / ``"aborted"``, return exit-code 1 — in BOTH output modes
+   since #410. Text mode also writes the error message to stderr; otherwise
+   it prints the TextContent blocks of the last message when that is an
+   answer that did not fail.
+9. Cleanup (unsubscribe + signal handler removal + harness dispose).
 
 JSON output is line-delimited JSON, one event per line. Header (when
 present) is emitted first; subsequent lines are session events from
 :meth:`AgentHarness.subscribe`.
+
+**Step 8 diverges from Pi, deliberately (ADR-0268, #410), in two ways.**
+(1) Pi sets ``exitCode = 1`` for an ``error`` / ``aborted`` final message
+only when ``mode === "text"`` (``print-mode.ts``, ``origin/main``
+fdce48eb4), and its ``cli-integration.md`` says a failed JSON-mode response
+"does not by itself produce a nonzero exit status". Aelix applies the text
+rule to ``--mode json`` too, on the owner's decision of 2026-10-20: a script
+must see a run that ended on an exhausted retry (a provider ``502``, an
+OAuth refresh that kept failing) in ``$?``. JSON mode writes NOTHING extra
+for it — not to stdout (the event stream is unchanged; the failed answer's
+``turn_end`` already carries ``stop_reason`` and ``error_message``) and not
+to stderr (a delegation parent reads a JSON child's stderr as a fallback
+summary, and a ``Request aborted`` line there would displace the partial
+answer the stream carried — ADR-0268 §3). (2) Pi's text mode judges the last
+message whoever wrote it, so ``--continue`` with no prompt (or one an extension's
+``input`` hook handles) exits 1 there on a session whose last answer failed in an
+EARLIER run (read, not run). Aelix judges only a message this run appended, in
+both modes (ADR-0268 §1).
 
 Pi citation: ``modes/print-mode.ts:1-158`` at SHA
 ``734e08edf82ff315bc3d96472a6ebfa69a1d8016``.
@@ -102,6 +128,52 @@ def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
     return {"metadata": repr(metadata)}
 
 
+#: The stop reasons that fail a run (#410, ADR-0268). ``"length"`` is not one:
+#: a truncated answer is printed and exits 0 in both modes (pi ``441f5767c``
+#: made text ``-p`` exit 1 for it; not followed yet).
+_FAILED_STOP_REASONS = ("error", "aborted")
+
+
+def _final_failure(messages: list[Any], *, before: list[Any]) -> str | None:
+    """The run's failure message, or :data:`None` when it did not fail.
+
+    One rule for both output modes (#410, ADR-0268): the LAST message of the
+    session, if it is an assistant message whose ``stop_reason`` is
+    ``"error"`` or ``"aborted"`` AND this run appended it. The first half is
+    pi's text-mode rule (``state.messages[state.messages.length - 1]``,
+    ``role === "assistant"``), so with several prompts it is the last one's
+    answer that decides, and a prompt that failed before a later one
+    succeeded does not.
+
+    The second half is aelix's (review round 2 of #410): ``before`` is the
+    session's messages as this run found them, read just before its first
+    prompt, and a last message that is one of THOSE objects is history — an
+    earlier run's answer — not this run's. Without it ``--continue`` with no
+    prompt, or with a prompt an extension's ``input`` hook handles (no turn
+    runs), exits 1 on a session whose last answer failed yesterday. Matched
+    by identity, not by counting: a compaction during the run rebuilds
+    ``state.messages`` in place from the session branch
+    (``harness/core.py``, ``compact``: ``clear()`` + ``extend()``), so the
+    list can end SHORTER than it started while its last message is this
+    run's failed answer. The rebuild keeps the message objects (a session
+    entry holds the object that was appended), so identity survives it.
+
+    The message is the one text mode writes to stderr: the message's own
+    ``error_message``, else ``Request <stop_reason>``.
+    """
+
+    if not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, AssistantMessage):
+        return None
+    if any(last is earlier for earlier in before):
+        return None
+    if last.stop_reason not in _FAILED_STOP_REASONS:
+        return None
+    return last.error_message or f"Request {last.stop_reason}"
+
+
 async def _safe_dispose(runtime_host: AgentSessionRuntime) -> None:
     """Dispose helper — swallows errors so cleanup never raises.
 
@@ -123,10 +195,12 @@ async def run_print_mode(
 ) -> int:
     """Pi parity: ``runPrintMode`` (``modes/print-mode.ts``).
 
-    Returns the process exit code (0 on success; 1 on assistant
-    ``stop_reason`` of ``"error"`` / ``"aborted"`` OR any exception;
-    ``128 + sig`` — 143 for SIGTERM, 149 for SIGBREAK — when a signal
-    handler installed by step 1 ran, which OVERRIDES the 1, #220).
+    Returns the process exit code (0 on success; 1 when the last message is
+    an assistant message this run appended with ``stop_reason`` ``"error"`` /
+    ``"aborted"`` — in ``text`` AND ``json`` mode since #410 (ADR-0268),
+    where pi returns 1 for it in text mode only — OR on any exception;
+    ``128 + sig`` — 143 for SIGTERM, 149 for SIGBREAK — when a signal handler
+    installed by step 1 ran, which OVERRIDES the 1, #220).
 
     ``model_registry`` is Aelix-only (#240) and optional: a headless run has no
     ``/reload`` and no ``/login``, so a turn that ended in an error is the ONLY
@@ -144,8 +218,8 @@ async def run_print_mode(
         Read off the harness state rather than from an exception, because
         ``harness.prompt`` does not raise for a provider failure: every shipping
         adapter converts one into an ``AssistantErrorEvent`` and the agent loop
-        returns on it. This is the same terminal message step 8 already reads to
-        pick the exit code — the ``"aborted"`` half of that check is left out on
+        returns on it. Step 8 reads the same kind of terminal message to pick
+        the exit code — the ``"aborted"`` half of that check is left out on
         purpose, since an abort is a signal or a user, not a credential.
         """
 
@@ -279,6 +353,15 @@ async def run_print_mode(
         # === Pi step 5 — initial rebind ======================================
         await _rebind(runtime_host.harness)
 
+        # #410 review round 2 — what the session holds before this run's first
+        # prompt is not this run's: step 8 judges only a message the run
+        # appended (see :func:`_final_failure`). A list of the objects, kept
+        # alive until step 8, so an identity match cannot hit a recycled id.
+        try:
+            messages_before = list(runtime_host.harness.state.messages)
+        except Exception:  # noqa: BLE001 — a stub harness need not carry state
+            messages_before = []
+
         # === Pi step 6 — initial message =====================================
         if initial_message is not None:
             await runtime_host.harness.prompt(
@@ -318,23 +401,29 @@ async def run_print_mode(
                 "stdout consumer went away during JSON event emit"
             )
 
-        # === Pi step 8 — text-mode terminal printout =========================
-        if mode == "text":
-            state_messages = list(runtime_host.harness.state.messages)
-            if state_messages:
-                last = state_messages[-1]
-                if isinstance(last, AssistantMessage):
-                    stop_reason = last.stop_reason
-                    if stop_reason in ("error", "aborted"):
-                        error_message = (
-                            last.error_message or f"Request {stop_reason}"
-                        )
-                        print(error_message, file=sys.stderr)
-                        exit_code = 1
-                    else:
-                        for block in last.content:
-                            if isinstance(block, TextContent):
-                                _write_raw_stdout(f"{block.text}\n")
+        # === Pi step 8 — the run's verdict + text-mode terminal printout ======
+        # The verdict is read in BOTH modes (#410, ADR-0268 — pi reads it in
+        # text mode only). JSON mode only takes the exit code from it: its
+        # stdout is the event stream, which already carried the failed
+        # message, and its stderr stays as it was (see the module docstring).
+        state_messages = list(runtime_host.harness.state.messages)
+        failure = _final_failure(state_messages, before=messages_before)
+        if failure is not None:
+            exit_code = 1
+            if mode == "text":
+                print(failure, file=sys.stderr)
+        elif mode == "text" and state_messages:
+            last = state_messages[-1]
+            # A failed answer is never printed as an answer: the one left by
+            # an EARLIER run (``--continue`` with no prompt) exits 0 and prints
+            # nothing, as before #410 it printed nothing to stdout either.
+            if (
+                isinstance(last, AssistantMessage)
+                and last.stop_reason not in _FAILED_STOP_REASONS
+            ):
+                for block in last.content:
+                    if isinstance(block, TextContent):
+                        _write_raw_stdout(f"{block.text}\n")
 
     except BrokenPipeError:
         # Issue #57: stdout consumer vanished — propagate to main_sync's
@@ -381,12 +470,14 @@ async def run_print_mode(
     signal_code = signal_exit["code"]
     if signal_code is not None:
         # A signal reached us and ``_signal_cleanup_and_exit`` recorded
-        # ``128 + sig``. This OVERRIDE is required, not cosmetic: step 7 above
+        # ``128 + sig``. This OVERRIDE is required, not cosmetic: step 8 above
         # already set ``exit_code = 1`` for an ``aborted`` stop_reason, which is
         # what a cancelled turn produces (MEASURED,
         # ``.omc/specs/220-progress-2026-09-05.md`` §1: the real child printed
         # "Request aborted" on the SIGTERM path), so without it the delegation
-        # parent cannot tell "we killed it" from "the model errored".
+        # parent cannot tell "we killed it" from "the model errored". Since
+        # #410 that ``1`` is set in ``--mode json`` too — the mode a delegated
+        # child runs in — so the override now matters on both.
         exit_code = signal_code
 
     return exit_code
@@ -434,7 +525,7 @@ async def _signal_cleanup_and_exit(
     goes red under the draft's order. With the assignment after the ``await``,
     ``run_print_mode`` returned **1**, not 143. ``dispose()`` is what ABORTS
     the in-flight turn, so the moment it starts, ``run_print_mode`` unparks
-    from ``harness.prompt(...)``, runs step 7 (which sets ``exit_code = 1`` for
+    from ``harness.prompt(...)``, runs step 8 (which sets ``exit_code = 1`` for
     the ``aborted`` stop_reason), runs its ``finally`` and returns — all while
     this coroutine is still inside ``dispose``. Assigning before the first
     ``await`` closes that window deterministically: ``ensure_future`` runs this

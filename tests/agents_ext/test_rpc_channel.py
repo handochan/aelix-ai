@@ -1798,7 +1798,9 @@ async def test_both_channels_report_a_failing_agent_identically(
 
     A child whose model errored exits 0 with empty stderr while the stream
     carries ``stop_reason: "error"`` — the case that proves neither channel
-    trusts the exit status alone.
+    trusts the exit status alone. (Both stubs exit 0; a real ``--mode json``
+    child exits 1 for it since #410, a real rpc child still 0 — ``exit_code``
+    is outside :func:`_comparable` for that reason.)
     """
 
     failing = textwrap.dedent(

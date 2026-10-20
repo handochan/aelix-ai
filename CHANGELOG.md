@@ -160,6 +160,25 @@ unwritten. Add them with the next release.
   Release, so its approval comes with a window in which RELEASING.md has the
   maintainer run the installers with `AELIX_VERSION=<tag>` first. If the smoke
   fails, nothing was published and the version is still free.
+- **`--mode json` exits 1 when the run's last answer failed, as `-p` does
+  (#410, ADR-0268).** A JSON run whose provider kept answering `502` until the
+  retries ran out, whose `/login` token refresh kept failing until the retries
+  ran out, or whose last answer otherwise ended in an error or an abort exited
+  0, so a script could not see the failure in `$?`; `-p` already exited 1.
+  Both now use the same rule: the last message decides when this run wrote
+  it, so with several prompts it is the last one's answer. The event stream
+  on stdout is unchanged (measured equal, line for line, apart from ids and
+  timestamps) and JSON mode still writes nothing to stderr for it: the failed
+  answer's `turn_end` carries its `stop_reason` and `error_message`. Signal
+  exit codes (143 for `SIGTERM`) are unchanged. pi's `--mode json` exits 0
+  here; aelix diverges on purpose. One change in `-p` too: a session whose
+  last answer failed in an earlier run, continued with no prompt or with a
+  prompt an extension handles, now exits 0 and prints nothing, where it
+  exited 1 and printed the old error (pi's `-p` still does; `--mode json`
+  exited 0 for it before and still does). An answer cut off at the output
+  token limit still prints and exits 0 in both modes. A delegated agent whose model failed now reports
+  exit code 1 and ends as `error` in `/agents`, where it showed `done`. The
+  getting-started guide has a new "Exit codes" section.
 
 - **Keyless OpenAI clients that extensions and embedders build need a
   placeholder key (#278, ADR-0265) - a migration.** On openai 2.34 and later,
@@ -1035,9 +1054,9 @@ unwritten. Add them with the next release.
   answer was lost) ends the retry with that same message, `✖ Retry failed: …` in the TUI
   and `auto_retry_end` with `success: false` in `--mode json` and rpc, and the
   next turn gets its full three retries again. One visible change: when every
-  retry fails, or a refusal ends one, `--mode json` ends with exit code 0 and
-  the error in its last message, as it does when a model's error ends a
-  retry; `-p` still exits 1.
+  retry fails, or a refusal ends one, the error is in the last message, as it
+  is when a model's error ends a retry; `-p` exits 1, and so does `--mode json`
+  since #410 (under Changed).
 - **A session you reopen without `--model` comes back on the model it last ran
   on, and a prompt that cannot run is no longer written into it (#376).**
   `aelix --continue` (also `--resume`, `--session`, `--fork`, and `/resume`,

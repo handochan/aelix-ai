@@ -668,7 +668,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:1979-1996``) nor child (``modes/print_mode.py:160-219``)
+    (``tui/shell.py:1979-1996``) nor child (``modes/print_mode.py:234-293``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -792,10 +792,11 @@ async def test_oversize_line_dropped_and_stream_recovers(tmp_path: Path) -> None
 # === The terminator, against real processes ==================================
 #
 # ``agent_end`` is the child's own end-of-run marker. The exit code cannot
-# substitute for it: a JSON-mode child that dies mid-turn exits **0**
-# (``print_mode.py`` maps ``stop_reason`` to a non-zero code only ``if mode ==
-# "text"``). These two children differ ONLY in whether that marker arrived
-# intact, and they must land on opposite verdicts.
+# substitute for it: a JSON-mode child that dies mid-turn may exit **0** (the
+# stub below does, after a good ``message_end``), and ``print_mode.py`` maps
+# only a FAILED last answer to 1 — in JSON mode too since #410 — which says
+# nothing about a missing marker. These two children differ ONLY in whether
+# that marker arrived intact, and they must land on opposite verdicts.
 
 _DIED_MID_TURN = _stub(
     """
@@ -1845,7 +1846,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:250-257``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:324-331``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —

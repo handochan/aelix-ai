@@ -674,7 +674,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:621-623`` → ``envelope.py:524``), which makes it attacker-supplied
+(``stream.py:621-623`` → ``envelope.py:529``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""

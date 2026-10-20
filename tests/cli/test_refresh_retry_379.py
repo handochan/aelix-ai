@@ -696,10 +696,10 @@ async def test_the_cli_in_json_mode_after_a_refused_retry(
                  and (e.get("message") or {}).get("role") == "assistant"]
     assert assistant == ["message_start", "message_end"] * 2
     assert endpoints.model_auth == []
-    # What --mode json does for every turn that ends on an error message (a model's 400
-    # after a 502 included): rc 0, the error in the last message_end (print_mode.py text
-    # branch only sets 1). A refusal on the FIRST attempt still raises: rc 1, as before.
-    assert rc == 0, (rc, out.err)
+    # What --mode json does for every run whose own last answer is an error (a model's 400
+    # after a 502 included): the error in the last message_end and, since #410
+    # (ADR-0268), rc 1 as in text mode. A refusal on the FIRST attempt raises: rc 1 too.
+    assert rc == 1, (rc, out.err)
 
 
 # === review round 3 ==========================================================

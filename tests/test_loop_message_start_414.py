@@ -488,7 +488,9 @@ async def test_json_mode_prints_the_pair(
     anthropic_502: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The real ``_async_main`` in ``--mode json``: what a json client reads. pi's json mode
-    prints its session events, ``message_start`` included, for the same failure."""
+    prints its session events, ``message_start`` included, for the same failure. The run
+    exits 1 since #410 (ADR-0268): its last message is the failed answer, the rule ``-p``
+    uses (pi's json mode exits 0 here)."""
 
     from aelix_coding_agent.cli import entry as entry_mod
 
@@ -523,4 +525,4 @@ async def test_json_mode_prints_the_pair(
         e for e in lines if e.get("type") == "message_end" and e["message"]["role"] == "assistant"
     ]
     assert "502" in assistant_end[0]["message"]["error_message"]
-    assert rc == 0, out.err
+    assert rc == 1, out.err

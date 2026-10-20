@@ -24,7 +24,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:345-346`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:434-435`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -1153,7 +1153,7 @@ class PrintChannel:
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
                     # neither parent (``tui/shell.py:1979-1996``) nor child
-                    # (``modes/print_mode.py:160-219``) installs a SIGINT
+                    # (``modes/print_mode.py:234-293``) installs a SIGINT
                     # handler to convert that into a result.
                     #
                     # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,
@@ -1423,9 +1423,10 @@ class PrintChannel:
             return envelope(outcome="timeout", exit_code=exit_code)
         # ``outcome="ok"`` is a PROPOSAL, not a verdict: ``build_result``
         # tightens it when the exit code or the stream disagrees (§(j)). Never
-        # trust the return code alone — a JSON-mode child whose model errored
-        # exits 0 with empty stderr while the stream carries
-        # ``stop_reason: "error"``.
+        # trust the return code alone — until #410 a JSON-mode child whose model
+        # errored exited 0 with empty stderr while the stream carried
+        # ``stop_reason: "error"`` (it exits 1 since, ADR-0268; the stream is
+        # still what ``build_result`` reads).
         row.state = "done" if exit_code == 0 else "error"
         return envelope(outcome="ok", exit_code=exit_code)
 

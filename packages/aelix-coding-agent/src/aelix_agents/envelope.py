@@ -250,7 +250,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     gated on ``not ok``. On a SUCCESSFUL run the child's own assistant text is
     authoritative and stderr is diagnostic noise — provider SDK / httpx logging
     and any extension ``print(..., file=sys.stderr)`` land in the same pipe
-    (``print_mode.py:38-41`` declines pi's ``takeOverStdout``). Ungated, one
+    (``print_mode.py:64-67`` declines pi's ``takeOverStdout``). Ungated, one
     ``DeprecationWarning`` on a perfectly successful delegation would replace
     the child's answer with a log line. On every FAILURE path the rung fires
     exactly as specified, including the zero-stdout case it exists for.
@@ -414,12 +414,17 @@ def build_result(
     stderr tail or a spawn error is not in that file — a child that never got
     as far as its first turn left only the header and the origin record there.
 
-    NEVER TRUST THE RETURN CODE ALONE (§9.1). ``print_mode.py``'s
-    ``stop_reason in ("error", "aborted") → exit_code = 1`` mapping is guarded
+    NEVER TRUST THE RETURN CODE ALONE (§9.1). Until #410 ``print_mode.py``'s
+    ``stop_reason in ("error", "aborted") → exit_code = 1`` mapping was guarded
     by ``if mode == "text"``, so a JSON-mode child whose model errored — a bogus
-    model id, an auth failure mid-stream — exits **0** with empty stderr while
-    the event stream carries ``stop_reason: "error"``. Reading only the exit
-    code reports that as a success with an empty summary.
+    model id, an auth failure mid-stream — exited **0** with empty stderr while
+    the event stream carried ``stop_reason: "error"``. It exits 1 now
+    (ADR-0268), still with empty stderr, but the stream stays the evidence read
+    here: a child from an older release still exits 0, a run that ended on a
+    dropped terminator says nothing about it in the code, and on Windows a
+    ``TerminateJobObject(job, 1)`` hard kill exits 1 exactly as a failed answer
+    now does. (A kill on POSIX stays visible: ``SIGTERM`` gives 143, ``SIGHUP``
+    129, ``SIGKILL`` -9.)
     """
 
     # ``agent_end`` is the child's own terminator (``stream.py:262-266``). Its

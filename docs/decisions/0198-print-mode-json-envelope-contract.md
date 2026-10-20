@@ -1,6 +1,7 @@
 # 0198. Print-mode JSON event-envelope stability contract (`--mode json`)
 
-Status: Accepted (2026-07-26) — lands with the P2 implementation.
+Status: Accepted (2026-07-26) — lands with the P2 implementation. Amended
+2026-10-20 by ADR-0268 (#410): §D5's first clause no longer holds.
 Date: 2026-07-26
 Relates: ADR-0056 (RPC JSONL framing — the same LF-only, one-object-per-line
 discipline this stream inherits), ADR-0057 (RPC types & envelope — the serializer
@@ -152,8 +153,18 @@ and a real child's SIGTERM stderr is now "Request aborted" and nothing else
 other unretrieved task exception in the child still produces that shape, and on
 an aborted/timeout outcome a traceback is not the diagnosis.*
 
+*Amended 2026-10-20 by [ADR-0268](0268-json-mode-exits-1-when-the-last-answer-failed.md)
+([#410](https://github.com/handochan/aelix-ai/issues/410)), on the owner's decision:
+the first clause above is reversed. JSON mode now exits 1 when the session's last
+message is an assistant message the run itself appended with `stop_reason` `"error"`
+or `"aborted"`, by the rule text mode uses (since the same change, text mode also
+ignores a failed answer an earlier run left), and still writes nothing to stderr for
+it. The rest of D5 stands: the consumer's failure predicate stays a disjunction (a
+child from an older release still exits 0, and a missing terminator is invisible to
+the exit code), and the stderr rung stays.*
+
 Unparseable lines are **silently skipped**. aelix deliberately declines pi's
-`takeOverStdout` (`print_mode.py:23-26`), so an extension or MCP server inside the
+`takeOverStdout` (`print_mode.py:64-67`), so an extension or MCP server inside the
 process can `print()` straight into the stream.
 
 ### D6. The transport must be **chunked**, not line-based — a routine event exceeds asyncio's ceiling

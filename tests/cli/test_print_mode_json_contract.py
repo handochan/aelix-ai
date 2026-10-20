@@ -273,10 +273,11 @@ async def test_usage_is_present_but_its_inner_keys_are_not_pinned(
     assert message["usage"] is None
     assert message["stop_reason"] == "error"
     assert message["error_message"] == "the provider said no"
-    # And the exit code is NOT evidence: the ``stop_reason → exit 1`` branch in
-    # print_mode is guarded by ``if mode == "text"``. The STREAM is the evidence,
-    # which is why ``envelope.build_result`` may tighten a proposed outcome.
-    assert exit_code == 0
+    # Since #410 (ADR-0268) the exit code agrees: JSON mode exits 1 when the
+    # last message is a failed answer, by text mode's rule. The STREAM stays the
+    # evidence a consumer reads first - ``envelope.build_result`` still tightens
+    # a proposed outcome on ``stop_reason`` alone (ADR-0198 D5).
+    assert exit_code == 1
 
 
 # === the content discriminators ===============================================

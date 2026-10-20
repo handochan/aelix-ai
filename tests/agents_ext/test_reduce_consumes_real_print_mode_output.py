@@ -16,7 +16,7 @@ a child actually runs.
 WHAT IT PROVES, concretely:
 
 * the first line is the session-metadata header and has NO ``type`` key
-  (``print_mode.py:266-277``) — hence ``event.get("type")``, never
+  (``print_mode.py:340-351``) — hence ``event.get("type")``, never
   ``event["type"]``;
 * the wire is snake_case ``dataclasses.asdict`` of the kernel's own event
   dataclasses, NOT pi's camelCase;
@@ -254,7 +254,7 @@ async def test_the_wire_is_snake_case_not_pi_camel_case(
     """THE PI-PORT TRAP, observed on real bytes.
 
     ``--mode json`` emits raw kernel ``AgentEvent`` dataclasses through
-    ``dataclasses.asdict`` (``print_mode.py:250-257``), so the field names are
+    ``dataclasses.asdict`` (``print_mode.py:324-331``), so the field names are
     Python's. A line-for-line port of pi's parser would read ``None`` for every
     field and every failure would look like a success with zero usage.
     """
@@ -269,18 +269,19 @@ async def test_the_wire_is_snake_case_not_pi_camel_case(
 async def test_an_errored_run_still_yields_a_readable_stop_reason(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A JSON-mode child whose model errored EXITS 0 with empty stderr.
+    """A JSON-mode child whose model errored exits 1, and its STREAM says why.
 
-    ``print_mode.py``'s ``stop_reason in ("error","aborted") → exit_code = 1``
-    is guarded by ``if mode == "text"``. So the exit code is not evidence, the
-    STREAM is — which is the whole reason ``envelope.build_result`` may tighten
-    a caller's proposed outcome but never loosen it.
+    Until #410 ``print_mode.py``'s ``stop_reason in ("error","aborted") →
+    exit_code = 1`` was guarded by ``if mode == "text"`` and this child exited
+    0. It exits 1 now (ADR-0268), but the reducer reads the stream regardless:
+    ``envelope.build_result`` may tighten a caller's proposed outcome on
+    ``stop_reason`` alone and never loosen it.
     """
 
     out, exit_code = await _emit(capsys, stop_reason="error", usage=None)
     state = _reduce_through_the_pump(out)
 
-    assert exit_code == 0
+    assert exit_code == 1
     assert state.stop_reason == "error"
     # ``usage`` is null on an errored message; the dual-read helper must not
     # turn that into an exception or a bogus count.

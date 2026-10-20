@@ -57,11 +57,13 @@ def _state(**kwargs: object) -> _StreamState:
 def test_exit_zero_with_error_stop_reason_is_failure() -> None:
     """NEVER TRUST THE RETURN CODE ALONE (§9.1).
 
-    ``print_mode.py``'s ``stop_reason in ("error","aborted") -> exit_code = 1``
-    mapping is guarded by ``if mode == "text"``. A JSON-mode child whose model
-    errored — bogus model id, mid-stream auth failure — exits **0** with empty
-    stderr while the stream carries ``stop_reason: "error"``. Reading only the
-    exit code reports that as a success with an empty summary.
+    Until #410 ``print_mode.py``'s ``stop_reason in ("error","aborted") ->
+    exit_code = 1`` mapping was guarded by ``if mode == "text"``: a JSON-mode
+    child whose model errored — bogus model id, mid-stream auth failure —
+    exited **0** with empty stderr while the stream carried ``stop_reason:
+    "error"``. Such a child exits 1 since (ADR-0268), but one from an older
+    release does not, and reading only the exit code reports it as a success
+    with an empty summary.
     """
 
     result = build_result(
@@ -349,7 +351,7 @@ def test_successful_run_keeps_its_summary_despite_stderr_noise() -> None:
 
     The stderr rung is gated on failure. Provider SDK / httpx logging and any
     extension ``print(..., file=sys.stderr)`` land in the same pipe —
-    ``print_mode.py:38-41`` declines pi's ``takeOverStdout``, so those bytes are
+    ``print_mode.py:64-67`` declines pi's ``takeOverStdout``, so those bytes are
     NOT redirected. Ungated, one ``DeprecationWarning`` on a perfectly
     successful delegation would replace the child's answer with a log line.
 

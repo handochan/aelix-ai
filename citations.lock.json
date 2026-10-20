@@ -1056,17 +1056,17 @@
    "(#168), which is why the truncation marker points at the delegated session",
    "file instead (:data:`_TRUNCATION_MARKER`)."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:443-447": [
+  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:448-452": [
    "process_failed = (",
    "outcome != \"ok\"",
    "or (exit_code is not None and exit_code != 0)",
    "or state.stop_reason in (\"error\", \"aborted\")",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:524-524": [
+  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:529-529": [
    "model=state.model,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:524-525": [
+  "packages/aelix-coding-agent/src/aelix_agents/envelope.py:529-530": [
    "model=state.model,",
    "provider=state.provider,"
   ],
@@ -1207,7 +1207,7 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1494-1497": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1495-1498": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
@@ -1216,7 +1216,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:151-151": [
    "POST_EXIT_DRAIN_SECONDS = 2.0"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1519-1521": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1520-1522": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
@@ -2642,7 +2642,17 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/mcp/client.py:232-232": [
    "stdio_client(params)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:160-219": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:102-111": [
+   "def _event_to_dict(event: Any) -> dict[str, Any]:",
+   "\"\"\"Convert a harness event to a Pi-shape dict for JSON emit.",
+   "",
+   "Reuses the Sprint 6d :mod:`rpc.rpc_mode` serializer so the wire",
+   "shape stays consistent across ``rpc`` and ``json`` modes.",
+   "\"\"\"",
+   "",
+   "from aelix_coding_agent.rpc.rpc_mode import _dataclass_to_dict"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:234-293": [
    "# === Pi step 1 — signal handlers (POSIX: SIGTERM/SIGHUP; win32: SIGBREAK) ==",
    "signals_installed: list[int] = []",
    "# These two are bound BEFORE the platform branch, not inside the win32 arm.",
@@ -2652,7 +2662,7 @@
    "break_previous: Any = None",
    "break_installed = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:250-257": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:324-331": [
    "if stdout_dead[\"v\"]:",
    "return # consumer gone — stop writing to a dead pipe",
    "try:",
@@ -2662,7 +2672,7 @@
    "except Exception: # noqa: BLE001 — pi swallows listener errors",
    "pass"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:265-277": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:339-351": [
    "# === Pi step 4 — JSON-mode header emit ================================",
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
@@ -2672,7 +2682,7 @@
    "header = _metadata_to_dict(metadata)",
    "if header:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:266-277": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:340-351": [
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
    "if session is not None:",
@@ -2682,25 +2692,15 @@
    "if header:",
    "_write_raw_stdout(json.dumps(header) + \"\\n\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:345-346": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:434-435": [
    "except Exception as exc: # noqa: BLE001 — surface any failure to caller",
    "print(str(exc), file=sys.stderr)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:38-41": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:64-67": [
    "**Out-of-scope** (deferred): ``takeOverStdout`` (Pi redirects stdout so",
    "tool ``console.log`` cannot corrupt the JSON stream) — Aelix builtins",
    "emit through harness events, not raw stdout, so the JSONL stream",
    "stays clean without the redirect (ADR-0089 §\"Carry-forward\")."
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:76-85": [
-   "def _event_to_dict(event: Any) -> dict[str, Any]:",
-   "\"\"\"Convert a harness event to a Pi-shape dict for JSON emit.",
-   "",
-   "Reuses the Sprint 6d :mod:`rpc.rpc_mode` serializer so the wire",
-   "shape stays consistent across ``rpc`` and ``json`` modes.",
-   "\"\"\"",
-   "",
-   "from aelix_coding_agent.rpc.rpc_mode import _dataclass_to_dict"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/_jsonl.py:126-146": [
    "if self._over_budget():",

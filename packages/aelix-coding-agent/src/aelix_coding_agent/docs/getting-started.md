@@ -256,6 +256,22 @@ which is what selects one-shot output. `--print` also opportunistically eats the
 next token as the message, so `aelix -p "hello"` and `aelix --print hello` are
 equivalent.
 
+### Exit codes
+
+`-p` and `--mode json` exit `0` when the run ends on the model's answer and `1`
+when the answer this run produced failed: a provider error that outlasted the
+[automatic retries](providers-and-models.md#automatic-retry), a `/login` token
+refresh that kept failing until the retries ran out, an aborted request. With
+several prompts the last one decides. An answer cut off at the model's output
+token limit exits `0`, and `-p` prints it. A failed answer left by an earlier run
+does not count: `--continue` with no prompt, or with a prompt an extension
+handles, exits `0`. `-p` writes the error to stderr. `--mode json` writes
+nothing extra: the failed answer's `turn_end` event carries its `stop_reason`
+and `error_message`. Both also exit `1`, with the reason on stderr, when aelix
+cannot start the run or fails during it. A run ended by a signal exits `128`
+plus its number (`143` for `SIGTERM`). pi's `--mode json` exits `0` for a
+failed answer; aelix's exits `1` so that a script sees it in `$?`.
+
 ## Common flags
 
 ```bash

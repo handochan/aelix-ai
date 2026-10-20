@@ -9,6 +9,9 @@ band reading (D1), owner-ratified kernel scope (D3/D4). Design record that lands
 **Amended 2026-09-30 (#351): a cancellation of the caller is never swallowed by
 the wait that races the terminator against the child's death — see
 `## Amendment (2026-09-30, #351)`.**
+**Amended 2026-10-21 (ADR-0268, #410): a `--mode json` child whose model errored
+now exits 1, not 0 — see the notes under the turn contract and under the channel
+comparison table.**
 Date: 2026-07-31
 Builds on: ADR-0197 (the subagent-runtime seam and the 3-band rule this ADR
 re-reads rather than amends), ADR-0198 (**this ADR delivers the `rpc` half its
@@ -151,6 +154,12 @@ sixth is the one it did not, and it is the one that costs the most.**
 | 4 | The command was refused before the turn started | a correlated `success: false` response, and **no** terminator |
 | 5 | The caller's budget expired | nothing; the parent's own deadline fires |
 | 6 | **The child process died** | **nothing at all, until the fix below** |
+
+*Amended 2026-10-21 by [ADR-0268](0268-json-mode-exits-1-when-the-last-answer-failed.md)
+([#410](https://github.com/handochan/aelix-ai/issues/410)): row 2's **exit code 0**
+holds for an rpc child (its exit code is its server's end, not the turn's) and for a
+`--mode json` child from an older release. A `--mode json` child from this release
+exits 1 for it, still with empty stderr; the events are unchanged.*
 
 **Row 3 is the kernel change (D3), and its shape is not the obvious one.** pi's
 *primary* abort path is `agent-loop.ts:196-199`: emit `turn_end` + `agent_end` on
@@ -452,6 +461,11 @@ mapping. What differs is everything around them.
 child whose model errored exits 0 with empty stderr while the stream carries
 `stop_reason: "error"` (row 2). On rpc the exit code additionally cannot describe
 the turn at all, because the turn ends while the process lives.
+
+*Amended 2026-10-21 by ADR-0268 (#410): the `--mode json` child of this release
+exits 1 for row 2, so its exit code now agrees with the stream there. The rule
+above stands: a child from an older release still exits 0, and the rpc channel's
+exit code still describes teardown.*
 
 **`dropped_lines`: the budget is per-direction, and that is a correctness
 requirement rather than a tidiness one.** `rpc/_jsonl.py` serves **both**

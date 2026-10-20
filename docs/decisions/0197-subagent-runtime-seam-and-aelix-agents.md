@@ -1093,6 +1093,10 @@ failed = exit_code != 0 or stop_reason in ("error", "aborted") or outcome != "ok
 by `if mode == "text"`, so a bogus-model JSON run **exits 0 with empty stderr**
 while the stream carries `stop_reason: "error"`.
 
+*Amended 2026-10-20 by ADR-0268 ([#410](https://github.com/handochan/aelix-ai/issues/410)):
+the guard is gone, and such a run exits 1, still with empty stderr. The predicate
+above is unchanged: a child from an older release still exits 0.*
+
 The summary fallback chain is `error_message` → sanitized stderr tail →
 extracted summary → `"(no output)"`. The **stderr rung is mandatory**: a child
 with no API key exits 1 with **zero stdout bytes**, not even the session header.
