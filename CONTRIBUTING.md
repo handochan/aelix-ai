@@ -62,7 +62,7 @@ uv run pytest -p no:cacheprovider -q   # the full suite, ~6 min on a laptop
 hand-laid formatting that `ruff format` would collapse. Match the surrounding
 code; do not reformat files you are not changing.
 
-### Three gates that are easy to miss
+### Four gates that are easy to miss
 
 **1. The citation lock.** Comments and tests in this repo cite source locations
 by path and line number, and `citations.lock.json` pins the text each citation
@@ -102,6 +102,30 @@ at `packages/aelix-coding-agent/src/aelix_coding_agent/docs/`, and
 **3. `.gitignore` and the `exclude` lists move together.** hatchling appends
 `.gitignore` to its own exclude spec, so "it is ignored, therefore it will not
 ship" does not hold. If you touch either, run `tests/packaging_gate/`.
+
+**4. Imports only go down.** The packages stack as `aelix-ai` ←
+`aelix-agent-core` ← `aelix-coding-agent` ← `aelix-server` and `aelix`
+(ADR-0015): a package may import only itself and what its `pyproject.toml`
+declares, directly or through one of those. So the kernel never imports
+`aelix_coding_agent`, `aelix_agents` or `aelix_status`, and `aelix_ai` never
+imports `aelix_agent_core`. That holds inside a function, under
+`if TYPE_CHECKING:` and through `importlib.import_module("...")` with a literal
+name too. `tests/test_import_direction_292.py` fails on a new one and names the
+file and the statement; run the check alone with:
+
+```bash
+uv run python scripts/check_import_direction.py
+```
+
+The kernel still has 13 such imports from before the gate. They are listed in
+that script's `ALLOWLIST`, and the tree must match it exactly: a new import
+fails until it is listed, and a listed one that is gone fails until its entry
+is removed. Do not list a new one: let the higher package pass in what the
+kernel needs (a Protocol or a callback), or move the shared type down. The
+gate cannot stop an edit to the list, so review does: ADR-0015 lets an entry
+change only to follow a listed import that moved to another file or under
+`TYPE_CHECKING` (change its file or kind), or to go away with its import
+(delete it, or lower its count, in the same commit).
 
 ### Tests are not optional here
 

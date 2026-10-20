@@ -257,6 +257,9 @@ Protocol/콜백으로 의존성을 주입한다. 기존 `bind_core` 배선은 �
 완료 조건에는 **coding-agent 없이 core wheel과 선언된 의존성만 설치해 Harness를 생성·사용하는 검증**을 둔다.
 일반 실행 식별자를 추가하는 설계도 ADR-0197의 subagent 경계·테스트와 충돌 여부를 명시적으로 검토한다.
 도메인 팀 정책을 kernel에 넣어 해결하지 않는다.
+(2026-10-20 추기, #292: 정적 검사가 들어갔다. `scripts/check_import_direction.py`가 모든 CI 레그에서
+선언하지 않은 workspace 패키지 import를 `TYPE_CHECKING` 안까지 막고, 7faf4b9a에서 잰 kernel의 13곳(이름 18개)은
+트리와 정확히 일치해야 하는 허용 목록에 있다 — 새 import는 목록에 오를 때까지, 사라진 import는 항목을 지울 때까지 실패하고, 옮기거나 `TYPE_CHECKING`으로 내린 import를 따라가는 것 말고 항목 추가는 ADR-0015 개정이 금한다(게이트는 목록 수정을 리뷰에 드러낼 뿐 막지 못한다). 주입으로 뒤집기와 core wheel만 깐 환경의 Harness 검증은 후속 이슈다.)
 
 ### 리팩토링 방법
 

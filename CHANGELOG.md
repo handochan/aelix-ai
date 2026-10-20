@@ -23,6 +23,37 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Contributors: CI now fails when a package imports one above it (#292,
+  ADR-0015).** The packages stack as `aelix-ai` <- `aelix-agent-core` <-
+  `aelix-coding-agent` <- `aelix-server` and `aelix`, and a package may import
+  only itself and the workspace packages its `pyproject.toml` declares. Nothing
+  checked that until now, and it did not hold: the kernel imports
+  `aelix_coding_agent` in 13 places (10 inside `AgentHarness` methods, 3 under
+  `TYPE_CHECKING`), so `AgentHarness` cannot be built without the coding-agent
+  package, and a new import like those passed ruff, the type gate and the
+  structural tests.
+  `tests/test_import_direction_292.py` runs `scripts/check_import_direction.py`
+  on every leg. The check reads every import in each package's source with
+  `ast`, including those inside functions and under typing's `TYPE_CHECKING`
+  flag (a `TYPE_CHECKING` the file binds any other way counts as code that
+  runs), and calls to `import_module`, `find_spec`, `resolve_name` and
+  `__import__` - also through a name the file binds to one with a
+  `from ... import ... as` alias or an assignment - whose module is a string
+  literal, a relative name resolved against a literal package. It fails on one
+  the package does not declare and names the file, the line, the statement and
+  the fix. The script's docstring lists the forms known not to be seen (a
+  module name built at run time, `getattr` on `importlib`, an importer bound by
+  tuple unpacking, `__import__` with a `level`, `importlib.resources.files` and
+  `pkgutil.get_data`, `exec`, and the like). The existing 13 are listed by
+  file, kind, module and name (not by line), with a count, and the tree must
+  match the list exactly: a new import fails until it is listed, and a listed
+  import that is gone fails until its entry is removed. The gate cannot stop an edit to the list itself; it makes
+  one visible in review, and ADR-0015 allows an entry to be added only to
+  follow a listed import that moved to another file or under `TYPE_CHECKING`.
+  `pyproject.toml` declaring an upward dependency fails too. Making
+  `AgentHarness` work without `aelix-coding-agent` is a follow-up. Users see no
+  change.
+
 - **Python 3.14 is supported (#278, ADR-0265).** `aelix-ai` now requires
   `openai>=2.7.2,<3` (was `>=1.66,<2.0`). Python 3.14 made `typing.Union[...]`
   slotted, and every openai before 2.7.2 assigns `__discriminator__` onto it
