@@ -11,8 +11,8 @@ the user holds a credential of their own (the helper ``/model <arg>`` uses,
 like ``--provider`` at launch and the no-argument picker, so a ``.env`` key may
 authenticate the route the client named: that is pinned here so a later change
 is deliberate (ADR-0250 §2.8). The shipped ``aelix --mode rpc`` passes
-``run_rpc_mode`` no registry (both commands answer "requires a ModelRegistry");
-these rows hold for a program that passes one.
+``run_rpc_mode`` its registry since #371 (until then both commands answered
+"requires a ModelRegistry" there); these rows hold wherever one is passed.
 
 A REAL ``ModelRegistry`` and the REAL ``load_dotenv``; fake keys.
 """

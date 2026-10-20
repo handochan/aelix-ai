@@ -164,7 +164,9 @@ async def test_a_keyed_mistral_prompt_through_the_real_cli_is_rejected(
     sessions = env / "sessions"
     seen: dict[str, Any] = {}
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         live = runtime_host.harness
         seen["model"] = live.current_model
         seen["response"] = await _handle_prompt(live, RpcCommandPrompt(message="m hi", id="p1"))

@@ -165,7 +165,9 @@ def _stub_modes(monkeypatch: pytest.MonkeyPatch, drive: Any = None) -> dict[str,
         await _record(runtime)
         return 0
 
-    async def _rpc(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _rpc(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await _record(runtime_host)
 
     monkeypatch.setattr(modes, "run_print_mode", _print)

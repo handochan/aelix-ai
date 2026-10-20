@@ -114,8 +114,8 @@ checks again after `session_start`. `set_model` there cannot release the decisio
 
 - An unclaimed launch exits 1 in print/JSON before any request, asking for a
   `setup()` registration. Interactive and RPC start held (`api='unknown'`).
-  Interactive `/model` can then select the now-registered provider; CLI RPC has
-  no model registry for `set_model`.
+  Interactive `/model` or RPC `set_model` can then select the now-registered
+  provider.
 - During `session_start`, an unclaimed launch cannot start a request, whatever
   model a handler selects. A triggered turn emits the normal refused-turn events,
   including `agent_end`, with its error and no send. Awaiters are woken; its

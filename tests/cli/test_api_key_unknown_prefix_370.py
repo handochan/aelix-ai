@@ -14,9 +14,10 @@ bearer, in print, json, RPC and the TUI. pi has no guard 2 —
   list, too);
 * a provider an extension registered and unregistered in ``session_start``
   (gone before the late decision) is the same not-found;
-* interactive and RPC hold the unresolved placeholder (aelix's stated
-  divergence, ADR-0250 §2.4) — interactive with the Warning — and the first
-  prompt, ``/new`` and ``/reload`` send nothing;
+* interactive holds the unresolved placeholder (aelix's stated divergence,
+  ADR-0250 §2.4) with the Warning, and the first prompt, ``/new`` and
+  ``/reload`` send nothing; RPC held it too, silently, until #371 — it now
+  exits 1 with print's text before serving stdin;
 * unchanged: ``openrouter/<id>``, ``--provider openrouter`` and an id
   OpenRouter's catalogue lists (``x-ai/grok-4.3``, pi's step 2) take the typed
   key to OpenRouter; without ``--api-key`` guard 2 still sends the string with
@@ -228,10 +229,12 @@ async def test_interactive_and_rpc_hold_the_placeholder_and_send_nothing(
     shape: str,
 ) -> None:
     """Interactive keeps aelix's stated divergence (ADR-0250 §2.4: a Warning and
-    a held placeholder where pi exits 1); RPC keeps today's unresolved-route
-    shape (its silent start is #371). The first prompt, ``/new`` and
-    ``/reload`` send nothing and no key is attached. ``late``: ``sessext``
-    registered only in ``session_start`` — #367's hold, unchanged."""
+    a held placeholder where pi exits 1). RPC used to start silently on the
+    unresolved placeholder; since #371 (owner decision 2026-10-20) it exits 1
+    with -p's not-found text before serving stdin, as pi does in every mode.
+    The first prompt, ``/new`` and ``/reload`` send nothing and no key is
+    attached. ``late``: ``sessext`` registered only in ``session_start`` —
+    #367's hold, unchanged in both modes (RPC is not refused)."""
 
     _openrouter(monkeypatch, env, "exported")
     model = "newlab/model-x"
@@ -273,6 +276,12 @@ async def test_interactive_and_rpc_hold_the_placeholder_and_send_nothing(
     code = await entry_mod._async_main([*_args(["--model", model], ext=ext, session=True), *flags])
     err = capsys.readouterr().err
     held = (model.partition("/")[0], model.partition("/")[2], "unknown")
+    if mode == "rpc" and shape != "late":
+        # #371 — refused before ``run_rpc_mode``: nothing served, nothing sent.
+        assert (code, seen, attached, wire) == (1, [], [], [])
+        assert f"Error: {_typed_not_found(model)}" in err
+        assert "Warning:" not in err
+        return
     assert code == 0
     assert seen == [
         ("launch", held),

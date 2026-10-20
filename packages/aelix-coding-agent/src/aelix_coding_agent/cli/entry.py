@@ -4026,18 +4026,16 @@ async def _async_main(argv: list[str]) -> int:
             # and which is lifted only here, once a turn a ``model_select`` handler
             # triggered has ended: a handler's ``set_model`` off the placeholder
             # is undone before the Warning says no prompt will be sent. The
-            # placeholder refuses every turn from here; ``/model`` leaves it.
+            # placeholder refuses every turn from here; ``/model`` (RPC:
+            # ``set_model``, or ``cycle_model`` when two or more models are
+            # available) leaves it.
             harness.hold_turns(None)
             if app_mode == "rpc":
-                # #367 verify round 1, N1 — not "run /model": ``aelix --mode
-                # rpc`` wires no model registry, so ``set_model`` and
-                # ``cycle_model`` answer "requires a ModelRegistry"; nothing
-                # in this session can leave the hold (a follow-up).
-                remedy = (
-                    "No prompt will be sent for it, and this RPC session cannot "
-                    "select another model (set_model has no model registry in "
-                    "--mode rpc); restart with another --model."
-                )
+                # #371 — RPC's ``/model``: ``run_rpc_mode`` gets the model
+                # registry below, so the client leaves the hold with
+                # ``set_model`` (#367 verify round 1, N1 said "restart with
+                # another --model" while the shipped RPC wired none).
+                remedy = "No prompt will be sent for it; send set_model to select a model."
             else:
                 remedy = "No prompt will be sent for it; run /model to select a model."
             print(f"Warning: {launch_hold.reason}\n         {remedy}", file=sys.stderr)
@@ -4299,11 +4297,91 @@ async def _async_main(argv: list[str]) -> int:
                 read_only=session_read_only,
             )
 
+        # The route the first turn takes, judged after ``session_start`` and the
+        # late-route decision: print/json refuse what cannot run below, RPC an
+        # unresolved launch (#371). #376 — a restored session model is judged
+        # as itself: ``parsed`` is only the fallback it did not need.
+        turn_route = (
+            launch_route
+            if launch_restored
+            else resolve_route(
+                parsed.model,
+                parsed.provider,
+                model_registry,
+                default_provider,
+                typed_key=parsed.api_key is not None,
+            )
+        )
+        if (
+            not launch_pending
+            and launch_route.error is None
+            and late_rule.late()
+            and (turn_route.error is not None or late_rule.lands(turn_route.model))
+        ):
+            # #367 verify round 3, B1 — the launch resolved to a registered
+            # provider and stays there; this re-resolve runs after
+            # ``session_start`` and lands on (or is made ambiguous by) a
+            # provider registered there, which this run does not use. Judge
+            # the launch route the turn really takes.
+            turn_route = launch_route
+        turn_model = turn_route.model
+
         if app_mode == "rpc":
+            # #371 (owner decision 2026-10-20) — a launch model given on the
+            # command line (``--model``, with or without ``--provider``) that
+            # does not resolve ends ``--mode rpc`` as it ends -p and --mode
+            # json: their error on stderr, exit 1, before stdin is read. pi's
+            # ``main.ts`` (``buildSessionOptions``) turns ``resolveCliModel``'s
+            # error into an error diagnostic and exits 1 in every mode — for
+            # ``--model`` only. A saved default pi cannot resolve is not an
+            # error there: ``findInitialModel`` falls back to an available
+            # model. So only the flags count (``parsed.provided``: a settings
+            # ``defaultModel`` / ``defaultProvider`` seeded into ``parsed`` is
+            # not in it, nor is an agent profile's ``model:``); a settings
+            # default that does not resolve, as a pair or alone, starts RPC as
+            # before, on its placeholder, which refuses each prompt until
+            # ``set_model`` or ``switch_session`` moves the session (review
+            # round 2; -p and json still refuse it, unchanged). Judged on the
+            # launch inputs' route (the one -p's gate judges, with #367 round
+            # 3's B1 fallback above), not on a model a ``session_start``
+            # handler moved the session to (that is the extension's own act;
+            # its turns are refused at the prompt check). "Does not resolve" is
+            # the route's own error (not found, ambiguous) or a route no
+            # protocol was found for (``api='unknown'`` with a provider:
+            # ``--provider`` naming a provider nobody registered), which
+            # ``turn_refusal`` refuses as -p's gate does — it fails open with
+            # no adapter registered at all (an embedder that never ran
+            # ``register_providers``). Not the #367 hold (``late_route_held``):
+            # its placeholder is ``api='unknown'`` too, but a provider
+            # registered while the session was starting serves its inputs, and
+            # ``set_model`` leaves it. Not a launch with no model at all
+            # (nothing to resolve; ``set_model`` picks one), nor a resolved
+            # model whose api has no adapter (pi starts on that too): both are
+            # refused at the first prompt, as before.
+            cli_named_launch_model = "model" in parsed.provided or "provider" in parsed.provided
+            if cli_named_launch_model and not late_route_held:
+                unresolved = turn_route.error
+                if (
+                    unresolved is None
+                    and turn_model.provider
+                    and turn_model.api == "unknown"
+                    and turn_refusal(turn_model) is not None
+                ):
+                    unresolved = ambiguous_route_message(
+                        parsed.model, parsed.provider, model_registry, default_provider
+                    ) or unsupported_message(turn_model)
+                if unresolved is not None:
+                    print(f"Error: {unresolved}", file=sys.stderr)
+                    return 1
             from aelix_coding_agent.modes import run_rpc_mode
 
+            # #371 — the registry the TUI's ``/model`` reads (extension
+            # providers replayed onto it), so ``set_model``, ``cycle_model``
+            # and ``get_available_models`` answer as in pi's RPC mode, and a
+            # session held by #367 can leave the hold.
             await run_rpc_mode(
                 harness,
+                model_registry=model_registry,
                 runtime_host=runtime,
                 harness_factory=_harness_factory,
             )
@@ -4313,32 +4391,6 @@ async def _async_main(argv: list[str]) -> int:
         # to the common post-input check: keyless InputHandled and a model an
         # input handler switches to must reach that seam in print/json too.
         if app_mode in ("print", "json"):
-            # #376 — a restored session model is judged as itself: ``parsed``
-            # is only the fallback it did not need.
-            turn_route = (
-                launch_route
-                if launch_restored
-                else resolve_route(
-                    parsed.model,
-                    parsed.provider,
-                    model_registry,
-                    default_provider,
-                    typed_key=parsed.api_key is not None,
-                )
-            )
-            if (
-                not launch_pending
-                and launch_route.error is None
-                and late_rule.late()
-                and (turn_route.error is not None or late_rule.lands(turn_route.model))
-            ):
-                # #367 verify round 3, B1 — the launch resolved to a registered
-                # provider and stays there; this re-resolve runs after
-                # ``session_start`` and lands on (or is made ambiguous by) a
-                # provider registered there, which this run does not use. Judge
-                # the launch route the turn really takes.
-                turn_route = launch_route
-            turn_model = turn_route.model
             if turn_route.error is not None:
                 # ADR-0250 — pi's own refusal for an ambiguous or unknown
                 # ``--model`` (``main.ts`` exits 1 on ``resolveCliModel``'s

@@ -1,6 +1,6 @@
 # 0250. Model routing follows pi's `resolveCliModel`, and a `.env` credential cannot choose a route
 
-Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2); §2.10 amended and §6's settings default pair and §7 item 11 closed 2026-10-06 (#369, [ADR-0252](0252-project-settings-follow-project-trust.md)): an untrusted project's `.aelix/settings.json` is not read, so it no longer chooses a route (nor takes a typed key to OpenRouter, §2.7), and the post-`/login` pick reads the global pair only; #363 amendment 2026-10-06 ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)): §2.2's "the request's key is the AuthStorage cascade" now reads pi's order (a `models.json` `apiKey` before the environment); guard 1's decisions are unchanged, and one input to it changes (ADR-0251 §2.6); §2.4, §2.6, §2.11 and §7 amended 2026-10-06 (#368): `--provider` without `--model` — typed, or an agent profile's `provider:` with no `model:` — is pi's usage error ("--provider requires --model"), exit 1 in every mode before MCP, the session's extensions and `session_start` — with no agent profile also before the project-trust question and its vote load, with one after the overlay (§7 item 14); the one exemption is `--provider` naming OpenRouter with a shell `OPENROUTER_DEFAULT_MODEL`, which the check lets through from argv alone and §2.6's rung decides after the extensions load (round 2: a key an extension's `setup()` registers counts again); §2.11 amended 2026-10-08 (#376, [ADR-0239](0239-the-level-was-never-written-down-so-every-resume-started-from-off.md)'s amendment): a build that restores its session's own recorded model did not re-resolve the launch inputs, so neither the factory nor the after-`session_start` seam holds it
+Status: Accepted (2026-10-02) — §2.11 amended 2026-10-03 (#367): a `session_start` provider is refused as a launch model no registered provider claimed, not switched to, and nothing is sent while that launch's `session_start` runs (round 3; since round 5 a turn gate: no turn of any kind, whatever model a handler sets, there or in a held rebuild's `session_start` — since round 6 a handler's `trigger_turn` there ends as a refused turn, and every hold is checked after it is applied; since round 7 every hold is applied under the turn gate, on every path, and since round 8 a turn refused while a hold is applied says so, on every path); a provider is late wherever it is registered while a session is starting — from the end of the build through its `session_start` and the turns its handlers triggered, which aelix waits out, up to aelix's check after `session_start` (round 8: also in a handler of a turn one triggers; round 9: whatever registered it, also after the handler returned, and the texts say "while a session was starting"); a launch that resolved to a registered provider stays on it, as in pi (round 4); every later implicit re-resolution is held where it lands on a late provider, judged after every `session_start`; §2.1, §2.3, §2.4, §2.7 and §2.12 amended 2026-10-06 (#370): with `--api-key`, a string no provider places is pi's not-found and the key is attached to nothing — guard 2 never carries a typed key; the not-found text names `--model openrouter/<s>` and `--provider openrouter --model <s>`; `/agents use` re-resolves the launch inputs with the key in view, as the launch and every rebuild do, and a profile's own `model:` as before (round 2); §2.10 amended and §6's settings default pair and §7 item 11 closed 2026-10-06 (#369, [ADR-0252](0252-project-settings-follow-project-trust.md)): an untrusted project's `.aelix/settings.json` is not read, so it no longer chooses a route (nor takes a typed key to OpenRouter, §2.7), and the post-`/login` pick reads the global pair only; #363 amendment 2026-10-06 ([ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md)): §2.2's "the request's key is the AuthStorage cascade" now reads pi's order (a `models.json` `apiKey` before the environment); guard 1's decisions are unchanged, and one input to it changes (ADR-0251 §2.6); §2.4, §2.6, §2.11 and §7 amended 2026-10-06 (#368): `--provider` without `--model` — typed, or an agent profile's `provider:` with no `model:` — is pi's usage error ("--provider requires --model"), exit 1 in every mode before MCP, the session's extensions and `session_start` — with no agent profile also before the project-trust question and its vote load, with one after the overlay (§7 item 14); the one exemption is `--provider` naming OpenRouter with a shell `OPENROUTER_DEFAULT_MODEL`, which the check lets through from argv alone and §2.6's rung decides after the extensions load (round 2: a key an extension's `setup()` registers counts again); §2.11 amended 2026-10-08 (#376, [ADR-0239](0239-the-level-was-never-written-down-so-every-resume-started-from-off.md)'s amendment): a build that restores its session's own recorded model did not re-resolve the launch inputs, so neither the factory nor the after-`session_start` seam holds it; §2.4, §2.8, §2.11 and §6 amended 2026-10-20 (#371, owner decision 2026-10-20): `aelix --mode rpc` hands `run_rpc_mode` its model registry, so `set_model`, `cycle_model` and `get_available_models` answer there as in pi and a session §2.11 holds leaves the hold with `set_model` (the Warning says so); a launch model given on the command line (`--model`, with or without `--provider`) that does not resolve — the route's error (not found, ambiguous) or a placeholder no protocol was found for — ends `--mode rpc` with -p's error and exit 1 before stdin is read, as pi exits 1 in every mode on `--model`'s error; a settings default that does not resolve is not that (pi falls back from it, `findInitialModel`) and still starts RPC (review round 2), nor is a §2.11 hold, which still starts held
 Superseded by: [ADR-0262](0262-explicit-provider-registrations-own-model-routes.md) (2026-10-11, #365: registration universe and sections 2.8/2.9's explicit-owner boundary; section 6's builtin-name /model limit is closed)
 Date: 2026-10-02
 Supersedes: **ADR-0249 §2.1** (rung 0 and the OpenRouter-from-env rung), **§2.6**'s split
@@ -14,7 +14,8 @@ notes in each.
 Relates: ADR-0067 (the `core/model_resolver.py` port of pi's resolver stays unwired),
 ADR-0235 (the divergences in §2.4 are stated, not parity gaps), #363 (the launch
 composition and a re-pointed built-in's key order), #365, #367 (the late-registered path
-refuses, §2.11), #368 (`--provider` requires `--model`, §2.6, 2026-10-06).
+refuses, §2.11), #368 (`--provider` requires `--model`, §2.6, 2026-10-06), #371 (RPC's model
+registry and its unresolved launch, §2.4 and §2.11, 2026-10-20).
 Issue: #362 (P1, security). Owner decision: 2026-10-02 (issue comment).
 Tests: `tests/cli/test_route_follows_pi_362.py`, `tests/cli/test_dotenv_provenance_362.py`,
 `tests/cli/test_launch_route_362.py`, `tests/cli/test_route_refusals_in_session_362.py`,
@@ -27,7 +28,8 @@ placeholder rule), `tests/cli/test_late_provider_refused_367.py`,
 `tests/tui/test_post_login_late_hold_367.py` and
 `tests/harness/test_harness_turn_gate_367.py` (§2.11, #367);
 `tests/cli/test_api_key_unknown_prefix_370.py` (§2.1 step 2, §2.7, #370);
-`tests/cli/test_provider_requires_model_368.py` (§2.6, #368).
+`tests/cli/test_provider_requires_model_368.py` (§2.6, #368);
+`tests/cli/test_rpc_model_registry_371.py` (§2.4, §2.11, #371).
 Cross-review: Codex on `854bf319` (§5) — `/model` reworked (§2.8), guard 2's scope and the
 hatch stated (§2.3, §2.6); Codex again on `a0edf615` (§5) — the post-`/login` pick's
 saved default, RPC `cycle_model` and a held credential with no model rows (§2.8, §2.10).
@@ -386,8 +388,13 @@ clause 3).
   OpenRouter on the user's own OpenRouter key, including the widening in §2.3 — never
   under `--api-key`, where a string no provider places is pi's not-found (#370): print
   and json exit 1 with it, nothing sent; interactive holds the placeholder with a Warning
-  (the "errors are held" divergence below); RPC keeps the unresolved route's shape — no
-  message at start, the first prompt refused (#371 is that silent start).
+  (the "errors are held" divergence below); RPC exits 1 with print's error before it reads
+  stdin when the string is a `--model` given on the command line (*2026-10-20, #371*; until
+  then it kept the unresolved route's shape — no message at start, the first prompt
+  refused). A settings `defaultModel` taken under `--api-key` (no `--model`) still starts
+  RPC in that shape, as every settings default that does not resolve does (the "errors are
+  held" bullet below; measured in #371's review round 2: RPC rc 0, the prompt refused,
+  nothing sent); print and json exit 1 on it.
 - **No fuzzy matching, no `:thinking` suffix**; **ids compared case-sensitively** (pi
   folds case), with the canonical-prefix variant in (4)/(5).
 - **aelix's provider case rule** (the owner's decision): pi has one case-folded map.
@@ -413,8 +420,31 @@ clause 3).
 - **Errors are held as placeholders** (`api='unknown'`, the prefix kept as the provider)
   so the late-registration check can still recognise them (§2.11); pi returns no model,
   and exits 1 in every mode (`main.ts:915-925` @ b223082bb). Interactive keeps the
-  placeholder and a Warning, so `/model` can leave it. Not a usage error: `--provider`
-  with no `--model` exits 1 in every mode, as in pi (#368, §2.6's note of 2026-10-06).
+  placeholder and a Warning, so `/model` can leave it. *Amended 2026-10-20 (#371, owner
+  decision of that day):* RPC no longer keeps it for a launch model given on the command
+  line (`--model`, with or without `--provider`) — one whose route has an error (not
+  found, ambiguous) or lands on a placeholder no protocol was found for (`api='unknown'`
+  with a provider: `--provider nope --model x`) exits 1 with the error -p writes, before
+  stdin is read, as pi's `hasRuntimeErrors` does for `resolveCliModel`'s error
+  (`main.ts:915-925` @ `fdce48eb4`). Only the flags count: pi's error diagnostic comes
+  from `--model` (`buildSessionOptions`), and a saved default it cannot resolve is no
+  error there — `findInitialModel` falls back to an available model
+  (`core/model-resolver.ts`). So a
+  settings `defaultProvider`/`defaultModel` that does not resolve, as a pair or alone,
+  still starts RPC on its placeholder, each prompt refused until `set_model` or
+  `switch_session` moves the session (review round 2 of #371; the first cut exited on it
+  too); print and json still refuse it, a pre-existing divergence from pi's fallback. An
+  agent profile's `model:` is not a flag either (pi has no `--agent`): RPC starts on one
+  that does not resolve, as before #371, where print and json refuse it (a `--provider`
+  typed beside it is a flag: RPC exits 1, the `beside-a-provider-flag` row). It is judged on
+  the launch inputs' route after `session_start`, as -p's gate is (with §2.11's round-3 B1
+  fallback: a launch that resolved to a registered provider is judged on that route), not
+  on a model a `session_start` handler set; a §2.11 hold is not an error (a provider
+  registered while the session was starting serves the inputs) and still starts held; a
+  launch with no model at all, and a resolved model whose api has no adapter (pi starts on
+  that too), still start and are refused at the first prompt. Interactive is unchanged.
+  Not a usage error: `--provider` with no `--model` exits 1 in every mode, as in pi (#368,
+  §2.6's note of 2026-10-06).
 - **`--provider openrouter` with no `--model` runs** when a shell `OPENROUTER_DEFAULT_MODEL`
   and an OpenRouter key from any source (an extension's `setup()` included) are there
   (§2.6); with the variable and no key it fails as before #368. pi, which has no such
@@ -731,7 +761,9 @@ where the program embedding `run_rpc_mode` passes one: the shipped `aelix --mode
 `aelix-server`'s `/rpc` do not, and answer `cycle_model requires a ModelRegistry — none
 configured` (measured in round 4 through the real CLI, `/tmp/362-work/fix4/live/rpc.out`,
 on `a0edf615` and now alike) — so this closes the path for embedders; wiring the registry
-into the shipped RPC mode is a separate change. **`set_model {"provider","modelId"}`
+into the shipped RPC mode is a separate change. *2026-10-20 (#371):* the shipped `aelix
+--mode rpc` now passes its registry, so the rotation is route-aware there too;
+`aelix-server`'s `/rpc` still passes none. **`set_model {"provider","modelId"}`
 is kept as it is**: it NAMES the provider, like `--provider` at launch and the no-argument
 picker, so a `.env` key may authenticate the route the client named (pinned by
 `test_set_model_names_the_provider_so_a_dotenv_key_may_authenticate_it`; changing it is an
@@ -1026,7 +1058,12 @@ continues, so providers registered there are available to startup model selectio
   `cycle_model` answer `set_model requires a ModelRegistry — none configured`; it adds
   `No prompt will be sent for it, and this RPC session cannot select another model
   (set_model has no model registry in --mode rpc); restart with another --model.` (verify
-  round 1, N1 — the wiring is a pre-existing gap, a follow-up).
+  round 1, N1 — the wiring is a pre-existing gap, a follow-up). *Amended 2026-10-20
+  (#371):* `aelix --mode rpc` passes the registry, so the client leaves the hold as `/model`
+  does — `set_model` names a model (`get_available_models` lists them, an extension's
+  providers included); `cycle_model` leaves it only when two or more models are available
+  (below two it returns nothing, as pi's does) — and RPC adds `No prompt will be sent for
+  it; send set_model to select a model.`
 - **Every implicit re-resolution of the launch inputs keeps the hold** where it lands on a
   late provider (`LateRoute`, one object `cli/entry.py` hands to each): every rebuild
   (`/new`, `/fork`, `/resume`, `/reload` — the harness factory, then D3's seam), since the
@@ -1112,7 +1149,7 @@ Verify round 1 (of `dcc78170`), measured with the verifier's pty driver on own p
 | settings `sessext`/`m1`; `/agents use lateprof` (its `model:` applies), `hi` | EXT request | EXT request (unchanged) |
 | `--model sessext/m1`; `/agents use plainprof`, `hi`, `/model sessext/m1`, `hi` | — | NO REQUEST, then EXT request |
 | settings `sessext`/`m1`; `/login` (API key), `hi` | `model → m1`, EXT request | `model → Ring-2.6-1T` (the provider logged into), `CONNECT api.ant-ling.com:443` |
-| RPC, OR exported / none: stderr | `… run /model to select a model.` | `… this RPC session cannot select another model …; restart with another --model.` |
+| RPC, OR exported / none: stderr | `… run /model to select a model.` | `… this RPC session cannot select another model …; restart with another --model.` (since #371: `… send set_model to select a model.`) |
 | print, `--provider sessext` alone | `The launch model "--provider sessext" names provider …` | `The launch provider 'sessext' (no model named) was registered …` (since #368: `Error: --provider requires --model …` before `sessext.py` loads; the N2 text is reached by a settings `defaultProvider` alone) |
 
 Round 3 (verify round 2 and Codex), each row reproduced on `9e233be9` with the reviewer's own
@@ -1777,10 +1814,10 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   id (round 5's R1 row) — nothing the user holds offers another route, the residual above.
 - **RPC `set_model`** names its provider, so a `.env` key authenticates the route the
   client named (§2.8, pinned).
-- **A held RPC session cannot leave the hold** (§2.11): `aelix --mode rpc` wires no model
+- ~~**A held RPC session cannot leave the hold** (§2.11): `aelix --mode rpc` wires no model
   registry, so `set_model` and `cycle_model` refuse; the warning says to restart with
   another `--model`. Wiring the registry is a follow-up (pre-existing; #367's verify
-  round 1, N1).
+  round 1, N1).~~ Closed 2026-10-20 (#371): the registry is wired and `set_model` leaves it.
 - **A `/model` to a `session_start` provider lasts until the next rebuild** and is saved
   as the default, so the next launch without `--model` is refused (§2.11) — aelix's
   rebuild re-derives the model from the launch inputs where pi keeps the session's.
@@ -1841,7 +1878,7 @@ red ("6 failed, 73 passed": the file gained this round's eight rows).
   `[rpc] prompt task failed: StreamSimpleError("No provider registered for api='unknown' …")`
   (measured, a registered launch on `other` with settings `defaultProvider` naming the
   late provider). The client cannot leave that hold either (no model registry in `--mode
-  rpc`, above).
+  rpc`, above) — *since #371 (2026-10-20) it can, with `set_model`; it still gets no notice.*
 - **An RPC `new_session` (or `clone`) is handled concurrently with the commands sent after
   it**, so a `get_state` sent before `new_session`'s response can show a transient model —
   the rebuild's model before its hold is re-applied (`other/m1` or `late/m1` with a real
@@ -1994,7 +2031,10 @@ Decided in this lane, each with the recommendation followed and put to the owner
    points). With `--api-key`, a string whose prefix is neither catalogued, nor user-defined,
    nor registered by an extension's `setup()` is pi's not-found (§2.1 step 2, §2.3 clause
    5); print/json exit 1 with it, interactive keeps the held placeholder and its Warning
-   (§2.4), RPC the unresolved route's shape (its silent start is #371). The hint names both
+   (§2.4), RPC the unresolved route's shape (its silent start was #371; since 2026-10-20 RPC
+   exits 1 with print's text when the string is a `--model` given on the command line — a
+   settings `defaultModel` taken under `--api-key` still starts RPC in that shape, §2.4).
+   The hint names both
    explicit routes for every slashed string whose segments are non-empty under
    `--api-key` (nested ids included; a string with an empty segment gets pi's bare text,
    since it cannot be an OpenRouter id — round 2), whether or not the user

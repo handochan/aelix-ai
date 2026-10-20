@@ -834,8 +834,8 @@ async def _handle_cycle_model(
     # exported and ``OPENAI_API_KEY`` only in the ``.env``, cycling moved an
     # OpenRouter session to ``openai/gpt-4`` on the file's key. ``set_model``
     # above is left as it is: it NAMES the provider, as ``--provider`` and the
-    # no-argument picker do (ADR-0250 §2.8). Reached only where the embedder
-    # passes a registry — ``aelix --mode rpc`` itself passes none.
+    # no-argument picker do (ADR-0250 §2.8). Reached wherever a registry is
+    # passed — ``aelix --mode rpc`` passes its own since #371.
     from aelix_coding_agent.core.model_argument import _route_aware_pool
 
     available, _dropped = _route_aware_pool(list(registry.get_available()), registry)
@@ -2112,7 +2112,9 @@ async def run_rpc_mode(
             Sprint 6f model commands (``set_model`` / ``cycle_model`` /
             ``get_available_models``). When :data:`None` the 3 handlers
             return a "no registry configured" error (Pi parity:
-            ModelRegistry is bound to the runtime host).
+            ModelRegistry is bound to the runtime host). ``aelix --mode
+            rpc`` (``cli/entry.py``) passes the registry its harnesses
+            resolve through since #371.
         runtime_host: Optional :class:`AgentSessionRuntime` (Sprint
             6h₄b ADR-0077). When :data:`None`, a passthrough runtime
             wraps the passed ``harness`` (P-309 back-compat shim).

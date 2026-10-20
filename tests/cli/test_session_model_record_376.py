@@ -129,11 +129,15 @@ async def test_an_idle_pick_then_quit_then_continue_comes_back_on_the_pick(
     path = await _session(env, _HAIKU)
     seen: list[tuple[str, str]] = []
 
-    async def pick(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def pick(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         seen.append(_ident(runtime_host.harness.current_model))
         await _pick(runtime_host.harness, *_SONNET)
 
-    async def look(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def look(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         seen.append(_ident(runtime_host.harness.current_model))
 
     assert await _rpc(env, monkeypatch, pick) == 0
@@ -154,10 +158,14 @@ async def test_an_idle_pick_without_a_settings_default_comes_back_too(
     await _session(env, _HAIKU)
     seen: list[tuple[str, str]] = []
 
-    async def pick(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def pick(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await runtime_host.harness.set_model(_get(*_SONNET))
 
-    async def look(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def look(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         seen.append(_ident(runtime_host.harness.current_model))
 
     assert await _rpc(env, monkeypatch, pick) == 0
@@ -175,7 +183,9 @@ async def test_reload_and_clone_after_an_idle_pick_keep_it(
     await _session(env, _HAIKU)
     seen: list[tuple[str, str]] = []
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await _pick(runtime_host.harness, *_SONNET)
         if op == "reload":
             await runtime_host.reload()
@@ -212,7 +222,9 @@ async def test_the_late_provider_holds_placeholder_is_never_recorded(
             if e.type == "model_change"
         ]
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         model = runtime_host.harness.current_model
         seen.append((_ident(model), model.api, await _changes(runtime_host)))
         await runtime_host.new_session()
@@ -260,7 +272,9 @@ async def test_rpc_refuses_a_keyless_prompt_before_new_records(
     before = [e for e in _lines(path) if e.get("type") == "message"]
     responses: list[Any] = []
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         import asyncio
 
         live = runtime_host.harness
@@ -540,7 +554,9 @@ async def test_rpc_session_swaps_print_the_fallback_line_on_stderr(
     )
     said: list[int] = []
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         def _count() -> None:
             said.append(capsys.readouterr().err.splitlines().count(line))
 

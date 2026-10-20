@@ -159,7 +159,9 @@ def _drive(monkeypatch: pytest.MonkeyPatch, fn: Any) -> None:
         await fn(runtime)
         return 0
 
-    async def _rpc(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _rpc(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await fn(runtime_host)
 
     monkeypatch.setattr(modes, "run_print_mode", _print)
@@ -545,7 +547,9 @@ async def test_a_reopen_with_a_conversation_records_nothing_whatever_it_runs_on(
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-fake")
 
-    async def _answer(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _answer(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         session = runtime_host.harness.session
         await session.append_message(UserMessage(content=[TextContent(text="q")]))
         await session.append_message(
@@ -619,7 +623,9 @@ async def test_new_session_and_a_fork_onto_the_empty_branch_record_a_fork_with_m
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-fake")
     made: dict[str, str] = {}
 
-    async def _drive_rpc(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _drive_rpc(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         session = runtime_host.harness.session
         user_id = await session.append_message(UserMessage(content=[TextContent(text="q")]))
         answer_id = await session.append_message(

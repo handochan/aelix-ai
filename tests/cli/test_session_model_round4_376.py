@@ -141,7 +141,9 @@ async def test_request_level_auth_is_not_refused_by_the_prompt_check(
     _settings(env, retry={"enabled": False})
     seen: dict[str, Any] = {}
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         live = runtime_host.harness
         seen["check"] = live._prompt_check(live.current_model)
         seen["response"] = await _handle_prompt(live, RpcCommandPrompt(message="hi", id="p1"))

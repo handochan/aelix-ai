@@ -34,12 +34,15 @@ delegations. That was measured and it cannot be built:
   and that ``stop_all``'s own docstring says P3 already fixed once.
 
 * **``set_model`` — the one mutable knob, and the last argument for reuse —
-  does not work on a spawned child at all.** ``cli/entry.py``'s rpc branch
-  passes no model registry, so the child answers ``set_model`` /
+  did not work on a spawned child at all** until #371: ``cli/entry.py``'s rpc
+  branch passed no model registry, so the child answered ``set_model`` /
   ``cycle_model`` / ``get_available_models`` with "no registry configured".
-  The model has to arrive on the argv — from the profile's ``--model`` /
-  ``--provider``, or, when the profile declares neither, forwarded from the
-  parent's own effective model (see :func:`build_rpc_child_argv`).
+  It passes one now, but this channel still sends no model command: the model
+  arrives on the argv — from the profile's ``--model`` / ``--provider``, or,
+  when the profile declares neither, forwarded from the parent's own effective
+  model (see :func:`build_rpc_child_argv`) — and since #371 a child whose argv
+  model does not resolve exits 1 at start-up with that error on stderr instead
+  of answering the first ``prompt`` with it.
 
 So what does this channel buy over :class:`PrintChannel`, which is simpler on
 every axis? A live, bidirectional command channel to a running turn: ``abort``

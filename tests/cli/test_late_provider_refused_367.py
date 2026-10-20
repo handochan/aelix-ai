@@ -492,11 +492,13 @@ async def test_agents_use_whose_model_a_cli_flag_overrides_keeps_the_hold(
 # === verify round 1 (N1, N2): what the refusal says where ========================
 
 
-async def test_rpc_hold_does_not_promise_model(
+async def test_rpc_hold_names_set_model_not_slash_model(
     env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """N1. ``aelix --mode rpc`` wires no model registry, so ``set_model`` answers
-    "requires a ModelRegistry"; dcc78170's warning said "run /model" there too."""
+    """N1. dcc78170's warning said "run /model" in RPC too, which has no slash
+    commands; until #371 it said the session could not select another model
+    (``aelix --mode rpc`` wired no model registry). Since #371 it has one, and
+    the warning names RPC's own way out, ``set_model``."""
 
     handed, flags = _stub_mode(monkeypatch, "rpc")
     code = await entry_mod._async_main(
@@ -507,8 +509,9 @@ async def test_rpc_hold_does_not_promise_model(
     assert [(m.provider, m.id, m.api) for m in handed] == [_HELD]
     assert _REFUSAL.format(subject="sessext/m1") in err
     assert "run /model" not in err
-    assert "this RPC session cannot select another model" in err
-    assert "restart with another --model" in err
+    assert "No prompt will be sent for it; send set_model to select a model." in err
+    assert "cannot select another model" not in err
+    assert "restart with another --model" not in err
 
 
 @pytest.mark.parametrize("openrouter", ["exported", "none"])

@@ -132,7 +132,9 @@ def _stub_modes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         _record(runtime)
         return 0
 
-    async def _rpc(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _rpc(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         _record(runtime_host)
 
     async def _tui(runtime: Any, **kwargs: Any) -> int:
@@ -378,7 +380,9 @@ async def test_switch_session_restores_and_new_session_keeps_the_launch_model(
     gone = await _session(env, ("openrouter", "anthropic/claude-sonnet-4.5"))  # no key for it
     seen: list[tuple[tuple[str, str], str | None]] = []
 
-    async def _drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         def _note() -> None:
             seen.append(
                 (_ident(runtime_host.harness.current_model), runtime_host.model_fallback_message)
@@ -464,7 +468,9 @@ async def test_a_rebuild_that_restores_is_not_held_for_the_launch_inputs(
     await _session(env, _HAIKU)
     seen: list[tuple[tuple[str, str], str | None]] = []
 
-    async def _drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         h = runtime_host.harness
         seen.append((_ident(h.current_model), h.turns_held))
         await runtime_host.reload()

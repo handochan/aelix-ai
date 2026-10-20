@@ -484,7 +484,7 @@ async def test_a_setup_provider_is_not_flagged_as_late(
     assert "session_start" not in capsys.readouterr().err
 
 
-# === interactive and RPC: held (#367; #344's D1 switched) — /model leaves it in the TUI; RPC has no model registry ===
+# === interactive and RPC: held (#367; #344's D1 switched) — /model leaves it in the TUI, set_model in RPC (#371) ===
 
 
 class _FakeTTYStdin:
@@ -556,10 +556,11 @@ async def test_a_session_start_provider_holds_interactive_and_rpc(
     ``api='unknown'`` (one ``set_model``, so one ``model_select``), which every
     turn entry refuses before a request (the TUI's #189 gate names ``/model``;
     an RPC ``prompt`` fails at the adapter lookup). One Warning gives the
-    reason and, interactive, ``/model``'s guidance — RPC says it cannot pick
-    another model (#367 verify round 1, N1: ``aelix --mode rpc`` wires no model
-    registry for ``set_model``); nothing is persisted. On 8c9d6397 the first
-    prompt went to OpenRouter; #344 switched to ``sessext``.
+    reason and, interactive, ``/model``'s guidance — RPC names ``set_model``
+    (#371: ``aelix --mode rpc`` has the model registry; until then it said the
+    session could not pick another model, #367 verify round 1, N1); nothing is
+    persisted. On 8c9d6397 the first prompt went to OpenRouter; #344 switched
+    to ``sessext``.
     """
 
     from aelix_agent_core.harness.core import AgentHarness
@@ -582,8 +583,7 @@ async def test_a_session_start_provider_holds_interactive_and_rpc(
     remedy = (
         "No prompt will be sent for it; run /model to select a model."
         if mode == "interactive"
-        else "No prompt will be sent for it, and this RPC session cannot select another "
-        "model (set_model has no model registry in --mode rpc); restart with another --model."
+        else "No prompt will be sent for it; send set_model to select a model."
     )
     assert f"Warning: {_LATE_REFUSAL}\n         {remedy}\n" in err
     assert err.count("session_start") == 1
@@ -777,7 +777,9 @@ async def test_rebuilds_after_a_late_refusal_stay_held(
         model = runtime.harness.current_model
         return (model.provider, model.id, model.api)
 
-    async def _drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         runtime = runtime_host
         routes["launch"] = _held(runtime)
         first = runtime.session.session_file
@@ -981,7 +983,7 @@ async def test_a_late_case_clash_holds_interactive_and_rpc(
     assert selected == [("sessext", "m1")]
     assert "'SESSEXT' and 'SessExt'" in err and "differ only in case" in err
     assert ("run /model" in err) == (mode == "interactive")
-    assert ("restart with another --model" in err) == (mode == "rpc")
+    assert ("send set_model to select a model" in err) == (mode == "rpc")
     # Once: the #98 startup warning stays quiet after the late-route Warning.
     assert err.count("differ only in case") == 1
     assert _persisted_default(env) == (None, None)

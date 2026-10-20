@@ -126,7 +126,9 @@ async def test_vertex_key_sources_run_and_definite_config_absence_refuses_before
     _settings(env, retry={"enabled": False})
     seen: dict[str, Any] = {}
 
-    async def drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         live = runtime_host.harness
         seen["model"] = live.current_model
         seen["check"] = live._prompt_check(live.current_model)

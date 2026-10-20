@@ -232,7 +232,9 @@ the provider's models, so the catalog id is not found there.
 > runs); interactive and RPC start held on `Model('m1', 'sessext')` with `api='unknown'`
 > (aelix's "interactive warns, fix it with `/model`", the #98 shape) with that reason and
 > `No prompt will be sent for it; run /model to select a model.` (RPC: that it cannot
-> select another model; restart with another `--model`). An explicit `/model
+> select another model; restart with another `--model` — *since 2026-10-20 (#371,
+> ADR-0250 §2.11) `aelix --mode rpc` has a model registry: `set_model` leaves the hold and
+> the line ends `send set_model to select a model.`*). An explicit `/model
 > sessext/m1` afterwards is the user's own choice and switches (the provider is in the
 > registry by then). The detection below stays — with an OpenRouter key of the user's own
 > the launch has the string on OpenRouter (guard 2, ADR-0250 §2.3), so it is what keeps

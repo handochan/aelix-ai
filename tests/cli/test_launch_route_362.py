@@ -158,7 +158,9 @@ async def test_the_route_warning_is_printed_once_on_stderr(
 
     rebuilt: list[Any] = []
 
-    async def _drive(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def _drive(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await runtime_host.reload()
         rebuilt.append(runtime_host.harness.current_model)
 

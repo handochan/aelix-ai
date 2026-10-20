@@ -263,7 +263,9 @@ async def run_mode(
         if before is not None:
             await before(runtime)
 
-    async def rpc(harness: Any, *, runtime_host: Any, harness_factory: Any) -> None:
+    async def rpc(
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+    ) -> None:
         await prepare(runtime_host)
         seen["response"] = await _handle_prompt(
             runtime_host.harness, RpcCommandPrompt(message="hello416")

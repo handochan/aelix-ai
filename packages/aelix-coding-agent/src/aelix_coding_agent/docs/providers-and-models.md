@@ -47,12 +47,10 @@ The model picked for you after `/login` (when the current one cannot run)
 follows the same rule: your saved `defaultProvider`/`defaultModel` (global
 settings only — a project's `.aelix/settings.json` is never read there, #369)
 that only a project `.env` key authenticates is skipped while you hold a key
-of your own. A program
-that runs RPC mode with a model registry gets the same from `cycle_model`,
-which rotates only through models the rule leaves; `set_model` names its
-provider, so a `.env` key may authenticate it, as with `--provider`.
-(`aelix --mode rpc` itself wires no registry, and answers both with "requires
-a ModelRegistry".)
+of your own. RPC's `cycle_model` (`aelix --mode rpc`, or a program that runs
+RPC mode with a model registry) rotates only through models the rule leaves;
+`set_model` names its provider, so a `.env` key may authenticate it, as with
+`--provider`.
 
 ### A resumed session keeps its model
 
@@ -212,6 +210,18 @@ of its own ([ADR-0250](https://github.com/handochan/aelix-ai/blob/main/docs/deci
    provider you hold a credential for first; if you hold one for the provider
    the prefix named, the id stays there as a custom id.
 
+A `--model` (with or without `--provider`) that does not resolve — not found,
+ambiguous, or naming a provider nobody registered (`--provider nope --model
+x`) — stops `-p`, `--mode json` and `--mode rpc` with that error on stderr and
+exit 1 before any request, as in pi. pi exits in the interactive mode too;
+aelix starts it with the error as a Warning and waits for `/model`. A saved
+`defaultProvider`/`defaultModel` (pair or alone) or an agent profile's
+`model:` that does not resolve stops `-p` and `--mode json` the same way, but
+`--mode rpc` starts on it and refuses each prompt until `set_model` or
+`switch_session` moves the session (pi falls back from a saved default to an
+available model) — unless `--provider` is typed beside the profile: then RPC
+exits 1 too.
+
 An extension's explicit `models` map replaces the named provider's builtin and
 models.json rows in every selection surface, including `/model`; `{}` offers
 none and `None` leaves the model list intact. Explicitly named unknown ids may
@@ -341,8 +351,7 @@ handler's `trigger_turn` then ends as a refused turn (nothing sent; its message
 stays in the conversation and goes out with the next prompt that is sent), a
 `model_select` handler cannot move the session off the hold — nor send a turn
 while aelix puts the session on hold, at launch, on a rebuild or at `/agents use`
-(that turn is refused too, and nothing is sent; its message stays in the
-conversation and goes out with the next prompt that is sent) —
+(that turn is refused too, the same way) —
 and an `--api-key` is attached only after that decision — typed with a refused
 model it is not used at all, and no provider holds it. The same holds while a
 rebuild's `session_start` handlers run in a session that is held. Once the session is running the provider is there,
@@ -356,8 +365,10 @@ session's model). A profile's choice lasts until an `/agents use` of a profile
 none of whose `model:` / `provider:` applies, or `--none`. `/model` also saves
 it as your default, so the next launch without `--model` reads it from
 `settings.json` and is refused the same way. The RPC mode
-starts held too but cannot pick another model (`aelix --mode rpc` has no model
-registry for `set_model`): restart it with another `--model`. Register providers
+starts held too, with the same warning ending `send set_model to select a
+model.`: RPC's `set_model` leaves the hold as `/model` does
+(`get_available_models` lists what it can pick; `cycle_model` leaves it only
+with two or more models available, as in pi). Register providers
 in the extension's `setup()` and they work at launch. A provider the handler
 registers and then unregisters is simply unknown.
 

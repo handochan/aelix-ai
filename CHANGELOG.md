@@ -382,7 +382,8 @@ unwritten. Add them with the next release.
   it there with that key, use --model openrouter/newlab/model-x or --provider
   openrouter --model newlab/model-x.)`; the TUI starts with that Warning and
   sends nothing until `/model` picks a model; RPC starts on the unresolved model
-  and refuses the prompt. **If K is an OpenRouter key and the id is one this
+  and refuses the prompt (since #371 it exits 1 with the same error, below).
+  **If K is an OpenRouter key and the id is one this
   build does not list** (`--model newvendor/model --api-key sk-or-…`), write
   `openrouter/newvendor/model` or `--provider openrouter`. Unchanged: those two
   explicit routes, an id OpenRouter's part of the catalog lists
@@ -427,6 +428,38 @@ unwritten. Add them with the next release.
   fails as it did before (pi has no such variable). `--help` and
   `--list-models` still work with `--provider`; its help line now reads
   "Provider to search for --model (requires --model)".
+
+- **`aelix --mode rpc` can change model, and a `--model` that does not
+  resolve ends it with exit 1, as in `-p` (#371, ADR-0250).** The shipped RPC
+  mode had no model registry, so `set_model`, `cycle_model` and
+  `get_available_models` all answered `set_model requires a ModelRegistry —
+  none configured` (`cycle_model …`, `get_available_models …`). They now work
+  as in pi: `get_available_models` lists the models your credentials reach,
+  those an extension registered included; `set_model {"provider", "modelId"}`
+  moves the next prompt to that model (an unknown one is `Model not found:
+  <provider>/<id>`); and `cycle_model` rotates to the next when two or more
+  models are available (below two it returns nothing, as pi's does). A
+  session held because its launch model names a provider an extension
+  registered while the session was starting (#367) leaves the hold with
+  `set_model` (or `cycle_model`, given two or more models to rotate through);
+  its Warning now ends `No prompt will be sent for it; send set_model to select
+  a model.` (it said to restart with another `--model`). **A launch model you
+  give on the command line that does not resolve** — `--model`, with or
+  without `--provider`: not found, ambiguous, or naming a provider nobody
+  registered — used to start RPC silently, answer the first `prompt` with
+  `success: false` and exit 0 at end of input; it now writes the error `-p` and
+  `--mode json` write (`Error: Model "newlab/model-x" not found. …`) to stderr
+  and exits 1 before reading a command, with nothing on stdout, as pi does for
+  `--model` in every mode. Still started as before: a `defaultProvider` /
+  `defaultModel` in `settings.json` that does not resolve (as a pair or alone;
+  each prompt is refused until `set_model` or `switch_session` moves the
+  session — pi falls back to an available model there instead of failing on
+  it, and `-p` and `--mode json` still exit 1 on it, unchanged), an agent
+  profile's `model:` that does not resolve (`-p` refuses it too, unchanged;
+  with `--provider` typed beside it, RPC exits 1 as for `--model`),
+  the #367 hold, a launch with no model at all, and a model that resolved to
+  an api this build has no adapter for (its prompt is refused). The
+  interactive mode is unchanged (a Warning, then `/model`).
 
 - **Session totals now include what delegated agents spent, so totals from
   this release on — History's included — are higher than the same work was
@@ -1186,7 +1219,8 @@ unwritten. Add them with the next release.
   that only the `.env` authenticates is skipped; since #369 only your global
   one is read there), RPC `cycle_model` for a program that runs RPC
   mode with a model registry (`set_model` names its provider and is
-  unchanged; `aelix --mode rpc` wires no registry), delegated agents and an `aelix` started
+  unchanged; `aelix --mode rpc` wires no registry — since #371 it does,
+  above), delegated agents and an `aelix` started
   from the bash tool. "A key of your own" counts one held for any provider,
   including a provider that lists no models. A project `.aelix/settings.json`
   `defaultProvider` alone no longer settles a `--model` id several providers
@@ -1322,7 +1356,8 @@ unwritten. Add them with the next release.
   next launch without `--model` is refused the same way. The
   RPC mode starts held too, and cannot pick another model (`aelix --mode rpc`
   has no model registry for `set_model`): its warning says to restart with
-  another `--model`. The same holds for `--provider <name> --model <id>`,
+  another `--model` (since #371 it has one: `set_model` leaves the hold and the
+  warning says so, above). The same holds for `--provider <name> --model <id>`,
   `--provider <name>` alone, a bare id only that provider lists, a
   `defaultProvider`/`defaultModel` pair in `settings.json`, an agent profile's
   `model:` and a delegated child's launch — several of which used to fail at
