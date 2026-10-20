@@ -567,6 +567,43 @@ unwritten. Add them with the next release.
   (Esc cannot stop it). A provider error event is judged as the turn judges it: an
   aborted stream is not retried. A split turn whose other summary fails no longer
   leaves the retrying one running.
+- **On macOS and Windows a certificate the system does not trust gets the TLS
+  advice too (#411, ADR-0195 amendment).** With `aelix status` showing
+  `store: OS certificate store`, the operating system checks the server's
+  certificate, and its error names none of the text aelix looked for. So a
+  corporate proxy's certificate on a Mac printed only
+  `Connection error. — ('“api.example.com” certificate is not trusted',)`, with
+  no word on what to do, in `aelix -p`, `--mode json`, `--mode rpc` and the TUI
+  alike. That error now gets the same advice OpenSSL's does: install the proxy's
+  root CA system-wide, or point `SSL_CERT_FILE` at it — and the command printed
+  for that is now the platform's own: Linux keeps
+  `export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`, which every
+  platform used to get (on macOS that directory is empty), macOS points at the
+  guide's `~/.aelix/ca-bundle.pem`, and Windows gets PowerShell's
+  `$env:SSL_CERT_FILE = …`. A certificate for the wrong host (macOS -67602,
+  Windows `0x800B010F`) gets the hostname advice and an expired or
+  not-yet-valid one (macOS -67818 and -67819, Windows `0x800B0101`) the clock
+  advice, never the CA one; none of them gets the Python 3.13 strict-mode
+  advice, since the operating system's check does not use it. A certificate
+  macOS rejects on its own — a validity period too long, a key too small, no
+  server use (-67901, -67735, -67609) — gets no advice, since no CA fixes it,
+  and neither does any failure on macOS 10.13 and older, whose verifier cannot
+  say which failure it is. A connection that fails for another reason
+  (refused, a name that does not resolve, a timeout, a proxy's `407`, a server
+  that demands a client certificate) still gets no TLS advice, and its message
+  is unchanged. An HTTP error that carries the server's status — a model
+  request's, or a `/login` sign-in endpoint's — no longer gets TLS advice
+  because its body mentions a certificate: a `400` quoting a prompt that said
+  `certificate verify failed` used to get the corporate-CA advice. An error a
+  provider reports mid-stream with no numeric status (an OpenAI-style error
+  whose code is a word such as `server_error`) is still read by its words, a
+  known limit. On Windows the TLS guide now makes the `~/.aelix/ca-bundle.pem`
+  copy in PowerShell with `Set-Content -Encoding ascii`, since Windows
+  PowerShell 5.1's `>` writes UTF-16, which OpenSSL cannot read. The macOS
+  codes were measured on macOS 26.6, -67819 aside (Apple's documented code; a
+  not-yet-valid certificate came back as -67818); the Windows ones are read
+  from Windows' error table, and the Windows CI legs run the untrusted case for
+  real. The TLS guide (`aelix docs tls-and-corporate-ca`) lists the codes.
 
 - **An extension's `select` draws a label of several lines that does not fit
   from its first line, not as a `⋮` over blank rows (#424, ADR-0253 §11.3).**

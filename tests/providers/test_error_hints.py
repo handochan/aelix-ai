@@ -6,8 +6,10 @@ raise ``APIConnectionError("Connection error.")`` whose real cause — an
 their error text through :func:`describe_provider_error`, which recovers the real
 reason and appends the remedy matching the OpenSSL verify code (issue #99).
 
-``verify_code`` / ``verify_message`` exist ONLY on OpenSSL-RAISED errors, so a
-synthetic ``ssl.SSLCertVerificationError("...")`` carries neither. Tests that
+``verify_code`` / ``verify_message`` exist ONLY on verifier-RAISED errors
+(OpenSSL's, or truststore's OS verifier on macOS and Windows - those rows are in
+``test_tls_os_verifier_411.py``), so a synthetic
+``ssl.SSLCertVerificationError("...")`` carries neither. Tests that
 exercise a verify-code branch must therefore either inject the attributes
 (:func:`_openssl_error`) or drive a real handshake
 (:func:`test_real_handshake_untrusted_issuer_reports_private_ca`) — asserting on

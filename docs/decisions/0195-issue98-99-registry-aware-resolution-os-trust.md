@@ -1,6 +1,6 @@
 # 0195. Registry-aware startup model resolution (#98) + OS trust store & cause-preserving TLS diagnostics (#99)
 
-Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4
+Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4; amended 2026-10-20 (#411): Decision 10 — see the amendment at the end
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -185,6 +185,11 @@ But three product defects made it undiagnosable:
     `verify_code` is read with `getattr` defaults: it exists ONLY on
     OpenSSL-raised errors, so an absent code keeps today's generic advice and
     synthetic test errors do not silently disable the branch.
+
+    **#411 amendment 2026-10-20** (below): truststore's OS verifiers set
+    `verify_code` too, and their codes for a wrong host and for the validity
+    window branch the same way; a TLS failure behind httpcore's `from None` is
+    attributed by the verification error the link carries, not only by text.
 11. **`enable_github_copilot_model` propagates a deterministic `TransportError`**
     (TLS/DNS/connect/proxy) instead of swallowing it — that swallow is what let
     `/login` report success on a network where every turn dies at message 1, and is
@@ -241,3 +246,202 @@ But three product defects made it undiagnosable:
 - #85 §B's premise that `SSL_CERT_FILE` means "no code change needed" is superseded
   by decision 7: requiring an env var the incumbent tool does not require is itself
   the defect.
+
+## Amendment (2026-10-20, #411) — the OS verifier's failures are attributed, and its codes earn the same remedies
+
+**What was wrong.** On macOS and Windows `truststore` verifies the chain with
+the operating system, not OpenSSL. The error is still an
+`ssl.SSLCertVerificationError`, but its text is the OS's and names none of
+`_TLS_MARKERS`, and httpcore re-raises the `ConnectError` that carries it
+`from None` (`_sync/connection_pool.py:256`): `__cause__` cleared,
+`__context__` cut. Decision 10's attribution walk respects that cut, so it
+found only the wrappers, whose text was the OS's too. Measured on macOS 26.6
+with truststore 0.10.4, against a local server whose self-signed certificate
+no keychain holds, through the real CLI (`aelix -p`, a `models.json` provider,
+fake key): `Connection error. — ('“localhost” certificate is not trusted',)`
+and no remedy, for `openai-completions`, `openai-responses`,
+`anthropic-messages` and `google-generative-ai`, in `-p`, `--mode json`,
+`--mode rpc` and the TUI. The chain, measured for the async OpenAI and
+Anthropic clients and httpx's sync and async ones: `APIConnectionError → httpx.ConnectError →
+httpcore.ConnectError` (`args[0]` is the error, `__cause__` None,
+`__suppress_context__` True) `→ SSLCertVerificationError` with `verify_code`
+-67843. Decision 10's "`verify_code` exists ONLY on OpenSSL-raised errors" was
+false for this path: truststore sets it on both platforms.
+
+**Decision 10 is amended in seven parts** (parts 5–7, and the review-round-2
+sentences in parts 1–3, come from the issue's second review round, which held
+every remedy to where it is true).
+
+1. *Attribution looks behind the cut for the verification error the link
+   carries, and for nothing else.* A link whose `__cause__` is None and whose
+   `__context__` is suppressed is attributed to a TLS failure when that
+   context is an `SSLCertVerificationError` and the link carries it — holds it
+   as an argument (httpcore's `map_exceptions` builds `ConnectError(exc)`) or
+   says exactly its text. An unrelated error raised `from None` inside an
+   `except` does neither, and the existing row for it stays green. The cause
+   TEXT keeps the old walk: a first draft crossed the cut for every error, and
+   a refused connection's `Connection error. — All connection attempts failed`
+   became anyio's `multiple connection attempts failed (2 sub-exceptions)`
+   (measured on `aelix -p`); now it reads as before, in the CLI and the TUI.
+   Review round 2: an `ssl.SSLError` carried the same way that is NOT a
+   verification error is not attributed, even when its reason names a
+   certificate — a TLS 1.3 server that demands a client certificate sends
+   `certificate_required` (`TLSV13_ALERT_CERTIFICATE_REQUIRED`, measured
+   through httpcore's `ReadError`), and no CA helps a client that sent none.
+2. *The OS's untrusted-issuer texts are markers*, for a wrapper that kept only
+   text: macOS `certificate is not trusted` (measured; English for a CLI
+   process even with `AppleLanguages` `ko-KR`), Windows'
+   `which is not trusted by the trust provider` (`CERT_E_UNTRUSTEDROOT`),
+   `could not be built to a trusted root authority` (`CERT_E_CHAINING`), and
+   truststore's fallback when Windows has no text for the code,
+   `Certificate chain policy error 0x800b0109` / `0x800b010a` (the text names
+   the code). Only texts that name an untrusted issuer: a wrapper that kept
+   only a wrong-host or validity text gets no remedy rather than the CA one.
+   Windows' texts are localized; its code is not. Review round 2 dropped two
+   generic texts round 1 had listed: truststore's macOS ≤ 10.13
+   `Recoverable trust failure occurred` — an untrusted root, a wrong host, an
+   expired and a not-yet-valid leaf all give it there, with code 5 (measured
+   on macOS 26.6 with that branch forced) — and the bare
+   `Certificate chain policy error` prefix, truststore's fallback for any
+   code, a wrong host and an expired leaf included.
+3. *The OS codes branch like OpenSSL's.* Hostname: 62, macOS -67602
+   (`errSecHostNameMismatch`), Windows `0x800B010F` (`CERT_E_CN_NO_MATCH`).
+   Clock: 9, 10, macOS -67818 (`errSecCertificateExpired`) and -67819
+   (`errSecCertificateNotValidYet`), Windows `0x800B0101` (`CERT_E_EXPIRED`).
+   Every other code keeps the untrusted-issuer default, except the verdicts
+   of part 6. The macOS codes were measured with a probe CA as the only anchor
+   (`load_verify_locations`, which truststore passes to
+   `SecTrustSetAnchorCertificates`; nothing was added to a keychain): a
+   wrong-host leaf -67602, an expired leaf AND a not-yet-valid one -67818, the
+   same leaves unanchored -67843, a leaf whose issuer the server did not send
+   -25318 (`errSecCreateChainFailed`). -67819 was never seen. The Windows
+   codes are read off `winerror.h` and `truststore/_windows.py` (`dwError`, a
+   DWORD, so unsigned): no Windows box ran them. On macOS 10.14 and later the
+   codes are negative and on Windows above 2^31, so neither meets OpenSSL's
+   0–95. On macOS ≤ 10.13 truststore sets the `SecTrustResultType` instead,
+   0–7, which does (5 is also OpenSSL's code for a CRL signature it cannot
+   decrypt): that path is recognised by truststore's own texts for those
+   results, never by the code (part 6).
+4. *The strict split holds.* An OS code is never in the strict-only set or
+   79, so it never gets the strict remedy; and it cannot be strict's: with
+   the OS verifying, truststore switches OpenSSL's verification off. Measured
+   on macOS with Python 3.12.13 and 3.14.5: a chain whose leaf lacks the
+   Authority Key Identifier fails a stdlib context with code 85 under strict
+   and verifies under truststore with strict on and off.
+5. *Text never attributes a chain that carries the HTTP status a server
+   answered with* (review round 2). A status — an int `status_code` (openai,
+   anthropic), `code` (google-genai), `status` (the Codex adapter),
+   `oauth_status_code` (aelix's OAuth sign-in and refresh errors,
+   `oauth_http_error`, which `/login` describes), or a `response` carrying one
+   (httpx) — means a server read the request and answered it, so a
+   certificate phrase in the error's text is the server's words, not this
+   machine's verifier. Measured at round 1 through `aelix -p`
+   (`openai-completions`) against a plain-`http://` server whose 400 quoted
+   the prompt: `… certificate is not trusted …` got the corporate-CA remedy,
+   and `certificate verify failed` had got it on every build before #411.
+   With any link of the attribution chain answered — the status error, or a
+   wrapper raised from it that repeats its text (the anthropic adapter's
+   `_AuthError` shape) — no link's text counts, the long-standing OpenSSL
+   markers included; a verification error object, which only a verifier
+   raises, still does. `oauth_status_code` was added in the narrowed finish
+   (2026-10-21): the second review's verify ran the real Copilot device-code
+   request against a plain-`http://` 503 whose body was Envoy's report of its
+   upstream's `CERTIFICATE_VERIFY_FAILED`, and `/login` printed the
+   corporate-CA remedy under it; now none. An error that carries no int
+   status is still read by its text (known limitations).
+6. *An OS verdict no remedy fits gets none* (review round 2). The failure is
+   still attributed (`is_tls_verification_error` is true) and the OS's own
+   text is shown, with nothing under it.
+   - macOS rejects the certificate ITSELF, whatever its issuer: -67901
+     (`errSecCertificateValidityPeriodTooLong`, `is not standards compliant`),
+     -67735 (`errSecUnsupportedKeySize`, `is using a broken key size`), -67609
+     (`errSecInvalidExtendedKeyUsage`, `is not permitted for this usage`). No
+     CA install satisfies them, and round 1's CA remedy named a CA the request
+     already trusted (the cross-review's -67901 run had it in
+     `SSL_CERT_FILE`). Measured on macOS 26.6 against a probe CA: a 900-day
+     leaf -67901 and an RSA-1024 leaf -67735 whether or not the CA is an
+     anchor, so "the chain is fine" would be false too; a clientAuth-only
+     leaf -67609 once anchored (unanchored, -25318 comes first).
+   - macOS ≤ 10.13's results name no cause: truststore's text for each
+     `SecTrustResultType` (`Recoverable trust failure occurred` for 5,
+     `User specified that certificate is not trusted` for 3, a user's
+     explicit "never trust", and the rest of its table) gets no remedy, with
+     its code or as text alone.
+7. *The printed `SSL_CERT_FILE` example is the platform's own* (review round
+   2). It was Linux's `export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt`
+   everywhere, and since this amendment the CA remedy reaches macOS and
+   Windows, where that directory is empty (macOS: following the line
+   literally fails with `[Errno 2] No such file or directory`, measured) and
+   `export` is no PowerShell command. Linux keeps it; Windows gets
+   `$env:SSL_CERT_FILE = "$HOME\.aelix\ca-bundle.pem"`, introduced as
+   PowerShell; macOS and other systems get
+   `export SSL_CERT_FILE="$HOME/.aelix/ca-bundle.pem"` — the bundle the TLS
+   guide's recipe makes (certifi's roots plus the CA). Measured in zsh on
+   macOS 26.6: that recipe with the probe CA, then the new line, and
+   `aelix -p` reached the server. `sys.platform` is read when the remedy is
+   built. No example carries a shell comment: zsh, macOS's default shell, does
+   not take `#` as one at the prompt. On Windows the guide makes the bundle
+   with `Get-Content … | Set-Content -Encoding ascii` (narrowed finish):
+   Windows PowerShell 5.1's `>` writes UTF-16LE, and OpenSSL loads no
+   certificate from such a file (`NO_CERTIFICATE_OR_CRL_FOUND`, measured on a
+   UTF-16LE copy written by `Out-File -Encoding unicode`). The recipe ran in
+   PowerShell 7.6.5 on macOS (the bundle loaded with the probe CA in it), not
+   on Windows.
+
+**pi.** pi gives no TLS remedy at all: it appends the cause chain's messages
+(`packages/coding-agent/src/utils/tools-manager.ts`,
+`packages/ai/src/utils/models-error.ts` @ `fdce48eb4`). Nor does it use the OS
+store: nothing in it asks Node for one (no `--use-system-ca`, no
+`tls.getCACertificates`), and its one CA setting is `test.sh` passing
+`NODE_EXTRA_CA_CERTS` — a PEM file Node adds to its bundled roots — through to
+its own test run. The divergence stands (ADR-0235).
+
+**Tests.** `tests/providers/test_tls_os_verifier_411.py`. Every OS row drives
+the real httpx, httpcore and OpenAI SDK through truststore's own `SSLContext`,
+sync and async; off macOS and Windows, truststore's `_verify_peercerts_impl`
+is replaced by one raising exactly what the macOS or Windows backend raises,
+so the Linux legs run the same chain. On macOS the real verifier runs the
+untrusted, wrong-host and expired rows; on Windows the real verifier runs the
+untrusted row — the first measurement of that path, on CI. Five non-TLS
+failures through the same stack get no remedy: refused (sync and async, whose
+text is pinned), a failed lookup, a handshake that times out, a proxy's 407,
+TLS to a plain-HTTP server. Review round 2 adds: a plain-HTTP 400 that quotes
+each marker family through the openai and anthropic SDKs, httpx's, the Codex
+adapter's and google-genai's status errors, and a wrapper raised from one
+(part 5); the verdicts of part 6, simulated on every runner and run on the
+real macOS verifier (the 900-day, RSA-1024 and clientAuth-only leaves, and
+truststore's ≤ 10.13 branch forced); a TLS 1.3 server that demands a client
+certificate (part 1); and the example for each of `linux`, `darwin`, `win32`
+and `freebsd14`, each remedy whole within the TUI's bound (part 7). The
+narrowed finish adds `oauth_http_error`'s status error for each marker family
+and the real Copilot device-code request against a plain-HTTP 503 (part 5).
+
+**Known limitations.**
+
+- Windows is read, not run, except for the CI row above.
+- macOS -67901, -67735 and -67609 get no remedy — only the OS's own text:
+  aelix does not say what to do about a certificate macOS rejects on its own.
+  Those three are the ones measured here. Every other OS code, on macOS or
+  Windows, keeps the untrusted-issuer default, so a rejection no CA can fix
+  that is not on the list would still get the CA remedy.
+- An error that carries no int status is still read by its text. An openai
+  `APIError` raised mid-stream whose body `code` is a string (`server_error`)
+  is one: certificate words in it still get the CA remedy (measured on an
+  error built in-process, not from a live stream).
+- On macOS ≤ 10.13 no failure gets a remedy, an untrusted root included: its
+  result code cannot say which failure it is. Measured with truststore's
+  branch forced on macOS 26.6, not on a real 10.13.
+- The printed example's macOS and Windows path is a placeholder the user
+  creates; only Linux's names a file the system keeps.
+- On Windows a CA from `SSL_CERT_FILE` is tried after the system store, and
+  when both fail truststore re-raises the system store's error, so a wrong
+  host or an expired leaf under such a CA reads as untrusted (read off
+  `truststore/_windows.py`).
+- The cause text still shows the error's `str()`, which for truststore's
+  one-argument error is a tuple: `('“localhost” certificate is not trusted',)`.
+- On a strict interpreter `maybe_relax_strict_for_session` still re-tests the
+  host twice for an OS-verifier failure, which can never relax anything there.
+- An OAuth token refresh that fails on TLS names no remedy on any platform
+  (`OAuthRefreshError` quotes `str(cause)`); that is not this decision's
+  boundary.
+

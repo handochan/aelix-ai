@@ -332,8 +332,8 @@ async def _run_oauth(
         # same 54,906 characters, and with a cause chain it returns MORE. It is a
         # TLS-hint appender, so the bound has to be applied here. `keep_newline`
         # and a line bound rather than a flatten: the #99 remedy this same call
-        # renders is deliberately five lines with an indented `export
-        # SSL_CERT_FILE=...`, and one-row treatment deletes the remedy outright.
+        # renders is deliberately five lines with an indented `SSL_CERT_FILE`
+        # example, and one-row treatment deletes the remedy outright.
         # A TLS wall is the ONE login failure aelix can act on rather than only
         # report: an intercepting proxy's certificate can fail Python 3.13's
         # strict RFC-5280 checks while the machine trusts its root perfectly

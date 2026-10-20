@@ -195,7 +195,7 @@ def safe_error_for_terminal(text: str) -> str:
     The three numbers, each earned by a measurement:
 
     * ``keep_newline=True`` — the #99 TLS remedy rendered by the SAME call site
-      is five lines with an indented ``export SSL_CERT_FILE=…``. Flattening to one
+      is five lines with an indented ``SSL_CERT_FILE`` example. Flattening to one
       row deletes the remedy, which is the whole point of the message.
     * ``max_lines=8`` — the body #184's reporter received was 164 lines; at 80
       columns the full page is ~815 rendered rows and takes the transcript with

@@ -3,9 +3,10 @@
 Status: Accepted
 
 If `aelix` cannot reach a provider and the error mentions
-`CERTIFICATE_VERIFY_FAILED`, this page tells you which of the four possible
-causes you have, and what to do about each. Start with `aelix status` — it
-answers most of the question before you try anything.
+`CERTIFICATE_VERIFY_FAILED` — or, on macOS and Windows, says a certificate
+`is not trusted` — this page tells you which of the four possible causes you
+have, and what to do about each. Start with `aelix status` — it answers most
+of the question before you try anything.
 
 Nothing here requires network access to read: this guide ships inside the
 wheel, so `aelix docs tls-and-corporate-ca` prints it on a closed network.
@@ -43,8 +44,54 @@ enough.
 
 ## The four causes, and how to tell them apart
 
-`aelix` reads the OpenSSL verify code out of the failure and says which one you
-have. The message is the diagnosis; you do not have to guess.
+`aelix` reads the verify code out of the failure and says which one you have.
+The message is the diagnosis; you do not have to guess. The advice appears only
+when this machine's own verifier rejected the connection: an HTTP error that
+carries the status the server sent back — a `400` that quotes your prompt, a
+gateway's `502` about its own upstream, a sign-in endpoint's `503` during
+`/login` — gets none, whatever certificate words it contains. One known
+exception: an error a provider reports in the middle of a streamed answer
+with no numeric status (an OpenAI-style error whose code is a word such as
+`server_error`) is still read by its words, so certificate words in it can
+still bring the corporate-CA advice.
+
+**On macOS and Windows the operating system does the verifying.** With
+`store: OS certificate store`, `truststore` hands the chain to the platform's
+own verifier, so the error is the OS's, not OpenSSL's: macOS says
+`“api.example.com” certificate is not trusted`, Windows says
+`A certificate chain processed, but terminated in a root certificate which is
+not trusted by the trust provider.` (in the system's language). Its code is
+the OS's too, and `aelix` maps it to the same four causes:
+
+| cause | OpenSSL code | macOS code | Windows code |
+|---|---|---|---|
+| 1. untrusted issuer | 2, 18, 19, 20 | -67843, -25318 | `0x800B0109`, `0x800B010A` |
+| 2. wrong hostname | 62 | -67602 | `0x800B010F` |
+| 3. clock | 9, 10 | -67818 (both ends of the window), -67819 | `0x800B0101` |
+| 4. strict mode | 78, 80–94 (and 79) | never | never |
+| none of the four: no advice | — | -67901, -67735, -67609; every result on macOS 10.13 and older | — |
+
+The macOS codes were measured (macOS 26.6), except -67819: Apple documents it
+for a certificate that is not yet valid, but macOS reported one here as -67818.
+The Windows ones are read off Windows' error table. Any other code gets the
+untrusted-issuer advice, as an unlisted OpenSSL code does.
+
+Some failures get no advice, only the operating system's own words, because
+none of the four fits. macOS rejects some certificates on their own, whoever
+issued them: a validity period longer than it allows (-67901,
+`is not standards compliant`), a key that is too small (-67735,
+`is using a broken key size`), a certificate not issued for server use
+(-67609, `is not permitted for this usage`). No CA you install fixes those;
+whoever runs the endpoint, or the proxy that mints its certificates, has to
+replace the certificate. And on macOS 10.13 and older the verifier gives the
+same result for an untrusted issuer, a wrong hostname and an expired
+certificate, so `aelix` cannot say which one you have.
+
+On Windows a CA that `SSL_CERT_FILE` points at
+(rather than one installed system-wide) is tried only after the system store,
+and when both fail the system store's error is the one reported: a wrong
+hostname or an expired certificate under such a CA then reads as an untrusted
+issuer.
 
 ### 1. A proxy is intercepting HTTPS with a private root CA
 
@@ -64,19 +111,40 @@ issuer nothing trusts). The message begins:
    `aelix status` reports `store: OS certificate store`. This fixes every tool
    on the machine, not just `aelix`.
 2. **Point `SSL_CERT_FILE` at a bundle that contains it.** Needed when you
-   cannot modify the system store, or when `store` says `degraded`:
+   cannot modify the system store, or when `store` says `degraded`. On
+   Debian/Ubuntu the system keeps one, and a CA installed with
+   `update-ca-certificates` is in it:
 
    ```sh
    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
    ```
 
-   If your platform has no such combined bundle, append the corporate CA to
-   the one `python -m certifi` prints and point at a **copy**:
+   If your platform has no such combined bundle — macOS and Windows keep none
+   that a system-wide install updates — append the corporate CA to the one
+   `python -m certifi` prints and point at a **copy**:
 
    ```sh
    cat "$(python -m certifi)" corp-root.pem > ~/.aelix/ca-bundle.pem
    export SSL_CERT_FILE=~/.aelix/ca-bundle.pem
    ```
+
+   In PowerShell on Windows, make the copy with `Set-Content -Encoding ascii`
+   and set the variable with `$env:`. Do not use `cat … >` there: Windows
+   PowerShell 5.1's `>` writes UTF-16, which OpenSSL cannot read as PEM
+   (`no certificate or crl found`).
+
+   ```powershell
+   Get-Content (python -m certifi), corp-root.pem | Set-Content -Encoding ascii "$HOME\.aelix\ca-bundle.pem"
+   $env:SSL_CERT_FILE = "$HOME\.aelix\ca-bundle.pem"
+   ```
+
+   This PowerShell recipe has not been run on Windows yet; it was checked
+   only with PowerShell 7 on macOS, where the bundle it wrote loaded with the
+   corporate CA in it.
+
+   The advice `aelix` prints carries the line for the platform it runs on:
+   the Debian/Ubuntu one on Linux, the `~/.aelix/ca-bundle.pem` one on macOS
+   (and other systems), the PowerShell one on Windows.
 
    Do not edit `certifi`'s own file in place — reinstalling or upgrading the
    package silently reverts it, and the failure comes back weeks later with no
@@ -139,7 +207,11 @@ separates them: `Verify return code: 0 (ok)` there means it is the strict case.
 
 Any other code — an untrusted root (18–20), a bad signature (7) — gets the
 advice for that failure even with strict on, because strict mode does not
-produce it.
+produce it. Neither does the operating system's verifier: with
+`store: OS certificate store` on macOS or Windows, OpenSSL does not verify the
+chain at all, so this section does not apply there (measured on macOS with
+Python 3.14: a chain missing its Authority Key Identifier verified with strict
+on).
 `aelix status` showing `RFC 5280 strict  on` tells you the flag is set, not
 that it is the cause.
 

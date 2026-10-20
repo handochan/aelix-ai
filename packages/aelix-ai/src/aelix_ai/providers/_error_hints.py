@@ -19,6 +19,22 @@ installed system-wide, e.g. inside a container. That injection is best-effort
 and embedders never run it, so the hint asks :func:`_os_trust_store_active` which
 store is live instead of asserting one.
 
+ON MACOS AND WINDOWS THE OS VERIFIES (#411). There truststore checks the chain
+with the platform's own verifier, so the failure carries the OS's text
+(``'“localhost” certificate is not trusted'`` on macOS) and the OS's code
+(a negative OSStatus, a Windows HRESULT) where OpenSSL's would be. Neither
+text names an OpenSSL marker, and httpcore re-raises the error ``from None``;
+until #411 nothing attributed it and the CLI printed the bare error. TLS
+attribution now takes the verification error a link carries from behind a
+``from None`` (:func:`_carried_verification_error`), the OS's untrusted-issuer
+texts are markers for a wrapper that kept only text, and the OS codes for a
+wrong host and for the validity window map to the same remedies as OpenSSL's.
+Review round 2 kept every remedy to where it is true: no text attributes a
+chain a server answered with an HTTP status (:func:`_answered`), the OS
+verdicts no remedy fits get none (:func:`_no_remedy_fits`: macOS rejecting the
+certificate itself, and macOS <= 10.13's results, which name no cause), and the
+``SSL_CERT_FILE`` example is the platform's own (:func:`_tls_cert_file_escape`).
+
 EVERY REMEDY FITS THE TUI (#192 review round 3). The TUI prints an error
 through ``safe_error_for_terminal``: 8 lines, each cut at 200 characters. The
 error itself is one line (``quote_model_text`` folds its line breaks) and a
@@ -39,33 +55,142 @@ from __future__ import annotations
 
 import re
 import ssl
+import sys
 from collections.abc import Callable
 
 # Substrings that mark a TLS trust failure across httpx / OpenSSL / SDK wrappers.
 # Cert-specific ONLY: a bare "SSL" / "ConnectError" substring would drag 401s,
 # DNS failures and connection-refused into the TLS branch.
+#
+# The second group is truststore's OS verifiers (#411). On macOS and Windows
+# truststore hands the chain to the operating system, whose error names no
+# OpenSSL text at all. Only texts that name an untrusted issuer are listed - the
+# one failure whose remedy is the default below - so a wrapper that kept only
+# the text of a hostname or validity failure gets no remedy rather than the CA
+# one; the error itself carries a code that does tell them apart (see the codes
+# below), and :func:`_carried_verification_error` reaches it behind httpcore's
+# ``from None``. Two truststore texts name no cause and are not listed (review
+# round 2): macOS <= 10.13's 'Recoverable trust failure occurred', which an
+# untrusted root, a wrong host and an expired leaf all give there (measured with
+# that branch forced, see :data:`_MACOS_10_13_RESULTS`), and Windows'
+# 'Certificate chain policy error <code>', which is listed only with the two
+# untrusted-issuer codes in it.
+#
+# No marker is matched on a chain a server answered with an HTTP status (review
+# round 2, :func:`_answered`): there the text is the server's - a 400 that
+# quotes the user's own words, a proxy's page about its upstream - not this
+# machine's verifier.
 _TLS_MARKERS: tuple[str, ...] = (
     "CERTIFICATE_VERIFY_FAILED",
     "certificate verify failed",
     "self-signed certificate",
     "self signed certificate",
     "unable to get local issuer certificate",
+    # macOS, Security framework errSecNotTrusted: '“localhost” certificate is not
+    # trusted' (measured, macOS 26.6, truststore 0.10.4; English for a CLI process
+    # even with AppleLanguages ko-KR). It is also the end of truststore's macOS
+    # <= 10.13 text 'User specified that certificate is not trusted', which this
+    # attributes and :func:`_tls_hint` then answers with no remedy.
+    "certificate is not trusted",
+    # Windows: FormatMessageW of CERT_E_UNTRUSTEDROOT (0x800B0109) and
+    # CERT_E_CHAINING (0x800B010A), the en-US system text truststore/_windows.py
+    # passes on (read off the table, not measured: no Windows here). The text is
+    # localized; the code is not, and the code is what the hint reads.
+    "which is not trusted by the trust provider",
+    "could not be built to a trusted root authority",
+    # Windows: truststore's own text when FormatMessageW has none for the code,
+    # f"Certificate chain policy error {code:#x} [{index}]" - for those same two
+    # codes only. With any other code in it the text names no untrusted issuer.
+    "Certificate chain policy error 0x800b0109",
+    "Certificate chain policy error 0x800b010a",
 )
 
-# OpenSSL X509_V_ERR_* verify codes, split by what the user must actually DO.
-# Every code below is confirmed against a real local handshake — NOT read off a
-# table: 62/10/9 all still stringify with "certificate verify failed", so the
+# Verify codes, split by what the user must actually DO. The OpenSSL
+# X509_V_ERR_* codes are confirmed against a real local handshake — NOT read off
+# a table: 62/10/9 all still stringify with "certificate verify failed", so the
 # _TLS_MARKERS above cannot tell them apart from an untrusted issuer.
+#
+# truststore sets ``verify_code`` too (#411), from the OS verifier: a negative
+# Security-framework OSStatus on macOS 10.14 and later, the unsigned
+# CertVerifyCertificateChainPolicy ``dwError`` (an HRESULT, read as a DWORD) on
+# Windows. Neither of those ranges meets OpenSSL's 0-95. On macOS <= 10.13 it
+# is the SecTrustResultType instead, 0-7, which does fall inside OpenSSL's
+# range: that path is told apart by truststore's own texts
+# (:data:`_MACOS_10_13_RESULTS`), never by its code. The macOS codes were
+# measured against a probe CA loaded as the only anchor (macOS 26.6): a
+# wrong-host leaf is -67602, an expired leaf AND a not-yet-valid one are both
+# -67818, an unanchored chain is -67843 (errSecNotTrusted, the default remedy).
+# -67819 is Apple's documented not-yet-valid code, never seen here. The Windows
+# codes are read off winerror.h, since no Windows box ran them.
 _HOSTNAME_MISMATCH_CODE = 62  # X509_V_ERR_HOSTNAME_MISMATCH
+_MACOS_HOSTNAME_MISMATCH = -67602  # errSecHostNameMismatch
+_WINDOWS_CN_NO_MATCH = 0x800B010F  # CERT_E_CN_NO_MATCH
+_HOSTNAME_CODES: frozenset[int] = frozenset(
+    {_HOSTNAME_MISMATCH_CODE, _MACOS_HOSTNAME_MISMATCH, _WINDOWS_CN_NO_MATCH}
+)
 
 # Both halves of the validity window. OpenSSL raises 10 when the clock is past
 # not_valid_after and 9 when it is before not_valid_before; a skewed local clock
 # (a VM with a bad RTC, a laptop resuming from suspend) produces EITHER, so they
 # share one remedy. 9 must not fall through to the untrusted-issuer default: the
 # chain verified fine there, and no CA can help someone whose date is wrong.
+# macOS and Windows each give one code for both ends of the window.
 _CERT_EXPIRED_CODE = 10  # X509_V_ERR_CERT_HAS_EXPIRED
 _CERT_NOT_YET_VALID_CODE = 9  # X509_V_ERR_CERT_NOT_YET_VALID
-_CLOCK_CODES: frozenset[int] = frozenset({_CERT_EXPIRED_CODE, _CERT_NOT_YET_VALID_CODE})
+_MACOS_CERT_EXPIRED = -67818  # errSecCertificateExpired
+_MACOS_CERT_NOT_YET_VALID = -67819  # errSecCertificateNotValidYet
+_WINDOWS_CERT_EXPIRED = 0x800B0101  # CERT_E_EXPIRED
+_CLOCK_CODES: frozenset[int] = frozenset(
+    {
+        _CERT_EXPIRED_CODE,
+        _CERT_NOT_YET_VALID_CODE,
+        _MACOS_CERT_EXPIRED,
+        _MACOS_CERT_NOT_YET_VALID,
+        _WINDOWS_CERT_EXPIRED,
+    }
+)
+
+# OS verdicts that no remedy here fits, so they get none (#411 review round 2).
+#
+# macOS rejects these certificates THEMSELVES, whatever their issuer - a rule no
+# CA install can satisfy, so the CA remedy would name the wrong lever (the #99
+# failure mode: the user installs the CA, or already has, and nothing changes).
+# Measured on macOS 26.6 against a probe CA: a leaf valid for 900 days and a
+# leaf with an RSA-1024 key are rejected with these codes whether or not the CA
+# is an anchor, so "the chain is fine" would not be true either; a leaf whose
+# EKU lacks serverAuth gives -67609 once the chain is anchored (unanchored, the
+# chain failure -25318 comes first).
+_MACOS_REJECTS_THE_CERTIFICATE: frozenset[int] = frozenset(
+    {
+        -67901,  # errSecCertificateValidityPeriodTooLong: 'is not standards compliant'
+        -67735,  # errSecUnsupportedKeySize: 'is using a broken key size'
+        -67609,  # errSecInvalidExtendedKeyUsage: 'is not permitted for this usage'
+    }
+)
+
+#: truststore's own text for each SecTrustResultType on macOS <= 10.13
+#: (``_verify_peercerts_impl_macos_10_13``), where ``verify_code`` is that result,
+#: 0-7. None of them names a cause: with the branch forced on macOS 26.6 an
+#: untrusted root, a wrong host, an expired and a not-yet-valid leaf ALL gave
+#: 'Recoverable trust failure occurred' and 5; 3 is a user's explicit "never
+#: trust". So none gets a remedy, by code or by text alone.
+_MACOS_10_13_RESULTS: tuple[str, ...] = (
+    "Invalid trust result type",
+    "User confirmation required",
+    "User specified that certificate is not trusted",
+    "Recoverable trust failure occurred",
+    "Fatal trust failure occurred",
+    "Other error occurred, certificate may be revoked",
+    "Unknown trust result: ",
+)
+
+
+def _no_remedy_fits(code: int | None, text: str) -> bool:
+    """Is this an OS verdict none of the remedies here is true for?"""
+
+    if code in _MACOS_REJECTS_THE_CERTIFICATE:
+        return True
+    return any(result in text for result in _MACOS_10_13_RESULTS)
 
 
 # The two halves of the untrusted-issuer remedy that hold regardless of which
@@ -75,12 +200,39 @@ _TLS_INTERCEPT_INTRO: str = (
     "TLS certificate verification failed — a proxy or firewall is likely "
     "intercepting HTTPS with a private root CA (common on corporate networks).\n"
 )
-_TLS_CERT_FILE_ESCAPE: str = (
-    "point SSL_CERT_FILE at a bundle that includes it:\n"
-    "  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n"
-    "or append the corporate CA to the bundle printed by `python -m certifi`, "
-    "then retry."
-)
+
+
+def _tls_cert_file_escape() -> str:
+    """Point ``SSL_CERT_FILE`` at a bundle, with a command for THIS platform.
+
+    Read off :data:`sys.platform` at call time (#411 review round 2). The one
+    example used to be ``export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt``
+    everywhere, and since #411 this remedy reaches macOS and Windows users too:
+    on macOS that directory is empty (following the line literally failed with
+    ``[Errno 2] No such file or directory``), and ``export`` is not a command in
+    PowerShell. Linux keeps the Debian/Ubuntu bundle, which holds a CA installed
+    with ``update-ca-certificates``; macOS, Windows and other systems name the
+    bundle the TLS guide's recipe makes (``~/.aelix/ca-bundle.pem``: certifi's
+    roots plus the CA), Windows with PowerShell's ``$env:``. No example carries a
+    shell comment: zsh, macOS's default shell, does not take ``#`` as one at the
+    prompt.
+    """
+
+    if sys.platform == "win32":
+        lead = "point SSL_CERT_FILE at a bundle that includes it, in PowerShell:\n"
+        example = '  $env:SSL_CERT_FILE = "$HOME\\.aelix\\ca-bundle.pem"\n'
+    elif sys.platform.startswith("linux"):
+        lead = "point SSL_CERT_FILE at a bundle that includes it:\n"
+        example = "  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n"
+    else:
+        lead = "point SSL_CERT_FILE at a bundle that includes it:\n"
+        example = '  export SSL_CERT_FILE="$HOME/.aelix/ca-bundle.pem"\n'
+    return (
+        f"{lead}{example}"
+        "or append the corporate CA to the bundle printed by `python -m certifi`, "
+        "then retry."
+    )
+
 
 # Deliberately never mentions SSL_CERT_FILE: the chain verified fine, so a CA
 # bundle is the wrong lever and offering it sends the user down a dead end.
@@ -141,14 +293,14 @@ def _untrusted_issuer_hint() -> str:
             "certificate store, so installing that root CA system-wide is the "
             "fix — it is what already makes VS Code and your browser work on "
             "this network.\nIf it cannot be installed system-wide (e.g. inside a "
-            f"container), {_TLS_CERT_FILE_ESCAPE}"
+            f"container), {_tls_cert_file_escape()}"
         )
     return (
         f"{_TLS_INTERCEPT_INTRO}This process is verifying against certifi's "
         "public-root bundle ONLY — the operating system's certificate store is "
         "NOT being consulted,\nso a root CA installed system-wide (the reason VS "
         "Code and your browser work on this network) cannot help by itself. "
-        f"Instead, {_TLS_CERT_FILE_ESCAPE}"
+        f"Instead, {_tls_cert_file_escape()}"
     )
 
 
@@ -358,7 +510,11 @@ def _causes(exc: BaseException) -> list[BaseException]:
     ``raise exc from None`` (``_sync/connection_pool.py:256``, mirrored in
     ``_async``), which parks the real :class:`ssl.SSLCertVerificationError`
     behind exactly this cut on EVERY httpx-backed request. Diagnosis therefore
-    uses :func:`_raw_chain`; only attribution uses this.
+    uses :func:`_raw_chain`, and attribution looks behind the cut only for the
+    verification error the exception itself carries (:func:`_carried_verification_error`).
+    The cause TEXT keeps this walk (#411): crossing the cut for every error
+    turned a refused connection's ``All connection attempts failed`` into anyio's
+    ``multiple connection attempts failed (2 sub-exceptions)``, measured.
     """
 
     out: list[BaseException] = []
@@ -374,6 +530,43 @@ def _causes(exc: BaseException) -> list[BaseException]:
         else:
             cur = cur.__context__
     return out
+
+
+def _carries(exc: BaseException, inner: BaseException) -> bool:
+    """Does ``exc`` re-raise ``inner`` rather than replace it? (#411)
+
+    httpcore's ``map_exceptions`` builds ``ConnectError(exc)`` - the error it
+    maps is its argument, and its text is that error's text - and
+    ``connection_pool`` then re-raises it ``from None``, which clears its
+    ``__cause__`` and cuts its ``__context__``: the very error it carries. An
+    unrelated error raised ``from None`` inside an ``except`` holds neither the
+    error behind the cut as an argument nor exactly its text.
+    """
+
+    if any(arg is inner for arg in exc.args):
+        return True
+    text = str(inner)
+    return bool(text) and str(exc) == text
+
+
+def _carried_verification_error(exc: BaseException) -> ssl.SSLCertVerificationError | None:
+    """The verification error ``exc`` re-raises from behind a ``from None`` (#411).
+
+    httpcore's ``ConnectError`` is the case: its ``__cause__`` is cleared, its
+    ``__context__`` is cut, and the error behind the cut is its own argument.
+    Until #411 a TLS failure there was attributed only when the wrapper's TEXT
+    named an OpenSSL marker, and truststore's OS verifiers on macOS and Windows
+    put none in it: the CLI printed ``Connection error. — ('“localhost”
+    certificate is not trusted',)`` and no remedy (measured, macOS 26.6,
+    truststore 0.10.4).
+    """
+
+    if exc.__cause__ is not None or not exc.__suppress_context__:
+        return None
+    context = exc.__context__
+    if isinstance(context, ssl.SSLCertVerificationError) and _carries(exc, context):
+        return context
+    return None
 
 
 def _raw_chain(exc: BaseException) -> list[BaseException]:
@@ -398,6 +591,55 @@ def _raw_chain(exc: BaseException) -> list[BaseException]:
     return out
 
 
+def _attribute(obj: object, name: str) -> object:
+    """``getattr`` that also survives a property that raises (httpx's ``request``)."""
+
+    try:
+        return getattr(obj, name, None)
+    except Exception:  # noqa: BLE001 - any failure means "not there"
+        return None
+
+
+def _answered(exc: BaseException) -> bool:
+    """Did a server answer this request with an HTTP status? (#411 review round 2)
+
+    The SDKs' status errors carry it as an int ``status_code`` (openai,
+    anthropic), ``code`` (google-genai's ``APIError``, whose ``response`` may be
+    a wrapper with neither), ``status`` (the Codex adapter's
+    ``_CodexHTTPError``), or on their ``response`` (httpx's
+    ``HTTPStatusError``: ``status_code``; an aiohttp response: ``status``).
+    aelix's own OAuth sign-in and refresh errors carry it as
+    ``oauth_status_code`` (:func:`aelix_ai.oauth._helpers.oauth_http_error`,
+    which ``/login`` passes to :func:`describe_provider_error`).
+    None of them is an int on the transport errors under a TLS failure here
+    (``ssl``'s, httpcore's, httpx's, the SDKs' ``APIConnectionError``,
+    requests' ``SSLError`` with its ``response`` None). A status means a server read
+    the request and answered it - over a TLS connection this machine had
+    already verified, or over none at all - so a certificate phrase in such an
+    error's text is the server's words, never this machine's verifier:
+    measured, a plain-``http://`` 400 that quoted the user's prompt
+    ``... certificate is not trusted ...`` was given the corporate-CA remedy.
+
+    Known limit: an error that carries no int status is still read by its
+    text. An openai ``APIError`` raised mid-stream whose body ``code`` is a
+    string (``'server_error'``) is one: certificate words in it still get the
+    CA remedy (measured on an error built in-process).
+    """
+
+    holders = (
+        (exc, ("status_code", "code", "status", "oauth_status_code")),
+        (_attribute(exc, "response"), ("status_code", "status")),
+    )
+    for holder, names in holders:
+        if holder is None:
+            continue
+        for name in names:
+            value = _attribute(holder, name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return True
+    return False
+
+
 def _tls_error(exc: BaseException) -> BaseException | None:
     """The TLS trust failure in ``exc``'s chain, or :data:`None`.
 
@@ -407,22 +649,37 @@ def _tls_error(exc: BaseException) -> BaseException | None:
     the second pass cross a suppressed link, to reach the OpenSSL error carrying
     the ``verify_code`` that :func:`_tls_hint` branches on.
 
-    That second pass is what makes the code branches reachable in production at
-    all: the real chain is ``APIConnectionError → httpx.ConnectError →
+    That second pass is what made the code branches reachable in production:
+    the real chain is ``APIConnectionError → httpx.ConnectError →
     httpcore.ConnectError → ssl.SSLCertVerificationError``, and the first three
-    match only on marker TEXT and carry no code. Returning the wrapper would pin
-    every real request's hint to the untrusted-issuer default — telling a user
-    with a hostname mismatch or a skewed clock to install a corporate root CA.
+    carry no code. Returning the wrapper would pin every real request's hint to
+    the untrusted-issuer default — telling a user with a hostname mismatch or a
+    skewed clock to install a corporate root CA. Since #411 the attribution pass
+    also takes the verification error a link carries from behind the cut
+    (:func:`_carried_verification_error`), which is what attributes a truststore
+    OS-verifier failure whose text names no marker.
+
+    TEXT attributes only on a chain no server answered (#411 review round 2,
+    :func:`_answered`): with an HTTP status anywhere in the attribution chain -
+    the status error itself, or a wrapper raised from it that repeats its text -
+    no link's text counts, the long-standing ``certificate verify failed``
+    marker included. The verification error itself, or one a link carries, still
+    counts: it is an object only a verifier raises, never a server's text.
     """
 
-    for e in _causes(exc):
+    chain = _causes(exc)
+    answered = any(_answered(e) for e in chain)
+    for e in chain:
         if isinstance(e, ssl.SSLCertVerificationError):
             return e
-        if any(m in str(e) for m in _TLS_MARKERS):
+        if not answered and any(m in str(e) for m in _TLS_MARKERS):
             for inner in _raw_chain(e):
                 if isinstance(inner, ssl.SSLCertVerificationError):
                     return inner
             return e
+        carried = _carried_verification_error(e)
+        if carried is not None:
+            return carried
     return None
 
 
@@ -432,18 +689,29 @@ def is_tls_verification_error(exc: BaseException) -> bool:
     return _tls_error(exc) is not None
 
 
-def _tls_hint(err: BaseException) -> str:
-    """The remedy matching ``err``'s OpenSSL verify code.
+def _tls_hint(err: BaseException) -> str | None:
+    """The remedy matching ``err``'s verify code, or :data:`None` when none fits.
 
-    ``verify_code`` / ``verify_message`` exist ONLY on OpenSSL-raised errors: a
-    synthetic ``ssl.SSLCertVerificationError("...")`` and a string-marker match
-    on a non-ssl wrapper both carry NEITHER, so the read must tolerate their
-    absence and fall back to the untrusted-issuer remedy — that is the shape #99
+    ``verify_code`` / ``verify_message`` exist ONLY on a verifier-raised error:
+    OpenSSL's, or truststore's OS verifier on macOS and Windows (#411, its codes
+    beside :data:`_HOSTNAME_CODES`). A synthetic
+    ``ssl.SSLCertVerificationError("...")`` and a string-marker match on a
+    non-ssl wrapper both carry NEITHER, so the read must tolerate their absence
+    and fall back to the untrusted-issuer remedy — that is the shape #99
     reported, and the shape every synthetic test constructs.
+
+    An OS-verifier code never reaches the strict remedy: truststore verifies
+    there with OpenSSL's own verification switched off, so OpenSSL's strict flag
+    cannot have caused it, and no OS code is in :data:`_STRICT_ONLY` or 79. The
+    OS verdicts :func:`_no_remedy_fits` names get no remedy at all (#411 review
+    round 2): the failure is still a TLS verification failure, and its own text
+    is all that is shown.
     """
 
     code = getattr(err, "verify_code", None)
-    if code == _HOSTNAME_MISMATCH_CODE:
+    if _no_remedy_fits(code, str(err)):
+        return None
+    if code in _HOSTNAME_CODES:
         return _TLS_HOSTNAME_HINT
     if code in _CLOCK_CODES:
         return _TLS_CLOCK_HINT
@@ -560,7 +828,8 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     if cause is not None:
         base = f"{base} — {cause}"
     tls = _tls_error(exc)
-    hint = "" if tls is None else f"\n\n{_tls_hint(tls)}"
+    remedy = None if tls is None else _tls_hint(tls)
+    hint = "" if remedy is None else f"\n\n{remedy}"
     if classifier_text is None:
         raw = _raw_text(exc) or type(exc).__name__
         raw_cause = _cause_text(exc, raw, text_of=_unquoted)

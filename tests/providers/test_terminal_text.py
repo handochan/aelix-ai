@@ -221,7 +221,7 @@ def test_the_tls_remedy_from_issue_99_survives_the_default_error_bounds() -> Non
     """A real multi-line message the SAME render site prints — it must not be flattened.
 
     ``describe_provider_error``'s untrusted-issuer hint is deliberately 5 lines
-    with an indented ``export SSL_CERT_FILE=…``. A one-row helper deletes the
+    with an indented ``SSL_CERT_FILE`` example. A one-row helper deletes the
     remedy outright, which is why this layer takes a LINE bound and not a
     flatten-to-one-row contract.
     """

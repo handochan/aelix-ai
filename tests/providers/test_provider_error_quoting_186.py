@@ -147,7 +147,11 @@ def test_describe_provider_error_keeps_the_tls_remedy_lines() -> None:
     except httpx.ConnectError as exc:
         described = describe_provider_error(exc)
     assert "\n\n" in described
-    assert "export SSL_CERT_FILE=" in described
+    # The indented example line survives; its command is the platform's own
+    # (#411 review round 2: PowerShell's ``$env:`` on Windows, ``export`` elsewhere).
+    assert any(
+        line.startswith("  ") and "SSL_CERT_FILE" in line for line in described.split("\n")
+    ), described
 
 
 def test_describe_provider_error_falls_back_to_the_type_name() -> None:
