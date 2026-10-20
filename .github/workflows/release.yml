@@ -4,14 +4,26 @@ name: Release
 #
 # Trigger: pushing a version tag of the form `vX.Y.Z` (e.g. `v0.1.0`).
 #
-# Pipeline:
-#   build   — `uv build --all-packages`, then DROP the aelix-server
-#             artifacts (Web-UI daemon is deferred to v1.1 and is NOT
-#             part of the v1 PyPI publish set). Uploads sdists + wheels
-#             as a build artifact.
-#   publish — downloads the artifact and uploads to PyPI via
-#             **Trusted Publishing** (OIDC). No API token is stored in
-#             the repository or in any secret.
+# Pipeline (ADR-0269, #382) - nothing is published before the candidate ran:
+#   build           — `uv build --all-packages`, then DROP the aelix-server
+#                     artifacts (Web-UI daemon is deferred to v1.1 and is NOT
+#                     part of the v1 PyPI publish set). Uploads sdists + wheels
+#                     + SHA256SUMS as a build artifact.
+#   candidate-smoke — on ubuntu, macos and windows: installs THAT artifact the
+#                     way install.sh / install.ps1 Step 5 install a Release
+#                     (their interpreter request for the version, on the
+#                     CPython uv downloads for a user with no Python in it),
+#                     then runs it (`aelix --version`, a turn against a local
+#                     stub). The candidate never comes from PyPI or a Release.
+#   github-release  — needs build + candidate-smoke. Creates the Release that
+#                     install.sh / install.ps1 resolve by default (newest tag,
+#                     betas included), so it must not exist before the smoke.
+#   publish         — needs build + candidate-smoke + github-release, then the
+#                     `pypi` environment approval. Uploads to PyPI via
+#                     **Trusted Publishing** (OIDC). No API token is stored in
+#                     the repository or in any secret. The approval is the
+#                     window RELEASING.md uses to run the installers against
+#                     the new Release before anything reaches the index.
 #
 # ──────────────────────────────────────────────────────────────────────
 # ONE-TIME MAINTAINER SETUP (required before the FIRST release):
@@ -62,8 +74,8 @@ jobs:
     # would PASS on the reverted SHA and a deletion could walk the whole way to
     # an irreversible PyPI upload that nobody asked for. `github.event.deleted`
     # is negated rather than compared to `false` so a payload without the field
-    # (any non-push path) still runs. `publish` and `github-release` inherit the
-    # skip through `needs: build`.
+    # (any non-push path) still runs. `candidate-smoke`, `github-release` and
+    # `publish` inherit the skip through `needs: build`.
     #
     # RELEASING.md's recovery procedure therefore force-UPDATES a tag in a
     # single ref push instead of deleting and recreating it; this guard is the
@@ -71,6 +83,14 @@ jobs:
     if: ${{ !github.event.deleted }}
     permissions:
       contents: read
+    outputs:
+      # The tag's PEP 440 version (`v0.1.0-beta.3` -> `0.1.0b3`), written by the
+      # assert step below only after every published version and pin matched it.
+      # candidate-smoke installs `aelix[tui]==` exactly this.
+      version: ${{ steps.pin.outputs.version }}
+      # The interpreter request the installers make for that version (the
+      # `request` step below); candidate-smoke installs under exactly this.
+      python_request: ${{ steps.request.outputs.python_request }}
     steps:
       - name: Validate release tag is strict semver
         run: |
@@ -107,14 +127,16 @@ jobs:
           version: "0.12.23"
           checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
           # 3.12 and NOT the 3.11-3.14 matrix ci.yml tests on (#192, #278), on
-          # purpose: this job builds and publishes, it runs no tests. Every
-          # wheel is pure `py3-none-any`, and the interpreter that runs
-          # hatchling does not reach the bytes - measured at 8f7d98aa with
-          # SOURCE_DATE_EPOCH fixed, `uv build --all-packages --wheel` under
-          # 3.12 and under 3.13 gave five byte-identical wheels. What a user's
-          # 3.13 executes is tested where tests run: ci.yml's legs on the
-          # branch push of the commit being tagged (this job does not re-check
-          # that they passed; a tag push does not trigger ci.yml).
+          # purpose: this job builds, it runs no tests. Every wheel is pure
+          # `py3-none-any`, and the interpreter that runs hatchling does not
+          # reach the bytes - measured at 8f7d98aa with SOURCE_DATE_EPOCH fixed,
+          # `uv build --all-packages --wheel` under 3.12 and under 3.13 gave
+          # five byte-identical wheels. What a user's interpreter executes is
+          # tested where tests run: ci.yml's legs on the branch push of the
+          # commit being tagged (this job does not re-check that they passed; a
+          # tag push does not trigger ci.yml), and since #382 candidate-smoke
+          # below, which runs these wheels on the CPython the installers' request
+          # gives a user with no Python in range.
           python-version: "3.12"
           enable-cache: true
 
@@ -142,6 +164,7 @@ jobs:
       # edit. aelix-server is skipped on purpose — it is dropped from the
       # publish set below and its inter-package deps are deliberately unpinned.
       - name: Assert the tag matches every published version and pin
+        id: pin
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -237,7 +260,25 @@ jobs:
               f"Tag '{tag}' (normalized {want}) matches all {len(seen)} published "
               "versions and every inter-package pin."
           )
+          # Only now, so no job downstream can read a version this step refused.
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"version={want}\n")
           PY
+
+      # The interpreter request install.sh / install.ps1 Step 5 make for this
+      # version - python_request_for / Get-PythonRequest (#278, ADR-0265):
+      # '>=3.11,<3.15' for 0.1.0b3 and later, '>=3.11,<3.14' for anything older
+      # or not provably newer (a dev, post or local version). The script's rule
+      # is held equal to both installers' by tests/test_release_candidate_smoke.py,
+      # so the smoke asks uv for what a user's installer asks for this version.
+      - name: The interpreter request the installers make for this version
+        id: request
+        env:
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          request="$(uv run --no-project --python 3.12 python -I scripts/release_candidate_smoke.py request --version "$VERSION")"
+          echo "Interpreter request for $VERSION: $request"
+          echo "python_request=$request" >> "$GITHUB_OUTPUT"
 
       - name: Build all workspace packages
         run: uv build --all-packages --out-dir dist
@@ -266,9 +307,169 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # ── The candidate, installed and run before anything is published (#382) ──
+  # Until #382 nothing installed the artifact this workflow publishes. ci.yml's
+  # install-sh-e2e / install-ps1-e2e jobs install the NEWEST PUBLISHED Release,
+  # so they meet a candidate only after users can, and RELEASING.md checked the
+  # installer only after `publish` - a defect found there costs the version
+  # number on PyPI, which never takes a file name twice (ADR-0240). And
+  # `github-release` needed only `build`, while install.sh / install.ps1 with
+  # no AELIX_VERSION take the newest Release tag, betas included: a candidate
+  # nobody had installed was every user's default the moment that job ran.
+  #
+  # pi's order (build-binaries.yml at fdce48eb4, owner decision 2026-10-20 on
+  # #382): build -> smoke on ubuntu/macos/windows -> stage the GitHub Release
+  # (needs build + smoke) -> publish (needs the Release, environment approval).
+  # Diverges in one place, knowingly: pi stages a DRAFT Release and makes it
+  # public only after npm. A draft's assets are not downloadable by the
+  # installers, and the approval window RELEASING.md uses runs install.sh /
+  # install.ps1 against this very Release, so it is public (pre-release for a
+  # hyphenated tag) once the smoke passed.
+  #
+  # What runs: THIS run's `dist` artifact, installed the way the installers'
+  # Step 5 installs a Release (see the install step), on every OS they serve;
+  # then scripts/release_candidate_smoke.py under the tool environment's own
+  # interpreter. `installed`: the request is the installers' for this version,
+  # SHA256SUMS is in the form sha256sum writes (stricter than install.sh: it
+  # refuses every form install.sh refuses, and more), holds for every file and names
+  # the tag's version where install.sh reads it, the interpreter is inside the
+  # request and is the CPython uv downloaded, every file of every first-party
+  # wheel (its .dist-info too) is installed byte for byte (a PyPI file of the
+  # same version standing in for the candidate goes red), every top-level
+  # package and the TUI import. `turn`: `aelix --version` prints the tag's
+  # version, and `aelix --offline -p` with a fake key runs one turn against a
+  # stub on 127.0.0.1 from scratch HOME / AELIX_* directories - the console
+  # script through settings, models.json, the OpenAI client, SSE and the agent
+  # loop; the stub must see exactly one request of any method. The turn also
+  # writes a session, which the script reports but does not require. The
+  # script's docstring says why `-p` rather than `--list-models`.
+  #
+  # Nothing here may turn a red leg green: no `continue-on-error` (job or
+  # step), no step `if:` but the per-OS uv bootstrap pair, and no `if:` with a
+  # status function (always(), !cancelled(), ...) on github-release or publish.
+  # tests/test_release_candidate_smoke.py holds all three.
+  candidate-smoke:
+    name: Smoke-test the candidate (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    # Bounded like every ci.yml job (#429): one uv bootstrap, one install (a
+    # CPython download included - only-managed, below), two short aelix runs.
+    # The install and both checks took under 10 s locally with a warm uv cache
+    # (macOS, 2026-10-20); a hung download must not sit six hours in front of
+    # the Release.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      # A red windows leg must not cancel the macOS one: each OS is a finding.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    # bash on every OS, windows included (Git Bash), so each step is one script
+    # rather than a bash and a pwsh copy; `shell: bash` is `bash --noprofile
+    # --norc -eo pipefail {0}`, so a failing command fails its step. The one
+    # step that needs PowerShell says so itself.
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The version the build job proved equal to the tag and to every
+      # published pyproject (its `pin` step), PEP 440 spelled: 0.1.0b3.
+      VERSION: ${{ needs.build.outputs.version }}
+      # The interpreter request both installers make for VERSION (build's
+      # `request` step): '>=3.11,<3.15' for 0.1.0b3 and later, '>=3.11,<3.14'
+      # for older or unparseable versions (ADR-0265).
+      PYTHON_REQUEST: ${{ needs.build.outputs.python_request }}
+    steps:
+      - name: Checkout (the smoke script, at the tagged commit)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # This job runs code from PyPI and from the candidate; leave no token
+          # in .git/config for it to find.
+          persist-credentials: false
+
+      - name: Download distributions artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: ${{ runner.temp }}/candidate-dist
+
+      - name: Scratch locations (outside the checkout, as a user's are)
+        run: |
+          {
+            echo "DIST=$RUNNER_TEMP/candidate-dist"
+            echo "UV_TOOL_DIR=$RUNNER_TEMP/candidate-tools"
+            echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/candidate-bin"
+            echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/candidate-python"
+          } >> "$GITHUB_ENV"
+          ls -l "$RUNNER_TEMP/candidate-dist"
+
+      # uv as the installers' Step 2 gets it on a machine without one: Astral's
+      # installer, newest uv. Not astral-sh/setup-uv: that action verifies
+      # nothing past uv 0.11.18 without a `checksum:` per runner OS (#393,
+      # tests/test_ci_uv_pin.py), and none is on record for macOS. This job
+      # publishes nothing and holds no secret, so its uv decides what the smoke
+      # sees, never what ships; ci.yml's e2e jobs bootstrap uv the same way. The
+      # Astral installer appends its directory to GITHUB_PATH on a runner.
+      - name: Install uv (POSIX - the bootstrap install.sh Step 2 runs)
+        if: runner.os != 'Windows'
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install uv (Windows - the bootstrap install.ps1 Step 2 runs)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://astral.sh/uv/install.ps1 | iex
+
+      # install.sh / install.ps1 Step 5 with THIS run's wheels where they put a
+      # Release's verified ones: --find-links ADDS them and PyPI stays the index
+      # for third-party dependencies (never --no-index); `==$VERSION` keeps a
+      # newer PyPI `aelix` from outranking them; `aelix[tui]` is the installers'
+      # default extra; --python is their request for this version. From
+      # $RUNNER_TEMP, not the checkout: a user's working directory is not this
+      # repository.
+      #
+      # WHICH INTERPRETER. With uv's defaults the runner's own Python wins
+      # whenever one is inside the request (python-preference `managed` takes a
+      # Python on PATH before it downloads one: measured with uv 0.13.4, a box
+      # with 3.11 and 3.12 on PATH got 3.12.13 for '>=3.11,<3.15'). A user with
+      # no Python in range gets a download instead: the newest CPython inside the
+      # request (3.14.8 for '>=3.11,<3.15', 3.13.16 for '>=3.11,<3.14', same
+      # uv). only-managed into an empty UV_PYTHON_INSTALL_DIR gives every leg
+      # that same download - on the box above too - and `installed` checks the
+      # environment is based on it. ci.yml's source-tree legs keep covering
+      # 3.11-3.14 on ubuntu and windows.
+      - name: Install the candidate as the installers do (local wheels + PyPI for the rest)
+        working-directory: ${{ runner.temp }}
+        env:
+          UV_PYTHON_PREFERENCE: only-managed
+          UV_PYTHON_DOWNLOADS: automatic
+        run: |
+          : "${VERSION:?build.outputs.version is empty}" "${PYTHON_REQUEST:?build.outputs.python_request is empty}"
+          printf 'uv: %s (%s)\n' "$(command -v uv)" "$(uv --version)"
+          uv tool install --force --find-links "$DIST" --python "$PYTHON_REQUEST" "aelix[tui]==$VERSION"
+          case "$RUNNER_OS" in
+            Windows) echo "CANDIDATE_PYTHON=$UV_TOOL_DIR/aelix/Scripts/python.exe" >> "$GITHUB_ENV" ;;
+            *) echo "CANDIDATE_PYTHON=$UV_TOOL_DIR/aelix/bin/python" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: The environment holds the candidate's own bytes, and every package imports
+        working-directory: ${{ runner.temp }}
+        run: '"$CANDIDATE_PYTHON" -I "$GITHUB_WORKSPACE/scripts/release_candidate_smoke.py" installed --dist "$DIST" --version "$VERSION" --python-request "$PYTHON_REQUEST" --managed-python-dir "$UV_PYTHON_INSTALL_DIR"'
+
+      - name: aelix --version, then one turn through the console script (fake key, local stub, no network)
+        working-directory: ${{ runner.temp }}
+        run: '"$CANDIDATE_PYTHON" -I "$GITHUB_WORKSPACE/scripts/release_candidate_smoke.py" turn --bin-dir "$UV_TOOL_BIN_DIR" --version "$VERSION" --scratch "$RUNNER_TEMP/candidate-turn"'
+
   publish:
     name: Publish to PyPI (Trusted Publishing)
-    needs: build
+    # After the candidate ran on every OS AND its Release exists (#382,
+    # ADR-0269; pi's publish-npm needs its staged Release the same way). The
+    # `pypi` approval below is therefore asked for only once the Release is up,
+    # which is the window RELEASING.md uses to run install.sh / install.ps1
+    # with AELIX_VERSION=<tag> before approving. `candidate-smoke` is listed
+    # although `github-release` already needs it, so dropping that edge cannot
+    # quietly ungate the irreversible upload.
+    needs: [build, candidate-smoke, github-release]
     # Pre-release tags publish too (ADR-0240). Until beta.2 this job carried
     # `if: !contains(github.ref_name, '-')` so a hyphenated tag never started
     # it. That gate left the four PyPI names holding only the `0.0.0a0`
@@ -334,7 +535,10 @@ jobs:
 
   github-release:
     name: Publish GitHub Release (wheels + SHA256SUMS + SBOM)
-    needs: build
+    # Not before the candidate ran on every OS (#382, ADR-0269): install.sh and
+    # install.ps1 with no AELIX_VERSION install the newest Release tag, betas
+    # included, so this job is what makes a build every user's default.
+    needs: [build, candidate-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the Release + upload assets (ONLY elevation here)

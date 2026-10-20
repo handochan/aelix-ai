@@ -5,6 +5,10 @@
   as ADR-0186/0187/0188/0189). **Amended 2026-07-12 (#89) — see Amendment below.**
   **Owner decision 1 (PyPI skipped for pre-release tags) superseded by ADR-0240
   (2026-09-08).**
+  **Dated note (2026-10-20, #382, ADR-0269): the `github-release` job needs
+  `build` and `candidate-smoke` now, so a Release - the newest tag `install.sh`
+  takes by default - exists only after the built wheels were installed and run on
+  Ubuntu, macOS and Windows.**
 - **Amendment (2026-07-12, #89) — progressive hardening + default catalog activated:**
   guard ⑤ originally made the official/default catalog signature-required the moment
   `DEFAULT_CATALOG_URL` became non-empty (fail-closed on any set URL). That was *stricter*

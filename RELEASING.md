@@ -109,7 +109,11 @@ is needed for subsequent releases.
    GitHub Pages from `site/`, so it goes live when this commit lands on `main` —
    before the tag, which is the right order: the file may name a release whose
    tag is minutes away, and nobody is offered a download by it (the notice
-   prints a command; it installs nothing).
+   prints a command; it installs nothing). Since #382 that gap also covers the
+   candidate smoke: the GitHub Release appears only after `build` and every
+   `candidate-smoke` leg passed, and while a leg is red the feed names a version
+   that has no Release until the fix is merged and the tag moved (step 6 of
+   **Cutting a beta**).
 
    Set `latest` to this release. For a stable release set `latestStable` to the
    same values; for a prerelease leave `latestStable` on the newest stable, so a
@@ -157,11 +161,29 @@ is needed for subsequent releases.
    git push origin vX.Y.Z
    ```
 
-8. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag:
-   it builds all workspace packages, drops the `aelix-server` artifacts, and —
-   after the `pypi` environment gate — publishes the four-package set to PyPI
-   via Trusted Publishing. The `github-release` job runs in parallel and
-   attaches the wheels, the sdists, `SHA256SUMS` and the SBOM to the Release.
+8. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag, in
+   this order (ADR-0269, #382) — nothing is published before the candidate ran:
+
+   1. `build` builds all workspace packages, drops the `aelix-server`
+      artifacts and writes `SHA256SUMS`;
+   2. `candidate-smoke` installs **that** build — the four `aelix` wheels
+      never come from PyPI or a Release; third-party dependencies do come from
+      PyPI, as for a user — on Ubuntu, macOS and Windows with the installers'
+      own Step 5 command and the interpreter request they make for this
+      version, then runs it: `aelix --version` must print the tag's version
+      and an `aelix -p` turn against a local stub must succeed (a fake key;
+      the turn reaches no network). Each leg runs on the CPython uv downloads for a user with no
+      Python in that range — the newest inside it (3.14.x for 0.1.0b3 and
+      later); ci.yml's legs cover 3.11–3.14 from source. What a red leg shows
+      is under step 6 of **Cutting a beta**;
+   3. `github-release` (needs `build` + `candidate-smoke`) creates the Release
+      and attaches the wheels, the sdists, `SHA256SUMS` and the SBOM;
+   4. `publish` (needs all three) waits for the `pypi` environment approval,
+      then uploads the four-package set to PyPI via Trusted Publishing.
+
+   The approval is asked for only once the Release exists. Use that window as
+   the beta flow does (step 7 of **Cutting a beta** below): run the installer
+   with `AELIX_VERSION=vX.Y.Z`, then approve.
 
 9. **Verify** the new versions appear on PyPI and that
    `pip install aelix==X.Y.Z` resolves the full lock-step set.
@@ -206,10 +228,11 @@ So `v0.1.0-beta.2` (has `-`) → `0.1.0b2` on PyPI, GitHub pre-release.
 > (`v0.1.0-beta.1` → `0.1.0b1`), so a tag pushed without the version bump fails
 > the job instead of publishing a mismatched artifact.
 
-> All three jobs — `build`, `publish`, `github-release` — run for **every**
-> release tag (beta and GA). The `github-release` job attaches the four wheels
-> + four sdists + the `SHA256SUMS` manifest — that Release is exactly what
-> `install.sh` consumes.
+> All four jobs — `build`, `candidate-smoke`, `github-release`, `publish` — run
+> for **every** release tag (beta and GA), in that order. The `github-release`
+> job attaches the four wheels + four sdists + the `SHA256SUMS` manifest — that
+> Release is exactly what `install.sh` consumes, and `candidate-smoke` has
+> installed and run those same wheels on Ubuntu, macOS and Windows before it.
 
 ### Every pre-release is a GA rehearsal
 
@@ -244,8 +267,9 @@ holding in mind before you push the tag:
 
 Because the second point above means a genuine half-release cannot be retried,
 it is worth being precise about which failures are which: anything that fails
-**before** the upload (the tag gate, the version/pin assert, `twine check`)
-leaves the index untouched and the same version can be re-cut after a retag.
+**before** the upload (the tag gate, the version/pin assert, `candidate-smoke`,
+`github-release`, `twine check`) leaves the index untouched and the same
+version can be re-cut after a retag.
 Only a rejection **during** the upload occupies versions. Check the index
 before assuming the worse case:
 
@@ -268,8 +292,8 @@ Deleting a tag is itself a `push` whose payload says `deleted: true`, the tag
 filter still matches the deleted ref, and `GITHUB_SHA` reverts to the default
 branch — which is carrying the very version you just tagged, so the pin assert
 would pass on it. `release.yml` fails closed on that (`if: !github.event.deleted`
-on `build`, inherited by both downstream jobs), but the guard is a backstop, not
-the plan.
+on `build`, inherited by every job downstream of it), but the guard is a
+backstop, not the plan.
 
 ```bash
 git tag -f -a v0.1.0-beta.2 -m "…" <new-sha>   # move it locally
@@ -317,16 +341,57 @@ updates an existing release in place rather than failing on the taken name.
    git push origin v0.1.0-beta.2
    ```
 
-6. **Verify the Release + installer**:
+6. **Wait for the candidate smoke** (`release.yml`, ADR-0269, #382). `build`
+   runs, then `candidate-smoke` installs that build on Ubuntu, macOS and
+   Windows exactly as the installers install a Release and runs it. Nothing
+   exists yet that a user can install: no Release, no PyPI upload.
 
-   - `release.yml` ran `build`, `publish` (after the `pypi` environment
-     approval), and `github-release`; the four names on pypi.org show the new
-     pre-version.
+   Each leg installs on the CPython uv downloads for a user with no Python in
+   the installers' range — the newest inside it (3.14.x for 0.1.0b3 and later,
+   3.13.x for older versions); the step log prints the version and where uv put
+   it. The runner's own Python is not used, and other interpreters are not
+   tried here: ci.yml's legs run 3.11–3.14 from source on Ubuntu and Windows.
+
+   **If a `candidate-smoke` leg fails, nothing was published.** What the log
+   shows depends on the step that failed:
+
+   - one of the two checks (`The environment holds the candidate's own bytes…`,
+     `aelix --version, then one turn…`): an `::error::` line naming the check
+     (the interpreter request, `SHA256SUMS`, the interpreter, a wheel installed
+     from somewhere other than this build, an import, `aelix --version`, or the
+     `-p` turn and its output). An error no check anticipated (the stub could
+     not bind, a file could not be read) ends in a Python traceback instead;
+   - the uv bootstrap or `Install the candidate as the installers do`: no
+     `::error::` line of ours — uv's own message (a resolution failure, an
+     interpreter it could not download) and the step's non-zero exit, as a
+     user's installer would show it; or bash's `build.outputs.version is
+     empty` / `build.outputs.python_request is empty` if `build` handed over an
+     empty one.
+
+   Then:
+
+   - A flake (a download that timed out, a runner that died): **Re-run failed
+     jobs** on that run. The workflow file is unchanged, so replaying it is
+     right here (unlike a fix to the workflow itself, see *Retagging* above).
+   - A defect in the candidate: fix it on `main` via PR, wait for CI, and move
+     the tag with the single force-update in *Retagging after a pre-upload
+     failure*. The version number is still free: there is no Release to clean
+     up and nothing reached PyPI.
+
+7. **The window: check the installers against the new Release, before you
+   approve `publish`.** Once every smoke leg is green, `github-release` creates
+   the Release, and only then does `publish` start and wait for the `pypi`
+   environment approval. In between, the Release is up and PyPI does not have
+   the version yet — and the installers do not need it to: they take the four
+   `aelix*` wheels from the Release (checksum-verified, `--find-links`) and
+   only third-party dependencies from PyPI.
+
    - The GitHub Release `v0.1.0-beta.2` is marked **Pre-release** and carries
      the four `aelix*` wheels, the four sdists, `SHA256SUMS`, and the SBOM —
      the `github-release` job refuses to create the Release unless exactly one
      `sbom/aelix-<version>.cdx.json` exists and its version matches
-     `pyproject.toml`, so a forgotten step 4 above fails that job.
+     `pyproject.toml`, so a forgotten step 4 above fails that job (and,
+     since #382, `publish` never starts).
    - The one-liner installs and smoke-tests. **Mind the shape.** An
      `AELIX_VERSION=… curl … | sh` prefix sets the variable for **`curl`**, not
      for the `sh` on the other side of the pipe — the installer would never see
@@ -347,6 +412,16 @@ updates an existing release in place rather than failing on the taken name.
      irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex
      aelix --version
      ```
+
+   Keep the window short. The Release is already what `install.sh` and
+   `install.ps1` install for anyone who does **not** set `AELIX_VERSION` (the
+   newest tag, betas included). If the check fails: **reject** the `pypi`
+   deployment, so nothing reaches PyPI and the version stays free; delete the
+   Release so the installers stop resolving it (`gh release delete
+   v0.1.0-beta.2 --yes` keeps the tag); then fix and move the tag as above.
+
+8. **Approve `publish`**, then confirm the four names on pypi.org show the new
+   pre-version.
 
 Subsequent betas bump the suffix (`0.1.0b3` / `v0.1.0-beta.3`, etc.). The GA cut
 uses the un-hyphenated tag (`v0.1.0`) and follows the **Cutting a release** flow

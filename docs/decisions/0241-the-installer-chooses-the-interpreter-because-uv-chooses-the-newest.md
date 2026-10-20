@@ -237,6 +237,14 @@ installer without a leg — or dropping one — goes red. `release.yml` stays on
 3.13 at `8f7d98aa` (`SOURCE_DATE_EPOCH` fixed) gave five byte-identical
 `py3-none-any` wheels.
 
+*Dated note (2026-10-21, #382, ADR-0269): `release.yml`'s `build` job still runs
+on 3.12 and still runs no tests. `release.yml` now also runs the candidate: its
+`candidate-smoke` job installs the built wheels on ubuntu, macos and windows
+under the interpreter request the installers make for the tag's version, on the
+newest CPython uv downloads inside it (`UV_PYTHON_PREFERENCE=only-managed`), and
+runs `aelix --version` and one `-p` turn there. "It runs no tests" above is true
+of `build` alone.*
+
 **The ten failures this ADR counted were eleven at `8f7d98aa`: nine were the
 product defect it named, two were tests that assumed an older interpreter.**
 `8f7d98aa` under 3.13.13: `11 failed, 13656 passed, 44 skipped`. Nine are the

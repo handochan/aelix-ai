@@ -11,6 +11,10 @@ Issue: #142 (GA blockers, item 1 — the pin assert; item 3 — the environment
 gate this ADR makes exercisable before GA), #73 (Trusted Publishers, registered
 by the owner on 2026-09-08 for all five names).
 Design spec: `.omc/specs/release-beta-2-plan-2026-09-08.md` §3.
+Amended 2026-10-20 (#382, ADR-0269): `publish` no longer needs `build` alone. It
+needs `candidate-smoke` (the built wheels installed and run on Ubuntu, macOS and
+Windows) and `github-release`, then the `pypi` approval. Decision 3's rehearsal
+now starts with that smoke, and the approval opens only once the Release exists.
 
 ADR-0192 kept pre-releases off PyPI so that a `0.1.0` upload — which PyPI never
 lets you replace — would not be burned on a rehearsal. The gate did its job,

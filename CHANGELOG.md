@@ -141,6 +141,26 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A release is installed and run on Linux, macOS and Windows before anything
+  is published (#382, ADR-0269).** `release.yml` used to create the GitHub
+  Release and start the PyPI upload straight after the build, and no job had
+  installed what they shipped; the installers' CI jobs install only releases
+  already published, and `install.sh` / `install.ps1` without `AELIX_VERSION`
+  take the newest Release, betas included. Now a new `candidate-smoke` job
+  installs the build's own wheels on all three OSes with the installers' own
+  command (`uv tool install --find-links <wheels> --python <request>
+  'aelix[tui]==<version>'`, where `<request>` is what the installers ask for
+  that version: `>=3.11,<3.15` from 0.1.0b3 on), on the CPython uv downloads
+  for a user who has no Python in that range (the newest inside it), and runs
+  them: the checksums in the form `install.sh` reads, the interpreter, every
+  installed file against the wheel it came from, `.dist-info` included (so a
+  same-version PyPI file cannot pass for the candidate), every package and the
+  TUI importing, `aelix --version`, and one `aelix -p` turn against a local stub
+  with a fake key. The Release waits for it, and the PyPI upload waits for the
+  Release, so its approval comes with a window in which RELEASING.md has the
+  maintainer run the installers with `AELIX_VERSION=<tag>` first. If the smoke
+  fails, nothing was published and the version is still free.
+
 - **Keyless OpenAI clients that extensions and embedders build need a
   placeholder key (#278, ADR-0265) - a migration.** On openai 2.34 and later,
   which `openai>=2.7.2,<3` resolves to today, `AsyncOpenAI(api_key="")` (the
