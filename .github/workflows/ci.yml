@@ -31,10 +31,22 @@ jobs:
   test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    # #429: the slowest measured green jobs were 15.6 min on Ubuntu and
-    # 31 min on Windows. Bound a stalled test or interpreter exit instead of
-    # spending GitHub's default six hours (run 37806642579, #428).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 25 }}
+    # #429: bound a stalled test or interpreter exit instead of spending
+    # GitHub's default six hours (run 37806642579, #428). #482 (ADR-0274) set
+    # both limits from measured runs, because the suite outgrew the first
+    # ones. Over 129 ci.yml runs from 2026-10-08 to 2026-10-19 (627 green
+    # pytest steps), the slowest green 'Test gate (pytest)' step took 19.5 min
+    # on Ubuntu and 40.0 min on Windows. That Ubuntu figure is capped by the
+    # old 20 min limit: run 38610624957 was killed on it at 85% with no test
+    # failed or stuck, and from its progress lines it would have taken about
+    # 25.3 min on Ubuntu (23.8 to 26.1 by other projections). The rule is the
+    # slowest of these x 1.3, rounded up to 5 min, so the pytest step limit is
+    # 35 min on Ubuntu and 55 min on Windows. The rest of a green job took at
+    # most 3.2 min, so the job limit is 40 min on Ubuntu and 60 min on Windows,
+    # 5 min more, and a hang inside pytest is reported by its step first.
+    # tests/test_ci_hang_guard_429.py holds the limits, this comment and the
+    # measurement together.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 40 }}
     # #103 P0-b: the windows leg GATES since 2026-09-04. It was advisory
     # while it was a measurement; run 33853043685 (beffc2f) closed that at
     # 0 failed / 9338 passed / 71 skipped on py3.11 and py3.12, down from the
@@ -132,8 +144,11 @@ jobs:
       - name: Type gate (pyright)
         run: uv run python scripts/check_types.py
 
+      # ADR-0274 (#482): this limit follows the rule in the job's comment
+      # above. A single stuck test is still caught in 240 s by pyproject.toml's
+      # faulthandler_timeout; this bounds the rest.
       - name: Test gate (pytest)
-        timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 55 || 35 }}
         run: uv run pytest -p no:cacheprovider -q
 
   # install.ps1 has no coverage that executes it (#106). Its only gate was

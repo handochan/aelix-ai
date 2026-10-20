@@ -857,10 +857,23 @@ unwritten. Add them with the next release.
   Aelix's own colours remain; child-authored Rich markup is displayed literally.
 
 - **CI hangs now fail within a bounded time and report Python thread stacks
-  (#429).** Lint/test jobs have Ubuntu/Windows limits of 25/50 minutes, and
-  pytest steps have 20/45 minute limits. A test stuck for 240 seconds exits
+  (#429).** Each lint/test job's job limit is 40 min on Ubuntu and 60 min on
+  Windows, and the pytest step limit is 35 min on Ubuntu and 55 min on Windows
+  (#482 raised them from 25/50 and 20/45). A test stuck for 240 seconds exits
   with a traceback; a separate 180 second watchdog covers interpreter exit
   after the test summary. Development now requires pytest 9.0 or newer.
+- **CI: a green test leg no longer fails on its pytest step's time limit
+  (#482).** The suite had outgrown #429's limits. Over 129 `ci.yml` runs, the
+  slowest green pytest step took 19.5 min on Ubuntu and 40.0 min on Windows,
+  against step limits of 20 and 45. Run 38610624957 was killed on the
+  20-minute limit with no test failed or stuck; projected from its progress
+  lines, it would have taken about 25.3 min on Ubuntu. The rule is the slowest
+  of these x 1.3, rounded up to 5 min: the pytest step limit is 35 min on
+  Ubuntu and 55 min on Windows. The job limit is 5 min more: the job limit is
+  40 min on Ubuntu and 60 min on Windows. The 240-second per-test watchdog is
+  unchanged. `tests/test_ci_hang_guard_429.py` pins the measured times, the
+  rule, the limits and the sentences that state them (ADR-0274). Making the
+  suite faster is a separate follow-up.
 - **Tests: the hang-guard gate's child pytest no longer slows down late in the
   suite (#448).** The child ran with the repository's pyproject, so pytest
   collected every directory above the child's temporary directory, including

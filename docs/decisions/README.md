@@ -36,6 +36,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0274 — CI's test limits follow the measured green runs](0274-ci-test-limits-follow-the-measured-green-runs.md)
+  (Accepted, 2026-10-20; review round 2, 2026-10-21; #482). The `ci.yml` pytest step limit is the
+  slowest step × 1.3, rounded up to 5 minutes, per OS, where the slowest step is the larger of the
+  slowest green step and the projected time of a step the old limit killed while still green. Over
+  129 runs the slowest green steps were 19.5 minutes (Ubuntu) and 40.0 (Windows); #429's 20 minutes
+  capped the Ubuntu figure, and the step it killed (run 38610624957, no test failed or stuck)
+  projects to about 25.3 (23.8 to 26.1). So the step limits are 35 and 55, and the job limits 5
+  minutes more (40 and 60), above the 3.2 minutes the rest of a green job took, so a hang in pytest
+  names its step. One limit per OS: the Python versions differ by under 10%. The 240 s per-test and
+  180 s exit watchdogs are unchanged. The test pins the measurement, the rule and, per OS, the
+  sentences in `ci.yml`, the diagnostics page and the CHANGELOG that state them; making the suite
+  faster is a follow-up. Amends `docs/development/ci-hang-diagnostics.md` (#429's record).
+
 - [0264 — The model catalog refreshes from aelix's own published copy, as pi's does from pi.dev, without transport](0264-the-model-catalog-refreshes-from-aelixs-own-published-copy-without-transport.md)
   (Accepted 2026-10-20 by the owner; rewritten 2026-10-15 on the owner's decision, revised after
   review (r5-r11), the owner's decisions of 2026-10-16 to 2026-10-19 recorded; #172, #434, #450). A

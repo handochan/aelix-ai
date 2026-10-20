@@ -2,16 +2,48 @@
 
 from __future__ import annotations
 
+import math
 import os
+import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: #482 (ADR-0274): the slowest green ``Test gate (pytest)`` step per runner over
+#: 129 ci.yml runs from 2026-10-08 to 2026-10-19 (627 green steps; a job that a
+#: re-run carried into a later attempt counted once), and the slowest rest of a
+#: green job (checkout, uv, sync, ruff, pyright and post steps). A re-measurement
+#: moves these, the limits, ci.yml's comment, docs/development/ci-hang-diagnostics.md
+#: and a CHANGELOG entry together.
+SLOWEST_GREEN_PYTEST_MIN = {"ubuntu-latest": 19.5, "windows-latest": 40.0}
+#: A green step can never show more than the limit it ran under, so a step that
+#: the old limit killed with no test failed or stuck counts at its projected full
+#: time. Run 38610624957 attempt 1 (Ubuntu, py3.12) was killed at #429's 20 min at
+#: 85%; aligned line by line with the same commit's two passes, its progress lines
+#: project 25.3 min (23.8 to 26.1 by the other projections). No Windows step ended
+#: on its limit.
+PROJECTED_KILLED_PYTEST_MIN = {"ubuntu-latest": 25.3}
+SLOWEST_GREEN_REST_OF_JOB_MIN = 3.2
+MARGIN_FACTOR = 1.3
+#: The CHANGELOG entries that state the current limits. A re-measurement adds its
+#: own entry and names it here instead.
+LIMITS_CHANGELOG_ISSUES = (429, 482)
+#: #429's limits before #482. Stated as current in ci.yml's comment, the
+#: diagnostics page or #429's CHANGELOG entry, they fail even beside the new ones.
+OLD_429_LIMITS = {
+    "job limit": {"ubuntu-latest": 25, "windows-latest": 50},
+    "step limit": {"ubuntu-latest": 20, "windows-latest": 45},
+}
+_PER_OS_LIMIT = re.compile(r"\$\{\{ matrix\.os == 'windows-latest' && (\d+) \|\| (\d+) \}\}")
+_OS_NAMES = {"ubuntu-latest": "Ubuntu", "windows-latest": "Windows"}
+_COUNT_WORDS = {4: "four", 6: "six", 8: "eight", 10: "ten", 12: "twelve"}
 
 
 def _run_pytest(
@@ -140,11 +172,137 @@ def pytest_collection_finish(session):
     assert not outside, f"the child collected above its own directory: {outside[:5]}"
 
 
+def _per_os(expression: str) -> dict[str, int]:
+    match = _PER_OS_LIMIT.fullmatch(expression)
+    assert match, expression
+    return {"windows-latest": int(match[1]), "ubuntu-latest": int(match[2])}
+
+
+def _on(minutes: Mapping[str, float]) -> str:
+    """How every pinned sentence states a per-OS pair: '35 min on Ubuntu and 55 min on Windows'."""
+    return " and ".join(f"{minutes[runner]} min on {name}" for runner, name in _OS_NAMES.items())
+
+
+def _prose(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _comment_above(ci_text: str, line: str) -> str:
+    """The ``#`` comment block directly above ``line`` in ci.yml, as one line of prose."""
+    lines = [text.strip() for text in ci_text.splitlines()]
+    assert lines.count(line) == 1, f"ci.yml has {lines.count(line)} lines {line!r}"
+    block: list[str] = []
+    for text in reversed(lines[: lines.index(line)]):
+        if not text.startswith("#"):
+            break
+        block.insert(0, text.lstrip("#"))
+    return _prose(" ".join(block))
+
+
+def _changelog_entry(changelog: str, issue: int) -> str:
+    entries = [_prose(entry) for entry in re.split(r"(?m)^(?=- \*\*|#)", changelog)]
+    found = [entry for entry in entries if re.match(rf"- \*\*[^*]*\(#{issue}\)\.\*\*", entry)]
+    assert len(found) == 1, f"CHANGELOG.md has {len(found)} entries titled with #{issue}"
+    return found[0]
+
+
 def test_ci_limits_cover_every_test_leg() -> None:
-    job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["test"]
-    assert job["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 50 || 25 }}"
+    """The limits are ADR-0274's rule over the measured runs (#482).
+
+    The pytest step's limit is the slowest step x 1.3, rounded up to five
+    minutes, where the slowest step is the larger of the slowest green step and
+    the projected time of a step the old limit killed while it was still green.
+    #429's 20/45 left 0.5 min over a green Ubuntu step, and run 38610624957 was
+    killed on it with no test failed or stuck. The job's limit is five minutes
+    above the step's, more than everything else a green job spends, so a hang
+    inside pytest is reported by its step first. The per-test watchdog that
+    catches a single stuck test stays at 240 s. The sentences that state these
+    numbers in ci.yml's comment, docs/development/ci-hang-diagnostics.md and the
+    CHANGELOG are pinned, per OS, to the same values, and #429's old limits
+    stated as current fail even next to them. Neither the job nor its pytest
+    step may continue on error, which would let a red or hung leg through.
+    """
+    ci_text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = yaml.safe_load(ci_text)["jobs"]["test"]
+    assert job["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 60 || 40 }}"
     test_step = next(step for step in job["steps"] if step.get("name") == "Test gate (pytest)")
-    assert test_step["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 45 || 20 }}"
+    assert test_step["timeout-minutes"] == "${{ matrix.os == 'windows-latest' && 55 || 35 }}"
+    assert "continue-on-error" not in job, "the lint + test job has continue-on-error"
+    assert "continue-on-error" not in test_step, "the 'Test gate (pytest)' step has continue-on-error"
+    matrix = job["strategy"]["matrix"]
+    assert sorted(matrix["os"]) == sorted(SLOWEST_GREEN_PYTEST_MIN) == sorted(_OS_NAMES)
+    assert set(PROJECTED_KILLED_PYTEST_MIN) <= set(SLOWEST_GREEN_PYTEST_MIN)
+    job_limit = _per_os(job["timeout-minutes"])
+    step_limit = _per_os(test_step["timeout-minutes"])
+    for runner, slowest in SLOWEST_GREEN_PYTEST_MIN.items():
+        step, whole_job = step_limit[runner], job_limit[runner]
+        basis = max(slowest, PROJECTED_KILLED_PYTEST_MIN.get(runner, 0.0))
+        rule = math.ceil(basis * MARGIN_FACTOR / 5) * 5
+        assert step == rule, f"{runner}: step limit {step}, ADR-0274 gives ceil5({basis} x {MARGIN_FACTOR}) = {rule}"
+        assert whole_job == step + 5, f"{runner}: job limit {whole_job} is not the step limit {step} + 5"
+        # Holds while the +5 does; a re-measured rest of the job above 5 min must widen the gap.
+        assert whole_job - step > SLOWEST_GREEN_REST_OF_JOB_MIN, f"{runner}: the job limit would fire first"
+
+    # The sentences that state the numbers move with them. Each one is pinned per
+    # OS, so a swapped pair or another factor in place of the right one fails
+    # here; a stale sentence beside the right one is caught only for #429's old
+    # limits, below.
+    sentences = {
+        "the slowest green steps": f"step took {_on(SLOWEST_GREEN_PYTEST_MIN)}",
+        **{
+            f"the killed {_OS_NAMES[runner]} step": f"would have taken about {minutes} min on {_OS_NAMES[runner]}"
+            for runner, minutes in PROJECTED_KILLED_PYTEST_MIN.items()
+        },
+        "the rule": f"x {MARGIN_FACTOR}, rounded up to 5 min",
+        "the step limits": f"step limit is {_on(step_limit)}",
+        "the job limits": f"job limit is {_on(job_limit)}",
+        "the rest of a green job": f"at most {SLOWEST_GREEN_REST_OF_JOB_MIN} min",
+    }
+    jobs = len(matrix["os"]) * len(matrix["python-version"])
+    doc = _prose((ROOT / "docs/development/ci-hang-diagnostics.md").read_text(encoding="utf-8"))
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    limits_only = ("the step limits", "the job limits")
+    job_comment = _comment_above(ci_text, f"timeout-minutes: {job['timeout-minutes']}")
+    sources: dict[str, tuple[str, dict[str, str]]] = {
+        "ci.yml's comment on the job's limit": (job_comment, sentences),
+        "ci-hang-diagnostics.md": (
+            doc, {**sentences, "the job count": f"The {_COUNT_WORDS[jobs]} lint/test matrix jobs"}
+        ),
+    }
+    *older, latest = LIMITS_CHANGELOG_ISSUES
+    for issue in older:
+        sources[f"the CHANGELOG entry for #{issue}"] = (
+            _changelog_entry(changelog, issue), {what: sentences[what] for what in limits_only}
+        )
+    sources[f"the CHANGELOG entry for #{latest}"] = (
+        _changelog_entry(changelog, latest),
+        {what: sentence for what, sentence in sentences.items() if what != "the rest of a green job"},
+    )
+    for source, (text, wanted) in sources.items():
+        for what, sentence in wanted.items():
+            assert sentence in text, f"{source} does not state {what} as {sentence!r}"
+
+    # #429's old limits stated as current, in #429's own wording or in the pinned
+    # one, fail in the three places that were #429's record of them.
+    stale: list[str] = []
+    for kind, old in OLD_429_LIMITS.items():
+        ubuntu, windows = old["ubuntu-latest"], old["windows-latest"]
+        stale += [
+            f"{kind} is {_on(old)}",
+            f"a {ubuntu} minute limit on Ubuntu and a {windows} minute limit on Windows",
+            f"{ubuntu} and {windows} minute limits",
+            f"limits of {ubuntu}/{windows} minutes",
+            f"{ubuntu}/{windows} minute limits",
+        ]
+    old_records = {
+        "ci.yml's comment on the job's limit": job_comment,
+        "ci-hang-diagnostics.md": doc,
+        "the CHANGELOG entry for #429": _changelog_entry(changelog, 429),
+    }
+    for source, text in old_records.items():
+        for sentence in stale:
+            assert sentence not in text, f"{source} still states #429's old limits: {sentence!r}"
+
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     options = config["tool"]["pytest"]["ini_options"]
     assert options["faulthandler_timeout"] == 240
