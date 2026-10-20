@@ -123,7 +123,7 @@ class OpenAICompletionsOptions(SimpleStreamOptions):
 
     tool_choice: ToolChoice | None = None
     reasoning_effort: (
-        Literal["minimal", "low", "medium", "high", "xhigh"] | None
+        Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = None
 
 
@@ -1494,8 +1494,8 @@ def stream_simple_openai_completions(
             )
         opts = replace(opts, api_key=api_key)
 
-    # Pi parity (P-62): use the shared :func:`clamp_thinking_level` so
-    # ``xhigh`` clamps to ``high`` and unknown values surface as ``None``.
+    # Pi parity (P-62): the shared :func:`clamp_thinking_level` moves a level the
+    # row lacks to the nearest it offers (``xhigh`` up to ``max`` first; #433).
     reasoning_effort = opts.reasoning_effort
     if reasoning_effort is None and isinstance(opts.reasoning, str):
         reasoning_effort = clamp_thinking_level(model, opts.reasoning)

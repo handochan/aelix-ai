@@ -688,50 +688,49 @@ async def _record_tui_default_level(
     """#286 — the TUI launch's record of ``defaultThinkingLevel``, as on ``529b997e``.
 
     Until #286 the default was seeded inside ``run_tui`` (issue #50 (b)), through
-    ``set_thinking_level``, which appends a ``thinking_level_change`` for a change
-    (#198). #286 moved the seed before the mode dispatch for every mode and
-    ASSIGNS the level (:func:`_seed_default_thinking_level`), but what a session
-    records stays as it was (owner decision 2026-10-15): ``-p``, ``--mode json``
-    and ``--mode rpc`` record nothing for the default, as they never applied it,
-    and the TUI records what that seed recorded — but where a ``session_start``
-    handler set the level or the model (below). This is that record, called
-    right before ``run_tui`` — where the seed ran, after ``session_start`` and
-    the late-route decision — under the seed's own conditions:
+    ``set_thinking_level``, which appends a ``thinking_level_change`` for a change (#198). #286
+    moved the seed before the mode dispatch for every mode and ASSIGNS the level
+    (:func:`_seed_default_thinking_level`), but what a session records stays as it was (owner
+    decision 2026-10-15): ``-p``, ``--mode json`` and ``--mode rpc`` record nothing for the default,
+    as they never applied it, and the TUI records what that seed recorded — but where a
+    ``session_start`` handler set the level or the model (below). This is that record, called right
+    before ``run_tui`` — where the seed ran, after ``session_start`` and the late-route decision —
+    under the seed's own conditions:
 
     * no ``--thinking`` (a profile's ``thinking:``) and no restored session level
       (``restored``, :func:`_seed_startup_state`'s answer), as the seed stood
       down on #198's ``thinking_level_restored``;
-    * a ``defaultThinkingLevel`` that the model the run is on SUPPORTS as written
-      (``get_supported_thinking_levels``, the seed's test): a default the launch
-      had to clamp (``xhigh`` on a ``high``-max model, ``high`` on a model that
-      cannot reason, ``off`` on one that cannot switch reasoning off), the bottom
-      rung (no default) and a run with no model or on a held placeholder are not
-      recorded, as the seed skipped them;
+    * a ``defaultThinkingLevel`` that the model the run is on SUPPORTS as written (the
+      seed's test; ``clamp_thinking_level`` returns it unchanged): a default the launch
+      had to clamp (``xhigh`` on a ``high``-max model, ``high`` on a model that cannot
+      reason, ``off`` on one that cannot switch reasoning off), the bottom rung (no
+      default) and a run with no model or on a held placeholder are not recorded, as the
+      seed skipped them — except ``xhigh`` the launch moved UP to ``max`` (#433 review
+      round 2), recorded as written: the 21 rows ADR-0266 renamed listed ``xhigh`` until
+      #433 and the seed recorded it there (it now also records it on the rows that
+      gained ``max`` and no ``xhigh``: Sonnet 4.6, map-less DeepSeek V4);
     * not ``off``: the seed's ``set_thinking_level("off")`` over the unset
       ``off`` was no change, and nothing was appended;
     * the live level still is that default (the seed, too, stood down over a
-      level other than ``off``).
+      level other than ``off``), or ``max`` for that ``xhigh``.
 
-    Where a ``session_start`` handler acted, the record differs from the seed's
-    (ADR-0239 decision 4's exceptions): the seed ran after the handler, which had
-    met ``off``; the level is now applied before it, as pi applies it. With no
-    flag and no restored level:
+    Where a ``session_start`` handler acted, the record differs from the seed's (ADR-0239 decision
+    4's exceptions): the seed ran after the handler, which had met ``off``; the level is now applied
+    before it, as pi applies it. With no flag and no restored level:
 
     * a handler's ``set_thinking_level("off")`` over an applied level other than
       ``off`` is a change the harness records, and it stands; the seed then set
       the default over it and recorded that, where the model supported it;
-    * a handler that sets the applied level again (not ``off``) changes nothing
-      and the harness records nothing, where it recorded that level on
-      ``529b997e``; this record still writes it when it is the default as
-      written, but not a default the launch clamped, nor a model's lowest level
-      applied with no default;
-    * a handler's ``set_model`` on a launch that is not pending keeps the level
-      the launch clamped against its own model, so where that model could not
-      take the default as written and the handler's can, the live level is not
-      the default and nothing is written; the seed judged the default against
-      the handler's model, ran at it and recorded it. pi re-applies the default
-      in ``setModel`` (``_getThinkingLevelForModelSwitch``): the ``/model``
-      follow-up covers this path too.
+    * a handler that sets the applied level again (not ``off``) changes nothing and the harness
+      records nothing, where it recorded that level on ``529b997e``; this record still writes it
+      when it is the default as written, but not a default the launch clamped, nor a model's lowest
+      level applied with no default;
+    * a handler's ``set_model`` on a launch that is not pending keeps the level the launch clamped
+      against its own model, so where that model could not take the default as written and the
+      handler's can, the live level is not the default and nothing is written; the seed judged the
+      default against the handler's model, ran at it and recorded it. pi re-applies the default in
+      ``setModel`` (``_getThinkingLevelForModelSwitch``): the ``/model`` follow-up covers this path
+      too.
 
     A read-only session and a storage failure write nothing and say nothing, as
     the seed's ``contextlib.suppress(Exception)`` did. Unlike the seed it fires
@@ -741,15 +740,16 @@ async def _record_tui_default_level(
 
     if restored or default_level is None or default_level == "off":
         return False
-    if harness.state.thinking_level != default_level:
+    live = harness.state.thinking_level
+    if live != default_level and (default_level, live) != ("xhigh", "max"):
         return False
     model = harness.current_model
     session = harness.session
     if model is None or session is None:
         return False
-    from aelix_ai.models import get_supported_thinking_levels
+    from aelix_ai.models import clamp_thinking_level
 
-    if default_level not in get_supported_thinking_levels(model):
+    if clamp_thinking_level(model, default_level) != live:
         return False
     try:
         await session.append_thinking_level_change(default_level)

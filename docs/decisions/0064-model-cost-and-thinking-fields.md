@@ -1,6 +1,7 @@
 # 0064. Model Cost + Thinking + Headers Fields
 
-Status: Accepted (Sprint 6f / Phase 4.6 / W6 shipped)
+Status: Accepted (Sprint 6f / Phase 4.6 / W6 shipped) — 2026-10-20 note (#433, ADR-0266):
+the level scale below is pi's seven since #433, `max` after `xhigh`
 
 ## Context
 
@@ -135,6 +136,10 @@ The Phase 4.6 §0 7-helper port lives in `models.py`:
 
 1. `EXTENDED_THINKING_LEVELS` — frozen 6-value tuple
    (`off` / `minimal` / `low` / `medium` / `high` / `max`).
+   *2026-10-20 note (#433, ADR-0266): the six shipped here were
+   `off` / `minimal` / `low` / `medium` / `high` / `xhigh` - this line said
+   `max` for `xhigh`. Since #433 there are seven, pi's (`fbdd46389`):
+   `max` follows `xhigh`, offered only where a model's map names it.*
 2. `get_all_models()` — registry access.
 3. `get_models_for_provider(provider_id)` — provider filter.
 4. `get_model_by_id(model_id)` — single-model lookup.

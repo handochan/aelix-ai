@@ -229,6 +229,12 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
 
     The pin is equality with the sibling, not the literal map: if the
     predecessor's map is corrected later, the flagship must move with it.
+
+    One key may differ, and only one way (#433): pi gives ``gpt-6`` rows a
+    ``max`` level its ``gpt-5.5`` predecessor does not have
+    (``supportsOpenAiMax``, ``generate-models.ts:600-607`` at
+    ``pi@fdce48eb4``), so on those rows the flagship carries
+    ``"max": "max"`` on top of the copied map.
     """
 
     row = _row(provider, model_id)
@@ -236,7 +242,16 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     assert row.thinking_level_map is not None, (
         f"{provider}/{model_id} lost its thinkingLevelMap — a refresh reverted it"
     )
-    assert row.thinking_level_map == _row(provider, sibling).thinking_level_map
+    flagship = dict(row.thinking_level_map)
+    pi_gives_max = "gpt-6" in model_id and row.api in (
+        "openai-responses",
+        "azure-openai-responses",
+        "openai-codex-responses",
+        "openai-completions",
+    )
+    if pi_gives_max:
+        assert flagship.pop("max") == "max", f"{provider}/{model_id} lost pi's max level"
+    assert flagship == _row(provider, sibling).thinking_level_map
 
 
 def test_sonnet_5_does_not_declare_thinking_off_unsupported() -> None:

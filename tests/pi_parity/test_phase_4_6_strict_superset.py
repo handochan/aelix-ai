@@ -41,11 +41,18 @@ def _load_fixture() -> dict:
     )
 
 
-# === §A — EXTENDED_THINKING_LEVELS exact 6 values =============================
+# === §A — EXTENDED_THINKING_LEVELS exact 7 values (6 at 734e08e) ==============
 
 
-def test_extended_thinking_levels_exact_pi_six() -> None:
-    """Pi parity: ``models.ts:48`` 6 ordered values."""
+def test_extended_thinking_levels_exact_pi_seven() -> None:
+    """Pi parity: ``models.ts:1242`` 7 ordered values at ``pi@fdce48eb4`` (#433).
+
+    The fixture records pi at ``734e08e`` and stays as recorded: six values
+    (``models.ts:48`` there). pi appended ``max`` in ``fbdd46389``, so the
+    ``734e08e`` scale must be exactly the first six of today's, in order -
+    a level renamed, dropped or moved would fail here, and so would a
+    seventh level anywhere but last.
+    """
 
     assert EXTENDED_THINKING_LEVELS == [
         "off",
@@ -54,9 +61,10 @@ def test_extended_thinking_levels_exact_pi_six() -> None:
         "medium",
         "high",
         "xhigh",
+        "max",
     ]
     fixture = _load_fixture()
-    assert fixture["extended_thinking_levels"] == EXTENDED_THINKING_LEVELS
+    assert fixture["extended_thinking_levels"] == EXTENDED_THINKING_LEVELS[:6]
 
 
 # === §B — 7 helpers from models.ts exposed in aelix_ai.models =================

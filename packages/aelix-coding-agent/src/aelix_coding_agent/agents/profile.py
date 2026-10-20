@@ -213,7 +213,7 @@ class AgentProfile:
     """Validated against ``cli.args.VALID_THINKING_LEVELS``.
 
     DELIBERATE ASYMMETRY with the CLI flag: ``--thinking bogus`` warns and drops
-    the value (``args.py:655-672``) because a typo must not abort a session
+    the value (``args.py:656-673``) because a typo must not abort a session
     already being launched; a profile is a checked-in file read before anything
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 

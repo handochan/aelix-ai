@@ -38,8 +38,8 @@ two sides can agree on a field that nothing reads, and both can collapse
 Two flag choices are not cosmetic:
 
 * ``--tools`` takes ONE comma-separated token and is NOT repeatable
-  (``args.py:647-654`` overwrites), so the list is joined, never repeated.
-* ``--system-prompt`` takes a LITERAL string (``args.py:587-591``); a profile
+  (``args.py:648-655`` overwrites), so the list is joined, never repeated.
+* ``--system-prompt`` takes a LITERAL string (``args.py:588-592``); a profile
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 

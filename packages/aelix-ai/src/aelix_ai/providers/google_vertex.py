@@ -347,8 +347,8 @@ def _vertex_thinking_level(effort: str, model_id: str) -> str:
 
     As on the shared resolver, the trailing ``HIGH`` is a ceiling clamp rather
     than a fail-open: the only effort that reaches it besides ``high`` is
-    ``xhigh``, and ``thinkingLevel`` has no dynamic value to defer with the way
-    :func:`_vertex_google_budget`'s ``-1`` does (#250 review). The full argument
+    ``xhigh`` or ``max`` (#433); ``thinkingLevel`` has no dynamic value like
+    :func:`_vertex_google_budget`'s ``-1`` (#250 review). The full argument
     lives
     on ``_google_shared.get_google_budget``.
     """

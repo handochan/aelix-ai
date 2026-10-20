@@ -79,9 +79,9 @@ def test_explicit_off_is_restored_not_treated_as_absent() -> None:
 def test_unsupported_level_clamps_not_drops() -> None:
     """A level the resumed model cannot do is clamped, never dropped.
 
-    ``xhigh`` is the last of ``EXTENDED_THINKING_LEVELS``, so the forward scan
-    inside ``clamp_thinking_level`` finds nothing and the backward one lands on
-    ``high`` — the closest thing the model can actually do.
+    Neither ``xhigh`` nor ``max`` above it (#433) is offered by this model, so
+    the forward scan inside ``clamp_thinking_level`` finds nothing and the
+    backward one lands on ``high`` — the closest thing the model can actually do.
     """
 
     entries = [_level("a", "xhigh", None)]

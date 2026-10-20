@@ -665,15 +665,29 @@ class AgentProfileService:
                     notices.append(notice)
 
             if self.parsed.thinking:
-                # Mirrors the TUI's own startup thinking seed in ``tui/shell.py``:
-                # a level the bound model does not support is skipped rather than
-                # forced, and a harness with no model yet has nothing to validate
-                # against.
+                # #433 review round 2 — the level is FITTED to the model first, as
+                # the launch fits ``defaultThinkingLevel`` (``cli/entry.py``
+                # ``_seed_default_thinking_level``, mirrored here: clamp only on a
+                # settled model). A membership test alone dropped ``thinking:
+                # xhigh`` on a row that now names ``max`` and no ``xhigh`` (Opus
+                # 4.6, DeepSeek V4, GLM 5.2; ADR-0266), so the request kept the
+                # previous level; clamped, it lands on ``max`` and sends what it
+                # sent before #433, and ``thinking: max`` on a row without ``max``
+                # runs at the row's top level. A held launch's placeholder (not
+                # settled) supports only ``off`` and says nothing about the model
+                # the run ends on: there a level it does not list is still
+                # skipped, and a harness with no model has nothing to fit to.
+                from aelix_ai.models import clamp_thinking_level
+
+                from aelix_coding_agent.cli.entry import _settled_model
+
                 current_model = getattr(harness, "current_model", None)
-                if current_model is not None and self.parsed.thinking in (
-                    get_supported_thinking_levels(current_model)
-                ):
-                    await harness.set_thinking_level(self.parsed.thinking)
+                if current_model is not None:
+                    level = self.parsed.thinking
+                    if _settled_model(current_model):
+                        level = clamp_thinking_level(current_model, level) or level
+                    if level in get_supported_thinking_levels(current_model):
+                        await harness.set_thinking_level(level)
         except BaseException:
             # ROLL BACK BOTH HALVES, then re-raise for the caller to report.
             # Leaving the durable half applied is the dangerous direction: the

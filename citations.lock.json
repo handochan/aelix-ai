@@ -688,12 +688,12 @@
   "packages/aelix-ai/src/aelix_ai/messages.py:139-139": [
    "role: Literal[\"assistant\"] = \"assistant\""
   ],
-  "packages/aelix-ai/src/aelix_ai/models.py:130-132": [
+  "packages/aelix-ai/src/aelix_ai/models.py:160-162": [
    "if level in thinking_map:",
    "if thinking_map[level] is None:",
    "continue"
   ],
-  "packages/aelix-ai/src/aelix_ai/models.py:179-182": [
+  "packages/aelix-ai/src/aelix_ai/models.py:213-216": [
    "for i in range(idx, len(EXTENDED_THINKING_LEVELS)):",
    "cand = EXTENDED_THINKING_LEVELS[i]",
    "if cand in available:",
@@ -702,15 +702,15 @@
   "packages/aelix-ai/src/aelix_ai/oauth/auth_storage.py:306-306": [
    "if _fcntl is None:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:517-535": [
+  "packages/aelix-ai/src/aelix_ai/providers/_anthropic_transforms.py:521-544": [
    "def map_thinking_level_to_effort(model: Model, level: str | None) -> str:",
    "\"\"\"Pi parity ``mapThinkingLevelToEffort`` (anthropic.ts:708-726).",
    "",
-   "Prefer the model's ``thinkingLevelMap`` native string (e.g. ``xhigh`` →",
-   "``\"max\"`` on Opus 4.6, ``\"xhigh\"`` on Opus 4.7); otherwise fall back to a",
-   "coarse mapping (minimal/low → ``\"low\"``, medium → ``\"medium\"``, else",
-   "``\"high\"``).",
-   "\"\"\""
+   "Prefer the model's ``thinkingLevelMap`` native string (``max`` →",
+   "``\"max\"`` on Opus 4.6 and every later adaptive row, ``xhigh`` →",
+   "``\"xhigh\"`` on Opus 4.7 and later; #433); otherwise fall back to a coarse",
+   "mapping (minimal/low → ``\"low\"``, medium → ``\"medium\"``, else ``\"high\"``).",
+   "The coarse ``\"high\"`` for ``xhigh`` and ``max`` is pi's too"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:1024-1024": [
    "yield ThinkingDeltaEvent("
@@ -1866,22 +1866,22 @@
    "_FENCE_OPEN = \"<project_context>\\n\\nProject-specific instructions and guidelines:\\n\\n\"",
    "_FENCE_CLOSE = \"</project_context>\\n\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:274-274": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:275-275": [
    "append_system_prompt: list[str] = field(default_factory=list)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:587-591": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:588-592": [
    "elif arg == \"--system-prompt\":",
    "if takes_value:",
    "parsed.system_prompt = argv[i + 1]",
    "parsed.provided.add(\"system_prompt\")",
    "i += 1"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:647-649": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:648-650": [
    "elif arg in (\"--tools\", \"-t\"):",
    "if takes_value:",
    "parsed.tools = [s.strip() for s in argv[i + 1].split(\",\") if s.strip()]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:647-654": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:648-655": [
    "elif arg in (\"--tools\", \"-t\"):",
    "if takes_value:",
    "parsed.tools = [s.strip() for s in argv[i + 1].split(\",\") if s.strip()]",
@@ -1891,7 +1891,7 @@
    "parsed.provided.add(\"tools\")",
    "i += 1"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:655-671": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:656-672": [
    "elif arg == \"--thinking\":",
    "if takes_value:",
    "level = argv[i + 1]",
@@ -1901,7 +1901,7 @@
    "# invalid branch below warns and drops, leaving the field",
    "# at its default, so recording it would let a typo veto an"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:655-672": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:656-673": [
    "elif arg == \"--thinking\":",
    "if takes_value:",
    "level = argv[i + 1]",
@@ -1911,7 +1911,7 @@
    "# invalid branch below warns and drops, leaving the field",
    "# at its default, so recording it would let a typo veto an"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:790-810": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:791-811": [
    "elif arg.startswith(\"--\"):",
    "# Pi parity: ``args.ts:167-180`` unknown extension flag.",
    "# Three sub-cases:",
@@ -1921,7 +1921,7 @@
    "# ``@`` exclusion (P-398) keeps ``@file`` arguments in",
    "# ``file_args`` instead of consuming them as the value."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:889-890": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/args.py:890-891": [
    "--no-approve, -na Do not trust them for this run. Note AGENTS.md",
    "is NOT covered — use --no-context-files"
   ],

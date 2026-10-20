@@ -94,7 +94,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `inherit_extensions` | bool | `false` | Whether the parent's extensions come along. |
 | `system_prompt` | `append` \| `replace` | `append` | `append` adds the body to the standard prompt; `replace` uses the body alone. |
 | `context_files` | bool | `true` | Whether `AGENTS.md` and friends are loaded. |
-| `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Absent → the parent's level if the profile also names no `model` or `provider`, otherwise the `defaultThinkingLevel` in your global `settings.json` (see below). A bad value here **rejects the profile**. |
+| `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Absent → the parent's level if the profile also names no `model` or `provider`, otherwise the `defaultThinkingLevel` in your global `settings.json` (see below). A bad value here **rejects the profile**. |
 | `role` | `leaf` \| `orchestrator` | `leaf` | A `leaf` child cannot delegate further. See the note below. |
 | `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. A parallel or chain call also shares one 64 KiB budget, split evenly across its tasks (8 192 bytes each for eight) and covering each task's summary and error note together, so a member can be cut shorter than its own cap. A single delegation gets this cap alone. When the child has a session file, the full text is kept there. |
 | `timeout_ms` | int | none | Wall clock for the whole delegation. The `agent` tool bounds a caller-supplied value to 1 000 … 1 800 000 ms. |
@@ -379,8 +379,9 @@ job is text.
   on that one); and with no `--model`/`--provider` and no settings
   default there is nothing to re-derive, so the replaced profile's model stays
   (where `/new` starts as a launch with no model would). A `thinking:` the
-  profile names, or your `--thinking`, is applied either way, so a `/thinking`
-  pick does not survive it yet. If the next prompt on the model you keep would
+  profile names, or your `--thinking`, is applied either way, fitted to the
+  model as `defaultThinkingLevel` is (`xhigh` runs at `max` on a model that
+  names `max` and no `xhigh`), so a `/thinking` pick does not survive it yet. If the next prompt on the model you keep would
   be refused (no API key, an id no provider serves, configuration missing), the
   status line says why, with the reason the check before every prompt gives. In
   the TUI, a model that cannot run at all (the last two) is refused before that

@@ -283,7 +283,7 @@ aelix --resume <id>              # resume a specific session by id/prefix
                                  #  pass --model, --provider or --api-key or an
                                  #  agent profile names a model)
 aelix --no-session               # in-memory session, not persisted
-aelix --thinking medium          # off | minimal | low | medium | high | xhigh
+aelix --thinking medium          # off | minimal | low | medium | high | xhigh | max
                                  # (the level is remembered per session: --continue
                                  #  and --resume come back at the level you left)
 aelix --append-system-prompt "Be terse."

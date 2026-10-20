@@ -28,14 +28,19 @@ if TYPE_CHECKING:
 def thinking_level_display(model: Any, level: str) -> str:
     """Render ``level`` as the tier ``model`` actually receives for it (#251).
 
-    ``"high"`` when the model calls the level by the same name, ``"xhigh (max)"``
-    when it does not. The contract is that the parenthesis names the tier the
+    ``"high"`` when the model calls the level by the same name, ``"minimal
+    (low)"`` when it does not (openai-codex ``gpt-5.6``), ``"xhigh (max)"`` when
+    the level is clamped to another (``claude-opus-4-6`` names ``max`` and no
+    ``xhigh`` since #433). The contract is that the parenthesis names the tier the
     REQUEST carries, so the clamp is resolved BEFORE the catalog's rename: a
     level the model does not support is served by another one
     (:func:`aelix_ai.models.clamp_thinking_level`, which the adapters call too),
     and only then does ``thinking_level_map`` say what that tier is called on the
-    wire. Measured over the vendored catalog, the rule adds a suffix to 2909
-    (model, level) pairs — 51 renames, 1013 clamps, 1845 non-reasoning rows.
+    wire. Measured over the shipped catalog at #433 (1529 rows, the six levels
+    above ``off``; ``.omc/probes/433-live/r2/picker_counts.py``), the rule adds a
+    suffix to 4410 (model, level) pairs — 20 renames, 2158 clamps, 2232 on
+    non-reasoning rows (#251 counted 2909 — 51, 1013, 1845 — over five levels and
+    a smaller catalog).
 
     One adapter breaks that contract, and the break is the adapter's rather than
     this rule's: both Google adapters revive a clamped ``off`` back into ``high``
@@ -51,11 +56,12 @@ def thinking_level_display(model: Any, level: str) -> str:
 
     - ``off`` — ``harness/core.py`` folds ``off``/unset to ``reasoning=None``
       before an adapter sees it, so ``off`` never reaches one as a tier and there
-      is no true value to show. (The cost, measured: on the 100 catalog models
-      that do not support ``off`` the request then carries no reasoning field at
-      all and the model thinks at its own default.)
+      is no true value to show. (The cost, measured: on the 118 reasoning rows
+      that do not support ``off`` — 103 before #433 gave the Fable mirrors pi's
+      ``off: null`` — the request then carries no reasoning field at all and the
+      model thinks at its own default.)
     - a case-only rename — Google spells its enum ``HIGH``/``LOW``/``MINIMAL``;
-      that is the same tier, so a suffix would be noise on 16 rows.
+      that is the same tier, so a suffix would be noise on 8 rows (#433's count).
     - a non-``str`` mapping — ``_anthropic_transforms.py`` guards on
       ``isinstance(mapped, str)`` and sends a coarse ``"high"`` where
       ``openai_completions._native_effort`` forwards the number, so there is no

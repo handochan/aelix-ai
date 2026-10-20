@@ -77,8 +77,8 @@ if TYPE_CHECKING:
 # helpers below and echoed straight into ``thinkingConfig.thinkingLevel``.
 GoogleThinkingLevel = str  # "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" | ...
 
-# Clamped effort the thinking helpers accept (pi ``ClampedThinkingLevel`` =
-# ``Exclude<ThinkingLevel, "xhigh">``). The caller clamps before dispatch.
+# Clamped effort the thinking helpers accept (pi ``ResolvedGoogleThinkingLevel``
+# = ``Exclude<ThinkingLevel, "xhigh" | "max">``). The caller clamps first.
 _CLAMPED_EFFORTS: frozenset[str] = frozenset({"minimal", "low", "medium", "high"})
 
 
@@ -575,8 +575,8 @@ def get_thinking_level(effort: str, model_id: str) -> GoogleThinkingLevel:
     levels; the default branch (other ``thinkingLevel`` models) is a 1:1
     map.
 
-    The final ``return "HIGH"`` is not a fail-open (#250 review). The one
-    effort it catches besides ``high`` is ``xhigh`` — the two collapsing
+    The final ``return "HIGH"`` is not a fail-open (#250 review). The effort
+    it catches besides ``high`` is ``xhigh`` or ``max`` (#433) — the two collapsing
     branches above also absorb ``medium``, which is the collapse, not a
     fallback — because the caller (``_thinking_for_simple``) has already run
     the level through ``clamp_thinking_level``, which can only return a member
@@ -588,7 +588,7 @@ def get_thinking_level(effort: str, model_id: str) -> GoogleThinkingLevel:
     the four scale points, :func:`get_google_budget` has ``-1`` and this
     function has no analogue for it, and Google defines a dynamic setting only
     for ``thinkingBudget`` (read from the API docs, not measured). So clamping
-    ``xhigh`` to the ceiling is the whole of the answer, and it is
+    ``xhigh`` (and ``max``) to the ceiling is the whole of the answer, and it is
     what the Anthropic adapter does with ``xhigh`` on a row that does not offer
     it. Pinned by ``test_xhigh_clamps_to_the_top_of_the_thinking_level_scale``.
     """
@@ -652,9 +652,9 @@ def get_google_budget(
     ``AssistantErrorEvent``; it is reachable from a ``thinkingLevelMap``
     override in ``~/.aelix/agent/models.json``, because
     ``clamp_thinking_level`` returns any extended level that map declares
-    non-null — including the ``xhigh`` these tables have no row for.
+    non-null — including the ``xhigh`` and ``max`` these tables have no row for.
 
-    **Which effort that actually is: ``xhigh``, and in-tree only ``xhigh``.**
+    **Which effort that is: ``xhigh`` or ``max`` (#433), in-tree only those.**
     The sole in-tree caller (``_thinking_for_simple``) passes a level that
     ``clamp_thinking_level`` has already reduced to a member of
     :data:`~aelix_ai.models.EXTENDED_THINKING_LEVELS`, and it maps ``off`` /

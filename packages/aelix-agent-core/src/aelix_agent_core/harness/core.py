@@ -3004,27 +3004,26 @@ class AgentHarness:
 
         Sprint 6h₂ (P-247): rotates through
         :func:`aelix_ai.models.get_supported_thinking_levels` for the
-        :attr:`current_model`. Returns the new level (persisted via
-        :meth:`set_thinking_level`) or :data:`None` when the model does
-        not support reasoning.
+        :attr:`current_model`; returns the new level (persisted via
+        :meth:`set_thinking_level`) or :data:`None` when the model does not
+        reason. P-254: the guard is pi's ``supportsThinking()``
+        (``agent-session.ts:1539``, ``!!model.reasoning``), not
+        ``len(levels) <= 1``, which also refused a reasoning model whose map
+        leaves one level (pi rotates and returns it). ``async`` because
+        :meth:`set_thinking_level` is (the RPC handler awaits this).
 
-        Sprint 6h₂ W6 (P-254 BLOCKING): Pi
-        ``agent-session.ts:1539`` short-circuits on ``!supportsThinking()``
-        (``!!this.model?.reasoning``). The prior Aelix gate
-        ``len(levels) <= 1`` happened to match for non-reasoning models
-        (which collapse to ``["off"]``) but FAILED for a reasoning model
-        with a degenerate ``thinking_level_map`` whose single non-null
-        entry collapses ``levels`` to length 1 — Pi rotates (idx wraps
-        ``(0+1)%1 = 0``) and returns the single level, while Aelix
-        silently returned :data:`None`. Replace the length guard with
-        Pi's ``reasoning`` guard so the rotation semantics align byte-
-        for-byte.
-
-        ``async def`` because :meth:`set_thinking_level` is async — the
-        RPC handler awaits this method.
+        #433 review round 2: the live level is FITTED first
+        (:func:`aelix_ai.models.clamp_thinking_level`). pi's setter clamps, so
+        its live level is always listed (``agent-session.ts:2642-2681`` at
+        ``pi@fdce48eb4``); this one does not, so ``--thinking xhigh`` or an RPC
+        ``set_thinking_level`` can leave an unlisted level, which fell back to
+        index 0: ``xhigh`` on ``claude-opus-4-6`` (``max`` and no ``xhigh``
+        since #433) stepped to ``minimal``, where it wrapped to ``off`` before.
+        Fitted, it steps as ``max`` does (``/settings`` → Thinking level and
+        RPC ``cycle_thinking_level`` call this).
         """
 
-        from aelix_ai.models import get_supported_thinking_levels
+        from aelix_ai.models import clamp_thinking_level, get_supported_thinking_levels
 
         model = self.current_model
         # Pi parity (P-254): ``agent-session.ts:1539`` ``supportsThinking()``
@@ -3036,6 +3035,7 @@ class AgentHarness:
         if not levels:
             return None
         current = self._state.thinking_level or "off"
+        current = clamp_thinking_level(model, current) or current
         idx = levels.index(current) if current in levels else 0
         next_level = levels[(idx + 1) % len(levels)]
         await self.set_thinking_level(next_level)

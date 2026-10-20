@@ -47,8 +47,10 @@ def _non_reasoning_model() -> Model:
 
 
 def _reasoning_model_full_levels() -> Model:
-    """Reasoning model that supports the full 6 levels (Pi
-    ``EXTENDED_THINKING_LEVELS`` order).
+    """Reasoning model that supports the six levels up to ``xhigh`` (Pi
+    ``EXTENDED_THINKING_LEVELS`` order). Its map has no ``max`` entry, so the
+    seventh level (#433) is not offered: ``max`` exists only where a map names
+    it, like ``xhigh``.
     """
 
     return Model(
@@ -156,6 +158,53 @@ async def test_cycle_wraps_from_xhigh_back_to_off() -> None:
         assert h.state.thinking_level == "off"
     finally:
         await h.dispose()
+
+
+async def test_cycle_reaches_max_on_a_row_that_names_it_then_wraps() -> None:
+    """#433: on a row whose map names ``max`` the cycle takes it after ``xhigh``,
+    and on a row that names ``max`` but not ``xhigh`` (21 of the 24 rows the
+    owner reclassified, e.g. ``anthropic/claude-opus-4-6``) it goes ``high → max``."""
+
+    both = Model(
+        id="m",
+        provider="p",
+        reasoning=True,
+        thinking_level_map={"xhigh": "xhigh", "max": "max"},
+    )
+    max_only = Model(id="m", provider="p", reasoning=True, thinking_level_map={"max": "max"})
+    for model, start, expected in (
+        (both, "xhigh", ["max", "off"]),
+        (max_only, "high", ["max", "off"]),
+    ):
+        h = AgentHarness(
+            AgentHarnessOptions(model=model, thinking_level=start, stream_fn=_stream())
+        )
+        try:
+            assert [await h.cycle_thinking_level() for _ in expected] == expected
+        finally:
+            await h.dispose()
+
+
+async def test_cycle_fits_a_level_the_row_does_not_list_before_stepping() -> None:
+    """#433 review round 2: the setter does not clamp, so ``--thinking xhigh`` or
+    an RPC ``set_thinking_level`` leaves a level the row may not list. The cycle
+    fits it first (``clamp_thinking_level``) and steps as the level it runs at:
+    ``xhigh`` on a row that names ``max`` and no ``xhigh`` (``claude-opus-4-6``
+    since #433) is ``max``, the last level, and wraps to ``off`` - as ``xhigh``
+    did on 7faf4b9a, where the row listed it. Unfitted it fell back to index 0
+    and went to ``minimal``. On a row with no map ``xhigh`` runs at ``high`` and
+    wraps to ``off`` too (``minimal`` before)."""
+
+    max_only = Model(id="m", provider="p", reasoning=True, thinking_level_map={"max": "max"})
+    no_map = Model(id="m", provider="p", reasoning=True)
+    for model in (max_only, no_map):
+        h = AgentHarness(
+            AgentHarnessOptions(model=model, thinking_level="xhigh", stream_fn=_stream())
+        )
+        try:
+            assert await h.cycle_thinking_level() == "off"
+        finally:
+            await h.dispose()
 
 
 async def test_cycle_handles_unknown_current_level() -> None:

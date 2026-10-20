@@ -38,8 +38,9 @@ VALID_THINKING_LEVELS: tuple[str, ...] = (
     "medium",
     "high",
     "xhigh",
+    "max",
 )
-"""Pi parity: ``cli/args.ts`` ``VALID_THINKING_LEVELS``."""
+"""Pi parity: ``cli/args.ts`` ``VALID_THINKING_LEVELS`` (``max`` since ``pi@fbdd46389``; #433)."""
 
 VALID_MODES: tuple[str, ...] = ("text", "json", "rpc")
 
@@ -265,7 +266,7 @@ class Args:
     """Pi parity: ``--api-key <key>``."""
 
     thinking: str | None = None
-    """Pi parity: ``--thinking <off|minimal|low|medium|high|xhigh>``."""
+    """Pi parity: ``--thinking <off|minimal|low|medium|high|xhigh|max>``."""
 
     # Prompt
     system_prompt: str | None = None
@@ -349,7 +350,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:655-672``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:656-673``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -681,7 +682,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:655-671): warn + drop, never
+                    # Mirrors --thinking (args.py:656-672): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -858,7 +859,7 @@ Model:
   --model <id>          Model id
   --models <csv>        Comma-separated model id list
   --api-key <key>       Inline API key
-  --thinking <level>    off | minimal | low | medium | high | xhigh
+  --thinking <level>    off | minimal | low | medium | high | xhigh | max
 
 Prompt:
   --system-prompt <text>          Replace the default system prompt

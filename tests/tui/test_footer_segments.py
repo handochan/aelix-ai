@@ -111,7 +111,7 @@ async def test_thinking_level_description_names_the_tier_suffix() -> None:
     async with _ctx(_FixedBranchFooter("main")) as (ctx, _chrome):
         reg = {s.id: s for s in build_footer_registry(ctx)}
         assert reg["thinking-level"].description == (
-            "The active reasoning effort (🧠 high — 🧠 xhigh (max) when the model "
+            "The active reasoning effort (🧠 high — 🧠 minimal (low) when the model "
             "names the tier differently)"
         )
 

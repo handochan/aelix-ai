@@ -138,6 +138,25 @@ unwritten. Add them with the next release.
   like a resume: the file does not carry what bounded the child — its
   permission clamp, its narrowed tools, `--no-agents` — so it would run as an
   ordinary session at your own posture. A viewer inside the TUI is #296. (#199)
+- **`max` is a thinking level, above `xhigh` (#433, ADR-0266)**, as in pi
+  since `fbdd46389`: `--thinking max`, `defaultThinkingLevel: "max"`, an agent
+  profile's `thinking: max`, `/thinking` and a `models.json` `thinkingLevelMap`
+  key; an `enabledModels` entry written `<id>:max` now scopes to that model
+  (aelix reads the suffix only to strip it; before, the entry matched nothing
+  and the scope widened to every model). A model offers it only where its
+  catalog entry names it, like `xhigh`; elsewhere it runs at the model's top
+  level.
+  Before, `--thinking max` was dropped with a warning and a
+  `defaultThinkingLevel: "max"` ran with thinking **off** (measured on
+  `7faf4b9a` through a local recorder: `thinking: {"type": "disabled"}` on
+  `anthropic/claude-opus-4-6`, `claude-opus-4-7` and `claude-sonnet-4-5`, and
+  on `openrouter/deepseek/deepseek-v4-pro`), and `/thinking max` printed
+  `thinking → max (off)`. It sends the model's own `max`: Claude's adaptive
+  effort, OpenAI's on the `gpt-5.6` and `gpt-6` rows, DeepSeek V4's off
+  OpenRouter, and GLM 5.2's on Fireworks and opencode-go - Z.AI's own GLM 5.2
+  rows send only `enable_thinking`, so there `max` thinks as `high` does. On a
+  Claude row that thinks with a token budget (only a `models.json` map can
+  offer `max` there) it sends `xhigh`'s 32768 budget.
 
 ### Changed
 
@@ -179,6 +198,32 @@ unwritten. Add them with the next release.
   token limit still prints and exits 0 in both modes. A delegated agent whose model failed now reports
   exit code 1 and ends as `error` in `/agents`, where it showed `done`. The
   getting-started guide has a new "Exit codes" section.
+- **The 24 catalog rows that called their top tier `xhigh` now call it `max`
+  - all but OpenRouter's DeepSeek V4 (#433, ADR-0266; the owner's decisions of
+  2026-10-20 and 2026-10-21).** Claude Opus 4.6 on every provider (12 rows),
+  DeepSeek V4 (8) and GLM 5.2 (4) mapped `xhigh` to the provider's `max`. 21
+  of them now list `max` and no `xhigh`, as pi does, and send what they sent: a
+  saved `xhigh` - a `defaultThinkingLevel`, a session's level, an agent
+  profile's `thinking:` - moves up to `max` and sends `max`. The picker and the
+  🧠 statusline say `max` where they said `xhigh (max)`; `--thinking xhigh` and
+  `/thinking xhigh` there still show `xhigh (max)`. **OpenRouter's 3 DeepSeek
+  V4 rows follow pi instead: a saved `xhigh` there now sends
+  `reasoning_effort: "xhigh"`, where it sent `"max"`, and they offer no `max`**
+  (OpenRouter answered DeepSeek's `max` with a 400, pi #4801). pi's other `max`
+  rules apply to the rows aelix ships too (132 rows in all): Claude Opus 4.7
+  and later, Sonnet 5 and Fable 5 offer both `xhigh` and `max` (rows that
+  offered neither now send `xhigh` for `xhigh` instead of `high`), Sonnet 4.6
+  offers `max` (so a saved `xhigh` there now runs at `max`, not `high`), the
+  Fable mirrors no longer offer `off`, the `gpt-5.6`/`gpt-6` rows that offered
+  `xhigh` offer `max`, and the 15 DeepSeek V4 rows that had no map get pi's
+  (`minimal`, `low` and `medium` now run at `high` - `minimal` and `low` at
+  `low` on the 4 Flash rows - and `xhigh` at `max`, or at `xhigh` on
+  OpenRouter; nvidia's 4 send no effort at any level). A TUI session
+  started at `defaultThinkingLevel: "xhigh"` records `xhigh` wherever that
+  runs at `max`, and cycling the level (`/settings`, RPC
+  `cycle_thinking_level`) from an `xhigh` the row does not list steps as the
+  level it runs at - to `off`, where it went to `minimal`. The row list is in
+  ADR-0266.
 
 - **Keyless OpenAI clients that extensions and embedders build need a
   placeholder key (#278, ADR-0265) - a migration.** On openai 2.34 and later,

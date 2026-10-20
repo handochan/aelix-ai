@@ -337,10 +337,16 @@ def test_is_valid_thinking_level_matches_extended_thinking_levels() -> None:
 
 
 def test_sprint_6f_extended_thinking_levels_unchanged() -> None:
-    """Sprint 6f invariant: 6 levels in canonical order."""
+    """Sprint 6f invariant: the six levels in canonical order, plus ``max`` (#433).
+
+    Sprint 6f pinned six (pi ``models.ts:48`` at ``734e08e``). pi appended
+    ``max`` in ``fbdd46389`` (``models.ts:1242`` at ``fdce48eb4``) and #433
+    followed, so the invariant this keeps is that the six keep their order
+    and ``max`` only ever comes after them.
+    """
 
     assert EXTENDED_THINKING_LEVELS == [
-        "off", "minimal", "low", "medium", "high", "xhigh",
+        "off", "minimal", "low", "medium", "high", "xhigh", "max",
     ]
 
 

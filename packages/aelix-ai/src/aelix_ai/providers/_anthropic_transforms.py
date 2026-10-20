@@ -348,7 +348,8 @@ def build_params(
 #: pi skips the header.
 INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
-#: Pi default thinking budgets (simple-options.ts:32-37) plus a fifth row.
+#: Pi default thinking budgets (simple-options.ts:32-37) plus a fifth row
+#: (``max`` borrows it: :func:`clamp_reasoning`, #433).
 #: **Divergence (#250, ADR-0135 amendment):** pi has four rows and folds
 #: ``xhigh`` onto ``high``; aelix offers ``xhigh`` in the picker, so on
 #: 0985fcf both tiers sent ``budget_tokens: 16384`` while the statusline
@@ -491,7 +492,10 @@ def supports_thinking_off(model: Model) -> bool:
       ``5-1`` spelling on ``github-copilot``, ``opencode`` and
       ``vercel-ai-gateway``. An ABSENT key means supported (pi
       ``models.ts:50-59``), so the map alone would send those six the
-      ``disabled`` request the model behind the proxy rejects.
+      ``disabled`` request the model behind the proxy rejects. (#433 applied
+      pi's fable rule, which declares ``"off": null`` on all six; the family
+      test stays for a fable row whose map does not, e.g. one from
+      ``models.json``.)
     """
 
     if _ALWAYS_THINKING_FAMILY_RE.search(model.id or model.name or ""):
@@ -517,10 +521,14 @@ def lowest_thinking_level(model: Model) -> str:
 def map_thinking_level_to_effort(model: Model, level: str | None) -> str:
     """Pi parity ``mapThinkingLevelToEffort`` (anthropic.ts:708-726).
 
-    Prefer the model's ``thinkingLevelMap`` native string (e.g. ``xhigh`` →
-    ``"max"`` on Opus 4.6, ``"xhigh"`` on Opus 4.7); otherwise fall back to a
-    coarse mapping (minimal/low → ``"low"``, medium → ``"medium"``, else
-    ``"high"``).
+    Prefer the model's ``thinkingLevelMap`` native string (``max`` →
+    ``"max"`` on Opus 4.6 and every later adaptive row, ``xhigh`` →
+    ``"xhigh"`` on Opus 4.7 and later; #433); otherwise fall back to a coarse
+    mapping (minimal/low → ``"low"``, medium → ``"medium"``, else ``"high"``).
+    The coarse ``"high"`` for ``xhigh`` and ``max`` is pi's too
+    (``anthropic-messages.ts:944-962`` at ``fdce48eb4``) and is reached only
+    by a caller that skips the clamp: ``clamp_thinking_level`` offers neither
+    level on a row whose map does not name it.
     """
 
     thinking_map = model.thinking_level_map or {}
@@ -555,12 +563,23 @@ def clamp_reasoning(level: str, budgets: dict[str, int] | None = None) -> str:
     :func:`adjust_max_tokens_for_thinking` (measured on 0985fcf,
     ``adjust(64000, 64000, "off")`` → budget 8192), so nothing moves.
 
+    ``max`` (#433) is not a spelling the table lacks by accident: it takes
+    ``xhigh``'s row, the top tier, so it never builds a smaller budget than a
+    lower level. pi folds both onto ``high`` (``clampReasoning``,
+    ``simple-options.ts:77-79`` at ``fdce48eb4``); aelix's top tier is
+    ``xhigh`` since #250. No shipped budget-path row offers ``max`` - every
+    row that names it thinks adaptively - so this is reached through a
+    ``models.json`` ``thinkingLevelMap`` only. Without it ``max`` fell into
+    the unknown-spelling branch and sent ``medium``'s 8192.
+
     ``budgets`` must be the **merged** table (defaults + ``custom_budgets``),
     not the overrides alone — pass only the overrides and every standard
     level demotes to ``"medium"``. The sole caller merges before calling.
     """
 
     table = _DEFAULT_THINKING_BUDGETS if budgets is None else budgets
+    if level == "max" and level not in table:
+        level = "xhigh"
     return level if level in table else "medium"
 
 

@@ -3,8 +3,9 @@
 Faithful port of Pi's current ``packages/ai/src/providers/*.models.ts``,
 ``env-api-keys.ts``, ``types.ts``, and ``model-resolver.ts``:
 
-- GLM-5.2 across Z.AI / OpenRouter / Fireworks / OpenCode-Go (xhigh
-  effort + correct endpoints).
+- GLM-5.2 across Z.AI / OpenRouter / Fireworks / OpenCode-Go (top
+  effort + correct endpoints; the native ``max`` tier is the ``max`` level
+  since #433, as pi's ``fbdd46389`` reclassified it).
 - OpenRouter ``Fusion`` alias.
 - Kimi K2.7 Code on the ``kimi-coding`` provider.
 - New OpenAI-compatible providers + env wiring: NVIDIA NIM, Ant Ling,
@@ -37,7 +38,7 @@ from aelix_coding_agent.core.model_resolver import DEFAULT_MODEL_PER_PROVIDER
 # ── GLM-5.2 across four providers ──────────────────────────────────
 
 
-def test_zai_glm_5_2_present_with_xhigh_effort() -> None:
+def test_zai_glm_5_2_present_with_max_effort() -> None:
     m = MODELS["zai"]["glm-5.2"]
     assert m.name == "GLM-5.2"
     assert m.api == "openai-completions"
@@ -45,9 +46,11 @@ def test_zai_glm_5_2_present_with_xhigh_effort() -> None:
     assert m.context_window == 1_000_000
     assert m.max_tokens == 131072
     assert m.reasoning is True
-    # xhigh effort maps to the Z.AI "max" thinking budget.
+    # The ``max`` level maps to the Z.AI "max" thinking budget (#433: it was
+    # spelled ``"xhigh": "max"`` until pi ``fbdd46389``'s reclassification).
     assert m.thinking_level_map is not None
-    assert m.thinking_level_map["xhigh"] == "max"
+    assert m.thinking_level_map["max"] == "max"
+    assert "xhigh" not in m.thinking_level_map
     assert m.compat is not None and m.compat["supportsReasoningEffort"] is True
 
 
@@ -72,7 +75,8 @@ def test_fireworks_glm_5_2_present() -> None:
     assert m.cost.output == 4.4
     assert m.cost.cache_read == 0.26
     assert m.thinking_level_map is not None
-    assert m.thinking_level_map["xhigh"] == "max"
+    assert m.thinking_level_map["max"] == "max"  # #433: was ``"xhigh": "max"``
+    assert "xhigh" not in m.thinking_level_map
 
 
 def test_opencode_go_glm_5_2_present() -> None:
@@ -83,7 +87,8 @@ def test_opencode_go_glm_5_2_present() -> None:
     assert m.cost.input == 1.4
     assert m.cost.output == 4.4
     assert m.thinking_level_map is not None
-    assert m.thinking_level_map["xhigh"] == "max"
+    assert m.thinking_level_map["max"] == "max"  # #433: was ``"xhigh": "max"``
+    assert "xhigh" not in m.thinking_level_map
     assert m.compat is not None and m.compat["maxTokensField"] == "max_tokens"
 
 
@@ -164,7 +169,8 @@ def test_zai_coding_cn_glm_5_2_metadata() -> None:
     assert m.base_url == "https://open.bigmodel.cn/api/coding/paas/v4"
     assert m.context_window == 1_000_000
     assert m.thinking_level_map is not None
-    assert m.thinking_level_map["xhigh"] == "max"
+    assert m.thinking_level_map["max"] == "max"  # #433: was ``"xhigh": "max"``
+    assert "xhigh" not in m.thinking_level_map
 
 
 # ── KnownProvider + env-key wiring + defaults ──────────────────────
@@ -216,6 +222,11 @@ def test_glm_5_2_thinking_level_map_key_set_asymmetry() -> None:
     """pi's fireworks ``glm-5p2`` omits ``high``; pi's zai ``glm-5.2`` omits
     ``off`` — this is real pi data, not a transcription slip. Both maps keep
     ``minimal: null`` (an explicitly-unmapped level), preserved verbatim.
+
+    #433 renamed one key on both, the top tier: ``"xhigh": "max"`` became
+    ``"max": "max"``, as pi ``fbdd46389`` did to the same two maps
+    (``generate-models.ts`` ``ZAI_GLM52_THINKING_LEVEL_MAP`` and the fireworks
+    ``glm-5p2`` merge). The asymmetry is untouched.
     """
 
     fireworks = MODELS["fireworks"]["accounts/fireworks/models/glm-5p2"]
@@ -225,14 +236,14 @@ def test_glm_5_2_thinking_level_map_key_set_asymmetry() -> None:
         "minimal": None,
         "low": "high",
         "medium": "high",
-        "xhigh": "max",
+        "max": "max",
     }
     assert zai.thinking_level_map == {
         "minimal": None,
         "low": "high",
         "medium": "high",
         "high": "high",
-        "xhigh": "max",
+        "max": "max",
     }
     # The flagged asymmetry, asserted directly.
     assert "high" not in fireworks.thinking_level_map

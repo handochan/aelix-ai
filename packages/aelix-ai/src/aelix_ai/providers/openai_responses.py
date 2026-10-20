@@ -135,7 +135,7 @@ class OpenAIResponsesOptions(SimpleStreamOptions):
     """
 
     reasoning_effort: (
-        Literal["minimal", "low", "medium", "high", "xhigh"] | None
+        Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None
     ) = None
     reasoning_summary: Literal["auto", "detailed", "concise"] | None = None
     service_tier: str | None = None

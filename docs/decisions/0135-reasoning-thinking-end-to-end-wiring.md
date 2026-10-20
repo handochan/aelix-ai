@@ -8,7 +8,9 @@ thinking, and the Gemini fallback is `-1` rather than the family ceiling;
 **#258 amendment 2026-09-09** — `supports_adaptive_thinking` reads the model row
 (`compat.forceAdaptiveThinking`, then a family fallback) instead of pi's marker
 list, and `"off"` is answered by this adapter rather than falling through to a
-budget; see the Amendments and Correction 2 below)
+budget; see the Amendments and Correction 2 below; **2026-10-20 note (#433, ADR-0266)** —
+`max` is a seventh level after `xhigh`; on an adaptive row it sends the effort its map names, on a
+budget row it takes `xhigh`'s 32768 row; the Gemini resolvers read it as `xhigh`)
 Date: 2026-06-17
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -306,7 +308,8 @@ ceiling is `max_tokens` rather than an API constant.
 `NESTED_PY_TO_JSON` row (without the row the key is dropped silently at the
 JSON boundary). It is schema only: `get_thinking_budgets()` has no caller and
 neither provider passes `custom_budgets`, so all five fields are equally
-unread. `EXTENDED_THINKING_LEVELS` is unchanged at six levels.
+unread. `EXTENDED_THINKING_LEVELS` is unchanged at six levels. *(2026-10-20: seven since
+#433, ADR-0266.)*
 
 ## Correction 2 (#250 Codex cross-review, 2026-09-09)
 

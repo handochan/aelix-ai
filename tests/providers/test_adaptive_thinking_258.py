@@ -273,11 +273,17 @@ def test_off_is_a_request_every_affected_row_accepts() -> None:
 
 
 def test_a_fable_mirror_without_a_thinking_level_map_is_still_never_off() -> None:
-    """The ``"off": null`` declaration is missing on every fable mirror.
+    """A fable mirror is never sent ``disabled``, with or without ``"off": null``.
 
-    ``github-copilot/claude-fable-5``, ``opencode/claude-fable-5`` and the
-    ``vercel-ai-gateway`` pair carry no ``off`` key (asserted), so the map
-    alone would send them the ``disabled`` request the model 400s on.
+    Until #433 ``github-copilot/claude-fable-5``, ``opencode/claude-fable-5``
+    and the ``vercel-ai-gateway`` pair carried no ``off`` key, so the map alone
+    would have sent them the ``disabled`` request the model 400s on and the
+    family fallback in ``supports_thinking_off`` was their only guard. #433
+    applies pi's fable rule (``generate-models.ts:1156-1158`` at
+    ``pi@fdce48eb4``: merge ``{off: null, xhigh: "xhigh", max: "max"}``), so
+    the shipped mirrors now declare it (asserted). The fallback stays pinned on
+    the same rows with the map stripped - the shape a ``models.json`` row, or a
+    refresh that drops the map, still has.
     """
 
     for provider, model_id in (
@@ -288,13 +294,17 @@ def test_a_fable_mirror_without_a_thinking_level_map_is_still_never_off() -> Non
         ("vercel-ai-gateway", "anthropic/claude-fable-5"),
         ("vercel-ai-gateway", "anthropic/claude-fable-5.1"),
     ):
-        model = _row(provider, model_id)
-        assert "off" not in (model.thinking_level_map or {}), (provider, model_id)
-        assert supports_thinking_off(model) is False, (provider, model_id)
-        assert resolve_anthropic_thinking(model, None, 32000)[0] == {
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": "low"},
-        }, (provider, model_id)
+        shipped = _row(provider, model_id)
+        assert (shipped.thinking_level_map or {}).get("off", "absent") is None, (
+            provider,
+            model_id,
+        )
+        for model in (shipped, replace(shipped, thinking_level_map=None)):
+            assert supports_thinking_off(model) is False, (provider, model_id)
+            assert resolve_anthropic_thinking(model, None, 32000)[0] == {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "low"},
+            }, (provider, model_id)
 
 
 def test_lowest_thinking_level_reads_the_row() -> None:

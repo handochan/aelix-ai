@@ -241,7 +241,10 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             # (``context.py:1393``) destructures the triple and draws the label
             # alone — so every segment description here is unreachable text.
             # Fixed because it is wrong, not because a user can see it (#257).
-            "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "
+            # The example is a rename a shipped row makes (openai-codex
+            # ``gpt-5.6``: ``minimal`` → ``low``); since #433 no row renames
+            # ``xhigh`` to ``max``, where ``xhigh (max)`` now means "clamped up".
+            "The active reasoning effort (🧠 high — 🧠 minimal (low) when "
             "the model names the tier differently)",
             _thinking_level,
         ),
@@ -303,7 +306,7 @@ _SEGMENT_SPEC: list[tuple[str, str, str, bool]] = [
      "The home-abbreviated working directory (📂)", True),
     ("model", "Model", "The active model id (✱)", True),
     ("thinking-level", "Thinking level",
-     "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "
+     "The active reasoning effort (🧠 high — 🧠 minimal (low) when "
      "the model names the tier differently)", True),
     ("context-remaining", "Context usage",
      "The context-window usage meter (◔ 42% · 84K/200K)", True),

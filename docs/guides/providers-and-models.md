@@ -506,17 +506,17 @@ Models that support extended reasoning accept a thinking level:
 aelix --thinking medium --model anthropic/claude-sonnet-4-6 "..."
 ```
 
-Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Inside the TUI,
-`/thinking` opens a picker over the levels the current model supports
+Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Inside
+the TUI, `/thinking` opens a picker over the levels the current model supports
 (`/settings` → **Thinking level** cycles them instead).
 
 Not every model calls those levels by those names, and not every model supports
 all of them. Where the two differ, the picker rows, the confirmation line and the
-🧠 statusline segment show both: `xhigh (max)` on a model whose catalog entry maps
-`xhigh` to `max`, `xhigh (high)` on one that has no `xhigh` and is clamped down to
-`high`, `low (high)` on one that supports neither `low` nor `medium` and is
-clamped up. **The value in parentheses is the tier the request carries**; a level
-shown as one bare word is one the model calls by the same name. `off` is always
+🧠 statusline segment show both: `xhigh (max)` on a model that has `max` but no
+`xhigh` and is clamped up, `xhigh (high)` on one that has neither and is clamped
+down to `high`, `low (high)` on one that supports neither `low` nor `medium`.
+**The value in parentheses is the tier the request carries**; a level shown as
+one bare word is one the model calls by the same name. `off` is always
 bare — it is folded into "no reasoning requested" before a provider adapter sees
 it, so there is no tier to name.
 
@@ -529,7 +529,8 @@ there understates what actually goes out. That is an adapter defect, tracked as
 The level is recorded in the session and restored when you come back to it —
 `--continue`, `--resume`, `--session`, `--fork` and the in-session `/resume`.
 It is clamped to whatever the resumed model can do, so a session left at `xhigh`
-opens at `high` on a model that tops out there rather than falling back to `off`.
+opens at `high` on a model that tops out there rather than falling back to `off`,
+and at `max` on one whose top level is `max`.
 An explicit `off` is a decision and is restored as `off`. `--thinking` (and an
 agent profile's `thinking:`) outranks the session at launch, and is itself
 recorded into a session that has not chosen a level yet — so the next
@@ -559,12 +560,19 @@ output cap 16384, are the shipped examples). Equal is as close as they get: a
 higher level never sends a *smaller* budget than a lower one, whatever you
 override `maxTokens` to. On an adaptive model — Opus 4.6 and everything after
 it (4.7, 4.8, Opus 5, Sonnet 5, Fable 5), plus any row the catalog marks
-`compat.forceAdaptiveThinking` — it selects the model's own top effort rather
-than a token count. On Gemini 2.x there is nothing above `high`: that level is
-already the API's `thinkingBudget` ceiling.
+`compat.forceAdaptiveThinking` — it selects an effort rather than a token count:
+`xhigh` on Opus 4.7 and later, `max` on Opus 4.6, which has no `xhigh`. On
+Gemini 2.x there is nothing above `high`: that level is already the API's
+`thinkingBudget` ceiling.
 
-A model that does not list `xhigh` gets `high` instead — `--thinking` accepts
-the level on any model, and each provider clamps it to what the model offers.
+`max` is the model's own top effort (Claude's adaptive `max`, the OpenAI
+`gpt-5.6` and `gpt-6` rows' `max`, DeepSeek V4's off OpenRouter — OpenRouter's
+tops out at `xhigh` — and GLM 5.2's on Fireworks and opencode-go; Z.AI's own
+GLM 5.2 rows send only `enable_thinking`, so `max` thinks as `high` there). A
+model lists `xhigh` and `max` only where its catalog entry names them; one that
+lacks the level you ask for gets the nearest level above it, else the nearest
+below — `--thinking` accepts any level on any model, and each provider clamps
+it, as `/agents use` does with a profile's `thinking:`.
 
 Override the `maxTokens` of a Claude-style row that thinks with a *budget*
 below 2048 and thinking is **off** for it, whatever level you pick: the API

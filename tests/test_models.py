@@ -114,8 +114,13 @@ def test_calculate_cost_zero_usage_yields_zero_cost() -> None:
 # === EXTENDED_THINKING_LEVELS =================================================
 
 
-def test_extended_thinking_levels_is_exact_six_pi_values() -> None:
-    """Pi parity: ``models.ts:48`` — 6 values, ordered."""
+def test_extended_thinking_levels_is_exact_seven_pi_values() -> None:
+    """Pi parity: ``models.ts:1242`` at ``pi@fdce48eb4`` — 7 values, ordered.
+
+    ``models.ts:48`` at ``734e08e`` had the first six; ``pi@fbdd46389``
+    appended ``max`` after ``xhigh`` and #433 followed (ADR-0266). The order
+    is load-bearing: ``clamp_thinking_level`` scans it up, then down.
+    """
 
     assert EXTENDED_THINKING_LEVELS == [
         "off",
@@ -124,6 +129,7 @@ def test_extended_thinking_levels_is_exact_six_pi_values() -> None:
         "medium",
         "high",
         "xhigh",
+        "max",
     ]
 
 

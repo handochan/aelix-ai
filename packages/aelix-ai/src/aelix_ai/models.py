@@ -5,6 +5,17 @@ port). Provider→model catalog accessor + cost calculator + thinking-
 level clamp. Replaces the Sprint 6b stub :func:`clamp_thinking_level`
 with the full Pi-parity 7-helper surface.
 
+**How the anchors below read now (#433, ADR-0266).** The ``models.ts:NN``
+line numbers are pi at ``734e08e`` (ADR-0034's pin, an interpretation anchor
+since ADR-0235), where the file was 92 lines. At ``pi@fdce48eb4`` (2026-10-20)
+it is 1,283 lines and the three thinking helpers this module ports sit at
+``models.ts:1242-1274``: ``EXTENDED_THINKING_LEVELS`` (``:1242``, seven values
+since ``pi@fbdd46389`` added ``max``), ``getSupportedThinkingLevels``
+(``:1244-1253``, which gates ``xhigh`` and ``max`` alike on an explicit map
+entry) and ``clampThinkingLevel`` (``:1255-1274``, unchanged: up first, then
+down). The level scale and the two gates follow ``fdce48eb4``; every other
+anchor in this file still reads at ``734e08e``.
+
 Public surface (Pi parity):
 
 - :func:`get_model` — Pi ``getModel`` (``models.ts:20-26``)
@@ -38,7 +49,9 @@ for _provider_name, _models_dict in MODELS.items():
         _PROVIDER_MODELS[_provider_name][_model_id] = _model
 
 
-# Pi parity: ``models.ts:48`` — exact 6-element ordered list.
+# Pi parity: ``models.ts:1242`` at ``pi@fdce48eb4`` — exact 7-element ordered
+# list (``models.ts:48`` at ``734e08e`` had the first six; ``pi@fbdd46389``
+# appended ``max``). #433, ADR-0266.
 EXTENDED_THINKING_LEVELS: list[str] = [
     "off",
     "minimal",
@@ -46,13 +59,21 @@ EXTENDED_THINKING_LEVELS: list[str] = [
     "medium",
     "high",
     "xhigh",
+    "max",
 ]
-"""Pi parity: ``models.ts:48`` — extended thinking level enum order."""
+"""Pi parity: ``models.ts:1242`` (``pi@fdce48eb4``) — extended thinking level enum order.
+
+``max`` sits above ``xhigh`` (#433): a level of its own that a model offers
+only when its ``thinkingLevelMap`` names it, exactly like ``xhigh``
+(:func:`get_supported_thinking_levels`). 21 of the 24 rows that spelled their top tier
+``"xhigh": "max"`` say ``"max": "max"`` (ADR-0266), so ``xhigh`` there clamps up to ``max`` and
+sends what it sent; OpenRouter's 3 DeepSeek V4 rows name ``xhigh`` and no ``max``, as pi's do.
+"""
 
 
-# Sprint 6b back-compat: legacy ``ThinkingLevel`` literal alias (5 values
+# Sprint 6b back-compat: legacy ``ThinkingLevel`` literal alias (the levels
 # excluding ``"off"``) — kept so Sprint 6b callers keep type-checking.
-ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
+ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 def get_model(provider: str, model_id: str) -> Model | None:
@@ -105,17 +126,26 @@ def calculate_cost(model: Model, usage: Usage) -> UsageCost:
     return usage.cost
 
 
+#: The levels a model offers only when its ``thinkingLevelMap`` names them
+#: (pi ``models.ts:1250`` at ``fdce48eb4``: ``level === "xhigh" || level ===
+#: "max"``). Every other level is offered unless the map says ``null``.
+_EXPLICIT_ONLY_LEVELS: frozenset[str] = frozenset({"xhigh", "max"})
+
+
 def get_supported_thinking_levels(model: Model) -> list[str]:
-    """Pi parity: ``models.ts:50-59`` ``getSupportedThinkingLevels``.
+    """Pi parity: ``models.ts:1244-1253`` ``getSupportedThinkingLevels`` (``pi@fdce48eb4``).
 
     Pi rules:
 
     - If ``model.thinkingLevelMap[level] === null`` the level is NOT
       supported.
-    - If ``level === "xhigh"`` AND ``model.thinkingLevelMap[level]`` is
-      ``undefined`` (Aelix: absent key), NOT supported.
+    - If ``level`` is ``"xhigh"`` or ``"max"`` AND
+      ``model.thinkingLevelMap[level]`` is ``undefined`` (Aelix: absent
+      key), NOT supported — the two top levels exist only where a map
+      names them (``max`` joined ``xhigh`` here in #433).
     - Otherwise (level mapped to a non-null value, OR level is in
-      EXTENDED_THINKING_LEVELS and absent and not ``xhigh``), supported.
+      EXTENDED_THINKING_LEVELS, absent, and neither ``xhigh`` nor
+      ``max``), supported.
 
     Pi parity short-circuit: non-reasoning models support ONLY ``"off"``.
     """
@@ -126,13 +156,13 @@ def get_supported_thinking_levels(model: Model) -> list[str]:
     out: list[str] = []
     for level in EXTENDED_THINKING_LEVELS:
         # Pi parity: ``thinkingLevelMap[level] === null`` → NOT supported.
-        # Pi parity: missing ``xhigh`` key → NOT supported.
+        # Pi parity: a missing ``xhigh`` or ``max`` key → NOT supported.
         if level in thinking_map:
             if thinking_map[level] is None:
                 continue
         else:
             # Key absent
-            if level == "xhigh":
+            if level in _EXPLICIT_ONLY_LEVELS:
                 continue
         out.append(level)
     return out
@@ -141,10 +171,14 @@ def get_supported_thinking_levels(model: Model) -> list[str]:
 def clamp_thinking_level(
     model: Model, level: str | ThinkingLevel | None
 ) -> str | None:
-    """Pi parity: ``models.ts:61-80`` ``clampThinkingLevel``.
+    """Pi parity: ``models.ts:61-80`` ``clampThinkingLevel`` (``:1255-1274`` at ``fdce48eb4``).
 
     Sprint 6f W2 (ADR-0065): replaces the Sprint 6b stub. Algorithm
-    matches Pi ``models.ts:61-80`` verbatim:
+    matches Pi ``models.ts:61-80`` verbatim, and ``pi@fdce48eb4`` has not
+    changed it — ``max`` (#433) needed no edit here because the scan walks
+    the list. What the scan now does with an old ``xhigh`` on a row that
+    names only ``max`` (21 of the 24 rows ADR-0266 reclassified) is step 3: it
+    finds ``max`` above it, so a saved ``xhigh`` keeps sending ``max``.
 
     1. If ``level`` is in :func:`get_supported_thinking_levels`, return
        it unchanged.

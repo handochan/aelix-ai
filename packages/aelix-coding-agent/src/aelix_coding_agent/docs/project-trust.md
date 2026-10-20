@@ -74,7 +74,7 @@ out of the fence and speak as the host. The whole block is capped at 32768 bytes
 `--no-approve`. The `--help` line used to read "Ignore project-local files for
 this run", which a user wanting *"do not let this cloned repo influence the
 agent"* would reasonably read as covering `AGENTS.md`. It does not, and the help
-text now says so (`cli/args.py:889-890`).
+text now says so (`cli/args.py:890-891`).
 
 **Trust is not a sandbox.** Answering "Trust" runs that repository's Python in
 your process, with your files and your credentials. It is a decision about

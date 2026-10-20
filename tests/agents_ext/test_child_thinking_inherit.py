@@ -250,7 +250,7 @@ def test_a_parent_at_off_hands_its_child_off() -> None:
     assert inherit_thinking(_profile(), "off").thinking == "off"
 
 
-_EVERY_LEVEL = ("off", "minimal", "low", "medium", "high", "xhigh")
+_EVERY_LEVEL = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 """Written out, not read off ``VALID_THINKING_LEVELS``: a validation that
 silently drops a level (``minimal`` treated as unset, Codex review round 1)
 would also shrink a parametrisation derived from the constant it edited."""
@@ -455,7 +455,8 @@ def _boom() -> str:
     "answer",
     [
         pytest.param(_boom, id="getter raises"),
-        pytest.param(lambda: "max", id="a level the child CLI would drop"),
+        # ``max`` was this case until #433 made it a level; ``maximum`` is not one.
+        pytest.param(lambda: "maximum", id="a level the child CLI would drop"),
         pytest.param(lambda: "", id="empty"),
         pytest.param(lambda: 3, id="not a string"),
         pytest.param(lambda: None, id="None"),

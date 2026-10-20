@@ -91,7 +91,7 @@ def strip_json_comments(content: str) -> str:
 # effective TypeBox behavior).
 
 _INPUT_LITERALS = ("text", "image")
-_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # A single schema error: ``(pi-dotted-instance-path, message)``.
 ValidationError = tuple[str, str]

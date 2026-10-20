@@ -147,7 +147,7 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -170,7 +170,8 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -223,7 +224,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "au.anthropic.claude-haiku-4-5-20251001-v1:0": {
       "id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -253,7 +257,7 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -306,7 +310,10 @@
         "cacheWrite": 4.125
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "deepseek.r1-v1:0": {
       "id": "deepseek.r1-v1:0",
@@ -413,7 +420,7 @@
       "baseUrl": "https://bedrock-runtime.eu-central-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -436,7 +443,8 @@
       "baseUrl": "https://bedrock-runtime.eu-central-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -489,7 +497,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
       "id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -539,7 +550,7 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -562,7 +573,8 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -615,7 +627,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "google.gemma-3-27b-it": {
       "id": "google.gemma-3-27b-it",
@@ -665,7 +680,8 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -718,7 +734,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "meta.llama3-1-70b-instruct-v1:0": {
       "id": "meta.llama3-1-70b-instruct-v1:0",
@@ -1443,7 +1462,7 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -1466,7 +1485,8 @@
       "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -1519,7 +1539,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "us.deepseek.r1-v1:0": {
       "id": "us.deepseek.r1-v1:0",
@@ -1693,7 +1716,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "jp.anthropic.claude-sonnet-5": {
       "id": "jp.anthropic.claude-sonnet-5",
@@ -1713,7 +1741,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "au.anthropic.claude-sonnet-5": {
       "id": "au.anthropic.claude-sonnet-5",
@@ -1733,7 +1765,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "global.openai.gpt-5.6-sol": {
       "id": "global.openai.gpt-5.6-sol",
@@ -1773,7 +1809,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "eu.anthropic.claude-opus-5": {
       "id": "eu.anthropic.claude-opus-5",
@@ -1793,7 +1833,11 @@
         "cacheWrite": 6.875
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "openai.gpt-5.6-terra": {
       "id": "openai.gpt-5.6-terra",
@@ -1833,7 +1877,12 @@
         "cacheWrite": 13.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "jp.anthropic.claude-haiku-4-5-20251001-v1:0": {
       "id": "jp.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1873,7 +1922,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "us.anthropic.claude-opus-5": {
       "id": "us.anthropic.claude-opus-5",
@@ -1893,7 +1946,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "openai.gpt-oss-120b": {
       "id": "openai.gpt-oss-120b",
@@ -1952,7 +2009,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "us.anthropic.claude-opus-4-8": {
       "id": "us.anthropic.claude-opus-4-8",
@@ -1972,7 +2034,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic.claude-sonnet-5": {
       "id": "anthropic.claude-sonnet-5",
@@ -1992,7 +2058,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "global.anthropic.claude-fable-5": {
       "id": "global.anthropic.claude-fable-5",
@@ -2012,7 +2082,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "global.anthropic.claude-opus-4-8": {
       "id": "global.anthropic.claude-opus-4-8",
@@ -2032,7 +2107,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "jp.anthropic.claude-opus-4-8": {
       "id": "jp.anthropic.claude-opus-4-8",
@@ -2052,7 +2131,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "jp.anthropic.claude-opus-5": {
       "id": "jp.anthropic.claude-opus-5",
@@ -2072,7 +2155,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "openai.gpt-5.6-luna": {
       "id": "openai.gpt-5.6-luna",
@@ -2112,7 +2199,11 @@
         "cacheWrite": 2.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "us.anthropic.claude-sonnet-5": {
       "id": "us.anthropic.claude-sonnet-5",
@@ -2132,7 +2223,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic.claude-opus-5": {
       "id": "anthropic.claude-opus-5",
@@ -2152,7 +2247,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "xai.grok-4.3": {
       "id": "xai.grok-4.3",
@@ -2232,7 +2331,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "global.openai.gpt-5.6-terra": {
       "id": "global.openai.gpt-5.6-terra",
@@ -2291,7 +2394,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "eu.anthropic.claude-opus-4-8": {
       "id": "eu.anthropic.claude-opus-4-8",
@@ -2311,7 +2418,11 @@
         "cacheWrite": 6.875
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "openai.gpt-5.6-sol": {
       "id": "openai.gpt-5.6-sol",
@@ -2351,7 +2462,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "us.xai.grok-4.6": {
       "id": "us.xai.grok-4.6",
@@ -2411,7 +2526,12 @@
         "cacheWrite": 13.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "xai.grok-4.6": {
       "id": "xai.grok-4.6",
@@ -2451,7 +2571,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic.claude-fable-5-1": {
       "id": "anthropic.claude-fable-5-1",
@@ -2471,7 +2596,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     }
   },
   "ant-ling": {
@@ -2738,7 +2868,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -2921,7 +3052,7 @@
       "baseUrl": "https://api.anthropic.com",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -2948,7 +3079,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -2975,7 +3107,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -3002,7 +3135,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -3115,7 +3249,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "claude-sonnet-5": {
       "id": "claude-sonnet-5",
@@ -3128,7 +3265,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -3167,7 +3305,8 @@
       },
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       }
     }
   },
@@ -4423,7 +4562,7 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/anthropic",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -4451,7 +4590,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -4524,7 +4664,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "gpt-4": {
       "id": "gpt-4",
@@ -5252,6 +5395,13 @@
       "maxTokens": 1048576,
       "compat": {
         "sendSessionAffinityHeaders": true
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "@cf/deepseek-ai/deepseek-v4-flash-0731": {
@@ -5274,6 +5424,13 @@
       "maxTokens": 1048576,
       "compat": {
         "sendSessionAffinityHeaders": true
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "@cf/qwen/qwen3-30b-a3b-fp8": {
@@ -5450,7 +5607,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -5480,7 +5637,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -5562,6 +5719,13 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     }
   },
@@ -5782,7 +5946,7 @@
         "minimal": null,
         "low": "high",
         "medium": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -6146,7 +6310,7 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -6175,7 +6339,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6243,7 +6408,10 @@
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 32000
+      "maxTokens": 32000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "gemini-2.5-pro": {
       "id": "gemini-2.5-pro",
@@ -6653,7 +6821,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6682,7 +6851,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6711,7 +6881,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6740,7 +6911,9 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "off": null,
+        "max": "max"
       },
       "input": [
         "text",
@@ -6801,7 +6974,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6831,7 +7005,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -6861,7 +7036,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -7206,7 +7382,9 @@
         "User-Agent": "GitHubCopilotChat/0.35.0"
       },
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "off": null,
+        "max": "max"
       }
     }
   },
@@ -13804,6 +13982,13 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "supportsStrictMode": false
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "deepseek-ai/deepseek-v4-pro": {
@@ -13834,6 +14019,13 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "supportsStrictMode": false
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "qwen/qwen3.5-397b-a17b": {
@@ -14349,6 +14541,13 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "supportsStrictMode": false
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "deepseek-ai/deepseek-v4-flash-0731": {
@@ -14379,6 +14578,13 @@
         "supportsReasoningEffort": false,
         "supportsStore": false,
         "supportsStrictMode": false
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "moonshotai/kimi-k3": {
@@ -15346,7 +15552,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": "none",
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15370,7 +15577,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": "none",
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15394,7 +15602,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": "none",
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15418,7 +15627,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": "none",
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15474,7 +15684,8 @@
       "maxTokens": 128000,
       "thinkingLevelMap": {
         "off": "none",
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       }
     }
   },
@@ -15721,7 +15932,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "xhigh": "xhigh",
-        "minimal": "low"
+        "minimal": "low",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15745,7 +15957,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "xhigh": "xhigh",
-        "minimal": "low"
+        "minimal": "low",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15769,7 +15982,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "xhigh": "xhigh",
-        "minimal": "low"
+        "minimal": "low",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15793,7 +16007,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "xhigh": "xhigh",
-        "minimal": "low"
+        "minimal": "low",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15897,7 +16112,7 @@
       "baseUrl": "https://opencode.ai/zen",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -15924,7 +16139,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -15997,7 +16213,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 64000
+      "maxTokens": 64000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "deepseek-v4-flash-free": {
       "id": "deepseek-v4-flash-free",
@@ -16015,7 +16234,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -16808,6 +17027,13 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "kimi-k2.5-free": {
@@ -16852,6 +17078,10 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsTemperature": false
+      },
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "gemini-3.5-flash-lite": {
@@ -16934,6 +17164,13 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "claude-sonnet-5": {
@@ -16954,7 +17191,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "glm-4.7-free": {
       "id": "glm-4.7-free",
@@ -17211,6 +17452,11 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsTemperature": false
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "claude-opus-5": {
@@ -17235,6 +17481,10 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsTemperature": false
+      },
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "gemini-3.7-flash": {
@@ -17298,6 +17548,13 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "gpt-6-astra": {
@@ -17321,7 +17578,8 @@
       "maxTokens": 128000,
       "thinkingLevelMap": {
         "off": null,
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "claude-fable-5-1": {
@@ -17346,6 +17604,11 @@
       "compat": {
         "forceAdaptiveThinking": true,
         "supportsTemperature": false
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "glm-5.3-flash": {
@@ -17425,7 +17688,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -17455,7 +17718,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -17525,7 +17788,7 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -18008,6 +18271,13 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "max": "max"
       }
     },
     "ox-alpha-free": {
@@ -18439,7 +18709,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -18462,7 +18732,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -18485,7 +18755,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -18508,7 +18779,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -18581,7 +18853,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "arcee-ai/trinity-large-preview": {
       "id": "arcee-ai/trinity-large-preview",
@@ -19042,7 +19317,8 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "xhigh": "xhigh",
+        "max": null
       },
       "input": [
         "text"
@@ -19072,7 +19348,8 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "xhigh": "xhigh",
+        "max": null
       },
       "input": [
         "text"
@@ -19102,7 +19379,8 @@
         "low": null,
         "medium": null,
         "high": "high",
-        "xhigh": "max"
+        "xhigh": "xhigh",
+        "max": null
       },
       "input": [
         "text"
@@ -23732,6 +24010,14 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": null
       }
     },
     "deepseek/deepseek-v4-flash-0731": {
@@ -23755,6 +24041,14 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": null
       }
     },
     "google/gemini-3-pro-image": {
@@ -24163,7 +24457,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-sonnet-5": {
       "id": "anthropic/claude-sonnet-5",
@@ -24183,7 +24481,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-4.8-fast": {
       "id": "anthropic/claude-opus-4.8-fast",
@@ -24203,7 +24505,11 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-fable-5": {
       "id": "anthropic/claude-fable-5",
@@ -24223,7 +24529,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-5-fast": {
       "id": "anthropic/claude-opus-5-fast",
@@ -24243,7 +24554,11 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-5": {
       "id": "anthropic/claude-opus-5",
@@ -24263,7 +24578,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "cohere/north-mini-code:free": {
       "id": "cohere/north-mini-code:free",
@@ -24709,6 +25028,14 @@
       "compat": {
         "supportsDeveloperRole": false,
         "thinkingFormat": "openrouter"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": null
       }
     },
     "inclusionai/ling-3.0-flash": {
@@ -24957,7 +25284,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "google/gemini-3.8-flash": {
       "id": "google/gemini-3.8-flash",
@@ -25159,6 +25491,14 @@
       "compat": {
         "requiresReasoningContentOnAssistantMessages": true,
         "thinkingFormat": "deepseek"
+      },
+      "thinkingLevelMap": {
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": null
       }
     },
     "inclusionai/ling-3.0-flash-fin": {
@@ -25238,7 +25578,8 @@
       "contextWindow": 1050000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "openai/gpt-6-astra": {
@@ -25261,7 +25602,8 @@
       "contextWindow": 1050000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       }
     },
     "~z-ai/glm-flash-latest": {
@@ -26807,7 +27149,7 @@
       "baseUrl": "https://ai-gateway.vercel.sh",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text",
@@ -26830,7 +27172,8 @@
       "baseUrl": "https://ai-gateway.vercel.sh",
       "reasoning": true,
       "thinkingLevelMap": {
-        "xhigh": "xhigh"
+        "xhigh": "xhigh",
+        "max": "max"
       },
       "input": [
         "text",
@@ -26903,7 +27246,10 @@
         "cacheWrite": 3.75
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "max": "max"
+      }
     },
     "arcee-ai/trinity-large-preview": {
       "id": "arcee-ai/trinity-large-preview",
@@ -29782,7 +30128,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-sonnet-5": {
       "id": "anthropic/claude-sonnet-5",
@@ -29802,7 +30152,11 @@
         "cacheWrite": 2.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-4.8-fast": {
       "id": "anthropic/claude-opus-4.8-fast",
@@ -29822,7 +30176,11 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-fable-5": {
       "id": "anthropic/claude-fable-5",
@@ -29842,7 +30200,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-5-fast": {
       "id": "anthropic/claude-opus-5-fast",
@@ -29862,7 +30225,11 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "anthropic/claude-opus-5": {
       "id": "anthropic/claude-opus-5",
@@ -29882,7 +30249,11 @@
         "cacheWrite": 6.25
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "zai/glm-5.2-fast": {
       "id": "zai/glm-5.2-fast",
@@ -31309,7 +31680,12 @@
         "cacheWrite": 12.5
       },
       "contextWindow": 1000000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
     },
     "google/gemini-3.8-flash": {
       "id": "google/gemini-3.8-flash",
@@ -32472,7 +32848,7 @@
         "low": "high",
         "medium": "high",
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"
@@ -32950,7 +33326,7 @@
         "low": "high",
         "medium": "high",
         "high": "high",
-        "xhigh": "max"
+        "max": "max"
       },
       "input": [
         "text"

@@ -54,7 +54,7 @@ DEFAULT_THINKING_LEVEL: Final[str] = "medium"
 DEFAULT_TOOL_CARD_MAX_LINES: Final[int] = 5
 
 # === 5 union string-literal types (Pi `settings-manager.ts:80-105`) ===
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 DefaultProjectTrust = Literal["ask", "always", "never"]
 """Pi parity: ``settings-manager.ts:61`` ``DefaultProjectTrust``. The persisted
@@ -144,6 +144,12 @@ class ThinkingBudgetsSettings:
     grows an ``xhigh`` entry from this change. (#250 Codex cross-review caught
     the CHANGELOG claiming it did; the round trip is pinned in
     ``tests/settings_manager/test_settings_types.py``.)
+
+    No ``max`` field (#433): pi's budgets stop at ``high`` too, and the budget
+    path sends ``max`` with ``xhigh``'s budget (``_anthropic_transforms.
+    clamp_reasoning``), so there is no sixth tier for a key to name. A
+    ``thinkingBudgets.max`` in ``settings.json`` is dropped on load like any
+    other key this table does not list.
     """
 
     minimal: int | None = None
