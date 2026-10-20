@@ -1,6 +1,6 @@
 # 0117. Compaction Summarizer — Real LLM Implementation (closes ADR-0023/0038 deferral)
 
-Status: Accepted (W4 shipped)
+Status: Accepted (W4 shipped) — 2026-10-21 note (#409): a retryable summary failure is retried first (ADR-0128, amendment 2026-10-21)
 Date: 2026-05-27
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -78,3 +78,13 @@ harness untouched — verified).
   swallowing; MEDIUM first_kept-entry-id reduction; `"\n"` join; docstring; auth
   guard; tool-result labels). MEDIUM max_tokens cap noted as an infra-gap divergence.
 - Live: real qwen3.6 summary, structurally correct, re-verified after the fixes.
+
+## Note (2026-10-21, #409)
+
+"An `AssistantErrorEvent` from the provider raises `AgentHarnessError("compaction", …)`
+immediately" now holds per request: a summary request the turn would retry (a provider's
+`502`, a transient OAuth refresh failure) is sent again first, on the turn's classification,
+`retry` settings and `auto_retry_start` / `auto_retry_end` events, and the raise above is what
+a request that is not retried ends with, unchanged. The split-turn and branch summaries
+retry the same way. ADR-0128, amendment 2026-10-21.
+

@@ -27,6 +27,7 @@ from aelix_ai.streaming import Model
 from aelix_agent_core.session.entries import BranchSummaryEntry, SessionTreeEntry
 
 if TYPE_CHECKING:
+    from aelix_agent_core.session.compaction import SummaryAttempt, SummaryRetry
     from aelix_agent_core.session.session import Session
 
 
@@ -198,6 +199,7 @@ async def generate_branch_summary(
     *,
     replace_instructions: bool | None = None,
     _summarizer_override: BranchSummarizerOverride | None = None,
+    retry: SummaryRetry | None = None,
 ) -> str:
     """Pi ``generateBranchSummary`` (``branch-summarization.ts:189-262``).
 
@@ -222,25 +224,20 @@ async def generate_branch_summary(
       ``details`` round-trip stays on the compaction path).
     - ``max_tokens = 2048`` cap via :class:`SimpleStreamOptions.max_tokens`.
 
+    ``retry`` (#409) runs the summarization request and may send it again, as
+    pi's ``completeSummarization`` does with ``settings.retry``
+    (``branch-summarization.ts:348-351`` @ fdce48eb4); the harness passes the
+    turn's retry (``_SummaryRetry``). ``None`` sends it once, as before.
+
     Known bounded divergence from Pi (deferred, not silently dropped):
 
     - no ``prepareBranchEntries`` token-budget backward walk; all entries are
       included (a separate fidelity concern not named in P0 #6).
     """
 
-    from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
-    from aelix_ai.streaming import (
-        AssistantDoneEvent,
-        AssistantErrorEvent,
-        Context,
-        SimpleStreamOptions,
-        TextDeltaEvent,
-        stream_simple,
-    )
-
     from aelix_agent_core.harness.core import AgentHarnessError
     from aelix_agent_core.session.compaction import (
-        SUMMARIZATION_SYSTEM_PROMPT,
+        _attempt_summary,
         _serialize_conversation,
         compute_file_lists,
         create_file_ops,
@@ -289,11 +286,43 @@ async def generate_branch_summary(
         instructions = BRANCH_SUMMARY_PROMPT
     user_text = f"<conversation>\n{serialized}\n</conversation>\n\n{instructions}"
 
-    auth = get_api_key_and_headers(model)
-    if hasattr(auth, "__await__"):
-        auth = await auth
-    # Coerce non-dict (e.g. None from a buggy auth callback) to empty.
-    auth = auth if isinstance(auth, dict) else {}
+    summary = await _attempt_summary(
+        retry, _request_branch_summary, model, get_api_key_and_headers, user_text
+    )
+
+    # P0 #6: append the file-op tail (pi ``summary += formatFileOperations(...)``)
+    # before the preamble prepend, so the returned str carries the file lists.
+    return BRANCH_SUMMARY_PREAMBLE + summary + file_ops_tail
+
+
+async def _request_branch_summary(
+    model: Model,
+    get_api_key_and_headers: Callable[..., Any],
+    user_text: str,
+    attempt: SummaryAttempt | None,
+) -> str:
+    """One branch-summary request: what it failed on goes into ``attempt`` (#409)."""
+
+    from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+    from aelix_ai.streaming import (
+        AssistantDoneEvent,
+        AssistantErrorEvent,
+        Context,
+        SimpleStreamOptions,
+        TextDeltaEvent,
+        stream_simple,
+    )
+
+    from aelix_agent_core.harness.core import AgentHarnessError
+    from aelix_agent_core.session.compaction import (
+        SUMMARIZATION_SYSTEM_PROMPT,
+        _provider_error,
+        _summary_auth,
+        _summary_validate,
+    )
+
+    # Coerces a non-dict (e.g. None from a buggy auth callback) to empty.
+    auth = await _summary_auth(model, get_api_key_and_headers, attempt)
 
     context = Context(
         system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
@@ -303,7 +332,7 @@ async def generate_branch_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
-        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
+        validate_request=_summary_validate(auth, attempt),
         # P0 #6: pi ``generateBranchSummary`` caps the call at maxTokens=2048.
         max_tokens=2048,
     )
@@ -320,7 +349,8 @@ async def generate_branch_summary(
             # partial accumulated text is never returned as a summary.
             raise AgentHarnessError(
                 "invalid_state",
-                getattr(event, "error_message", None) or "branch summary failed",
+                _provider_error(attempt, event.error, getattr(event, "error_message", None))
+                or "branch summary failed",
             )
         elif isinstance(event, AssistantDoneEvent):
             done_message = event.message
@@ -329,7 +359,7 @@ async def generate_branch_summary(
         if done_message.stop_reason == "error":
             raise AgentHarnessError(
                 "invalid_state",
-                done_message.error_message or "branch summary failed",
+                _provider_error(attempt, done_message, done_message.error_message) or "branch summary failed",
             )
         # Prefer the terminal message's TextContent (authoritative) over the
         # delta accumulation when present (Pi joins text parts with "\n").
@@ -340,10 +370,7 @@ async def generate_branch_summary(
         ]
         if text_blocks:
             summary = "\n".join(text_blocks)
-
-    # P0 #6: append the file-op tail (pi ``summary += formatFileOperations(...)``)
-    # before the preamble prepend, so the returned str carries the file lists.
-    return BRANCH_SUMMARY_PREAMBLE + summary + file_ops_tail
+    return summary
 
 
 __all__ = [

@@ -738,13 +738,16 @@ async def compact(
     custom_instructions: str | None = None,
     *,
     _summarizer_override: SummarizerOverride | None = None,
+    retry: SummaryRetry | None = None,
 ) -> CompactResult:
     """Pi ``compact`` (``compaction.ts:626-705``).
 
     Calls into the provider via ``get_api_key_and_headers`` per P-14 (no
     summarizer callback on :class:`AgentHarnessOptions`). Test fixtures can
     short-circuit the LLM call via ``_summarizer_override`` (Aelix-additive
-    test-only seam documented in ADR-0023).
+    test-only seam documented in ADR-0023). ``retry`` (#409) runs each
+    summarization request and may send it again (``_SummaryRetry``,
+    ``harness/core.py``); ``None`` sends each once, as before.
 
     Raises :class:`AgentHarnessError("invalid_state", ...)` when no override
     is supplied and ``get_api_key_and_headers`` is ``None``.
@@ -771,21 +774,21 @@ async def compact(
             "compact requires options.get_api_key_and_headers (Phase 4 owner)",
         )
 
-    # Pi parity (``compaction.ts`` ``compact``): on a split turn, summarize the
-    # history prefix and the turn prefix concurrently (asyncio.gather), then
-    # combine with the verbatim separator. When the history is empty (the cut
-    # is at the very start of a fresh turn) pi substitutes "No prior history.".
+    # Pi (``compaction.ts`` ``compact``): on a split turn, summarize the history
+    # prefix and the turn prefix - here concurrently (``_gather_summaries``; pi at
+    # fdce48eb4 awaits one, then the other) - and combine them with the verbatim
+    # separator; an empty history (the cut opens a fresh turn) is "No prior history.".
     if preparation.is_split_turn and preparation.turn_prefix_messages:
         if preparation.messages_to_summarize:
-            history_coro = _generate_summary(
-                model, get_api_key_and_headers, preparation, custom_instructions
+            history_coro = _attempt_summary(
+                retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions
             )
         else:
             history_coro = _resolved("No prior history.")
-        turn_prefix_coro = _generate_turn_prefix_summary(
-            model, get_api_key_and_headers, preparation.turn_prefix_messages
+        turn_prefix_coro = _attempt_summary(
+            retry, _generate_turn_prefix_summary, model, get_api_key_and_headers, preparation.turn_prefix_messages
         )
-        history_summary, turn_prefix_summary = await asyncio.gather(
+        history_summary, turn_prefix_summary = await _gather_summaries(
             history_coro, turn_prefix_coro
         )
         summary = (
@@ -793,8 +796,8 @@ async def compact(
             f"**Turn Context (split turn):**\n\n{turn_prefix_summary}"
         )
     else:
-        summary = await _generate_summary(
-            model, get_api_key_and_headers, preparation, custom_instructions
+        summary = await _attempt_summary(
+            retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions
         )
 
     file_ops = preparation.file_ops or create_file_ops()
@@ -809,7 +812,7 @@ async def compact(
 
 
 async def _resolved(value: str) -> str:
-    """Awaitable wrapper so :func:`asyncio.gather` can mix a constant with a
+    """Awaitable wrapper so :func:`_gather_summaries` can mix a constant with a
     real coroutine (pi's ``Promise.resolve(ok("No prior history."))``)."""
 
     return value
@@ -836,6 +839,7 @@ async def _generate_summary(
     get_api_key_and_headers: Callable[..., Any],
     preparation: CompactionPreparation,
     custom_instructions: str | None,
+    attempt: SummaryAttempt | None = None,
 ) -> str:
     """Pi ``generateSummary`` (``compaction.ts:541-606``).
 
@@ -876,11 +880,7 @@ async def _generate_summary(
     if custom_instructions:
         user_text += f"\n\nAdditional focus: {custom_instructions}"
 
-    auth = get_api_key_and_headers(model)
-    if inspect.isawaitable(auth):
-        auth = await auth
-    # Coerce non-dict (e.g. None returned by a buggy auth callback) to empty.
-    auth = auth if isinstance(auth, dict) else {}
+    auth = await _summary_auth(model, get_api_key_and_headers, attempt)
 
     context = Context(
         system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
@@ -893,7 +893,7 @@ async def _generate_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
-        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
+        validate_request=_summary_validate(auth, attempt),
         max_tokens=_summary_max_tokens(model, 0.8),
     )
 
@@ -909,7 +909,7 @@ async def _generate_summary(
             # partial accumulated text is never silently treated as a summary.
             raise AgentHarnessError(
                 "compaction",
-                getattr(event, "error_message", None) or "summarization failed",
+                _provider_error(attempt, event.error, getattr(event, "error_message", None)) or "summarization failed",
             )
         elif isinstance(event, AssistantDoneEvent):
             done_message = event.message
@@ -920,7 +920,7 @@ async def _generate_summary(
         if done_message.stop_reason == "error":
             raise AgentHarnessError(
                 "compaction",
-                done_message.error_message or "summarization failed",
+                _provider_error(attempt, done_message, done_message.error_message) or "summarization failed",
             )
         # Prefer the terminal message's accumulated TextContent (authoritative)
         # over the delta accumulation when present.
@@ -942,6 +942,7 @@ async def _generate_turn_prefix_summary(
     model: Model,
     get_api_key_and_headers: Callable[..., Any],
     messages: list[AgentMessage],
+    attempt: SummaryAttempt | None = None,
 ) -> str:
     """Pi ``generateTurnPrefixSummary`` (``compaction.ts``).
 
@@ -950,7 +951,9 @@ async def _generate_turn_prefix_summary(
     threading — pi keeps it minimal). Caps output at
     ``floor(0.5 * reserveTokens)`` (clamped by ``model.max_tokens`` when > 0)
     via :class:`SimpleStreamOptions.max_tokens` (P0 #6). Shares the
-    ``AssistantErrorEvent``-raises + terminal-text-preferred event loop.
+    ``AssistantErrorEvent``-raises + terminal-text-preferred event loop. Both
+    summarizers record what one request failed on in ``attempt`` (#409), for
+    the caller's retry (:class:`SummaryAttempt`).
     """
 
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
@@ -971,10 +974,7 @@ async def _generate_turn_prefix_summary(
         f"{TURN_PREFIX_SUMMARIZATION_PROMPT}"
     )
 
-    auth = get_api_key_and_headers(model)
-    if inspect.isawaitable(auth):
-        auth = await auth
-    auth = auth if isinstance(auth, dict) else {}
+    auth = await _summary_auth(model, get_api_key_and_headers, attempt)
 
     context = Context(
         system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
@@ -984,7 +984,7 @@ async def _generate_turn_prefix_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
-        validate_request=auth.get("validate") if callable(auth.get("validate")) else None,
+        validate_request=_summary_validate(auth, attempt),
         max_tokens=_summary_max_tokens(model, 0.5),
     )
 
@@ -997,7 +997,7 @@ async def _generate_turn_prefix_summary(
         elif isinstance(event, AssistantErrorEvent):
             raise AgentHarnessError(
                 "compaction",
-                getattr(event, "error_message", None)
+                _provider_error(attempt, event.error, getattr(event, "error_message", None))
                 or "turn-prefix summarization failed",
             )
         elif isinstance(event, AssistantDoneEvent):
@@ -1007,7 +1007,7 @@ async def _generate_turn_prefix_summary(
         if done_message.stop_reason == "error":
             raise AgentHarnessError(
                 "compaction",
-                done_message.error_message or "turn-prefix summarization failed",
+                _provider_error(attempt, done_message, done_message.error_message) or "turn-prefix summarization failed",
             )
         text_blocks = [
             block.text
@@ -1194,6 +1194,156 @@ def get_latest_compaction_boundary_ms(branch_entries: list[Any]) -> float | None
     from aelix_agent_core.session.context import _iso_to_unix_ms
 
     return _iso_to_unix_ms(getattr(entry, "timestamp", "") or "")
+
+
+# === #409 — a summarization request its caller may send again ================
+#
+# pi wraps every compaction and branch-summary request in ``retryAssistantCall``
+# with the session's ``settings.retry`` (``completeSummarization``,
+# ``compaction/compaction.ts:611-638`` @ fdce48eb4), and its request resolves
+# auth on each call, so a transient OAuth refresh failure is retried there too.
+# Here one request is a ``(attempt) -> summary`` coroutine function: it raises
+# on failure and records in ``attempt`` what it failed on - the facts the
+# harness's retry (``_SummaryRetry``, ``harness/core.py``) decides on, kept
+# apart from the exception's text, as #379 keeps a setup failure's answer.
+
+
+@dataclass
+class SummaryAttempt:
+    """What one summarization request failed on (#409).
+
+    ``auth_failed``: the ``get_api_key_and_headers`` callback raised, and
+    ``auth_retry_reason`` is the non-empty ``retry_reason`` string it raised
+    with (#379: a stored OAuth refresh that failed on a transient cause), else
+    ``None``. ``provider_message``: the provider's failed message - an error
+    event's ``error`` (pi's ``{type: "error", reason, error}``) or a done message
+    with ``stop_reason="error"`` - the message the turn's loop classifies for the
+    same answer (``loop.py``: ``final = event.error``), so the retry decision
+    reads its ``stop_reason`` and ``error_message``, not the event's top-level
+    text (#409 review round 2: an aborted stream is never retried, and an
+    error event without a top-level ``error_message`` is decided as the turn
+    decides it).
+    ``validate_failed``: the auth snapshot's closing ``validate`` check raised
+    (#365: never retried, even when an adapter turns the raise into an error
+    event). All unset: the request raised something else, or produced an
+    empty summary.
+    """
+
+    auth_failed: bool = False
+    auth_retry_reason: str | None = None
+    provider_message: Any = None
+    validate_failed: bool = False
+
+
+#: Runs a request (given a fresh :class:`SummaryAttempt`, it returns the summary
+#: text or raises) and decides whether to send it again; returns its summary or
+#: raises its last failure.
+SummaryRetry = Callable[[Callable[["SummaryAttempt"], Awaitable[str]]], Awaitable[str]]
+
+
+async def _attempt_summary(
+    retry: SummaryRetry | None, request: Callable[..., Awaitable[str]], *args: Any
+) -> str:
+    """``request(*args, attempt)``: sent once, or as ``retry`` decides (#409).
+
+    ``request`` takes the :class:`SummaryAttempt` it records its failure in as
+    its last argument (``None`` when nothing retries).
+    """
+
+    if retry is None:
+        return await request(*args, None)
+    return await retry(lambda attempt: request(*args, attempt))
+
+
+async def _summary_auth(
+    model: Model,
+    get_api_key_and_headers: Callable[..., Any],
+    attempt: SummaryAttempt | None,
+) -> dict[str, Any]:
+    """Resolve one request's auth, recording a raise in ``attempt`` (#409).
+
+    The raise itself propagates unchanged, so a request that is not retried
+    fails exactly as before. A non-dict answer (``None`` from a buggy
+    callback) is an empty dict, as before.
+    """
+
+    try:
+        auth = get_api_key_and_headers(model)
+        if inspect.isawaitable(auth):
+            auth = await auth
+    except Exception as exc:
+        if attempt is not None:
+            attempt.auth_failed = True
+            reason = getattr(exc, "retry_reason", None)
+            attempt.auth_retry_reason = reason if isinstance(reason, str) and reason else None
+        raise
+    return auth if isinstance(auth, dict) else {}
+
+
+def _summary_validate(
+    auth: dict[str, Any], attempt: SummaryAttempt | None
+) -> Callable[[Model], Any] | None:
+    """The auth snapshot's closing check, marking ``attempt`` when it fails (#409)."""
+
+    validate = auth.get("validate")
+    if not callable(validate):
+        return None
+    if attempt is None:
+        return validate
+    record = attempt
+
+    async def checked(request_model: Model) -> None:
+        try:
+            result = validate(request_model)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            record.validate_failed = True
+            raise
+
+    return checked
+
+
+def _provider_error(attempt: SummaryAttempt | None, message: Any, error: Any) -> Any:
+    """Record the provider's failed ``message`` in ``attempt``; hand back ``error`` (#409).
+
+    ``error`` is the text the summarizer raises with, unchanged since before
+    #409; ``message`` is what the retry decides on (:class:`SummaryAttempt`).
+    Anything but an :class:`~aelix_ai.messages.AssistantMessage` is recorded as
+    no message, which is never retried.
+    """
+
+    from aelix_ai.messages import AssistantMessage
+
+    if attempt is not None:
+        attempt.provider_message = message if isinstance(message, AssistantMessage) else None
+    return error
+
+
+async def _gather_summaries(
+    first: Awaitable[str], second: Awaitable[str]
+) -> tuple[str, str]:
+    """``asyncio.gather`` of a split turn's two summaries (#409).
+
+    When one fails (or this is cancelled) the other is cancelled and awaited
+    before the failure propagates: a sibling still retrying must not outlive
+    the compaction that already failed - sending requests and emitting
+    ``auto_retry_*`` after its ``compaction_end``. Plain ``gather`` left it
+    running. The failure that propagates is the one ``gather`` reports.
+    """
+
+    tasks = (asyncio.ensure_future(first), asyncio.ensure_future(second))
+    try:
+        history, turn_prefix = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.wait(tasks)
+        for task in tasks:
+            if not task.cancelled():
+                task.exception()  # retrieved: a second failure is not logged as lost
+        raise
+    return history, turn_prefix
 
 
 __all__ = [

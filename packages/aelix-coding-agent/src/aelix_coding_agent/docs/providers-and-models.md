@@ -400,7 +400,10 @@ shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
 pi's same events spell them `maxAttempts`, `delayMs`, `errorMessage` and
 `finalError`. A context overflow is not retried this way: it is compacted
 instead. When the retries run out on the run's last prompt, `-p` and
-`--mode json` exit 1 ([exit codes](getting-started.md#exit-codes)).
+`--mode json` exit 1 ([exit codes](getting-started.md#exit-codes)). The summary
+request of a compaction (`/compact` or an automatic one) or of a branch summary
+retries the same failures and a transient OAuth refresh failure, with the same
+settings and events; Esc cancels its wait during `/compact` too.
 
 The `retry` block of `settings.json` (`~/.aelix/agent/settings.json`; a trusted
 project's `.aelix/settings.json` overrides it key by key) sets how, with pi's

@@ -1,6 +1,6 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
-Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them
+Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events
 Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
 for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
@@ -499,3 +499,257 @@ throwaway worktree (`r2/kit/sabotage_r2.py`, `r2/logs/sabotage_r2.out`; 1008 pas
 unmutated over the auth, retry, loop and renderer rows): no `520` 16 red, no `524` 10,
 `529b997e`'s five 26, round 1's whole-number rule 14, digit-only boundaries 8, `\b` 15, the
 lookbehind alone 12, the lookahead alone 11, a `[0-9a-z]` class without `_` 13; 0 survive.
+
+## Amendment (2026-10-21, #409) — compaction and branch summaries retry as the turn does
+
+Pi reference: `earendil-works/pi@fdce48eb4` (2026-10-20): `completeSummarization`
+wraps every compaction and branch-summary request in `retryAssistantCall` with the
+session's `settings.retry` (`packages/coding-agent/src/core/compaction/compaction.ts:611-638`,
+`branch-summarization.ts:348-351`; `_runDefaultCompaction` and
+`_summarizationRetryCallbacks`, `agent-session.ts:2749-2772`, `:3745-3774`;
+`retryAssistantCall` and `isRetryableAssistantError`, `packages/ai/src/utils/retry.ts:204-254`,
+`:265-270`). Its streamFn resolves auth on every call, so a transient OAuth refresh
+failure is retried there too.
+
+### What was measured on `7faf4b9a`
+
+The summarizers (`session/compaction.py` `_generate_summary`,
+`_generate_turn_prefix_summary`; `session/branch_summarization.py`
+`generate_branch_summary`) called `get_api_key_and_headers` and the provider once.
+In-process (`.omc/probes/409-live/impl/probe_repro.py`, `probe_repro.base.out`): a
+provider `502` once failed `/compact` (1 request), a split turn's compaction, a
+`navigate_tree(summarize=True)` summary and the threshold compaction inside `prompt()`
+(which then raised the `502` out of a turn that had succeeded); the overflow
+recovery's compaction failed and the turn was not re-run; an auth callback raise
+carrying #379's `retry_reason` failed `/compact` at once. A real `aelix --mode rpc`
+against a local OpenAI-compatible server whose summary request answered `502` once
+(`x-should-retry: false`, so each answer is one request; `rpc_probe_409.base.out`):
+the rpc `compact` answered `success: false` after one summary request, and the
+threshold compaction of a prompt failed the same way; no compaction entry was
+written. The turn retried the same `502`.
+
+### Decision
+
+Each summary request - the compaction's history summary, a split turn's
+turn-prefix summary (each with its own budget, as pi gives each call its own),
+and a branch summary - retries on the turn's decision, read at each failure:
+
+- **Classification.** The provider's failed message through
+  `AgentHarness._is_retryable_error` - the message the turn's loop classifies for
+  the same answer (an error event's `error`, or a done message whose
+  `stop_reason` is `"error"`), so its `stop_reason` must be `"error"` (an aborted
+  stream is never retried) and the turn's pattern reads its `error_message`, a
+  context overflow excluded (review round 2; round 1 read the event's top-level
+  text). An auth callback raise only when it carries a non-empty `str`
+  `retry_reason` (#379: a stored OAuth refresh that failed on a transient cause);
+  any other raise propagates at once, unchanged. A failed closing auth check
+  (`validate`, #365) is never retried, even when an adapter turns it into an error
+  event whose text reads retryable. An empty summary is not retried. The request
+  records what it failed on in a `SummaryAttempt` (`session/compaction.py`); the
+  decision reads that record, not the exception's text, as #379 reads the harness's
+  record of a setup failure.
+- **Budget and settings.** `_auto_retry_policy` and `_retry_enabled` (#408):
+  `retry.enabled` (else the harness toggle), `retry.maxRetries`,
+  `retry.baseDelayMs`, `retry.maxAgentDelayMs`, the `_AUTO_RETRY_*` constants as
+  fallback.
+- **Events.** The turn's: `auto_retry_start` before each wait, one
+  `auto_retry_end` when a sequence ends (`success` true when a later request
+  produced the summary; `Retry cancelled` for an aborted wait); with
+  `maxRetries: 0` none. pi emits `summarization_retry_scheduled` /
+  `_attempt_start` / `_finished` instead and draws them with the turn's retry
+  indicator; aelix's TUI, `--mode json` and rpc already show the turn's events,
+  so a summary's retry looks the same in every mode - a divergence in the wire
+  names (ADR-0235). The TUI draws the retried error first while "Compacting
+  context…" is up (`✖ <error>`, as the turn's failed message draws it, and as pi's
+  `showError` does), then the countdown.
+- **Aborts.** `abort()`, `abort_retry()` and an extension's `ctx.abort()` end a
+  wait at once, and nothing is sent again after one made while a summary request
+  is in flight: the summary retry's abort event is
+  `AgentHarness._retry_abort_event` for the length of the summarization call.
+  Under a prompt's claim (the threshold and overflow compactions) an earlier
+  abort of that prompt counts too; in a public `compact()` / `navigate_tree()`
+  `_abort_requested` may still describe a prompt that already returned, so it is
+  not read there. The TUI's interrupt keys reach the swapped handler for the
+  length of any retry countdown, running or not (`AelixChrome.interrupt_armed`):
+  a manual `/compact` runs outside the `set_running` turn wrapper, where Esc was
+  inert and Ctrl+C armed the exit window while the countdown said "Esc to cancel".
+  A split turn's countdown stands for both of its summaries: it stays (and the
+  keys stay armed) while either is in its wait (review round 2). Once a wait has
+  run out, the re-sent request's line reads `⟳ Retrying (N/M) now… Esc to
+  interrupt` only over a turn's own request, which Esc's `abort()` cancels; over
+  a summary request it reads `⟳ Retrying (N/M) now…` - nothing cancels a summary
+  request in flight (#347).
+- **What a request that is not retried does** - its budget ran out, retries are
+  off, the error is not retryable, or a wait was aborted: its own failure
+  propagates exactly as before #409 (`AgentHarnessError("compaction")` /
+  `("invalid_state")` with the provider's text, or the auth callback's raise).
+- A split turn's two summaries still run concurrently; when one fails the other is
+  cancelled and awaited (`_gather_summaries`) - plain `gather` left a sibling
+  retrying after the compaction had failed.
+
+Every entry point goes through `AgentHarness.compact()` or `navigate_tree()`: manual
+`/compact`, rpc `compact`, an extension's `ctx.compact()`, the threshold and
+overflow compactions inside `prompt()`, and an extension's `navigate_tree`. The
+session-level `compact()` / `generate_branch_summary()` take an optional `retry`;
+without one they send each request once, as before.
+
+### Choices made under the decision (ADR-0235)
+
+- **Not covered:** an abort made before the first summary request of a public
+  `compact()` / `navigate_tree()` (during its `session_before_compact` hooks) is
+  not seen by the retry; aelix has no compaction abort at all, so it did not stop
+  the compaction before either (#347). An abort does not cancel a summary request
+  in flight, for the same reason - it only prevents the next one.
+- **pi's newer pattern and its quota exclusions** (#414's "Not changed") apply to
+  the summaries as to the turn: the classification is the turn's.
+- No gated citation moves (`check_citations.py --check`: 931 gated, none drifted):
+  the new code sits at the ends of `harness/core.py`, `session/compaction.py` and
+  `tui/shell.py` and of the chrome class, and the edits above a cited line keep the
+  count of lines above it (lines between two edits of `session/compaction.py`
+  shift by up to four, where nothing cites them).
+- **pi runs a split turn's two summaries one after the other** at `fdce48eb4`
+  (`compaction.ts:980-1015`: the history summary is awaited, then the prefix
+  summary), so its retry indicator never holds two sequences. aelix still runs
+  them concurrently (`_gather_summaries`, the `asyncio.gather` ADR-0142 §2 took from
+  an older pi's `Promise.all` at `734e08ed`), each with its own budget, so its TUI
+  counts the sequences that started and have not ended and the waits still ahead
+  (`tui/shell.py` `_RetryWaits`). Making them sequential is a follow-up, not this
+  amendment.
+- **Not changed:** inside a turn, the working row of a threshold or overflow
+  compaction keeps the turn's own `(Ns · esc to cancel)` hint, which predates
+  #409. Esc there is the turn's `abort()`: it stops any further summary retry
+  (the row for an abort made while the request was failing pins that), but the
+  summary request in flight runs to its end (#347) - measured in a real TUI, the
+  threshold compaction completed after that Esc (`r2/out/tui-after/threshold.screen`).
+
+### Tests, sabotage and live runs
+
+`tests/test_summary_retry_409.py` (35 rows: each classification, the settings,
+the events and their order, each abort route during the wait and during the
+request, a finished prompt's abort, the earlier abort under a prompt's claim, the
+threshold and overflow compactions in `prompt()`, a split turn and its prefix
+summary's done-message error, the sibling cancelled in its wait and in its retried
+request, a branch summary), `tests/cli/test_summary_refresh_retry_409.py` (12:
+the real registry, CLI auth callback and Codex / Anthropic / Copilot refresh code
+over `httpx.MockTransport` - a refresh `502` or a refused connection retried with
+only the refreshed token reaching the model, a `401` failing at once with today's
+message, a branch summary) and four TUI rows in `tests/tui/test_run_tui_smoke.py`.
+On `7faf4b9a` 30 of the 47 fail (`red_on_base.full.out`) and the four TUI rows fail
+(`red_on_base_tui.out`); the 17 that pass are the controls - what must still fail at
+once (an auth raise without a `retry_reason`, a `401`, an overflow, a failed closing
+check, an empty summary, `retry.enabled: false`, the toggle, `maxRetries: 0`, an abort
+during the request, a refused refresh) and the session API without a retry.
+Round 1's mutations, in a throwaway worktree (`sabotage_409.py`,
+`sabotage_409.out`, `sabotage_409.rerun.out`), each alone - 38 of them: the retry
+not passed (harness, `compact()`, `generate_branch_summary`, each split-turn
+summary), the auth raise or its `retry_reason` not recorded, any truthy
+`retry_reason`, the closing check by its text, every auth raise retried, the regex
+without the overflow exclusion, the provider's error not recorded (in the shared
+helper; the history summary's done message; the prefix summary's done message; the
+branch summary's error event), no abort check, a wait that sleeps through an abort,
+the turn's wait helper (reads a finished prompt's abort), no carry of the prompt's
+earlier abort, a carry without the claim, the event never released or never
+registered, `retry.enabled` ignored, one retry too many, no `auto_retry_start`, no
+`auto_retry_end` on success or on a cancel, plain `gather`, no doubling,
+`max_attempts` not the policy's, and in the TUI each key not armed, the countdown
+not arming, the hand-back or the end leaving the keys armed, the error line for
+every retry, none, or unbounded. The first run turned 36 red and left two (the
+cancel during a retried request, the prefix summary's done-message error); a row
+was added for each and both then went red. The branch summary's done-message
+record was not among them - review round 2 found it unpinned (below).
+
+Live, with the kits in `.omc/probes/409-live/impl/`: the real `aelix --mode rpc`
+(`rpc_probe_409.after.out`) answered the manual `compact` `success: true` after
+`auto_retry_start (1, 3, 50)` and `auto_retry_end (true, 1)`, two summary
+requests and one compaction entry; with `baseDelayMs: 30000` an rpc `abort` sent
+at `auto_retry_start` ended the compact 0.03 s later (`Retry cancelled`, one
+summary request); the threshold compaction of the third prompt retried the same
+way and wrote its entry. The real TUI (`tui_probe_409.py`, pty + pyte;
+`tui-tree/{ok,esc,turn}.screen`): `/compact` drew `✖ Error code: 502 …`, `⟳
+Retrying (1/3) in 3s… Esc to cancel` over `Compacting context…`, then `✓ Retry
+succeeded (attempt 1)` and the summary panel - the turn's own retry draws the same
+`✖` line and countdown; Esc during the countdown drew `✖ Retry failed: Retry
+cancelled` and `✖ compact failed: Error code: 502 …` with no second request; with the
+chrome's arming removed (`tui-nochrome/esc.screen`) the same Esc did nothing, the
+countdown ran out and the retry was sent.
+
+### Review round 2 (2026-10-21)
+
+The verify and cross-review passes (`.omc/probes/409-live/verify/`,
+`cross-claude/`) found six things; each was reproduced on round 1's commit
+before it was changed (`.omc/probes/409-live/r2/`).
+
+1. **After a countdown the TUI promised a key that did nothing.** In a real
+   `/compact` (pty, `p6_live_tui.before.inflight.screen`) the re-sent request
+   showed `⟳ Retrying (1/3) now… Esc to interrupt`; Esc changed nothing and
+   Ctrl+C armed the exit window. The line now makes that promise only over a turn's
+   own request (`_retry_now_label`); after the fix the same run shows
+   `⟳ Retrying (1/3) now…` (`p6_live_tui.after.inflight.screen`). The threshold
+   compaction inside a turn (`tui-after/threshold.screen`) shows it too, and the
+   turn's own retry still shows `Esc to interrupt`.
+2. **A split turn's first `auto_retry_end` cleared the countdown and disarmed Esc
+   while the other summary was still waiting.** Live (`p6_live_tui.before.split.screen`):
+   `Retry succeeded` with no countdown, Esc pressed 3.1 s before the prefix
+   summary's next request, which still went out. The TUI now counts sequences
+   (opened by an attempt-1 `auto_retry_start`, closed by an `auto_retry_end`) and
+   the waits still ahead (`_RetryWaits`): after the fix the countdown stays, Esc
+   cancels it (`Retry cancelled`, `compact failed`, no third request;
+   `p6_live_tui.after.split.screen`). Its corner - the latest countdown runs out
+   while the other sequence's earlier, longer wait still runs - was measured the
+   same way: before, `now… Esc to interrupt` and an Esc that let the history
+   summary's third request out (`before.corner`); after, the longer wait's
+   countdown takes over and Esc ends it (`after.corner`). A failed end still closes
+   every countdown: a summary sequence fails only when its compaction does.
+   A wait with under 50 ms left counts as over (`_RETRY_WAIT_MARGIN_S`): a
+   py<=3.12 Windows clock can wake a countdown up to 15.6 ms early, and two waits
+   begun together would otherwise hand the countdown back and forth. **No row pins
+   that margin** - it only matters on a Windows clock that wakes early; with it
+   removed (`deadline > now`) the split-turn and hand-over rows still pass on macOS
+   (`T5_no_margin` survived, `.omc/probes/409-live/r2verify/out/sabotage_r2verify.out`).
+   Read it as a reasoned guard, not a tested behaviour.
+3. **Three wrong implementations survived every row** (verify, `sabotage.out`):
+   C21, one budget shared by a split turn's two requests (the verify kit's entry
+   left out the write, so it mutated nothing; with the write it was already red on
+   round 1's split-turn row through the attempt numbers); B2, the branch
+   summarizer's done-message error not recorded; C22, the policy read once per
+   compaction. Each now has a row that goes red: both split-turn summaries retry
+   their one `502` under `maxRetries: 1`; a branch summary retries a done-message
+   `502`; `retry.enabled` turned off in the settings during the first wait stops the
+   next retry.
+4. **This amendment overstated round 1's sabotage run** (36 for 38 entries, and a
+   branch done-message mutation that was never run): corrected above.
+5. **The summary's decision was not the turn's for every error event** (cross F3,
+   `p1_error_shape.before.out`): a `502` in pi's event shape (`error=` the message,
+   no top-level `error_message`) failed the compaction at once while the turn
+   retried it, and an aborted stream (`stop_reason: "aborted"`, text
+   `terminated`) was retried while the turn never retries one. The summarizers
+   now record the message itself and the decision runs the turn's classifier on
+   it (Classification, above); the events carry that message's text. Rows run the
+   turn and the compaction on the same event shape and require the same decision.
+   The text a request that is not retried raises is unchanged.
+6. **A 0 ms wait that does not yield survived** (cross F4, mutant `zero_no_yield`):
+   rows with `retry.baseDelayMs: 0` now abort from an `auto_retry_start`
+   subscriber (`abort`, `abort_retry`, `ctx.abort()`) and require one request and
+   `Retry cancelled`; under the mutant the abort is lost (`p4_zero.before.out`).
+
+Rows added: `tests/test_summary_retry_409.py` 35 → 44 (budget, branch done
+message, settings read at each failure, three error-event shapes, three 0 ms
+aborts); `tests/tui/test_run_tui_smoke.py` gains eight (the in-flight line in four
+states, the label helper, a split turn's kept countdown, the hand-over to a longer
+wait, a failed end closing every countdown), and round 1's `agent_start` hand-back
+row now runs its turn inside the turn wrapper, as a turn's retry does. On round
+1's commit the new rows that pin a changed behaviour fail - two core rows
+(`pi-shaped-502`, `aborted`) and six TUI rows; the others pass there and go red
+only under their mutation (`red_on_round1.*.out`).
+
+Sabotage, round 2 (`sabotage_r2.py`, a throwaway worktree, each mutation alone): 61
+mutations - the verify kit's 48 entries (its report counts 47) re-targeted where the
+code moved, C21 with its write, plus thirteen for this round (round 1's
+classification from the text, the events' text from the raise, a 0 ms wait that does
+not yield, round 1's record of the top-level text, a budget shared with per-request
+attempt numbers, the in-flight line always, whenever a turn runs, or never promising
+Esc, an end never keeping another sequence's countdown, the open-sequence guard
+dropped, every start opening a sequence, a countdown never handing over, a failed
+end closing one sequence only). All 61 went red; none survived (`sabotage_r2.out`).
+The 50 ms wait margin was not among them; the verify pass's own run removed it and
+the rows stayed green (item 2, above).

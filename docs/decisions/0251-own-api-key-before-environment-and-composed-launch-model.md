@@ -1051,7 +1051,11 @@ decides on it. In aelix:
   `retry.maxAgentDelayMs` from `settings.json` at each decision, and rpc `set_auto_retry`
   writes `retry.enabled` there, as pi does - ADR-0128, amendment 2026-10-14. "The same
   budget, backoff and `auto_retry_enabled`" above therefore means the configured ones; the
-  compaction and branch-summary retries stay #409.)*
+  compaction and branch-summary retries stay #409.)* *(Amended 2026-10-21, #409: the first is
+  closed too. A compaction's and a branch summary's summary request now retries a transient
+  refresh failure (the callback's `retry_reason`) and a provider's `502` on the turn's
+  classification, settings and events; a refused refresh still fails it at once with the
+  message above - ADR-0128, amendment 2026-10-21.)*
 
 ### 12.4 Tests, sabotage and live runs
 

@@ -545,6 +545,28 @@ unwritten. Add them with the next release.
   has `/new` start on yours; and if such a provider lists both `mygw/x` and
   `mygw/mygw/x`, a profile with `model: mygw/mygw/x` runs `mygw/x`, then
   `mygw/mygw/x` after `/new`.
+- **A compaction or a branch summary whose summary request hits a provider `502` or
+  a transient OAuth refresh failure is retried, as the turn is (#409, ADR-0128
+  amendment 2026-10-21).** `/compact`, rpc `compact`, an extension's `ctx.compact()`
+  and `navigate_tree` summary, the automatic compaction when the context fills, the
+  one that recovers from a context overflow, and a split turn's prefix summary sent
+  their request once: measured on the base with a local server whose summary request
+  answered `502` once, the rpc `compact` failed after one request, the automatic
+  compaction raised the `502` out of a turn that had succeeded, and the overflow
+  recovery did not re-run the turn. Each summary request now follows the turn's
+  decision - the same retryable causes (a context overflow excluded), an auth raise
+  only with #379's `retry_reason` (a refused refresh still fails at once with the
+  message it had), `settings.json` `retry.*` and `retry.enabled` - and shows the
+  turn's `auto_retry_start` / `auto_retry_end` in the TUI, `--mode json` and rpc.
+  `abort`, `abort_retry` and an extension's `ctx.abort()` end a wait at once. In the
+  TUI a compaction's retry first shows the error it retries (`✖ …`), and Esc or
+  Ctrl+C now cancel a retry countdown during `/compact`, which runs outside a turn
+  (they did nothing there, or armed the exit window); a split turn's countdown stays
+  until both of its summaries are done waiting, and once a wait is over a summary's
+  re-sent request shows `Retrying (N/M) now…` without the turn's `Esc to interrupt`
+  (Esc cannot stop it). A provider error event is judged as the turn judges it: an
+  aborted stream is not retried. A split turn whose other summary fails no longer
+  leaves the retrying one running.
 
 - **An extension's `select` draws a label of several lines that does not fit
   from its first line, not as a `⋮` over blank rows (#424, ADR-0253 §11.3).**

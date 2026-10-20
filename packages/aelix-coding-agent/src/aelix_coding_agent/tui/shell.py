@@ -2298,6 +2298,7 @@ async def run_tui(
     # below; ``_end_retry_countdown`` clears it, so a late ``turn_start`` from a
     # sequence that already finished cannot repaint a stale widget.
     retry_handover_ref: dict[str, tuple[int, int] | None] = {"pending": None}
+    retry_waits = _RetryWaits()  # #409 review round 2: every wait a countdown stands for
 
     def _hand_back_retry_interrupt() -> None:
         """Give the interrupt key back to the full-turn abort. Idempotent.
@@ -2347,20 +2348,20 @@ async def run_tui(
         """
 
         pending = retry_handover_ref["pending"]
-        if pending is None:
-            return
+        if pending is None or retry_waits.resume_other(loop.time(), _start_retry_countdown):
+            return  # (#409 review round 2: or another sequence is still in its wait)
         retry_handover_ref["pending"] = None
         attempt, max_attempts = pending
-        out_chrome.on_interrupt = _on_interrupt
+        out_chrome.on_interrupt, out_chrome.interrupt_armed = _on_interrupt, False  # #409
         # Pi parity: after the sleep ends the harness immediately re-runs; leave
         # a placeholder until ``auto_retry_end`` arrives (or a new
         # ``auto_retry_start`` for the next attempt overwrites it). The label
         # says "interrupt" rather than "cancel" because Esc now aborts the TURN,
-        # not the retry — advertising "Esc to cancel" for a key that did nothing
-        # is half of what made this defect so confusing.
+        # not the retry — and says it only when Esc does (#409 review round 2,
+        # ``_retry_now_label``): advertising a key that does nothing is the defect.
         out_chrome.set_widget(
             _RETRY_WIDGET_KEY,
-            [f"⟳ Retrying ({attempt}/{max_attempts}) now… Esc to interrupt"],
+            [_retry_now_label(attempt, max_attempts, out_chrome.running and not _compaction_working_state["active"])],
             above=True,
         )
 
@@ -2405,26 +2406,25 @@ async def run_tui(
         except Exception:  # noqa: BLE001 — log + return, never crash the TUI
             return
 
-    def _start_retry_countdown(event: object) -> None:
-        # Cancel any prior ticker (e.g. between attempt N and N+1) — the new
-        # start event refreshes the countdown from scratch.
+    def _start_retry_countdown(event: object, resumed: Any = None) -> None:
+        # Cancel any prior ticker (e.g. between attempt N and N+1) — the new start event
+        # (or a ``resumed`` wait, #409 review round 2) refreshes the countdown from scratch.
         prior = retry_countdown_ref["task"]
-        if prior is not None and not prior.done():
+        if prior is not None and not prior.done() and prior is not asyncio.current_task():
             prior.cancel()
-        # Swap the interrupt handler so Esc cancels the retry sleep (Pi
-        # parity), not the whole turn. The original is restored on end.
-        out_chrome.on_interrupt = _on_retry_interrupt
+        # Swap the interrupt handler so Esc cancels the retry sleep (Pi parity), not
+        # the whole turn - armed while no turn runs too (#409). Restored on end.
+        out_chrome.on_interrupt, out_chrome.interrupt_armed = _on_retry_interrupt, True
         attempt = getattr(event, "attempt", 1)
         max_attempts = getattr(event, "max_attempts", 1)
-        # Arm the handover. Until this is set, a ``turn_start`` (the first
-        # attempt's own, or one from any turn outside a retry sequence) is a
-        # no-op in ``_hand_back_retry_interrupt``.
+        # Arm the handover. Until this is set, a ``turn_start`` (the first attempt's own,
+        # or one from any turn outside a retry sequence) is a no-op in the hand-back.
         retry_handover_ref["pending"] = (attempt, max_attempts)
         retry_countdown_ref["task"] = loop.create_task(
             _tick_retry_countdown(
                 attempt,
                 max_attempts,
-                getattr(event, "delay_ms", 0),
+                retry_waits.start(loop.time(), event, resumed),  # its delay_ms (#409 r2)
             )
         )
 
@@ -2436,21 +2436,21 @@ async def run_tui(
         # invariants (widget cleared, original interrupt handler) idempotently.
         task = retry_countdown_ref["task"]
         had_active = task is not None
-        if task is not None and not task.done():
-            task.cancel()
-        retry_countdown_ref["task"] = None
-        # Disarm the causal handover with the same idempotence as the handler
-        # restore below: without this, a ``turn_start`` from the NEXT prompt
-        # would repaint this finished sequence's "Retrying (N/M) now…" widget.
-        retry_handover_ref["pending"] = None
-        out_chrome.set_widget(_RETRY_WIDGET_KEY, None, above=True)
-        out_chrome.on_interrupt = _on_interrupt
+        if not retry_waits.end(event, loop.time(), task, _start_retry_countdown):  # #409 r2
+            if task is not None and not task.done():
+                task.cancel()
+            retry_countdown_ref["task"] = None
+            # Disarm the causal handover with the same idempotence as the handler
+            # restore below: without this, a ``turn_start`` from the NEXT prompt
+            # would repaint this finished sequence's "Retrying (N/M) now…" widget.
+            retry_handover_ref["pending"] = None
+            out_chrome.set_widget(_RETRY_WIDGET_KEY, None, above=True)
+            out_chrome.on_interrupt, out_chrome.interrupt_armed = _on_interrupt, False  # #409
         if not had_active:
             return
-        # Commit a final transcript line so the user has a record after the
-        # transient widget clears. ``success=True`` is the terminal-success
-        # path (counter reset in core.py); ``success=False`` is at-max or
-        # user-cancel via ``abort_retry``.
+        # Commit a final transcript line so the user has a record after the transient
+        # widget clears. ``success=True`` is the terminal-success path (counter reset in
+        # core.py); ``success=False`` is at-max or user-cancel via ``abort_retry``.
         if getattr(event, "success", False):
             _commit(
                 Text(
@@ -2515,7 +2515,7 @@ async def run_tui(
         renderer.on_agent_event(event)  # type: ignore[arg-type]
         etype = getattr(event, "type", None)
         if etype == "auto_retry_start":
-            _start_retry_countdown(event)
+            _start_retry_countdown(_show_summary_retry_error(event, _compaction_working_state, _commit))
         elif etype == "auto_retry_end":
             _end_retry_countdown(event)
         elif etype == "agent_start":
@@ -4184,6 +4184,142 @@ class _RouteAuthView:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._registry, name)
+
+
+def _show_summary_retry_error(
+    event: object, compaction_state: dict[str, Any], commit: Callable[[object], None]
+) -> object:
+    """#409 — a compaction's summary request is retried: show what failed first.
+
+    A turn's retry follows the failed assistant message, which the renderer has
+    already drawn as ``✖ <error>`` (``render.py`` ``_render_message_error``);
+    a summary request leaves no message, so a compaction's ``auto_retry_start``
+    (one that arrives while the "Compacting context…" indicator is up) draws
+    the same line before the countdown, as pi draws its
+    ``summarization_retry_scheduled`` (``interactive-mode.ts:3774-3781`` @
+    fdce48eb4: ``showError(event.errorMessage)``, then the retry indicator).
+    Returns ``event`` - the dispatch hands it on to the countdown in the same
+    expression, so the lines below the dispatch keep their numbers (gated
+    citations name them).
+    """
+
+    if compaction_state.get("active"):
+        from aelix_ai.utils.terminal_text import safe_error_for_terminal
+
+        text = getattr(event, "error_message", None) or "Unknown error"
+        commit(Text(f"✖ {safe_error_for_terminal(str(text))}", style="bold red"))
+    return event
+
+
+def _retry_now_label(attempt: object, max_attempts: object, interruptible: bool) -> str:
+    """#409 review round 2 — the widget while a retried request is in flight.
+
+    "Esc to interrupt" only when Esc does interrupt it: a turn's own retried
+    request runs in the turn task, which Esc's ``abort()`` cancels. A summary
+    request (a compaction's, a branch summary's) is cancelled by nothing
+    (#347): in a manual ``/compact`` or an extension's ``navigate_tree`` no
+    turn runs, so Esc is inert and Ctrl+C arms the exit window; inside a
+    turn's threshold or overflow compaction ``abort()`` stops any further retry
+    but not the request. Neither gets the promise - before round 2 the
+    summary's in-flight request read "Esc to interrupt" while Esc did nothing.
+    """
+
+    suffix = " Esc to interrupt" if interruptible else ""
+    return f"⟳ Retrying ({attempt}/{max_attempts}) now…{suffix}"
+
+
+class _RetryWait:
+    """One backoff wait, as its ``auto_retry_start`` announced it (#409 review round 2)."""
+
+    __slots__ = ("attempt", "deadline", "max_attempts")
+
+    def __init__(self, deadline: float, attempt: object, max_attempts: object) -> None:
+        self.deadline, self.attempt, self.max_attempts = deadline, attempt, max_attempts
+
+
+#: A wait with less time than this left counts as over (#409 review round 2): asyncio
+#: may wake a countdown up to one clock tick early (15.6 ms on a py<=3.12 Windows
+#: clock), and two waits begun together would otherwise hand the countdown back and
+#: forth until the clock ticks. Esc could not reach so short a wait anyway.
+_RETRY_WAIT_MARGIN_S = 0.05
+
+
+class _RetryWaits:
+    """#409 review round 2 — the retry sequences and waits a countdown stands for.
+
+    A split turn's two summaries run concurrently (``_gather_summaries``), each
+    its own retry sequence with its own budget, and both speak the turn's
+    untagged ``auto_retry_start`` / ``auto_retry_end``. The countdown used to
+    stand for the LATEST start only, so one sequence's ``auto_retry_end``, or
+    its countdown running out, cleared the widget and disarmed Esc while the
+    other sequence was still in its wait - Esc then cancelled nothing and its
+    next request went out (measured in a real ``/compact``). pi at
+    ``fdce48eb4`` awaits the history summary, then the prefix summary
+    (``compaction.ts:980-1015``), so its indicator never holds two sequences.
+
+    A sequence opens on its attempt-1 ``auto_retry_start`` and closes on its
+    ``auto_retry_end``; each start records its wait's deadline. While another
+    open sequence's wait has not run out, an end or a countdown that runs out
+    hands over to that wait's countdown (the keys stay armed: Esc reaches
+    ``abort_retry``, which ends every summary wait of the compaction at once -
+    one abort event serves them all). A failed end (``success`` false) closes
+    everything: a summary sequence fails only when its compaction does (the
+    sibling is cancelled and ends at once), an abort ends every wait, and a
+    turn has one sequence. A wait ends early only on such a failed end, so a
+    recorded deadline still ahead belongs to a sequence that is in that wait.
+    """
+
+    def __init__(self) -> None:
+        self.open = 0
+        self.waits: list[_RetryWait] = []
+        #: The wait the running countdown counts down.
+        self.counting: _RetryWait | None = None
+
+    def start(self, now: float, event: object, resumed: _RetryWait | None = None) -> Any:
+        """Record the wait ``event`` starts (or count ``resumed`` down again); the
+        ``delay_ms`` the countdown ticker gets."""
+
+        if resumed is not None:
+            self.counting = resumed
+            return max(0.0, resumed.deadline - now) * 1000.0
+        attempt = getattr(event, "attempt", 1)
+        if attempt == 1 or self.open == 0:
+            self.open += 1
+        delay = getattr(event, "delay_ms", 0)
+        seconds = delay / 1000.0 if isinstance(delay, (int, float)) and delay > 0 else 0.0
+        self.counting = _RetryWait(now + seconds, attempt, getattr(event, "max_attempts", 1))
+        self.waits = [wait for wait in self.waits if wait.deadline > now] + [self.counting]
+        return delay
+
+    def _latest(self, now: float, besides: _RetryWait | None = None) -> _RetryWait | None:
+        for wait in reversed(self.waits):
+            if wait is not besides and wait.deadline > now + _RETRY_WAIT_MARGIN_S:
+                return wait
+        return None
+
+    def resume_other(self, now: float, start: Callable[[object, Any], None]) -> bool:
+        """At a countdown's end: count another open sequence's wait down instead."""
+
+        wait = self._latest(now, besides=self.counting) if self.open else None
+        if wait is None:
+            return False
+        start(wait, wait)
+        return True
+
+    def end(
+        self, event: object, now: float, ticker: object, start: Callable[[object, Any], None]
+    ) -> bool:
+        """Close the sequence ``event`` ends. True when another one is still in its
+        wait: its countdown (and the armed keys) stays, or is started again."""
+
+        self.open = self.open - 1 if getattr(event, "success", False) and self.open else 0
+        wait = self._latest(now) if self.open else None
+        if wait is None:
+            self.open, self.waits, self.counting = 0, [], None
+            return False
+        if wait is not self.counting or ticker is None or getattr(ticker, "done", lambda: True)():
+            start(wait, wait)
+        return True
 
 
 __all__ = ["run_tui"]

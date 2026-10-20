@@ -2020,9 +2020,9 @@ class AgentHarness:
                 result = provided
                 from_hook = True
             else:
-                result = await compaction_compact(
-                    self._state.model,
-                    self._options.get_api_key_and_headers,
+                result = await _with_summary_retry(  # #409: retried as the turn is
+                    self,
+                    compaction_compact,
                     preparation,
                     custom_instructions,
                     _summarizer_override=self._options._summarizer_override,
@@ -2672,9 +2672,9 @@ class AgentHarness:
                 and opts.summarize
                 and len(entries) > 0
             ):
-                summary_text = await generate_branch_summary(
-                    self._state.model,
-                    self._options.get_api_key_and_headers,
+                summary_text = await _with_summary_retry(  # #409: retried as the turn is
+                    self,
+                    generate_branch_summary,
                     entries,
                     opts.custom_instructions,
                     replace_instructions=opts.replace_instructions,
@@ -5952,3 +5952,193 @@ def _mark_abort_and_wake_backoff(harness: AgentHarness) -> None:
     harness._abort_requested = True
     if harness._retry_abort_event is not None:
         harness._retry_abort_event.set()
+
+
+# === #409 — compaction and branch summaries retry as the turn does ============
+#
+# pi gives every compaction and branch-summary request the session's
+# ``settings.retry`` and ``isRetryableAssistantError`` (``_runDefaultCompaction``
+# and ``_summarizationRetryCallbacks``, ``agent-session.ts:2749-2772``,
+# ``:3745-3774``; ``retryAssistantCall`` and ``isRetryableAssistantError``,
+# ``packages/ai/src/utils/retry.ts:204-254``, ``:265-270`` @ fdce48eb4). Before #409 aelix sent each once, so a provider's ``502`` or a
+# transient OAuth refresh failure (#379) failed ``/compact``, the threshold and
+# overflow compactions and a ``/tree`` summary at once, while the turn itself
+# retried the same failure (ADR-0128, amendment 2026-10-21).
+
+if TYPE_CHECKING:
+    from aelix_agent_core.session.compaction import SummaryAttempt
+
+
+class _SummaryRetry:
+    """The turn's retry, for the summarization requests of one compaction or
+    one branch summary (#409).
+
+    The same decision as the turn's, read at each failure: the classification
+    (:meth:`AgentHarness._is_retryable_error` on the provider's failed message,
+    the one the turn's loop classifies - an aborted stream and a context
+    overflow are not retried; an auth callback raise only when it
+    carries a ``retry_reason``, as #379 retries the turn; the auth snapshot's
+    closing check never), and settings.json ``retry`` with the module
+    constants as fallback (``_auto_retry_policy``, ``_retry_enabled``: #408).
+    What subscribers see is what the turn's retry emits:
+    ``auto_retry_start`` before each wait, one ``auto_retry_end`` when a
+    sequence ends (``success`` true when a later request produced the
+    summary; ``Retry cancelled`` for a wait that was aborted). pi sends its
+    own ``summarization_retry_*`` events instead, which its TUI draws with the
+    turn's retry indicator; aelix's TUI, ``--mode json`` and rpc already show
+    the turn's events, so a summary's retry looks the same everywhere
+    (ADR-0128, amendment 2026-10-21).
+
+    Each request has its own budget, as pi's ``retryAssistantCall`` gives each
+    call its own (a split turn's two summaries run concurrently). One abort
+    event serves them all: it is :attr:`AgentHarness._retry_abort_event` from
+    construction to :meth:`close` (:func:`_with_summary_retry`), so ``abort()``,
+    ``abort_retry()`` and an extension's ``ctx.abort()`` made while a summary
+    request is in flight or waiting set it - a wait in progress ends at once,
+    and no request is sent again after it. Nothing else runs a retry wait
+    while a compaction or a branch summary holds the harness. Under a
+    prompt's claim (the threshold and overflow compactions) an abort of that
+    prompt made earlier counts too: ``_abort_requested`` is the prompt's own
+    there (``_run`` clears it), unlike in a public ``compact()`` or
+    ``navigate_tree()``, where it may still describe a prompt that already
+    returned. Once a request fails and is not retried, its own failure
+    propagates unchanged, exactly as before #409.
+    """
+
+    def __init__(self, harness: AgentHarness) -> None:
+        self._harness = harness
+        self.abort = asyncio.Event()
+        if harness._claim is not None and harness._abort_requested:
+            self.abort.set()
+        harness._retry_abort_event = self.abort
+
+    def close(self) -> None:
+        if self._harness._retry_abort_event is self.abort:
+            self._harness._retry_abort_event = None
+
+    async def _end(self, retries: int, success: bool, final_error: str | None) -> None:
+        """``auto_retry_end`` for a sequence that started (none when ``retries`` is 0)."""
+
+        if retries > 0:
+            from aelix_agent_core.types import AutoRetryEndEvent
+
+            await self._harness._emit_to_subscribers(
+                AutoRetryEndEvent(success=success, attempt=retries, final_error=final_error)
+            )
+
+    async def __call__(self, request: Callable[[SummaryAttempt], Awaitable[str]]) -> str:
+        from aelix_agent_core.session.compaction import SummaryAttempt
+        from aelix_agent_core.types import AutoRetryStartEvent
+
+        harness = self._harness
+        retries = 0
+        while True:
+            attempt = SummaryAttempt()
+            try:
+                summary = await request(attempt)
+            except Exception as exc:
+                # The provider message's own text when there is one, as the turn's
+                # events carry it; else the raise's (an auth callback's).
+                message_text = getattr(attempt.provider_message, "error_message", None)
+                text = str(message_text or exc) or type(exc).__name__
+                policy = _auto_retry_policy(harness._settings_manager)
+                if (
+                    self.abort.is_set()
+                    or not _summary_failure_retryable(harness, attempt)
+                    or not _retry_enabled(policy, harness._state)
+                    or retries >= policy.max_retries
+                ):
+                    await self._end(retries, False, text)
+                    raise
+                retries += 1
+                delay_ms = policy.delay_ms(retries)
+                try:
+                    await harness._emit_to_subscribers(
+                        AutoRetryStartEvent(
+                            attempt=retries,
+                            max_attempts=policy.max_retries,
+                            delay_ms=delay_ms,
+                            error_message=text,
+                        )
+                    )
+                    aborted = await _summary_backoff_aborted(self.abort, delay_ms)
+                except BaseException as stop:
+                    await self._end(retries, False, str(stop) or type(stop).__name__)
+                    raise
+                if aborted:
+                    await self._end(retries, False, "Retry cancelled")
+                    raise
+                continue
+            except BaseException as stop:
+                # A cancel (a sibling summary failed, or the caller was cancelled):
+                # close the sequence so the TUI's countdown and interrupt handler
+                # are restored, as #379 review round 2 closes the turn's.
+                await self._end(retries, False, str(stop) or type(stop).__name__)
+                raise
+            await self._end(retries, True, None)
+            return summary
+
+
+async def _with_summary_retry(
+    harness: AgentHarness,
+    summarize: Callable[..., Awaitable[Any]],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """``summarize(model, get_api_key_and_headers, *args, retry=..., **kwargs)`` (#409).
+
+    :func:`session.compaction.compact` or
+    :func:`session.branch_summarization.generate_branch_summary`, called by
+    :meth:`AgentHarness.compact` / :meth:`AgentHarness.navigate_tree` with the
+    model and auth callback as before, plus a :class:`_SummaryRetry` whose abort
+    event is registered for the call and released after it.
+    """
+
+    retry = _SummaryRetry(harness)
+    try:
+        return await summarize(
+            harness._state.model,
+            harness._options.get_api_key_and_headers,
+            *args,
+            retry=retry,
+            **kwargs,
+        )
+    finally:
+        retry.close()
+
+
+def _summary_failure_retryable(harness: AgentHarness, attempt: SummaryAttempt) -> bool:
+    """Whether the failure ``attempt`` recorded is one the turn would retry (#409)."""
+
+    if attempt.validate_failed:
+        return False  # #365: a closing auth check that fails is fatal, never retried
+    if attempt.auth_failed:
+        return attempt.auth_retry_reason is not None  # #379: the callback's answer
+    if attempt.provider_message is None:
+        return False  # an empty summary, or a raise that is not the provider's answer
+    # The message the turn's loop classifies for the same answer (an error event's
+    # ``error``, or the done message), through the turn's own classifier: its
+    # ``stop_reason`` must be ``"error"`` (an aborted stream is never retried, as
+    # the turn and pi's ``retryAssistantCall`` never retry one) and its
+    # ``error_message`` is what the pattern reads (#409 review round 2).
+    return harness._is_retryable_error(attempt.provider_message)
+
+
+async def _summary_backoff_aborted(event: asyncio.Event, delay_ms: float) -> bool:
+    """Wait ``delay_ms`` for the summary retry's abort event; True when aborted.
+
+    :func:`_retry_backoff_aborted` without its read of ``_abort_requested``: a
+    public ``compact()`` or ``navigate_tree()`` runs while that flag may still
+    say a FINISHED prompt was aborted (only ``_run`` clears it), and every
+    abort made during the compaction sets this event. A 0 ms wait still
+    yields once (#408 review round 2).
+    """
+
+    if event.is_set():
+        return True
+    if delay_ms > 0:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(event.wait(), timeout=delay_ms / 1000.0)
+    else:
+        await asyncio.sleep(0)
+    return event.is_set()

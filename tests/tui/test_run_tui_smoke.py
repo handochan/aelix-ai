@@ -2398,7 +2398,10 @@ async def test_run_tui_retry_agent_start_hands_the_interrupt_back_at_once() -> N
         assert harness.retry_aborts == 1, "mid-backoff Esc must still cancel the retry"
         assert harness.aborts == 0
 
-        # The retry attempt begins — the request is going out NOW.
+        # The retry attempt begins — the request is going out NOW. A turn's retry
+        # runs inside the turn wrapper (#409 review round 2: the "Esc to interrupt"
+        # promise is made only while a turn runs, ``_retry_now_label``).
+        chrome.set_running(True)
         subscriber(AgentStartEvent())
 
         await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above["__auto_retry__"]))
@@ -2410,6 +2413,7 @@ async def test_run_tui_retry_agent_start_hands_the_interrupt_back_at_once() -> N
         await _wait_slow(lambda: harness.aborts == 1)
         assert harness.retry_aborts == 1, "the turn abort must not be a second abort_retry"
 
+        chrome.set_running(False)
         pipe.send_text("/quit\n")
         await _quit_within(task)
 
@@ -4316,3 +4320,265 @@ async def test_a_mid_turn_model_repaint_claims_a_generation(
     assert code == 0
     labels = [p for p in painted if p]
     assert labels[-1] == "◔ 10% · 96.9K/1M", labels
+
+
+# === #409 — a compaction's summary retry counts down like the turn's ===========
+#
+# A manual ``/compact`` runs outside the ``set_running`` turn wrapper, so Esc was
+# inert and Ctrl+C armed the exit window there - while the countdown said "Esc to
+# cancel". The keys now reach the swapped handler for the length of a countdown,
+# running or not, and a compaction's retry first shows the error it retries.
+
+
+async def test_run_tui_a_retry_countdown_arms_the_interrupt_keys_while_no_turn_runs() -> None:
+    """SABOTAGE: drop ``or self.interrupt_armed`` from the Ctrl+C binding, or set
+    ``interrupt_armed`` to ``False`` in ``_start_retry_countdown``."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        assert chrome._running is False and chrome.interrupt_armed is False
+
+        await _armed_retry(chrome, subscriber, delay_ms=60_000)
+        assert chrome.interrupt_armed is True
+        pipe.send_text("\x03")  # Ctrl+C while idle, during the countdown
+        await _wait_slow(lambda: harness.retry_aborts == 1)
+        assert harness.aborts == 0
+        assert chrome._last_ctrl_c is None, "the exit window must not be armed"
+
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="Retry cancelled"))
+        await _wait_slow(lambda: "__auto_retry__" not in chrome._widgets_above)
+        assert chrome.interrupt_armed is False
+        pipe.send_text("\x03")  # idle again: the first press arms the exit window
+        await _wait_slow(lambda: chrome._last_ctrl_c is not None)
+        assert harness.retry_aborts == 1 and harness.aborts == 0
+
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+async def test_run_tui_a_retry_countdown_arms_esc_while_no_turn_runs() -> None:
+    """SABOTAGE: drop ``or self.interrupt_armed`` from the Esc binding's filter."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        await _armed_retry(chrome, subscriber, delay_ms=60_000)
+        pipe.send_text("\x1b")
+        await _wait_slow(lambda: harness.retry_aborts == 1)
+        assert harness.aborts == 0
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="Retry cancelled"))
+        await _wait_slow(lambda: "__auto_retry__" not in chrome._widgets_above)
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+async def test_run_tui_the_countdowns_expiry_disarms_the_keys() -> None:
+    """After the backoff the request is in flight and a manual compaction cannot be
+    interrupted: the keys go back to their idle meaning (SABOTAGE: keep
+    ``interrupt_armed`` set in ``_hand_back_retry_interrupt``)."""
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        await _armed_retry(chrome, subscriber, delay_ms=50)
+        await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above["__auto_retry__"]))
+        assert chrome.interrupt_armed is False
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+def test_a_compactions_retry_shows_the_error_it_retries_and_a_turns_does_not() -> None:
+    """A turn's failed message already drew ``✖ <error>``; a summary request leaves
+    none, so a retry that starts while "Compacting context…" is up draws it (pi:
+    ``summarization_retry_scheduled`` -> ``showError``). The text is bounded the
+    way every error line is (``safe_error_for_terminal``)."""
+
+    from aelix_agent_core.types import AutoRetryStartEvent
+
+    event = AutoRetryStartEvent(
+        attempt=1, max_attempts=3, delay_ms=10, error_message="Error code: 502 \x1b[2J- Bad Gateway"
+    )
+    committed: list[object] = []
+    assert tui_shell._show_summary_retry_error(event, {"active": False}, committed.append) is event
+    assert committed == []
+    assert tui_shell._show_summary_retry_error(event, {"active": True}, committed.append) is event
+    assert len(committed) == 1
+    line = committed[0]
+    assert str(line).startswith("✖ Error code: 502")
+    assert "\x1b" not in str(line)
+
+
+# === #409 review round 2 — what the widget promises, and a split turn's two sequences
+
+
+@pytest.mark.parametrize(
+    ("running", "compacting", "promise"),
+    [(False, True, False), (False, False, False), (True, True, False), (True, False, True)],
+    ids=["manual-compact", "branch-summary", "threshold-compaction", "turn"],
+)
+async def test_run_tui_the_in_flight_label_promises_esc_only_when_esc_interrupts(
+    running: bool, compacting: bool, promise: bool
+) -> None:
+    """After the countdown the retried request is in flight. Esc interrupts it only
+    when it is a turn's own request (the turn task ``abort()`` cancels): a summary
+    request is cancelled by nothing (#347), and in a manual ``/compact`` or an
+    extension's ``navigate_tree`` no turn runs, so Esc is inert there. Round 1
+    showed "Esc to interrupt" over all four (SABOTAGE: always pass ``True`` to
+    ``_retry_now_label``)."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent, CompactionStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        if compacting:
+            subscriber(CompactionStartEvent(reason="manual"))
+        chrome.set_running(running)
+        await _armed_retry(chrome, subscriber, delay_ms=50)
+        await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above["__auto_retry__"]))
+        expected = "⟳ Retrying (1/3) now…" + (" Esc to interrupt" if promise else "")
+        assert chrome._widgets_above["__auto_retry__"] == [expected]
+        assert chrome.interrupt_armed is False
+        subscriber(AutoRetryEndEvent(success=True, attempt=1, final_error=None))
+        chrome.set_running(False)
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+def test_retry_now_label_reads_as_it_did_for_a_turn() -> None:
+    assert tui_shell._retry_now_label(2, 3, True) == "⟳ Retrying (2/3) now… Esc to interrupt"
+    assert tui_shell._retry_now_label(2, 3, False) == "⟳ Retrying (2/3) now…"
+
+
+async def test_run_tui_a_split_turns_other_summary_keeps_its_countdown_and_esc() -> None:
+    """A split turn's two summaries retry concurrently, each its own sequence on the
+    turn's untagged events. When one sequence's ``auto_retry_end`` lands while the
+    other is in its wait, that wait keeps its countdown and Esc still cancels it.
+    Round 1 cleared the widget and disarmed Esc on the first end: in a real
+    ``/compact`` the Esc pressed then cancelled nothing and the next request went
+    out (SABOTAGE: ``_RetryWaits.end`` always returning False)."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent, CompactionStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        subscriber(CompactionStartEvent(reason="manual"))
+        # Both summaries' first requests fail: two sequences open at attempt 1 ...
+        for _ in range(2):
+            subscriber(AutoRetryStartEvent(attempt=1, max_attempts=3, delay_ms=50, error_message="502"))
+        await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above.get("__auto_retry__", [])))
+        # ... both are sent again; the prefix summary's fails again and waits a minute ...
+        subscriber(AutoRetryStartEvent(attempt=2, max_attempts=3, delay_ms=60_000, error_message="502"))
+        await _wait_slow(lambda: "(2/3) in" in " ".join(chrome._widgets_above.get("__auto_retry__", [])))
+        # ... and then the history summary's succeeds.
+        subscriber(AutoRetryEndEvent(success=True, attempt=1, final_error=None))
+        label = " ".join(chrome._widgets_above.get("__auto_retry__", []))
+        assert "Retrying (2/3) in" in label and "Esc to cancel" in label, label
+        assert chrome.interrupt_armed is True
+        pipe.send_text("\x1b")
+        await _wait_slow(lambda: harness.retry_aborts == 1)
+        assert harness.aborts == 0
+        subscriber(AutoRetryEndEvent(success=False, attempt=2, final_error="Retry cancelled"))
+        assert "__auto_retry__" not in chrome._widgets_above
+        assert chrome.interrupt_armed is False
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+async def test_run_tui_a_countdown_that_runs_out_hands_over_to_a_wait_still_running() -> None:
+    """The countdown shows the latest ``auto_retry_start``. When it runs out while an
+    earlier, longer wait of the other sequence is still running, that wait's
+    countdown takes over and Esc stays armed (round 1 handed the keys back and
+    showed "now…" for a wait that was still running; SABOTAGE: drop the
+    ``resume_other`` call from ``_hand_back_retry_interrupt``)."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent, CompactionStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        subscriber(CompactionStartEvent(reason="manual"))
+        # The history summary is in its second wait (a minute); the prefix summary's
+        # slow first request fails and starts a short wait - it becomes the countdown.
+        subscriber(AutoRetryStartEvent(attempt=2, max_attempts=3, delay_ms=60_000, error_message="502"))
+        subscriber(AutoRetryStartEvent(attempt=1, max_attempts=3, delay_ms=50, error_message="502"))
+        def _label() -> str:
+            return " ".join(chrome._widgets_above.get("__auto_retry__", []))
+
+        # The short countdown runs out: either the longer wait's countdown or "now…".
+        await _wait_slow(lambda: "(2/3) in" in _label() or "now…" in _label())
+        label = _label()
+        assert "Retrying (2/3) in" in label and "Esc to cancel" in label, label
+        assert chrome.interrupt_armed is True
+        pipe.send_text("\x1b")
+        await _wait_slow(lambda: harness.retry_aborts == 1)
+        for attempt in (2, 1):  # the abort ends every wait; each sequence closes
+            subscriber(AutoRetryEndEvent(success=False, attempt=attempt, final_error="Retry cancelled"))
+        assert "__auto_retry__" not in chrome._widgets_above
+        assert chrome.interrupt_armed is False
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+
+async def test_run_tui_a_failed_sequence_closes_the_countdown_at_once() -> None:
+    """A summary sequence fails only when its compaction does (the other summary is
+    cancelled and ends at once), and an abort ends every wait: a failed
+    ``auto_retry_end`` clears the countdown and disarms the keys although another
+    start's wait is still ahead (SABOTAGE: a failed end closing one sequence only)."""
+
+    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent, CompactionStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+        subscriber(CompactionStartEvent(reason="manual"))
+        for _ in range(2):
+            subscriber(AutoRetryStartEvent(attempt=1, max_attempts=3, delay_ms=60_000, error_message="502"))
+        await _wait_slow(lambda: "__auto_retry__" in chrome._widgets_above)
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="Error code: 401"))
+        assert "__auto_retry__" not in chrome._widgets_above
+        assert chrome.interrupt_armed is False
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="CancelledError"))
+        pipe.send_text("/quit\n")
+        await _quit_within(task)

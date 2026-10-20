@@ -898,7 +898,7 @@ class AelixChrome:
             #  · idle, EMPTY buffer → first press arms a short window + shows a
             #    transient status hint; a second press within the window requests
             #    EOF (the exact Ctrl+D teardown), never exit() directly.
-            if self._running:
+            if self._running or self.interrupt_armed:  # #409: a retry countdown, running or not
                 if self.on_interrupt is not None:
                     self.on_interrupt()
                 return
@@ -942,7 +942,7 @@ class AelixChrome:
             # (``get_app().current_buffer``), which ``event.current_buffer`` is.
             event.current_buffer.cancel_completion()
 
-        @kb.add("escape", filter=Condition(lambda: self._running) & ~has_completions)
+        @kb.add("escape", filter=Condition(lambda: self._running or self.interrupt_armed) & ~has_completions)
         def _escape_interrupt(event: object) -> None:
             # Esc interrupts an in-progress turn (same as Ctrl-C while running);
             # running-gated so Esc stays inert when idle (no interference with
@@ -1652,6 +1652,15 @@ class AelixChrome:
         # ``app.exit()`` raises if the app is not running — harmless at teardown.
         with contextlib.suppress(Exception):
             self.app.exit()
+
+    #: #409 — Esc and Ctrl+C reach :attr:`on_interrupt` while this is set, running
+    #: or not. The host sets it for the length of an auto-retry countdown, whose
+    #: widget says "Esc to cancel": a compaction's summary retry counts down in a
+    #: manual ``/compact`` too, which runs outside the ``set_running`` turn
+    #: wrapper, where both keys were otherwise idle-mode keys (Esc inert, Ctrl+C
+    #: the exit window). Declared here, at the end of the class, so the lines
+    #: above keep their numbers (gated citations name them).
+    interrupt_armed: bool = False
 
 
 __all__ = ["AelixChrome"]
