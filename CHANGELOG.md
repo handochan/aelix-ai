@@ -655,6 +655,28 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The corporate-CA advice no longer reads as "edit certifi's own certificate
+  file": its last line now says to use a copy of it with the CA appended (#556,
+  ADR-0195 amendment 2026-10-22).** The advice for a certificate from an issuer
+  this machine does not trust ended with ``or append the corporate CA to the
+  bundle printed by `python -m certifi`, then retry.`` That command prints the
+  path of the `cacert.pem` inside the installed certifi package, so the line
+  read as "add the CA to that file" - which the TLS guide warns against,
+  because reinstalling or upgrading certifi replaces the file and the failure
+  comes back weeks later with no clue (measured: a CA appended there was gone
+  after `uv pip install --reinstall certifi`). On macOS, Windows and every
+  system but Linux, where the example above it already points at `~/.aelix/ca-bundle.pem`, the line now
+  says what that file is: ``where ca-bundle.pem is a copy of the bundle
+  `python -m certifi` prints with the corporate CA appended (not certifi's own
+  file, which an upgrade silently reverts), then retry.`` On Linux, whose
+  example is the system's own bundle, the copy is offered as the alternative
+  (`or at a copy of …`). The example for each platform is unchanged, and the
+  advice still fits the TUI whole. The TLS guide's recipe sentence now says
+  "make a copy" the same way. Following the new line in zsh on macOS - the
+  guide's `cat … > ~/.aelix/ca-bundle.pem`, then the printed `export` line -
+  reached a server whose certificate the probe CA signed, and certifi's own
+  file was unchanged.
+
 - **aelix no longer retries a request whose certificate this machine does not
   trust, and the TUI shows the TLS advice once, not five times (#551, ADR-0128
   amendment 2026-10-22).** The OpenAI and Anthropic SDKs report a

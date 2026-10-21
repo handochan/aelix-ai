@@ -1,6 +1,6 @@
 # 0195. Registry-aware startup model resolution (#98) + OS trust store & cause-preserving TLS diagnostics (#99)
 
-Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4; amended 2026-10-20 (#411): Decision 10 — see the amendment at the end; dated note 2026-10-22 (#551): the same attribution decides the retry
+Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4; amended 2026-10-20 (#411): Decision 10 — see its amendment below; dated note 2026-10-22 (#551): the same attribution decides the retry; amended 2026-10-22 (#556): the remedy's last line names a copy of certifi's bundle — see the amendment at the end
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -457,3 +457,59 @@ turn retried the SDKs' `Connection error.` three times and the TUI showed this
 remedy once per attempt. The known limit above (an error with no int status is
 read by its text) carries over: such an error with certificate words is not
 retried either.
+
+## Amendment (2026-10-22, #556) — the remedy's last line names a copy of certifi's bundle
+
+**What was wrong.** Part 7 of the #411 amendment changed the example line and
+kept the line under it, which dates from #99:
+``or append the corporate CA to the bundle printed by `python -m certifi`, then retry.``
+`python -m certifi` prints the path of the `cacert.pem` inside the installed
+certifi package, so the line reads as "add the CA to that file" - the step the
+TLS guide warns against, because reinstalling or upgrading certifi replaces the
+file and the failure comes back with no clue. Measured in a throwaway venv
+(certifi 2026.4.22, Python 3.12.13): a probe CA appended to that file loaded
+(121 CAs), and after `uv pip install --reinstall certifi` there were 120. Since
+#411 the line reaches macOS and Windows too, where it also did not fit the
+example above it: that example points at `~/.aelix/ca-bundle.pem`, which IS the
+guide's copy, and the "or" offered certifi's own file as the alternative.
+
+**Decision.** The last line names the guide's copy and warns off certifi's own
+file. Part 7's examples, and the remedy's five lines, stay.
+
+- Where the example names `ca-bundle.pem` (macOS, Windows and every system but
+  Linux), the line says what that file is:
+  ``where ca-bundle.pem is a copy of the bundle `python -m certifi` prints with the corporate CA appended (not certifi's own file, which an upgrade silently reverts), then retry.``
+- On Linux, whose example is the system's own bundle, the same copy follows
+  `or at`, as the alternative.
+
+The line is 174 characters (157 on Linux), inside the TUI's 200. The guide's recipe sentence,
+which read "append the corporate CA to the one `python -m certifi` prints and
+point at a **copy**", now says to make a copy of that bundle with the CA
+appended and point at the copy, in both copies of the guide. Measured on macOS
+26.6 with the real CLI (`-p`, `--mode json`, the TUI at 200 and 90 columns;
+truststore active and blocked): the new line is printed whole. Following it in
+zsh - the guide's `cat "$(python -m certifi)" corp-root.pem > ~/.aelix/ca-bundle.pem`,
+then the printed `export` line - the request to a local server whose leaf the
+probe CA signed completed its handshake, and certifi's own file hashed the same
+before and after.
+
+**pi.** Unchanged: pi prints no TLS remedy, and its one CA setting,
+`NODE_EXTRA_CA_CERTS` (passed through by `test.sh` @ `fdce48eb4`), adds a PEM
+file to Node's bundled roots instead of replacing them, so there is no copy to
+make. The divergence stands (ADR-0235).
+
+**Tests.** `tests/providers/test_tls_remedy_names_a_copy_556.py`: the last line
+pinned for `linux`, `darwin`, `win32` and `freebsd14`, with and without the OS
+store; the line fits the example above it, in five lines of at most 200
+characters; the guide's recipes write the file the examples set, and its prose
+says to make a copy (both copies).
+
+**Known limitations.**
+
+- The line still names `python -m certifi`, which assumes a `python` with
+  certifi on the user's PATH. On macOS 26.6 a stock PATH has no `python`, and
+  `/usr/bin/python3 -m certifi` answers `No module named certifi`; aelix's own
+  interpreter has certifi. Not changed here.
+- The macOS and Windows path is still a placeholder the user creates; the line
+  now says what goes in it, not the command that makes it (the guide has both
+  shells' commands).

@@ -133,8 +133,9 @@ issuer nothing trusts). The message begins:
    ```
 
    If your platform has no such combined bundle — macOS and Windows keep none
-   that a system-wide install updates — append the corporate CA to the one
-   `python -m certifi` prints and point at a **copy**:
+   that a system-wide install updates — make a **copy** of the bundle
+   `python -m certifi` prints with the corporate CA appended, and point at
+   the copy:
 
    ```sh
    cat "$(python -m certifi)" corp-root.pem > ~/.aelix/ca-bundle.pem
@@ -157,7 +158,10 @@ issuer nothing trusts). The message begins:
 
    The advice `aelix` prints carries the line for the platform it runs on:
    the Debian/Ubuntu one on Linux, the `~/.aelix/ca-bundle.pem` one on macOS
-   (and other systems), the PowerShell one on Windows.
+   (and other systems), the PowerShell one on Windows. Its last line names
+   the copy this recipe makes: everywhere but Linux it says `ca-bundle.pem`
+   is that copy; on Linux it offers the copy as the alternative to the
+   system's bundle.
 
    Do not edit `certifi`'s own file in place — reinstalling or upgrading the
    package silently reverts it, and the failure comes back weeks later with no

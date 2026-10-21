@@ -34,6 +34,7 @@ chain a server answered with an HTTP status (:func:`_answered`), the OS
 verdicts no remedy fits get none (:func:`_no_remedy_fits`: macOS rejecting the
 certificate itself, and macOS <= 10.13's results, which name no cause), and the
 ``SSL_CERT_FILE`` example is the platform's own (:func:`_tls_cert_file_escape`).
+Its last line names a copy of certifi's bundle, never certifi's own file (#556).
 
 EVERY REMEDY FITS THE TUI (#192 review round 3). The TUI prints an error
 through ``safe_error_for_terminal``: 8 lines, each cut at 200 characters. The
@@ -231,22 +232,37 @@ def _tls_cert_file_escape() -> str:
     roots plus the CA), Windows with PowerShell's ``$env:``. No example carries a
     shell comment: zsh, macOS's default shell, does not take ``#`` as one at the
     prompt.
+
+    The last line names a COPY of certifi's bundle (#556). It used to say
+    "append the corporate CA to the bundle printed by ``python -m certifi``",
+    which reads as editing the ``cacert.pem`` inside the installed certifi
+    package - the step the TLS guide warns against, because reinstalling or
+    upgrading certifi replaces that file and the failure comes back with no
+    clue (measured: a CA appended in place was gone after
+    ``uv pip install --reinstall certifi``). Where the example names
+    ``ca-bundle.pem`` the line says what that file is, the guide's recipe; on
+    Linux, whose example is the system's own bundle, the copy is the
+    alternative. Either way the remedy stays five lines.
     """
 
+    copy = (
+        "a copy of the bundle `python -m certifi` prints with the corporate CA "
+        "appended (not certifi's own file, which an upgrade silently reverts), "
+        "then retry."
+    )
     if sys.platform == "win32":
         lead = "point SSL_CERT_FILE at a bundle that includes it, in PowerShell:\n"
         example = '  $env:SSL_CERT_FILE = "$HOME\\.aelix\\ca-bundle.pem"\n'
+        tail = f"where ca-bundle.pem is {copy}"
     elif sys.platform.startswith("linux"):
         lead = "point SSL_CERT_FILE at a bundle that includes it:\n"
         example = "  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt\n"
+        tail = f"or at {copy}"
     else:
         lead = "point SSL_CERT_FILE at a bundle that includes it:\n"
         example = '  export SSL_CERT_FILE="$HOME/.aelix/ca-bundle.pem"\n'
-    return (
-        f"{lead}{example}"
-        "or append the corporate CA to the bundle printed by `python -m certifi`, "
-        "then retry."
-    )
+        tail = f"where ca-bundle.pem is {copy}"
+    return f"{lead}{example}{tail}"
 
 
 # Deliberately never mentions SSL_CERT_FILE: the chain verified fine, so a CA
