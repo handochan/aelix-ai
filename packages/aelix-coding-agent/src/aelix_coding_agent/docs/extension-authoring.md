@@ -181,6 +181,17 @@ A hook handler registered through `on(...)` receives a read-only
 `ctx.model`. Those live on the context passed to your handler — not on the
 `aelix` handle itself.
 
+A `model_select` or `thinking_level_select` handler runs after the change: the
+model or level is already in force. Raising there does not undo it. The command
+that made the switch (`/model`, `/thinking`, `/settings`, the pick after
+`/login`) says it failed, the footer shows the model and level the next request
+uses, and that request goes with them. `/agents use` is the one command that
+puts its model and level back when it fails. Your handler also runs before the
+TUI's own footer repaint, so a raise there skips it. The commands repaint
+anyway (#559), but a `ctx.set_model` or `ctx.set_thinking_level` from an
+extension that your handler refuses leaves the footer on the old value until
+the next repaint.
+
 The full surface is defined in
 `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py`.
 

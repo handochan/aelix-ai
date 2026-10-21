@@ -1324,7 +1324,16 @@ async def run_tui(
         # (model-aware, session) AND persist the new level as the default.
         if settings_manager is None:
             return
-        new_level = await runtime_host.harness.cycle_thinking_level()  # live
+        try:
+            new_level = await runtime_host.harness.cycle_thinking_level()  # live
+        except Exception:
+            # #559 — a ``thinking_level_select`` handler that raises does so after
+            # the level was replaced, and stops the bus before this TUI's own
+            # repaint (an extension's handler precedes it). Measured: a refused
+            # second cycle left ``🧠 minimal`` above a request sent at ``low``.
+            # Repaint, then let ``/settings`` report the failure as before.
+            _repaint_footer_for_model_in_force()
+            raise
         if new_level is None:
             _commit(Text("This model has no thinking levels to cycle.", style="yellow"))
             return
@@ -1558,7 +1567,9 @@ async def run_tui(
             harness=runtime_host.harness,
             select=functools.partial(context.select, own=True),
             commit=_commit,
-            refresh_footer=context._refresh_footer,
+            # #559 review round 2 — the meter too: the picker's failure path is
+            # a model the ``model_select`` hook did not see (a handler raised).
+            refresh_footer=_repaint_footer_for_model_in_force,
             settings_manager=settings_manager,
         )
 
@@ -1900,6 +1911,10 @@ async def run_tui(
         try:
             await runtime_host.harness.set_model(chosen)
         except Exception as exc:  # noqa: BLE001
+            # #559 — as ``/model``: a ``model_select`` handler's raise comes after
+            # the model was replaced and stops the bus before the TUI's repaint,
+            # which also re-derives the meter from the model in force.
+            _repaint_footer_for_model_in_force()
             _commit(
                 Text(
                     f"Logged in, but selecting its default model failed: "
@@ -2117,7 +2132,10 @@ async def run_tui(
         cwd=cwd,
         commands=commands,
         set_mode=_set_mode,
-        refresh_footer=context._refresh_footer,
+        # #559 review round 2 — the meter is re-derived from the model in force
+        # too, for ``/model <id>``'s refusal and ``/agents use``'s rollback.
+        # Late-bound: the helper is defined below, with the meter's state.
+        refresh_footer=lambda: _repaint_footer_for_model_in_force(),
         model_picker=_open_model_picker,
         model_registry=model_registry,
         thinking_picker=_open_thinking_picker,
@@ -2273,34 +2291,27 @@ async def run_tui(
         live_tokens["n"] = usage.tokens
         context.set_context_label(_format_context_label(usage))
 
-    async def _model_select_hook(_event: object, _ctx: object = None) -> None:
-        """#249 — every model change re-derives the meter, immediately; #534 —
-        and repaints the footer, so its ``✱`` id is the model the next prompt
-        goes to even when the meter's label did not change.
+    def _repaint_footer_for_model_in_force() -> None:
+        """Re-derive the context meter from the model in force, then repaint the
+        footer (#249, #534; #559 review round 2). Never raises.
 
-        Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2783``)
-        is the single funnel: ``/model``, the model picker, the pick offered
-        after ``/login``, and an extension's ``ctx.set_model`` all reach it.
-        Without this the window in the denominator changed and the percentage
-        did not.
+        The footer is a cached string and the meter's label (``◔ 0% · 0/128K``)
+        is one of its cached segments, so ``context._refresh_footer`` alone
+        recomposes the old window beside a new ``✱`` id. ``_model_select_hook``
+        is the usual caller; every path that knows the model may have changed
+        without that hook running calls it too: a ``model_select`` handler that
+        raises (an extension's, registered before the TUI's) stops the bus after
+        ``set_model`` assigned, so ``/model <id>``, the ``/model`` picker and the
+        pick after ``/login`` repaint through here on their failure paths, and
+        ``/agents use``'s ``finally`` does after a rollback that restores the
+        model without an event. Measured before: ``/model gwa/m2`` refused that
+        way showed ``✱ m2`` beside ``0/128K``, m1's window, on a 32K model.
 
-        What must hold: a footer bug must not report a successful switch as a
-        failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2828``), and
-        ``/model`` prints that as ``✖ model switch failed``.
-
-        The registration's ``error_mode="continue"`` is the load-bearing half —
-        ``_safe_invoke`` (``hooks.py:1386-1391``) logs and swallows exactly
-        ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
-        redundant on purpose, not a second class of failure: it catches the same
-        class, and it is here so the guarantee survives a future registration
-        that loses the kwarg (or a caller that invokes this handler off the bus).
-        Neither catches ``BaseException``, so a ``CancelledError`` still
-        propagates.
-
-        Two positional parameters for the arity reason spelled out in
-        ``_settled_hook`` below.
+        Mid-turn the token count is known (``live_tokens``) and only the
+        denominator moves, so the label is computed here; otherwise a stats
+        read is scheduled off the frame (``_schedule_context_usage_refresh``),
+        which reads the model in force when it runs. Two guards, so a meter
+        failure and a footer failure cannot cost each other their repaint.
         """
 
         with contextlib.suppress(Exception):
@@ -2327,12 +2338,45 @@ async def run_tui(
         # unchanged label, and a switch inside one context window (``gwa/m1`` →
         # ``gwa/m2``, or across providers at the same window) leaves the label
         # as it was — so the footer kept the old id until the next turn ended
-        # while the prompt already went to the new one. ``/model`` hid this by
-        # repainting itself; ``/agents use`` and an extension's
-        # ``ctx.set_model`` reach only this hook. Its own guard, so a footer
-        # failure and a meter failure cannot cost each other their repaint.
+        # while the prompt already went to the new one.
         with contextlib.suppress(Exception):
             context._refresh_footer()
+
+    async def _model_select_hook(_event: object, _ctx: object = None) -> None:
+        """#249 — every model change re-derives the meter, immediately; #534 —
+        and repaints the footer, so its ``✱`` id is the model the next prompt
+        goes to even when the meter's label did not change. Both through
+        :func:`_repaint_footer_for_model_in_force`, which the paths this hook
+        cannot reach share (#559).
+
+        Registered on the harness's own ``model_select`` hook rather than in
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2783``)
+        is the single funnel: ``/model``, the model picker, the pick offered
+        after ``/login``, and an extension's ``ctx.set_model`` all reach it.
+        Without this the window in the denominator changed and the percentage
+        did not.
+
+        What must hold: a footer bug must not report a successful switch as a
+        failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
+        AFTER ``_state.model`` is already replaced (``core.py:2828``), and
+        ``/model`` prints that as ``✖ model switch failed``.
+
+        The registration's ``error_mode="continue"`` is the load-bearing half —
+        ``_safe_invoke`` (``hooks.py:1386-1391``) logs and swallows exactly
+        ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
+        redundant on purpose, not a second class of failure: it catches the same
+        class, and it is here so the guarantee survives a future registration
+        that loses the kwarg (or a caller that invokes this handler off the bus).
+        Neither catches ``BaseException``, so a ``CancelledError`` still
+        propagates.
+
+        Two positional parameters for the arity reason spelled out in
+        ``_settled_hook`` below.
+        """
+
+        # ``/model`` hid #534 by repainting itself; ``/agents use`` and an
+        # extension's ``ctx.set_model`` reach only this hook.
+        _repaint_footer_for_model_in_force()
 
     async def _thinking_level_select_hook(_event: object, _ctx: object = None) -> None:
         """#534 — every thinking-level change repaints the footer's ``🧠`` segment.
@@ -2343,9 +2387,17 @@ async def run_tui(
         profile's ``thinking:``, set after its model) and an extension's
         ``ctx.set_thinking_level`` all reach it without repainting — measured,
         each left ``🧠 off`` on screen after the level changed. The picker and
-        the ``/settings`` row already repaint themselves; a second repaint
-        there costs one composed string. pi invalidates its footer on the same
-        signal (``interactive-mode.ts`` ``case "thinking_level_changed"``).
+        the ``/settings`` row already repaint themselves, and since #559 so
+        does ``/thinking <level>``; a second repaint there costs one composed
+        string. pi invalidates its footer on the same signal
+        (``interactive-mode.ts`` ``case "thinking_level_changed"``).
+
+        It is not a repaint every change is sure of (#559): ``run_tui``
+        registers it after the handlers the harness was built with, so an
+        extension's handler that raises (default ``error_mode="throw"``) stops
+        the bus first — after the level was replaced. The commands repaint on
+        their failure paths for that; an extension's own
+        ``ctx.set_thinking_level`` has no such path and stays stale then.
 
         Registered with ``error_mode="continue"`` for ``_model_select_hook``'s
         reason: ``set_thinking_level`` raises ``AgentHarnessError`` for a

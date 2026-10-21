@@ -2972,17 +2972,17 @@
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1270-1271": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1285-1286": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1658-1658": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1686-1686": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2207-2207": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2235-2235": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2208-2208": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2236-2236": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1111-1113": [
@@ -3135,7 +3135,7 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2014-2031": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2029-2046": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3145,33 +3145,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2574-2574": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2626-2626": [
    "# call would leave the prompt looking frozen. Drive the \"Working…\" row from"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2767-2769": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2819-2821": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2875-2875": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2927-2927": [
    "abort_retry()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3095-3095": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3147-3147": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3540-3540": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3592-3592": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3638-3638": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3690-3690": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3638-3641": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3690-3693": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
    "# ``cli/entry.py:1756``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3689-3706": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3741-3758": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3181,7 +3181,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3897-3897": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3949-3949": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:730-730": [

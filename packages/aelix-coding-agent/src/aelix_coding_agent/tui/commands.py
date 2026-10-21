@@ -87,10 +87,14 @@ class CommandContext:
     commands: list[BuiltinCommand] = field(default_factory=list)
     set_mode: Callable[[str], None] | None = None
     refresh_footer: Callable[[], None] | None = None
-    """``run_tui`` wires this to ``context._refresh_footer`` so ``/model`` can
-    re-render the footer ``✱ {model}`` segment after a switch (the footer is a
-    cached string recomposed only on refresh), and ``/agents use`` after a use
-    that succeeded or was rolled back (#534). ``None`` in headless tests."""
+    """``run_tui`` wires this to its ``_repaint_footer_for_model_in_force``, which
+    re-derives the context meter from the model in force and recomposes the
+    footer, so ``/model`` can re-render the footer ``✱ {model}`` segment after a
+    switch (the footer is a cached string recomposed only on refresh),
+    ``/agents use`` after a use that succeeded or was rolled back (#534), and
+    ``/thinking <level>`` and ``/model <id>`` after a switch that took and was
+    reported as failed (#559; the meter's window too since its review round 2).
+    ``None`` in headless tests."""
     model_picker: Callable[[], Awaitable[None]] | None = None
     trust_action: Callable[[], Awaitable[None]] | None = None
     """``/trust`` — the project-trust selector (#112, pi ``showTrustSelector``).
@@ -324,6 +328,8 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     # what is printed stays here.
     from aelix_coding_agent.cli.model_switch import switch_model_argument
 
+    # #559 — the model in force before the switch: a refusal can leave another.
+    before = getattr(ctx.harness, "current_model", None)
     switched = await switch_model_argument(
         args,
         harness=ctx.harness,
@@ -332,6 +338,14 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         warn=lambda message: ctx.commit(Text(message, style="yellow")),
     )
     if switched.model is None:
+        # Most refusals switch nothing, and repaint nothing. But a
+        # ``model_select`` handler that raises does so AFTER ``set_model``
+        # replaced the model (``harness/core.py`` assigns, then emits), and its
+        # raise stops the bus before the TUI's own ``model_select`` repaint,
+        # which runs after an extension's handlers. Measured: ``/model gwa/m2``
+        # refused that way left ``✱ m1`` above a request sent as m2.
+        if getattr(ctx.harness, "current_model", None) is not before:
+            _refresh_footer_quietly(ctx)
         ctx.commit(Text(switched.refusal or "✖ model switch failed", style="bold red"))
         return
     model = switched.model
@@ -786,7 +800,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3689-3706`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3741-3758`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -917,7 +931,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2875`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2927`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1217,9 +1231,10 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
             # without an event (``agents/service.py``), and either hook's
             # repaint on the way in would otherwise leave the abandoned
             # profile's ``✱`` id on screen beside the red line that says
-            # nothing changed. (The context meter's denominator stays the #249
-            # known gap: the label is cached and this repaint does not re-derive
-            # it.)
+            # nothing changed. The repaint re-derives the context meter from
+            # the restored model too (#559 review round 2), which closes the
+            # #249 gap of a rollback mid-turn: the label kept the abandoned
+            # profile's window.
             _refresh_footer_quietly(ctx)
         ctx.commit(Text(status, style="green"))
         return
@@ -1351,6 +1366,15 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     host wired one, else prints the current level. An explicit level
     (``/thinking high``) skips the picker and sets it via the harness. Degrades
     gracefully on a harness lacking the API.
+
+    An explicit level repaints the footer itself, on success and on failure, as
+    the picker's host does after every pick (``shell.py``
+    ``_open_thinking_picker``) and as pi's ``selectThinkingLevel`` does for
+    both doors (#559). The ``thinking_level_select`` hook ``run_tui`` registers
+    (#534) repaints too, but it is one handler on the bus: one registered
+    before it that raises — an extension's, loaded with the harness — stops
+    the bus after ``set_thinking_level`` has replaced the level, and the footer
+    kept the old level above a request sent at the new one.
     """
 
     # #251 — every line below says the tier the model RECEIVES, not just the
@@ -1392,6 +1416,10 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         ctx.commit(Text(f"✖ thinking switch failed: {exc}", style="bold red"))
         return
+    finally:
+        # #559 — the footer's ``🧠`` reads the live level, whichever way the
+        # setter ended: a handler's raise comes after the level was replaced.
+        _refresh_footer_quietly(ctx)
     ctx.commit(Text(f"thinking → {thinking_level_display(model, args)}", style="green"))
 
 

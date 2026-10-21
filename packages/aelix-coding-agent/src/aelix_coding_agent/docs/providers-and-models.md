@@ -508,7 +508,12 @@ aelix --thinking medium --model anthropic/claude-sonnet-4-6 "..."
 
 Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Inside
 the TUI, `/thinking` opens a picker over the levels the current model supports
-(`/settings` → **Thinking level** cycles them instead).
+(`/settings` → **Thinking level** cycles them instead), and `/thinking <level>`
+sets one directly. Whichever you use, the 🧠 statusline segment shows the new
+level as soon as it is set. That includes a level an extension's
+`thinking_level_select` handler refused: the line above says the switch failed,
+but the refusal does not undo it, and the next request goes at the new level
+(#559).
 
 Not every model calls those levels by those names, and not every model supports
 all of them. Where the two differ, the picker rows, the confirmation line and the

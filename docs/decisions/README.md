@@ -114,12 +114,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   `--list-models` reads the cache.
 
 - [0116 — TUI P0 consumer batch: footer meter, real mode, diffs, /export, /thinking, usage capture](0116-tui-p0-consumer-batch.md)
-  (amended 2026-10-22; #534). Every model or thinking-level change repaints the footer when it
+  (amended 2026-10-22; #534, #559). Every model or thinking-level change repaints the footer when it
   happens: the `model_select` hook repaints it whatever the meter's label did (a switch inside one
   context window left `✱` on the old id until the turn ended), a `thinking_level_select` hook does
   the same for `🧠` (`/thinking <level>`, a profile's `thinking:`, an extension's
-  `ctx.set_thinking_level`), and `/agents use` repaints after a use it rolled back. The #249
-  rollback gap stays the meter's denominator only.
+  `ctx.set_thinking_level`), and `/agents use` repaints after a use it rolled back. #559: `/thinking <level>` repaints by itself, as
+  the picker's host does. It and `/model <id>`, the `/model` picker, the `/settings` thinking row
+  and the pick after `/login` also repaint when they report a failed switch: an extension's
+  `model_select` or `thinking_level_select` handler that raises stops the bus before the TUI's
+  hook, after the model or level was already replaced. Review round 2: each of those repaints, and
+  `/agents use`'s, goes through the helper the `model_select` hook uses, which also re-derives the
+  context meter from the model in force (a refused `/model` showed the old model's window), so
+  the #249 rollback gap is closed in the TUI. An extension's own `ctx.set_model` /
+  `ctx.set_thinking_level` refused that way still leaves the footer stale (a follow-up).
 
 - [0221 — Reasoning streams to a live window, and the renderer must give it back](0221-reasoning-streams-to-a-live-window-the-renderer-must-give-back.md)
   (amended 2026-10-14; #285). A text block that arrives whole (`text_start` → `text_end`, no

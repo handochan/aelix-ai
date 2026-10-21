@@ -65,7 +65,7 @@ from tests.tui.test_run_tui_smoke import FakeRuntime, _message_end, _spy_commits
 
 # Two providers, three models, ONE context window: the label the meter paints is
 # the same string before and after every switch below, which is the condition
-# the defect needed. ``reasoning`` so ``thinking: high`` is a level these models
+# the defect needed. (``gws/s1``, at another window, is only row 9's.) ``reasoning`` so ``thinking: high`` is a level these models
 # list (``AgentProfileService.use`` skips one they do not).
 _WINDOW = 128_000
 _MODELS_JSON = {
@@ -85,6 +85,12 @@ _MODELS_JSON = {
             "api": "openai-completions",
             "models": [{"id": "n1", "contextWindow": _WINDOW, "reasoning": True}],
         },
+        "gws": {
+            "baseUrl": "http://127.0.0.1:9/gws/v1",
+            "apiKey": "fake-gws-534",
+            "api": "openai-completions",
+            "models": [{"id": "s1", "contextWindow": 32_000, "reasoning": True}],
+        },
     }
 }
 
@@ -95,6 +101,8 @@ _PROFILES = {
     "a2hi": "model: gwa/m2\nthinking: high\n",
     # Its ``thinking: low`` is refused by a handler (row 7), AFTER its model was set.
     "a2low": "model: gwa/m2\nthinking: low\n",
+    # Row 9: the same refusal onto a model with another window.
+    "s1low": "model: gws/s1\nthinking: low\n",
 }
 
 
@@ -334,6 +342,35 @@ async def test_a_rolled_back_agents_use_leaves_the_model_it_stayed_on(
         assert bench.harness.state.model.id == "m1", "the use rolled back"
         assert "✱ m1" in bench.footer(), bench.footer()
         assert "✱ m2" not in bench.footer(), bench.footer()
+
+
+async def test_a_use_rolled_back_mid_turn_puts_the_meter_back_on_the_kept_model(
+    tmp_path: Path, _completions_adapter: None
+) -> None:
+    """Row 9 (#559 review round 2) — the #249 rollback gap, mid-turn.
+
+    While a live ``message_end`` figure is held the ``model_select`` hook paints
+    the meter synchronously against the new model's window, so the profile's
+    ``gws/s1`` (32K) moved it to ``96.9K/32K``. The rollback restores ``m1``
+    with no event, and ``/agents use``'s repaint used to recompose that cached
+    label. It now goes through the helper that re-derives the meter from the
+    model in force, so the meter is back on m1's 128K when the red line lands.
+    """
+
+    async with _tui(tmp_path) as bench:
+        await bench.harness._emit_to_subscribers(_message_end(96_900))
+        await wait_until(lambda: "96.9K/128K" in bench.footer(), what="the live figure")
+
+        def _refuse_low(event: Any, _ctx: object = None) -> None:
+            if getattr(event, "level", None) == "low":
+                raise RuntimeError("refuses low")
+
+        bench.harness.hooks.on("thinking_level_select", _refuse_low, source="test-559")
+        await bench.run("/agents use s1low", until="agents use failed")
+
+        assert bench.harness.state.model.id == "m1", "the use rolled back"
+        assert "96.9K/128K" in bench.footer(), bench.footer()
+        assert "/32K" not in bench.footer(), bench.footer()
 
 
 # === 8. the new registration =================================================

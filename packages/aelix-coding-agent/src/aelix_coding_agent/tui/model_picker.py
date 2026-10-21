@@ -234,6 +234,13 @@ async def run_model_picker(
     try:
         await harness.set_model(chosen)
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+        # #559 — repaint here too: a ``model_select`` handler that raises does so
+        # after ``set_model`` replaced the model, and its raise stops the bus
+        # before the TUI's own repaint (an extension's handler precedes it), so
+        # the footer kept the old id above a request sent as the chosen one.
+        if refresh_footer is not None:
+            with contextlib.suppress(Exception):
+                refresh_footer()
         commit(Text(f"✖ model switch failed: {exc}", style="bold red"))
         return
     # Persist as the default (pi parity: setModel → setDefaultModelAndProvider) so

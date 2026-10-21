@@ -703,21 +703,21 @@ class AgentProfileService:
             # / ``set_thinking_level`` this way also avoids re-emitting their
             # hooks, which already fired for the value being reverted.
             #
-            # #249 KNOWN GAP: the TUI's context meter now listens on
-            # ``model_select`` (``tui/shell.py`` ``_model_select_hook``), so the
-            # forward ``set_model`` above moved the footer's denominator to the
-            # model this rollback is abandoning, and no event tells it to move
-            # back. The footer therefore reads against the wrong window until the
-            # next ``settled`` / ``turn_end`` / model change repaints it — one
-            # turn at most, and only on a profile that fails AFTER its model was
-            # accepted. Left as-is rather than re-emitting, because re-emitting
-            # is the thing this block was written not to do; recorded in the
-            # ADR-0116 #249 amendment. #534 keeps it to the denominator: the
-            # same hook (and the ``thinking_level_select`` one) now repaint the
-            # footer's ``✱`` id and ``🧠`` level on the way in, so the TUI's
-            # ``/agents use`` handler repaints the footer again after a failed
-            # use (``tui/commands.py``) and both read the values restored here.
-            # The meter's label is cached, and that repaint does not re-derive it.
+            # #249 GAP, closed in the TUI by #559 review round 2: the context
+            # meter listens on ``model_select`` (``tui/shell.py``
+            # ``_model_select_hook``), so the forward ``set_model`` above moved
+            # the footer's denominator to the model this rollback is abandoning,
+            # and no event tells it to move back. Left as-is here rather than
+            # re-emitting, because re-emitting is the thing this block was
+            # written not to do (ADR-0116 #249 amendment). Instead the TUI's
+            # ``/agents use`` handler repaints after a failed use
+            # (``tui/commands.py``, its ``finally``) through the helper that
+            # re-derives the meter from the model in force
+            # (``_repaint_footer_for_model_in_force``) and recomposes the
+            # footer's ``✱`` id and ``🧠`` level (#534), so all three read the
+            # values restored here. Another host that caches a meter must do
+            # the same, since nothing re-emits (ADR-0116, the #559
+            # amendment's review round 2).
             self.parsed.__dict__.update(durable_snapshot)
             self.active = previous_active
             self.skills_holder["result"] = previous_skills

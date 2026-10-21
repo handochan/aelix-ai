@@ -675,6 +675,24 @@ unwritten. Add them with the next release.
   footer at once. An `/agents use` that fails after switching the model (an
   extension refused its thinking level, say) leaves the footer on the model you
   stayed on. `/model`, the pickers and `/settings` already did this.
+- **The footer shows the thinking level and model in force even when the TUI
+  says the switch failed (#559, ADR-0116 amendment 2026-10-22).** An
+  extension's `thinking_level_select` or `model_select` handler that raises
+  does not undo the switch. The level or model is already in force, and the next
+  request goes with it. But the raise stopped the footer's repaint, so
+  `/thinking low` refused that way printed `✖ thinking switch failed` above
+  `🧠 off` while the next request went at `low`. The `/thinking` picker showed
+  `🧠 low`. `/model gwa/m2` and the `/model` picker left `✱ m1` over a request
+  sent as `m2`, and a refused `/settings` thinking cycle left the previous
+  level. The pick after `/login` had the same gap. Each of these now repaints the
+  footer on its failure path too, context meter included: a refused
+  `/model gwa/m2` onto a 32K model showed `✱ m2` beside `◔ 0% · 0/128K`, the
+  previous model's window. The repaint after a rolled-back `/agents use` puts
+  the meter back on the kept model's window too, also during a turn, where it
+  stayed on the abandoned model's. `/thinking <level>` also repaints by itself,
+  as the picker does, rather than only through the change event. An
+  extension's own `ctx.set_model` or `ctx.set_thinking_level` refused this way
+  still leaves the footer stale.
 - **A compaction or a branch summary whose summary request hits a provider `502` or
   a transient OAuth refresh failure is retried, as the turn is (#409, ADR-0128
   amendment 2026-10-21).** `/compact`, rpc `compact`, an extension's `ctx.compact()`
