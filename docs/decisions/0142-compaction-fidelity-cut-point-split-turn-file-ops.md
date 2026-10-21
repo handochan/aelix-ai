@@ -36,7 +36,9 @@ test-adequacy gaps (closed with additive tests, no production-code change).
   cuts: any `message` whose role is **not** `toolResult`, plus `branch_summary`
   / `custom_message` control entries.
 - `find_cut_point(...)` — backward token walk over message entries; once
-  accumulated `estimate_tokens` ≥ `KEEP_RECENT_TOKENS` (20000), snap to the
+  accumulated `estimate_tokens` ≥ `KEEP_RECENT_TOKENS` (20000; *2026-10-22, #469:
+  settings.json `compaction.keepRecentTokens`, this its fallback, passed as
+  `prepare_compaction(..., settings=)` - ADR-0126 amendment*), snap to the
   first valid cut point ≥ that index, then back the cut up over control entries
   so the first-kept entry is a `message`/`compaction`. Returns
   `(first_kept_entry_index, turn_start_index, is_split_turn)`.

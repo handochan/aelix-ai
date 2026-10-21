@@ -524,9 +524,9 @@ class _MessageQueue:
 
 
 # pi parity (``settings-manager.ts:681-683``): default
-# ``compaction.reserveTokens`` is 16384. Aelix has no SettingsManager in core,
-# so the reserve is a module constant — same value, same ``shouldCompact``
-# semantics (``compaction.ts:219-222``).
+# ``compaction.reserveTokens`` is 16384. Since #469 the FALLBACK for settings.json
+# ``compaction.reserveTokens``, read at each check (``_compaction_policy``, at the end
+# of this module); same ``shouldCompact`` semantics (``compaction.ts:219-222``).
 _AUTO_COMPACT_RESERVE_TOKENS = 16384
 
 
@@ -1230,12 +1230,12 @@ class AgentHarness:
     def auto_compaction_enabled(self) -> bool:
         """Pi parity: ``session.autoCompactionEnabled``.
 
-        Sprint 6h₂ (P-252): real-source accessor used by the RPC
-        ``_handle_get_state`` handler — replaces the Sprint 6d hardcoded
-        ``True``. Toggled via :meth:`set_auto_compaction_enabled`.
+        #469: pi's getter IS ``getCompactionEnabled()`` - settings.json ``compaction.enabled``
+        when it holds a boolean, else the harness's toggle (:meth:`set_auto_compaction_enabled`),
+        as #408 does for retry. RPC ``get_state``; the threshold and overflow checks read it.
         """
 
-        return self._state.auto_compaction_enabled
+        return _compaction_enabled(_compaction_policy(self._settings_manager), self._state)
 
     @property
     def auto_retry_enabled(self) -> bool:
@@ -1987,7 +1987,7 @@ class AgentHarness:
                 # A nested compaction leaves its prompt's queue to the release.
                 await self._drain_pending_session_writes()
             branch_entries = await self._session.get_branch()
-            preparation = prepare_compaction(branch_entries, custom_instructions)
+            preparation = prepare_compaction(branch_entries, custom_instructions, settings=_compaction_settings(self))
             if preparation is None:
                 raise AgentHarnessError(
                     "invalid_state", "Nothing to compact"
@@ -2109,11 +2109,11 @@ class AgentHarness:
         threshold path only (Sprint 6h₁₈ v1, ADR-0126).
 
         Called from :meth:`prompt` after ``_run`` returns, still under the
-        prompt's claim (``claim``, #334). When the
-        ``auto_compaction_enabled`` flag is set (default ``True``) and the
+        prompt's claim (``claim``, #334). When :attr:`auto_compaction_enabled`
+        is true (settings.json ``compaction.enabled``, default ``True``) and the
         most-recent assistant message's context-token count exceeds
-        ``context_window - reserveTokens`` (pi ``compaction.ts:219-222``
-        ``shouldCompact``), invokes :meth:`compact` — the path manual
+        ``context_window - compaction.reserveTokens`` (read now, #469; pi
+        ``compaction.ts:219-222`` ``shouldCompact``), invokes :meth:`compact` — the path manual
         ``/compact`` uses (ADR-0117), nested under that claim so that it needs
         no idle harness. Called without a claim (the unit tests, on an idle
         harness) it takes the public path unchanged. The complementary overflow path
@@ -2138,7 +2138,7 @@ class AgentHarness:
             get_latest_compaction_boundary_ms,
         )
 
-        if not self._state.auto_compaction_enabled:
+        if not _compaction_enabled(policy := _compaction_policy(self._settings_manager), self._state):
             return
         if self._session is None:
             # Aelix in-memory backward-compat path (ADR-0022) — no session
@@ -2172,8 +2172,8 @@ class AgentHarness:
         else:
             context_tokens = calculate_context_tokens(last_assistant.usage)
 
-        # pi ``compaction.ts:219-222`` ``shouldCompact``.
-        if context_tokens > context_window - _AUTO_COMPACT_RESERVE_TOKENS:
+        # pi ``compaction.ts:219-222`` ``shouldCompact``; ``compaction.reserveTokens`` (#469).
+        if context_tokens > context_window - policy.reserve_tokens:
             # Issue #4 (FU2) — compaction-boundary staleness guards (pi parity),
             # consulted ONLY once the threshold trips so a non-triggering turn pays
             # no ``get_branch()`` boundary read. ``boundary_ms`` is the latest
@@ -2216,7 +2216,7 @@ class AgentHarness:
             except AgentHarnessError as exc:
                 # W-review HIGH-2 fix: a "Nothing to compact" raise means
                 # ``prepare_compaction`` found no viable cut (small kept-tail
-                # under ``KEEP_RECENT_TOKENS``, or no message entries). The
+                # under ``compaction.keepRecentTokens``, or no message entries). The
                 # threshold check tripped but there's nothing to do; swallow
                 # so the auto-trigger does not turn a successful turn into
                 # an exception. Any OTHER ``AgentHarnessError`` still
@@ -2261,10 +2261,10 @@ class AgentHarness:
             get_latest_compaction_boundary_ms,
         )
 
-        # pi ``:1812-1813`` — gated by the compaction-enabled flag. Also keeps
+        # pi ``:1812-1813`` — gated by ``compaction.enabled`` (#469). Also keeps
         # the in-memory backward-compat path (no Session → ``compact()`` raises)
         # and the model-less path a no-op, mirroring :meth:`_check_auto_compaction`.
-        if not self._state.auto_compaction_enabled:
+        if not _compaction_enabled(_compaction_policy(self._settings_manager), self._state):
             return False
         if self._session is None:
             return False
@@ -3045,11 +3045,11 @@ class AgentHarness:
         """Pi parity: ``session.setAutoCompactionEnabled``
         (``rpc-mode.ts:516-519`` + ``agent-session.ts:2026-2034``).
 
-        Sprint 6h₂ (P-249): state-only setter — the auto-compaction
-        trigger itself lands in a later sprint. P-4 setter-no-emit.
+        #469: pi's is ``settingsManager.setCompactionEnabled`` - it writes ``compaction.enabled``
+        to the GLOBAL settings.json. Same when a manager is attached (as #408's retry). P-4 no-emit.
         """
 
-        self._state.auto_compaction_enabled = bool(enabled)
+        _set_compaction_enabled(self._state, self._settings_manager, bool(enabled))
 
     def set_auto_retry_enabled(self, enabled: bool) -> None:
         """Pi parity: ``session.setAutoRetryEnabled``
@@ -6147,3 +6147,115 @@ async def _summary_backoff_aborted(event: asyncio.Event, delay_ms: float) -> boo
     else:
         await asyncio.sleep(0)
     return event.is_set()
+
+
+# === #469 — compaction reads settings.json's ``compaction`` block =============
+#
+# pi reads ``settingsManager.getCompactionSettings(model)`` at every threshold check,
+# overflow recovery and compaction (``agent-session.ts`` ``_checkCompaction``,
+# ``_runAutoCompaction``, ``compact`` @ fdce48eb4). aelix read none of it: the reserve,
+# the kept tail and ``enabled`` were module constants and an in-memory toggle. Same
+# shape as #408's retry - read at the decision, the module constant AS IT IS NOW when
+# the settings do not carry a usable value. Here at the end of the module so that no
+# locked citation of this file moves.
+
+if TYPE_CHECKING:
+    from aelix_ai.settings.types import CompactionSettings
+
+
+@dataclass(frozen=True)
+class _CompactionPolicy:
+    """settings.json ``compaction`` for one check or one compaction (#469)."""
+
+    enabled: bool | None  # ``None``: the settings do not say; the harness's toggle answers
+    reserve_tokens: int
+    keep_recent_tokens: int
+
+
+def _compaction_tokens(value: object) -> int | None:
+    """A ``compaction.*`` token count from settings, or ``None`` to use the fallback.
+
+    pi takes a non-negative safe integer and throws on anything else
+    (``getCompactionTokenSetting``, ``settings-manager.ts:833-859`` @ fdce48eb4). aelix
+    ignores such a value instead: the settings loader keeps whatever JSON the file holds,
+    and a raise here would fail the turn that just succeeded (#408's rule for
+    ``retry.*``). ``20000.0`` counts as ``20000``, the number JavaScript reads.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not value.is_integer():  # 1.5, NaN, ±inf
+        return None
+    if not 0 <= value <= _MAX_SAFE_INTEGER:
+        return None
+    return int(value)
+
+
+def _compaction_policy(settings_manager: SettingsManager | None) -> _CompactionPolicy:
+    """Read settings.json's ``compaction`` block for one decision (#469).
+
+    Read when it is needed, as pi does, so a ``/reload`` (or any change the manager
+    holds) applies to the next check. A ``compaction`` that is not an object
+    (``"compaction": false``) is ignored as a whole, a non-boolean ``enabled`` too; a
+    token count the settings do not carry falls back to ``_AUTO_COMPACT_RESERVE_TOKENS``
+    or ``session.compaction.KEEP_RECENT_TOKENS``, read now.
+    """
+
+    from aelix_agent_core.session import compaction  # lazy: it imports this module
+
+    block: object = None
+    if settings_manager is not None:
+        block = settings_manager.get_settings().compaction
+    enabled = getattr(block, "enabled", None)
+    reserve = _compaction_tokens(getattr(block, "reserve_tokens", None))
+    keep = _compaction_tokens(getattr(block, "keep_recent_tokens", None))
+    return _CompactionPolicy(
+        enabled=enabled if isinstance(enabled, bool) else None,
+        reserve_tokens=reserve if reserve is not None else _AUTO_COMPACT_RESERVE_TOKENS,
+        keep_recent_tokens=keep if keep is not None else compaction.KEEP_RECENT_TOKENS,
+    )
+
+
+def _compaction_enabled(policy: _CompactionPolicy, state: AgentState) -> bool:
+    """settings.json ``compaction.enabled`` when it says, else the harness's toggle."""
+
+    if policy.enabled is not None:
+        return policy.enabled
+    return state.auto_compaction_enabled
+
+
+def _compaction_settings(harness: AgentHarness) -> CompactionSettings:
+    """The resolved settings one compaction runs with (#469).
+
+    pi hands ``prepareCompaction`` its ``getCompactionSettings(model)`` and the result
+    carries them as ``preparation.settings``, which a ``session_before_compact`` handler
+    reads; here the same three values, resolved as :func:`_compaction_policy` does.
+    """
+
+    from aelix_ai.settings.types import CompactionSettings
+
+    policy = _compaction_policy(harness._settings_manager)
+    return CompactionSettings(
+        enabled=_compaction_enabled(policy, harness._state),
+        reserve_tokens=policy.reserve_tokens,
+        keep_recent_tokens=policy.keep_recent_tokens,
+    )
+
+
+def _set_compaction_enabled(
+    state: AgentState, settings_manager: SettingsManager | None, enabled: bool
+) -> None:
+    """:meth:`AgentHarness.set_auto_compaction_enabled` (rpc ``set_auto_compaction``).
+
+    pi's setter is ``settingsManager.setCompactionEnabled(enabled)``
+    (``agent-session.ts`` ``setAutoCompactionEnabled`` @ fdce48eb4), which writes
+    ``compaction.enabled`` into the GLOBAL settings.json, so the toggle outlasts the
+    session. Same here when a manager is attached; the harness's own toggle is set
+    either way. The settings write goes first, as #408's does: when it raises, rpc
+    answers ``success: false`` and the toggle has not moved. A project settings.json
+    that sets ``compaction.enabled`` itself still wins in the merged view, as in pi.
+    """
+
+    if settings_manager is not None:
+        settings_manager.set_compaction_enabled(enabled)
+    state.auto_compaction_enabled = enabled

@@ -14,7 +14,7 @@ prints one. That is why every cross-directory link here is an absolute URL —
   common flags, and the interactive TUI.
 - [providers-and-models.md](providers-and-models.md) — selecting and
   switching models, how a `--model` string finds its provider, automatic
-  retry, thinking levels, and what this build can run.
+  retry, automatic compaction, thinking levels, and what this build can run.
 - [credentials.md](credentials.md) — provider API keys: the environment
   variables, `--api-key`, a `models.json` `apiKey`, and `/login`.
 - [models-json.md](models-json.md) — `~/.aelix/agent/models.json`: add custom

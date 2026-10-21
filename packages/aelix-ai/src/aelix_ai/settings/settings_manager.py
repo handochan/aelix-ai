@@ -1269,9 +1269,9 @@ class SettingsManager:
         return comp.enabled
 
     def set_compaction_enabled(self, enabled: bool) -> None:
-        """Pi parity: ``settings-manager.ts::setCompactionEnabled`` (line 672-679)."""
+        """Pi parity: ``setCompactionEnabled`` (:672-679); a non-object ``compaction`` is replaced (#469)."""
 
-        if self._global_settings.compaction is None:
+        if not isinstance(self._global_settings.compaction, CompactionSettings):  # None, true, "off", []
             self._global_settings.compaction = CompactionSettings()
         self._global_settings.compaction.enabled = enabled
         self._mark_modified("compaction", "enabled")

@@ -36,6 +36,17 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0126 — Auto-compaction trigger](0126-sprint-6h18-auto-compaction-trigger.md)
+  (amended 2026-10-22; #469). The harness reads settings.json `compaction` at each decision, as
+  pi's `getCompactionSettings` and #408's `retry.*`: `enabled` gates the threshold and the
+  overflow compactions and is what `get_state`'s `autoCompactionEnabled` reports, rpc
+  `set_auto_compaction` writes it to the global file as pi does, `reserveTokens` sets the
+  threshold and `keepRecentTokens` every compaction's cut (`/compact` too; passed as
+  `prepare_compaction(..., settings=)` and carried as `preparation.settings`). The constants are
+  the fallback, read now; a value pi would refuse with an error is ignored instead. Not covered:
+  pi's `compaction.modelOverrides`, `branchSummary.*`, `/context`'s buffer row. Notes in ADR-0128
+  and ADR-0142.
+
 - [0142 — Compaction fidelity: entry-level cut point, split turn, file ops and the summary cap](0142-compaction-fidelity-cut-point-split-turn-file-ops.md)
   (amended 2026-10-22; #506). The history, split-turn prefix and `/tree` branch summaries ask at
   the session's thinking level, fitted to the model (pi `createSummarizationOptions`; `off` and a

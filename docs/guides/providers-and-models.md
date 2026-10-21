@@ -486,9 +486,10 @@ Some endpoints refuse a request whose conversation plus its `maxTokens` is
 larger than the window (MiniMax's Anthropic-compatible API, vLLM, many
 OpenAI-compatible servers). Until this release aelix sent the whole cap there,
 so once a conversation passed `contextWindow - maxTokens` every turn failed -
-before auto-compaction, which waits for `contextWindow - 16384`, was reached
-(#563). Near a full window an answer can now stop at the smaller limit
-(`stop_reason` `length`) instead; the compaction after that turn makes room.
+before auto-compaction, which waits for `contextWindow - 16384` by default
+([automatic compaction](#automatic-compaction)), was reached (#563). Near a
+full window an answer can now stop at the smaller limit (`stop_reason`
+`length`) instead; the compaction after that turn makes room.
 
 Per adapter: Anthropic's Messages API always sends a cap, so the catalog's is
 cut, and with a thinking budget the budget fits inside it (under 2048 tokens of
@@ -502,6 +503,60 @@ compaction. The errors endpoints give when the conversation plus the cap is too
 large - Anthropic's ``input length and `max_tokens` exceed context limit``,
 Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - count
 as a context overflow, like `prompt is too long`.
+
+## Automatic compaction
+
+When a conversation gets close to the model's context window, aelix replaces
+its older part with a summary, as `/compact` does, after the turn that brought
+it there. It does the same when a provider refuses a request as too long, and
+then sends that turn again, once. The `compaction` block of `settings.json`
+(`~/.aelix/agent/settings.json`; a trusted project's `.aelix/settings.json`
+overrides it key by key) sets when and how much, with pi's keys and defaults:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `compaction.enabled` | `true` | `false` turns both automatic compactions off; `/compact` still works. |
+| `compaction.reserveTokens` | `16384` | Compact once the conversation is larger than `contextWindow - reserveTokens`. |
+| `compaction.keepRecentTokens` | `20000` | How much of the latest conversation every compaction (`/compact` too) keeps as it is; the older part is summarized. |
+
+```json
+{ "compaction": { "reserveTokens": 60000, "keepRecentTokens": 10000 } }
+```
+
+compacts a conversation with a 200000-token model once it passes 140000
+tokens, and keeps about its last 10000 tokens. The size is the last answer's
+reported usage (after a failed answer, an estimate). The values are read each
+time they are needed, so a `/reload` after editing the file applies them to the
+next turn. The TUI, `-p`, `--mode json` and `--mode rpc` use them; a delegated
+agent's run uses the global file's values, as for `retry`.
+
+A token count must be a whole number from `0` to 2^53 - 1. Anything else - a
+string such as `"20000"`, a negative or fractional number, `null` - is ignored
+and the default applies, where pi stops with `Invalid compaction.reserveTokens
+setting`. `0` is a value: `"keepRecentTokens": 0` keeps only the last message,
+and `"reserveTokens": 0` compacts only once the conversation is larger than the
+window. An `enabled` that is not `true` or `false`, or a `compaction` that is
+not an object, is ignored too. When `keepRecentTokens` covers the whole
+conversation there is nothing to summarize: `/compact` answers `Nothing to
+compact` and the automatic compaction does nothing.
+
+rpc `set_auto_compaction` sets `compaction.enabled` in the global
+`settings.json`, as pi does, so it outlasts the session: later TUI, `-p` and
+rpc runs follow it too, until something sets it back. `get_state`'s
+`autoCompactionEnabled` reports the value in force. A project
+`.aelix/settings.json` that sets `compaction.enabled` itself still wins over
+it, in pi as here; the harness's own toggle is set as well, for a project whose
+`"compaction"` is not an object. The file is written in the background after
+the answer, as for `set_auto_retry`.
+
+Until this release none of these keys was read: auto-compaction waited for
+`contextWindow - 16384`, every compaction kept about 20000 tokens, so
+`"keepRecentTokens": 20` still answered `Nothing to compact` in a short
+session, `"enabled": false` stopped nothing, and `set_auto_compaction` lasted
+only as long as its rpc session (#469). The `aelix-server` WebSocket bridge has
+no settings file and keeps the defaults. Not read yet: pi's per-model
+`compaction.modelOverrides`, and `branchSummary.*`. The TUI's `/context` still
+shows the default `16384` as its `autocompact buffer`.
 
 ## Adapter coverage — what this build can actually run
 

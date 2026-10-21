@@ -42,7 +42,7 @@ from aelix_agent_core.session.entries import SessionTreeEntry
 from aelix_agent_core.types import AgentMessage
 
 if TYPE_CHECKING:
-    pass
+    from aelix_ai.settings.types import CompactionSettings
 
 
 # === Summarization prompt constants (Pi parity, ``compaction.ts``) =========
@@ -131,13 +131,13 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 # in the serialized conversation so a single huge result can't dominate.
 TOOL_RESULT_MAX_CHARS = 2000
 
-# Pi ``findCutPoint`` keep-recent budget. Messages whose accumulated (reverse)
-# token estimate is within this budget stay; everything older is summarized.
+# Pi ``findCutPoint`` keep-recent budget, the default of settings.json ``compaction.keepRecentTokens``
+# (#469: the harness passes that setting; this when it carries none). Within it the tail stays.
 KEEP_RECENT_TOKENS = 20000
 
-# Pi ``DEFAULT_COMPACTION_SETTINGS.reserveTokens`` (compaction.ts). Mirrors
-# ``core._AUTO_COMPACT_RESERVE_TOKENS`` (same value, separate constants because
-# core has no SettingsManager). It no longer sizes a summary's output: the
+# Pi ``DEFAULT_COMPACTION_SETTINGS.reserveTokens`` (compaction.ts). Only the harness's
+# threshold reads ``compaction.reserveTokens``, with ``core._AUTO_COMPACT_RESERVE_TOKENS``
+# as its fallback (#469); nothing reads this one. It no longer sizes a summary's output: the
 # ``floor(0.8 * RESERVE_TOKENS)`` / ``floor(0.5 * ...)`` caps of P0 #6 are gone
 # (#506; pi #11036 keeps ``_reserveTokens`` as an unused parameter).
 RESERVE_TOKENS = 16384
@@ -188,11 +188,11 @@ class CompactionPreparation:
     # into the ``<read-files>`` / ``<modified-files>`` summary tail + details.
     # Defaults to ``None`` so legacy test constructions (which pass only the
     # first few fields) still work — ``compact`` coerces ``None`` to an empty
-    # :func:`create_file_ops`. ``settings`` remains an ``Any`` placeholder
-    # (aelix uses module constants ``RESERVE_TOKENS`` / ``KEEP_RECENT_TOKENS``
-    # instead of a per-call CompactionSettings object).
+    # :func:`create_file_ops`. ``settings`` is pi's ``preparation.settings``: the
+    # resolved ``CompactionSettings`` the harness compacts with (#469), ``None`` when
+    # the caller of :func:`prepare_compaction` passed none (the constants applied).
     file_ops: FileOperations | None = None
-    settings: Any | None = None
+    settings: CompactionSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -605,6 +605,8 @@ def _get_message_from_entry_for_compaction(entry: SessionTreeEntry) -> Any | Non
 def prepare_compaction(
     path_entries: list[SessionTreeEntry],
     custom_instructions: str | None = None,
+    *,
+    settings: CompactionSettings | None = None,
 ) -> CompactionPreparation | None:
     """Pi ``prepareCompaction`` (``compaction.ts``).
 
@@ -623,12 +625,12 @@ def prepare_compaction(
     - ``file_ops`` seeded from the previous compaction's ``details`` then
       folded over the summarized + turn-prefix messages.
 
-    Returns ``None`` when there is nothing to compact (empty entries, the tail
-    is already a compaction, or the cut yields no first-kept id) so the harness
-    short-circuits with "Nothing to compact".
+    Returns ``None`` when there is nothing to compact (no entries, a compaction at the
+    tail, or no first-kept id) so the harness short-circuits with "Nothing to compact".
 
-    The ``custom_instructions`` parameter is accepted to match the call site
-    (``agent-harness.ts``) but threaded into the summarizer call separately.
+    ``custom_instructions`` is threaded into the summarizer call separately. ``settings``
+    (pi's second argument; the harness's resolved settings.json ``compaction``, #469) gives the
+    cut's ``keep_recent_tokens`` (``None``: :data:`KEEP_RECENT_TOKENS`) and is carried as is.
     """
 
     if not path_entries:
@@ -636,8 +638,6 @@ def prepare_compaction(
     if path_entries[-1].type == "compaction":
         # Already compacted to the tail.
         return None
-
-    _ = custom_instructions  # accepted for Pi-parity signature (threaded at summarize time)
 
     # Locate the most recent compaction so a second pass only re-summarizes
     # what the first kept (boundary_start) + can seed file-ops from its details.
@@ -666,17 +666,17 @@ def prepare_compaction(
 
     boundary_end = len(path_entries)
 
-    # tokens_before is over the WHOLE live context (build_session_context honors
-    # the prior compaction boundary already), matching pi's
-    # estimateContextTokens(buildSessionContext(pathEntries).messages).
+    # tokens_before is over the WHOLE live context (build_session_context honors the prior
+    # compaction boundary already), as pi's estimateContextTokens(buildSessionContext(...).messages).
     from aelix_agent_core.session.context import build_session_context
 
     tokens_before = estimate_context_tokens(
         build_session_context(path_entries).messages
     ).tokens
 
+    keep = None if settings is None else settings.keep_recent_tokens
     cut_point = find_cut_point(
-        path_entries, boundary_start, boundary_end, KEEP_RECENT_TOKENS
+        path_entries, boundary_start, boundary_end, KEEP_RECENT_TOKENS if keep is None else keep
     )
     first_kept_entry = path_entries[cut_point.first_kept_entry_index]
     if not first_kept_entry.id:
@@ -707,8 +707,7 @@ def prepare_compaction(
             if msg is not None:
                 turn_prefix_messages.append(msg)
 
-    # Nothing actually summarizable (the kept-recent budget covers everything
-    # in-bounds) — short-circuit so the harness reports "Nothing to compact".
+    # Nothing summarizable (the kept-recent budget covers it all): "Nothing to compact".
     if not messages_to_summarize and not turn_prefix_messages:
         return None
 
@@ -727,6 +726,7 @@ def prepare_compaction(
         tokens_before=tokens_before,
         previous_summary=previous_summary,
         file_ops=file_ops,
+        settings=settings,
     )
 
 

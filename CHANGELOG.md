@@ -655,6 +655,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`settings.json`'s `compaction` block now takes effect: `enabled`,
+  `reserveTokens` and `keepRecentTokens` (#469, ADR-0126 amendment
+  2026-10-22).** None of the three was read, as `retry.*` was not before #408:
+  auto-compaction always waited for `contextWindow - 16384`, every compaction
+  kept about the last 20000 tokens, and `"enabled": false` stopped nothing.
+  Measured on the base with the real `aelix --mode rpc` and a local server:
+  with `"keepRecentTokens": 20`, `compact` after three short turns answered
+  `Nothing to compact`; with `"reserveTokens": 60000` no compaction ran at
+  150000 of a 200000 window; with `"enabled": false` the threshold and the
+  overflow compactions both still ran and `get_state` said
+  `autoCompactionEnabled: true`. Now `enabled` turns both automatic compactions
+  off (`/compact` still works), `reserveTokens` sets the threshold and
+  `keepRecentTokens` how much every compaction keeps, `/compact` included;
+  pi's keys and defaults, read each time they are needed (a `/reload` applies
+  them). A value pi refuses with an error - a string, a negative or fractional
+  number, `null` - is ignored and the default applies. rpc
+  `set_auto_compaction` now writes `compaction.enabled` to the global
+  `settings.json`, as pi does, so it outlasts the session (before, it held
+  only for that rpc session); a project's own `compaction.enabled` still wins.
+  An extension's `session_before_compact` handler sees the values in force as
+  `preparation.settings` (it was `None`). Not read yet: pi's per-model
+  `compaction.modelOverrides` and `branchSummary.*`; the TUI's `/context` still
+  shows 16384 as its `autocompact buffer`.
+
 - **Compaction and `/tree` summaries work on models that cannot switch reasoning
   off: they ask at the session's thinking level, set no output cap of their own,
   and a summary cut at its limit is refused (#506, ADR-0142 amendment
@@ -709,7 +733,7 @@ unwritten. Add them with the next release.
   Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - and
   pi's newer z.ai (`Prompt too long`, `Prompt exceeds max length`), DS4 and
   DashScope texts now count as a context overflow, so overflow recovery
-  compacts. Not changed: the 16384 threshold itself (#469); the compaction
+  compacts. Not changed: the threshold itself (configurable since #469, above); the compaction
   summary's own limits went with #506 (above). Found while measuring and left for a follow-up:
   after a session's first compaction no automatic compaction runs again.
 
