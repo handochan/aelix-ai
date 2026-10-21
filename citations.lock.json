@@ -712,19 +712,19 @@
    "mapping (minimal/low → ``\"low\"``, medium → ``\"medium\"``, else ``\"high\"``).",
    "The coarse ``\"high\"`` for ``xhigh`` and ``max`` is pi's too"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:1024-1024": [
+  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:1029-1029": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:259-259": [
+  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:260-260": [
    "transformed = transform_messages("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:292-292": [
+  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:293-293": [
    "if isinstance(block, TextContent):"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:296-296": [
+  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:297-297": [
    "sig = resolve_thought_signature(same, block.text_signature)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:478-478": [
+  "packages/aelix-ai/src/aelix_ai/providers/_google_shared.py:479-479": [
    "decl[\"parametersJsonSchema\"] = params"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/_openai_responses_shared.py:171-171": [
@@ -742,21 +742,21 @@
    "if same_model:",
    "out.append(block)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:205-206": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:1021-1021": [
+   "yield ThinkingDeltaEvent("
+  ],
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:206-207": [
    "if not (input_tokens or output_tokens or cache_read or cache_write):",
    "return None"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:255-255": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:256-256": [
    "_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:695-695": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:730-730": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:817-817": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:852-852": [
    "content=list(output_content),"
-  ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:986-986": [
-   "yield ThinkingDeltaEvent("
   ],
   "packages/aelix-ai/src/aelix_ai/providers/google_generative_ai.py:309-309": [
    "clamped = clamp_thinking_level(model, options.reasoning)"
@@ -775,14 +775,14 @@
   "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:664-664": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1233-1234": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1253-1254": [
    "if thinking_index is None:",
    "thinking_index = len(output_content)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1259-1259": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1279-1279": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1382-1390": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1402-1410": [
    "output = AssistantMessage(",
    "content=list(output_content),",
    "stop_reason=stop_reason,",
@@ -792,16 +792,16 @@
    "provider=model.provider,",
    "model=model.id,"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1501-1501": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1521-1521": [
    "reasoning_effort = clamp_thinking_level(model, opts.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:339-339": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:341-341": [
    "transformed = transform_messages("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:505-505": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:507-507": [
    "params = getattr(tool, \"parameters\", None) or {"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:977-984": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:997-1004": [
    "return {",
    "\"input\": int(prompt),",
    "\"output\": int(completion),",
@@ -811,7 +811,7 @@
    "\"cache_read\": int(cached),",
    "}"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_responses.py:598-598": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_responses.py:614-614": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:108-108": [

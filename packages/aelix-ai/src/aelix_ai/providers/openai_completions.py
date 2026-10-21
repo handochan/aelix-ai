@@ -60,6 +60,8 @@ from aelix_ai.providers._streaming_json import parse_streaming_json
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
+    clamp_max_tokens_to_context,
+    estimate_context_tokens,
     estimate_payload_tokens,
 )
 from aelix_ai.providers._transform_messages import transform_messages
@@ -648,6 +650,7 @@ def _native_effort(model: Model, effort: str) -> str | int:
 def _apply_max_tokens(
     params: dict[str, Any],
     model: Model,
+    context: Context,
     options: OpenAICompletionsOptions | SimpleStreamOptions | None,
     compat: OpenAICompletionsCompat,
 ) -> None:
@@ -672,14 +675,26 @@ def _apply_max_tokens(
     ``context_window - estimate`` would still 400 whenever the estimate ran low,
     whereas an over-high estimate here costs only a cap nobody could have used.
 
-    A *caller-supplied* ``options.max_tokens`` still wins unconditionally (P0
-    #6): the compaction summarizer's ``floor(0.8 * reserveTokens)`` is an
-    explicit, intentionally-small cap, never the full window.
+    A *caller-supplied* ``options.max_tokens`` is always sent (P0 #6) - it
+    cannot be omitted, because it is the caller's bound - but since #563 it is
+    cut to what the window still holds, pi's ``clampMaxTokensToContext``
+    (``simple-options.ts:18-22`` at ``fdce48eb4``): ``min(cap, context_window -
+    estimated context - 4096)``, at least 1. Before, it "won unconditionally",
+    on the reasoning that the compaction summarizer's ``floor(0.8 *
+    reserveTokens)`` is small; it is small, but a compaction is asked for when
+    the window is nearly full, so on an endpoint that checks ``prompt +
+    max_tokens <= context_window`` the summary request was the one request that
+    did not fit. The model-default rule above stays a divergence from pi,
+    which clamps the default too (pi ``09f105957``): omission leaves the
+    provider the whole remaining window, and ADR-0114 measured it working.
+    #563 changes only its prompt estimate, which is now the larger of the
+    payload's characters and the context anchored on the last answer's
+    reported usage (:func:`estimate_context_tokens`).
     """
 
     options_max_tokens = getattr(options, "max_tokens", None)
     if options_max_tokens is not None and options_max_tokens > 0:
-        cap = options_max_tokens
+        cap = clamp_max_tokens_to_context(model, context, options_max_tokens)
     else:
         cap = getattr(model, "max_tokens", 0) or 0
         if cap <= 0:
@@ -688,12 +703,17 @@ def _apply_max_tokens(
         # ``context_window == 0`` means "unknown" — no arithmetic is possible,
         # so keep the catalog cap rather than silently dropping it.
         if context_window > 0:
-            required = (
+            # #563: the payload's characters alone under-count a long
+            # conversation whose text tokenizes denser than 4 characters a token
+            # (code does), so the cap went out and an endpoint that checks the
+            # sum rejected it. The larger of that estimate and the one anchored
+            # on the last answer's reported usage decides.
+            prompt = max(
                 estimate_payload_tokens(params.get("messages"))
-                + estimate_payload_tokens(params.get("tools"))
-                + OUTPUT_CAP_MARGIN_TOKENS
+                + estimate_payload_tokens(params.get("tools")),
+                estimate_context_tokens(context),
             )
-            if cap + required > context_window:
+            if cap + prompt + OUTPUT_CAP_MARGIN_TOKENS > context_window:
                 return
 
     if compat.max_tokens_field == "max_tokens":
@@ -768,7 +788,7 @@ def build_params(
     # the prompt estimate below sees the whole payload (the live 400 counted
     # "886 of text input, 1276 of tool input" — tools are a third of a
     # first-turn prompt and must not be ignored).
-    _apply_max_tokens(params, model, options, compat)
+    _apply_max_tokens(params, model, context, options, compat)
 
     tool_choice = getattr(options, "tool_choice", None)
     if tool_choice is not None:

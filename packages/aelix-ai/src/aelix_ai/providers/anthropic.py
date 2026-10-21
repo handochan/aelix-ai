@@ -78,6 +78,7 @@ from aelix_ai.providers._stream_close import close_provider_client
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
+    context_output_room,
     estimate_payload_tokens,
 )
 from aelix_ai.streaming import (
@@ -345,7 +346,24 @@ already doomed and the provider's own "prompt is too long" is the honest error.
 
 
 def _effective_output_cap(model: Model, context: Context) -> int:
-    """The model-default output cap, clamped only when the catalog row is UNSAT.
+    """The model-default output cap, clamped here only when the catalog row is UNSAT.
+
+    **#563 (2026-10-21) — this is no longer the last word on the cap.**
+    :func:`stream_anthropic` now cuts whatever this returns, and a caller's own
+    ``max_tokens``, and the cap after the thinking budget is added, to
+    ``context_window - estimated context - 4096`` as pi does
+    (``clampMaxTokensToContext``, ``simple-options.ts:18-22`` at ``fdce48eb4``;
+    ADR-0114's 2026-10-21 amendment). The measurement below still stands — the
+    first-party endpoint accepted ``prompt + max_tokens > context_window`` on
+    claude-haiku-4-5 — but it is not the only endpoint that speaks this API:
+    MiniMax's Anthropic-compatible API rejects that sum (pi #6061), and a
+    request it rejects fails with an error auto-compaction never sees, every
+    turn, until the window overflows outright. Against that, the clamp costs a
+    first-party answer at most the 4096 tokens of margin plus the estimate's
+    error, and only once the conversation leaves less than the catalog cap: an
+    answer there could never have run past the window anyway. What follows is
+    the UNSAT protection, which is kept: the window clamp alone cannot stand in
+    for an output ceiling a broken row never encodes.
 
     ``max_tokens`` is MANDATORY in the Messages API, so — unlike the
     openai-completions guard (#144), which *omits* a cap that does not fit — the
@@ -364,13 +382,16 @@ def _effective_output_cap(model: Model, context: Context) -> int:
 
     It does **not** enforce ``prompt + max_tokens <= context_window``: a
     142514-token prompt with ``max_tokens=64000`` on claude-haiku-4-5 (window
-    200000, sum 206514) was ACCEPTED and answered normally. That measurement is
-    what shapes this function. A prompt-aware clamp applied to *every* model —
+    200000, sum 206514) was ACCEPTED and answered normally (the request's
+    thinking setting was not recorded). That measurement is what shapes this
+    function. It concluded that a prompt-aware clamp applied to *every* model —
     the shape the openai-completions guard uses — would shrink ``max_tokens``
     below the catalog cap on long prompts for well-behaved models like
-    claude-opus-4-7 and truncate answers Anthropic would gladly have produced.
-    That is a real regression bought for nothing, because rule (3) does not
-    exist.
+    claude-opus-4-7 and truncate answers Anthropic would gladly have produced,
+    "a real regression bought for nothing, because rule (3) does not exist".
+    #563 weighs it the other way for the endpoints where rule (3) does exist
+    (top of this docstring); the clamp it added lives in the caller, so this
+    function still returns a satisfiable row's catalog cap unchanged.
 
     So the clamp fires on one condition only: ``max_tokens >= context_window``,
     the self-inconsistent row. No endpoint can emit its entire context as output
@@ -500,9 +521,23 @@ async def stream_anthropic(
         if opts.max_tokens is not None and opts.max_tokens > 0
         else model_output_cap
     )
+    # #563: pi ``buildBaseOptions`` + the re-clamp after the thinking budget
+    # (``anthropic-messages.ts:1004`` at ``fdce48eb4``). Both the base and the
+    # ceiling the thinking math may grow to are cut to what the window still
+    # holds (``context_window - estimated context - 4096``), so every branch of
+    # ``resolve_anthropic_thinking`` returns a cap that fits: no thinking, adaptive
+    # and "off" send the base; the budget path sends ``min(base + budget,
+    # ceiling)`` with the budget carved inside the ceiling; its "no room for a
+    # budget" fallback sends ``min(base, ceiling)``. A caller's ``max_tokens`` (a
+    # compaction or branch summary's) is cut the same way.
+    window_room = context_output_room(model, context)
+    output_ceiling = model_output_cap
+    if window_room is not None:
+        default_max_tokens = min(default_max_tokens, window_room)
+        output_ceiling = min(output_ceiling, window_room)
     # #250: clamp the requested level against what THIS row offers, the way
     # every sibling adapter already does (google_generative_ai.py:309,
-    # google_vertex.py:443, openai_responses.py:598, openai_completions.py:1501,
+    # google_vertex.py:443, openai_responses.py:614, openai_completions.py:1521,
     # openai_codex_responses.py:664). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
@@ -536,7 +571,7 @@ async def stream_anthropic(
         model,
         clamped_reasoning,
         default_max_tokens,
-        max_tokens_ceiling=model_output_cap,
+        max_tokens_ceiling=output_ceiling,
     )
     if oauth_mode:
         import logging as _logging
@@ -740,7 +775,7 @@ async def stream_anthropic(
             # anthropic turn as same-model and preserve its signed thinking
             # blocks on replay. Without this the shared transform always
             # treats prior thinking as cross-model → downgrades to text →
-            # signatures never travel back. Mirrors openai_completions.py:1382-1390.
+            # signatures never travel back. Mirrors openai_completions.py:1402-1410.
             output = replace(
                 output,
                 content=list(output_content),
@@ -819,7 +854,7 @@ async def stream_anthropic(
             error_message=error_msg,
             # ADR-0190: stamp provenance on the error path too so a partial
             # turn surfaced to observers still carries the same-model markers
-            # (mirrors the success build). openai_completions.py:1382-1390.
+            # (mirrors the success build). openai_completions.py:1402-1410.
             api=model.api,
             provider=model.provider,
             model=model.id,

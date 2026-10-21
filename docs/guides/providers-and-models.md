@@ -465,6 +465,38 @@ Until this release none of these keys was read: every retry ran three times at
 `retry.provider.*` (the provider SDK's own retries and timeout) is still not
 read.
 
+## How much a request asks the model to write
+
+A model's `maxTokens` (the catalog's, or yours in `models.json`) is the most
+one answer asks for. Each request asks for no more than the context window
+still holds: `contextWindow`, less the conversation so far, less 4096 tokens,
+and at least 1 - pi's rule. The conversation is counted as the last answer's
+reported usage plus an estimate of what came after it (3.5 characters a token,
+as pi counts; an image counts as 1372 tokens); after a compaction, until a new answer reports usage, the whole
+conversation is estimated. A compaction's or a branch summary's own limit is
+cut the same way.
+
+Some endpoints refuse a request whose conversation plus its `maxTokens` is
+larger than the window (MiniMax's Anthropic-compatible API, vLLM, many
+OpenAI-compatible servers). Until this release aelix sent the whole cap there,
+so once a conversation passed `contextWindow - maxTokens` every turn failed -
+before auto-compaction, which waits for `contextWindow - 16384`, was reached
+(#563). Near a full window an answer can now stop at the smaller limit
+(`stop_reason` `length`) instead; the compaction after that turn makes room.
+
+Per adapter: Anthropic's Messages API always sends a cap, so the catalog's is
+cut, and with a thinking budget the budget fits inside it (under 2048 tokens of
+room, budget thinking is off for that request). openai-completions sends its
+own cap only while it fits and otherwise leaves it out, so the provider uses
+whatever room is left. OpenAI Responses and Gemini send a cap only when the
+request sets one (a compaction does; Responses never sends less than 16, which
+the API refuses), and the Codex adapter sends none. A prompt that alone
+overflows the window still goes out, and the provider's error starts a
+compaction. The errors endpoints give when the conversation plus the cap is too
+large - Anthropic's ``input length and `max_tokens` exceed context limit``,
+Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - count
+as a context overflow, like `prompt is too long`.
+
 ## Adapter coverage — what this build can actually run
 
 The bundled model catalog spans nine wire protocols; this build ships adapters

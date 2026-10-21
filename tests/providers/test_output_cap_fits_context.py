@@ -137,14 +137,15 @@ def test_unknown_context_window_keeps_the_cap() -> None:
     assert _emitted_cap(params) == 4096
 
 
-# === A caller-supplied cap still wins =====================================
+# === A caller-supplied cap is always sent ================================
 
 
 def test_options_max_tokens_wins_over_the_guard() -> None:
     """P0 #6: the compaction summarizer's explicit small cap must survive.
 
-    It is intentionally small and is never the full window, so it bypasses the
-    context-window arithmetic entirely — even on the headroom-2 model.
+    It is never omitted, even on the headroom-2 model. Since #563 it is cut to
+    what the window still holds (``test_output_cap_clamp_563.py``); here the
+    window holds far more than 13107.
     """
 
     model = _model(context_window=262144, max_tokens=262142)

@@ -10,7 +10,10 @@ thinking, and the Gemini fallback is `-1` rather than the family ceiling;
 list, and `"off"` is answered by this adapter rather than falling through to a
 budget; see the Amendments and Correction 2 below; **2026-10-20 note (#433, ADR-0266)** —
 `max` is a seventh level after `xhigh`; on an adaptive row it sends the effort its map names, on a
-budget row it takes `xhigh`'s 32768 row; the Gemini resolvers read it as `xhigh`)
+budget row it takes `xhigh`'s 32768 row; the Gemini resolvers read it as `xhigh`;
+**2026-10-21 note (#563, ADR-0114)** — `stream_anthropic` cuts the budget path's base and its
+ceiling to what the context window still holds, so near a full window the budget shrinks and, under
+2048 tokens of room, budget thinking turns off by Correction 2's rule)
 Date: 2026-06-17
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -552,3 +555,16 @@ first-party ids: those five plus the `claude-opus-4-7` control. The 17 mirror
 rows need credentials nobody in this repo has and are unverified in both
 directions (they were also unverified while they were building a request their
 underlying model rejects).
+
+## Note (2026-10-21, #563) — the budget is carved inside what the window still holds
+
+ADR-0114's 2026-10-21 amendment cuts every Anthropic request's cap to `context_window -
+estimated context - 4096` (pi `clampMaxTokensToContext`). `stream_anthropic` applies it to both
+arguments of `resolve_anthropic_thinking`: the base (`options.max_tokens`, else the catalog cap or
+`_effective_output_cap`'s UNSAT ceiling) and `max_tokens_ceiling`. The carve above is unchanged —
+the budget is `min(B, ceiling - 1024)` and the request `min(base + budget, ceiling)` — so near a
+full window the ceiling, not the catalog, bounds both, and below 2048 tokens of room Correction 2's
+"an unbuildable budget disables thinking" rule now fires on a long conversation too, not only on a
+small `maxTokens` override. pi does the same in a different order: it carves first and re-clamps
+after (`anthropic-messages.ts:1004`, `thinkingBudgetTokens: min(budget, max(0, maxTokens - 1024))`
+at `fdce48eb4`), and sends a budget below 1024 where aelix turns thinking off.

@@ -87,6 +87,7 @@ from aelix_ai.providers._stream_close import (
     close_provider_stream,
 )
 from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
+from aelix_ai.providers._token_estimate import clamp_max_tokens_to_context
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -254,6 +255,11 @@ def _native_effort(model: Model, effort: str) -> str | int:
 # === Param assembly ===
 
 
+_MIN_MAX_OUTPUT_TOKENS = 16
+"""OpenAI Responses rejects ``max_output_tokens`` below 16 (pi #6265,
+``OPENAI_RESPONSES_MIN_OUTPUT_TOKENS``); #563's clamp can reach 1."""
+
+
 def build_params(
     model: Model,
     context: Context,
@@ -293,9 +299,19 @@ def build_params(
         params["prompt_cache_retention"] = retention
 
     # Pi parity: ``if (options?.maxTokens) params.max_output_tokens = …`` —
-    # truthy-gated, so ``0`` / ``None`` omit the cap entirely.
+    # truthy-gated, so ``0`` / ``None`` omit the cap entirely. #563: the cap is
+    # cut to what the window still holds (pi ``clampMaxTokensToContext``,
+    # ``simple-options.ts:18-22`` at ``fdce48eb4``) and, as in pi, never sent
+    # below 16, which OpenAI Responses rejects (pi #6265,
+    # ``openai-responses.ts:37,371``). Unlike pi, no cap is sent when the caller
+    # gives none (pi's ``buildBaseOptions`` defaults it to ``model.maxTokens``):
+    # this adapter has never sent the catalog cap, and an absent cap leaves the
+    # answer the whole remaining window.
     if opts.max_tokens:
-        params["max_output_tokens"] = opts.max_tokens
+        params["max_output_tokens"] = max(
+            clamp_max_tokens_to_context(model, context, opts.max_tokens),
+            _MIN_MAX_OUTPUT_TOKENS,
+        )
 
     if opts.temperature is not None:
         params["temperature"] = opts.temperature

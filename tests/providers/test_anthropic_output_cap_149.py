@@ -13,10 +13,13 @@ Measured against the real endpoint on 2026-08-10:
   200000, sum 206514) → **ACCEPTED**. Anthropic does NOT enforce
   ``prompt + max_tokens <= context_window``.
 
-That second result is why the clamp fires ONLY on a self-inconsistent catalog
-row (``maxTokens >= contextWindow``). A blanket prompt-aware clamp would shrink
-``max_tokens`` on long prompts for well-behaved models and truncate answers the
-API would have produced — a regression bought for nothing.
+That second result is why ``_effective_output_cap`` fires ONLY on a
+self-inconsistent catalog row (``maxTokens >= contextWindow``). #563
+(2026-10-21) added pi's clamp on top of it in ``stream_anthropic``: every request
+now also asks for at most ``context_window - estimated context - 4096``, because
+endpoints other than the first-party one do enforce the sum (MiniMax, pi #6061).
+``tests/providers/test_output_cap_clamp_563.py`` covers that clamp; this file
+still covers the UNSAT protection under it.
 
 FOLLOW-UP (2026-08-10, second pass). The window arithmetic ALONE does not fix the
 blocker. An independent verifier ran the same live probe with a realistic gap —
@@ -372,8 +375,10 @@ async def test_generous_model_is_unchanged_even_on_a_long_prompt() -> None:
     """The regression guard for the measurement.
 
     prompt(~250K) + 128000 exceeds nothing Anthropic enforces, and the live
-    haiku probe proved ``prompt + max_tokens > context_window`` is ACCEPTED. A
-    prompt-aware clamp would cut this to ~750K and silently shorten answers.
+    haiku probe proved ``prompt + max_tokens > context_window`` is ACCEPTED.
+    #563's window clamp leaves ~746K here, more than the 128000 cap, so the cap
+    goes out unchanged: the clamp binds only once the window holds less than the
+    cap.
     """
 
     big = "word " * 200_000

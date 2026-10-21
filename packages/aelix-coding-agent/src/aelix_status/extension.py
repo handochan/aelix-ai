@@ -88,10 +88,10 @@ form above:
     openai_completions         {}  -> {"type": "object", "properties": {}}
 
 Only the Chat-Completions path normalises, and it does so by accident of
-``getattr(tool, "parameters", None) or {...}`` (``openai_completions.py:505``) —
+``getattr(tool, "parameters", None) or {...}`` (``openai_completions.py:507``) —
 ``or`` is falsy-triggered, so ``{}`` takes the fallback. The Responses adapter
 tests ``if params is None`` (``_openai_responses_shared.py:171``) and ``{}`` is
-not ``None``, so it ships the empty object verbatim; ``_google_shared.py:478``
+not ``None``, so it ships the empty object verbatim; ``_google_shared.py:479``
 assigns it with no test at all. Declaring the schema here makes all three agree,
 which is why ``tools/ls.py:57-70`` — an all-optional tool — writes it out too.
 

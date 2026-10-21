@@ -28,10 +28,28 @@ from typing import Any
 _SUCCESS_STOP_REASONS = ("stop", "end_turn")
 
 #: Regex patterns to detect context-overflow errors from different providers.
-#: Verbatim port of Pi's ``OVERFLOW_PATTERNS`` (overflow.ts). See the Pi source
-#: for the per-provider example error messages each pattern matches.
+#: Port of Pi's ``OVERFLOW_PATTERNS`` (overflow.ts), brought up to ``fdce48eb4``
+#: by #563 (z.ai, DS4, DashScope), plus two aelix-only patterns for the
+#: ``prompt + max_tokens`` sum error. Not ported: pi's provider-gated Cerebras
+#: rule and its 413 prefix rule, which read pi's own error formatting. See the Pi
+#: source for the per-provider example error messages each pattern matches.
 _OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"prompt is too long", re.IGNORECASE),  # Anthropic token overflow
+    # Anthropic token overflow and z.ai's "Prompt too long" (pi #9805, ``(?:is )?``
+    # as pi's pattern at ``fdce48eb4`` has it).
+    re.compile(r"prompt (?:is )?too long", re.IGNORECASE),
+    re.compile(r"prompt exceeds max length", re.IGNORECASE),  # z.ai CN endpoint (pi #10208)
+    # #563 — the sum check, ``prompt + max_tokens > context_window``, not in pi's
+    # list. The Anthropic Messages API's text for it is "input length and
+    # `max_tokens` exceed context limit: 188240 + 21333 > 200000, decrease input
+    # length or `max_tokens` and try again" (from the error as users report it,
+    # not measured here; the first-party endpoint accepted the sum on
+    # claude-haiku-4-5, measured 2026-08-10 in ``providers/anthropic.py``, so it
+    # is the endpoints that enforce the sum that send it). Hugging Face TGI's is
+    # "`inputs` tokens + `max_new_tokens` must be <= 4097. Given: 4000 `inputs`
+    # tokens and 200 `max_new_tokens`". Neither says the prompt is too long, so
+    # no pattern here matched them and overflow recovery never compacted.
+    re.compile(r"input length and `?max_tokens`? exceed context limit", re.IGNORECASE),
+    re.compile(r"`?inputs`? tokens \+ `?max_new_tokens`? must be <=", re.IGNORECASE),
     re.compile(r"request_too_large", re.IGNORECASE),  # Anthropic HTTP 413 byte overflow
     re.compile(r"input is too long for requested model", re.IGNORECASE),  # Amazon Bedrock
     re.compile(r"exceeds the context window", re.IGNORECASE),  # OpenAI
@@ -60,6 +78,11 @@ _OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"too large for model with \d+ maximum context length", re.IGNORECASE),  # Mistral
     re.compile(r"model_context_window_exceeded", re.IGNORECASE),  # z.ai surfaced as error text
     re.compile(r"prompt too long; exceeded (?:max )?context length", re.IGNORECASE),  # Ollama
+    re.compile(
+        r"prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?",
+        re.IGNORECASE,
+    ),  # DS4 server (pi)
+    re.compile(r"range of input length should be", re.IGNORECASE),  # DashScope / Qwen (pi)
     re.compile(r"context[_ ]length[_ ]exceeded", re.IGNORECASE),  # Generic fallback
     re.compile(r"too many tokens", re.IGNORECASE),  # Generic fallback
     re.compile(r"token limit exceeded", re.IGNORECASE),  # Generic fallback

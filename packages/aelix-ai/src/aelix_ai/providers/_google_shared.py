@@ -54,6 +54,7 @@ from aelix_ai.messages import (
     UserMessage,
 )
 from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
+from aelix_ai.providers._token_estimate import clamp_max_tokens_to_context
 from aelix_ai.providers._transform_messages import transform_messages
 from aelix_ai.streaming import (
     AssistantMessageEvent,
@@ -845,7 +846,11 @@ def build_google_params(
     if temperature is not None:
         config["temperature"] = temperature
     if max_tokens is not None:
-        config["maxOutputTokens"] = max_tokens
+        # #563: cut to what the window still holds (pi ``clampMaxTokensToContext``,
+        # ``simple-options.ts:18-22`` at ``fdce48eb4``). Only a caller's cap is
+        # sent here - with none, ``maxOutputTokens`` is omitted, where pi's
+        # ``buildBaseOptions`` would send the clamped ``model.maxTokens``.
+        config["maxOutputTokens"] = clamp_max_tokens_to_context(model, context, max_tokens)
     if context.system_prompt:
         config["systemInstruction"] = sanitize_surrogates(context.system_prompt)
 

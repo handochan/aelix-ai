@@ -36,6 +36,18 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0114 — OpenRouter Qwen3 tool-calling fixes, and the output cap that must fit the window](0114-sprint-6h13-openrouter-qwen3-tool-calling.md)
+  (amended 2026-10-21; #563). Every output cap an adapter sends is cut to `context_window -
+  estimated context - 4096`, at least 1, as pi's `clampMaxTokensToContext` does: the Anthropic
+  adapter's catalog or caller cap and its thinking ceiling, and a caller's cap (a compaction's) in
+  openai-completions, openai-responses (at least 16) and both Google adapters. The estimate is pi's:
+  the last answer's reported usage plus the text after it at 3.5 characters a token (review round 2;
+  it was 4), an image flat, no anchor on an answer a compaction summary postdates. openai-completions keeps omitting its own cap when it does not fit
+  (now judged with the usage estimate too); pi clamps it. Kept: #149's 32000 ceiling for broken
+  rows, and the 2026-08-10 measurement that the first-party endpoint accepts the sum — outweighed by
+  the endpoints that reject it. Anthropic's and TGI's sum errors and pi's newer z.ai, DS4 and
+  DashScope texts count as context overflow. Notes in ADR-0135.
+
 - [0268 — `--mode json` exits 1 when the run's last answer failed, as `-p` does](0268-json-mode-exits-1-when-the-last-answer-failed.md)
   (Accepted 2026-10-20, the owner's decision; review round 2 2026-10-21; #410). `--mode json`
   takes its exit code by `-p`'s rule: the session's last message, if it is an assistant message

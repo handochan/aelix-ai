@@ -248,7 +248,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
     a TypeScript assertion erased at runtime, so pi's parsed JSON *is* the
     entry and pi is structurally incapable of dropping a content field. Python
     cannot copy that shape — the whole downstream contract is ``isinstance``-based
-    (``_transform_messages.py:177``, ``_google_shared.py:292``) and needs real
+    (``_transform_messages.py:177``, ``_google_shared.py:293``) and needs real
     dataclass instances. So the obligation this decoder takes on instead is to
     be **total**: every field of every content dataclass must be read back.
     ``tests/session/test_message_roundtrip_content.py`` walks
@@ -271,7 +271,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
     def _text(block: dict[str, Any]) -> Any:
         # ``text_signature`` carries the OpenAI Responses ``TextSignatureV1``
         # replay payload AND Gemini's per-text-part ``thoughtSignature``
-        # (``_google_shared.py:296``), so it is load-bearing in both roles.
+        # (``_google_shared.py:297``), so it is load-bearing in both roles.
         return TextContent(
             text=_wire_str(block, "text"),
             text_signature=_wire_str(block, "text_signature"),

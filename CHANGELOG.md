@@ -655,6 +655,38 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A long conversation no longer fails on every turn before auto-compaction is
+  reached: each request asks the model for no more output than the context
+  window still holds, as pi does (#563, ADR-0114 amendment 2026-10-21).** An
+  endpoint that refuses a request whose conversation plus its output cap is
+  larger than the window (MiniMax's Anthropic-compatible API, vLLM, many
+  OpenAI-compatible servers) rejected every turn once the conversation passed
+  `contextWindow - maxTokens`, while auto-compaction waits for
+  `contextWindow - 16384`. Measured on the base with a local server that
+  enforces the sum (window 60000, cap 32000, about 8000 tokens a turn) and the
+  real `aelix -p -c`: turns 4 to 6 failed with ``input length and `max_tokens`
+  exceed context limit``, and after the compaction the error path finally ran,
+  the kept 35101 tokens plus the 32000 cap still did not fit, so every later
+  turn failed too. Now every output cap is cut to `contextWindow`, less the
+  conversation (the last answer's reported usage plus an estimate of what came
+  after it at pi's 3.5 characters a token; an image counts as 1372 tokens), less 4096, and at least 1: the
+  Anthropic adapter's cap, with its thinking budget inside it (under 2048 tokens
+  of room, budget thinking is off for that request), and a caller's cap - a
+  compaction's or a branch summary's - in openai-completions, OpenAI Responses
+  (never under 16) and both Gemini adapters. On the same server all 8 turns
+  answered and the automatic compaction ran at its threshold. openai-completions
+  still leaves its own cap out when it does not fit, now judged with the
+  reported usage too (a divergence: pi sends the cut cap). The cost on the
+  first-party Anthropic endpoint, which accepts the sum: near a full window an
+  answer can stop up to about 4096 tokens sooner. The errors such endpoints
+  give - Anthropic's ``input length and `max_tokens` exceed context limit``,
+  Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - and
+  pi's newer z.ai (`Prompt too long`, `Prompt exceeds max length`), DS4 and
+  DashScope texts now count as a context overflow, so overflow recovery
+  compacts. Not changed: the 16384 threshold itself (#469) and the compaction
+  summary's own limits (#506). Found while measuring and left for a follow-up:
+  after a session's first compaction no automatic compaction runs again.
+
 - **After an `/agents use` that switches the model, `/new` stays on that model:
   OpenRouter's `auto` no longer turns into `openrouter/auto` (#398, ADR-0196).**
   Three cases moved, each measured against a local server standing in for

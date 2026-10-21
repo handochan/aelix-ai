@@ -458,9 +458,16 @@ class SimpleStreamOptions:
     # and its own comment on the parameter reads "Undefined means no explicit
     # caller cap. Use the model cap and fit thinking inside it." The adapters
     # that do NOT carve a thinking budget use the value as the payload cap
-    # verbatim (``openai_responses`` → ``max_output_tokens``,
-    # ``openai_completions`` "wins unconditionally", both Google adapters pass
-    # it through); ``openai_codex_responses`` reads it nowhere at all.
+    # (``openai_responses`` → ``max_output_tokens``, at least 16;
+    # ``openai_completions`` always sends it; both Google adapters →
+    # ``maxOutputTokens``); ``openai_codex_responses`` reads it nowhere at all.
+    #
+    # #563: every one of those caps - and on the Anthropic budget path the cap
+    # after the budget is added - is cut to what the context window still
+    # holds, ``context_window - estimated context - 4096`` (at least 1), pi's
+    # ``clampMaxTokensToContext`` (``providers/_token_estimate.py``). So a
+    # caller's number is an upper bound, not a promise: near a full window the
+    # request asks for less.
     max_tokens: int | None = None
 
     # --- Sprint 6a (ADR-0045) provider-adapter extensions ---
