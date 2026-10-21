@@ -2,7 +2,8 @@
 
 Status: Accepted (2026-10-20, approved by the owner as a whole); rewritten 2026-10-15 on the
 owner's decision (§2), revised after its reviews (r5-r11) and on the owner's decisions of
-2026-10-16, 2026-10-17 and 2026-10-19 (§7). §8 is what the implementation owes.
+2026-10-16, 2026-10-17 and 2026-10-19 (§7). §8 is what the implementation owes. Amended 2026-10-21
+(§10: #172's B4, what the parser and the publisher measured against the shipped catalog).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -1405,3 +1406,82 @@ hours (§6); the first aelix-only hook event (§4.7); a sixth batch (§4.8).
   with no candidate; a resume with no default resolves none, as a launch does (§4.4).
 - 2026-10-20: accepted by the owner as a whole (draft PR #505); §8 is now what the implementation
   owes rather than a condition for acceptance.
+
+## 10. Amendments
+
+### 2026-10-21: #172's B4 - the format, the parser and the publisher, as measured
+
+B4 (§4.8) landed `aelix_ai/catalog_inherit.py`, `aelix_ai/hosted_catalog.py`,
+`scripts/publish_catalog.py`, the derived maps in `scripts/refresh_catalog.py`,
+`tests/test_hosted_catalog_contract.py` with `tests/fixtures/hosted_catalog/` (`v1-sample.json`,
+`v1-index-sample.json`, `r7-inputs.json.gz`), ADR-0232's amendment and the fold-back in
+`RELEASING.md`. The catalog repository's workflow and `control/` are prepared outside this
+repository for the owner, who creates `handochan/aelix-catalog` (§7 Q1). Evidence:
+`.omc/probes/b4-d-live/172/` (commands in `commands.txt`). Run against the shipped catalog, the
+rules of §4.3 and §4.2 as written refused shipped data in four places, so this records what the
+code does instead:
+
+1. **A `thinkingLevelMap` value is `null` or 1-32 characters of `[A-Za-z0-9_-]`**, not `[a-z0-9_-]`.
+   MEASURED: 8 shipped Google rows (`google`, `google-vertex`, `opencode` Gemini 3.x and Gemma 4)
+   send Gemini's own `thinkingLevel` values `HIGH`, `LOW` and `MINIMAL`, 16 values the lowercase
+   rule refused; every revision would have failed step 3. Wire values are case-sensitive, so the
+   rule takes both cases and nothing more.
+2. **A known row's field that fails validation passes the publisher when the client keeps the same
+   value.** `openrouter/openrouter/auto` ships `cost.input` and `cost.output` of -1,000,000,
+   OpenRouter's "price varies" sentinel, outside 0 to 10,000. §4.3 already keeps the shipped value
+   for such a field, so every client shows exactly what ships; step 3's client-parse check now
+   compares each row's effective facts with what the generator wrote and fails only where they
+   differ, and the summary lists the fields clients keep. A NEW row with such a value is still
+   dropped by the client and so still fails the run, loudly, and so does a `family` or
+   `releaseDate` the parser rejects on any row, known ones included.
+3. **The clamp makes two shipped rows differ.** `maxTokens` is clamped to `contextWindow` (§4.3), and
+   two shipped OpenRouter rows carry upstream's own incoherent caps (`nex-agi/deepseek-v3.1-nex-n1`
+   163,840 in 131,072; `openai/gpt-3.5-turbo-0613` 4,096 in 4,095; pinned since ADR-0232). A
+   revision of the shipped catalog therefore reproduces every shipped row except those two caps,
+   which the contract test pins by name; neither nears the regression bound.
+4. **A shipped id is matched exactly before any case rule**, so a case variant never shadows it.
+   Rows are sorted by id and `ACME-1` sorts before `acme-1`: a parser that marks ids seen ignoring
+   case, as the first draft did, dropped the shipped `acme-1` as "listed twice" behind a variant,
+   and a forged row could freeze a known id's facts that way. The frozen sample holds that case.
+
+Also decided while implementing, within the ADR's rules:
+
+- `lineage` collapses consecutive versions with the same digest (a commit that touches the file
+  without changing what it says), and a revision whose `lineage` is not 1 to 500 digests of 32 hex
+  characters is not schema 1's shape and is refused whole. A shallow clone is refused: its history
+  would cut the lineage silently.
+- A publication is "unchanged" (step 4) only when the index names this revision for this floor and
+  carries no `hold`; the first publication after a `release-hold` writes the index again without
+  it.
+- `publish_catalog.py build` stops as `held` when the catalog checkout has `control/hold.json`, as
+  well as the workflow's own first step, so a build started by hand cannot walk past a hold.
+- The plan runs over the catalog as committed at the source commit, and a checkout whose file
+  differs from it is refused; the applied file is restored after the tests unless
+  `--leave-applied`.
+- The index parser requires the protocol fields (`minimumAelixVersion`, `revision`, `hold`) and
+  checks the build metadata's types where present, as pi's parser returns only its protocol fields.
+
+**The first publication meets the additions cap.** MEASURED live on 2026-10-21 23:52 KST: against
+`main`'s catalog (`27fa21c5`, 1,529 rows) the plan adds 288 ids, over step 3's 100, so the first
+run fails `additions-cap`. It needs either the fold-back committed on `main` first (then the first
+revision adds what models.dev listed since) or one dispatch with `max_additions` of at least 288.
+With the cap raised, the build passes every check, the pin, overlay and contract tests included on
+the applied checkout: 1,817 rows, 460,765 bytes.
+
+**Where §8's #172 list stands.** Done in B4: the contract test in CI; each publisher check made to
+fail once (pin, additivity, no-transport, client-parse, inheritance, lineage-head, additions-cap,
+caps, providers, hold); the derived maps' rules, order, a kept `max`, no `anthropic-messages` map
+and r7's counts reproduced; the digest and lineage with r5's pairs over a synthetic `main` (a merge
+and a no-op commit included); the ladder's audit unchanged. The dry run of both jobs ran locally
+(`probes/dry_run.py`): every workflow step replayed with the workflow's own commands against a
+scratch bare repository and a loopback static server standing in for Pages, each served revision
+fetched back, checked against its name and parsed over the shipped catalog. A held slot publishes
+nothing, and an artifact built before the hold is not published; `release-hold` resumes; a
+rollback's index carries `hold` and survives the next slot; an unchanged slot commits nothing; a
+push onto a moved branch is refused and nothing is deployed; an artifact naming another path, a
+second revision, a hash mismatch, an index naming another revision or an index carrying `hold` is
+refused; `control/` is never served. NOT run: GitHub Actions itself, so `publish` running after a
+skipped `build` is the workflow's `if:` as written, not measured; actionlint 1.7.12 (with
+shellcheck) passes the workflow except `concurrency.queue`, which it does not know and GitHub's
+documentation (r6) does. Waiting for the owner: the repository, its first real publication and
+§8's GETs of Pages' headers. The fold-back runs once in R's prep.

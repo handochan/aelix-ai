@@ -23,6 +23,39 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Maintainers: the model catalog can now be built for publication between
+  releases (#172, ADR-0264, ADR-0232).** `scripts/publish_catalog.py build`
+  fetches models.dev and OpenRouter's public model list, runs the generator's
+  additive plan over the committed catalog, and writes a content-addressed
+  revision (`sha256-<hex>.json`) and the next `index.json` that a scheduled job
+  in a separate repository, `handochan/aelix-catalog`, will publish. A
+  published row carries facts only (name, reasoning, thinking map, input,
+  cost, window, output cap) plus the two fields the transport rule reads:
+  `api`, `baseUrl`, `headers` and `compat` are never published, and a client
+  takes them from its own shipped catalog. Nothing is published when a check
+  fails: the pin test, the catalog tests and the new contract test run against
+  the applied catalog; every committed row must be present and unchanged; no
+  row may carry transport; every row must pass the client's parser
+  (`aelix_ai.hosted_catalog`), with each new row inheriting, through the
+  client's copy of the rule, the transport the generator wrote; at most 100 ids
+  new per publication; and the revision's lineage (the digests of `main`'s
+  catalog history) must end in the committed catalog's. The transport rule
+  itself moved to `aelix_ai/catalog_inherit.py`, so the generator and the
+  client run one implementation; its score is unchanged (95.3% forward over
+  r7's inputs). `scripts/refresh_catalog.py` now gives a new reasoning row a
+  thinking map derived as pi derives one (Xiaomi's and Together's off/high
+  rule, OpenRouter's supported efforts, models.dev's effort list where the
+  wire sends the level's name), or none; `--fetch` downloads OpenRouter's list
+  too and `--apply` refuses without it. `RELEASING.md` gains the fold-back that
+  commits published additions before each release.
+  `tests/test_hosted_catalog_contract.py` runs the publisher and the parser
+  together on every pull request, without network, with a frozen schema-1
+  sample. Users see no change yet: the client that reads the hosted catalog is
+  #434. Not done here: `handochan/aelix-catalog` itself (the owner creates it)
+  and its first publication; measured on 2026-10-21, that one would add 288
+  ids against `main`'s catalog, over the 100 cap, so it needs the fold-back
+  first or a raised `max_additions` once.
+
 - **Contributors: CI now fails when a package imports one above it (#292,
   ADR-0015).** The packages stack as `aelix-ai` <- `aelix-agent-core` <-
   `aelix-coding-agent` <- `aelix-server` and `aelix`, and a package may import

@@ -18,19 +18,36 @@ transport error nobody can read.
 
 So transport is INHERITED from a model we already ship, never invented, and
 where it cannot be inherited unambiguously the model is SKIPPED and reported.
-:func:`audit_transport_rule` measures that inheritance rule against the rows we
-already have — leave-one-out, so the row being predicted is never its own
-evidence — and ``tests/test_catalog_overlay.py`` fails if the accuracy drops.
+The rule is ADR-0232's ladder, which lives in :mod:`aelix_ai.catalog_inherit`
+since #172's publishing pipeline (ADR-0264 §4.8) so the client that reads a
+published revision runs the same implementation; the names below are that
+module's functions. :func:`audit_transport_rule` measures the rule against the
+rows we already have — leave-one-out, so the row being predicted is never its
+own evidence — and ``tests/test_catalog_overlay.py`` fails if the accuracy
+drops.
+
+THINKING MAPS FOR NEW ROWS (ADR-0264 §7 Q2, the owner's decision of
+2026-10-16). A new reasoning row's ``thinkingLevelMap`` is derived as pi derives
+one, in pi's order, and a row nothing covers gets none:
+:func:`derive_thinking_level_map`. An existing row's map is never touched — it
+is a key that exists.
 
 Usage::
 
     python scripts/refresh_catalog.py --audit                 # score the rule
-    python scripts/refresh_catalog.py --source api.json       # dry run
-    python scripts/refresh_catalog.py --source api.json --apply
+    python scripts/refresh_catalog.py --source api.json --openrouter-source models.json
+    python scripts/refresh_catalog.py --fetch --apply         # the fold-back (RELEASING.md)
 
-``--source`` takes a models.dev ``api.json`` on disk; ``--fetch`` downloads one
-first. Nothing here runs in CI and nothing here runs at import: the catalog is
-committed data, and the test that guards this file needs no network.
+``--source`` takes a models.dev ``api.json`` on disk and ``--openrouter-source``
+OpenRouter's public ``/api/v1/models``; ``--fetch`` downloads both. ``--apply``
+refuses to run without OpenRouter's list, because without it every new
+OpenRouter reasoning row would land without the map rule 2 gives it.
+
+WHERE THIS RUNS. By hand (the fold-back, ``RELEASING.md``), and on a schedule in
+``handochan/aelix-catalog`` through ``scripts/publish_catalog.py build``, which
+plans with this module over the committed catalog and publishes the result
+without transport (ADR-0264 §4.2). aelix-ai's own CI runs it without network
+(``tests/test_hosted_catalog_contract.py``). Nothing here runs at import.
 """
 
 from __future__ import annotations
@@ -42,7 +59,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from aelix_ai.catalog_inherit import (
+    Transport,
+    encode,
+    family_keys,
+    namespace,
+    orphans,
+    released,
+    resolve_transport,
+    settle,
+    transport_of,
+    wire,
+)
+
 UPSTREAM_URL = "https://models.dev/api.json"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 
 UPSTREAM_IDS: dict[str, tuple[str, ...]] = {
     "together": ("togetherai",),
@@ -80,14 +111,6 @@ CATALOG_PATH = (
 
 Row = dict[str, Any]
 Catalog = dict[str, dict[str, Row]]
-Transport = tuple[str, str, str | None, str | None]
-"""``(api, baseUrl, headers, compat)`` with the last two JSON-encoded.
-
-Encoded because a transport has to be comparable and set-membership is how
-this file asks "does the family agree with itself"; ``headers`` and ``compat``
-are dicts, and two dicts that mean the same thing must not count as two
-answers. ``sort_keys`` is what makes that true.
-"""
 
 
 def upstream_models_for(provider: str, upstream: dict[str, Any]) -> dict[str, Row]:
@@ -131,209 +154,19 @@ def is_eligible(upstream_row: Row) -> str | None:
 
 
 # ── transport, which upstream does not have ────────────────────────────
+#
+# ADR-0232's ladder, moved to ``aelix_ai.catalog_inherit`` (#172) so the
+# generator and the client run one implementation. These are the same function
+# objects under the names this script and its tests have always used;
+# ``tests/test_catalog_overlay.py`` checks the identity.
 
-
-def _encode(value: Any) -> str | None:
-    return None if value is None else json.dumps(value, sort_keys=True)
-
-
-def transport_of(row: Row) -> Transport:
-    return (
-        row["api"],
-        row["baseUrl"],
-        _encode(row.get("headers")),
-        _encode(row.get("compat")),
-    )
-
-
-def _family_keys(model_id: str, upstream_row: Row | None) -> list[str]:
-    """Sibling-matching keys for ``model_id``, most specific first.
-
-    models.dev's own ``family`` ("claude-opus", "gpt-codex", "qwen") is the
-    first key because it is maintained by someone who tracks these releases.
-    Its root ("claude", "gpt") is the second, for a genuinely new family whose
-    transport its cousins already establish — ``claude-fable`` had no sibling
-    when it appeared, but every ``claude-*`` on every provider we ship speaks
-    ``anthropic-messages``.
-
-    The root is deliberately NOT tried when the cousins disagree; see
-    :func:`resolve_transport`. On ``github-copilot`` the ``gpt`` root spans
-    ``openai-completions`` (gpt-4.1, gpt-4o) and ``openai-responses``
-    (everything 5.x), which is exactly the case where a guess would be wrong
-    half the time.
-    """
-
-    keys: list[str] = []
-    family = (upstream_row or {}).get("family")
-    if isinstance(family, str) and family:
-        keys.append(family.lower())
-        root = family.lower().split("-")[0]
-        if root not in keys:
-            keys.append(root)
-    stem = model_id.rsplit("/", 1)[-1].lower()
-    fallback = stem.split("-")[0]
-    if fallback and fallback not in keys:
-        keys.append(fallback)
-    return keys
-
-
-def _namespace(model_id: str) -> str:
-    """The routing prefix an id carries, or ``""``.
-
-    ``amazon-bedrock`` puts the AWS region in the model id and the region in
-    the base URL: ``eu.anthropic.claude-opus-4-7`` is served from
-    ``eu-central-1``, its ``us.`` twin from ``us-east-1``. MEASURED: without
-    this, the family rule handed every ``eu.`` row the ``us-east-1`` endpoint —
-    the one leave-one-out miss in 827 that was a real defect rather than an
-    artifact of holding a row out.
-
-    A namespace is the leading ``/``-segment, or the leading ``.``-segment when
-    it has no digit in it. The digit test is what separates a route
-    (``eu``, ``anthropic``, ``global``) from a version (``glm-5`` of
-    ``glm-5.2``, ``gpt-4`` of ``gpt-4.1``), and it is checked against the whole
-    catalog by ``test_a_namespace_is_a_route_not_a_version``.
-    """
-
-    if "/" in model_id:
-        return model_id.split("/", 1)[0]
-    if "." in model_id:
-        head = model_id.split(".", 1)[0]
-        if not any(character.isdigit() for character in head):
-            return head
-    return ""
-
-
-def _released(model_id: str, upstream_models: dict[str, Row]) -> str:
-    row = upstream_models.get(model_id) or {}
-    for field in ("release_date", "last_updated"):
-        value = row.get(field)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
-def _wire(transport: Transport) -> tuple[str, str]:
-    """The half of a transport that decides whether a request arrives at all.
-
-    ``api`` and ``baseUrl`` are the wire; ``headers`` and ``compat`` are quirks.
-    The split is the difference between a model that cannot work and one that
-    works with a wrong detail, and MEASURED it is most of the disagreement: of
-    14 leave-one-out misses, 10 were ``compat`` alone. Requiring a family to
-    agree on all four fields therefore refused models over quirks — it is what
-    kept ``glm-5.3`` and ``qwen3.8`` out on the first pass, both of which have
-    siblings that agree perfectly about where to send the request.
-    """
-
-    return transport[0], transport[1]
-
-
-def _orphans(local_models: dict[str, Row], upstream_models: dict[str, Row]) -> list[str]:
-    """Local rows whose family nothing else in the provider shares.
-
-    A model we have never seen a relative of is the evidence class for a model
-    that arrives with no relative — ``kimi-k3`` and ``mai-code-1.1-flash`` on
-    ``github-copilot``, where the provider itself speaks three different wires
-    and family tells us nothing. What those rows have in common is not a family
-    but a position: everything that is not Claude and not GPT-5 reaches Copilot
-    over ``openai-completions``, and the orphans we already ship say so.
-    """
-
-    orphans = []
-    for model_id in local_models:
-        keys = set(_family_keys(model_id, upstream_models.get(model_id)))
-        namespace = _namespace(model_id)
-        relatives = [
-            other
-            for other in local_models
-            if other != model_id
-            and _namespace(other) == namespace
-            and keys & set(_family_keys(other, upstream_models.get(other)))
-        ]
-        if not relatives:
-            orphans.append(model_id)
-    return orphans
-
-
-def _settle(
-    candidates: list[str], local_models: dict[str, Row], upstream_models: dict[str, Row]
-) -> Transport | None:
-    """One transport from ``candidates``, or ``None`` if they disagree on the wire.
-
-    The wire has to be unanimous. The quirks come from the newest candidate
-    that speaks that wire — newest by upstream release date, ties broken by
-    catalog order, which puts hand-added rows last. Newest because ``compat``
-    tracks a provider's recent models: a new ``qwen`` on ``opencode-go`` needs
-    ``thinkingFormat: qwen``, which only its recent siblings carry, and a new
-    ``glm`` needs the ``supportsReasoningEffort`` its predecessor gained.
-    """
-
-    if not candidates:
-        return None
-    wires = {_wire(transport_of(local_models[c])) for c in candidates}
-    if len(wires) != 1:
-        return None
-    wire = next(iter(wires))
-    same = [c for c in candidates if _wire(transport_of(local_models[c])) == wire]
-    newest = max(
-        same,
-        key=lambda c: (_released(c, upstream_models), list(local_models).index(c)),
-    )
-    return transport_of(local_models[newest])
-
-
-def resolve_transport(
-    model_id: str,
-    upstream_row: Row | None,
-    local_models: dict[str, Row],
-    upstream_models: dict[str, Row],
-) -> tuple[Transport | None, str]:
-    """The transport a new ``model_id`` should get, and how we got it.
-
-    Returns ``(None, reason)`` when no answer is defensible, which happens on
-    purpose: upstream carries no transport at all, so every answer here is
-    inherited from something we already ship, and where nothing we ship
-    resembles the model there is nothing honest to inherit.
-
-    The ladder, first match wins:
-
-    1. **Same family, same namespace.** The family is models.dev's own, its
-       root second, an id-stem guess last.
-    2. **The provider speaks one wire.** 22 of the 27 providers with an
-       upstream counterpart do, and then family does not enter into it.
-    3. **The orphans agree.** See :func:`_orphans` — a model with no relative
-       inherits from the rows that also have none.
-    """
-
-    if not local_models:
-        return None, "provider has no local rows to inherit from"
-
-    namespace = _namespace(model_id)
-    for key in _family_keys(model_id, upstream_row):
-        siblings = [
-            sibling_id
-            for sibling_id in local_models
-            if key in _family_keys(sibling_id, upstream_models.get(sibling_id))
-            and _namespace(sibling_id) == namespace
-        ]
-        if not siblings:
-            continue
-        settled = _settle(siblings, local_models, upstream_models)
-        if settled is None:
-            # A family that disagrees about the wire is not evidence, and a
-            # broader key will not fix it: the broader key contains these same
-            # rows. ``minimax`` on ``opencode-go`` is genuinely split between
-            # ``anthropic-messages`` and ``openai-completions``.
-            return None, f"family {key!r} spans several wires"
-        return settled, f"family {key!r}"
-
-    settled = _settle(list(local_models), local_models, upstream_models)
-    if settled is not None:
-        return settled, "sole wire on the provider"
-
-    settled = _settle(_orphans(local_models, upstream_models), local_models, upstream_models)
-    if settled is not None:
-        return settled, "the provider's other family-less models"
-    return None, "no sibling family, and the provider spans several wires"
+_encode = encode
+_family_keys = family_keys
+_namespace = namespace
+_released = released
+_wire = wire
+_orphans = orphans
+_settle = settle
 
 
 # ── the local conventions upstream disagrees with ──────────────────────
@@ -426,11 +259,195 @@ def build_row(
     return row
 
 
+# ── thinking maps for new rows (ADR-0264 §7 Q2) ────────────────────────
+
+PROVIDER_RULE_PROVIDERS: frozenset[str] = frozenset(
+    {"together", "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp"}
+)
+"""Rule 1: providers whose every new reasoning row offers only off and high.
+
+pi's Xiaomi rule (``packages/ai/scripts/generate-models.ts:2487-2503`` at
+``pi@fdce48eb4``: MiMo "documents all effort levels as identical") and
+Together's default (``:215-219``, ``:578-587``). The MAP only: pi's Xiaomi
+``compat`` is transport, which a published row never carries, and MEASURED
+(ADR-0264 §7 Q2) aelix's 21 Xiaomi rows are ``anthropic-messages`` and send a
+budget per level, so here the rule only hides levels.
+"""
+
+PROVIDER_RULE_MAP: dict[str, str | None] = {"minimal": None, "low": None, "medium": None}
+"""Hides minimal, low and medium; off and high stay; xhigh and max need a map entry anyway."""
+
+_EFFORT_LEVELS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+"""pi's ``THINKING_LEVELS`` in ``models-dev-reasoning-options.ts:11``: the levels an effort list names."""
+
+_DIRECT_EFFORT_APIS: frozenset[str] = frozenset(
+    {"openai-responses", "azure-openai-responses", "openai-codex-responses"}
+)
+
+
+def effort_thinking_level_map(values: list[Any]) -> dict[str, str | None] | None:
+    """pi's ``getEffortThinkingLevelMap`` (``models-dev-reasoning-options.ts:18-30``).
+
+    A listed level maps to itself and an unlisted one is hidden (``None``);
+    ``off`` maps to ``none`` when ``none`` is listed and is hidden otherwise.
+    ``default`` and JSON ``null`` have no level and are ignored, and a list
+    naming no level and no ``none`` gives no map. Then cut to this build's
+    levels (§7 Q2: "A map names only the build's levels"); since #433 that
+    keeps ``max``.
+    """
+
+    from aelix_ai.models import EXTENDED_THINKING_LEVELS
+
+    supported = {value for value in values if isinstance(value, str)}
+    if not any(level in supported for level in _EFFORT_LEVELS) and "none" not in supported:
+        return None
+    mapped: dict[str, str | None] = {"off": "none" if "none" in supported else None}
+    for level in _EFFORT_LEVELS:
+        mapped[level] = level if level in supported else None
+    return {level: wire for level, wire in mapped.items() if level in EXTENDED_THINKING_LEVELS}
+
+
+def _models_dev_effort_values(upstream_row: Row | None) -> list[Any]:
+    values: list[Any] = []
+    for option in (upstream_row or {}).get("reasoning_options") or []:
+        if isinstance(option, dict) and option.get("type") == "effort":
+            values.extend(option.get("values") or [])
+    return values
+
+
+def openrouter_thinking_level_map(reasoning: Any) -> dict[str, str | None] | None:
+    """pi's ``getOpenRouterThinkingLevelMap`` (``openrouter-reasoning-options.ts:12-23``).
+
+    OpenRouter's ``reasoning.supported_efforts`` uses models.dev's effort
+    values, so both share :func:`effort_thinking_level_map`; ``off`` then
+    follows ``mandatory`` rather than ``none``. A mandatory model with no
+    effort list hides ``off`` and nothing else.
+    """
+
+    if not isinstance(reasoning, dict):
+        return None
+    mandatory = reasoning.get("mandatory") is True
+    efforts = reasoning.get("supported_efforts")
+    mapped = (
+        effort_thinking_level_map(list(efforts)) if isinstance(efforts, list) and efforts else None
+    )
+    if mapped is None:
+        return {"off": None} if mandatory else None
+    mapped["off"] = None if mandatory else "none"
+    return mapped
+
+
+def sends_level_name(row: Row) -> bool:
+    """pi's ``supportsDirectReasoningEffort`` (``generate-models.ts:545-561``), for aelix rows.
+
+    True when the row's inherited transport sends the level's own name as the
+    wire value: the three Responses APIs, and ``openai-completions`` whose
+    compat (detected, then the row's own, as the adapter merges them) says
+    ``thinkingFormat: openai`` with reasoning effort supported.
+    ``anthropic-messages`` is False here: pi's branch fires only where a loader
+    set ``forceAdaptiveThinking`` before the derivation (Fireworks,
+    ``:1765-1770``), and this generator adds no Fireworks rows (§7 Q2 rule 3).
+    """
+
+    if row["api"] in _DIRECT_EFFORT_APIS:
+        return True
+    if row["api"] != "openai-completions":
+        return False
+    from aelix_ai.providers._openai_compat import get_compat
+    from aelix_ai.streaming import Model, ModelCost
+
+    model = Model(
+        id=row["id"],
+        name=row.get("name") or row["id"],
+        api=row["api"],
+        provider=row["provider"],
+        base_url=row["baseUrl"],
+        reasoning=bool(row.get("reasoning")),
+        input=list(row.get("input") or ["text"]),
+        cost=ModelCost(input=0.0, output=0.0, cache_read=0.0, cache_write=0.0),
+        context_window=int(row["contextWindow"]),
+        max_tokens=int(row["maxTokens"]),
+        headers=row.get("headers"),
+        compat=row.get("compat"),
+    )
+    compat = get_compat(model)
+    return compat.thinking_format == "openai" and bool(compat.supports_reasoning_effort)
+
+
+def derive_thinking_level_map(
+    provider: str,
+    row: Row,
+    upstream_row: Row | None,
+    openrouter_row: Row | None,
+) -> tuple[dict[str, str | None] | None, str]:
+    """A new row's thinking map and where it came from, in pi's order (ADR-0264 §7 Q2).
+
+    1. ``"provider rule"``: :data:`PROVIDER_RULE_PROVIDERS` hide every level but
+       off and high.
+    2. ``"openrouter"``: an OpenRouter row takes OpenRouter's public
+       ``reasoning.supported_efforts`` (:func:`openrouter_thinking_level_map`).
+    3. ``"models.dev"``: any other row whose inherited transport sends the
+       level's own name (:func:`sends_level_name`) takes models.dev's
+       ``reasoning_options`` effort values.
+    4. ``"none"``: no map. The row offers off to high and the OpenAI-family
+       adapters send each level's name, as pi publishes such rows.
+
+    ``"not reasoning"`` for a row that does not reason. Only ever called for
+    rows this script adds: an existing row's map is a key that exists.
+    """
+
+    if not row.get("reasoning"):
+        return None, "not reasoning"
+    if provider in PROVIDER_RULE_PROVIDERS:
+        return dict(PROVIDER_RULE_MAP), "provider rule"
+    if provider == "openrouter":
+        mapped = openrouter_thinking_level_map((openrouter_row or {}).get("reasoning"))
+        return (mapped, "openrouter") if mapped else (None, "none")
+    if sends_level_name(row):
+        mapped = effort_thinking_level_map(_models_dev_effort_values(upstream_row))
+        if mapped:
+            return mapped, "models.dev"
+    return None, "none"
+
+
+def openrouter_by_id(listing: dict[str, Any] | None) -> dict[str, Row] | None:
+    """OpenRouter's ``/api/v1/models`` body as ``{id: row}``, or ``None`` without one."""
+
+    if listing is None:
+        return None
+    data = listing.get("data")
+    if not isinstance(data, list):
+        raise ValueError("OpenRouter's model list has no data array")
+    return {item["id"]: item for item in data if isinstance(item, dict) and "id" in item}
+
+
 # ── planning ───────────────────────────────────────────────────────────
 
 
-def plan(local: Catalog, upstream: dict[str, Any]) -> tuple[Catalog, list[tuple[str, str, str]]]:
-    """``(additions, skips)`` for every provider we already ship.
+class CatalogPlan:
+    """What a refresh would add, what it skipped and why, and each new row's map source.
+
+    A plain class, not a dataclass: the tests load this file with
+    ``spec_from_file_location`` without registering it in ``sys.modules``, and
+    ``dataclasses`` looks its module up there.
+    """
+
+    def __init__(self) -> None:
+        self.additions: Catalog = {}
+        self.skips: list[tuple[str, str, str]] = []
+        self.map_sources: dict[tuple[str, str], str] = {}
+
+
+def plan_catalog(
+    local: Catalog,
+    upstream: dict[str, Any],
+    openrouter: dict[str, Row] | None = None,
+) -> CatalogPlan:
+    """The additions for every provider we already ship, each new reasoning row's map derived.
+
+    ``openrouter`` is OpenRouter's list by id (:func:`openrouter_by_id`); without
+    it rule 2 has nothing to read and new OpenRouter rows get no map, which is
+    why ``--apply`` refuses to run without it.
 
     Providers we ship that upstream does not have — ``openai-codex``,
     ``azure-openai-responses``, ``fireworks``, ``together``,
@@ -440,8 +457,7 @@ def plan(local: Catalog, upstream: dict[str, Any]) -> tuple[Catalog, list[tuple[
     fill. Adding one means adding auth, an env var, and a resolver default.
     """
 
-    additions: Catalog = {}
-    skips: list[tuple[str, str, str]] = []
+    result = CatalogPlan()
     for provider, local_models in local.items():
         upstream_models = upstream_models_for(provider, upstream)
         for model_id, upstream_row in upstream_models.items():
@@ -449,21 +465,36 @@ def plan(local: Catalog, upstream: dict[str, Any]) -> tuple[Catalog, list[tuple[
                 continue
             reason = is_eligible(upstream_row)
             if reason is not None:
-                skips.append((provider, model_id, reason))
+                result.skips.append((provider, model_id, reason))
                 continue
             transport, why = resolve_transport(
                 model_id, upstream_row, local_models, upstream_models
             )
             if transport is None:
-                skips.append((provider, model_id, why))
+                result.skips.append((provider, model_id, why))
                 continue
             try:
                 row = build_row(provider, model_id, upstream_row, transport, local_models)
             except ValueError as exc:
-                skips.append((provider, model_id, str(exc)))
+                result.skips.append((provider, model_id, str(exc)))
                 continue
-            additions.setdefault(provider, {})[model_id] = row
-    return additions, skips
+            mapped, source = derive_thinking_level_map(
+                provider, row, upstream_row, (openrouter or {}).get(model_id)
+            )
+            if mapped is not None:
+                row["thinkingLevelMap"] = mapped
+            result.map_sources[(provider, model_id)] = source
+            result.additions.setdefault(provider, {})[model_id] = row
+    return result
+
+
+def plan(
+    local: Catalog, upstream: dict[str, Any], openrouter: dict[str, Row] | None = None
+) -> tuple[Catalog, list[tuple[str, str, str]]]:
+    """``(additions, skips)``: :func:`plan_catalog` without the map sources."""
+
+    planned = plan_catalog(local, upstream, openrouter)
+    return planned.additions, planned.skips
 
 
 def merge(local: Catalog, additions: Catalog) -> Catalog:
@@ -575,19 +606,46 @@ def audit_transport_rule(
 # ── cli ────────────────────────────────────────────────────────────────
 
 
-def _load_upstream(args: argparse.Namespace) -> dict[str, Any]:
+def fetch_json(url: str) -> tuple[bytes, Any]:
+    """GET ``url`` (no credential) and return ``(raw bytes, decoded JSON)``."""
+
+    request = urllib.request.Request(url, headers={"User-Agent": "aelix-catalog-refresh"})
+    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+        raw = response.read()
+    return raw, json.loads(raw.decode("utf-8"))
+
+
+def _load_upstream(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Row] | None]:
     if args.fetch:
-        with urllib.request.urlopen(UPSTREAM_URL, timeout=30) as response:  # noqa: S310
-            return json.loads(response.read().decode("utf-8"))
+        _raw, upstream = fetch_json(UPSTREAM_URL)
+        _raw, listing = fetch_json(OPENROUTER_URL)
+        return upstream, openrouter_by_id(listing)
     if not args.source:
         raise SystemExit("--source PATH or --fetch is required")
-    return json.loads(Path(args.source).read_text(encoding="utf-8"))
+    upstream = json.loads(Path(args.source).read_text(encoding="utf-8"))
+    listing = (
+        json.loads(Path(args.openrouter_source).read_text(encoding="utf-8"))
+        if args.openrouter_source
+        else None
+    )
+    return upstream, openrouter_by_id(listing)
+
+
+def write_catalog(catalog: Catalog, path: Path = CATALOG_PATH) -> None:
+    """Write the catalog as every refresh has: two-space indent, UTF-8, no trailing newline."""
+
+    path.write_text(json.dumps(catalog, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", help="path to a models.dev api.json")
-    parser.add_argument("--fetch", action="store_true", help=f"download {UPSTREAM_URL}")
+    parser.add_argument(
+        "--openrouter-source", help="path to OpenRouter's public /api/v1/models body"
+    )
+    parser.add_argument(
+        "--fetch", action="store_true", help=f"download {UPSTREAM_URL} and {OPENROUTER_URL}"
+    )
     parser.add_argument("--apply", action="store_true", help="write the catalog")
     parser.add_argument("--audit", action="store_true", help="score the transport rule")
     parser.add_argument("--show-skips", action="store_true")
@@ -597,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     local: Catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    upstream = _load_upstream(args)
+    upstream, openrouter = _load_upstream(args)
 
     if args.audit:
         correct, answered, misses = audit_transport_rule(local, upstream, forward=not args.strict)
@@ -611,18 +669,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {mark} {provider}/{model_id}: {wrong} disagreed — {why}")
         return 0
 
-    additions, skips = plan(local, upstream)
+    if args.apply and openrouter is None:
+        raise SystemExit(
+            "--apply needs OpenRouter's list (--fetch, or --openrouter-source PATH): "
+            "without it every new OpenRouter reasoning row would land without its map"
+        )
+
+    planned = plan_catalog(local, upstream, openrouter)
+    additions, skips = planned.additions, planned.skips
     total = sum(len(rows) for rows in additions.values())
     for provider, rows in sorted(additions.items(), key=lambda kv: -len(kv[1])):
         print(f"  + {provider:26} {len(rows):>4}  {', '.join(sorted(rows))[:96]}")
     print(f"{total} model(s) to add, {len(skips)} skipped")
+    sources: dict[str, int] = {}
+    for source in planned.map_sources.values():
+        sources[source] = sources.get(source, 0) + 1
+    print(
+        "thinking maps of the new rows: "
+        + ", ".join(f"{k} {v}" for k, v in sorted(sources.items()))
+    )
     if args.show_skips:
         for provider, model_id, reason in sorted(skips):
             print(f"  - {provider}/{model_id}: {reason}")
 
     if args.apply:
-        merged = merge(local, additions)
-        CATALOG_PATH.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+        write_catalog(merge(local, additions))
         print(f"wrote {CATALOG_PATH}")
     return 0
 

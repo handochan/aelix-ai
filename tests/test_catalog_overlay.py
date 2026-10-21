@@ -11,6 +11,21 @@ server. So every added row inherits its transport from a model we already ship,
 and :func:`refresh_catalog.audit_transport_rule` measures that inheritance
 against the rows we have — hide one, predict it, score it.
 
+THE LADDER MOVED (ADR-0264 §4.8). It lives in :mod:`aelix_ai.catalog_inherit`
+so the client that reads a published revision runs the generator's own rule;
+the script's names are that module's functions, and
+``test_the_generator_and_the_client_run_one_ladder`` holds them to it. Its
+score over ADR-0264 r7's inputs is pinned below, so a move that changed the rule
+would show here.
+
+THINKING MAPS (ADR-0264 §7 Q2). A new reasoning row's map is derived in pi's
+order; each rule, the order, a kept ``max`` and the absence of any derived
+``anthropic-messages`` map are tested here, and r7's counts are reproduced from
+``tests/fixtures/hosted_catalog/r7-inputs.json.gz`` (r7's models.dev and
+OpenRouter bodies cut to what the generator reads, with the catalog r7 planned
+over; ``.omc/probes/b4-d-live/172/probes/make_r7_fixture.py`` wrote it and checked the
+cut changes neither the plan nor the audit).
+
 Nothing here needs the network. The catalog is committed data and these are its
 properties; the audit is exercised on a synthetic pair so its logic is gated
 without a 4MB fixture.
@@ -18,12 +33,15 @@ without a 4MB fixture.
 
 from __future__ import annotations
 
+import collections
+import gzip
 import importlib.util
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from aelix_ai import catalog_inherit
 from aelix_ai.models_generated import MODELS
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -513,3 +531,250 @@ def test_the_metadata_comes_from_upstream_and_the_transport_does_not() -> None:
     assert row["cost"] == {"input": 1.0, "output": 2.0, "cacheRead": 0.5, "cacheWrite": 0.25}
     assert (row["contextWindow"], row["maxTokens"]) == (200000, 32000)
     assert row["provider"] == "acme" and row["id"] == "m"
+
+
+# ── one ladder for the generator and the client (ADR-0264 §4.8) ────────
+
+
+def test_the_generator_and_the_client_run_one_ladder() -> None:
+    """The script's ladder IS ``aelix_ai.catalog_inherit``'s, not a copy of it.
+
+    ADR-0264 moved the ladder so a client inheriting a published row's
+    transport asks exactly the generator's question. A second copy in the
+    script would let the two drift, and the publisher's inheritance check
+    would then compare the generator with something the client never runs.
+    """
+
+    for script_name, module_name in (
+        ("resolve_transport", "resolve_transport"),
+        ("transport_of", "transport_of"),
+        ("_encode", "encode"),
+        ("_family_keys", "family_keys"),
+        ("_namespace", "namespace"),
+        ("_released", "released"),
+        ("_wire", "wire"),
+        ("_orphans", "orphans"),
+        ("_settle", "settle"),
+    ):
+        assert getattr(rc, script_name) is getattr(catalog_inherit, module_name), script_name
+    assert catalog_inherit.resolve_transport.__module__ == "aelix_ai.catalog_inherit"
+
+
+_R7 = _ROOT / "tests/fixtures/hosted_catalog/r7-inputs.json.gz"
+
+
+def _r7() -> dict[str, Any]:
+    return json.loads(gzip.decompress(_R7.read_bytes()))
+
+
+def test_the_ladder_scores_over_r7s_inputs_what_it_scored_before_the_move() -> None:
+    """ADR-0264 §8: "the ladder's audit unchanged after the move".
+
+    MEASURED before the move, on ``27fa21c5`` with r7's full models.dev body
+    (``.omc/probes/b4-d-live/172/out/audit_orig*.txt``, byte-identical to the
+    moved ladder's output): forward 1407/1477, leave-one-out 1428/1509. The
+    fixture keeps the catalog's order, which the ladder's ties and the forward
+    audit's cut read, so the same numbers come back from it.
+    """
+
+    r7 = _r7()
+    forward = rc.audit_transport_rule(r7["catalog"], r7["modelsDev"], forward=True)
+    strict = rc.audit_transport_rule(r7["catalog"], r7["modelsDev"], forward=False)
+    assert forward[:2] == (1407, 1477)
+    assert strict[:2] == (1428, 1509)
+    fatal = [miss for miss in forward[2] if "api" in miss[2] or "baseUrl" in miss[2]]
+    assert len(forward[2]) == 70 and len(fatal) == 12
+
+
+# ── thinking maps for new rows (ADR-0264 §7 Q2) ────────────────────────
+
+
+def test_r7s_counts_come_back_from_r7s_inputs() -> None:
+    """ADR-0264 §7 Q2, MEASURED in r7 (``r7/out/q2_derive_probe.txt``) and reproduced here.
+
+    265 new rows, 230 reasoning: 38 take OpenRouter's map, 15 models.dev's
+    and 10 a provider rule, 167 none; 452 candidates skipped. 39 derived maps
+    named ``max``, which r7's build dropped and this one keeps (#433).
+    """
+
+    r7 = _r7()
+    planned = rc.plan_catalog(r7["catalog"], r7["modelsDev"], rc.openrouter_by_id(r7["openRouter"]))
+    assert sum(len(rows) for rows in planned.additions.values()) == 265
+    assert len(planned.skips) == 452
+    assert collections.Counter(planned.map_sources.values()) == {
+        "openrouter": 38,
+        "models.dev": 15,
+        "provider rule": 10,
+        "none": 167,
+        "not reasoning": 35,
+    }
+    maps = [
+        planned.additions[provider][model_id].get("thinkingLevelMap")
+        for provider, model_id in planned.map_sources
+    ]
+    assert sum(1 for m in maps if m and m.get("max") == "max") == 39
+    for (provider, model_id), source in planned.map_sources.items():
+        row = planned.additions[provider][model_id]
+        assert ("thinkingLevelMap" in row) == (
+            source in ("openrouter", "models.dev", "provider rule")
+        ), (provider, model_id, source)
+
+
+def test_no_anthropic_messages_row_gets_a_derived_map() -> None:
+    """Rule 3 skips ``anthropic-messages``: pi's branch needs ``forceAdaptiveThinking`` first.
+
+    Over r7's plan, the only ``anthropic-messages`` rows with a map are the
+    Xiaomi rows rule 1 covers, and their map only hides levels.
+    """
+
+    r7 = _r7()
+    planned = rc.plan_catalog(r7["catalog"], r7["modelsDev"], rc.openrouter_by_id(r7["openRouter"]))
+    for (provider, model_id), source in planned.map_sources.items():
+        row = planned.additions[provider][model_id]
+        if row["api"] == "anthropic-messages" and "thinkingLevelMap" in row:
+            assert source == "provider rule", (provider, model_id)
+            assert row["thinkingLevelMap"] == rc.PROVIDER_RULE_MAP
+
+
+def _new_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": "m-9",
+        "name": "M 9",
+        "api": "openai-responses",
+        "provider": "acme",
+        "baseUrl": "https://api.example",
+        "reasoning": True,
+        "input": ["text"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 200000,
+        "maxTokens": 32000,
+    }
+    row.update(overrides)
+    return row
+
+
+_EFFORT = {"reasoning_options": [{"type": "effort", "values": ["low", "high", "max"]}]}
+
+
+def test_rule_1_a_provider_rule_wins_over_every_upstream_list() -> None:
+    """Xiaomi and Together hide every level but off and high, whatever upstream lists."""
+
+    for provider in ("xiaomi", "xiaomi-token-plan-sgp", "together"):
+        mapped, source = rc.derive_thinking_level_map(
+            provider,
+            _new_row(provider=provider, api="anthropic-messages"),
+            _EFFORT,
+            {"reasoning": {"supported_efforts": ["low"]}},
+        )
+        assert source == "provider rule"
+        assert mapped == {"minimal": None, "low": None, "medium": None}
+
+
+def test_rule_2_an_openrouter_row_takes_openrouters_list_and_never_models_dev() -> None:
+    mapped, source = rc.derive_thinking_level_map(
+        "openrouter",
+        _new_row(provider="openrouter", api="openai-completions"),
+        _EFFORT,
+        {"reasoning": {"supported_efforts": ["minimal", "high", "xhigh"]}},
+    )
+    assert source == "openrouter"
+    assert mapped == {
+        "off": "none",
+        "minimal": "minimal",
+        "low": None,
+        "medium": None,
+        "high": "high",
+        "xhigh": "xhigh",
+        "max": None,
+    }
+    # Mandatory reasoning hides off; with no effort list that is the whole map.
+    mandatory, _ = rc.derive_thinking_level_map(
+        "openrouter",
+        _new_row(provider="openrouter"),
+        None,
+        {"reasoning": {"mandatory": True}},
+    )
+    assert mandatory == {"off": None}
+    # Mandatory reasoning with an effort list: the list's map, off hidden all the same
+    # (pi ``openrouter-reasoning-options.ts:22``, ``off: mandatory ? null : "none"``).
+    listed, source = rc.derive_thinking_level_map(
+        "openrouter",
+        _new_row(provider="openrouter"),
+        None,
+        {"reasoning": {"mandatory": True, "supported_efforts": ["none", "low", "high"]}},
+    )
+    assert source == "openrouter"
+    assert listed == {
+        "off": None,
+        "minimal": None,
+        "low": "low",
+        "medium": None,
+        "high": "high",
+        "xhigh": None,
+        "max": None,
+    }
+    # Not listed by OpenRouter: no map, and models.dev's list is not consulted.
+    assert rc.derive_thinking_level_map("openrouter", _new_row(), _EFFORT, None) == (None, "none")
+
+
+def test_rule_3_models_dev_maps_only_rows_whose_wire_sends_the_level_name() -> None:
+    """The Responses APIs and OpenAI-format Chat Completions with effort support; nothing else."""
+
+    for api in ("openai-responses", "azure-openai-responses", "openai-codex-responses"):
+        mapped, source = rc.derive_thinking_level_map("acme", _new_row(api=api), _EFFORT, None)
+        assert source == "models.dev", api
+        assert mapped is not None
+        assert mapped["off"] is None and mapped["low"] == "low" and mapped["max"] == "max"
+        assert mapped["minimal"] is None and mapped["medium"] is None
+    openai_format = _new_row(
+        api="openai-completions",
+        compat={"thinkingFormat": "openai", "supportsReasoningEffort": True},
+    )
+    assert rc.derive_thinking_level_map("acme", openai_format, _EFFORT, None)[1] == "models.dev"
+    toggle_only = _new_row(
+        api="openai-completions",
+        compat={"thinkingFormat": "openai", "supportsReasoningEffort": False},
+    )
+    assert rc.derive_thinking_level_map("acme", toggle_only, _EFFORT, None) == (None, "none")
+    assert rc.derive_thinking_level_map(
+        "anthropic", _new_row(provider="anthropic", api="anthropic-messages"), _EFFORT, None
+    ) == (None, "none")
+
+
+def test_off_maps_to_none_only_when_upstream_lists_none() -> None:
+    listed, _ = rc.derive_thinking_level_map(
+        "acme",
+        _new_row(),
+        {"reasoning_options": [{"type": "effort", "values": ["none", "high"]}]},
+        None,
+    )
+    assert listed is not None and listed["off"] == "none"
+    # ``default`` and JSON null name no level, so a list of only them gives no map.
+    assert rc.derive_thinking_level_map(
+        "acme",
+        _new_row(),
+        {"reasoning_options": [{"type": "effort", "values": ["default", None]}]},
+        None,
+    ) == (None, "none")
+
+
+def test_a_derived_max_is_kept_now_that_the_build_has_max() -> None:
+    """r7 dropped 39 derived ``max`` levels because the build had none; #433 added it."""
+
+    mapped = rc.effort_thinking_level_map(["high", "max"])
+    assert mapped is not None and mapped["max"] == "max"
+
+
+def test_a_row_that_does_not_reason_gets_no_map() -> None:
+    assert rc.derive_thinking_level_map(
+        "xiaomi", _new_row(provider="xiaomi", reasoning=False), _EFFORT, None
+    ) == (None, "not reasoning")
+
+
+def test_apply_refuses_to_run_without_openrouters_list(tmp_path: Path) -> None:
+    """Without it every new OpenRouter reasoning row would land without rule 2's map."""
+
+    source = tmp_path / "api.json"
+    source.write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="OpenRouter's list"):
+        rc.main(["--source", str(source), "--apply"])

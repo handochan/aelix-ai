@@ -84,10 +84,53 @@ is needed for subsequent releases.
 
 ---
 
+## Before every release: fold the hosted catalog back
+
+Between releases the model catalog reaches users from `handochan/aelix-catalog`
+(ADR-0264 §4.2): a scheduled job runs this repository's generator on the newest
+green `main` and publishes the rows it adds, without transport. Those rows
+reach `main`, and so a release, **only through a commit**. Without one, the ids
+new to the latest release grow by up to 100 at every slot until a client's
+500-new-ids-per-provider bound refuses every revision for that release.
+
+So the release prep (beta and GA alike), and the owner at any time, runs the
+generator once by hand and commits the result as its own change, reviewed in
+the diff:
+
+```bash
+uv run python scripts/refresh_catalog.py --fetch               # dry run: additions, skips, map sources
+uv run python scripts/refresh_catalog.py --fetch --show-skips  # what it refused and why
+uv run python scripts/refresh_catalog.py --fetch --apply       # write models_generated.json
+uv run pytest -q tests/test_catalog_corrections_are_pinned.py tests/test_catalog_overlay.py \
+    tests/test_hosted_catalog_contract.py tests/test_max_thinking_level_433.py
+```
+
+- `--fetch` downloads models.dev's `api.json` and OpenRouter's public
+  `/api/v1/models`; no key is sent. `--apply` refuses to run without
+  OpenRouter's list, because every new OpenRouter reasoning row takes its
+  thinking map from it.
+- Review the diff as rows, not lines (`git diff` re-anchors a file that is
+  mostly `},`; ADR-0232). It may only append: `merge()` cannot write a key that
+  exists, and the pin test fails if a correction moved.
+- Read the transport each new row inherited (ADR-0232's ladder; its residual
+  risk is the first model of a new wire on a provider) and each derived
+  thinking map (ADR-0264 §7 Q2; a map is upstream's claim until `main` curates
+  one). Fix by hand what is wrong, in the same commit.
+- It commits upstream as of now, not exactly what was published, with no
+  100-id cap, and it proposes again a row a hold rolled back: the diff review
+  is the gate. Drop such a row by hand.
+
+The next slot publishes from the new `main`, whose catalog is then the
+lineage's last entry.
+
+---
+
 ## Cutting a release
 
 1. **Bump the version** in every published package to the new `X.Y.Z`. Keep them
-   identical, and update the pinned inter-package constraints to match:
+   identical, and update the pinned inter-package constraints to match (fold
+   the hosted catalog back first, in its own commit: **Before every release**
+   above):
 
    - `pyproject.toml` (meta) — `version` **and** the `aelix-ai==`,
      `aelix-agent-core==`, `aelix-coding-agent==` pins.
@@ -308,7 +351,8 @@ updates an existing release in place rather than failing on the taken name.
 1. **Bump the version to the PEP 440 beta form** (`0.1.0b2` for the tag
    `v0.1.0-beta.2`) in every published package and its inter-package pins (same
    files as step 1 above; `release.yml` asserts all of them, the `[tui]` extra
-   pin included, before it builds):
+   pin included, before it builds; fold the hosted catalog back first, in its
+   own commit: **Before every release** above):
 
    - `pyproject.toml` (meta) — `version`, the `aelix-ai==` / `aelix-agent-core==`
      / `aelix-coding-agent==` pins, **and** the `[tui]` extra pin.

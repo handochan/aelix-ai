@@ -217,7 +217,9 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     """``xhigh`` reaches the new flagship, because its predecessor's map was copied.
 
     models.dev carries no ``thinkingLevelMap``, so ``scripts/refresh_catalog.py``
-    adds every new row WITHOUT one — and a reasoning model without a map has no
+    added every new row WITHOUT one (since #172 it derives a map from upstream's
+    effort lists where pi would, ADR-0264 §7 Q2, and still none where nothing
+    covers the row) — and a reasoning model without a map has no
     ``xhigh`` at all (``get_supported_thinking_levels`` treats a missing
     ``xhigh`` key as unsupported). Measured on the 2026-09-08 refresh: the
     102 added rows all landed mapless, so ``claude-fable-5-1`` would have

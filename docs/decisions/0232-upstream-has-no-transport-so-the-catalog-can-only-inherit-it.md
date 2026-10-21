@@ -1,6 +1,7 @@
 # 0232. Upstream has no transport, so the catalog can only inherit it
 
-Status: Accepted (2026-08-19).
+Status: Accepted (2026-08-19); amended 2026-10-21 (#172, ADR-0264 §4.8 B4: the ladder moved to
+`aelix_ai/catalog_inherit.py`, new rows get a derived thinking map, the generator runs in CI).
 Date: 2026-08-19
 Relates: ADR-0067 (the catalog and its shape contract), ADR-0230 §catalog (the coverage
 measurement that opened this), ADR-0034 (the pi pin a regeneration would follow).
@@ -166,3 +167,48 @@ Two narrower limits, both deliberate:
   guards it needs no network.
 - `test_catalog_corrections_are_pinned.py` keeps its role unchanged — it pins values
   that differ from upstream, and this script is now the thing it is defending against.
+
+## Amendment 2026-10-21: the ladder moved, new rows get a map, and this runs in CI
+
+ADR-0264 (accepted 2026-10-20) publishes this generator's output from `handochan/aelix-catalog`
+and inherits a published row's transport on the client with this ADR's ladder. Its §4.8 B4 row is
+#172's second half, and it changes three things here; ADR-0264 §6 asked for an amendment, not a
+supersession. Evidence: `.omc/probes/b4-d-live/172/` (commands in `commands.txt`).
+
+- **The ladder lives in `aelix_ai/catalog_inherit.py`.** `transport_of`, `family_keys`,
+  `namespace`, `released`, `wire`, `orphans`, `settle` and `resolve_transport` moved verbatim (one
+  `list(...).index` hoisted out of a sort key), so the generator and the client run one
+  implementation. The script keeps its old names (`_family_keys`, `_namespace`, ...) as the same
+  function objects, and `tests/test_catalog_overlay.py` checks the identity. The ladder reads three
+  upstream fields and nothing else: a new id's `family`, and each compared row's `family` and
+  release date (`release_date`, else `last_updated`); `ladder_inputs()` puts a published row's
+  `family` and `releaseDate` where it looks for them. MEASURED: `--audit` prints byte-identical
+  output before and after the move over r7's models.dev (2026-10-17): forward 1407/1477 = 95.3% (12
+  of 70 misses on the wire), leave-one-out 1428/1509 = 94.6%. Both scores are pinned over
+  `tests/fixtures/hosted_catalog/r7-inputs.json.gz`, r7's inputs cut to what the generator reads
+  (the cut changes neither the plan nor either audit, checked when it was written).
+- **A new reasoning row gets a thinking map derived as pi derives one** (ADR-0264 §7 Q2, the owner's
+  decision of 2026-10-16), in pi's order: Xiaomi's and Together's provider rule (hide minimal, low
+  and medium), OpenRouter's public `reasoning.supported_efforts` for OpenRouter rows, models.dev's
+  `reasoning_options` for a row whose inherited wire sends the level's own name (the three
+  Responses APIs, OpenAI-format Chat Completions with effort support; never `anthropic-messages`),
+  else none. `max` is kept (#433). An existing row's map is a key that exists, so additive-only
+  still holds as a shape. `--fetch` downloads OpenRouter's list as well, and `--apply` refuses to
+  run without one, because every new OpenRouter reasoning row would land without its map.
+  MEASURED over r7's inputs, r7's counts come back: 265 rows, 230 reasoning, 38 OpenRouter maps,
+  15 models.dev, 10 provider rule, 167 none, 39 naming `max`.
+- **It runs in CI.** The Consequences above say "nothing here runs in CI"; aelix-ai's own CI now
+  runs `tests/test_hosted_catalog_contract.py`, which runs the generator's plan, without network.
+  It will also run on a schedule in the catalog repository, `handochan/aelix-catalog`, once the
+  owner creates it (ADR-0264 §7 Q1; its workflow is prepared, the repository does not exist yet),
+  through `scripts/publish_catalog.py build`, which plans over the committed catalog, applies it
+  to a throwaway checkout, runs the pin test, this ADR's overlay test and ADR-0264's contract test
+  against it, and publishes the rows without transport (ADR-0264 §4.2). A row reaches `main`, and
+  a release, only through the fold-back (`RELEASING.md`), reviewed in a diff as every run before
+  it was.
+
+MEASURED live on 2026-10-21 23:52 KST (models.dev and OpenRouter fetched without a key; sha256 in
+`inputs/live/sha256.txt`): the plan over `27fa21c5`'s 1,529 rows adds 288 and skips 465; of the new
+rows, 41 take OpenRouter's map, 17 models.dev's, 13 a provider rule, 176 none, and 41 do not reason.
+The forward audit over today's models.dev scores 1403/1476 = 95.1% (12 misses on the wire). This
+commit does not apply them; the fold-back does, as its own reviewed commit.

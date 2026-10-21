@@ -622,10 +622,10 @@ def _refresh_script() -> Any:
 
 def test_a_refresh_from_upstream_cannot_undo_the_reclassification() -> None:
     """``refresh_catalog.py`` is additive-only (it never writes a key that exists)
-    and writes no ``thinkingLevelMap`` at all, so an upstream that still lists
-    every reclassified id - with a map of its own - plans nothing for them and
-    leaves their maps as #433 left them. ADR-0264's #172 runs the generator next;
-    a map it DERIVES for a new id may name ``max`` now that the level exists."""
+    and writes a ``thinkingLevelMap`` only on a row it adds, so an upstream that
+    still lists every reclassified id - with a map of its own - plans nothing for
+    them and leaves their maps as #433 left them. Since #172 (ADR-0264 §7 Q2) a
+    map it DERIVES for a new id may name ``max``, which the build now keeps."""
 
     rc = _refresh_script()
     with open(_CATALOG, encoding="utf-8") as handle:
