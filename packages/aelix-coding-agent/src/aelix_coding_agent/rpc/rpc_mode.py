@@ -755,6 +755,44 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
     }
 
 
+async def _fit_thinking_level_to_live_model(harness: AgentHarness) -> str:
+    """#415 — fit the live thinking level to the model the harness now runs.
+
+    pi's ``setModel`` and ``cycleModel`` end in ``setThinkingLevel``
+    (``agent-session.ts:2524``, ``:2593``, ``:2625`` at ``pi@fdce48eb4``), which
+    clamps to the model (``:2642-2646``); ``AgentHarness.set_model`` leaves the
+    level alone and ``set_thinking_level`` does not clamp (ADR-0239's #198
+    divergence), so the RPC model commands fit it here, both through this one
+    helper. ``set_model`` kept ``xhigh`` on a model that cannot reason before.
+
+    - **The model the harness ENDED on**, not the one asked for: a
+      ``model_select`` handler that answers the pick with a ``set_model`` of its
+      own leaves the harness on that model, and the level fits it — the state
+      pi reaches, where that handler's ``setModel`` fits the level again.
+    - **Written only when the fit changes it**: pi's setter records and fires
+      ``thinking_level_select`` only ``isChanging`` (``:2647-2662``); this
+      harness's setter fires its hook on every call, so the gate is here.
+    - **The base is the live level** (P-182: ``"off"`` when there is none), as
+      ``cycle_model`` always did and as ``/model`` keeps it, not pi's
+      ``_getThinkingLevelForModelSwitch`` ladder, which puts the settings
+      ``defaultThinkingLevel`` before the live level (``:2699-2711``): aelix has
+      no per-model level setting, and its default is for a session that has
+      not chosen one (ADR-0239). Divergence recorded in ADR-0239's #415
+      amendment.
+
+    Returns the live level after the fit (pi's ``cycleModel`` answers
+    ``this.thinkingLevel``).
+    """
+
+    from aelix_ai.models import clamp_thinking_level
+
+    live = harness.state.thinking_level
+    fitted = clamp_thinking_level(harness.state.model, live or "off")
+    if fitted is not None and fitted != live:
+        await harness.set_thinking_level(fitted)
+    return harness.state.thinking_level
+
+
 async def _handle_set_model(
     harness: AgentHarness,
     registry: Any,  # ``ModelRegistry`` — typed via TYPE_CHECKING import
@@ -769,6 +807,17 @@ async def _handle_set_model(
     model the harness can't actually call. Returns the Pi-shape
     ``Model<Api>`` dict on success, or a ``Model not found:
     {provider}/{model_id}`` error.
+
+    #415: switches through :meth:`AgentHarness.set_model`, as pi's
+    ``setModel`` — the pick is recorded (``model_change``, idle or queued in a
+    turn), ``model_select`` fires — and then fits the thinking level to the
+    model the harness ends on (:func:`_fit_thinking_level_to_live_model`). A
+    ``model_select`` handler that raises fails the command with that error; the
+    model stays in force, as after a refused ``/model``, and the level is not
+    fitted. Between turns neither the model nor a level is recorded; during a
+    turn ``set_model`` has queued the model's record before the hook runs, so it
+    is recorded there (ADR-0239's #415 amendment). The answer names the model
+    asked for, as pi's does.
     """
 
     if registry is None:
@@ -793,7 +842,13 @@ async def _handle_set_model(
             command="set_model",
             error=f"Model not found: {cmd.provider}/{cmd.model_id}",
         )
-    harness.set_current_model(model)
+    # #415 — pi's ``session.setModel`` (``rpc-mode.ts:476`` →
+    # ``agent-session.ts:2507-2527`` at ``pi@fdce48eb4``): record the pick, fire
+    # ``model_select``, fit the level. ``set_current_model`` did only the state
+    # write, so a pick no prompt followed was never recorded and ``--continue``
+    # reopened on the model before it.
+    await harness.set_model(model)
+    await _fit_thinking_level_to_live_model(harness)
     return RpcSuccessResponse(
         id=cmd.id, command="set_model", data=_model_to_dict(model)
     )
@@ -809,8 +864,11 @@ async def _handle_cycle_model(
     Rotates to the next model in :meth:`ModelRegistry.get_available`
     (insertion order), without the providers only a cwd ``.env``
     authenticates while the user holds a credential of their own (ADR-0250
-    guard 1, #362). Updates :meth:`AgentHarness.set_current_model`
-    and emits the new model + clamped thinking level + ``isScoped``.
+    guard 1, #362). Switches through :meth:`AgentHarness.set_model` (#415: the
+    pick is recorded and ``model_select`` fires, as pi's ``cycleModel``), fits
+    the thinking level to the model the harness ends on
+    (:func:`_fit_thinking_level_to_live_model`) and answers with the new model,
+    that level and ``isScoped``.
 
     Sprint 6f₁ always returns ``isScoped: False`` — workspace-scoped
     selection is Sprint 6g per spec §J.
@@ -818,7 +876,7 @@ async def _handle_cycle_model(
     Returns ``data: None`` if no models are available (Pi parity).
     """
 
-    from aelix_ai.models import clamp_thinking_level, models_are_equal
+    from aelix_ai.models import models_are_equal
 
     if registry is None:
         return RpcErrorResponse(
@@ -854,22 +912,14 @@ async def _handle_cycle_model(
                 next_index = (i + 1) % len(available)
                 break
     next_model = available[next_index]
-    harness.set_current_model(next_model)
-    # P-182: Pi ``agent-session.ts:1490`` clamps via the harness's
-    # current thinking level; on a fresh harness ``state.thinking_level``
-    # may be :data:`None`, but the Pi caller always carries a level
-    # string. Coerce to ``"off"`` so :func:`clamp_thinking_level`
-    # produces a real Pi-shape level rather than propagating ``None``.
-    current_level = harness.state.thinking_level or "off"
-    thinking_level = clamp_thinking_level(next_model, current_level)
-    # P-171: Pi ``agent-session.ts:1490`` calls
-    # ``this.setThinkingLevel(thinkingLevel)`` BEFORE returning so the
-    # next turn uses the clamped value. Sprint 6f W2 only computed
-    # the clamped level for the response payload and never persisted
-    # it. The clamp can be :data:`None` (Sprint 6b back-compat) so
-    # only persist when the clamp produced a concrete level.
-    if thinking_level is not None:
-        await harness.set_thinking_level(thinking_level)
+    # #415 — pi's ``_cycleAvailableModel`` (``agent-session.ts:2600-2630`` at
+    # ``pi@fdce48eb4``) records the model and fires ``model_select`` as
+    # ``setModel`` does. ``set_current_model`` did neither, while the level fit
+    # below WAS recorded, so a reopen came back on the old model at the level
+    # fitted for the new one. P-171's fit (pi calls ``setThinkingLevel`` before
+    # returning) is kept, in the helper both handlers share.
+    await harness.set_model(next_model)
+    thinking_level = await _fit_thinking_level_to_live_model(harness)
     return RpcSuccessResponse(
         id=cmd.id,
         command="cycle_model",

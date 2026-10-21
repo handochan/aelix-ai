@@ -4626,10 +4626,13 @@ def _live_model_of(host: dict[str, Any]) -> Model | None:
     The model sibling of :func:`_live_session_of`, reading the same holder.
     ``AgentSessionRuntime.harness`` is the LIVE harness — replaced on ``/new``,
     ``/resume``, ``/fork`` and ``/reload`` — and ``current_model`` is a thin
-    reader over ``_state.model``, which ``/model`` writes directly
-    (``harness/core.py`` ``set_current_model``). So this follows every way the
-    parent's model can move, including the two that fire no hook and therefore
-    never refresh the delegation extension's ``ExtensionContext``.
+    reader over ``_state.model``. Every switch writes it: ``AgentHarness.set_model``
+    (``/model``, ``/agents use``, an extension's ``set_model`` and, since #415,
+    RPC ``set_model`` / ``cycle_model``, which called ``set_current_model``
+    before), and the direct writes that fire no hook (a pending or held launch's
+    placeholder and its put-back, ``/agents use``'s rollback). So this follows
+    every way the parent's model can move, including those, which never refresh
+    the delegation extension's ``ExtensionContext``.
 
     ``None`` before the runtime exists (startup, and any embedder that never
     builds one), which leaves the extension on its ``_ctx`` fallback exactly as

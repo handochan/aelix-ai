@@ -1,6 +1,6 @@
 # 0065. ModelRegistry Runtime
 
-Status: Accepted (Sprint 6f / Phase 4.6 / W6 shipped)
+Status: Accepted (Sprint 6f / Phase 4.6 / W6 shipped) — amended 2026-10-22 (#415): the RPC `set_model` / `cycle_model` handlers switch through `AgentHarness.set_model`, not `set_current_model` (ADR-0239's #415 amendment)
 
 ## Context
 
@@ -167,7 +167,13 @@ single source of truth.
   but does not add new OAuth provider types.
 - The harness `current_model` property + `set_current_model`
   method bind to `_state.model` directly (P-187). RPC `set_model`
-  and `cycle_model` route through this seam.
+  and `cycle_model` route through this seam. *Amended 2026-10-22
+  (#415): they no longer do. A bare state write recorded no
+  `model_change` and fired no `model_select`, so a pick that no prompt
+  followed was lost on reopen. Both now switch through
+  `AgentHarness.set_model` and fit the thinking level to the new model, as
+  pi's `setModel` / `cycleModel` do (ADR-0239's #415 amendment).
+  `set_current_model` and P-187's single source of truth are unchanged.*
 
 ### Carry-forward — Sprint 6g
 

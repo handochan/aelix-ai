@@ -184,8 +184,13 @@ A hook handler registered through `on(...)` receives a read-only
 A `model_select` or `thinking_level_select` handler runs after the change: the
 model or level is already in force. Raising there does not undo it. The command
 that made the switch (`/model`, `/thinking`, `/settings`, the pick after
-`/login`) says it failed, the footer shows the model and level the next request
-uses, and that request goes with them. `/agents use` is the one command that
+`/login`, RPC's `set_model` or `cycle_model`) says it failed, the footer shows the
+model and level the next request uses, and that request goes with them. A
+model refused between turns is not recorded when it is refused. If the session
+is closed before another prompt, reopening it brings back the model it was on
+before. If a prompt follows, it runs on the refused model and its answer
+records that model, so reopening the session comes back on the refused model.
+`/agents use` is the one command that
 puts its model and level back when it fails. Your handler also runs before the
 TUI's own footer repaint, so a raise there skips it. The commands repaint
 anyway (#559), but a `ctx.set_model` or `ctx.set_thinking_level` from an

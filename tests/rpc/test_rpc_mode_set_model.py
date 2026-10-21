@@ -1,9 +1,10 @@
 """RPC ``set_model`` handler — Sprint 6f W2 (ADR-0065 §G.1, P-168).
 
 Pi parity: ``rpc-mode.ts::handle_set_model``. Looks up the model via
-:meth:`ModelRegistry.find`, mutates
-:meth:`AgentHarness.set_current_model`, and returns the Pi-shape
-``Model<Api>`` dict on success.
+:meth:`ModelRegistry.get_available`, switches through
+:meth:`AgentHarness.set_model` (#415 — it called ``set_current_model``, which
+recorded nothing; ``test_rpc_model_commands_record_415.py`` holds what it records,
+fires and fits), and returns the Pi-shape ``Model<Api>`` dict on success.
 """
 
 from __future__ import annotations

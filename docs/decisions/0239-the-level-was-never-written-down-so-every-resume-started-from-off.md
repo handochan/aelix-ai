@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -925,3 +925,103 @@ before `session_start` brings; the finish after it states those exceptions
 (decision 4) and the `thinking_level_select` the TUI launch no longer fires
 (decision 1), measured in `.omc/probes/286-live/r4/`, and changes no
 behaviour.
+
+## Amendment (2026-10-22, #415) — RPC `set_model` and `cycle_model` record the pick and fit the level
+
+Decision 8 of the #376 amendment records every idle `set_model`, and its list of
+picks a user makes left out the two RPC model commands. They never reached it:
+both handlers called `AgentHarness.set_current_model`, a bare state write.
+
+**Measured on `7d9588d1`** (main `27fa21c5` plus three TUI commits that do not
+touch these paths): the real `aelix --mode rpc` with a fake key, `models.json`
+pointing a `rec` provider at a local recorder (`m1` reasons up to `xhigh`, `m2` up
+to `high`, `m3` not at all); driver and outputs in `.omc/probes/b4-b-live/415/`.
+
+- A prompt, then `set_model rec/m2`, then close: `--continue` answered `get_state`
+  with `rec/m1` and sent its next request to `m1`. The file held no
+  `model_change` for `m2`. `cycle_model` did the same.
+- Neither command fired `model_select`. An extension logging both hooks saw only
+  the `thinking_level_select` of `cycle_model`'s level fit.
+- `--thinking xhigh`, then `set_model rec/m3` (a model that cannot reason):
+  `get_state` still said `xhigh`, and nothing was recorded. The request itself
+  was already right, because every adapter clamps when it builds the request (`m2`
+  went out with `reasoning_effort: high`).
+- `cycle_model` fitted the level and recorded the fit, but recorded no model.
+  `xhigh` on `m1`, a rotation to `m2` (`high`) and on to `m3` (`off`), then
+  close: `--continue` came back on `m1` at `off`, the level fitted for `m3`.
+
+### Decision
+
+1. **Both commands switch through `AgentHarness.set_model`**, as pi's RPC calls
+   `setModel` and `cycleModel` (`rpc-mode.ts:476`, `:481` →
+   `agent-session.ts:2507-2527`, `:2600-2630` at `pi@fdce48eb4`). The pick is
+   recorded under decision 8's rules: at once when idle, queued during a turn,
+   never a placeholder, nothing on a read-only session. `model_select` fires.
+2. **Then the level is fitted to the model the harness ended on**
+   (`rpc_mode._fit_thinking_level_to_live_model`, shared by both commands):
+   `clamp_thinking_level` of the live model and the live level, with `off` when
+   no level is set. It is written through `set_thinking_level` only when the fit
+   changes the level, as pi's setter records and fires only when `isChanging`
+   (`:2648`). The model is the live one. A `model_select` handler that answers the
+   pick with its own `set_model` leaves the harness on that model, and the level
+   fits that model. In pi the handler's `setModel` fits the level again, so pi
+   ends in the same state. The file reads `model_change` then
+   `thinking_level_change`, pi's order.
+3. **A `model_select` handler that raises fails the command** with its error
+   (`model_select hook handler raised: …`). The model stays in force, as after a
+   refused `/model` (the extension guide: a raise there does not undo the
+   switch). The level is not fitted. Between turns neither the model nor a level
+   is recorded then, so a session closed before another prompt reopens where it
+   was. A prompt that follows runs on the refused model, and its answer records
+   that model, so a reopen then comes back on it (review round 2, measured with
+   the real `aelix --mode rpc`: `.omc/probes/b4-b-live/r2/p415_rpc.refused.out`).
+   A fit at this point would record a level for a model the session never
+   recorded. During a turn, `set_model` has already queued the model's record before the hook runs
+   (the in-turn write comes before the emit, unlike the idle append). A pick
+   refused there is therefore still recorded, as it already was for `/model` and
+   an extension's `set_model` (`.omc/probes/b4-b-live/415/inturn_refusal.out`;
+   a follow-up).
+4. **The answers.** `set_model` returns the model it was asked for, as pi's does.
+   `cycle_model`'s `thinkingLevel` is the live level after the fit, which is
+   what pi's `this.thinkingLevel` returns.
+
+### Divergences from Pi (ADR-0235: recorded, not argued)
+
+- **The fit starts from the live level.** pi's `_getThinkingLevelForModelSwitch`
+  (`:2699-2711`) checks a per-model level setting first, then
+  `defaultThinkingLevel`, and only then the live level. aelix has no per-model
+  setting, and its default is for a session that has chosen no level (the #286
+  amendment). `cycle_model` has always started from the live level (P-182), and
+  `/model` keeps it. A switch away and back therefore restores nothing: `xhigh`
+  on `m1`, then `m3`, then `m1` again ends at `off`. pi does the same when no
+  default is set.
+- **`model_select` fires before the level is fitted** (pi fits first), so a
+  handler still sees the old level. It also fires when the pick is the live model
+  again, which pi's `_emitModelSelect` skips (`:2492`). Both behaviours belong to
+  `AgentHarness.set_model`, which `/model` uses too.
+- **A rotation's `model_select` says `source: "set"`.** The event's literal has
+  no `"cycle"` (`harness/hooks.py`).
+- **`cycle_model` still ignores `enabledModels`** (`isScoped: false`, ADR-0162).
+  This amendment does not change that.
+
+### Not changed
+
+- `/model`, its picker, `/agents use` and an extension's `setModel` still do not
+  fit the level (#255).
+- `AgentHarness.set_current_model` is kept for embedders and tests. No product
+  code calls it now, but its docstring still names the RPC handlers. A
+  follow-up fixes the docstring.
+- A session with no conversation still follows the launch inputs (decision 1 of
+  the #376 amendment). The pick is written to its file, but a reopen ignores it.
+- `aelix-server`'s WebSocket RPC passes no model registry, so both commands
+  still answer `requires a ModelRegistry` there.
+
+### Consequences
+
+- The rows are in `tests/rpc/test_rpc_model_commands_record_415.py`. All eleven
+  fail on `7d9588d1`, and ten sabotages of the fix each turn at least one red
+  (`.omc/probes/b4-b-live/415/sabotage.out`). Review round 2 adds a twelfth: a
+  `cycle_model` whose rotation a `model_select` handler moves on answers the
+  live level (`xhigh` on m1, to m2 and on to m3: `off`), so an answer of the
+  level fitted to the model asked for, read before the switch (`high`), is red
+  (`.omc/probes/b4-b-live/r2/415-mutants.out`).

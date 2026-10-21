@@ -693,6 +693,26 @@ unwritten. Add them with the next release.
   as the picker does, rather than only through the change event. An
   extension's own `ctx.set_model` or `ctx.set_thinking_level` refused this way
   still leaves the footer stale.
+- **RPC `set_model` and `cycle_model` are recorded in the session, fire
+  `model_select`, and fit the thinking level to the new model, as pi does (#415,
+  ADR-0239 amendment 2026-10-22).** Both commands changed the live model and
+  nothing else. A pick that no prompt followed was lost: in `aelix --mode rpc`,
+  a prompt, then `set_model rec/m2`, then closing, and `--continue` came back on
+  `rec/m1`. Extensions never saw a `model_select` for either command.
+  `set_model` also kept the level as it was, so after `--thinking xhigh` and a
+  `set_model` to a model that cannot reason, `get_state` still said `xhigh`.
+  The request was already right, because the adapter fits the level when it
+  builds it. `cycle_model` did fit the level and recorded the fitted level, but
+  not the model, so a reopen came back on the old model at the level fitted for
+  the new one. Both commands now record the pick and fire `model_select`. They
+  then fit the level to the model the session ends on: `xhigh` becomes `high` on
+  a model that tops out there, and `off` on one that cannot reason. They record
+  the level only when it changes. A `model_select` handler that raises fails the
+  command with its error, and between turns the pick is then not recorded: a
+  session closed before another prompt reopens on the model it had, while a
+  prompt that follows runs on the refused model, and its answer records it. A
+  `cycle_model` rotation's `model_select` reports `source: "set"`, because the
+  event has no `"cycle"` value yet.
 - **A compaction or a branch summary whose summary request hits a provider `502` or
   a transient OAuth refresh failure is retried, as the turn is (#409, ADR-0128
   amendment 2026-10-21).** `/compact`, rpc `compact`, an extension's `ctx.compact()`

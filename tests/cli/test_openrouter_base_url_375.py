@@ -310,11 +310,18 @@ async def test_rpc_set_model_and_cycle_model_carry_it(
     async def _set_level(_level: str) -> None:
         return None
 
+    async def _set_model(model: Model) -> None:
+        # #415: both handlers switch through ``AgentHarness.set_model`` (it was
+        # ``set_current_model``), then fit the level against ``state.model``.
+        chosen.append(model)
+        harness.current_model = model
+        harness.state.model = model
+
     harness = SimpleNamespace(
         current_model=None,
-        set_current_model=chosen.append,
+        set_model=_set_model,
         set_thinking_level=_set_level,
-        state=SimpleNamespace(thinking_level="off"),
+        state=SimpleNamespace(thinking_level="off", model=None),
     )
     reply = await _handle_set_model(
         harness,  # type: ignore[arg-type]

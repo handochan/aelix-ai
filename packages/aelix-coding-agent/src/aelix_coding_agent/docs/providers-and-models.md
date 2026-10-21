@@ -59,7 +59,8 @@ Opening a session that already has a conversation — `--continue`, `--resume`,
 `/import` and `/reload` (RPC: `switch_session`, `fork`, `clone`) — puts you back
 on the model it last ran on: whichever the session recorded last, a `/model`
 pick or the model that wrote an answer. A pick is recorded when you make it, so
-`/model` then quitting comes back on that model. A new session records the model
+`/model` then quitting comes back on that model. The same goes for RPC's `set_model`
+and `cycle_model`, which also fire `model_select` for your extensions. A new session records the model
 it starts on as well, as pi does — at launch, on `/new`, and on a `/fork` before
 the first message — when it is created, before the extensions' `session_start`
 handlers run, so a session whose answers all failed before reaching a model (an
@@ -543,6 +544,18 @@ recorded into a session that has not chosen a level yet — so the next
 turn outranks the `defaultThinkingLevel` setting. One exception to the ladder: after an in-session
 `/resume` the target session's own recorded level wins, launch flag included —
 you asked for that session, not for a re-run of the command line.
+
+RPC's `set_model` and `cycle_model` fit the level to the model they switch to,
+as pi does. `xhigh` becomes `high` on a model that tops out there, and `off` on
+a model that cannot reason. `get_state` and the session then show the level the
+next request carries. Moving back to the first model does not restore the level
+you had there. A `model_select` handler that raises fails the command with its
+error. The model it switched to stays in force, and between turns neither that
+model nor a level is recorded then. A prompt that follows runs on that model and
+its answer records it, so a reopen comes back on it; a session closed before
+another prompt reopens on the model it had. `/model` keeps the level as you set it
+([#255](https://github.com/handochan/aelix-ai/issues/255)), and every adapter
+fits the level when it builds the request.
 
 `defaultThinkingLevel` applies in every mode, a delegated agent included (it
 reads only your global `settings.json`), when neither `--thinking` nor the
