@@ -300,8 +300,9 @@ async def test_a_silent_overflow_whose_compaction_raises_keeps_the_completed_ans
         False,
         "Context overflow recovery failed: no credential for p (probe)",
     )
-    # The threshold check that follows fails the same way, and is told the same way.
-    assert ends[1:] == [("threshold", False, "Auto-compaction failed: no credential for p (probe)")]
+    # #391 review round 2: no threshold compaction follows on the same answer - the
+    # overflow case owns it, as pi's ``_checkCompaction`` returns from that case.
+    assert ends[1:] == []
     assert _last_assistant(harness).content[0].text == _ANSWER  # type: ignore[union-attr]
 
 

@@ -269,7 +269,12 @@ handles, exits `0`. `-p` writes the error to stderr. `--mode json` writes
 nothing extra: the failed answer's `turn_end` event carries its `stop_reason`
 and `error_message`. An [automatic compaction](providers-and-models.md#automatic-compaction)
 that fails after the answer does not change the exit code: `-p` prints the
-answer and writes `Auto-compaction failed: <reason>` to stderr. Both also exit
+answer and writes `Auto-compaction failed: <reason>` to stderr. A request the
+provider refused as too long is a failed answer when that compaction could not
+recover it - nothing to compact yet (the session's first turn), or it failed or
+was cancelled: both exit `1`, and `-p` writes the provider's error to stderr
+(after one `Context overflow recovery failed: <reason>` line when the compaction failed);
+until this release such a run printed nothing and exited `0` (#391). Both also exit
 `1`, with the reason on stderr, when aelix cannot start the run or fails during it. A run ended by a signal exits `128`
 plus its number (`143` for `SIGTERM`). pi's `--mode json` exits `0` for a
 failed answer; aelix's exits `1` so that a script sees it in `$?`.

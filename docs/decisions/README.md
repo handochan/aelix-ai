@@ -36,6 +36,20 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0176 — Overflow-compaction follow-ups: trailing-error exclusion, staleness guards, compaction events](0176-overflow-compaction-followups.md)
+  (amended 2026-10-22; #391). The overflow recovery drops the failed answer from the live context
+  before its compaction and, when no re-run follows - nothing to compact, a summary that failed or
+  was refused, an extension's cancel, a hook's or an auth callback's raise, an abort during a
+  compaction that succeeded, a cancelled prompt - puts the same message back, once (a compaction
+  that rebuilt the context before raising already has it). The live context is again what the
+  session file holds, so `-p` and `--mode json` exit 1 with the provider's error (ADR-0268 §1)
+  where they printed nothing and exited 0, and rpc `get_messages` ends on it. pi leaves the
+  attempt omitted (`_omitRecoveryAttempt`); the divergence is deliberate. Review round 2: the
+  threshold check that follows passes over an overflow the recovery owns, as pi's
+  `_checkCompaction` returns from that case, so a failed recovery is not followed by a second
+  compaction in the same prompt. Not covered: the auto-retry's cancelled backoff drops a
+  retriable error the same way (pi alike), a follow-up.
+
 - [0126 — Auto-compaction trigger](0126-sprint-6h18-auto-compaction-trigger.md)
   (amended 2026-10-22; #469, #546). The harness reads settings.json `compaction` at each decision, as
   pi's `getCompactionSettings` and #408's `retry.*`: `enabled` gates the threshold and the
@@ -87,7 +101,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   unchanged and JSON mode writes nothing to stderr for it, because the delegation parent reads a
   JSON child's stderr as a fallback summary. Signal codes, exceptions and exit 141 are unchanged.
   Amends ADR-0198 §D5 (first clause), ADR-0197 §(k), ADR-0251 (json `rc 0` on an exhausted
-  refresh retry) and ADR-0201 (turn contract row 2, `exit code 0`).
+  refresh retry) and ADR-0201 (turn contract row 2, `exit code 0`). Note 2026-10-22 (#391): an
+  overflow recovery that gives up now leaves the failed answer last (ADR-0176), so the rule exits
+  1 there too; `aelix --help` still names no exit codes.
 - [0269 — The release candidate is installed and run on every OS before anything is published](0269-the-release-candidate-is-installed-and-run-on-every-os-before-anything-is-published.md)
   (Accepted 2026-10-20 by the owner; #382). `release.yml` runs `build` -> `candidate-smoke`
   (ubuntu, macos, windows) -> `github-release` (needs build + smoke) -> `publish` (needs all

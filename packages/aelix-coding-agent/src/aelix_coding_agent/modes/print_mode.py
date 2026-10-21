@@ -559,8 +559,8 @@ def _compaction_failure(event: Any) -> str | None:
     """The stderr line text mode writes for an automatic compaction that failed (#546).
 
     Since #546 a threshold or overflow compaction that fails is not raised out of
-    the prompt: the turn keeps its answer, which step 8 prints and judges as any
-    other, and the failure is on the compaction's ``compaction_end``
+    the prompt: the turn keeps its answer (after an overflow the failed one, #391),
+    which step 8 prints or judges as any other; the failure is on ``compaction_end``
     (``Auto-compaction failed: …`` / ``Context overflow recovery failed: …``,
     ``harness/core.py`` ``_compaction_end_failure``). Text mode writes that line
     to stderr as it happens, so a run whose context could not be compacted does

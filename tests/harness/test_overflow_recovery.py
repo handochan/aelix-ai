@@ -410,7 +410,7 @@ async def test_threshold_guard_a_skips_stale_pre_compaction_assistant() -> None:
         AssistantMessage(
             content=[TextContent(text="stale")],
             stop_reason="end_turn",
-            usage={"input": 500_000},  # well over the threshold
+            usage={"input": 190_000},  # over the threshold, inside the window (#391 r2)
             timestamp=boundary - 1000.0,  # BEFORE the compaction boundary
         )
     ]
@@ -429,7 +429,7 @@ async def test_threshold_fires_for_fresh_assistant_after_compaction() -> None:
         AssistantMessage(
             content=[TextContent(text="fresh")],
             stop_reason="end_turn",
-            usage={"input": 500_000},
+            usage={"input": 190_000},  # past the window it is the overflow case's (#391 r2)
             timestamp=None,  # live message — never stale
         )
     ]

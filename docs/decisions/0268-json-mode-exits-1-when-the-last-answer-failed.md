@@ -143,8 +143,17 @@ stderr to say why.
   session during the run, that session's messages are loaded as new objects, so its
   last message is judged as before this change. Not measured.
 - **#391**: `-p` that ends with no output and exit 0 lives in `harness/core.py` (B4).
+  *2026-10-22 (#391): fixed there.* An overflow recovery that gave up (nothing to compact, a
+  compaction that failed or was cancelled, an abort during it) had dropped the failed answer from
+  the live context, so §1's last message was the user's prompt and both modes exited 0 with
+  nothing on stdout or stderr. The harness now puts the answer back (ADR-0176's #391 amendment)
+  and §1 judges it as any other: exit 1, text mode writes the provider's error (after #546's
+  `Context overflow recovery failed: …` line when the compaction failed). This ADR's rule is
+  unchanged.
 - **`aelix --help`** names no exit codes and is not changed (`cli/args.py`). The
-  getting-started guide's "Exit codes" section is where they are written down.
+  getting-started guide's "Exit codes" section is where they are written down. *2026-10-22
+  (#391): kept so - pi's `--help` names none either; the guide's section gained the overflow
+  case.*
 - **An automatic compaction that fails (2026-10-22, #546).** Before #546 its error was raised
   out of the prompt and reached `run_print_mode`'s `except`: stderr got the error, both modes
   exited 1 and step 8 never ran, so the answer was not printed. Now the prompt returns and step 8

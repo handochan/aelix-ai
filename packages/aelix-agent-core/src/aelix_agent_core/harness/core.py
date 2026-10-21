@@ -2118,8 +2118,8 @@ class AgentHarness:
         no idle harness. Called without a claim (the unit tests, on an idle
         harness) it takes the public path unchanged. The complementary overflow path
         (LLM-returned context-overflow → compact + re-run) is handled
-        separately by :meth:`_try_overflow_recovery` (issue #4 Lane B), which
-        runs BEFORE this threshold check in :meth:`prompt`'s recovery loop.
+        separately by :meth:`_try_overflow_recovery` (issue #4 Lane B), which runs BEFORE
+        this check; an overflow last answer is that path's alone (#391 r2, :func:`_overflow_case`).
 
         Auto-trigger MUST NOT turn a successful turn into a propagated
         exception (W-review HIGH-1/HIGH-2, #546):
@@ -2140,7 +2140,7 @@ class AgentHarness:
 
         if not _compaction_enabled(policy := _compaction_policy(self._settings_manager), self._state):
             return
-        if self._session is None:
+        if self._session is None or _overflow_case(self):
             # Aelix in-memory backward-compat path (ADR-0022) — no session
             # to compact. W-review HIGH-1 fix.
             return
@@ -2251,8 +2251,8 @@ class AgentHarness:
           ``prompt()``) allows at most ONE compact-and-retry per turn; a second
           overflow refuses the re-run (pi ``:1848-1859``).
         - **pi #4811** (nothing eligible to compact): a "Nothing to compact"
-          raise from :meth:`compact` is swallowed and no re-run happens (pi
-          ``prepareCompaction`` returning ``None`` → ``:1931-1934``).
+          raise from :meth:`compact` is swallowed, no re-run happens, and (#391,
+          unlike pi) the failed answer is back, as on every way out but a re-run.
         """
 
         from aelix_ai.utils.overflow import is_context_overflow
@@ -2352,21 +2352,20 @@ class AgentHarness:
 
         # pi ``:1862-1867`` — drop the error assistant from the live context
         # before the retry (it remains in session history). The retry re-runs
-        # from the compacted pre-error context.
-        if self._state.messages and isinstance(
-            self._state.messages[-1], AssistantMessage
-        ):
-            self._state.messages.pop()
+        # from the compacted pre-error context. #391: every way out that does
+        # not re-run puts it back (:func:`_restore_failed_answer`).
+        failed = _drop_failed_answer(self._state)
 
         # pi ``:1868`` — ``runAutoCompaction("overflow", will_retry=True)``.
         try:
             await self.compact(reason="overflow", will_retry=True, _claim=claim)
-        except Exception as exc:  # noqa: BLE001 — #546: an auth callback's raise too
-            # pi ``:1931-1934`` / #4811 — nothing eligible to compact: no retry.
-            if getattr(exc, "code", None) == "invalid_state" and "Nothing to compact" in str(exc):
-                return False
-            # pi ``:2054-2069`` — compaction itself failed: no retry.
-            _log.debug("overflow compaction failed: %r", exc, exc_info=True)
+        except BaseException as exc:  # #391: a cancel too, re-raised; #546: any raise
+            _restore_failed_answer(self._state, failed, context_window)
+            if not isinstance(exc, Exception):
+                raise
+            # pi ``:1931-1934`` / #4811 (nothing to compact), ``:2054-2069`` (failed): no retry.
+            if not (getattr(exc, "code", None) == "invalid_state" and "Nothing to compact" in str(exc)):
+                _log.debug("overflow compaction failed: %r", exc, exc_info=True)
             return False
 
         # Issue #4 (FU1) — pi ``agent-session.ts:1988-1994`` (willRetry branch).
@@ -2374,18 +2373,19 @@ class AgentHarness:
         # RE-ADDS the trailing overflow message (still persisted in history, the
         # FIRST pop above only removed it from the LIVE list) as the last kept-tail
         # entry. Pop it a SECOND time AFTER the rebuild so the re-run does not
-        # replay it as its most-recent message. Guard on ``is_context_overflow``
-        # (rather than pi's narrower ``stopReason == "error"``) so it also drops a
-        # ``stop_reason == "length"`` overflow — aelix's ``is_context_overflow``
-        # Case 3 detects more than pi's "error" branch (see ``overflow.py``). A
-        # legitimate trailing assistant is never an overflow, so it is never
-        # dropped (including the case where the rebuild did NOT re-add the error).
+        # replay it. Guard on ``is_context_overflow`` (not pi's ``stopReason ==
+        # "error"``) so it also drops a ``"length"`` overflow (Case 3 in
+        # ``overflow.py``); a legitimate trailing assistant is never an overflow.
         if (
             self._state.messages
             and isinstance(self._state.messages[-1], AssistantMessage)
             and is_context_overflow(self._state.messages[-1], context_window)
         ):
             self._state.messages.pop()
+        # #391 — an abort during the compaction: no re-run, so the answer is back.
+        if claim is not None and self._abort_requested:
+            _restore_failed_answer(self._state, failed, context_window)
+            return False
         return True
 
     # === Sprint 6h₂₀ (ADR-0128) — auto-retry state machine ====================
@@ -6317,3 +6317,97 @@ def _auto_compaction_failed(reason: str, exc: Exception) -> None:
     """
 
     _log.debug("%s compaction failed: %r", reason, exc, exc_info=True)
+
+
+# === #391 — an overflow recovery that does not re-run keeps the failed answer =====
+#
+# The overflow recovery drops the failed answer from the live context before its
+# compaction, so that the re-run does not send it again (pi ``:1862-1867``). When no
+# re-run follows - nothing to compact, the compaction failed, was cancelled or aborted,
+# or the prompt was cancelled during it - the answer used to stay dropped: the live
+# context ended on the user's message while the session file still held the answer, so
+# ``-p`` printed nothing and exited 0, ``--mode json`` exited 0 and rpc ``get_messages``
+# ended on the prompt. pi does the same (it persists the omission, ``_omitRecoveryAttempt``
+# @ fdce48eb4); aelix puts the answer back, so the run is judged on it (ADR-0268) and the
+# live context is again what the session file holds (ADR-0176, amendment 2026-10-22).
+# Here at the end of the module so that no locked citation of the file moves.
+
+
+def _drop_failed_answer(state: AgentState) -> AssistantMessage | None:
+    """Pop the live context's trailing assistant message and return it (``None``: none)."""
+
+    last = state.messages[-1] if state.messages else None
+    if not isinstance(last, AssistantMessage):
+        return None
+    state.messages.pop()
+    return last
+
+
+def _restore_failed_answer(
+    state: AgentState, failed: AssistantMessage | None, context_window: int
+) -> None:
+    """Put back the answer :func:`_drop_failed_answer` took, unless the context has it (#391).
+
+    A compaction that rebuilt the context from the session branch and raised after it
+    (a ``session_compact`` hook) left the answer there already, the branch's last entry:
+    the same object, or an overflow in its place. Anything else ends without it, and it
+    goes back at the end - where it was, since nothing is appended to the live context
+    while a compaction runs.
+    """
+
+    from aelix_ai.utils.overflow import is_context_overflow
+
+    if failed is None:
+        return
+    last = state.messages[-1] if state.messages else None
+    if last is failed or (
+        isinstance(last, AssistantMessage) and is_context_overflow(last, context_window)
+    ):
+        return
+    state.messages.append(failed)
+
+
+def _overflow_case(harness: AgentHarness) -> bool:
+    """Is the live context's last answer one the overflow recovery owns? (#391 review round 2)
+
+    pi's ``_checkCompaction`` takes a context overflow on the last answer as its
+    case 1 or 2 and returns from there - a compaction without a re-run, a
+    compact-and-retry, the refusal of a second one, a failed compaction - so its
+    threshold case 3 never runs on that answer (``agent-session.ts:3040-3077`` @
+    fdce48eb4). aelix splits the two cases between
+    :meth:`AgentHarness._try_overflow_recovery` and
+    :meth:`AgentHarness._check_auto_compaction`, which runs after it in the same
+    pass of :meth:`AgentHarness.prompt`; this is the overflow recovery's own test,
+    so the threshold check passes over what it took. Without it, an overflow whose
+    compaction failed - its failed answer put back since #391 - tripped the
+    threshold on the error-path estimate (the last good usage plus the long
+    prompt) and a second compaction ran at once: a second summary request with its
+    own retries, a second ``session_before_compact``, a second failure line.
+
+    The same tests as the overflow recovery's, in its order: a message from
+    another model (explicit provenance) or #379's setup failure is not its case.
+    Here, at the end of the module, so that no locked citation moves.
+    """
+
+    from aelix_ai.utils.overflow import is_context_overflow
+
+    model = harness._state.model
+    last = next(
+        (m for m in reversed(harness._state.messages) if isinstance(m, AssistantMessage)),
+        None,
+    )
+    if model is None or last is None:
+        return False
+    msg_provider = getattr(last, "provider", None)
+    msg_model = getattr(last, "model", None)
+    if (
+        msg_provider is not None
+        and msg_model is not None
+        and (msg_provider != getattr(model, "provider", None) or msg_model != getattr(model, "id", None))
+    ):
+        return False
+    failure = harness._setup_failure
+    if failure is not None and last is failure.message:
+        return False
+    return is_context_overflow(last, getattr(model, "context_window", 0) or 0)
+

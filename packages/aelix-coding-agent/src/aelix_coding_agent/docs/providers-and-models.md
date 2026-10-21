@@ -575,6 +575,18 @@ printed the compaction's error instead of the answer and exited 1, and an
 extension that cancels automatic compaction failed every turn past the
 threshold (#546).
 
+After a request refused as too long there is no answer to keep: when the
+compaction cannot recover it - nothing to compact yet (the session's first
+turn), the compaction failed or an extension cancelled it, or the prompt was
+aborted during it - the failed answer stays the conversation's last message and
+the request is not sent again, and no second compaction is tried in that prompt.
+`-p` writes the provider's error to stderr (after the one `Context overflow
+recovery failed: <reason>` line when the compaction failed) and exits 1, `--mode json` exits 1, and rpc `get_messages` ends on that
+answer. Until this release it was dropped there, though the session file kept
+it: `-p` and `--mode json` printed nothing and exited 0, and rpc
+`get_last_assistant_text` answered the previous turn's text (#391). pi drops it
+too.
+
 ## Adapter coverage — what this build can actually run
 
 The bundled model catalog spans nine wire protocols; this build ships adapters

@@ -655,6 +655,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A request the provider refused as too long that compaction could not
+  recover now fails visibly: `-p` writes the provider's error and exits 1, and
+  `--mode json` exits 1 (#391, ADR-0176 amendment 2026-10-22).** The overflow
+  recovery takes the failed answer out of the conversation before it compacts,
+  so that the request it sends again does not carry it. When nothing was sent
+  again - nothing to compact yet (the session's first turn), a summary that
+  failed or was refused, an extension that cancelled the compaction, an abort
+  during it - the answer stayed out, while the session file kept it. Measured
+  on the base with the real CLI and a local server that refuses the request as
+  `prompt is too long`: `-p` exited 0 with nothing on stdout or stderr (after a
+  failed summary, only #546's `Context overflow recovery failed: …` line),
+  `--mode json` exited 0, rpc `get_messages` ended on the prompt and
+  `get_last_assistant_text` answered the previous turn's text. Now the failed
+  answer is put back: `-p` writes the provider's error to stderr (after that
+  line when the compaction failed) and exits 1, `--mode json` exits 1 with a
+  clean stderr, and rpc ends on it. A turn the compaction did recover is sent
+  again and answers as before. The TUI already drew the error, and still does.
+  pi leaves the answer out. A refused request that the compaction could not
+  recover is not compacted a second time in the same prompt: the threshold check
+  after it passes over the overflow, as pi's does (with the answer back, it had
+  estimated the long prompt past the threshold and run a second summary at once).
+  Not changed: a retry wait that is cancelled
+  (Esc, rpc `abort_retry`) drops a retriable error the same way, as in pi.
+
 - **A turn that succeeded is no longer turned into an error when the automatic
   compaction after it fails: `-p` prints the answer and exits 0, and the failure
   is reported as pi reports it (#546, ADR-0126 amendment 2026-10-22).** When the
