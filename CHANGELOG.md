@@ -914,6 +914,32 @@ unwritten. Add them with the next release.
   Folders that earlier runs left behind are not removed. Their names contain
   `pytest-of-`.
 
+- **Tests: running the suite no longer opens, locks or reads your
+  `~/.aelix/agent/auth.json`, or lists your extensions (#497).** This changes
+  only the tests, not anything users run. Four tests ran the CLI in the test
+  process with neither a sandboxed HOME nor their own `AELIX_CODING_AGENT_DIR`.
+  The CLI loads `auth.json` from the agent directory before anything else, so
+  each of them created `~/.aelix/agent` if it was missing, set it to mode
+  `0700`, opened `auth.json` read-write (creating an empty one if there was
+  none), took the same blocking lock a running `aelix` takes, and read your API
+  keys and OAuth tokens. They also read `settings.json` and listed your
+  `extensions` and `skills`. Measured with a stand-in home, 42 more tests that
+  build the agent's options listed `~/.aelix/agent/extensions`, and with an
+  extension installed there they would have imported and run it; 13 listed
+  `~/.aelix/extensions`, one read `models.json` and two read `mcp.json`. One
+  TUI test that undid its isolation while the TUI still ran let the update
+  check write `~/.aelix/agent/update_check.json`. All of them now use a
+  directory of their own. The best-effort guard from #458 now covers the whole
+  `~/.aelix` (a rename or removal of `~/.aelix` itself too) and an exported
+  `AELIX_CODING_AGENT_DIR`, and judges reads and listings as well as writes,
+  so a test that still reaches your agent directory in the test process fails
+  with a `#458/#497` message that names the fix. It still never reads that
+  directory itself. It cannot see a check like `Path.exists()`, so a read the
+  code makes only when a file exists is caught on a machine that has the file,
+  not on CI's empty home. The four tests were why a full run needed a scratch
+  HOME to stay out of your `~/.aelix`. The guard still judges nothing a child
+  process does.
+
 - **`-p`, `--mode json`, `--mode rpc` and delegated agents now think at your
   `defaultThinkingLevel` (#286).** The setting reached the interactive TUI only,
   so the other modes asked for reasoning off with it set to `high` (an

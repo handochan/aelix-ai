@@ -338,6 +338,8 @@ async def test_continue_reopens_most_recent_session(
 ) -> None:
     """``--continue`` re-opens the most-recent session (no NEW file)."""
 
+    # #497: ``--session-dir`` moves the sessions, not ``<agent dir>/auth.json``.
+    sandbox_home(monkeypatch, tmp_path / "home")
     root = tmp_path / "sroot"
     cwd = str(tmp_path)
     monkeypatch.chdir(cwd)

@@ -50,6 +50,11 @@ from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options, _visible_tools
 from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
 
+# #497: these build harness options, and ``_build_harness_options`` lists
+# ``<agent dir>/extensions`` and loads what is there. Without this, a test here
+# listed the developer's ``~/.aelix/agent/extensions``.
+pytestmark = pytest.mark.usefixtures("own_agent_dir")
+
 _COMPAT = OpenAICompletionsCompat()
 
 

@@ -23,6 +23,11 @@ from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options
 from aelix_coding_agent.tools import create_all_tools
 
+# #497: these build harness options, and ``_build_harness_options`` lists
+# ``<agent dir>/extensions`` and loads what is there. Without this, a test here
+# listed the developer's ``~/.aelix/agent/extensions``.
+pytestmark = pytest.mark.usefixtures("own_agent_dir")
+
 
 # Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
 # REQUIRED, so every call here has to say which session it is describing. The

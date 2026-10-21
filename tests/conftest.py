@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from aelix_coding_agent.cli.config import ENV_SESSION_DIR
+from aelix_coding_agent.cli.config import ENV_AGENT_DIR, ENV_SESSION_DIR
 from aelix_coding_agent.util import tools_manager as _tm
 
 from tests import session_root_guard
@@ -85,6 +85,28 @@ def _run_session_root() -> Iterator[str]:
         patch.setenv(ENV_SESSION_DIR, root)
         yield root
     session_root_guard.remove_session_roots()
+
+
+@pytest.fixture
+def own_agent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ``AELIX_CODING_AGENT_DIR`` at a directory of the test's own (#497).
+
+    Unlike the session root, nothing pins the agent dir for every test
+    (ADR-0026, #497 amendment, says why and what a pin measured). So a module
+    whose code under test resolves ``get_agent_dir()`` opts in: ``pytestmark =
+    pytest.mark.usefixtures("own_agent_dir")``. ``_build_harness_options`` is
+    the common case: it lists ``<agent dir>/extensions`` and loads what is
+    there, and with the developer's own extensions installed there a test would
+    run them. A test that runs ``_async_main`` sandboxes the home instead
+    (``tests.env_sandbox.sandbox_home``), as its siblings do. The directory is
+    not created, and a test that sets the variable itself wins (the same
+    ``monkeypatch``, last write wins). ``tests/session_root_guard.py`` fails a
+    test that reaches the developer's real agent dir anyway.
+    """
+
+    agent_dir = tmp_path / "isolated-agent-dir"
+    monkeypatch.setenv(ENV_AGENT_DIR, str(agent_dir))
+    return agent_dir
 
 
 @pytest.fixture(autouse=True)

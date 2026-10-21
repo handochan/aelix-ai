@@ -344,6 +344,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
 
 async def test_auth_callback_wired_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """WP-8 follow-up regression: the harness ``get_api_key_and_headers`` auth
     callback MUST be wired even WITHOUT ``--api-key``.
@@ -356,6 +357,8 @@ async def test_auth_callback_wired_without_api_key(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    # #497: ``_async_main`` loads ``<agent dir>/auth.json`` before it dispatches.
+    sandbox_home(monkeypatch, tmp_path / "home")
 
     import aelix_coding_agent.cli.entry as entry_mod
 
@@ -638,6 +641,7 @@ async def test_interactive_explicit_model_flag_overrides_persisted_default(
 async def test_interactive_missing_tui_extra_returns_1(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     """When the ``[tui]`` extra is absent, interactive mode prints an
     actionable install hint and returns exit code 1 (no stack trace).
@@ -646,6 +650,8 @@ async def test_interactive_missing_tui_extra_returns_1(
     import aelix_coding_agent.modes as modes_mod
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    # #497: the auth load runs before the ``run_tui`` import fails.
+    sandbox_home(monkeypatch, tmp_path / "home")
 
     # Simulate the extra missing: make the lazy ``run_tui`` resolution raise
     # ImportError exactly as a real absent prompt-toolkit would at import time.
@@ -672,9 +678,13 @@ async def test_interactive_missing_tui_extra_returns_1(
 async def test_piped_stdin_promotes_to_print(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     """A non-TTY stdin promotes to print mode — but with no message
     and no initial content, the print path is a no-op (exit 0)."""
+
+    # #497: print mode reads stdin, then loads ``<agent dir>/auth.json``.
+    sandbox_home(monkeypatch, tmp_path / "home")
 
     class _FakePipedStdin:
         def isatty(self) -> bool:

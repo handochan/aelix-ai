@@ -34,7 +34,18 @@ from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
 )
 
+from tests.env_sandbox import sandbox_home
+
 # === Fixtures / helpers ===
+
+
+@pytest.fixture(autouse=True)
+def _own_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#497: called with no ``agent_dir``, discovery lists
+    ``Path.home() / ".aelix" / "extensions"`` and loads what is there. Without
+    this, every test here listed the developer's ``~/.aelix/extensions``."""
+
+    sandbox_home(monkeypatch, tmp_path / "home")
 
 
 def _write_plugin_dir(

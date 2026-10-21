@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
 from aelix_coding_agent.cli import agent_context as _agent_context
@@ -38,6 +39,11 @@ from aelix_coding_agent.cli.agent_context import build_system_prompt
 from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options
 from aelix_coding_agent.help import bundled_docs_dir, topic_names
+
+# #497: these build harness options, and ``_build_harness_options`` lists
+# ``<agent dir>/extensions`` and loads what is there. Without this, a test here
+# listed the developer's ``~/.aelix/agent/extensions``.
+pytestmark = pytest.mark.usefixtures("own_agent_dir")
 
 
 # Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is

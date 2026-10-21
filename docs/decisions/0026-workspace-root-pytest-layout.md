@@ -6,6 +6,10 @@ own session root unless a wider-scoped fixture set a non-empty one, which stays
 in effect until that fixture is torn down, and a best-effort guard
 fails a test that does one of a listed set of writes under the developer's real
 one in process. See `## Amendment (2026-10-14, #458)`.**
+**Amended 2026-10-22 (#497): the guard covers the developer's whole `~/.aelix`
+(the agent dir among it) and an exported `AELIX_CODING_AGENT_DIR`, and judges
+reads and listings too; the tests that reached the agent dir isolate it. The
+agent dir is not pinned. See `## Amendment (2026-10-22, #497)`.**
 
 ## Context
 
@@ -146,11 +150,12 @@ whole run in `test.sh`: it uses `env -i` with a temporary `HOME` and
 under a bare `uv run pytest`, so the isolation is per test and inside the
 runner. The guard has no pi counterpart.
 
-**Not done here.** The guard protects the session root only. With a scratch
+**Not done here.** The guard protected the session root only. With a scratch
 HOME, four in-process tests opened `~/.aelix/agent/auth.json` for writing and
 `chmod`ed `~/.aelix/agent`: three in `tests/cli/test_entry_router.py` and one
-in `tests/cli/test_session_flags.py`. Widening the guard to `~/.aelix` waits for
-those to be fixed. Two product gaps stay open: `aelix-server`'s `/rpc` ignores
+in `tests/cli/test_session_flags.py`. Widening the guard to `~/.aelix` waited
+for those to be fixed; #497 fixed them and widened it (next amendment). Two
+product gaps stay open: `aelix-server`'s `/rpc` ignores
 the variable (above), and the CLI does not read `settings.json`'s `sessionDir`,
 which pi does. Directories that earlier runs left behind are not removed
 (their names contain `pytest-of-`). Removing them is the owner's call.
@@ -160,3 +165,97 @@ through the real conftest. Its child pytest proves that a test writing a real
 root in process fails and writes nothing, that a child inheriting the pin
 writes under it, and that the run removes its roots.
 `tests/test_session_root_guard_458.py` covers each part of the guard.
+
+## Amendment (2026-10-22, #497): the guard covers the whole `~/.aelix`, reads included
+
+`get_agent_dir()` is `AELIX_CODING_AGENT_DIR` or `~/.aelix/agent`, and it holds
+`auth.json` (API keys, OAuth tokens), `settings.json`, `extensions/` and
+`skills/`. Nothing in the suite pins it; tests isolate it one by one, with
+`sandbox_home` or by setting the variable, and `tests/tui/conftest.py` sets it
+for its directory. Two audit runs with a stand-in home, over the directories
+that drive the CLI, the TUI, RPC and extensions (not the whole suite), found
+what reached it.
+
+On this lane's base (`f6d41f77`), 12,098 tests, the home holding `auth.json`,
+`settings.json`, the agent dir's `extensions/`, `skills/`, `prompts/` and
+`agents/`, the session root and `~/.config/aelix/agent/auth.json`:
+
+- the four tests the #458 amendment named made `~/.aelix/agent`, `chmod`ed it
+  `0700`, opened `auth.json` `O_RDWR | O_CREAT` and took the blocking `flock` a
+  running aelix takes, then read it; they also locked and read `settings.json`
+  and listed `extensions/` and `skills/`;
+- 42 more, in six `tests/cli` modules that build harness options, listed
+  `~/.aelix/agent/extensions/`. `_build_harness_options` loads what it finds
+  there, so with an extension installed a test would import and run the
+  developer's code;
+- one `run_tui` test called `monkeypatch.undo()` while the TUI still ran. That
+  undid `tests/tui/conftest.py`'s `AELIX_CODING_AGENT_DIR` (and every conftest
+  pin), and the TUI's update check then wrote `update_check.json` into the
+  home's agent dir.
+
+With those fixed and the guard below on, 13,306 tests (32 more modules that
+import the CLI, the TUI or the settings and registry types among them), the
+home holding every file name the product reads under the agent dir and
+`~/.aelix/extensions`: the guard failed 16 more. 13 in
+`tests/extensions/test_manifest_v1_loader.py` listed `~/.aelix/extensions`
+(discovery called with no `agent_dir` falls back to `Path.home() / ".aelix"`),
+one in `tests/cli/test_register_provider_bootstrap.py` read `models.json`, and
+two in `tests/cli/test_dotenv_admission.py` read `mcp.json`. Nothing reached
+`~/.aelix/sessions` or the `~/.config/aelix` defaults `aelix_ai` uses when no
+path is given.
+
+1. **The tests isolate the agent dir; nothing pins it.** The four sandbox the
+   home, as their siblings in the same files do, and so does the manifest
+   loader module. The six harness-option modules, the registry module and the
+   two `mcp.json` tests opt into a new `own_agent_dir` fixture
+   (`tests/conftest.py`), which points the variable at a directory of the
+   test's own. The three `run_tui` tests that undid their isolation mid-run
+   (one measured, two of the same shape) patch through a scoped
+   `pytest.MonkeyPatch.context()`. With the same home, those files then ran
+   525 tests green and reached nothing.
+
+   A default-only pin like the session root's was tried as a wrong form, and it
+   did not go wrong: `own_agent_dir` made autouse failed none of the 4,537 tests
+   in the 95 modules that name the variable, `get_agent_dir` or `sandbox_home`.
+   Only the new end-to-end case failed, because the pin made its defect shape
+   harmless. A pin would also close, for code that resolves `get_agent_dir()`,
+   the empty-home gap in item 3. It is not taken here: the issue asked for the
+   tests' own isolation, the whole suite has not run under a pin, and it would
+   change the environment of every test and of every child built from
+   `os.environ`. Whether to add one is the owner's call.
+2. **The guard protects the whole `~/.aelix`** under the start-of-run home and
+   the password database's home (each as given and resolved), an exported
+   `AELIX_CODING_AGENT_SESSION_DIR` as before, and now an exported
+   `AELIX_CODING_AGENT_DIR` too. The temp-dir rule is unchanged. A rename or
+   `rmtree` of `~/.aelix` itself, an ancestor's operation #458 listed as
+   missed, is now an operation on a root and is judged.
+3. **The guard judges reads.** An `open` in any mode, an import's
+   `open_code` among them, and `os.listdir` / `os.scandir` (so `Path.iterdir`,
+   `glob`, `os.walk`) under a protected root are blocked and fail the test, as
+   writes were. #458 judged writes only, so a read of `auth.json` by a test was
+   allowed. The guard still never opens, lists or stats a root itself. It cannot
+   see `os.stat` and what is built on it (`Path.exists`, `is_dir`): CPython
+   raises no audit event for them. So a read that the product makes only when a
+   file exists is caught on a machine with that file and not on CI's empty home;
+   the `O_RDWR | O_CREAT` open of `auth.json` happens either way wherever
+   `fcntl` exists. On Windows `AuthStorage` takes no lock and reads only an
+   existing file (code reading, not measured). Children are still not judged.
+
+**Divergence from pi** (ADR-0235: recorded, not argued). pi still isolates the
+whole run in `test.sh` (at pi `fdce48eb4`: `env -i` with a temporary `HOME`,
+`USERPROFILE`, `XDG_CONFIG_HOME` and temp dir). Aelix keeps the per-test
+isolation and the in-process guard.
+
+**Not done here.** The suite's own network use is unchanged: a `run_tui` test
+fetches the real update feed (five of the ten tests in
+`tests/tui/test_footer_repaints_on_model_change_534.py` connected to
+`handochan.github.io:443`, measured with an audit of `socket.connect`), and the
+Anthropic SDK reads `~/.config/anthropic/active_config` from the developer's
+home in 36 tests. Neither is under `~/.aelix`.
+
+Tests: `tests/test_agent_dir_guard_497.py`. Its child pytest runs the real
+conftest with a stand-in home that holds an `auth.json` and an extension: a CLI
+run and a harness build that reach that agent dir each fail at teardown, the
+planted extension never runs, and the home is left as it was. Its other cases
+cover the roots, every kind of read, an import from the root, and the auth
+load.

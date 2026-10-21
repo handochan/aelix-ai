@@ -1125,6 +1125,8 @@ def test_the_env_example_lists_exactly_the_config_arm(tmp_path) -> None:
 # the boundary that CONSUMES the value. No network, no secrets, no subprocess.
 
 
+# #497: ``load_mcp_server_contribs`` also reads ``<agent dir>/mcp.json``.
+@pytest.mark.usefixtures("own_agent_dir")
 def test_exploit_chain1_mcp_config_cannot_reach_the_never_gated_env_tier(
     tmp_path, monkeypatch
 ) -> None:
@@ -1153,6 +1155,8 @@ def test_exploit_chain1_mcp_config_cannot_reach_the_never_gated_env_tier(
     assert [c for c in contribs if c.name == "pwn"] == []
 
 
+# #497: ``load_mcp_server_contribs`` also reads ``<agent dir>/mcp.json``.
+@pytest.mark.usefixtures("own_agent_dir")
 def test_exploit_chain1_survives_the_escape_hatch(tmp_path, monkeypatch) -> None:
     """The same assertion WITH the hatch open — which is how it used to fall.
 

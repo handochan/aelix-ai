@@ -3772,9 +3772,7 @@ async def test_the_model_select_registration_is_error_isolated() -> None:
     assert model_select[0]["source"] == "tui-context-meter"
 
 
-async def test_a_raising_meter_repaint_cannot_fail_the_model_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_raising_meter_repaint_cannot_fail_the_model_switch() -> None:
     """T7b — the behavioural half. A kwarg assertion only mirrors the
     implementation back at itself; what must hold is that ``emit`` RETURNS.
     Otherwise a footer bug prints ``✖ model switch failed`` for a switch that
@@ -3800,11 +3798,15 @@ async def test_a_raising_meter_repaint_cannot_fail_the_model_switch(
             exploded.append(1)
             raise RuntimeError("footer formatter exploded")
 
-        monkeypatch.setattr(tui_shell, "_format_context_label", _boom)
-        # …which now raises. The emit must still complete.
-        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        # #497: a scoped patch, not ``monkeypatch.undo()``. That undo also took
+        # back tests/tui/conftest.py's AELIX_CODING_AGENT_DIR (and every other
+        # pin) while this TUI still ran, and its update check writes
+        # ``<agent dir>/update_check.json`` when the feed answers.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(tui_shell, "_format_context_label", _boom)
+            # …which now raises. The emit must still complete.
+            await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
 
-        monkeypatch.undo()
         pipe.send_text("/quit\n")
         code = await _quit_within(task)
 
@@ -4160,9 +4162,7 @@ async def test_a_reload_keeps_the_cached_live_tokens(
     assert second.stats_calls == before, "a reload keeps the figure, so no walk"
 
 
-async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus() -> None:
     """T7c — the ``contextlib.suppress(Exception)`` in the handler body, isolated
     from the registration's ``error_mode="continue"``.
 
@@ -4192,12 +4192,13 @@ async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus(
             exploded.append(1)
             raise RuntimeError("footer formatter exploded")
 
-        monkeypatch.setattr(tui_shell, "_format_context_label", _boom)
-        handler = harness.hooks.handlers["model_select"]
-        # …and raises. Called OFF the bus, so nothing else can swallow it.
-        await handler(SimpleNamespace(model=_LIVE_MODEL_1M), None)
+        # #497: scoped, as in T7b, not ``monkeypatch.undo()``.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(tui_shell, "_format_context_label", _boom)
+            handler = harness.hooks.handlers["model_select"]
+            # …and raises. Called OFF the bus, so nothing else can swallow it.
+            await handler(SimpleNamespace(model=_LIVE_MODEL_1M), None)
 
-        monkeypatch.undo()
         pipe.send_text("/quit\n")
         code = await _quit_within(task)
 

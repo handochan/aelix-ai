@@ -62,10 +62,11 @@ def test_the_guard_watches_the_products_default_root() -> None:
 
 
 def test_the_run_protects_the_home_it_started_with() -> None:
-    """Computed by string from the start-of-run home, never by reading the root."""
+    """Computed by string from the start-of-run home, never by reading the root.
+    Since #497 the root is the home's whole ``.aelix``, which holds the sessions."""
 
     roots = srg.install()
-    assert srg._norm(str(Path.home() / ".aelix" / "sessions")) in roots
+    assert srg._under(str(Path.home() / ".aelix" / "sessions"), roots)
 
 
 def test_a_configured_session_dir_is_protected_too(
@@ -172,8 +173,8 @@ def test_the_real_password_home_is_among_the_roots(
     except KeyError:
         pytest.skip("this uid has no password entry")
     sandbox_home(monkeypatch, tmp_path / "home")
-    expected = srg._norm(os.path.join(password_home, ".aelix", "sessions"))
-    assert expected in srg.protected_roots({})
+    expected = os.path.join(password_home, ".aelix", "sessions")
+    assert srg._under(expected, srg.protected_roots({}))
 
 
 def test_a_root_that_is_or_contains_the_temp_dir_is_not_protected(tmp_path: Path) -> None:
@@ -404,16 +405,17 @@ def test_a_path_is_judged_where_it_lands_not_as_spelled(
     assert sorted(p.name for p in root.iterdir()) == ["--bucket--"]
 
 
-def test_reads_and_neighbours_are_not_writes(root: Path, tmp_path: Path) -> None:
-    """Reading the root is not judged, and neither is a sibling whose name only
-    starts like the root's."""
+def test_neighbours_are_not_the_root(root: Path, tmp_path: Path) -> None:
+    """A sibling whose name only starts like the root's is not judged. Reading
+    the root was not judged either until #497; ``tests/test_agent_dir_guard_497.py``
+    shows a read and a listing under it blocked now."""
 
     sibling = root.parent / (root.name + "-other")
     with srg.protecting([root]), srg.guard() as found:
-        assert (root / "--bucket--" / "s.jsonl").read_text(encoding="utf-8") == "{}\n"
-        assert os.listdir(root) == ["--bucket--"]
         sibling.mkdir()
         (sibling / "f").write_text("ok", encoding="utf-8")
+        assert (sibling / "f").read_text(encoding="utf-8") == "ok"
+        assert os.listdir(sibling) == ["f"]
         (tmp_path / "elsewhere").mkdir()
     assert found == []
 

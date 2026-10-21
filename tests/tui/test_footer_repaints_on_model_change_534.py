@@ -376,9 +376,7 @@ async def test_a_use_rolled_back_mid_turn_puts_the_meter_back_on_the_kept_model(
 # === 8. the new registration =================================================
 
 
-async def test_a_raising_footer_repaint_cannot_fail_a_thinking_switch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_raising_footer_repaint_cannot_fail_a_thinking_switch(tmp_path: Path) -> None:
     """Row 8 — ``set_thinking_level`` raises ``AgentHarnessError`` for a handler
     error AFTER it assigned the level, so a footer bug must not surface as a
     failed switch (the ``error_mode="continue"`` the meter's hook carries, #249).
@@ -391,9 +389,13 @@ async def test_a_raising_footer_repaint_cannot_fail_a_thinking_switch(
             exploded.append(1)
             raise RuntimeError("footer exploded")
 
-        monkeypatch.setattr(AelixTUIContext, "_refresh_footer", _boom)
-        await bench.harness.set_thinking_level("high")  # must not raise
-        monkeypatch.undo()
+        # #497: a scoped patch, not ``monkeypatch.undo()``. The undo also took
+        # back tests/tui/conftest.py's AELIX_CODING_AGENT_DIR while this TUI
+        # still ran, and its update check wrote ``update_check.json`` into the
+        # home's ``.aelix/agent`` (measured with a stand-in home).
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(AelixTUIContext, "_refresh_footer", _boom)
+            await bench.harness.set_thinking_level("high")  # must not raise
 
         assert exploded, "the thinking_level_select repaint never ran"
         assert bench.harness.state.thinking_level == "high"

@@ -37,6 +37,11 @@ from aelix_coding_agent.cli.entry import (
     _build_harness_options,
 )
 
+# #497: these build harness options, and ``_build_harness_options`` lists
+# ``<agent dir>/extensions`` and loads what is there. Without this, a test here
+# listed the developer's ``~/.aelix/agent/extensions``.
+pytestmark = pytest.mark.usefixtures("own_agent_dir")
+
 
 def _normalized(argv: list[str]):
     """``parse_args`` + the ``_apply_prompt_files`` normalization pass.

@@ -135,7 +135,10 @@ behaviour change without one will be asked for one. Make it a real test: revert
 your production hunk and confirm the test goes red. A test that passes with and
 without your change is documentation, not a gate.
 
-**Keep tests out of your home's sessions.** `tests/conftest.py` gives every
+**Keep tests out of your home's `~/.aelix`.** You can run the suite with your
+own HOME: nothing in it should open, list or change anything there.
+
+Sessions: `tests/conftest.py` gives every
 test its own `AELIX_CODING_AGENT_SESSION_DIR`, unless a module-, class- or
 session-scoped fixture has set the variable to a non-empty value: that value
 then reaches its tests, and stays in effect until the fixture is torn down. For
@@ -144,16 +147,29 @@ after it until the run ends, whether or not the test requests it. An empty
 value is replaced like an unset one, since the CLI reads it as unset. Code in
 the test process that reads the variable, and every child built from
 `os.environ`, uses it. A `JsonlSessionRepo` built without `sessions_root` does
-not read it. For that case a guard watches the test process: a write-mode open,
-`mkdir`, rename, remove, `rmdir`, `chmod`, link, symlink, truncate or `rmtree`
-under `~/.aelix/sessions` is blocked, and the test fails with a `#458` message.
-Fix it by passing `sessions_root` or by sandboxing the home
-(`tests/env_sandbox.py` `sandbox_home`). Do not turn the guard off. It is best
-effort, not a proof: it does not see a rename of `~/.aelix` or the home or, on
-POSIX, an `rmtree` of either, `touch` or `utime`, `chflags`, `mkfifo`,
-`sqlite3`, sockets, paths relative to a directory descriptor, or a symlink into
-the root from outside it (`tests/session_root_guard.py` lists what it judges
-and what it misses).
+not read it; pass one of the test's own.
+
+The agent dir (`~/.aelix/agent`: `auth.json`, `settings.json`, extensions,
+skills) is not pinned. A test whose code resolves it must isolate it: sandbox
+the home (`tests/env_sandbox.py` `sandbox_home`) when it runs the CLI
+(`_async_main` loads `auth.json` before anything else), or put the module on the
+`own_agent_dir` fixture (`pytestmark = pytest.mark.usefixtures("own_agent_dir")`)
+when it builds harness options, which list and load `<agent dir>/extensions`.
+Do not call `monkeypatch.undo()` while the code under test still runs: it
+undoes every conftest pin too. Use `pytest.MonkeyPatch.context()` for a patch
+you need to take back.
+
+A guard watches the test process. Under `~/.aelix` (and an exported
+`AELIX_CODING_AGENT_SESSION_DIR` or `AELIX_CODING_AGENT_DIR`) an open in any
+mode, a directory listing, `mkdir`, rename, remove, `rmdir`, `chmod`, link,
+symlink, truncate or `rmtree` is blocked, and the test fails with a `#458/#497`
+message that says which fix applies. Do not turn the guard off. It is best
+effort, not a proof: it does not see `os.stat` and what is built on it
+(`Path.exists`), so a read the code makes only when a file exists fails on a
+machine that has the file and passes on CI's empty home. Nor does it see a
+rename of the home or, on POSIX, an `rmtree` of it, `touch` or `utime`, `chflags`, `mkfifo`, `sqlite3`, sockets, paths relative to a
+directory descriptor, or a symlink into the root from outside it
+(`tests/session_root_guard.py` lists what it judges and what it misses).
 Children are not checked. A child whose environment you build by hand must
 sandbox the home (`child_env`) or pass `--session-dir`. A shell, `env` or
 `uv run` wrapper that drops the variable, and an `aelix-server` child (its

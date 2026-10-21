@@ -35,6 +35,10 @@ from aelix_coding_agent.cli.entry import _async_main
 from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 from aelix_coding_agent.model_registry import ModelRegistry, ProviderConfigInput
 
+# #497: ``ModelRegistry.create(auth)`` reads ``<agent dir>/models.json``. Without
+# this, a test here read the developer's ``~/.aelix/agent/models.json``.
+pytestmark = pytest.mark.usefixtures("own_agent_dir")
+
 
 class _FakeTTYStdin:
     def isatty(self) -> bool:

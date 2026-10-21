@@ -471,7 +471,7 @@ def test_a_test_that_still_reaches_the_real_root_fails_and_writes_nothing(
     assert "ERROR at teardown of test_a" in result.stdout, out
     assert "ERROR at teardown of test_b" in result.stdout, out
     assert "ERROR at teardown of test_c" not in result.stdout, out
-    reported = result.stdout.count("#458: this test wrote under the developer's REAL session root")
+    reported = result.stdout.count("#458/#497: this test reached the developer's REAL ~/.aelix")
     assert reported >= 2, out
     pin = Path((inner / "pin.txt").read_text(encoding="utf-8"))
     assert not pin.parent.exists(), f"the run left its session roots behind: {pin.parent}"
