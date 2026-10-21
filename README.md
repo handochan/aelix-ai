@@ -328,11 +328,13 @@ there is ([#110](https://github.com/handochan/aelix-ai/issues/110)).
 
 ## Architecture
 
-Three packages (a uv workspace), orchestrated by `Agent` and `AgentHarness`:
+Five packages (a uv workspace), orchestrated by `Agent` and `AgentHarness`:
 
 - **`aelix-ai`** — provider-agnostic messages, streaming primitives, tool definitions. No loop, no hooks.
 - **`aelix-agent-core`** — the agent loop, `Agent`, `AgentHarness`, and the typed `HookBus`. No extension deps.
 - **`aelix-coding-agent`** — `ExtensionAPI`, extension loader, built-in `PolicyExtension` / `GuardrailExtension`.
+- **`aelix-server`** — a local daemon that serves the RPC protocol over HTTP (a WebSocket at `/rpc`); not published to PyPI. See [its README](packages/aelix-server/README.md).
+- **`aelix`** — the workspace root and the package you install (see [Install](#install)): the `aelix` command, and an umbrella module that re-exports the main names of the first three packages, which it depends on.
 
 Small kernel, broad extension surface; policy and guardrails as built-in extensions rather
 than core; an explicit hook bus for auditability. Full rationale in [`docs/`](docs/README.md).

@@ -632,6 +632,26 @@ unwritten. Add them with the next release.
   directory (`os.replace` in `LocalFileSystem`). Creating a session and forking
   one now publish the whole file through it, so an implementation without it
   fails at the first `create`. (#294)
+- **The README's architecture section lists all five packages of the
+  workspace, and the design documents no longer name an object that does not
+  exist or a goal that was dropped (#266, ADR-0235 amendment 2026-10-22).**
+  `README.md` and `README.ko.md` said "Three packages" and left out
+  `aelix-server` and `aelix`, the workspace root and the package you install.
+  The `aelix-server` line says what it is - a local daemon that serves the RPC
+  protocol over HTTP (a WebSocket at `/rpc`), not published to PyPI - and points
+  to its own README; the `aelix` line says it gives the `aelix` command and
+  re-exports the main names of the three packages it depends on. A test now
+  fails when the README's package list or count and the uv workspace's members
+  disagree, and drives the server line's claims with FastAPI's test client. `docs/00-conventions.md` defined the term
+  `AgentRuntime` as the runtime object in the code; nothing in the code has
+  that name. It now defines `Agent` and `AgentHarness` with their import paths,
+  and a test imports every path the terms name. `docs/01-product-vision.md` still set the
+  goal of reimplementing pi almost exactly, which ADR-0235 dropped: it now says
+  pi is a verified reference implementation and full parity is not the goal,
+  and one paragraph adds the security/self-host-first positioning from #86,
+  with where Aelix runs, where model traffic goes, where extension artifacts
+  come from and how permissions are enforced each said on its own. It stays a
+  draft.
 
 ### Fixed
 

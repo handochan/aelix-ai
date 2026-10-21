@@ -9,10 +9,26 @@ platform입니다. 목표는 coding, office assistant, operations automation,
 analysis platform agent, customer-site automation 같은 여러 agent 워크로드를
 하나의 확장 가능한 런타임 위에서 실행하는 것입니다.
 
-초기 구현의 가장 직접적인 기준점은 `pi agent`입니다. Aelix는 pi agent의 핵심
-경험과 구조를 Python으로 거의 완벽에 가깝게 재구현하는 것을 목표로 하되, 너무
+초기 구현의 가장 직접적인 기준점은 `pi agent`였고, 그 핵심 경험과 구조의 상당
+부분이 이미 Python으로 포팅됐습니다. 이제 pi와의 완전한 parity는 목표가 아닙니다
+(ADR-0235). pi는 따라가야 할 기준이 아니라 검증된 참조 구현이어서, 문제가 생기거나
+새 표면을 다룰 때 먼저 확인하되 Aelix가 다르게 가는 것은 결함이 아닙니다. 너무
 날것에 가까운 agent runtime에서 바로 시작하지 않도록 permission system과 최소
-guardrail을 기본 내장 확장으로 포함합니다.
+guardrail은 기본 내장 확장으로 포함합니다.
+
+포지셔닝은 보안·self-host 우선입니다(#86, 2026-07-11 오너 확정). 약속은 네 가지를
+따로 말하고, 하나로 뭉뚱그리지 않습니다. **실행 위치** — Aelix와 그 확장은 사용자의
+머신이나 사용자가 운영하는 호스트에서 돌고, 사용자에 대한 telemetry는 없습니다. Aelix가
+스스로 내보내는 요청(업데이트 확인, `rg`/`fd` 다운로드, 카탈로그 fetch)은 `--offline`이
+끕니다(`git+https://` 설치 대상은 예외). **모델 전송 경로** — 프롬프트와 컨텍스트(읽은
+파일, `AGENTS.md`)는 설정한 프로바이더로 갑니다. 원격 모델을 쓰면 그 내용은 네트워크
+밖으로 나가며, 망 안에 머무르려면 자체 호스팅한 모델 엔드포인트가 필요합니다. 이미 보유한
+GitHub Copilot 좌석으로도 동작합니다. **artifact 출처** — 빌드된 확장 artifact는 Ed25519
+서명과 fail-closed인 `install --require-signature`로 출처를 검증할 수 있지만, 기본값은
+아닙니다. **권한 enforcement** — policy와 guardrail은 lifecycle hook을 구독하는 교체
+가능한 built-in extension이고(ADR-0004), 제품 표면(`AgentHarness`)의 모든 tool call은
+hook bus를 지나는 관찰 가능한 이벤트입니다. in-process 확장은 sandbox가 아니며 Aelix
+프로세스와 같은 권한으로 실행됩니다.
 
 제품의 감성은 다음 표현에 가깝습니다.
 
@@ -69,7 +85,8 @@ Aelix
 
 Aelix는 다음을 만족해야 합니다.
 
-- pi agent의 핵심 agent runtime 경험을 Python 기반으로 충실히 구현해야 합니다.
+- pi agent에서 검증된 핵심 agent runtime 경험을 Python 기반으로 제공해야 합니다. pi는 참조
+  구현이며 parity 자체가 기준은 아닙니다(ADR-0235).
 - 작은 kernel 위에 다양한 extension를 얹을 수 있어야 합니다.
 - marketplace를 통해 extension 생태계를 만들 수 있어야 합니다.
 - 사내망, 폐쇄망, 고객사 배포를 고려해야 합니다.

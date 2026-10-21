@@ -321,11 +321,13 @@ Windows에서는 job object의 `kill_on_close`이고, macOS는 둘 다 없어서
 
 ## 아키텍처
 
-세 패키지(uv 워크스페이스)를 `Agent`와 `AgentHarness`가 오케스트레이션합니다:
+다섯 패키지(uv 워크스페이스)를 `Agent`와 `AgentHarness`가 오케스트레이션합니다:
 
 - **`aelix-ai`** — 프로바이더 비의존 메시지·스트리밍 프리미티브·툴 정의. 루프도 훅도 없음.
 - **`aelix-agent-core`** — 에이전트 루프, `Agent`, `AgentHarness`, 타입이 붙은 `HookBus`. 확장 의존 없음.
 - **`aelix-coding-agent`** — `ExtensionAPI`, 확장 로더, 내장 `PolicyExtension` / `GuardrailExtension`.
+- **`aelix-server`** — RPC 프로토콜을 HTTP(`/rpc`의 WebSocket)로 내보내는 로컬 데몬. PyPI에는 배포하지 않음. [패키지 README](packages/aelix-server/README.md) 참고.
+- **`aelix`** — 워크스페이스 루트이자 설치하는 패키지([설치](#설치) 참고): `aelix` 명령, 그리고 맨 앞의 세 패키지(`aelix-ai`, `aelix-agent-core`, `aelix-coding-agent`)에 의존하며 그 주요 이름을 다시 내보내는 우산 모듈.
 
 작은 커널과 넓은 확장 표면, 코어가 아니라 내장 확장으로 두는 정책·가드레일, 감사를 위한 명시적
 훅 버스. 전체 근거는 [`docs/`](docs/README.md)에 있습니다.

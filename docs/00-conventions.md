@@ -59,7 +59,12 @@ Status: Draft
 
 - `Aelix`: 전체 제품 및 플랫폼 이름
 - `Aelix Runtime`: Python 기반 agent runtime
-- `AgentRuntime`: 코드상의 런타임 kernel 객체
+- `Agent`: 코드상의 상태를 가진 agent 객체(`aelix_agent_core.agent.Agent`). 메시지 상태와
+  steering·follow-up 큐를 들고 hook bus 없이 agent loop를 돌립니다. 라이브러리 API와
+  `python -m aelix` 데모가 쓰며, 제품 표면은 `AgentHarness`를 씁니다.
+- `AgentHarness`: 코드상의 hook-aware 오케스트레이터(`aelix_agent_core.harness.AgentHarness`).
+  agent loop에 hook bus·extension·session 기록을 엮으며, CLI·TUI·RPC 모드와 `aelix-server`가
+  턴을 돌리는 객체입니다.
 - `Extension`: 런타임이 실행할 수 있는 확장 단위
 - `Extension Pack`: marketplace에 배포 가능한 extension 묶음
 - `Marketplace`: extension pack의 검색, 배포, 검증, 설치 흐름

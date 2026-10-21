@@ -107,3 +107,24 @@ Nothing was measured about how far Pi's head has moved since `734e08e`. The
 distance is not load-bearing for this decision — the rule is retired because the
 port closed, not because upstream drifted — but anyone consulting Pi should
 expect three-plus months of divergence from every SHA this repository quotes.
+
+## Amendment (2026-10-22, #266) — the vision document says it too
+
+`docs/04-reference-projects.md` was updated with this ADR. `docs/01-product-vision.md`
+was not, and kept setting the goal this ADR retired: Aelix would reimplement pi
+agent's core experience and structure in Python "거의 완벽에 가깝게". Its success
+criteria asked for the same thing in other words ("충실히 구현"). Both now say
+what this ADR says: much of pi is ported, full parity is not the goal, and pi is
+a verified reference implementation, read first and diverged from without a
+defect. The owner decided on 2026-10-21 that the edit stays minimal: the
+document keeps `Status: Draft`, and the only other addition is one paragraph for
+the security/self-host-first positioning #86 confirmed, written the way the
+owner's 2026-09-19 note on #86 asks — where Aelix runs, where model traffic
+goes, where extension artifacts come from and how permissions are enforced, each
+said on its own, with no "never leaves your network" and no sandbox claim for
+in-process extensions. `tests/docs/test_honesty_pass_266.py` fails if the
+retired goal comes back to `docs/01` or one of the four goes missing.
+
+Not done here: `docs/02-initial-requirements.md` still says "pi agent를 Python으로
+거의 완벽하게 재구현" and "충실히 구현". The owner kept `docs/02` and `docs/03` out
+of this issue (#266).
