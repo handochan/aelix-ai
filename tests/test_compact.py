@@ -449,21 +449,21 @@ async def test_check_auto_compaction_swallows_nothing_to_compact() -> None:
     assert raised == []  # swallowed
 
 
-async def test_check_auto_compaction_propagates_other_invalid_state_errors() -> None:
-    # W-review HIGH-2 follow-up: OTHER invalid_state errors must still bubble
-    # (silent failure of a non-no-op compaction would mask real bugs).
+async def test_check_auto_compaction_does_not_raise_other_failures() -> None:
+    # #546 (pi ``_runAutoCompaction`` returns false): before it, OTHER errors
+    # bubbled out of the turn that had just succeeded (W-review HIGH-2 follow-up).
+    # The failure is told on compaction_end now (tests/harness/test_auto_compaction_failure_546.py).
     h = await _harness_with_model(context_window=20_000)
+    calls: list[str] = []
 
     async def _raises_other(_ci: object = None, **_kw: object) -> Any:
+        calls.append("compact")
         raise AgentHarnessError("invalid_state", "Some other failure")
 
     h.compact = _raises_other  # type: ignore[method-assign]
-    h._state.messages = [
-        AssistantMessage(content=[], usage={"total_tokens": 19_000})
-    ]
-    with pytest.raises(AgentHarnessError) as ei:
-        await h._check_auto_compaction()
-    assert "Some other failure" in str(ei.value)
+    h._state.messages = [AssistantMessage(content=[], usage={"total_tokens": 19_000})]
+    await h._check_auto_compaction()
+    assert calls == ["compact"]
 
 
 async def test_check_auto_compaction_real_compact_integration() -> None:

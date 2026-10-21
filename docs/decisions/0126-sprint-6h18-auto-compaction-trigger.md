@@ -1,6 +1,6 @@
 # 0126. Sprint 6h₁₈ — Auto-compaction trigger (pi-faithful port, threshold-only v1)
 
-Status: Accepted (6h₁₈ shipped) — #334 amendment 2026-09-25 (the check runs nested under the prompt's claim; see Code changes) — #469 amendment 2026-10-22 (the threshold, the cut and `enabled` read settings.json `compaction`; see the end)
+Status: Accepted (6h₁₈ shipped) — #334 amendment 2026-09-25 (the check runs nested under the prompt's claim; see Code changes) — #469 amendment 2026-10-22 (the threshold, the cut and `enabled` read settings.json `compaction`; see the end) — #546 amendment 2026-10-22 (an automatic compaction that fails is told on `compaction_end`, never raised out of the prompt, and the TUI draws it - review round 2; see the end)
 Date: 2026-05-28
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -106,7 +106,11 @@ propagated exception. All fixed:
   `"Nothing to compact"` — swallow only that specific no-op case, propagate
   everything else (silent failure of a non-no-op compaction would mask real
   bugs). New tests: `test_check_auto_compaction_swallows_nothing_to_compact` +
-  `test_check_auto_compaction_propagates_other_invalid_state_errors`.
+  `test_check_auto_compaction_propagates_other_invalid_state_errors`. *(2026-10-22, #546:
+  reversed. pi raises nothing from an automatic compaction; propagating "everything else"
+  turned every good turn past the threshold into an error on a model that refused the summary
+  and under an extension that cancels it. The second test is now
+  `test_check_auto_compaction_does_not_raise_other_failures` - see the amendment.)*
 - **[MEDIUM]** Test suite never exercised the real `compact()` path (all tests
   used a spy). FIXED: new `test_check_auto_compaction_real_compact_integration`
   letting the real pipeline run end-to-end + asserting the pi-shape "compacted
@@ -229,3 +233,107 @@ starts at the last prompt), `reserveTokens: 60000` compacts after the second tur
 false` compacts neither on the threshold nor on the overflow and `get_state` says `false`,
 `set_auto_compaction false` writes `{"compaction": {"enabled": false}}`; the `{}` controls behave as
 on the base.
+
+## Amendment (2026-10-22, #546) — an automatic compaction that fails is told, never raised
+
+Pi reference: `earendil-works/pi@fdce48eb4`.
+
+### What was measured on `6f292a38`
+
+`_check_auto_compaction` caught `AgentHarnessError`, swallowed "Nothing to compact" and re-raised
+the rest (HIGH-2 above); it did not catch anything else, and neither did the overflow recovery
+(`_try_overflow_recovery` caught `AgentHarnessError` only). So a summary request that failed past
+its retries (#409), one the model refused (#506's 400), an auth callback that raised for it, and
+an extension's `session_before_compact` cancel all left `prompt()` with an exception after a turn
+that had succeeded. The real CLI, two seed turns, then a turn whose answer reports 190000 of a
+200000 window (local Anthropic-Messages recorder, isolated HOME, agent dir, settings, session dir
+and cwd, a fake key, `retry.maxRetries: 2`; `.omc/probes/b4-a-live/546/`):
+
+- `-p`: exit 1, nothing on stdout, stderr `Error code: 502 - {...upstream bad gateway...}` (the
+  summary's 502, three requests), `Error code: 400 - ...` (one request) or `Compaction cancelled`;
+- `--mode json -p`: exit 1, the same line on stderr; `compaction_end` carried the bare error;
+- `--mode rpc`: the `prompt` answered `success`, then stderr `[rpc] prompt task failed:
+  AgentHarnessError("Error code: 502 ...")`;
+- TUI (a 120x40 pty): after the answer, `✖ Error code: 502 ...` (or `✖ Compaction cancelled`);
+- control (the summary answers): exit 0, the answer on stdout.
+
+### Decision
+
+pi's `_runAutoCompaction` (`agent-session.ts:3127-3274`) catches every failure of a threshold or
+overflow compaction (`:3242-3267`): `compaction_end` with `errorMessage: "Auto-compaction failed:
+<message>"` (`Context overflow recovery failed: <message>` for an overflow), or `aborted: true`
+and no message when its abort signal fired or an extension cancelled it (`cancelledByExtension`),
+then `return false` - the turn keeps its result. Aelix now does the same:
+
+- `_check_auto_compaction` catches `Exception`; "Nothing to compact" stays a silent no-op and every
+  other failure is logged at DEBUG (`_auto_compaction_failed`) and not raised. The overflow
+  recovery's two `except AgentHarnessError` became `except Exception` (an auth callback's own raise
+  on the silent-overflow branch had the same effect: a completed answer became an exception).
+  `BaseException` (a cancel, an interpreter exit) still propagates.
+- `compact()`'s error-path `compaction_end` is computed by `_compaction_end_failure`: for
+  `threshold` and `overflow`, pi's prefix and the failure's words, or `aborted: true` with no
+  message when the cancel was an extension's (raised as `_CompactionCancelled`, an
+  `AgentHarnessError("compaction", ...)` subclass, so every caller that catches the base or reads
+  `code` is unchanged) or the prompt that runs the compaction was aborted (`_abort_requested`,
+  that prompt's own under its claim). A manual compaction's end and "Nothing to compact" keep
+  their words, `aborted: false`, as before.
+- These helpers sit at the end of `harness/core.py` and the edited blocks keep their line counts,
+  so no locked citation of the file moves.
+
+### Choices made under the decision (ADR-0235)
+
+- **DEBUG, not WARNING.** The issue suggested a WARNING. The tree installs no logging handler, so a
+  WARNING reaches `logging.lastResort`, i.e. stderr: it would paint over a live TUI, and land on
+  the stderr that `--mode json` keeps clean for a delegation parent (ADR-0268 §3). The event is
+  the report; DEBUG keeps the traceback for whoever turns logging on. pi logs nothing.
+- **`-p` writes the line to stderr.** pi's text mode writes nothing for it. A `-p` run whose
+  compaction keeps failing would otherwise look like one that compacted, turn after turn, and the
+  next symptom would be an overflow. So text mode subscribes to `compaction_end` and writes an
+  automatic compaction's `error_message` (`modes/print_mode.py` `_compaction_failure`) - not for a
+  cancel, an abort or "Nothing to compact"; the exit code is step 8's, from the answer. `--mode
+  json` writes nothing extra: the event is on its stdout.
+- **No invariant re-raise.** The issue left open whether `invalid_state` should still be raised.
+  Nothing is: pi raises nothing here, and the one invariant error that could reach this path
+  (`compact()` nested under a claim without phase `turn`) is unreachable while the claim model
+  holds. Every failure that `compact()` raises inside its body is on the event.
+- **"Nothing to compact" keeps its event.** pi emits no `compaction_start`/`compaction_end` for it
+  (it checks before its `compaction_start`); aelix emits both with `error_message: "Nothing to
+  compact"` (issue 4's FU3) and keeps doing so. A subscriber that shows failures must pass over it,
+  as `_compaction_failure` does.
+- **The TUI draws it (review round 2).** As first committed, the TUI drew nothing for the event:
+  a failure the summary's retry saw showed its `✖ Retry failed: ...` line, and a non-retried one
+  or a cancel showed nothing at all, where before #546 the raise was drawn as the turn's error.
+  Now `tui/shell.py` `_show_compaction_end` follows pi (`interactive-mode.ts:3694-3740` @
+  fdce48eb4): a threshold or overflow `compaction_end` with `aborted` shows the status line
+  `Auto-compaction cancelled` (dim, pi's `showStatus`), one with an `error_message` shows it as
+  `✖ <message>` in bold red - aelix's error line, where pi colours the text - bounded by
+  `safe_error_for_terminal`. A manual end (`/compact` prints its own) and "Nothing to compact" show
+  nothing. Measured in a 140x45 pty with the real TUI (five seed turns, then a turn reporting
+  50000 of a 60000 window): a 400 summary shows `✖ Auto-compaction failed: Error code: 400 - ...`
+  (bold red) under the answer, an extension's cancel `Auto-compaction cancelled` (dim); before,
+  the answer and nothing (`.omc/probes/b4-a-live/r2/tui546-*`).
+  `tests/tui/test_auto_compaction_end_546.py` (7 rows, one through a running `run_tui`).
+- **Not covered.** pi's `session_compact_failed` extension event and its `compaction_end` for a refused second
+  overflow recovery (`:3049-3068`) have no aelix counterpart. A `session_compact` hook that
+  raises after the compaction entry was written is reported as a failure, as on the manual path.
+
+### Tests and sabotage
+
+`tests/harness/test_auto_compaction_failure_546.py` (13 rows: a 502 past its retries, a non-retried
+400, a raising auth callback, an extension's cancel, an abort in the summary's backoff, an abort
+left by a finished prompt, the DEBUG log, "Nothing to compact", a `BaseException`, both overflow
+branches with a raising auth callback, a manual failure and a manual cancel) and
+`tests/cli/test_print_mode_compaction_failure_546.py` (15: text and json exit codes, stdout and
+stderr, a cancel, no failure, and `_compaction_failure`'s table). On `6f292a38` 22 of the 28 fail
+(the six that pass are the controls) and so do the two rewritten rows (`tests/test_compact.py`,
+`tests/test_summary_retry_409.py`). Twenty-three mutations on a throwaway worktree, each alone -
+each piece reverted and wrong forms (a `BaseException` caught, one prefix for both reasons, a
+stale abort flag read outside the claim, the manual end or "Nothing to compact" prefixed, a
+WARNING or no log, the line in json mode or on stdout, a filter that lets an abort, a manual end,
+"Nothing to compact" or another event through) - each turn a row red
+(`.omc/probes/b4-a-live/546/`).
+The same CLI runs on the fix: `-p` prints the answer, exits 0 and writes `Auto-compaction failed:
+Error code: 502 - ...`; `--mode json` exits 0 with that `error_message` and a clean stderr; rpc
+logs nothing; the cancel exits 0 with no line and `aborted: true`; the TUI shows the answer and,
+for the 502, its `Retry failed` line only (as first committed; review round 2 adds the
+`compaction_end` line, above).

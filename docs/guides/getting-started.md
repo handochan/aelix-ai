@@ -267,8 +267,10 @@ token limit exits `0`, and `-p` prints it. A failed answer left by an earlier ru
 does not count: `--continue` with no prompt, or with a prompt an extension
 handles, exits `0`. `-p` writes the error to stderr. `--mode json` writes
 nothing extra: the failed answer's `turn_end` event carries its `stop_reason`
-and `error_message`. Both also exit `1`, with the reason on stderr, when aelix
-cannot start the run or fails during it. A run ended by a signal exits `128`
+and `error_message`. An [automatic compaction](providers-and-models.md#automatic-compaction)
+that fails after the answer does not change the exit code: `-p` prints the
+answer and writes `Auto-compaction failed: <reason>` to stderr. Both also exit
+`1`, with the reason on stderr, when aelix cannot start the run or fails during it. A run ended by a signal exits `128`
 plus its number (`143` for `SIGTERM`). pi's `--mode json` exits `0` for a
 failed answer; aelix's exits `1` so that a script sees it in `$?`.
 

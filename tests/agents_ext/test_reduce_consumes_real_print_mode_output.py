@@ -16,7 +16,7 @@ a child actually runs.
 WHAT IT PROVES, concretely:
 
 * the first line is the session-metadata header and has NO ``type`` key
-  (``print_mode.py:340-351``) — hence ``event.get("type")``, never
+  (``print_mode.py:349-360``) — hence ``event.get("type")``, never
   ``event["type"]``;
 * the wire is snake_case ``dataclasses.asdict`` of the kernel's own event
   dataclasses, NOT pi's camelCase;

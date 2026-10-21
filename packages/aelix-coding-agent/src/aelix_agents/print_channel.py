@@ -24,7 +24,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:434-435`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:443-444`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be

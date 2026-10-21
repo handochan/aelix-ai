@@ -417,10 +417,12 @@ async def test_under_a_prompts_claim_an_earlier_abort_of_that_prompt_stops_the_r
             harness._mark_abort()
 
     harness.subscribe(on_compaction_start)
-    with pytest.raises(AgentHarnessError, match="502"):
-        await asyncio.wait_for(harness.prompt("go"), timeout=10)
+    # #546: the 502 is no longer raised out of the prompt; the compaction ends aborted.
+    await asyncio.wait_for(harness.prompt("go"), timeout=10)
     assert provider.calls == {"turn": 1, "summary": 1}
     assert _retry_events(events) == []
+    end = [e for e in events if getattr(e, "type", None) == "compaction_end"]
+    assert [(e.aborted, e.error_message) for e in end] == [(True, None)]
 
 
 async def test_a_finished_prompts_abort_does_not_cancel_a_later_compactions_retry() -> None:

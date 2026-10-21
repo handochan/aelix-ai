@@ -655,6 +655,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A turn that succeeded is no longer turned into an error when the automatic
+  compaction after it fails: `-p` prints the answer and exits 0, and the failure
+  is reported as pi reports it (#546, ADR-0126 amendment 2026-10-22).** When the
+  conversation passed the compaction threshold after a good answer and the
+  summary request then failed - a `502` past its retries, a model that refuses
+  it (the 400 of #506), an auth callback that raised - or an extension's
+  `session_before_compact` cancelled it, the error was raised out of the
+  prompt. Measured on the base with the real CLI and a local server: `-p`
+  printed `Error code: 502 - …` (or `Compaction cancelled`) instead of the
+  answer and exited 1, `--mode json` exited 1 too, rpc logged `[rpc] prompt
+  task failed`, and the TUI drew the error after the answer; an extension that
+  cancels automatic compaction failed every turn past the threshold. Now the
+  turn keeps its answer and the conversation stays as it was (the next turn
+  past the threshold tries again). The `compaction_end` event says what failed
+  in pi's words, `Auto-compaction failed: <reason>` (`Context overflow recovery
+  failed: <reason>` when a request refused as too long could not be compacted),
+  or `aborted: true` with no message for a cancel or an abort of the prompt.
+  `-p` also writes that line to stderr (pi writes nothing there); `--mode json`
+  and rpc carry it on the event, and json's stderr stays clean. A manual
+  `/compact` fails as before. The TUI draws the line in red under the answer
+  (`✖ Auto-compaction failed: …`, after the `Retry failed` line of a failure that
+  was retried) and a cancel or an abort as `Auto-compaction cancelled`, as pi
+  does.
+
 - **`settings.json`'s `compaction` block now takes effect: `enabled`,
   `reserveTokens` and `keepRecentTokens` (#469, ADR-0126 amendment
   2026-10-22).** None of the three was read, as `retry.*` was not before #408:

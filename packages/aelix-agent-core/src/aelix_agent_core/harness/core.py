@@ -2009,7 +2009,7 @@ class AgentHarness:
                     f"session_before_compact hook handler raised: {exc}",
                 ) from exc
             if isinstance(hook_result, SessionBeforeCompactResult) and hook_result.cancel:
-                raise AgentHarnessError(
+                raise _CompactionCancelled(  # #546: an AgentHarnessError, marked
                     "compaction",
                     hook_result.reason or "Compaction cancelled",
                 )
@@ -2076,18 +2076,18 @@ class AgentHarness:
             return result
         except Exception as exc:
             # Issue #4 (FU3) — emit a compaction_end on the error path so a
-            # subscriber always sees a matched start/end pair. pi emits
-            # compaction_end on the swallowed "Nothing to compact" raise too, so
-            # callers that swallow it (threshold / overflow recovery) still see the
-            # event. CancelledError / KeyboardInterrupt (BaseException) bypass this
-            # and propagate untouched.
+            # subscriber always sees a matched start/end pair, "Nothing to
+            # compact" included (pi emits none for it: it checks before its
+            # compaction_start). #546: an automatic compaction's end reads as
+            # pi's does (:func:`_compaction_end_failure`). BaseException bypasses.
+            aborted, error_message = _compaction_end_failure(self, reason, exc, nested)
             await self._emit_to_subscribers(
                 CompactionEndEvent(
                     reason=reason,
                     result=None,
-                    aborted=False,
+                    aborted=aborted,
                     will_retry=False,
-                    error_message=str(exc),
+                    error_message=error_message,
                 )
             )
             raise
@@ -2122,12 +2122,12 @@ class AgentHarness:
         runs BEFORE this threshold check in :meth:`prompt`'s recovery loop.
 
         Auto-trigger MUST NOT turn a successful turn into a propagated
-        exception (W-review HIGH-1/HIGH-2):
-        - no Session attached → skip (manual ``compact()`` raises, but
-          the in-memory backward-compat path has no session to compact);
-        - ``Nothing to compact`` (``prepare_compaction`` finds no viable cut
-          — small kept-tail, or no message entries) → swallow, since the
-          auto-trigger is a best-effort side effect, not a hard contract.
+        exception (W-review HIGH-1/HIGH-2, #546):
+        - no Session attached → skip (the in-memory path has none to compact);
+        - ``Nothing to compact`` (no viable cut) → swallowed, a no-op;
+        - any other failure (past its retries, cancelled, aborted, a raise of
+          its auth callback or a hook) → on ``compaction_end`` as pi's
+          ``Auto-compaction failed: …``, logged at DEBUG, never raised.
         """
 
         from aelix_ai.messages import AssistantMessage
@@ -2213,18 +2213,18 @@ class AgentHarness:
                 return
             try:
                 await self.compact(reason="threshold", _claim=claim)
-            except AgentHarnessError as exc:
-                # W-review HIGH-2 fix: a "Nothing to compact" raise means
-                # ``prepare_compaction`` found no viable cut (small kept-tail
-                # under ``compaction.keepRecentTokens``, or no message entries). The
-                # threshold check tripped but there's nothing to do; swallow
-                # so the auto-trigger does not turn a successful turn into
-                # an exception. Any OTHER ``AgentHarnessError`` still
-                # propagates (the user's turn just succeeded — silent failure
-                # of a non-no-op compaction would mask real bugs).
+            except Exception as exc:  # noqa: BLE001 — #546: reported, never raised
+                # #546 (pi ``_runAutoCompaction``, ``agent-session.ts:3242-3267``
+                # @ fdce48eb4): the turn just succeeded and its answer is the
+                # prompt's result. A compaction that fails (a summary request
+                # past its retries, a cancel, an abort, a raising auth callback
+                # or hook) is told on its ``compaction_end`` and logged at DEBUG
+                # (:func:`_auto_compaction_failed`); "Nothing to compact" is not.
+                if not isinstance(exc, AgentHarnessError):
+                    return _auto_compaction_failed("threshold", exc)
                 if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
                     return
-                raise
+                _auto_compaction_failed("threshold", exc)
 
     async def _try_overflow_recovery(
         self, system_prompt: str, *, claim: object | None = None
@@ -2335,8 +2335,8 @@ class AgentHarness:
             # to shrink context for the NEXT turn, but do not re-run this one.
             try:
                 await self.compact(reason="overflow", will_retry=False, _claim=claim)
-            except AgentHarnessError as exc:
-                if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
+            except Exception as exc:  # noqa: BLE001 — #546: an auth callback's raise too
+                if getattr(exc, "code", None) == "invalid_state" and "Nothing to compact" in str(exc):
                     return False
                 _log.debug("overflow compaction (no-retry) failed: %r", exc, exc_info=True)
             return False
@@ -2361,9 +2361,9 @@ class AgentHarness:
         # pi ``:1868`` — ``runAutoCompaction("overflow", will_retry=True)``.
         try:
             await self.compact(reason="overflow", will_retry=True, _claim=claim)
-        except AgentHarnessError as exc:
+        except Exception as exc:  # noqa: BLE001 — #546: an auth callback's raise too
             # pi ``:1931-1934`` / #4811 — nothing eligible to compact: no retry.
-            if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
+            if getattr(exc, "code", None) == "invalid_state" and "Nothing to compact" in str(exc):
                 return False
             # pi ``:2054-2069`` — compaction itself failed: no retry.
             _log.debug("overflow compaction failed: %r", exc, exc_info=True)
@@ -6259,3 +6259,61 @@ def _set_compaction_enabled(
     if settings_manager is not None:
         settings_manager.set_compaction_enabled(enabled)
     state.auto_compaction_enabled = enabled
+
+
+# === #546 — an automatic compaction that fails is told, never raised ===========
+#
+# pi's ``_runAutoCompaction`` (``agent-session.ts:3127-3274`` @ fdce48eb4) catches every
+# failure of a threshold or overflow compaction, emits ``compaction_end`` with
+# ``errorMessage: "Auto-compaction failed: <message>"`` (``Context overflow recovery
+# failed: …`` for an overflow; none, with ``aborted: true``, when it was aborted or an
+# extension cancelled it) and returns ``false``: the turn keeps its result. Aelix raised
+# the failure out of ``prompt()`` after a turn that had succeeded, so ``-p`` printed the
+# error instead of the answer and exited 1. Here at the end of the module so that no
+# locked citation of the file moves.
+
+
+class _CompactionCancelled(AgentHarnessError):
+    """A ``session_before_compact`` handler cancelled the compaction (#546).
+
+    Raised where ``AgentHarnessError("compaction", …)`` was, and still one, so a caller
+    that catches the base class or reads ``code`` sees what it saw before. Only
+    :func:`_compaction_end_failure` tells it apart, as pi's ``cancelledByExtension``.
+    """
+
+
+def _compaction_end_failure(
+    harness: AgentHarness, reason: str, exc: Exception, nested: bool
+) -> tuple[bool, str | None]:
+    """``(aborted, error_message)`` for the ``compaction_end`` of a compaction that raised.
+
+    A manual compaction's end is as before #546, ``(False, str(exc))``: its caller raises
+    the error itself (``/compact``, rpc ``compact``). "Nothing to compact" is a no-op on
+    every path and keeps its own words. An automatic compaction (``threshold``,
+    ``overflow``) reads as pi's: ``aborted`` with no message when an extension cancelled
+    it or the prompt that runs it was aborted (``_abort_requested`` is that prompt's own
+    under its claim), else pi's prefix and the failure's words.
+    """
+
+    if reason == "manual" or (
+        isinstance(exc, AgentHarnessError)
+        and exc.code == "invalid_state"
+        and "Nothing to compact" in str(exc)
+    ):
+        return False, str(exc)
+    if isinstance(exc, _CompactionCancelled) or (nested and harness._abort_requested):
+        return True, None
+    prefix = "Context overflow recovery failed" if reason == "overflow" else "Auto-compaction failed"
+    return False, f"{prefix}: {str(exc) or type(exc).__name__}"
+
+
+def _auto_compaction_failed(reason: str, exc: Exception) -> None:
+    """Log an automatic compaction that failed, at DEBUG (#546).
+
+    Its ``compaction_end`` is the report. Not WARNING: the tree installs no logging
+    handler, so a WARNING reaches ``logging.lastResort`` - stderr - where it would paint
+    over a live TUI and land on the stderr that ``--mode json`` keeps clean for a
+    delegation parent (ADR-0268 §3). ``-p`` writes the event's line itself.
+    """
+
+    _log.debug("%s compaction failed: %r", reason, exc, exc_info=True)

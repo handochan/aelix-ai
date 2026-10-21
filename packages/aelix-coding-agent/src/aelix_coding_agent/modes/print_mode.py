@@ -6,8 +6,8 @@ Sprint 6h₆ (Phase 5a-ii, ADR-0089, P-389). Lifecycle mirrors Pi:
    Windows — #220).
 2. ``setRebindSession`` (the rebind closure) so JSON-mode subscribe survives
    session swaps.
-3. The subscribe itself (JSON mode: one event per stdout line), re-attached
-   by every rebind.
+3. The subscribe itself (JSON mode: one event per stdout line; text mode: an
+   automatic compaction's failure on stderr, #546), re-attached by every rebind.
 4. JSON-mode header emit (session metadata).
 5. Initial rebind (binds subscribe to the live harness).
 6. Initial-message prompt (if non-:data:`None`). Just before it, the
@@ -331,6 +331,15 @@ async def run_print_mode(
                     pass
 
             unsubscribe_holder["u"] = new_harness.subscribe(_emit)
+        elif getattr(new_harness, "subscribe", None) is not None:
+            # #546 — text mode's one subscriber: the stderr line of an automatic
+            # compaction that failed (:func:`_compaction_failure`).
+            def _note(event: Any) -> None:
+                line = _compaction_failure(event)
+                if line is not None:
+                    print(line, file=sys.stderr, flush=True)
+
+            unsubscribe_holder["u"] = new_harness.subscribe(_note)
 
     runtime_host.set_rebind_session(_rebind)
 
@@ -544,6 +553,32 @@ async def _signal_cleanup_and_exit(
 
     holder["code"] = 128 + sig
     await _safe_dispose(runtime_host)
+
+
+def _compaction_failure(event: Any) -> str | None:
+    """The stderr line text mode writes for an automatic compaction that failed (#546).
+
+    Since #546 a threshold or overflow compaction that fails is not raised out of
+    the prompt: the turn keeps its answer, which step 8 prints and judges as any
+    other, and the failure is on the compaction's ``compaction_end``
+    (``Auto-compaction failed: …`` / ``Context overflow recovery failed: …``,
+    ``harness/core.py`` ``_compaction_end_failure``). Text mode writes that line
+    to stderr as it happens, so a run whose context could not be compacted does
+    not look like one that was. An aelix choice: pi's text mode writes nothing
+    for it (ADR-0126, amendment 2026-10-22, #546). No line for a manual
+    compaction (none runs under ``-p``), an aborted or cancelled one, or
+    "Nothing to compact" (a no-op the harness passes over too). JSON mode writes
+    none: the event is on its stdout, and its stderr stays as it was (ADR-0268).
+    """
+
+    if getattr(event, "type", None) != "compaction_end":
+        return None
+    if getattr(event, "reason", None) == "manual" or getattr(event, "aborted", False):
+        return None
+    message = getattr(event, "error_message", None)
+    if not isinstance(message, str) or not message or "Nothing to compact" in message:
+        return None
+    return message
 
 
 __all__ = ["run_print_mode"]

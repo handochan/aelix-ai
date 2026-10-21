@@ -2664,7 +2664,7 @@ async def run_tui(
             # stranded indicator (a BaseException-cancelled compaction never emits
             # compaction_end). All three route through the one tested helper, so
             # there is no untested dispatch glue.
-            _drive_compaction_indicator(out_chrome, _compaction_working_state, etype)
+            _drive_compaction_indicator(out_chrome, _compaction_working_state, _show_compaction_end(event, _commit))
             if etype == "compaction_end":
                 # Compaction changes the real context with NO following turn_end,
                 # so without this the meter kept painting the pre-compaction
@@ -4464,6 +4464,37 @@ class _RetryWaits:
         if wait is not self.counting or ticker is None or getattr(ticker, "done", lambda: True)():
             start(wait, wait)
         return True
+
+
+def _show_compaction_end(event: object, commit: Callable[[object], None]) -> object:
+    """#546 review round 2 - show an automatic compaction that ended without a result.
+
+    Since #546 a threshold or overflow compaction that fails is not raised out of
+    the prompt, so its ``compaction_end`` is the only place the TUI can say so.
+    pi (``interactive-mode.ts:3694-3740`` @ fdce48eb4) shows an aborted one as
+    the status line ``Auto-compaction cancelled`` and a failed one as its
+    ``errorMessage`` (``Auto-compaction failed: …`` / ``Context overflow recovery
+    failed: …``) in the error colour; here the failure is drawn as every error
+    line is, ``✖`` in bold red, bounded by ``safe_error_for_terminal``. Not for a
+    ``manual`` one (``/compact`` prints its own result) nor for ``Nothing to
+    compact``, which aelix puts on the event and pi does not emit. Returns the
+    event's ``type`` - the dispatch hands it on to the indicator in the same
+    expression, so the lines below the dispatch keep their numbers (gated
+    citations name them).
+    """
+
+    etype = getattr(event, "type", None)
+    if etype != "compaction_end" or getattr(event, "reason", None) == "manual":
+        return etype
+    if getattr(event, "aborted", False):
+        commit(Text("Auto-compaction cancelled", style="dim"))
+        return etype
+    message = getattr(event, "error_message", None)
+    if isinstance(message, str) and message and "Nothing to compact" not in message:
+        from aelix_ai.utils.terminal_text import safe_error_for_terminal
+
+        commit(Text(f"✖ {safe_error_for_terminal(message)}", style="bold red"))
+    return etype
 
 
 __all__ = ["run_tui"]

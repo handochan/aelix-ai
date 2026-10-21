@@ -652,7 +652,7 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
 
     1. The FIRST line is the session-metadata header — a bare
        ``{"id": ..., "created_at": ...}`` object with **no** ``type`` key
-       (``modes/print_mode.py:339-351``). It is emitted best-effort inside its
+       (``modes/print_mode.py:348-360``). It is emitted best-effort inside its
        own ``try/except``, so neither its presence nor its absence may be
        relied on. Hence ``event.get("type")``, never ``event["type"]``.
     2. Anything in the child can ``print()`` straight into the same stdout —

@@ -7,7 +7,7 @@
   "citing_files": 154,
   "out_of_range": 0,
   "blank_line": 0,
-  "ambiguous": 18
+  "ambiguous": 17
  },
  "anchors": {
   "packages/aelix-agent-core/src/aelix_agent_core/contracts/api_level.py:9-9": [
@@ -2679,7 +2679,7 @@
    "except Exception: # noqa: BLE001 — pi swallows listener errors",
    "pass"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:339-351": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:348-360": [
    "# === Pi step 4 — JSON-mode header emit ================================",
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
@@ -2689,7 +2689,7 @@
    "header = _metadata_to_dict(metadata)",
    "if header:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:340-351": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:349-360": [
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
    "if session is not None:",
@@ -2699,7 +2699,7 @@
    "if header:",
    "_write_raw_stdout(json.dumps(header) + \"\\n\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:434-435": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:443-444": [
    "except Exception as exc: # noqa: BLE001 — surface any failure to caller",
    "print(str(exc), file=sys.stderr)"
   ],

@@ -266,9 +266,14 @@ class CompactionStartEvent:
 class CompactionEndEvent:
     reason: Literal["manual", "threshold", "overflow"]
     result: CompactResult | None  # None on the error/aborted path
+    # #546: an automatic compaction (threshold, overflow) that an extension
+    # cancelled or whose prompt was aborted ends ``aborted`` with no message, as pi's.
     aborted: bool
     will_retry: bool
-    error_message: str | None = None  # populated only on the error path
+    # The error path's words. An automatic compaction's carry pi's prefix,
+    # "Auto-compaction failed: …" / "Context overflow recovery failed: …" (#546);
+    # a manual one's and "Nothing to compact" are the raise's own.
+    error_message: str | None = None
     type: Literal["compaction_end"] = "compaction_end"
 
 

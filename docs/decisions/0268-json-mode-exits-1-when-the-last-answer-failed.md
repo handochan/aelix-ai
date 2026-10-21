@@ -145,3 +145,9 @@ stderr to say why.
 - **#391**: `-p` that ends with no output and exit 0 lives in `harness/core.py` (B4).
 - **`aelix --help`** names no exit codes and is not changed (`cli/args.py`). The
   getting-started guide's "Exit codes" section is where they are written down.
+- **An automatic compaction that fails (2026-10-22, #546).** Before #546 its error was raised
+  out of the prompt and reached `run_print_mode`'s `except`: stderr got the error, both modes
+  exited 1 and step 8 never ran, so the answer was not printed. Now the prompt returns and step 8
+  judges the answer as any other. Text mode also writes the compaction's `Auto-compaction failed:
+  …` line to stderr (pi writes nothing); JSON mode writes nothing extra, as §3 has it - the
+  event is on its stdout. ADR-0126's #546 amendment has the decision.

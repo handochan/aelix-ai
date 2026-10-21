@@ -558,6 +558,23 @@ no settings file and keeps the defaults. Not read yet: pi's per-model
 `compaction.modelOverrides`, and `branchSummary.*`. The TUI's `/context` still
 shows the default `16384` as its `autocompact buffer`.
 
+When an automatic compaction fails - its summary request failed past its
+retries (`retry.*`), the model refused it, or the auth for it failed - the turn
+that led to it keeps its answer and the conversation stays as it was; the next
+turn past the threshold tries again. The `compaction_end` event says why in
+pi's words: `error_message` is `Auto-compaction failed: <reason>`, or `Context
+overflow recovery failed: <reason>` after a request refused as too long. A
+compaction an extension's `session_before_compact` cancelled, or one stopped by
+aborting the prompt, ends `aborted: true` with no message. `-p` prints the
+answer, exits 0 and writes the `error_message` line to stderr (pi writes
+nothing there); `--mode json` and `--mode rpc` carry it on the event only. The
+TUI draws it in red under the answer (`✖ Auto-compaction failed: …`, after the
+`Retry failed` line of a failure that was retried) and a cancelled or aborted
+one as `Auto-compaction cancelled`, as pi does. Until this release the failure ended the turn as an error: `-p`
+printed the compaction's error instead of the answer and exited 1, and an
+extension that cancels automatic compaction failed every turn past the
+threshold (#546).
+
 ## Adapter coverage — what this build can actually run
 
 The bundled model catalog spans nine wire protocols; this build ships adapters

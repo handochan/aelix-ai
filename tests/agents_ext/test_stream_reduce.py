@@ -71,7 +71,7 @@ def _feed(state: _StreamState, *events: object) -> _StreamState:
 def test_typeless_header_line_does_not_raise() -> None:
     """The FIRST line has no ``type`` key at all.
 
-    ``modes/print_mode.py:339-351`` emits the session metadata dict verbatim
+    ``modes/print_mode.py:348-360`` emits the session metadata dict verbatim
     before any event. ``event["type"]`` would ``KeyError`` on line one of every
     single delegation.
     """
