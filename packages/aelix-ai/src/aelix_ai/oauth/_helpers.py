@@ -382,7 +382,11 @@ def refresh_retry_reason(exc: BaseException) -> str | None:
       (``400``/``401``/``403``: ``invalid_grant``, a revoked login; ``501``,
       ``505``) is not;
     - a transport failure (:data:`_TRANSIENT_TRANSPORT`, pi's ``fetch failed``
-      class): transient.
+      class): transient - except a TLS certificate verification failure no
+      strict relaxation answers (#551,
+      :func:`aelix_ai.providers._error_hints.tls_failure_repeats_on_retry`),
+      which arrives as an ``httpx.ConnectError`` and fails the same way on
+      every attempt: before #551 the turn retried it three times.
 
     A chain with neither - a 2xx whose whole body was read and is not JSON, a
     2xx whose encoding is broken, a token response missing fields, an unknown
@@ -401,6 +405,11 @@ def refresh_retry_reason(exc: BaseException) -> str | None:
                 return f"the token endpoint answered HTTP {status}"
             return None
         if isinstance(link, _TRANSIENT_TRANSPORT):
+            # Imported here: _error_hints imports this module (for quote_server_text).
+            from aelix_ai.providers._error_hints import tls_failure_repeats_on_retry
+
+            if tls_failure_repeats_on_retry(link):
+                return None  # #551: a certificate verification failure is not transient
             return f"the token endpoint could not be reached ({type(link).__name__})"
         link = link.__cause__
     return None

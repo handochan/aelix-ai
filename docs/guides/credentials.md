@@ -49,8 +49,10 @@ A `/login` subscription's access token expires, and aelix refreshes it before
 the request that needs it. If that refresh fails because the token endpoint
 answered `429`, `500`, `502`, `503`, `504`, `520` or `524` (the statuses pi
 retries), or could not be reached (a dropped connection, a timeout, a proxy
-that refused the connection), the turn is retried the way a provider's `502`
-is: by default up to three retries, 2 s, 4 s and 8 s apart (your
+that refused the connection - but not a certificate that fails verification,
+which fails the turn at once with the
+[TLS advice](tls-and-corporate-ca.md), #551), the turn is retried the way a
+provider's `502` is: by default up to three retries, 2 s, 4 s and 8 s apart (your
 `settings.json` `retry` block changes both, see
 [Automatic retry](providers-and-models.md#automatic-retry)), shown as `Retrying…` in the
 TUI and as `auto_retry_start` / `auto_retry_end` in `--mode json` and rpc, and

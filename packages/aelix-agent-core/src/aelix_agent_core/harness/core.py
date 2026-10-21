@@ -2447,7 +2447,7 @@ class AgentHarness:
         if getattr(message, "stop_reason", None) != "error":
             return False
         err = getattr(message, "error_message", None)
-        if not err:
+        if not err or _repeats_on_retry(err):  # #551: a TLS verification failure
             return False
         return _RETRYABLE_ERROR_PATTERN.search(classifier_text_of(err)) is not None  # #186
 
@@ -5975,8 +5975,8 @@ class _SummaryRetry:
 
     The same decision as the turn's, read at each failure: the classification
     (:meth:`AgentHarness._is_retryable_error` on the provider's failed message,
-    the one the turn's loop classifies - an aborted stream and a context
-    overflow are not retried; an auth callback raise only when it
+    the one the turn's loop classifies - an aborted stream, a context overflow
+    and a TLS verification failure (#551) are not retried here; an auth callback raise only when it
     carries a ``retry_reason``, as #379 retries the turn; the auth snapshot's
     closing check never), and settings.json ``retry`` with the module
     constants as fallback (``_auto_retry_policy``, ``_retry_enabled``: #408).
@@ -6411,3 +6411,29 @@ def _overflow_case(harness: AgentHarness) -> bool:
         return False
     return is_context_overflow(last, getattr(model, "context_window", 0) or 0)
 
+
+def _repeats_on_retry(error_message: Any) -> bool:
+    """Is this failed answer one the next attempt would repeat? (#551)
+
+    :meth:`AgentHarness._is_retryable_error` asks it before the retry pattern,
+    and so do the compaction and branch-summary retries (#409), which call that
+    method. aelix-additive: pi retries this failure. A TLS certificate
+    verification failure is marked by the adapter that described it
+    (:func:`aelix_ai.utils.overflow.repeats_on_retry`, set by
+    ``describe_provider_error``): the next attempt verifies the same chain
+    against the same trust store and fails the same way, while its
+    ``Connection error.`` matched the pattern and the TUI showed the remedy
+    once per attempt - five times. A failure the session's strict relaxation
+    answers is not marked and is retried as before (#184). The mark travels
+    with the message object, like #186's ``classifier_text``: a message an
+    extension rebuilds is classified on its text. Only aelix's retry is decided
+    here: the OpenAI and Anthropic SDKs' own connection retries inside the one
+    request (``max_retries`` 2) still run, so it makes 3 handshakes, not 1.
+
+    Here, at the end of the module, so that no locked citation of the lines
+    above moves.
+    """
+
+    from aelix_ai.utils.overflow import repeats_on_retry
+
+    return repeats_on_retry(error_message)

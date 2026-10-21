@@ -538,7 +538,7 @@ async def stream_anthropic(
     # #250: clamp the requested level against what THIS row offers, the way
     # every sibling adapter already does (google_generative_ai.py:309,
     # google_vertex.py:443, openai_responses.py:614, openai_completions.py:1521,
-    # openai_codex_responses.py:664). This adapter was the only one passing
+    # openai_codex_responses.py:677). This adapter was the only one passing
     # ``opts.reasoning`` through raw, and nothing upstream clamps either —
     # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
     # ``thinking:``) verbatim and ``harness/core.py`` snapshots the state level

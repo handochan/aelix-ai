@@ -100,7 +100,10 @@ _HTTP_TIMEOUT_SECONDS: float = 30.0
 # stays — it is an unambiguous "I did not process your request".
 _TRANSIENT_STATUS: frozenset[int] = frozenset({408, 500, 502, 503, 504})
 
-# Transport failures that say nothing about whether the request was valid.
+# Transport failures that say nothing about whether the request was valid. A TLS
+# certificate verification failure arrives as a ``ConnectError`` too and is not
+# transient (#551): the poll stops on it at once unless a strict relaxation
+# answers it (``tls_failure_repeats_on_retry``).
 _TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -381,6 +384,7 @@ async def _poll_for_github_access_token(
             # If it is a strict-only rejection this machine already trusts, this
             # relaxes it and the loop's own next poll — which is about to happen
             # anyway — is the retry. Measured before acting; a no-op otherwise.
+            from aelix_ai.providers._error_hints import tls_failure_repeats_on_retry
             from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 
             maybe_relax_strict_for_session(exc)
@@ -390,6 +394,12 @@ async def _poll_for_github_access_token(
                 f"{type(exc).__name__}: {exc}"
             )
             last_transient.__cause__ = exc
+            # #551: any other certificate verification failure is the same on
+            # every poll - the next one would verify the same chain against the
+            # same trust store. Before #551 the poll sent it five more times,
+            # an interval apart, before /login saw the same error and its remedy.
+            if tls_failure_repeats_on_retry(exc):
+                raise last_transient from exc
 
         if transient is not None:
             consecutive_transient += 1

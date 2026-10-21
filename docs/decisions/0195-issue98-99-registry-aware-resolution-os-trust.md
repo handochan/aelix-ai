@@ -1,6 +1,6 @@
 # 0195. Registry-aware startup model resolution (#98) + OS trust store & cause-preserving TLS diagnostics (#99)
 
-Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4; amended 2026-10-20 (#411): Decision 10 — see the amendment at the end
+Status: Accepted — amended by ADR-0249 (2026-09-30, #344): Decision 4 and Known-limitations bullet 1; amended by ADR-0250 (2026-10-02, #362): Decisions 2 and 4; amended 2026-10-20 (#411): Decision 10 — see the amendment at the end; dated note 2026-10-22 (#551): the same attribution decides the retry
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -445,3 +445,15 @@ and the real Copilot device-code request against a plain-HTTP 503 (part 5).
   (`OAuthRefreshError` quotes `str(cause)`); that is not this decision's
   boundary.
 
+
+**2026-10-22 note (#551, ADR-0128 amendment).** Decision 10's attribution also
+decides the retry now: a failure it attributes is not sent again by aelix's own
+retry layers - the turn, a summary request, an OAuth refresh's `retry_reason`,
+the Copilot device-code poll or the Codex adapter's connection retries - unless
+the session's strict relaxation answers it (`_error_hints.tls_failure_repeats_on_retry`).
+The OpenAI and Anthropic SDKs' own two connection retries inside one request still
+run (3 handshakes; ADR-0128). Before, the
+turn retried the SDKs' `Connection error.` three times and the TUI showed this
+remedy once per attempt. The known limit above (an error with no int status is
+read by its text) carries over: such an error with certificate words is not
+retried either.

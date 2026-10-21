@@ -120,21 +120,34 @@ class ClassifiedErrorText(str):
     process. A message rebuilt from its fields (a resumed session, an
     extension's ``message_end`` replacement built anew) is a plain ``str`` and
     is classified on its display text.
+
+    :attr:`repeats_on_retry` (#551) is the adapter's verdict that sending the
+    request again would fail the same way - a TLS certificate verification
+    failure (:func:`aelix_ai.providers._error_hints.tls_failure_repeats_on_retry`);
+    the harness does not retry such a message, whatever its text matches. It
+    travels like :attr:`classifier_text`: a rebuilt message loses it and is
+    classified on its text, as before #551.
     """
 
     classifier_text: str
+    repeats_on_retry: bool = False
 
 
-def with_classifier_text(display: str, classifier_text: str) -> str:
+def with_classifier_text(
+    display: str, classifier_text: str, *, repeats_on_retry: bool = False
+) -> str:
     """``display``, carrying ``classifier_text`` for :func:`classifier_text_of`.
 
-    A plain ``str`` comes back when the two are equal: nothing was lost.
+    A plain ``str`` comes back when the two are equal and nothing else is
+    carried: nothing was lost. ``repeats_on_retry`` (#551) always carries.
     """
 
-    if display == classifier_text:
+    if display == classifier_text and not repeats_on_retry:
         return display
     carried = ClassifiedErrorText(display)
     carried.classifier_text = classifier_text
+    if repeats_on_retry:
+        carried.repeats_on_retry = True
     return carried
 
 
@@ -143,6 +156,15 @@ def classifier_text_of(error_message: str) -> str:
 
     carried = getattr(error_message, "classifier_text", None)
     return carried if isinstance(carried, str) else error_message
+
+
+def repeats_on_retry(error_message: str) -> bool:
+    """Did the adapter find that sending again would fail the same way? (#551)
+
+    :attr:`ClassifiedErrorText.repeats_on_retry`; ``False`` for any other text.
+    """
+
+    return getattr(error_message, "repeats_on_retry", False) is True
 
 
 def _usage_field(usage: Any, *keys: str) -> int:
@@ -225,5 +247,6 @@ __all__ = [
     "classifier_text_of",
     "get_overflow_patterns",
     "is_context_overflow",
+    "repeats_on_retry",
     "with_classifier_text",
 ]

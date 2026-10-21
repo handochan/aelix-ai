@@ -49,6 +49,21 @@ with code 89), so it fits whole for a host of up to 576 characters (DNS allows
 253) and a verify message of up to 187 (OpenSSL's longest is 68). A longer
 host pushes the note's last lines past the TUI's 8; a longer message is cut at
 200 on its own line.
+
+A VERIFICATION FAILURE IS NOT RETRIED (#551). The next attempt verifies the
+same chain against the same trust store and fails the same way, so the retry
+layers ask the attribution below - the one that decides the remedy - before
+they send again: :func:`tls_failure_repeats_on_retry` for the harness's turn
+and summary retries (through the ``repeats_on_retry`` mark
+:func:`describe_provider_error` puts on the message), an OAuth refresh's
+``retry_reason`` and the Copilot device-code poll, and
+:func:`is_tls_verification_error` for the Codex adapter's connection retries,
+which reuse one client. Before #551 the turn retried it on its ``Connection
+error.`` text, and the TUI stacked this remedy five times. The one failure a
+retry on a new client can pass is one a strict relaxation answers
+(:func:`_strict_relaxation_answers`). Not among these layers: the OpenAI and
+Anthropic SDKs' own connection retries inside one request (``max_retries``,
+default 2), so such a request still makes 3 handshakes before it fails.
 """
 
 from __future__ import annotations
@@ -689,6 +704,61 @@ def is_tls_verification_error(exc: BaseException) -> bool:
     return _tls_error(exc) is not None
 
 
+def _strict_relaxation_answers(tls: BaseException) -> bool:
+    """Does the strict relaxation in force change how the next attempt verifies? (#551)
+
+    ``tls`` is the verification failure :func:`_tls_error` attributed. A
+    relaxation (:func:`aelix_ai.providers._tls_strict.maybe_relax_strict_for_session`)
+    clears ``VERIFY_X509_STRICT`` from every context built after it, so a
+    request that failed on strict passes on its next attempt, which builds a
+    new client - the turn's retry has been that next attempt since #184 ("the
+    harness already retries 'Connection error.' on its own"). It answers a
+    failure whose code is the one it was measured on (the failure that caused
+    it, or a sibling request that failed the same way before it took effect),
+    or a code only strict raises (:data:`_STRICT_ONLY`: a context built without
+    strict cannot have raised it). Every other failure verifies the same way
+    the next time, relaxation or not; so does every failure while no relaxation
+    is in force, and one with no code (a text-only match, which no relaxation
+    was measured on).
+
+    Known limit: code 79 under a relaxation measured on 79 is answered even
+    when it came from a relaxed context (a ``CA:FALSE`` issuer gives 79 both
+    ways), so that failure is retried as before #551.
+    """
+
+    from aelix_ai.providers._tls_strict import session_relaxation
+
+    relaxation = session_relaxation()
+    if relaxation is None:
+        return False
+    code = getattr(tls, "verify_code", None)
+    if not isinstance(code, int) or isinstance(code, bool):
+        return False
+    return code == relaxation.verify_code or code in _STRICT_ONLY
+
+
+def tls_failure_repeats_on_retry(exc: BaseException) -> bool:
+    """Would sending this request again fail TLS verification the same way? (#551)
+
+    True when ``exc`` is a TLS certificate verification failure on this
+    machine - :func:`is_tls_verification_error`'s attribution, the one that
+    decides the remedy, so a failure is not retried exactly when it is told
+    what to fix - and no strict relaxation in force answers it
+    (:func:`_strict_relaxation_answers`). An HTTP error a server answered is
+    never one, whatever certificate words it carries (:func:`_answered`).
+
+    For a retry that opens a NEW client: the Copilot device-code poll, an
+    OAuth refresh's ``retry_reason``, and the turn (through
+    :func:`describe_provider_error`'s mark). A retry on the SAME client - the
+    Codex adapter's connection retries - can never pass a verification
+    failure, since that client's context is fixed, and asks
+    :func:`is_tls_verification_error` instead.
+    """
+
+    tls = _tls_error(exc)
+    return tls is not None and not _strict_relaxation_answers(tls)
+
+
 def _tls_hint(err: BaseException) -> str | None:
     """The remedy matching ``err``'s verify code, or :data:`None` when none fits.
 
@@ -819,6 +889,16 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
     :func:`aelix_ai.utils.overflow.classifier_text_of`, or ``classifier_text``
     when the caller passes the text its classifiers read before (the two Google
     adapters used ``str(exc)``).
+
+    A TLS verification failure no strict relaxation answers is marked
+    ``repeats_on_retry`` (#551, :func:`tls_failure_repeats_on_retry`), and the
+    harness does not retry it: before #551 its ``Connection error.`` matched the
+    retry pattern and the TUI showed the remedy once per attempt. The mark is
+    read after any strict relaxation this failure caused - every adapter that
+    relaxes calls :func:`~aelix_ai.providers._tls_strict.
+    maybe_relax_strict_for_session` first - so the failure that caused one
+    stays retried. Like :attr:`classifier_text`, it lives as long as the
+    message object does.
     """
 
     from aelix_ai.utils.overflow import with_classifier_text
@@ -836,7 +916,13 @@ def describe_provider_error(exc: BaseException, *, classifier_text: str | None =
         if raw_cause is not None:
             raw = f"{raw} — {raw_cause}"
         classifier_text = raw + hint
-    return with_classifier_text(base + hint, classifier_text)
+    repeats = tls is not None and not _strict_relaxation_answers(tls)
+    return with_classifier_text(base + hint, classifier_text, repeats_on_retry=repeats)
 
 
-__all__ = ["describe_provider_error", "is_tls_verification_error", "quote_model_text"]
+__all__ = [
+    "describe_provider_error",
+    "is_tls_verification_error",
+    "quote_model_text",
+    "tls_failure_repeats_on_retry",
+]

@@ -655,6 +655,32 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **aelix no longer retries a request whose certificate this machine does not
+  trust, and the TUI shows the TLS advice once, not five times (#551, ADR-0128
+  amendment 2026-10-22).** The OpenAI and Anthropic SDKs report a
+  failed certificate check as `Connection error.`, which is in the automatic
+  retry's pattern, so one prompt behind a corporate proxy's private CA sent 4
+  attempts (12 TLS handshakes with the SDKs' own retries) over 20 s, and the TUI
+  printed `✖ Connection error. …` and the 7-line advice after each attempt, the
+  last as `✖ Retry failed: …`. Every attempt checked the same certificate
+  against the same trust store. Now aelix does not send a failure that gets the
+  TLS advice again: one prompt is 3 handshakes and about 2 s - the request and
+  the OpenAI or Anthropic SDK's own 2 connection retries inside it, which still
+  run (`anthropic-messages`, `openai-completions` and `openai-responses` 3 each,
+  Gemini 1; measured on macOS with a local self-signed server, `-p`, `--mode
+  json` and the TUI, and with truststore blocked). The same holds for a compaction's or branch summary's
+  summary request, a stored `/login` subscription's token refresh that fails
+  the check (it is no longer "could not be reached"), the GitHub Copilot sign-in's polling (it
+  stops at once instead of after 6 polls) and the OpenAI Codex adapter's
+  connection retries (1 attempt instead of 4). A `502`, a refused connection
+  and a timeout are retried as before, and so is the one certificate failure a
+  retry can pass: the request that failed on Python 3.13's strict checking
+  just before `aelix` relaxed it for the session (measured on 3.13.13: one
+  retry, answered). pi retries this failure; aelix diverges knowingly. Still
+  retried (follow-ups): the SDKs' own two connection retries inside the one
+  request, above, and a failure whose message an extension rebuilds in
+  `message_end`.
+
 - **A request the provider refused as too long that compaction could not
   recover now fails visibly: `-p` writes the provider's error and exits 1, and
   `--mode json` exits 1 (#391, ADR-0176 amendment 2026-10-22).** The overflow

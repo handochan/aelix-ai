@@ -53,7 +53,11 @@ from aelix_ai.api_registry import register_provider_object
 from aelix_ai.messages import AssistantMessage
 from aelix_ai.models import clamp_thinking_level
 from aelix_ai.oauth.openai_codex import OPENAI_CODEX_OAUTH_ID, _get_account_id
-from aelix_ai.providers._error_hints import describe_provider_error, quote_model_text
+from aelix_ai.providers._error_hints import (
+    describe_provider_error,
+    is_tls_verification_error,
+    quote_model_text,
+)
 from aelix_ai.providers._openai_prompt_cache import clamp_openai_prompt_cache_key
 from aelix_ai.providers._openai_responses_shared import (
     OPENAI_TOOL_CALL_PROVIDERS,
@@ -124,7 +128,10 @@ _RETRY_MAX_DELAY_S: float = 8.0
 # response — a TCP reset / TLS handshake drop / read-before-first-byte. These
 # carry no status_code, so the status-only retry gate never sees them; the
 # sibling ``openai_responses`` adapter retries these via the OpenAI SDK, so the
-# bespoke transport must too (review: correctness-transport MEDIUM).
+# bespoke transport must too (review: correctness-transport MEDIUM). A TLS
+# certificate verification failure is a ``ConnectError`` too and is NOT retried
+# (#551, :func:`_open_codex_stream`): the same client verifies the same chain the
+# same way every time.
 _RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -471,6 +478,12 @@ async def _open_codex_stream(
     the backoff. A successful (``< 400``) response is yielded for streaming; an
     exhausted transport error re-raises and a terminal error status raises
     :class:`_CodexHTTPError`.
+
+    A TLS certificate verification failure re-raises at once (#551): this
+    client's SSL context is fixed, so every attempt verifies the same chain
+    the same way. Before #551 it was sent four times, with 3.5 s of backoff,
+    to the same answer. The stream's error handler still runs the strict
+    relaxation check on it.
     """
 
     attempt = 0
@@ -478,9 +491,9 @@ async def _open_codex_stream(
         cm = client.stream("POST", url, json=body, headers=headers)
         try:
             response = await cm.__aenter__()
-        except _RETRYABLE_EXCEPTIONS:
+        except _RETRYABLE_EXCEPTIONS as exc:
             # No response yet — nothing to close. Retry the establishment.
-            if attempt < _MAX_RETRIES:
+            if attempt < _MAX_RETRIES and not is_tls_verification_error(exc):
                 await asyncio.sleep(_backoff_delay(attempt))
                 attempt += 1
                 continue

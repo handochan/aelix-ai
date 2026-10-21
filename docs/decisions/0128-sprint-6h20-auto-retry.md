@@ -1,6 +1,6 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
-Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events
+Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events — amended 2026-10-22 (#551): aelix's own retries do not resend a TLS certificate verification failure, unless the session's strict relaxation answers it (the OpenAI and Anthropic SDKs' two connection retries inside one request remain - review round 2)
 Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
 for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
@@ -754,3 +754,112 @@ dropped, every start opening a sequence, a countdown never handing over, a faile
 end closing one sequence only). All 61 went red; none survived (`sabotage_r2.out`).
 The 50 ms wait margin was not among them; the verify pass's own run removed it and
 the rows stayed green (item 2, above).
+
+## Amendment (2026-10-22, #551) — aelix's retries do not resend a TLS certificate verification failure
+
+Pi reference: `earendil-works/pi@fdce48eb4`: `RETRYABLE_PROVIDER_ERROR_PATTERN` has
+`connection.?error` (`packages/ai/src/utils/retry.ts:69`) and nothing excludes a
+certificate failure (its only exclusion, `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN`,
+`:7-28`, is usage-limit, quota and billing text), so pi retries this failure (read, not run). pi
+shows no TLS remedy either (ADR-0195, #411 amendment), so it has nothing to stack.
+Aelix diverges knowingly (ADR-0235).
+
+### What was measured on `73a2efa4`
+
+The real CLI against a local TLS server whose self-signed certificate nothing
+trusts, fake key, isolated agent dir, settings and session dir
+(`.omc/probes/b4-a-live/551/`). The OpenAI and Anthropic SDKs raise
+`APIConnectionError("Connection error.")` and `connection.?error` matched it, so
+`openai-completions`, `openai-responses` and `anthropic-messages` each sent 4 turn
+attempts of 3 SDK connections (12 handshakes) and took 20 s; `--mode json` carried 3
+`auto_retry_start` events, each with the remedy; the TUI (forkpty, 200x150) showed
+`✖ Connection error. …` and #411's 7-line remedy 5 times, the last as
+`✖ Retry failed: …`. The OpenSSL path (truststore blocked, certifi only) was the same.
+The Codex adapter's own connection retries (`_RETRYABLE_EXCEPTIONS` holds
+`httpx.ConnectError`) sent it 4 times (4.0 s) - its text matched nothing, so the turn
+did not retry it. `google-generative-ai`: 1 connection. In-process: the Copilot
+device-code poll polled through it 6 times, and `refresh_retry_reason` called a
+token refresh that failed verification "could not be reached", so #379 retried the
+turn 3 times; #409's summary requests decided as the turn did.
+
+### Decision
+
+1. *What a retry would repeat is not retried.* A failure the TLS attribution
+   attributes (`providers/_error_hints._tls_error`, the one that decides the remedy:
+   a verification error object in the chain, or a marker text on a chain no server
+   answered) is not retried, unless the session's strict relaxation answers it
+   (part 3). One attribution decides both, so a failure is not retried exactly when
+   it is told what to fix (`tls_failure_repeats_on_retry`).
+2. *The adapter decides, the harness reads.* The harness never sees the exception,
+   so `describe_provider_error` marks the message it builds
+   (`ClassifiedErrorText.repeats_on_retry`, carried like #186's `classifier_text`;
+   `with_classifier_text` keeps a carrier for the mark even when the texts are
+   equal), and `_is_retryable_error` returns False for a marked message before the
+   pattern - which covers #409's summary retries, since they call it. The adapters
+   that relax call `maybe_relax_strict_for_session` before describing, so the mark
+   sees a relaxation the failure itself caused.
+3. *The one retry that can pass.* A relaxation clears `VERIFY_X509_STRICT` from
+   every context built after it, and the turn's next attempt builds a new client:
+   the flow #184 built on the turn's retry ("the next attempt is the one that
+   succeeds"). It answers a failure whose verify code is the one it was measured on,
+   or one only strict raises (78, 80-94: a context without strict cannot raise it -
+   a sibling request that failed before the relaxation took effect). Any other code,
+   no code, or no relaxation: not answered.
+4. *Every retry layer, by whether it opens a new client.* The OAuth refresh's
+   `refresh_retry_reason` and the Copilot device-code poll open one per attempt and
+   ask `tls_failure_repeats_on_retry` (the poll raises its `Could not reach …` error
+   at once, after giving the relaxation its check). The Codex adapter's connection
+   retries reuse one client, whose context is fixed, and ask
+   `is_tls_verification_error`: none of them can pass.
+
+### Measured after
+
+Same probes on the fixed tree: `openai-completions`, `openai-responses` and
+`anthropic-messages` 3 handshakes (the SDKs' own retries, below), 0
+`auto_retry_start`, about 2 s, exit 1; the TUI showed the remedy once and no
+`Retry failed`; the OpenSSL path the same; Codex 1 connection (0.47 s). A plain-HTTP
+`502` control is still retried (3 `auto_retry_start`). The strict relaxation, live on
+Python 3.13.13 with truststore blocked and `SSL_CERT_FILE` naming the CA of a leaf
+without an Authority Key Identifier (code 85): one failed attempt, the relaxation's
+two handshakes, one `auto_retry_start` carrying the relaxation note, the retry's
+request answered, exit 0 - identical on `73a2efa4`.
+
+### Not changed (follow-ups)
+
+- The OpenAI and Anthropic SDKs still retry the connection twice inside one attempt
+  (`max_retries` 2: 3 handshakes, about 1.5 s); a retry on the same client cannot
+  pass verification either. Review round 2 (2026-10-22): the cross review found the
+  user-facing text overstated this amendment - the TLS guide said the failure "is not
+  retried ... so the turn ends at once", the CHANGELOG headline said "no longer
+  retried: the turn ends at once" - while each request still makes these 3
+  handshakes. Re-measured on the real CLI against a local self-signed server:
+  `anthropic-messages`, `openai-completions` and `openai-responses` 3 handshakes in
+  about 2 s, `google-generative-ai` 1 (`.omc/probes/b4-a-live/r2/551-*`). The guides,
+  the CHANGELOG, this Status line and title, ADR-0195's note and the docstrings now
+  say what holds: aelix's own retry layers do not send it again and the advice is
+  shown once; the SDKs' own retries remain, a follow-up.
+- A message an extension rebuilds in `message_end` is a plain `str`, classified on its
+  text and retried as before: the mark lives as long as the message object, as
+  `classifier_text` does.
+- A Codex request that failed on strict alone is relaxed but not retried: its text
+  never matched the pattern (on `73a2efa4` too, after four transport attempts). The
+  next prompt passes.
+- Code 79 under a relaxation measured on 79 is answered even when a relaxed context
+  raised it (a `CA:FALSE` issuer gives 79 both ways): retried, as before #551.
+- An error with no int status whose text carries a certificate marker - an openai
+  `APIError` raised mid-stream whose body `code` is a string, ADR-0195's known limit -
+  gets the remedy and is now not retried either.
+
+### Tests and sabotage
+
+`tests/providers/test_tls_failure_not_retried_551.py` (29 rows): real TLS against a
+local server through httpx, httpcore, the OpenAI and Anthropic SDKs, the real
+anthropic adapter and harness (one prompt: 1 handshake with strict off, 3 with it on,
+no retry event, the remedy once; the strict-relaxation flow retried once and
+answered), a compaction's summary request (not retried; the same words without the
+mark retried), the three built-in refreshes, the Copilot poll (stops at once; a
+refused connection still polls 6 times; a relaxation-answered failure polls again)
+and the Codex adapter (1 attempt; a refused connection still 4). The relaxation
+rule's nine cases run on synthetic codes. On `73a2efa4` the file does not import.
+On a throwaway worktree each fix piece reverted, and eight plausible wrong forms,
+each went red (`.omc/probes/b4-a-live/551/sabotage/`).

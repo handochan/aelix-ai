@@ -55,6 +55,19 @@ with no numeric status (an OpenAI-style error whose code is a word such as
 `server_error`) is still read by its words, so certificate words in it can
 still bring the corporate-CA advice.
 
+**aelix does not retry a failure that gets this diagnosis.** Sending the
+request again would verify the same certificate against the same trust store,
+so the turn is not sent again and the TUI shows the advice once, instead of once
+per [automatic retry](providers-and-models.md#automatic-retry) (before #551 it
+waited 2 s, 4 s and 8 s and stacked the advice five times). The OpenAI and
+Anthropic SDKs still make their own two connection retries inside the one
+request: 3 handshakes and about 2 s before the advice (measured; the Gemini
+adapters make 1). The same holds for
+a compaction's summary request, a `/login` token refresh, the GitHub Copilot
+sign-in's polling and the OpenAI Codex adapter's own connection retries. The
+one exception is the strict-mode case below: when `aelix` relaxes strict
+checking for the session, the request that failed under it is sent again.
+
 **On macOS and Windows the operating system does the verifying.** With
 `store: OS certificate store`, `truststore` hands the chain to the platform's
 own verifier, so the error is the OS's, not OpenSSL's: macOS says
@@ -220,7 +233,11 @@ verification on a strict interpreter, it re-tests that host twice — once with
 strict on, once with it off — whatever the verify code, as long as the error
 names the host (the Google adapters do not take this path). Only if the
 handshake **fails with strict and succeeds without it** does it relax that one
-flag for the rest of the session, saying so in place of the advice:
+flag for the rest of the session, saying so in place of the advice. For the
+OpenAI and Anthropic APIs the automatic retry then sends the request again,
+now without strict, and a request that failed on strict alone passes; that
+retry is the only one a certificate failure gets. An OpenAI Codex request is
+not retried, so its next prompt is the one that passes:
 
 ```text
 RFC-5280 strict verification relaxed for this session after the host below failed it but verified against this machine's trust store without it.

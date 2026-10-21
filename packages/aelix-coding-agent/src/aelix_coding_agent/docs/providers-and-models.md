@@ -400,7 +400,13 @@ shows `Retrying (N/M) in Xs… Esc to cancel`; `--mode json` and rpc emit
 `auto_retry_end` (`success`, `attempt`, `final_error`). The keys are snake_case;
 pi's same events spell them `maxAttempts`, `delayMs`, `errorMessage` and
 `finalError`. A context overflow is not retried this way: it is compacted
-instead. When the retries run out on the run's last prompt, `-p` and
+instead. Nor is a TLS certificate verification failure (#551): the next attempt
+would check the same certificate against the same trust store, so aelix does not
+send the turn again and shows [the advice for it](tls-and-corporate-ca.md) once -
+unless `aelix` has just relaxed Python 3.13's strict checking for the session,
+when an OpenAI or Anthropic request is sent again without it. The OpenAI and
+Anthropic SDKs still retry the connection twice inside the one request (3
+handshakes, about 2 s in all). When the retries run out on the run's last prompt, `-p` and
 `--mode json` exit 1 ([exit codes](getting-started.md#exit-codes)). The summary
 request of a compaction (`/compact` or an automatic one) or of a branch summary
 retries the same failures and a transient OAuth refresh failure, with the same

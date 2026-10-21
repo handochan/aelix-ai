@@ -779,7 +779,7 @@
   "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:443-443": [
    "clamped = clamp_thinking_level(model, options.reasoning)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:664-664": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:677-677": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1253-1254": [
