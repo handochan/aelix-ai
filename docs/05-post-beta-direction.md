@@ -754,6 +754,10 @@ pi 방향 배치(#362 #350 #367 #370 #369 #363 #368, main `986f5916`)를 마친 
 - (2) 후보 산출물을 설치해 보는 단계가 publish 앞에 없다. install.sh는 CI에서 돈 적이 없다.
   (2026-10-14 추기: #279로 CI가 install.sh를 ubuntu·macOS에서 **배포된** 릴리즈에 대해 실행한다.
   publish 전 **후보** 산출물 설치(#382)는 별개이고 여전히 열려 있다.)
+  (2026-10-22 추기: #382가 `release.yml`에 `candidate-smoke`를 넣었고, #535로 태그 없이
+  `build`와 `candidate-smoke`만 도는 수동 실행(dry run, `gh workflow run release.yml --ref main -f tag=<태그>`)이
+  생겼다. 수동 실행은 Release도 PyPI 업로드도 만들지 않는다. beta.3 태그 전에 한 번 돌려 세 레그가 green인지 보고
+  run id를 여기 남긴다. 아직 돌린 적은 없다.)
 - (3) 릴리즈 후보 라이브 기록과 Windows 데스크톱 결과가 없다.
 - (4) CHANGELOG에 Known limitations 절이 없다. README의 제한 목록은 이미 고친 #137·#260을 결함으로 적고 있다.
 

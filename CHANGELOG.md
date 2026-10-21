@@ -23,6 +23,20 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Maintainers: the release can be dry-run before its tag (#535, ADR-0269).**
+  `release.yml` now also runs by hand: `gh workflow run release.yml --ref main
+  -f tag=v0.1.0-beta.3` builds the commit and runs `candidate-smoke` on
+  Ubuntu, macOS and Windows, with the same tag gate and version/pin assert the
+  tag push would run, and stops there. `github-release` and `publish` run for
+  a tag push only (each says so in its own `if:`), so a manual run creates no
+  Release and uploads nothing to PyPI. Until now the smoke's macOS and Windows
+  legs would first have run on the beta.3 tag itself. RELEASING.md's *Cutting
+  a beta* runs the dry run as step 5, before the tag. The smoke script's
+  failure line also reaches a Windows leg's log now: a message quoting a
+  character outside cp1252 ended in a `UnicodeEncodeError` traceback instead
+  of the `::error::` line, because the step runs it with `-I`, which ignores
+  `PYTHONIOENCODING`.
+
 - **Maintainers: the model catalog can now be built for publication between
   releases (#172, ADR-0264, ADR-0232).** `scripts/publish_catalog.py build`
   fetches models.dev and OpenRouter's public model list, runs the generator's

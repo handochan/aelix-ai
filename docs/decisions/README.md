@@ -62,7 +62,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   function `if:` or step `if:` (but uv's bootstrap) can turn a red leg green. Diverges from
   pi: the Release is public, not a draft, so the maintainer can run the installers with
   `AELIX_VERSION` in the window before approving `publish`. Dated notes in ADR-0240,
-  ADR-0192 and ADR-0241.
+  ADR-0192 and ADR-0241. Amended 2026-10-22 (#535): a manual run (`workflow_dispatch`, one
+  required input `tag`, the tag about to be pushed) is the dry run before the tag - `build`
+  and `candidate-smoke` on the commit it starts on, never `github-release` or `publish`, each
+  of which carries `if: github.event_name == 'push'` itself (pi's manual run publishes; this
+  one cannot). The smoke script's `::error::` line survives a Windows leg's cp1252 stdout.
 - [0274 — CI's test limits follow the measured green runs](0274-ci-test-limits-follow-the-measured-green-runs.md)
   (Accepted, 2026-10-20; review round 2, 2026-10-21; #482). The `ci.yml` pytest step limit is the
   slowest step × 1.3, rounded up to 5 minutes, per OS, where the slowest step is the larger of the

@@ -3,7 +3,10 @@
 Status: Accepted (2026-10-20; owner decision on #382). Revised in review round 2
 (2026-10-21) before merge: the request is computed per version, the interpreter is
 the one a user without Python gets, and the gate holds against `continue-on-error`
-and status functions.
+and status functions. Amended 2026-10-22 (#535): a manual run of `release.yml` is
+the dry run before the tag - `build` and `candidate-smoke` only - and the smoke
+script's `::error::` line survives a Windows leg's cp1252 stdout (the amendment
+at the end).
 Date: 2026-10-20
 Issue: #382 (beta.3 exit condition 2: the candidate artifact itself is verified)
 Relates: ADR-0147 (release engineering; `release.yml`), ADR-0192 (the
@@ -130,7 +133,7 @@ under the tool environment's own interpreter):
 Each check exits 1 after one `::error::` line naming it. A failure outside the
 checks shows differently: uv's own message and a non-zero exit for the uv
 bootstrap or the install, a Python traceback for an exception no check
-anticipated (RELEASING.md, *Cutting a beta* step 6).
+anticipated (RELEASING.md, *Cutting a beta* step 7; step 6 before #535).
 
 **Nothing turns a red leg green.** `needs` alone is not the gate: no job or
 step in `release.yml` carries `continue-on-error`, no job `if:` calls a status
@@ -202,6 +205,8 @@ was published, so re-run a flake or fix and move the tag.
   status. What first runs on Windows at the tag push is the rest: the
   PowerShell uv bootstrap, the Git Bash steps, `uv tool install` of the built
   wheels, and the scripts under the tool environment's interpreter.
+  (Since #535 that first run can be a dry run before the tag: the amendment
+  at the end.)
 
 ## Not decided here
 
@@ -221,7 +226,8 @@ was published, so re-run a flake or fix and move the tag.
 ## Verification
 
 Probes and outputs are in `.omc/probes/382-live/impl/`. `release.yml` itself
-cannot run before a tag push; instead `run_release_jobs_locally.py` executes the
+could not run before a tag push (until the #535 dry run: the amendment at the end);
+instead `run_release_jobs_locally.py` executes the
 `run:` blocks of `build` and `candidate-smoke` verbatim with bash on macOS
 (runner variables, `GITHUB_ENV` / `GITHUB_PATH` / `GITHUB_OUTPUT` simulated, the
 artifact copied in; the uv bootstrap not run — the local uv 0.11.19 stands in).
@@ -274,3 +280,104 @@ reproduced on `a5790c33` first, and every named mutant goes red after it:
   the step, uv took the PATH's 3.12.13 and `installed` failed: "the tool
   environment's interpreter is based on .../cpython-3.12.13-macos-aarch64-none,
   not on a CPython uv downloaded into .../candidate-python".
+
+## Amendment 2026-10-22 (#535): the dry run before the tag
+
+**Context.** `release.yml` started on a release-tag push and nothing else. The
+last run of the workflow was the `v0.1.0-beta.2` tag's (34315063972, 2026-09-09),
+before #382 added `candidate-smoke`; so the job had not run on any runner, and its
+first run on macOS and Windows would be the `v0.1.0-beta.3` tag itself. A red leg
+there publishes nothing (the gate holds), but beta.3 waits on a fix and a moved
+tag while the update-check feed already names it. Measured on the tree this
+amends (`.omc/probes/b4-d-live/535/repro_dispatch_before.txt`): the triggers are
+`['push']`, so a manual run does not start the workflow at all; and adding a bare
+`workflow_dispatch:` alone - the plausible first fix - gives a manual run all four
+jobs, `github-release` (`contents: write`) and `publish` (`id-token: write`, the
+`pypi` environment) among them. The second gap was in the script: each smoke step
+runs it with `-I`, which ignores PYTHONIOENCODING, and a redirected stdout on
+Windows is cp1252 with `errors='strict'`. Measured with exactly that stdout
+(`repro_encoding_before.txt`): a failure quoting U+2192 exited 1 with no
+`::error::` line and a `UnicodeEncodeError` traceback in its place.
+
+**Decision.**
+
+- **A manual run is the dry run.** `release.yml` gains `workflow_dispatch` with
+  one input, `tag` (required, a string): the tag about to be pushed. `build`
+  reads its tag from one place, `TAG: ${{ inputs.tag || github.ref_name }}` (the
+  input on a manual run, the pushed ref otherwise), so the tag gate and the
+  version/pin assert refuse on a dry run exactly what they would refuse on the
+  push; the input reaches the scripts through the environment, never expanded
+  into a `run:`. The gate's step says when a run is a dry run and prints the SHA
+  it builds. `candidate-smoke` is unchanged and runs on every OS.
+- **A manual run never publishes.** `github-release` and `publish` each carry
+  `if: ${{ github.event_name == 'push' }}`, and each condition guards its own job.
+  Without `publish`'s, a manual run still never reaches PyPI, because `publish`
+  needs `github-release`, which does not start. Without `github-release`'s, a
+  manual run creates the Release (`contents: write`), and only `publish`'s own
+  condition keeps it off PyPI. So neither condition is redundant, and the test
+  requires each job to carry its own. (Review round 2 corrected this bullet: it
+  said removing either one kept a manual run off the Releases page.) The
+  condition calls no status function, so decision 1's implicit `success()` still
+  applies. The `pypi` environment's approval is a third layer, not the gate.
+- **The smoke's output lines stay whole.** `scripts/release_candidate_smoke.py`'s
+  `main()` first sets stdout's and stderr's error handler to `backslashreplace`;
+  a character the code page lacks prints as `\u2192`. The encoding is left as it
+  is: the runner's own decoding of a Windows step's output is not measured, and
+  an escape is ASCII under any of them.
+- RELEASING.md's *Cutting a beta* runs the dry run as step 5, after the commit and
+  before the tag (`gh workflow run release.yml --ref main -f tag=<tag>`); the
+  later steps move down by one. The GA flow points at it before its tag.
+
+`tests/test_release_candidate_smoke.py` holds it: the triggers are exactly the tag
+push and the manual run with its one input; GitHub's job selection read from the
+file (a job starts when its needs started and its `if:` holds, each condition's
+meaning written into the test by hand) gives the tag push all four jobs, the tag
+deletion none and a manual run `build` and `candidate-smoke`; each job holding a
+write permission or an environment carries the push-only condition itself, and
+no job a manual run starts holds one or reads a secret; `build`'s tag comes from
+that one expression and no build `run:` expands one; the gate's own script, run
+by bash, passes a manual run with a release tag and refuses `main` and the dot
+form; and the script prints one `::error::` line from a cp1252 stdout, in-process
+and as a separate `python -I` process.
+
+**pi, and where this diverges.** pi's `build-binaries.yml` (fdce48eb4, lines 3-16)
+also takes `workflow_dispatch`, with a required `tag` and an optional
+`source_ref` "for release recovery", but a manual run there runs the whole graph -
+`stage-github-release`, `publish-npm`, `publish-github-release`. pi has no dry run
+without publishing; it is a contrast, not the precedent. aelix's manual run is
+only the rehearsal. Recovery stays the single force-update of the tag
+(RELEASING.md, *Retagging after a pre-upload failure*): a manual run on the tag's
+ref after a failed tag run builds and smokes again, and publishes nothing.
+
+**What you give up.**
+
+- **The dry run is a separate run.** It builds the commit; the tag run builds it
+  again. Both build the same tree with the same pinned uv, but the smoke's uv and
+  the third-party dependencies it resolves from PyPI are those of the day each
+  runs, so a green dry run does not make the tag run's smoke a formality.
+- **The dry run of a version already on PyPI** (`main` before its bump, as now at
+  `0.1.0b2`) may meet the index's same-version file. uv 0.11.19 took the build's
+  (above); a uv that takes the index's turns `installed` red on the bytes. That
+  is the byte check working, not a defect in the build.
+- **Anyone who may start a run can start a dry run** - the same people who may
+  push a tag. It holds no write permission and no secret, so it costs runner
+  minutes and nothing else.
+
+**Not done here.** Running it. The issue asks for one run before the beta.3 tag,
+with all three legs green and the run id recorded here and in
+`docs/05-post-beta-direction.md`'s beta.3 exit condition 2; no run has happened
+yet.
+
+**Verification** (`.omc/probes/b4-d-live/535/`). Before: the triggers probe and the
+encoding probe above. After: a manual run on `main` and on the tag ref each give
+`['build', 'candidate-smoke']` and no job that can publish
+(`repro_dispatch_after.txt`); the encoding probe gives exit 1 and one
+`::error::` line with `\u2192` (`repro_encoding_after.txt`). On a throwaway
+worktree (`sabotage.out.txt`) each fix piece reverted - the whole workflow, the
+trigger alone, `github-release`'s condition alone, `publish`'s alone, the tag
+source, the script's handler - and eleven wrong forms - `!= 'pull_request'`, a
+condition that lets an input through, a `publish` switch input, push on `main`
+too, the smoke skipped on a manual run, the input expanded into the gate's
+script, the dry-run line dropped, stderr only, `errors='replace'`,
+`encoding='utf-8'` without a handler, the handler set only on the success path -
+each turns at least one row red; the fixed tree passes all 78.

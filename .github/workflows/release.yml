@@ -4,6 +4,15 @@ name: Release
 #
 # Trigger: pushing a version tag of the form `vX.Y.Z` (e.g. `v0.1.0`).
 #
+# Dry run (#535): started by hand (workflow_dispatch) with the tag you are
+# about to push as the `tag` input, this workflow runs `build` and
+# `candidate-smoke` on the commit it was started on, and stops there:
+# `github-release` and `publish` run for a tag push only (their `if:`). It is
+# how candidate-smoke's macOS and Windows legs run before the tag that would
+# otherwise be their first run. RELEASING.md, "Cutting a beta", runs it before
+# tagging:
+#     gh workflow run release.yml --ref main -f tag=v0.1.0-beta.3
+#
 # Pipeline (ADR-0269, #382) - nothing is published before the candidate ran:
 #   build           — `uv build --all-packages`, then DROP the aelix-server
 #                     artifacts (Web-UI daemon is deferred to v1.1 and is NOT
@@ -15,11 +24,13 @@ name: Release
 #                     CPython uv downloads for a user with no Python in it),
 #                     then runs it (`aelix --version`, a turn against a local
 #                     stub). The candidate never comes from PyPI or a Release.
-#   github-release  — needs build + candidate-smoke. Creates the Release that
-#                     install.sh / install.ps1 resolve by default (newest tag,
-#                     betas included), so it must not exist before the smoke.
-#   publish         — needs build + candidate-smoke + github-release, then the
-#                     `pypi` environment approval. Uploads to PyPI via
+#   github-release  — needs build + candidate-smoke; a tag push only. Creates
+#                     the Release that install.sh / install.ps1 resolve by
+#                     default (newest tag, betas included), so it must not
+#                     exist before the smoke.
+#   publish         — a tag push only; needs build + candidate-smoke +
+#                     github-release, then the `pypi` environment
+#                     approval. Uploads to PyPI via
 #                     **Trusted Publishing** (OIDC). No API token is stored in
 #                     the repository or in any secret. The approval is the
 #                     window RELEASING.md uses to run the installers against
@@ -52,6 +63,19 @@ on:
       # Strict-ish glob (GitHub filter syntax supports `+`); a hard regex
       # gate in the build job (below) is the real enforcement.
       - "v[0-9]+.[0-9]+.[0-9]+*"
+  # The dry run (#535; header above). Nothing a manual run starts can publish:
+  # github-release and publish carry `if: github.event_name == 'push'`, and
+  # tests/test_release_candidate_smoke.py holds that, the input below and the
+  # jobs each event runs.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          The release tag you are about to push (e.g. v0.1.0-beta.3). The run
+          builds and smoke-tests the commit it is started on, as that tag; it
+          creates no Release and uploads nothing to PyPI.
+        required: true
+        type: string
 
 # Default to read-only at the workflow level; the publish job opts into
 # the `id-token: write` permission it needs for OIDC.
@@ -83,6 +107,14 @@ jobs:
     if: ${{ !github.event.deleted }}
     permissions:
       contents: read
+    env:
+      # The tag this run builds: the pushed one, or on a manual run (the dry run,
+      # #535) the `tag` input - the tag about to be pushed - so the tag gate and
+      # the version/pin assert below check exactly what the push will. On a push
+      # there are no inputs and the ref name is the tag. Read from the
+      # environment in each script, never expanded into one: an input is text
+      # anyone who may start a run chooses.
+      TAG: ${{ inputs.tag || github.ref_name }}
     outputs:
       # The tag's PEP 440 version (`v0.1.0-beta.3` -> `0.1.0b3`), written by the
       # assert step below only after every published version and pin matched it.
@@ -94,7 +126,7 @@ jobs:
     steps:
       - name: Validate release tag is strict semver
         run: |
-          tag="${{ github.ref_name }}"
+          tag="$TAG"
           # A pre-release MUST be spelled with a HYPHEN. The github-release job
           # decides "is this a pre-release?" by testing for one — its
           # `--prerelease` case is the last reader of that signal. (The publish
@@ -109,10 +141,13 @@ jobs:
           # reads as GA. Accepting only `vX.Y.Z` and `vX.Y.Z-<suffix>` makes
           # "no hyphen" and "is GA" the same fact.
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish. A pre-release must use a hyphen (v0.1.0-beta.1), never a dot (v0.1.0.rc1)."
+            echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish. A pre-release must use a hyphen (v0.1.0-beta.1), never a dot (v0.1.0.rc1). On a manual run (the dry run) the tag is the 'tag' input."
             exit 1
           fi
           echo "Release tag: $tag"
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            echo "Dry run ($GITHUB_EVENT_NAME on $GITHUB_REF_NAME): build and candidate-smoke for $GITHUB_SHA as $tag; github-release and publish do not run."
+          fi
 
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -165,8 +200,6 @@ jobs:
       # publish set below and its inter-package deps are deliberately unpinned.
       - name: Assert the tag matches every published version and pin
         id: pin
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           uv run --no-project --with packaging --python 3.12 python - <<'PY'
           import glob
@@ -481,6 +514,12 @@ jobs:
     # trap without pre-empting GA. The tag gate above still refuses dot-form
     # pre-releases, and `skip-existing: false` still makes a re-run of the
     # same version fail loudly instead of silently uploading nothing.
+    #
+    # A tag push only, which is the one `if:` this job has: a manual run (the
+    # dry run, #535) stops after candidate-smoke. github-release carries the
+    # same condition and this job needs it, but each states it, so neither
+    # relies on the other to keep a manual run off PyPI.
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     # GitHub Environment adds an approval/protection gate around the
     # publish step. The maintainer references this same environment name
@@ -539,6 +578,8 @@ jobs:
     # install.ps1 with no AELIX_VERSION install the newest Release tag, betas
     # included, so this job is what makes a build every user's default.
     needs: [build, candidate-smoke]
+    # A tag push only: a manual run (the dry run, #535) creates no Release.
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the Release + upload assets (ONLY elevation here)

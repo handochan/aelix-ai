@@ -155,8 +155,9 @@ lineage's last entry.
    prints a command; it installs nothing). Since #382 that gap also covers the
    candidate smoke: the GitHub Release appears only after `build` and every
    `candidate-smoke` leg passed, and while a leg is red the feed names a version
-   that has no Release until the fix is merged and the tag moved (step 6 of
-   **Cutting a beta**).
+   that has no Release until the fix is merged and the tag moved (step 7 of
+   **Cutting a beta**). The dry run before the tag (step 5 there) is what
+   keeps that gap rare.
 
    Set `latest` to this release. For a stable release set `latestStable` to the
    same values; for a prerelease leave `latestStable` on the newest stable, so a
@@ -197,7 +198,10 @@ lineage's last entry.
 6. **Commit** the version bump + changelog on the default branch (via PR; CI
    must be green).
 
-7. **Tag and push**:
+7. **Dry-run the release on that commit, then tag and push.** The dry run is
+   step 5 of **Cutting a beta** below with `-f tag=vX.Y.Z`: `build` and
+   `candidate-smoke` on the commit, no Release, no upload. Tag that commit
+   once every leg is green:
 
    ```bash
    git tag vX.Y.Z
@@ -218,14 +222,14 @@ lineage's last entry.
       the turn reaches no network). Each leg runs on the CPython uv downloads for a user with no
       Python in that range — the newest inside it (3.14.x for 0.1.0b3 and
       later); ci.yml's legs cover 3.11–3.14 from source. What a red leg shows
-      is under step 6 of **Cutting a beta**;
+      is under step 7 of **Cutting a beta**;
    3. `github-release` (needs `build` + `candidate-smoke`) creates the Release
       and attaches the wheels, the sdists, `SHA256SUMS` and the SBOM;
    4. `publish` (needs all three) waits for the `pypi` environment approval,
       then uploads the four-package set to PyPI via Trusted Publishing.
 
    The approval is asked for only once the Release exists. Use that window as
-   the beta flow does (step 7 of **Cutting a beta** below): run the installer
+   the beta flow does (step 8 of **Cutting a beta** below): run the installer
    with `AELIX_VERSION=vX.Y.Z`, then approve.
 
 9. **Verify** the new versions appear on PyPI and that
@@ -272,10 +276,12 @@ So `v0.1.0-beta.2` (has `-`) → `0.1.0b2` on PyPI, GitHub pre-release.
 > the job instead of publishing a mismatched artifact.
 
 > All four jobs — `build`, `candidate-smoke`, `github-release`, `publish` — run
-> for **every** release tag (beta and GA), in that order. The `github-release`
-> job attaches the four wheels + four sdists + the `SHA256SUMS` manifest — that
-> Release is exactly what `install.sh` consumes, and `candidate-smoke` has
-> installed and run those same wheels on Ubuntu, macOS and Windows before it.
+> for **every** release tag (beta and GA), in that order. A manual run (the dry
+> run, step 5 of **Cutting a beta**) runs the first two and nothing else. The
+> `github-release` job attaches the four wheels + four sdists + the `SHA256SUMS`
+> manifest — that Release is exactly what `install.sh` consumes, and
+> `candidate-smoke` has installed and run those same wheels on Ubuntu, macOS and
+> Windows before it.
 
 ### Every pre-release is a GA rehearsal
 
@@ -378,17 +384,50 @@ updates an existing release in place rather than failing on the taken name.
 
 4. **Commit** on the default branch (via PR; CI green).
 
-5. **Tag with the hyphenated pre-release form and push**:
+5. **Dry-run the release on that commit, before you tag it** (#535,
+   ADR-0269). `release.yml` also runs by hand. Given the tag you are about to
+   push as its `tag` input, it runs `build` and `candidate-smoke` on the commit
+   it is started on: the same tag gate and version/pin assert, the same
+   install on Ubuntu, macOS and Windows, the same checks. Then it stops.
+   `github-release` and `publish` run for a tag push only, so a manual run
+   creates no Release and uploads nothing to PyPI.
+
+   ```bash
+   gh workflow run release.yml --ref main -f tag=v0.1.0-beta.2
+   gh run list --workflow release.yml --event workflow_dispatch --limit 1   # its run id
+   gh run watch <run-id> --exit-status
+   ```
+
+   Every leg must be green before step 6, and the commit you tag must be the
+   one the run built: the `Validate release tag` step prints its SHA. A red
+   leg reads as in step 7. Fix it on `main` and dry-run again; no tag exists
+   yet, so there is nothing to move. This is also the first run of a new
+   Windows or macOS path: until #535 that first run was the tag itself.
+
+   - Dry-run the version you are about to release. For a version already on
+     PyPI (`main` before its bump), the index holds another file of the same
+     version. uv 0.11.19 took the build's (ADR-0269); a uv that takes the
+     index's fails `installed` on the bytes, which is the check working, not
+     a defect in the build. An unreleased version has no such file.
+   - The feed (step 2) is live from step 4 on. To dry-run before the feed
+     names the version, start the run on the release branch instead
+     (`--ref <branch>`), before it lands; then tag the commit that lands, if
+     its tree is the one the run built.
+
+6. **Tag with the hyphenated pre-release form and push**:
 
    ```bash
    git tag v0.1.0-beta.2
    git push origin v0.1.0-beta.2
    ```
 
-6. **Wait for the candidate smoke** (`release.yml`, ADR-0269, #382). `build`
+7. **Wait for the candidate smoke** (`release.yml`, ADR-0269, #382). `build`
    runs, then `candidate-smoke` installs that build on Ubuntu, macOS and
    Windows exactly as the installers install a Release and runs it. Nothing
-   exists yet that a user can install: no Release, no PyPI upload.
+   exists yet that a user can install: no Release, no PyPI upload. The dry
+   run in step 5 ran the same legs on this commit. A leg that is red here
+   and was green there is a flake, or a change between the two runs: a new
+   uv, or a third-party dependency released in between.
 
    Each leg installs on the CPython uv downloads for a user with no Python in
    the installers' range — the newest inside it (3.14.x for 0.1.0b3 and later,
@@ -422,7 +461,7 @@ updates an existing release in place rather than failing on the taken name.
      failure*. The version number is still free: there is no Release to clean
      up and nothing reached PyPI.
 
-7. **The window: check the installers against the new Release, before you
+8. **The window: check the installers against the new Release, before you
    approve `publish`.** Once every smoke leg is green, `github-release` creates
    the Release, and only then does `publish` start and wait for the `pypi`
    environment approval. In between, the Release is up and PyPI does not have
@@ -464,7 +503,7 @@ updates an existing release in place rather than failing on the taken name.
    Release so the installers stop resolving it (`gh release delete
    v0.1.0-beta.2 --yes` keeps the tag); then fix and move the tag as above.
 
-8. **Approve `publish`**, then confirm the four names on pypi.org show the new
+9. **Approve `publish`**, then confirm the four names on pypi.org show the new
    pre-version.
 
 Subsequent betas bump the suffix (`0.1.0b3` / `v0.1.0-beta.3`, etc.). The GA cut

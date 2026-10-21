@@ -61,6 +61,14 @@ agent loop and writes a session (reported, not checked) - the path whose depende
 Exit status 0 when every check passed; otherwise 1 and an ``::error::`` line naming the
 first check that failed. An exception no check expected (a stub that cannot bind, a file
 that cannot be read) ends in Python's traceback and exit status 1 instead.
+
+That line survives a Windows leg's stdout (#535). The job runs this script with ``-I``,
+which ignores PYTHONIOENCODING and PYTHONUTF8, and a redirected stdout on Windows is the
+locale code page (cp1252) with ``errors='strict'``: a failure message quoting a character
+cp1252 lacks (aelix's stderr, a path) raised ``UnicodeEncodeError`` inside the ``print`` and
+the leg showed that traceback instead of the check. :func:`main` therefore first sets
+stdout's and stderr's error handler to ``backslashreplace``, so such a character prints as
+``\\u2192`` and every line stays one line; the encoding itself is left as it is.
 """
 
 from __future__ import annotations
@@ -650,7 +658,21 @@ def find_launcher(bin_dir: Path) -> list[str]:
 # --- main ----------------------------------------------------------------------------------
 
 
+def _keep_output_lines_whole() -> None:
+    """Make stdout and stderr print what their encoding lacks as escapes, never raise.
+
+    See the module docstring's last paragraph (#535). Only the error handler changes; a
+    stream that is not a text wrapper (a test's replacement, ``None`` under pythonw) is
+    left alone.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _keep_output_lines_whole()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     sub = parser.add_subparsers(dest="command", required=True)
     request = sub.add_parser("request", help="the interpreter request the installers make")

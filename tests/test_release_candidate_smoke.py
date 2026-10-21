@@ -18,6 +18,10 @@ This file holds:
 * the job graph — the smoke runs on all three OSes, no job that can publish
   (``contents: write`` or ``id-token: write``) runs before it, and nothing turns a red
   leg green (``continue-on-error``, a status function in a job ``if:``, a step ``if:``);
+* the dry run (#535) — a manual run (``workflow_dispatch``, one input: the tag about to be
+  pushed) starts ``build`` and the smoke and nothing else, each job that can publish
+  keeps it out by its own ``if:``, and ``build`` checks that input as it checks a pushed
+  tag;
 * the smoke's commands — it installs THIS run's ``dist`` artifact with install.sh's own
   Step 5 command (find-links, the ``==`` pin, the ``[tui]`` default, the interpreter
   request the installers make for that version, computed by their rule), on the CPython
@@ -30,6 +34,7 @@ This file holds:
   against this tree's own console script, so a change to the flags or the models.json
   shape it relies on goes red on the branch, not on release day. ci.yml's windows legs
   run those rows too: they are the first Windows run of the turn's environment handling.
+  Its failure line survives the cp1252 stdout a Windows leg gives it under ``-I`` (#535).
 
   Not every sub-check has a row of its own yet (review round 2, cross M5-M7; a
   follow-up): a base interpreter in a directory that only shares a string prefix with
@@ -45,6 +50,7 @@ import base64
 import hashlib
 import importlib.metadata
 import importlib.util
+import io
 import json
 import os
 import re
@@ -224,6 +230,188 @@ def test_the_smoke_pins_its_actions_to_a_commit() -> None:
     for step in _jobs()[SMOKE]["steps"]:
         if "uses" in step:
             assert _PINNED_ACTION.match(step["uses"]), step["uses"]
+
+
+# === the dry run: build + smoke by hand, never a Release or an upload (#535) ===
+#
+# Before #535 only a tag push started release.yml, so candidate-smoke's macOS and Windows
+# legs would first run on the v0.1.0-beta.3 tag itself. A manual run (workflow_dispatch)
+# with the tag about to be pushed now runs build and candidate-smoke on the commit it is
+# started on; github-release and publish run for a push only.
+
+#: The condition a job that can publish carries: a tag push, never a manual run.
+_PUSH_ONLY = "${{ github.event_name == 'push' }}"
+
+#: Every job ``if:`` in release.yml, with what it means for an event. A condition not in
+#: this table fails the graph row below: its meaning for a manual run must be written
+#: here, by hand, before the graph can be read.
+_CONDITIONS: dict[str, Any] = {
+    "${{ !github.event.deleted }}": lambda event: not event["deleted"],
+    _PUSH_ONLY: lambda event: event["event_name"] == "push",
+}
+
+#: (event, the jobs GitHub starts for it, each needed job assumed to pass).
+_EVENTS = [
+    pytest.param(
+        {"event_name": "push", "deleted": False},
+        {"build", SMOKE, "github-release", "publish"},
+        id="the release tag is pushed",
+    ),
+    pytest.param({"event_name": "push", "deleted": True}, set(), id="the release tag is deleted"),
+    pytest.param(
+        {"event_name": "workflow_dispatch", "deleted": None},
+        {"build", SMOKE},
+        id="a manual run (the dry run)",
+    ),
+]
+
+
+def _triggers() -> dict[str, Any]:
+    """The ``on:`` block. YAML 1.1 reads the bare key ``on`` as ``True``."""
+
+    doc = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))
+    return doc["on"] if "on" in doc else doc[True]
+
+
+def _can_publish(job: dict[str, Any]) -> bool:
+    """A write permission (a Release, an OIDC upload token) or a deployment environment."""
+
+    return "environment" in job or any(
+        v == "write" for v in (job.get("permissions") or {}).values()
+    )
+
+
+def test_the_workflow_starts_on_a_release_tag_or_by_hand_and_nothing_else() -> None:
+    """A tag push, or a manual run whose one input is the tag about to be pushed. Another
+    input (a ``publish`` switch) or another trigger (a branch push, a schedule) would be
+    a path past the push-only condition this file reads below."""
+
+    triggers = _triggers()
+    assert set(triggers) == {"push", "workflow_dispatch"}
+    assert triggers["push"] == {"tags": ["v[0-9]+.[0-9]+.[0-9]+*"]}
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"tag"}
+    assert inputs["tag"]["required"] is True and inputs["tag"]["type"] == "string"
+    assert set(triggers["workflow_dispatch"]) == {"inputs"}
+
+
+@pytest.mark.parametrize(("event", "expected"), _EVENTS)
+def test_each_event_starts_exactly_these_jobs(event: dict[str, Any], expected: set[str]) -> None:
+    """GitHub's selection, read from the file: a job starts when every job it needs
+    started (and passed) and its ``if:`` holds. A manual run gets build and the smoke on
+    every OS, and nothing after them."""
+
+    jobs = _jobs()
+    started: dict[str, bool] = {}
+
+    def starts(job_id: str) -> bool:
+        if job_id not in started:
+            job = jobs[job_id]
+            condition = job.get("if")
+            assert condition is None or condition in _CONDITIONS, (
+                f"{job_id}: teach _CONDITIONS what {condition!r} means for a manual run"
+            )
+            holds = condition is None or _CONDITIONS[condition](event)
+            started[job_id] = holds and all(starts(n) for n in _needs(job))
+        return started[job_id]
+
+    assert {job_id for job_id in jobs if starts(job_id)} == expected
+
+
+def test_a_manual_run_reaches_no_job_that_can_publish() -> None:
+    """Each job that can publish keeps a manual run out by its own ``if:``, not only
+    through a need: publish needs github-release, and removing github-release's
+    condition alone, or publish's alone, must each be a failure here. Every job a manual
+    run starts holds no write permission, no environment and no secret."""
+
+    jobs = _jobs()
+    publishers = {job_id for job_id, job in jobs.items() if _can_publish(job)}
+    assert publishers == {"github-release", "publish"}, publishers
+    for job_id in publishers:
+        assert jobs[job_id].get("if") == _PUSH_ONLY, (job_id, jobs[job_id].get("if"))
+    doc = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))
+    assert doc["permissions"] == {"contents": "read"}
+    for job_id in ("build", SMOKE):
+        job = jobs[job_id]
+        assert not _can_publish(job), job_id
+        assert "secrets." not in yaml.safe_dump(job), job_id
+
+
+def test_the_dry_run_checks_the_tag_it_names() -> None:
+    """build reads the tag from one place: the ``tag`` input on a manual run, the pushed
+    ref otherwise. The tag gate and the version/pin assert therefore refuse on a dry run
+    exactly what they would refuse on the push. The input reaches the scripts through
+    the environment only: expanded into a ``run:`` it would be shell text anyone who may
+    start a run chooses."""
+
+    build = _jobs()["build"]
+    assert build["env"] == {"TAG": "${{ inputs.tag || github.ref_name }}"}
+    for step in build["steps"]:
+        assert "TAG" not in (step.get("env") or {}), step.get("name")
+        assert "${{" not in str(step.get("run", "")), step.get("name")
+    gate = next(
+        s for s in build["steps"] if s.get("name") == "Validate release tag is strict semver"
+    )
+    assert gate["run"].splitlines()[0] == 'tag="$TAG"'
+    pin = next(s for s in build["steps"] if s.get("id") == "pin")
+    assert 'tag = os.environ["TAG"]' in pin["run"]
+    ids = [s.get("id") or s.get("name") for s in build["steps"]]
+    assert ids.index("Validate release tag is strict semver") == 0, "the gate runs first"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the step runs under bash on ubuntu-latest; on a Windows test leg `bash` may be "
+        "WSL's launcher rather than a shell. Its text is the same on every OS, so the "
+        "POSIX legs' run covers it"
+    ),
+)
+@pytest.mark.parametrize(
+    ("tag", "event", "status", "shown"),
+    [
+        ("v0.1.0-beta.3", "push", 0, "Release tag: v0.1.0-beta.3"),
+        (
+            "v0.1.0-beta.3",
+            "workflow_dispatch",
+            0,
+            "Dry run (workflow_dispatch on main): build and candidate-smoke for",
+        ),
+        ("main", "workflow_dispatch", 1, "On a manual run (the dry run) the tag is the 'tag'"),
+        ("v0.1.0.rc1", "workflow_dispatch", 1, "never a dot (v0.1.0.rc1)"),
+    ],
+)
+def test_the_tag_gate_runs_the_same_on_a_manual_run(
+    tag: str, event: str, status: int, shown: str
+) -> None:
+    """build's first step, executed by bash with the runner's variables: a manual run
+    with a release tag passes and says it is a dry run; a manual run without one (the
+    ``tag`` input left as the branch name) or with the dot form is refused."""
+
+    gate = next(
+        s
+        for s in _jobs()["build"]["steps"]
+        if s.get("name") == "Validate release tag is strict semver"
+    )
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "TAG": tag,
+        "GITHUB_EVENT_NAME": event,
+        "GITHUB_REF_NAME": "main" if event == "workflow_dispatch" else tag,
+        "GITHUB_SHA": "0" * 40,
+    }
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", gate["run"]],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == status, (result.stdout, result.stderr)
+    assert shown in result.stdout, result.stdout
+    assert ("Dry run" in result.stdout) == (event != "push" and status == 0)
 
 
 # === what the smoke installs, and how =========================================
@@ -978,6 +1166,114 @@ def test_a_failing_check_exits_1_after_one_error_line(tmp_path: Path, case: str)
     assert result.returncode == 1, (result.stdout, result.stderr)
     errors = [ln for ln in result.stdout.splitlines() if ln.startswith("::error::")]
     assert len(errors) == 1 and errors[0].startswith(want), result.stdout
+
+
+#: A character cp1252 (a Windows runner's code page) has no byte for: U+2192.
+_NOT_CP1252 = "→"
+
+
+def _installed_without_a_manifest(dist: Path, tmp_path: Path) -> list[str]:
+    """``installed`` arguments that fail its first file check: no SHA256SUMS in ``dist``,
+    a message that quotes ``dist``."""
+
+    dist.mkdir()
+    return [
+        "installed",
+        "--dist",
+        str(dist),
+        "--version",
+        "0.1.0b3",
+        "--python-request",
+        smoke.PY_SUPPORTED,
+        "--managed-python-dir",
+        str(tmp_path / "python"),
+    ]
+
+
+def test_a_failure_in_a_character_the_code_page_lacks_is_still_one_error_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#535: under ``-I`` a Windows leg's stdout is cp1252 with ``errors='strict'``
+    (PYTHONIOENCODING is ignored), so printing a failure that quotes a character cp1252
+    lacks raised ``UnicodeEncodeError`` and the leg showed a traceback, not the check.
+    Here stdout and stderr are exactly that stream; the line prints, the character as
+    an escape."""
+
+    def cp1252() -> io.TextIOWrapper:
+        return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+
+    out, err = cp1252(), cp1252()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    args = _installed_without_a_manifest(tmp_path / f"dist{_NOT_CP1252}candidate", tmp_path)
+    assert smoke.main(args) == 1
+    for stream in (out, err):
+        assert stream.errors == "backslashreplace"
+        assert stream.encoding == "cp1252", "the encoding is left as it was"
+    out.flush()
+    buffer = out.buffer
+    assert isinstance(buffer, io.BytesIO)
+    lines = buffer.getvalue().decode("cp1252").splitlines()
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("::error::release candidate smoke (installed): no SHA256SUMS in ")
+    assert "dist\\u2192candidate" in lines[0], lines[0]
+
+
+def test_a_passing_checks_report_in_a_character_the_code_page_lacks_prints_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 2: the handler is set before any check runs, not only on the failure
+    path, so the report lines a passing check prints (a path, aelix's own output) cannot
+    raise ``UnicodeEncodeError`` on a cp1252 stdout either and turn a green leg red."""
+
+    def cp1252() -> io.TextIOWrapper:
+        return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+
+    out, err = cp1252(), cp1252()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr(
+        smoke, "run_installed", lambda *_args: [f"read dist{_NOT_CP1252}candidate", "ok"]
+    )
+    args = _installed_without_a_manifest(tmp_path / "dist", tmp_path)
+    assert smoke.main(args) == 0
+    for stream in (out, err):
+        assert stream.errors == "backslashreplace"
+    out.flush()
+    buffer = out.buffer
+    assert isinstance(buffer, io.BytesIO)
+    assert buffer.getvalue().decode("cp1252").splitlines() == [
+        "candidate smoke (installed): read dist\\u2192candidate",
+        "candidate smoke (installed): ok",
+    ]
+
+
+def test_the_job_shows_that_line_from_a_cp1252_stdout(tmp_path: Path) -> None:
+    """The same failure in a separate ``python -I`` process, as each smoke step runs the
+    script, with the stdout a Windows runner gives it built before the script starts:
+    exit status 1, one ``::error::`` line, nothing on stderr."""
+
+    args = _installed_without_a_manifest(tmp_path / f"dist{_NOT_CP1252}candidate", tmp_path)
+    shim = (
+        "import io, runpy, sys\n"
+        "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='cp1252', errors='strict', "
+        "line_buffering=True)\n"
+        "sys.argv = [sys.argv[1], *sys.argv[2:]]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", shim, str(SCRIPT), *args],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    stdout = result.stdout.decode("cp1252")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert (result.returncode, stderr) == (1, ""), (stdout, stderr)
+    errors = [ln for ln in stdout.splitlines() if ln.startswith("::error::")]
+    assert len(errors) == 1 and "dist\\u2192candidate" in errors[0], stdout
 
 
 def test_request_prints_the_installers_request(tmp_path: Path) -> None:
