@@ -1,6 +1,6 @@
 # 0252. Project settings follow project trust
 
-Status: Accepted (2026-10-06)
+Status: Accepted (2026-10-06; **#380 amendment 2026-10-21**, §10: the trust question wraps by word, `/trust` shows pi's trust selector)
 Date: 2026-10-06
 Amends: **ADR-0149** (the gated resource set gains `.aelix/settings.json`), **ADR-0178**
 (the "project settings are loaded ungated" premise of its global-only read), **ADR-0250**
@@ -245,7 +245,8 @@ Every piece turns at least one row red:
   global settings or a TRUSTED project's file it still goes to `openrouter.ai` — the user's
   own choice (§9).
 - `/trust`'s in-TUI selector shows the first line of the prompt only (pre-existing; the
-  startup selector shows all of it).
+  startup selector shows all of it). Closed by §10 (#380): `/trust` shows pi's trust
+  selector rows instead.
 - pi's `.agents/skills` ancestor walk and its `themes`/`SYSTEM.md`/`APPEND_SYSTEM.md`
   resources are still not in aelix's set (no loaders).
 
@@ -317,3 +318,78 @@ untrusted project rows attach nothing and send nothing (the `defaultProvider` ro
 not-found; the pair row has no model: `--api-key requires a model`), while the global rows
 and the `--approve` project rows — 8 of 12 — still send the typed key there, the stated
 residual of §5.
+
+## 10. Amendment 2026-10-21 (#380): the trust question wraps by word, `/trust` is pi's selector
+
+Owner decision (issue comment, 2026-10-21): as pi. Measured on main `27fa21c5` in a pty
+(`.omc/probes/b4-b-live/380/before/`, fake keys, a CONNECT recorder that answers 403):
+
+- the start-up selector (`cli/entry.py` `_prompt_one_shot_select`) handed prompt-toolkit
+  one string in a `Window(wrap_lines=True)`, which wraps by cell: at 120 columns the
+  body read `… on your m` / `achine` and `… apply .` / `aelix/settings.json`
+  (`fresh.120.0_prompt.screen`), at 80 `wh` / `ich`, `promp` / `t`, `se` / `nt`;
+- `/trust` (`tui/shell.py` `_open_trust`) passed the same body to aelix's own picker
+  frame, which does not wrap (ADR-0253 §11.3), so it showed the heading, the path and the
+  paragraph's first row cut at the screen's edge (`fresh.120.2_trust_open.screen`) and
+  never what was saved;
+- `/trust` → `Trust parent folder` after a saved `Do not trust` on the folder wrote the
+  parent only; the folder's `false` stayed nearer and outranked it, so the message said
+  "Project trusted (saved)" and the folder stayed untrusted
+  (`saved-untrusted-parent`: `trust.json` held the parent `true` and the folder `false`).
+
+Decision:
+
+- **The start-up selector cuts its rows after a space**, at the width of each paint (a
+  resize re-wraps), as pi's `ExtensionSelectorComponent` (`Text`, `wrapTextWithAnsi`)
+  does: `_one_shot_rows` runs every line through `tui/context.py`'s `_title_rows` (the
+  approval prompt's `_cut`, by grapheme cluster), which also draws a character
+  `safe_for_terminal` would remove by its name in reverse video. A word wider than the
+  row (a path) is cut where the row is full; its indent ends a row of its own, as pi's
+  `wrapSingleLine` pushes the whitespace before breaking a long word. A line that fits is
+  drawn as before. The project-agent confirmation (ADR-0196) and the session-in-use
+  question (#137) use the same widget and wrap the same way. `wrap_lines=True` stays as the
+  net for a row prompt-toolkit measures wider than `_cut` did.
+- **`/trust` shows pi's `trust-selector.ts` rows** (pi `fdce48eb4`): `Project trust`, the
+  project path, `Saved decision: <trusted|untrusted> (<path>)` — `(inherited from
+  <path>)` when an ancestor's entry decided, `none` when nothing did (pi `formatDecision`)
+  — and `Current session: trusted|untrusted` (pi reads `isProjectTrusted()`; aelix
+  `SettingsManager.is_project_trusted()`, set from the launch decision by §C). The options
+  carry pi's mark column: `✓ ` on the option whose first write is the entry's directory and
+  decision (pi `isSavedOption`), two spaces on the others, and the cursor starts on it.
+  The risk text stays on the start-up question, which is the consent; `/trust` changes a
+  decision already made. `ProjectTrustStore.get_entry` returns the deciding directory with
+  the decision (pi `getEntry`).
+- **Divergences, knowingly (ADR-0235).** pi draws a blank row under the path; aelix's own
+  frame draws its rule under the title, and four title rows is the height `/trust` had,
+  so at 80x16 `Do not trust` and its counter stay on the modal (ADR-0253 §11.3's reason
+  for not wrapping own pickers). pi's `Text` wraps every row; aelix cuts the title rows
+  (`_own_title_rows`, the same `_cut`) to the width `/trust` opens at, because the saved
+  decision repeats the path: at 80 columns a 62-character path ran `Saved decision:
+  untrusted (/private/…` off the edge. A row wider than the screen therefore adds rows; at
+  80x16 with such a path the key hint is the row the modal cuts (`Do not trust` and the
+  counter stay), and a terminal that narrows while `/trust` is open clips as every own
+  picker does. The option rows themselves are not wrapped (the own frame's rule).
+- **`Trust parent folder` writes pi's `updates`**: the parent `true` and the folder's own
+  entry deleted, in one atomic write (`ProjectTrustStore.set_many`, pi `setMany`;
+  `trust_option_updates`, pi `ProjectTrustOption.updates`). The start-up path is
+  unchanged: it asks only when no entry from the folder up is decided, so there is no
+  folder entry to clear.
+- **The one exception to ADR-0253 §11.3's "aelix's own pickers are main's, byte for
+  byte".** `/trust` still passes `own=True` and is drawn by `_picker_frame` with main's
+  keys; only the title and option text it passes moved. Every other own picker is
+  unchanged (`tests/tui/test_select_title_held.py`, its `/trust` case now pi's rows).
+
+Tests: `tests/cli/test_one_shot_select_wraps_words_380.py` (the cut at 120, 80 and 40
+columns, the measured breaks gone, a long path, rows that fit unchanged, an ESC named,
+the real widget painted through pyte at 120 and 80, the real widget painted at 120 and then,
+after the output narrowed, at 50, and a TUI whose row cutter cannot be imported answering
+`None`, the deny, before the app runs) and
+`tests/tui/test_trust_selector_380.py` (the saved-decision words and mark for none, the
+folder, its parent and a grandparent, `get_entry`, the parent update, `/trust` in a running
+TUI at 80 and 120 columns with an untrusted and a trusted session, and the rows in the own
+frame). Each fix piece reverted, and four wrong forms (no cut, a cut by cell, `textwrap`, a
+fixed 78-column cut in `_one_shot_rows`), turns a row red (`.omc/probes/b4-b-live/380/sabotage.out`, 17 of 17).
+Review round 2: the width `_render` reads was pinned by no row, so a fixed 78 or the
+process terminal's width (`shutil.get_terminal_size`) in its place passed them all; the
+120-then-50 row is red on both (`.omc/probes/b4-b-live/r2/`).
+After the change in a pty at 120, 80 and 80x16: `.omc/probes/b4-b-live/380/after/`.

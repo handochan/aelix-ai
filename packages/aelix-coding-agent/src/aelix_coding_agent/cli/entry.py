@@ -2154,6 +2154,33 @@ async def _build_harness_options(
     return options
 
 
+_ONE_SHOT_HINT = "↑/↓ to move · Enter to choose · Esc to cancel"
+
+
+def _one_shot_rows(body: str, options: Sequence[str], idx: int, width: int) -> str:
+    """The rows :func:`_prompt_one_shot_select` draws at *width* columns (#380).
+
+    The body, a blank row, one row per option (``→ `` on *idx*), a blank row
+    and the key hint, each line cut into rows no wider than *width* after its
+    last space, as pi's ``wrapTextWithAnsi`` and the approval prompt's
+    ``_cut`` do: ``tui/context.py``'s ``_title_rows``, reused, which also draws
+    a character ``safe_for_terminal`` would remove by its name in reverse video
+    (a path from the filesystem can hold an ESC). The window wrapped by cell
+    before, so at 120 columns the trust body read ``on your m`` / ``achine``
+    and ``apply .`` / ``aelix/settings.json``. A word wider than the row (a
+    long path) is still cut where the row is full. Rows that fit come back as
+    they were, so a body at a width that holds it is drawn byte for byte.
+    Returns ANSI text holding no SGR but 7 and 27.
+    """
+
+    from aelix_coding_agent.tui.context import _title_rows  # noqa: PLC0415
+
+    lines = [body, ""]
+    lines += [f"{'→ ' if i == idx else '  '}{label}" for i, label in enumerate(options)]
+    lines += ["", _ONE_SHOT_HINT]
+    return "\n".join(row for line in lines for row in _title_rows(line, width))
+
+
 async def _prompt_one_shot_select(body: str, options: list[str]) -> str | None:
     """A1 seam (Sprint P0 #10) — the one-shot pre-``run_tui`` selector.
 
@@ -2178,23 +2205,25 @@ async def _prompt_one_shot_select(body: str, options: list[str]) -> str | None:
 
     try:
         from prompt_toolkit.application import Application
+        from prompt_toolkit.application.current import get_app
+        from prompt_toolkit.formatted_text import ANSI
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.layout import Layout, Window
         from prompt_toolkit.layout.controls import FormattedTextControl
+
+        # #380: ``_one_shot_rows`` draws with the TUI's row cutter; a TUI that
+        # cannot be imported denies here, before the app runs, like the rest.
+        import aelix_coding_agent.tui.context  # noqa: F401
     except ImportError:
         # No TUI extra → cannot prompt; caller denies by default.
         return None
 
     state = {"idx": 0}
 
-    def _render() -> str:
-        rows = [body, ""]
-        for i, label in enumerate(options):
-            marker = "→ " if i == state["idx"] else "  "
-            rows.append(f"{marker}{label}")
-        rows.append("")
-        rows.append("↑/↓ to move · Enter to choose · Esc to cancel")
-        return "\n".join(rows)
+    def _render() -> ANSI:
+        # #380: wrapped at the width of THIS paint, so a resize re-wraps.
+        width = get_app().output.get_size().columns
+        return ANSI(_one_shot_rows(body, options, state["idx"], width))
 
     kb = KeyBindings()
     chosen: dict[str, str | None] = {"label": None}
@@ -2228,7 +2257,10 @@ async def _prompt_one_shot_select(body: str, options: list[str]) -> str | None:
             # was about was off the right edge, clipped rather than wrapped,
             # because that is ``Window``'s default. The project-trust gate shows
             # a cwd and the project-agent confirmation shows a file, so both
-            # gain the same way.
+            # gain the same way. Since #380 ``_render`` hands it rows that
+            # already fit, cut after a space (``_one_shot_rows``); this window
+            # wrap cut mid-word, and stays only as the net for a row measured
+            # narrower than prompt-toolkit draws it.
             Window(
                 FormattedTextControl(_render, focusable=True, key_bindings=kb),
                 wrap_lines=True,

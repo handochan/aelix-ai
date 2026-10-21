@@ -79,6 +79,7 @@ from aelix_coding_agent.tui.completion import (
 from aelix_coding_agent.tui.context import (
     _PICK_MAX_WIDTH,
     AelixTUIContext,
+    _own_title_rows,
 )
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
@@ -1626,6 +1627,19 @@ async def run_tui(
         next rebuild", "Run /reload to apply it"); measured false in a pty on
         ``5dee21d1`` (#369): untrusted at launch, ``/trust`` → Trust, ``/reload``,
         and the project prompt template was still "Unknown command".
+
+        #380 (owner decision 2026-10-21, as pi ``trust-selector.ts``): the
+        question is no longer the start-up prompt's risk text, of which the own
+        picker frame showed the first row cut at the screen's edge. It shows
+        the project path, the saved decision and where it was saved
+        (``inherited from`` an ancestor), this session's trust, and the options
+        with ``✓`` on the one that saved the decision; the cursor starts there.
+        Its title rows are cut after a space to the width it opens at, as pi's
+        wrap (``_own_title_rows``); its option rows are cut at the edge.
+        ``Trust parent folder`` also clears this folder's own entry, as pi's
+        ``updates`` do, so a saved ``Do not trust`` here no longer outranks it.
+        The one exception to #399's "aelix's own pickers stay byte for byte":
+        the frame is ``own=True``'s; only what ``/trust`` puts in it moved (ADR-0252 §10).
         """
 
         from pathlib import Path
@@ -1633,30 +1647,51 @@ async def run_tui(
         from aelix_coding_agent.cli.config import get_agent_dir
         from aelix_coding_agent.cli.project_trust import (
             ProjectTrustStore,
-            format_project_trust_prompt,
             interpret_trust_option,
             project_trust_options,
+            saved_trust_option,
+            trust_option_updates,
+            trust_selector_title,
         )
 
         cwd_path = Path(cwd)
+        store = ProjectTrustStore(get_agent_dir())
+        # pi ``showTrustSelector`` reads ``settingsManager.isProjectTrusted()``;
+        # entry.py sets it from the launch decision (#369). The harness flag is
+        # the same value, for a run_tui built without a settings manager.
+        session_trusted = (
+            settings_manager.is_project_trusted()
+            if settings_manager is not None
+            else bool(getattr(runtime_host.harness, "project_trusted", False))
+        )
+        # No "this session only" options (pi ``trust-selector.ts:44``):
+        # nothing decided here applies to this session.
+        labels = project_trust_options(cwd_path, include_session_only=False)
         try:
-            label = await context.select(
-                format_project_trust_prompt(cwd_path),
-                # No "this session only" options (pi ``trust-selector.ts:44``):
-                # nothing decided here applies to this session.
-                project_trust_options(cwd_path, include_session_only=False),
+            entry = store.get_entry(cwd_path)
+            saved = saved_trust_option(cwd_path, labels, entry)
+            # pi draws ``✓ `` or two spaces between the cursor and the label.
+            shown = [f"✓ {label}" if label == saved else f"  {label}" for label in labels]
+            title = trust_selector_title(cwd_path, entry, session_trusted=session_trusted)
+            picked = await context.select(
+                # Cut to the width it opens at, as pi's ``Text`` wraps: the saved
+                # decision repeats the path. The own frame itself does not wrap.
+                _own_title_rows(title, terminal_columns(context.chrome)),
+                shown,
+                initial_index=labels.index(saved) if saved is not None else 0,
                 own=True,
             )
         except Exception as exc:  # noqa: BLE001 — never kill the REPL
             _commit(Text(f"✖ trust: {exc}", style="bold red"))
             return
-        if not label:
+        if not picked or picked not in shown:
             return
+        label = labels[shown.index(picked)]
         result = interpret_trust_option(label, cwd_path)
         target = result.target or cwd_path
         if result.remember:
             try:
-                ProjectTrustStore(get_agent_dir()).set(target, result.trusted)
+                store.set_many(trust_option_updates(label, cwd_path))
             except Exception as exc:  # noqa: BLE001
                 _commit(Text(f"✖ could not save trust: {exc}", style="bold red"))
                 return
@@ -1766,7 +1801,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4230``) always passes one, so this is
+            # production caller (``entry.py:4262``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -4048,7 +4083,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4161-4177 and
+            # Two audiences, discriminated exactly as entry.py:4193-4209 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

@@ -17,7 +17,7 @@ own ``explorer``.
 
 The project tier is gated because a profile is an identity: it can replace the
 system prompt, swap the model, and (outside project scope) name extensions.
-``cli/project_trust.py:218-243`` learns about ``.aelix/agents/`` in the same
+``cli/project_trust.py:223-248`` learns about ``.aelix/agents/`` in the same
 change that adds this module — without that, ``project_trusted`` here is
 decorative (an agents-only ``.aelix`` resolves trusted with no prompt in every
 mode).

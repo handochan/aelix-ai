@@ -557,18 +557,18 @@ def test_the_set_of_anchors_too_generic_to_gate_has_not_grown() -> None:
 
 
 def test_a_continuation_inherits_the_file_from_the_citation_before_it() -> None:
-    """``(`project_trust.py:205`, `:240`, `:288`)`` is three citations.
+    """``(`project_trust.py:210`, `:245`, `:293`)`` is three citations.
 
     Thirty of them exist in the tree. A scanner that saw only the first would
     leave the other two to rot beside a number it kept correct — which reads
     worse than leaving all three alone.
     """
 
-    line = "see (``project_trust.py:205``, ``:240``, ``:288``) for the walk"
+    line = "see (``project_trust.py:210``, ``:245``, ``:293``) for the walk"
     assert [(m.group(1), int(m.group(2))) for m in cc.FULL.finditer(line)] == [
-        ("project_trust.py", 205)
+        ("project_trust.py", 210)
     ]
-    assert [int(m.group(1)) for m in cc.CONT.finditer(line)] == [240, 288]
+    assert [int(m.group(1)) for m in cc.CONT.finditer(line)] == [245, 293]
 
     # And end to end, on the real tree: the guide that carries this exact
     # sentence yields all three, not one.

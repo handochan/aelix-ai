@@ -37,17 +37,17 @@ Two structural details that decide whether you are asked at all:
 - The four directory entries (`extensions/`, `agents/`, `skills/`,
   `prompt-templates/`) require **at least one entry** to count. An empty
   `.aelix/extensions/` loads nothing, so it does not trip the gate
-  (`project_trust.py:205`, `:240`, `:288`).
+  (`project_trust.py:210`, `:245`, `:293`).
 - `settings.json`, `SYSTEM.md` and `APPEND_SYSTEM.md` count if **anything**
   exists at that path — a FIFO or a directory asks too, as in pi (`existsSync`); a file test let a FIFO skip a
   saved denial. `mcp.json` counts when it is a file.
 - If none of these resources is present, the directory is trusted **without a prompt**
-  (`project_trust.py:738-739`). There is nothing to gate, so there is no
+  (`project_trust.py:883-884`). There is nothing to gate, so there is no
   question to ask.
 
 `.aelix/teams/` is reserved and deliberately **not** checked — that clause lands
 with the loader that reads team descriptors, not before it
-(`project_trust.py:235-237`).
+(`project_trust.py:240-242`).
 
 ## What the gate does not protect
 
@@ -164,7 +164,7 @@ Before this, `https://{TENANT_KEY}.owner-gateway.invalid/v1` plus a `.env`
 ### Interactively
 
 The first time you run `aelix` in a directory carrying any of the six
-resources, you get a selector (`project_trust.py:365-391`):
+resources, you get a selector (`project_trust.py:388-414`):
 
 ```
 Trust project folder?
@@ -185,7 +185,8 @@ prompts are sent to.
 | `Do not trust` | Refused, and remembered. |
 | `Do not trust (this session only)` | Refused now, nothing written. |
 
-Cancelling (Esc / Ctrl+C) denies (`project_trust.py:783-785`).
+Cancelling (Esc / Ctrl+C) denies (`project_trust.py:928-930`). The text breaks
+between words at your terminal's width, as pi's does (#380).
 
 ### `/trust`, after startup
 
@@ -200,6 +201,22 @@ project-local resources."; measured in a pty, that was false.) For the same
 reason `/trust` offers no "this session only" answers — one would change
 nothing.
 
+`/trust` shows what pi's trust selector shows (#380), not the risk text:
+
+```
+Project trust
+/path/to/repo
+Saved decision: trusted (inherited from /path/to)
+Current session: trusted
+    Trust
+▸ ✓ Trust parent folder (/path/to)
+    Do not trust
+```
+
+`Saved decision` is `none` when nothing is saved, and names the folder whose entry
+decided. `✓` marks the option that saved it, and the cursor starts there. `Trust parent folder` also removes the
+folder's own entry, so a saved `Do not trust` here no longer outranks the parent.
+
 ### `--approve` / `-a` and `--no-approve` / `-na`
 
 ```bash
@@ -208,7 +225,7 @@ aelix --no-approve     # ignore them for this run
 ```
 
 Both **short-circuit** the whole resolution: no prompt, and **nothing is
-persisted** (`project_trust.py:733-735`). They are per-run overrides, so they are
+persisted** (`project_trust.py:878-880`). They are per-run overrides, so they are
 the right tool for CI and for a one-off look at an unfamiliar repository — and
 the wrong tool for recording a decision.
 
@@ -218,9 +235,9 @@ both: `aelix --no-approve --no-context-files`.
 ### Headless
 
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
-undecided directory is **denied** (`project_trust.py:777-779`, pi parity). The
+undecided directory is **denied** (`project_trust.py:922-924`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3363-3368`, the text at `:949-954`), because a silent drop looks identical to a
+(`cli/entry.py:3395-3400`, the text at `:949-954`), because a silent drop looks identical to a
 misconfiguration:
 
 ```
@@ -240,12 +257,12 @@ stdout is unchanged.
 ## Where the answer is stored
 
 `~/.aelix/agent/trust.json` — more precisely `<agent_dir>/trust.json`
-(`project_trust.py:424`, `:438-440`). A JSON object mapping an absolute
+(`project_trust.py:538`, `:552-554`). A JSON object mapping an absolute
 canonical path to `true` / `false` / `null`, keys sorted, written atomically via
-a temp file plus `os.replace` (`project_trust.py:492-512`).
+a temp file plus `os.replace` (`project_trust.py:610-630`).
 
 Lookup walks **up** from your cwd to the first decided ancestor
-(`project_trust.py:514-536`), which gives two useful properties:
+(`project_trust.py:632-654`), which gives two useful properties:
 
 - trusting `~/work` transitively trusts everything under it;
 - a `false` on a child beats a `true` on an ancestor.
@@ -254,11 +271,11 @@ Lookup walks **up** from your cwd to the first decided ancestor
 
 To revoke, delete the entry (or the file). A malformed store is treated as *no
 decision* rather than an error — it falls through to the prompt-or-deny path,
-which is the safe direction (`project_trust.py:763-769`).
+which is the safe direction (`project_trust.py:908-914`).
 
 ## The full resolution order
 
-`resolve_project_trusted` (`project_trust.py:682-792`), in order. The first step
+`resolve_project_trusted` (`project_trust.py:827-937`), in order. The first step
 that produces an answer wins:
 
 1. `--approve` / `--no-approve` — returns immediately. No prompt, no write.
@@ -312,7 +329,7 @@ If a directory had nothing to gate at startup, you were never asked, and step 2
 trusted it. If trust-requiring resources appear *later* — a `git pull` that adds
 `.aelix/extensions/` — and a `/reload` picks them up, aelix writes that implicit
 trust to the store rather than asking
-(`maybe_save_implicit_project_trust_after_reload`, `project_trust.py:554-619`).
+(`maybe_save_implicit_project_trust_after_reload`, `project_trust.py:699-764`).
 
 It runs **after** the reload, so it does not stop the new resources from loading;
 by the time it is called they already have. It converts "never asked" into

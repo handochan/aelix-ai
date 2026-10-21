@@ -554,7 +554,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     than an "always" that flag would falsify.
 
     ``resolve_project_trusted`` short-circuits to ``True`` when the project has
-    no trust-requiring resources (``project_trust.py:738-739``), so in a FRESH
+    no trust-requiring resources (``project_trust.py:883-884``), so in a FRESH
     project the local path does work for the session that creates it; it is the
     next run (which now sees a non-empty ``.aelix/extensions/``) that must
     answer the trust prompt. Both cases are covered by "loaded only if this
@@ -819,10 +819,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3546``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3581``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
-    # (0/false/no/off, ``shell.py:138-154``) /reload routes to
+    # (0/false/no/off, ``shell.py:139-155``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
     # (``harness/core.py:3852-3859``) and never re-scans the extension dirs.
     # Measured:

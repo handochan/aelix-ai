@@ -385,6 +385,29 @@ unwritten. Add them with the next release.
   /reload to apply it to project-local resources.", which was not true (the
   session's trust is decided once, at launch). For the same reason it no
   longer offers "this session only" answers. (#369)
+- **The trust question breaks its lines between words, and `/trust` shows what
+  is saved, as pi does (#380, ADR-0252 amendment 2026-10-21).** The question
+  `aelix` asks at start-up broke its text wherever the terminal edge fell: at
+  120 columns it read `… on your m` / `achine` and `… apply .` /
+  `aelix/settings.json`. Its lines now break after a space, at the width of the
+  terminal, also when you resize it; a path wider than the terminal is still
+  cut where the row is full. The two other questions asked before the session
+  opens (running a project agent profile, and a session already open in another
+  terminal) wrap the same way. `/trust` showed the start-up question's first
+  line, cut at the terminal edge, so its skills and settings clauses never
+  appeared and it did not say what you had decided before. It now shows the
+  project path, `Saved decision: trusted (<path>)` or `untrusted (<path>)` -
+  `(inherited from <path>)` when the decision is a parent folder's - or
+  `none`, and `Current session: trusted` or `untrusted`, then the options with
+  `✓` on the one you saved, the cursor on it. The title rows (the path and the
+  saved decision, which repeats it) are cut between words at the width
+  `/trust` opens at; an option row wider than the terminal is cut at its edge,
+  as in aelix's other pickers. The risk text stays on the start-up question
+  only. And choosing `Trust parent folder` in `/trust` after a saved `Do not
+  trust` for the folder now trusts the folder: it also removes the folder's
+  own entry from `trust.json`, as pi does. Before, the folder's `false` stayed
+  and outranked the parent, so `/trust` said "Project trusted (saved)" and the
+  next launch was still untrusted.
 - **`aelix extension source list/add/remove` read install sources from your
   global settings only.** A project `.aelix/settings.json` listing
   `extensionSources` or `suppressedDefaultCatalogs` used to be merged in, and
@@ -2167,8 +2190,8 @@ unwritten. Add them with the next release.
     picker, `/thinking`, `/login`, `/logout`, the session-in-use prompt,
     `/extension new`'s placement question and `/agents run`'s project-agent
     confirm) are unchanged at every terminal size: same layout, same keys, a
-    key typed before the first paint still taken. `/trust`'s question is still
-    cut at the edge of the screen (#380).
+    key typed before the first paint still taken. `/trust`'s option rows are still
+    cut at the edge of the screen; since #380 its title rows break between words.
   - Not changed: option labels are drawn as before, one row per line of the
     label, cut at the edge of the screen (#179), and a member of a parallel or
     chain delegation is still shown as one row of up to 72 characters.

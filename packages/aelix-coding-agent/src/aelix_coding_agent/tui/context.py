@@ -369,6 +369,36 @@ def _title_rows(title: str, width: int) -> list[str]:
     return rows
 
 
+def _own_title_rows(title: str, width: int) -> str:
+    """An own picker's *title* with each line cut into rows of at most *width* cells (#380).
+
+    For ``/trust`` only, which shows pi's ``trust-selector.ts`` rows: pi wraps
+    them (``Text``), and the saved decision repeats the project path, so at 80
+    columns a 62-character path ran ``Saved decision: untrusted (/private/…``
+    off the screen's edge. :func:`_picker_frame` draws a title as given and
+    does not wrap, so the caller cuts it first, at the width it opens at.
+
+    The cut is :func:`_title_rows`' (``_cut``: after the last space, a word
+    wider than the row cut where the row is full, by grapheme cluster), on the
+    title as :func:`_picker_frame` will draw it (:data:`_TITLE_CONTROL_MAP`
+    first), without the reverse-video names: :func:`_picker_frame` blanks the
+    ESC those are drawn with. A line that fits is returned as it was.
+    """
+
+    from aelix_coding_agent.tui.approval_dialog import _cut  # noqa: PLC0415
+    from aelix_coding_agent.tui.width import cells_by_cluster  # noqa: PLC0415
+
+    limit = max(1, width)
+    rows: list[str] = []
+    for line in title.translate(_TITLE_CONTROL_MAP).split("\n"):
+        if cells_by_cluster(line) <= limit:
+            rows.append(line)
+            continue
+        chars = cast("StyleAndTextTuples", [("", ch) for ch in line])
+        rows.extend("".join(fragment[1] for fragment in row) for row in _cut(chars, limit))
+    return "\n".join(rows)
+
+
 class _TitleHeldControl(UIControl):
     """An extension's or the model's ``select`` / ``confirm`` (#399): the dialog
     whose title the approving keys wait for.

@@ -117,12 +117,17 @@ __all__ = [
     "DefaultProjectTrust",
     "ProjectTrustPromptResult",
     "ProjectTrustStore",
+    "ProjectTrustStoreEntry",
     "emit_project_trust_event",
     "format_project_trust_prompt",
+    "format_trust_decision",
     "has_trust_requiring_project_resources",
     "maybe_save_implicit_project_trust_after_reload",
     "project_trust_options",
     "resolve_project_trusted",
+    "saved_trust_option",
+    "trust_option_updates",
+    "trust_selector_title",
 ]
 
 
@@ -315,6 +320,24 @@ class ProjectTrustPromptResult:
     target: Path | None = None
 
 
+@dataclass(frozen=True)
+class ProjectTrustStoreEntry:
+    """A decided ``trust.json`` entry and the directory that holds it.
+
+    Pi ``ProjectTrustStoreEntry`` (``trust-manager.ts:11-14``), returned by
+    :meth:`ProjectTrustStore.get_entry`. ``/trust`` needs the directory, not
+    only the decision: it says where a decision was inherited from and marks
+    the option that saved it (#380).
+
+    :param path: the canonical key that decided — ``cwd`` itself, or the
+        nearest ancestor with a ``true`` / ``false`` entry.
+    :param decision: ``True`` trusted, ``False`` untrusted.
+    """
+
+    path: str
+    decision: bool
+
+
 # === Prompt wording + options (pi ``getProjectTrustOptions``) ===============
 
 
@@ -415,6 +438,97 @@ def interpret_trust_option(label: str, cwd: Path) -> ProjectTrustPromptResult:
     return ProjectTrustPromptResult(trusted=False, remember=False)
 
 
+# === The in-session /trust selector (pi ``trust-selector.ts``) ==============
+#
+# #380, owner decision 2026-10-21: ``/trust`` shows what pi's
+# ``TrustSelectorComponent`` shows — the project path, the saved decision, this
+# session's trust and the options with a mark on the saved one — and not the
+# start-up prompt's risk text. The start-up selector keeps that text: it is the
+# consent; ``/trust`` changes a decision already made.
+
+
+def trust_option_updates(label: str, cwd: Path) -> list[tuple[Path, bool | None]]:
+    """What choosing *label* writes to ``trust.json`` (pi ``ProjectTrustOption.updates``).
+
+    Pi ``getProjectTrustOptions`` (``trust-manager.ts:67-97``): ``Trust`` and
+    ``Do not trust`` write the folder; ``Trust parent folder`` writes the parent
+    AND deletes the folder's own entry (``None``), so a saved ``Do not trust``
+    on the folder no longer outranks the parent it was just told to follow;
+    a "session only" option writes nothing.
+    """
+
+    result = interpret_trust_option(label, cwd)
+    if not result.remember:
+        return []
+    if result.target is None:
+        return [(cwd, result.trusted)]
+    return [(result.target, result.trusted), (cwd, None)]
+
+
+def saved_trust_option(
+    cwd: Path, options: Sequence[str], entry: ProjectTrustStoreEntry | None
+) -> str | None:
+    """The option among *options* that saved *entry*, or ``None`` (pi ``isSavedOption``).
+
+    Pi ``trust-selector.ts:92-98``: an option is the saved one when the first
+    directory it writes is the entry's directory and it writes the entry's
+    decision. A decision inherited from a grandparent therefore marks nothing:
+    no option here would have written it.
+    """
+
+    if entry is None:
+        return None
+    for label in options:
+        updates = trust_option_updates(label, cwd)
+        if not updates:
+            continue
+        path, decision = updates[0]
+        if decision == entry.decision and ProjectTrustStore.canonical(path) == entry.path:
+            return label
+    return None
+
+
+def format_trust_decision(cwd: Path, entry: ProjectTrustStoreEntry | None) -> str:
+    """Pi ``formatDecision`` (``trust-selector.ts:21-30``): the saved decision in words.
+
+    ``none`` when no directory from *cwd* up holds a decision; otherwise
+    ``trusted`` or ``untrusted`` and the directory that holds it, as
+    ``(inherited from <path>)`` when that is an ancestor of *cwd*.
+    """
+
+    if entry is None:
+        return "none"
+    label = "trusted" if entry.decision else "untrusted"
+    if entry.path != ProjectTrustStore.canonical(cwd):
+        return f"{label} (inherited from {entry.path})"
+    return f"{label} ({entry.path})"
+
+
+def trust_selector_title(
+    cwd: Path, entry: ProjectTrustStoreEntry | None, *, session_trusted: bool
+) -> str:
+    """The rows ``/trust`` shows above its options (#380, pi ``trust-selector.ts:54-69``).
+
+    ``Project trust``, the project path, ``Saved decision: …``
+    (:func:`format_trust_decision`) and ``Current session: trusted|untrusted``.
+    Pi puts a blank row under the path; aelix's own picker frame draws a rule
+    under the title instead, and four rows is the height ``/trust`` had, which
+    keeps ``Do not trust`` and its counter on screen at 80x16, where ADR-0253
+    §11.3 measured a taller ``/trust`` title pushing them off the modal. A
+    path wider than the screen still adds rows: ``tui/shell.py`` cuts these
+    lines to the width ``/trust`` opens at, as pi's ``Text`` wraps them.
+    """
+
+    return "\n".join(
+        (
+            "Project trust",
+            str(cwd),
+            f"Saved decision: {format_trust_decision(cwd, entry)}",
+            f"Current session: {'trusted' if session_trusted else 'untrusted'}",
+        )
+    )
+
+
 # === On-disk store (pi ``ProjectTrustStore``) ===============================
 
 
@@ -444,8 +558,12 @@ class ProjectTrustStore:
         return self._path
 
     @staticmethod
-    def _canonical(cwd: Path) -> str:
-        """Canonical absolute key (pi uses ``realpath``-style canonical paths)."""
+    def canonical(cwd: Path) -> str:
+        """Canonical absolute key (pi uses ``realpath``-style canonical paths).
+
+        Public since #380: ``/trust`` compares an option's directory with the
+        key a :class:`ProjectTrustStoreEntry` was found under.
+        """
 
         try:
             return str(Path(os.path.abspath(cwd)).resolve(strict=False))
@@ -522,14 +640,25 @@ class ProjectTrustStore:
         whether to surface it or fail safe).
         """
 
+        entry = self.get_entry(cwd)
+        return None if entry is None else entry.decision
+
+    def get_entry(self, cwd: Path) -> ProjectTrustStoreEntry | None:
+        """:meth:`get`, with the directory that decided (pi ``getEntry``, #380).
+
+        ``None`` when no directory from ``cwd`` up holds ``true`` or ``false``.
+        A malformed store raises :class:`ValueError`, as :meth:`get` does.
+        """
+
         data = self._read()
         if not data:
             return None
-        current = Path(self._canonical(cwd))
+        current = Path(self.canonical(cwd))
         while True:
             key = str(current)
-            if key in data and data[key] is not None:
-                return data[key]
+            value = data.get(key)
+            if value is not None:
+                return ProjectTrustStoreEntry(path=key, decision=value)
             parent = current.parent
             if parent == current:
                 return None
@@ -543,8 +672,24 @@ class ProjectTrustStore:
         we cannot parse).
         """
 
+        self.set_many([(cwd, trusted)])
+
+    def set_many(self, updates: Sequence[tuple[Path, bool | None]]) -> None:
+        """Apply several decisions in one atomic write (pi ``setMany``, #380).
+
+        ``None`` deletes that directory's entry, as pi's ``null`` update does:
+        ``Trust parent folder`` writes the parent and clears the folder's own
+        entry in the same write (:func:`trust_option_updates`). A malformed
+        store raises :class:`ValueError` and nothing is written.
+        """
+
         data = self._read()
-        data[self._canonical(cwd)] = trusted
+        for path, decision in updates:
+            key = self.canonical(path)
+            if decision is None:
+                data.pop(key, None)
+            else:
+                data[key] = decision
         self._write(data)
 
 

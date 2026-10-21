@@ -65,7 +65,7 @@ the hook already validated and every member's task is on screen, whereas the mem
 covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
-(``tui/context.py:149-227``, ``:924-927``) and ``tui/overlay.py``'s
+(``tui/context.py:149-227``, ``:954-957``) and ``tui/overlay.py``'s
 ``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
@@ -427,7 +427,7 @@ def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     the reasoning as it stood for both rows.
 
     Same three properties; only the truncation differs, and the difference is not
-    cosmetic. The modal does not wrap (``tui/context.py:924-927``), so an
+    cosmetic. The modal does not wrap (``tui/context.py:954-957``), so an
     over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO
     MARKER — the human sees a plausible prefix and cannot tell there is more.
     Containment (``print_channel.resolve_child_cwd``) only guarantees the child
@@ -1003,7 +1003,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
 #     overflow is BOTTOM TRUNCATION. ``select``'s own ``viewport = 8`` (``:303``)
 #     scrolls the OPTIONS list and does nothing for a tall title.
-#   * ``body`` is the option rows plus one counter row (``tui/context.py:866``).
+#   * ``body`` is the option rows plus one counter row (``tui/context.py:896``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
 #     (``tui/overlay.py:221-231``).
 #
@@ -1015,7 +1015,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # which is why this has never bitten. A naive 8-task batch is 16 + 3 + 4 = 23:
 # the bottom four rows — the hint, the closing divider, the counter, and the LAST
 # OPTION, which ``build_options`` guarantees is ``Cancel`` — are simply not
-# drawn. It bites from N >= 5. Esc still works (``tui/context.py:1081-1083``), but a
+# drawn. It bites from N >= 5. Esc still works (``tui/context.py:1111-1113``), but a
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
@@ -1209,7 +1209,7 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:785-794``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:815-824``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer

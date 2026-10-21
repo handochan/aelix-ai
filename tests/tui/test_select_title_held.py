@@ -728,15 +728,21 @@ def _paint_legacy(text: Any, width: int, height: int) -> list[list[tuple[str, st
 
 def _own_cases() -> list[tuple[str, list[str], list[str]]]:
     from aelix_coding_agent.cli.project_trust import (
-        format_project_trust_prompt,
+        ProjectTrustStoreEntry,
         project_trust_options,
+        trust_selector_title,
     )
 
     cwd = Path("/home/someone/projects/" + "nested-folder/" * 4 + "repo")
+    trust = project_trust_options(cwd, include_session_only=False)
     return [
         (
-            format_project_trust_prompt(cwd),
-            project_trust_options(cwd, include_session_only=False),
+            # #380: /trust's rows are pi's trust selector's now (the one own
+            # picker whose CONTENT moved); its frame is still main's.
+            trust_selector_title(
+                cwd, ProjectTrustStoreEntry(path=str(cwd), decision=False), session_trusted=False
+            ),
+            [f"  {trust[0]}", f"  {trust[1]}", f"✓ {trust[2]}"],
             [],
         ),
         (_SETTINGS_TITLE, [f"Setting {k:02d}    value" for k in range(18)], ["help row"]),

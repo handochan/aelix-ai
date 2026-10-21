@@ -127,7 +127,9 @@ async def test_the_trust_command_says_restart_and_offers_no_session_only_answer(
 
         async def _select(title: str, options: list[str], **_kwargs: Any) -> str:
             offered.append(list(options))
-            return "Trust"
+            # #380: the rows carry pi's saved-decision mark column ("✓ " or
+            # two spaces), so the answer is the row as shown, not the bare label.
+            return options[0]
 
         ctx.select = _select  # type: ignore[method-assign]
         pipe.send_text("/trust\n")

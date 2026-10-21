@@ -1152,7 +1152,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:1979-1996``) nor child
+                    # neither parent (``tui/shell.py:2014-2031``) nor child
                     # (``modes/print_mode.py:234-293``) installs a SIGINT
                     # handler to convert that into a result.
                     #

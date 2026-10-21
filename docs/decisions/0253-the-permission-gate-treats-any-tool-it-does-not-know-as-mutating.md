@@ -581,7 +581,10 @@ owner did not decide round 1's layout, which round 2 reverses):
   Round 1 wrapped their titles too, so at 80x16 `/trust`'s question took 8 rows and
   `Do not trust` (the only answer that saves a revocation) and its counter fell off the
   modal; at 12x8 `/settings` held Enter after a paint and at 20x8 lost its choices.
-  `/trust`'s own wrapping is #380, not this issue. `tests/tui/test_own_pickers_marked.py`
+  `/trust`'s own wrapping is #380, not this issue. (Amended 2026-10-21, #380, owner
+  decision: `/trust` is the one exception. It keeps `own=True` and this frame, but shows pi's
+  `trust-selector.ts` rows, the title rows cut to the width it opens at and the option rows
+  cut at the edge as before, instead of the start-up risk text; ADR-0252 §10.) `tests/tui/test_own_pickers_marked.py`
   pins `own=True` at each call site, read from every product source file (review round
   3: it read `tui/shell.py` only and missed the two in `tui/commands.py`).
 - **An extension's or the model's title wraps, like pi's.** `select` wraps its title and
