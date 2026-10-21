@@ -1212,6 +1212,48 @@ unwritten. Add them with the next release.
   fires `thinking_level_select` for your default: the level is set before
   `session_start`, as a reopened session's level is, not selected.
 
+- **Tests only: the bash containment cases no longer fail when Windows is slow
+  to start the shell and the Python tree under it (#447).** Nothing users run
+  changed. `tests/tools/test_bash_tool_containment.py` failed "the root never
+  announced its tree — the case measured nothing" on windows-latest 12 times
+  in CI across 6 cases, never on Linux or macOS, each time without measuring
+  what the case is about. Two causes. The three timeout cases (1.0 s
+  and 2.0 s) counted their deadline from the call, so PowerShell's start, the
+  Python root's, its `aelix_ai` import and its children all had to fit inside
+  it; when the runner stalled, the kill came before the root existed. Their
+  deadline now starts once the root has announced its tree (in the `on_data`
+  case, once the first output has also arrived): the test holds the bash
+  tool's own timed wait until then, as #388 did for the subprocess helper,
+  and measures the call's time minus that hold. So the cases still bound
+  everything the tool does before it starts waiting. The hold depends on the
+  tool counting its timeout from that wait, and the cases fail by name if it
+  starts counting from the spawn instead (#502). The other cases waited for
+  the announcement "10 s", but the thread polling for it stopped after 5 s,
+  so a marker written at 5.6 s was never seen, its processes were never
+  registered for cleanup, and the case failed over a root that had
+  announced. Reproduced on macOS with a shell that sleeps 5.5 s before
+  running anything: 6 of 6 cases failed with every marker on disk, and three
+  60 s helpers were left running. Every wait for the announcement in the file
+  now uses #449's 30 s hang guard, stops when the call has already returned,
+  and cancels the call when it gives up. Three wall-clock ceilings that also
+  included the start-up now count from the announcement instead. A related
+  rule was fixed too. The #446 drain-cap check failed one Windows run as "gave
+  up 1.173s past its own deadline" when the runner had stopped the test
+  process, so the timestamp was late, not the wait. A clock thread now ticks
+  next to the wait, and a give-up late across a stretch with no ticks counts
+  as a stall; any tick in between leaves the verdict as it was. New tests
+  cover the stall with a GIL-holding foreign call on every platform: a rule
+  table, the clock thread's two arms and the drain-cap row under the stall.
+  The old and the new file ran interleaved on the same windows-latest runners
+  (runs 39623623654 and 39624740002: Python 3.11 to 3.14, with no load and with
+  four busy loops, 20 to 30 rounds per runner). The old file failed 67 of 1200
+  timeout-leg runs (3 of 720 with no load, 64 of 480 under load), and its rule
+  failed the new stalled row 400 of 400 times. The new file failed none of
+  5600 runs over every case re-run. The hold before the deadline was a median
+  0.36 to 0.53 s with no load and at most 4.3 s, mostly PowerShell's own
+  start. Once a Python root took 4.73 s to spawn its child, which put the
+  marker at 5.73 s, past the old 5 s wait.
+
 - **Tests only: the bash drain-cap case's deadline arm no longer fails when
   Windows starts the shell too slowly to finish inside the deadline (#446).**
   Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`

@@ -198,17 +198,20 @@ def _root_argv(marker: Path, shape: str, *, hold: float, nap: float = OUTLIVE) -
     return [sys.executable, "-c", ROOT_SOURCE, str(marker), shape, str(hold), str(nap)]
 
 
-def _await_marker(marker: Path, strays: list[int], *, fields: int = 2) -> tuple[int, ...] | None:
+def _await_marker(
+    marker: Path, strays: list[int], *, fields: int = 2, bound: float | None = None
+) -> tuple[int, ...] | None:
     """Poll for the root's announcement, registering every pid in it as it lands.
 
     Returns ``None`` rather than failing so a caller can run this from a
     ``finally`` without masking the real assertion; the caller states the
     vacuity guard itself. ``fields`` is how many pids the root writes — two for
     the roots here (root + grandchild), one at the exec site, whose roots
-    announce only themselves.
+    announce only themselves. ``bound`` is how long it polls: :data:`_ANNOUNCE_BOUND`
+    unless the caller waits longer for its root's start-up and says so (#447).
     """
 
-    deadline = time.monotonic() + _ANNOUNCE_BOUND
+    deadline = time.monotonic() + (_ANNOUNCE_BOUND if bound is None else bound)
     while time.monotonic() < deadline:
         try:
             raw = marker.read_text(encoding="utf-8").split()
@@ -234,6 +237,11 @@ class _Registrar(threading.Thread):
     which the tree is known to EXIST, so a cancellation aimed at it cannot land
     before the root has forked (measured in D.2.4: injected at the top of the
     first ``wait``, the interrupt beat the fork and the marker never appeared).
+
+    ``bound`` is :func:`_await_marker`'s (#447): a caller that waits longer than
+    :data:`_ANNOUNCE_BOUND` for an announcement has to have the registrar poll
+    that long too, or a marker landing after the poll stopped is a tree nobody
+    registered and a vacuity guard that fails on a root that did announce.
     """
 
     def __init__(
@@ -243,29 +251,36 @@ class _Registrar(threading.Thread):
         *,
         fields: int = 2,
         on_announce: Callable[[tuple[int, ...]], None] | None = None,
+        bound: float | None = None,
     ) -> None:
         super().__init__(daemon=True)
-        self._marker = marker
-        self._strays = strays
-        self._fields = fields
+        self.marker = marker
+        self.strays = strays
+        self.fields = fields
         self._on_announce = on_announce
+        #: How long the poll runs, from :meth:`start`.
+        self.bound = _ANNOUNCE_BOUND if bound is None else bound
         #: The pids, once seen. ``None`` while the root has not announced.
         self.pids: tuple[int, ...] | None = None
+        #: ``time.monotonic()`` as the poll saw them; ``None`` until then.
+        self.announced_at: float | None = None
 
     def run(self) -> None:
-        pids = _await_marker(self._marker, self._strays, fields=self._fields)
+        pids = _await_marker(self.marker, self.strays, fields=self.fields, bound=self.bound)
+        if pids is not None:
+            self.announced_at = time.monotonic()
         self.pids = pids
         if pids is not None and self._on_announce is not None:
             self._on_announce(pids)
 
     def settle(self) -> tuple[int, ...] | None:
-        """Join the poll and return what it saw — ``None`` if it never landed.
+        """Join the poll for its whole bound; return what it saw, or ``None``.
 
-        Shaped for a ``finally``: it never raises, so the case's own assertion
-        is what a reader sees when something else went wrong first.
+        Shaped for a ``finally``: never raises. A 6 s join under #447's 30 s poll
+        let a late marker register its tree after the strays were reaped (#447 review round 2).
         """
 
-        self.join(6.0)
+        self.join(self.bound + 1.0)
         return self.pids
 
 
@@ -275,10 +290,11 @@ def _registrar(
     *,
     fields: int = 2,
     on_announce: Callable[[tuple[int, ...]], None] | None = None,
+    bound: float | None = None,
 ) -> _Registrar:
     """Start a :class:`_Registrar`. Call it BEFORE the bounded call, always."""
 
-    thread = _Registrar(marker, strays, fields=fields, on_announce=on_announce)
+    thread = _Registrar(marker, strays, fields=fields, on_announce=on_announce, bound=bound)
     thread.start()
     return thread
 

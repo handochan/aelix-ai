@@ -32,6 +32,17 @@ started BEFORE the call polls on its own thread, so a call that never returns
 still leaves no 60 s stray; every timing case warns its elapsed so the windows
 log carries numbers under ``-q``.
 
+THE START-UP IS NEVER INSIDE WHAT A CASE ASSERTS (#447). On the windows leg a
+root is pwsh's start plus one to three python starts, and a runner that stalls
+there for seconds is the commonest way this file failed: twelve times in six
+cases, as "the root never announced its tree — the case measured nothing". So
+every wait for an announcement runs for :data:`_START_UP_BOUND` and stops when
+the call has come back (:func:`_registrar`, :func:`_await_pids`), a timeout
+leg's deadline is armed once the tree has started (:class:`_ArmedOnTheStart`),
+and a ceiling that ran from the call runs from the announcement or has the
+hold taken out of it — all but 5b's launch literal, which keeps the launch on
+purpose and runs again when a slow one breaks it.
+
 Liveness is ``tests/process_probe`` and never ``os.kill(pid, 0)``: on Windows
 signal 0 falls through CPython's ``os_kill_impl`` to ``TerminateProcess``, so
 the "probe" would cause the death it claims to observe (#203).
@@ -41,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import inspect
 import os
 import shlex
@@ -49,6 +61,7 @@ import sys
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -74,8 +87,11 @@ from tests.process_probe import STATE_ALIVE, STATE_GONE, STATE_ZOMBIE, probe_sta
 from tests.process_tree.test_process_tree_real_processes import DEADLINE, _await_dead, _reap
 from tests.process_tree.test_run_contained_real_processes import (
     OUTLIVE,
-    _registrar,
+    _Registrar,
     _with_planted_stdin,
+)
+from tests.process_tree.test_run_contained_real_processes import (
+    _registrar as _registrar_for,
 )
 from tests.process_tree.test_run_contained_real_processes import (
     strays as _strays_fixture,
@@ -86,6 +102,7 @@ from tests.process_tree.test_the_drain_asks_the_pipe import (
     the_drain_stopped_at_its_hard_end,
     the_hard_end,
 )
+from tests.rpc._bash_phases import HANG_GUARD_SECONDS
 
 _T = TypeVar("_T")
 
@@ -105,7 +122,7 @@ MARK = "aelix222"
 #: formula is #221's and the exclusion is the load-bearing half: ``bound =
 #: timeout + KILL_DRAIN_SECONDS + 1.5``, NEVER ``+ REAP_GRACE_SECONDS`` —
 #: folding the reap grace in is what let a 6.011 s regression pass its own
-#: assertion (``test_run_contained_real_processes.py:461-465``).
+#: assertion (``test_run_contained_real_processes.py:477-481``).
 SLACK = 1.5
 
 #: Added to every bound on win32: ``hard_kill`` shells out to ``taskkill.exe
@@ -399,19 +416,6 @@ async def _bounded(task: asyncio.Task[_T], bound: float, what: str) -> _T:
         pytest.fail(f"{what}: exec did not return within {bound}s")
 
 
-async def _await_pids(registrar: Any, what: str) -> tuple[int, ...]:
-    """Wait for the root's announcement from inside the event loop."""
-
-    deadline = time.monotonic() + 10.0
-    while registrar.pids is None and time.monotonic() < deadline:
-        await asyncio.sleep(0.02)
-    pids = registrar.pids
-    assert pids is not None, (
-        f"{what}: the root never announced its tree — the case measured nothing"
-    )
-    return pids
-
-
 def _exec_task(
     command: str,
     cwd: Path,
@@ -438,6 +442,452 @@ def _holder_command(
     root = _script(tmp_path, "root_with_a_holder.py", ROOT_WITH_AN_ESCAPED_HOLDER)
     holder = _script(tmp_path, "holder.py", HOLDER)
     return _command(root, str(marker), holder, str(OUTLIVE), str(tick), str(hold))
+
+
+# === the start-up, outside what a case measures (#447) ======================
+
+#: How long a case here waits for its root to announce its tree, counted from
+#: just before the call: the registrar's poll (:func:`_registrar`),
+#: :func:`_await_pids` and the hold in front of a timeout leg's deadline
+#: (:class:`_ArmedOnTheStart`) all wait this long and no longer. A hang guard
+#: on the shell's and the root's start-up, NOT a claim about the product: no
+#: bound this file asserts holds the start-up any more (but 5b's launch
+#: literal, a premise said and run again, whose docstring says why it keeps
+#: the launch), so the only cost of this one is how long a root that never
+#: starts takes to fail.
+#: It is #449's :data:`~tests.rpc._bash_phases.HANG_GUARD_SECONDS`, the bound
+#: the bash cases in ``tests/rpc`` and ``tests/tools/test_abort_signal.py``
+#: wait for a shell's start under, sized there from windows-latest: a bare
+#: pwsh once spent 5.97 s between its creation and its first statement, which
+#: is past the 5.0 s these cases' announcement wait really had. Measured for
+#: #447 on windows-latest (runs 39623623654 and 39624740002, py3.11-3.14, with
+#: no load and with four busy loops on the four vCPUs): the hold in front of a
+#: timeout leg's deadline was a median 0.36-0.53 s with no load (at most
+#: 4.30 s) and 1.17-1.37 s under the loops (at most 3.77 s); the time to a
+#: tree's marker was mostly pwsh's own start (0.28 s of 0.35 s at the median
+#: with no load, 1.04 s of 1.20 s under the loops), and once a python root's
+#: spawn of its child took 4.73 s, which put the marker at 5.73 s, past the old
+#: 5.0 s wait (py3.14 under the loops). A 10 ms pulse in the test process never
+#: paused longer than 0.07 s in any of it: the time goes to starting processes,
+#: not to this one.
+_START_UP_BOUND = HANG_GUARD_SECONDS
+
+
+def _registrar(
+    marker: Path,
+    strays: list[int],
+    *,
+    fields: int = 2,
+    on_announce: Callable[[tuple[int, ...]], None] | None = None,
+) -> _Registrar:
+    """The sibling's registrar, polling for :data:`_START_UP_BOUND` (#447).
+
+    Until #447 every case here polled for the sibling's own
+    ``_ANNOUNCE_BOUND`` (5.0 s, from just before the call) while
+    :func:`_await_pids` said it waited 10 s: a marker that landed after the
+    poll had stopped was never seen, its tree was never registered, and the
+    case failed "the root never announced its tree" over a root that had.
+    Reproduced on darwin with a shell that sleeps 5.5 s before it runs a line:
+    each of the six cases tried failed so, with every one of their markers on
+    disk, and three 60 s helpers were left running that nothing had
+    registered.
+    """
+
+    return _registrar_for(
+        marker, strays, fields=fields, on_announce=on_announce, bound=_START_UP_BOUND
+    )
+
+
+def _came_back(task: asyncio.Task[Any]) -> str:
+    """How a call that is done came back, for a message."""
+
+    if task.cancelled():
+        return "cancelled"
+    error = task.exception()
+    if error is not None:
+        return f"raised {error!r}"
+    result = task.result()
+    return f"exit_code={result.exit_code}, timed_out={result.timed_out}"
+
+
+def _look_at_the_marker(registrar: _Registrar) -> tuple[int, ...] | None:
+    """One read of ``registrar``'s marker, registering its pids as the poll would.
+
+    For :func:`_await_pids`'s verdict on a call that came back (#447 review
+    round 2). The root writes the marker with ``os.replace``, so a read sees
+    all of it or none. A pid this registers that the poll registers again is
+    reaped once: the cleanup skips a pid that is already gone.
+    """
+
+    try:
+        raw = registrar.marker.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if len(raw) != registrar.fields:
+        return None
+    pids = tuple(int(field) for field in raw)
+    registrar.strays.extend(pids)
+    return pids
+
+
+async def _await_pids(
+    registrar: _Registrar, what: str, task: asyncio.Task[Any] | None = None
+) -> tuple[int, ...]:
+    """Wait for the root's announcement from inside the event loop.
+
+    For as long as the registrar polls and no longer (#447) —
+    :data:`_START_UP_BOUND` from just before the call, for this file's
+    :func:`_registrar` — and, given the call's ``task``, not past the call's
+    return: a call that came back has a root that exited or was killed, and
+    the root writes its marker before either. A miss cancels the call, bounded
+    as :func:`_bounded` cancels one, so a failed premise leaves no ``exec``
+    running on, and the message says which miss it was: a start-up longer than
+    the whole poll is the premise failing; a call back first is the command
+    failing before it could announce. That verdict reads the marker itself
+    first (#447 review round 2): the registrar's thread gets only one poll's
+    worth after the return, and one starved through it had not looked yet,
+    so the case failed "the call came back" over a marker on disk.
+    """
+
+    while registrar.pids is None and registrar.is_alive():
+        if task is not None and task.done():
+            # One poll's worth more: the marker lands before the root's exit.
+            await asyncio.sleep(0.1)
+            break
+        await asyncio.sleep(0.02)
+    pids = registrar.pids
+    if pids is None and task is not None and task.done():
+        pids = _look_at_the_marker(registrar)
+    if pids is not None:
+        return pids
+    if task is not None and task.done():
+        pytest.fail(
+            f"{what}: the call came back ({_came_back(task)}) before the root announced its "
+            f"tree — the command failed before the case could measure anything"
+        )
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(task), 5.0)
+    pytest.fail(
+        f"{what}: the root never announced its tree within the registrar's {registrar.bound}s "
+        f"poll — PREMISE, NOT THE CASE: the shell's and the root's start-up on this runner, "
+        f"not what the case asserts; the case measured nothing"
+    )
+
+
+class _ArmedOnTheStart:
+    """Holds the site's first timed ``proc.wait`` until the case's tree has started (#447).
+
+    A timeout leg's deadline used to hold the whole start-up. ``exec`` counts
+    the caller's timeout from where its worker's ``proc.wait(timeout)`` begins,
+    just after the spawn (#502), and on win32 everything the case's tree is —
+    pwsh's start, the python root's, ``aelix_ai``'s import, the children the
+    root spawns, the marker — had to happen inside it. On a windows runner that
+    stalled for a second or two the kill landed first, and the case failed "the
+    root never announced its tree — the case measured nothing" with every
+    assertion about the kill unasked (#447). So the gate takes the start-up out
+    of the deadline, as #388's took it out of ``run_cancellable``'s
+    (``tests/tools/test_subprocess_helper.py``'s ``_AttachRecorder``).
+
+    Installed in place of the site's ``_retained_handle``, which ``exec`` calls
+    once, right after the spawn, it wraps THAT ``proc``'s ``wait``: the first
+    call with a timeout — the worker's — first waits on the worker thread until
+    ``started()`` is true, the root has exited, or :data:`_START_UP_BOUND` has
+    passed since the spawn, and then calls the real wait with the timeout the
+    site handed it. The site's deadline is then the caller's timeout from the
+    tree's start, and the case's elapsed is the call's less :attr:`held`, the
+    hold the gate inserted — so what the site does before it asks for its wait
+    stays inside the case's bound, as it was before the gate (the bound
+    :func:`_why_the_root_timed_out` says a late wait meets here). The hold is
+    AFTER the job assignment: the worker's wait runs after
+    ``ProcessTree.attach``, while ``_retained_handle`` itself runs before it,
+    and on win32 only the descendants created after the assignment join the job
+    (#388's note), so a hold there would let the tree escape it.
+
+    WHAT IT RELIES ON, AND SAYS. It moves the deadline only because the site
+    counts the timeout from its wait. A site that counted it from the spawn
+    (#502) would hand the wait what is left of it, and each gated case fails on
+    :attr:`handed` by name (:func:`_armed_on_the_start`) instead of measuring a
+    deadline the hold had spent.
+    """
+
+    def __init__(self, started: Callable[[], bool], waits_for: str) -> None:
+        self._started = started
+        #: What ``started`` waits for, for the premise's message.
+        self.waits_for = waits_for
+        #: When the site called its ``_retained_handle`` — just after the spawn returned.
+        self.spawned_at: float | None = None
+        #: When the site asked for its first timed wait, and the timeout it handed it.
+        self.asked_at: float | None = None
+        self.handed: float | None = None
+        #: When the hold let that wait go, and why: ``"started"``, ``"exited"``
+        #: (the root ended first) or ``"bound"`` (the start-up bound ran out).
+        self.armed_at: float | None = None
+        self.why: str | None = None
+
+    @property
+    def held(self) -> float:
+        """How long the gate held the site's wait; 0.0 before it was asked."""
+
+        if self.asked_at is None or self.armed_at is None:
+            return 0.0
+        return self.armed_at - self.asked_at
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        gate = self
+        real = bash_module._retained_handle
+
+        def retained(proc: Any) -> int | None:
+            gate.spawned_at = time.monotonic()
+            wait = proc.wait
+
+            def gated(timeout: float | None = None) -> Any:
+                if timeout is not None and gate.asked_at is None:
+                    gate.asked_at, gate.handed = time.monotonic(), timeout
+                    gate.why = gate._hold(proc)
+                    gate.armed_at = time.monotonic()
+                return wait(timeout)
+
+            proc.wait = gated
+            return real(proc)
+
+        monkeypatch.setattr(bash_module, "_retained_handle", retained)
+
+    def _hold(self, proc: Any) -> str:
+        assert self.spawned_at is not None
+        until = self.spawned_at + _START_UP_BOUND
+        while True:
+            if self._started():
+                return "started"
+            if proc.poll() is not None:
+                return "exited"
+            if time.monotonic() >= until:
+                return "bound"
+            time.sleep(0.01)
+
+
+def _armed_on_the_start(
+    gate: _ArmedOnTheStart, pids: tuple[int, ...] | None, *, timeout: float, what: str
+) -> float:
+    """A gated timeout leg's premise, said apart from the case (#447); returns :attr:`held`."""
+
+    assert gate.spawned_at is not None, f"{what}: the site never spawned the command"
+    assert gate.armed_at is not None and gate.why is not None, (
+        f"{what}: the site never began a timed wait, so the deadline the case measures was "
+        f"never armed"
+    )
+    held = gate.armed_at - gate.spawned_at
+    assert gate.why != "bound", (
+        f"{what}: PREMISE, NOT THE CASE — {gate.waits_for} had not come {held:.3f}s after the "
+        f"spawn, the whole start-up bound: the shell's and the root's start-up on this runner, "
+        f"not the timeout leg; the case measured nothing"
+    )
+    assert gate.why != "exited", (
+        f"{what}: the root exited {held:.3f}s after the spawn, before {gate.waits_for} — the "
+        f"command failed before the case could measure anything"
+    )
+    assert gate.handed == timeout, (
+        f"{what}: the site handed its timed wait {gate.handed}s, not the caller's {timeout}s. "
+        f"The gate holds that wait until the tree has started and relies on the site counting "
+        f"the caller's timeout from where the wait begins; a site that counts it from the spawn "
+        f"(#502) needs the gate moved with the origin"
+    )
+    assert pids is not None, f"{what}: the root never announced its tree — the case measured nothing"
+    return gate.held
+
+
+@pytest.mark.parametrize("miss", ["the-call-came-back-first", "the-poll-ran-out"])
+async def test_await_pids_says_which_miss_it_was_and_leaves_no_call_running(
+    tmp_path: Path, strays: list[int], miss: str
+) -> None:
+    """:func:`_await_pids`'s two misses, with a registrar over a marker no root writes (#447).
+
+    A call that came back before any announcement is the command failing, said
+    at once rather than after the whole poll; a poll that ran out with the call
+    still out is the start-up premise, said as one, and the call is cancelled
+    rather than left running into the next case. A short poll stands in for
+    :data:`_START_UP_BOUND`; the calls are stand-ins too, no process is spawned.
+    """
+
+    if miss == "the-call-came-back-first":
+        registrar = _registrar_for(tmp_path / "never.txt", strays, bound=DEADLINE)
+
+        async def call() -> ExecExitResult:
+            return ExecExitResult(exit_code=127)
+
+    else:
+        registrar = _registrar_for(tmp_path / "never.txt", strays, bound=0.2)
+
+        async def call() -> ExecExitResult:
+            await asyncio.sleep(OUTLIVE)
+            return ExecExitResult(exit_code=0)
+
+    task = asyncio.ensure_future(call())
+    if miss == "the-call-came-back-first":
+        await task
+    began = time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as failed:
+        await _await_pids(registrar, "a stand-in", task)
+    took = time.monotonic() - began
+    message = str(failed.value)
+    if miss == "the-call-came-back-first":
+        assert "the call came back (exit_code=127, timed_out=False)" in message, message
+        assert took < DEADLINE / 2, f"a call already back was waited on for {took:.3f}s"
+    else:
+        assert "PREMISE, NOT THE CASE" in message and "0.2s poll" in message, message
+        assert task.cancelled(), "the call was left running after the premise failed"
+
+
+class _StarvedRegistrar(_Registrar):
+    """A registrar whose thread has not been scheduled yet: it looks once let go."""
+
+    def __init__(self, marker: Path, strays: list[int], **kwargs: Any) -> None:
+        super().__init__(marker, strays, **kwargs)
+        self.let_go = threading.Event()
+
+    def run(self) -> None:
+        self.let_go.wait(DEADLINE)
+        super().run()
+
+
+async def test_await_pids_reads_the_marker_before_it_says_the_call_came_back(
+    tmp_path: Path,
+) -> None:
+    """A starved registrar is not a root that never announced (#447 review round 2).
+
+    Once the call is back, :func:`_await_pids` gives the registrar's thread one
+    poll's worth, 0.1 s; a thread the runner did not schedule in it had not
+    looked, and the case failed "the call came back before the root announced
+    its tree" with the marker on disk. The verdict now reads the marker itself
+    first. The pids are stand-ins registered into a local list, so nothing
+    reaps them, and no process is spawned.
+    """
+
+    marker = tmp_path / "pids.txt"
+    registered: list[int] = []
+    registrar = _StarvedRegistrar(marker, registered, bound=DEADLINE)
+    registrar.start()
+    try:
+        marker.write_text("4242 4343", encoding="utf-8")
+
+        async def call() -> ExecExitResult:
+            return ExecExitResult(exit_code=0)
+
+        task = asyncio.ensure_future(call())
+        await task
+        assert await _await_pids(registrar, "a stand-in", task) == (4242, 4343)
+        assert registrar.pids is None, "the stand-in's thread looked: it was not starved"
+        assert registered == [4242, 4343], f"the look did not register the pids: {registered}"
+    finally:
+        registrar.let_go.set()
+        registrar.settle()
+
+
+def test_settle_asks_for_a_join_as_long_as_the_registrars_poll(tmp_path: Path) -> None:
+    """``_Registrar.settle`` joins for the poll's bound, not a fixed 6 s (#447 review round 2).
+
+    The poll runs :data:`_START_UP_BOUND` here (30 s) and ``settle`` joined it
+    for 6 s: on a failed premise a marker that landed after the join registered
+    its tree into ``strays`` after the fixture's teardown had reaped them, so
+    nothing reaped that tree. Read off the join ``settle`` asks for; no thread
+    runs and nothing is waited on.
+    """
+
+    asked: list[float | None] = []
+    registrar = _Registrar(tmp_path / "never.txt", [], bound=_START_UP_BOUND)
+
+    def _join(timeout: float | None = None) -> None:
+        asked.append(timeout)
+
+    registrar.join = _join  # pyright: ignore[reportAttributeAccessIssue]
+    assert registrar.settle() is None
+    assert len(asked) == 1 and asked[0] is not None and asked[0] >= _START_UP_BOUND, (
+        f"settle() joined a {_START_UP_BOUND}s poll for {asked}: a marker that lands after "
+        "the join registers its tree past the fixture's teardown"
+    )
+
+
+def test_settle_registers_a_marker_that_lands_inside_the_poll_after_it_was_called(
+    tmp_path: Path,
+) -> None:
+    """What that join waits for (#447 review round 2): a marker landing after ``settle()`` was
+    called but inside the poll is registered before it returns, and the poll is over. The pid
+    is a stand-in in a local list; no process is spawned.
+    """
+
+    marker = tmp_path / "late.txt"
+    registered: list[int] = []
+    registrar = _registrar_for(marker, registered, fields=1, bound=2.0)
+
+    def _land() -> None:
+        tmp = marker.with_name(marker.name + ".tmp")
+        tmp.write_text("4242", encoding="utf-8")
+        os.replace(tmp, marker)
+
+    lands = threading.Timer(0.3, _land)
+    lands.start()
+    try:
+        assert registrar.settle() == (4242,), "settle() returned before the marker landed"
+        assert not registrar.is_alive(), "settle() returned with the poll still running"
+        assert registered == [4242], registered
+    finally:
+        lands.cancel()
+        lands.join(DEADLINE)
+
+
+@pytest.mark.parametrize("why", ["started", "exited", "bound"])
+def test_the_gate_holds_the_first_timed_wait_until_the_tree_has_started(
+    monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """:class:`_ArmedOnTheStart` on a stand-in for the site's ``proc`` (#447).
+
+    The site's first timed wait is held until the tree has started (``started``
+    turns true 0.3 s after the spawn), the root has exited (``poll`` answers at
+    once), or the start-up bound has run out (0.5 s from the spawn here, for
+    :data:`_START_UP_BOUND`); then the real wait runs with the very timeout the
+    site handed, and :attr:`_ArmedOnTheStart.held` is the hold, from the ask
+    (0.1 s after the spawn) to the release. A second timed wait and an untimed
+    one pass straight through. Judged on the gate's own instants, so a slow
+    runner delays the row rather than failing it.
+    """
+
+    monkeypatch.setattr(sys.modules[__name__], "_START_UP_BOUND", 0.5)
+    flips_at = time.monotonic() + 0.3 if why == "started" else float("inf")
+    gate = _ArmedOnTheStart(lambda: time.monotonic() >= flips_at, "the stand-in's start")
+    gate.install(monkeypatch)
+    waits: list[float | None] = []
+
+    class _Root:
+        pid = os.getpid()
+
+        def poll(self) -> int | None:
+            return 0 if why == "exited" else None
+
+        def wait(self, timeout: float | None = None) -> int:
+            waits.append(timeout)
+            return 0
+
+    proc = _Root()
+    bash_module._retained_handle(proc)  # what ``exec`` does right after the spawn
+    time.sleep(0.1)
+    proc.wait(1.5)
+    proc.wait(0.25)
+    proc.wait()
+    assert waits == [1.5, 0.25, None], waits
+    assert gate.why == why and gate.handed == 1.5
+    assert gate.spawned_at is not None and gate.asked_at is not None
+    assert gate.armed_at is not None
+    assert gate.held == gate.armed_at - gate.asked_at
+    # Released no sooner than its reason, and within a quarter second of it.
+    reason = {
+        "started": flips_at,
+        "exited": gate.asked_at,
+        "bound": gate.spawned_at + 0.5,
+    }[why]
+    assert reason <= gate.armed_at <= reason + 0.25, (
+        f"released {gate.armed_at - reason:+.3f}s from its reason ({why})"
+    )
 
 
 # === the drain's own record (#325) ==========================================
@@ -853,7 +1303,7 @@ def _judged_on_its_record(record: _DrainRecord, *, returned: float, what: str) -
 
 
 async def test_the_timeout_ends_a_tree_whose_middle_parent_already_exited(
-    tmp_path: Path, strays: list[int]
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pi #9129, at this site: the leaf is killed and ``exec`` comes back.
 
@@ -864,24 +1314,38 @@ async def test_the_timeout_ends_a_tree_whose_middle_parent_already_exited(
     against which the critique measured the leaf still ``S`` while the tree
     ladder left it GONE.
 
-    ``timeout=1.0`` is the sibling's number for the same chain and is green on
-    both windows legs there: the runner's pwsh reaches the third pid in ~0.3 s.
+    ``timeout=1.0`` is the sibling's number for the same chain. THE DEADLINE IS
+    ARMED ON THE ANNOUNCEMENT SINCE #447 (:class:`_ArmedOnTheStart`): the
+    runner's pwsh reaches the third pid in ~0.3 s, but the start-up of the
+    shell and of three interpreters used to be inside the 1.0 s, and a windows
+    runner that stalled through it killed the tree before the middle had
+    announced it (``the root never announced its tree``, runs 34305628718 and
+    38483007492).
     """
 
     marker = tmp_path / "pids.txt"
     timeout = 1.0
+    what = "timeout with a dead middle parent"
     registrar = _registrar(marker, strays, fields=3)
+    gate = _ArmedOnTheStart(lambda: registrar.pids is not None, "the root's announcement")
+    gate.install(monkeypatch)
     chunks: list[bytes] = []
     task = _exec_task(_tree_command(tmp_path, marker), tmp_path, chunks, timeout=timeout)
     started = time.monotonic()
 
     try:
-        result = await _bounded(task, _bound(timeout) + 5.0, "timeout with a dead middle parent")
+        # ``+ _START_UP_BOUND`` on the watchdog only, for the hold before the
+        # deadline (as #388's ``+ _ANNOUNCE_BOUND``).
+        result = await _bounded(task, _bound(timeout) + 5.0 + _START_UP_BOUND, what)
     finally:
-        elapsed = time.monotonic() - started
+        returned = time.monotonic()
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    held = _armed_on_the_start(gate, pids, timeout=timeout, what=what)
+    assert pids is not None
+    # The call's elapsed less the hold, never from the release: what the site
+    # does before it asks for its wait stays inside the bound.
+    elapsed = returned - started - held
     root_pid, _middle, leaf = pids
     assert result.timed_out is True
     assert result.exit_code is None
@@ -892,7 +1356,11 @@ async def test_the_timeout_ends_a_tree_whose_middle_parent_already_exited(
     )
     assert _await_dead(root_pid) != STATE_ALIVE
     assert elapsed <= _bound(timeout)
-    warnings.warn(f"bash exec timeout leg: {elapsed:.3f}s on {sys.platform}", stacklevel=1)
+    warnings.warn(
+        f"bash exec timeout leg: {elapsed:.3f}s less a {held:.3f}s hold for the announcement "
+        f"on {sys.platform}",
+        stacklevel=1,
+    )
 
 
 async def test_the_abort_signal_ends_a_tree_whose_middle_parent_already_exited(
@@ -917,7 +1385,9 @@ async def test_the_abort_signal_ends_a_tree_whose_middle_parent_already_exited(
     aborted_at = time.monotonic()
 
     try:
-        _root_pid, _middle, leaf = await _await_pids(registrar, "abort with a dead middle parent")
+        _root_pid, _middle, leaf = await _await_pids(
+            registrar, "abort with a dead middle parent", task
+        )
         assert probe_state(leaf) == STATE_ALIVE
         aborted_at = time.monotonic()
         signal.abort()
@@ -949,7 +1419,9 @@ async def test_a_cancel_ends_a_tree_whose_middle_parent_already_exited(
     cancelled_at = time.monotonic()
 
     try:
-        _root_pid, _middle, leaf = await _await_pids(registrar, "cancel with a dead middle parent")
+        _root_pid, _middle, leaf = await _await_pids(
+            registrar, "cancel with a dead middle parent", task
+        )
         assert probe_state(leaf) == STATE_ALIVE
         cancelled_at = time.monotonic()
         task.cancel()
@@ -972,7 +1444,7 @@ async def test_a_cancel_ends_a_tree_whose_middle_parent_already_exited(
 
 @pytest.mark.parametrize("leg", ["timeout", "abort", "cancel"])
 async def test_a_holder_outside_the_tree_does_not_hang_the_call(
-    tmp_path: Path, strays: list[int], leg: str
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch, leg: str
 ) -> None:
     """§1-3, the reason #222 is not inert on the owner's own platform.
 
@@ -993,47 +1465,68 @@ async def test_a_holder_outside_the_tree_does_not_hang_the_call(
     the cap is what
     ``test_run_contained.py::test_a_chatty_holder_past_the_kill_is_cut_at_kill_drain``
     binds.
+
+    The timeout leg's deadline is armed on the root's announcement since #447
+    (:class:`_ArmedOnTheStart`), and its elapsed is measured from there: once
+    on windows-latest py3.11 (job 117361921256) the kill landed before the
+    root had written its marker — it imports ``aelix_ai`` and spawns the holder
+    first — and the leg failed "the root never announced its tree" with
+    ``timed_out=True`` already asserted.
     """
 
     marker = tmp_path / "pids.txt"
-    # 2.0 and not 0.5 on the timeout leg: the clock starts BEFORE the shell runs
-    # a line (``exec`` hands ``timeout`` to ``proc.wait`` on the
-    # ``[shell, flag, command]`` spawn), and the runner's pwsh needs 0.5-0.57 s
-    # to start before the python chain under it begins at all. Reproduced by
-    # emulating 0.5 s of shell startup (a wrapper that sleeps and then ``exec``s
-    # the real shell): at ``timeout=0.5`` this leg failed with "the root never
-    # announced its tree — the case measured nothing", i.e. the kill landed
-    # before there was a tree to kill. The other two legs fire on the
-    # announcement and so have no such budget.
+    what = f"a {leg} with an escaped holder"
+    # 2.0 and not 0.5 on the timeout leg, from before #447: the clock started
+    # BEFORE the shell ran a line (``exec`` hands ``timeout`` to ``proc.wait``
+    # on the ``[shell, flag, command]`` spawn), and the runner's pwsh needs
+    # 0.5-0.57 s to start before the python chain under it begins at all.
+    # Reproduced by emulating 0.5 s of shell startup (a wrapper that sleeps and
+    # then ``exec``s the real shell): at ``timeout=0.5`` this leg failed with
+    # "the root never announced its tree — the case measured nothing", i.e. the
+    # kill landed before there was a tree to kill. The deadline is armed on the
+    # announcement now, so the start-up is outside it whatever it costs; the
+    # number stays, and with it every elapsed this leg has logged. The other
+    # two legs fire on the announcement and so never had such a budget.
     timeout = 2.0 if leg == "timeout" else None
     registrar = _registrar(marker, strays)
+    gate = _ArmedOnTheStart(lambda: registrar.pids is not None, "the root's announcement")
+    if leg == "timeout":
+        gate.install(monkeypatch)
     signal = AbortSignal() if leg == "abort" else None
     chunks: list[bytes] = []
     command = _holder_command(tmp_path, marker)
     task = _exec_task(command, tmp_path, chunks, signal=signal, timeout=timeout)
     started = time.monotonic()
+    timed: ExecExitResult | None = None
 
     try:
         if leg == "timeout":
-            result = await _bounded(task, _bound(2.0) + 5.0, f"a {leg} with an escaped holder")
-            assert result.timed_out is True
-            assert result.exit_code is None
+            timed = await _bounded(task, _bound(2.0) + 5.0 + _START_UP_BOUND, what)
         else:
-            _root_pid, holder = await _await_pids(registrar, f"a {leg} with an escaped holder")
+            _root_pid, holder = await _await_pids(registrar, what, task)
             assert probe_state(holder) == STATE_ALIVE
             started = time.monotonic()
             if signal is not None:
                 signal.abort()
-                result = await _bounded(task, _bound(0.0) + 5.0, f"a {leg} with an escaped holder")
+                result = await _bounded(task, _bound(0.0) + 5.0, what)
                 assert result.exit_code is None
             else:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await _bounded(task, _bound(0.0) + 5.0, f"a {leg} with an escaped holder")
+                    await _bounded(task, _bound(0.0) + 5.0, what)
     finally:
-        elapsed = time.monotonic() - started
+        returned = time.monotonic()
         pids = registrar.settle()
 
+    held = 0.0
+    if leg == "timeout":
+        # The premise first, then what the leg asserts about the timeout.
+        held = _armed_on_the_start(gate, pids, timeout=2.0, what=what)
+        assert timed is not None
+        assert timed.timed_out is True
+        assert timed.exit_code is None
+    # Less the hold on the timeout leg, as case 1 measures it.
+    elapsed = returned - started - held
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     root_pid, holder = pids
     assert _await_dead(root_pid) != STATE_ALIVE
@@ -1045,7 +1538,10 @@ async def test_a_holder_outside_the_tree_does_not_hang_the_call(
         # survival real rather than merely not-yet-observed.
         time.sleep(0.5)
         assert probe_state(holder) == STATE_ALIVE
-    warnings.warn(f"bash exec {leg} with a holder: {elapsed:.3f}s on {sys.platform}", stacklevel=1)
+    hold = f" less a {held:.3f}s hold for the announcement" if leg == "timeout" else ""
+    warnings.warn(
+        f"bash exec {leg} with a holder: {elapsed:.3f}s{hold} on {sys.platform}", stacklevel=1
+    )
 
 
 # === 5: what a successful command is allowed to leave behind =================
@@ -1059,7 +1555,9 @@ async def test_a_successful_command_keeps_the_helper_it_backgrounded(
     Pi #8225's rule and ADR-0238's per-site decision — a command that exits 0
     after starting a daemon meant to outlive it keeps it. The helper takes all
     three stdio at ``DEVNULL`` (see :data:`ROOT_THAT_BACKGROUNDS_A_HELPER`), so
-    what is measured here is the CLOSE and not the drain.
+    what is measured here is the CLOSE and not the drain. Its ceiling counts
+    from the root's announcement since #447, the instant before the root
+    exits: from the call it held the shell's and the root's whole start-up.
     """
 
     marker = tmp_path / "pids.txt"
@@ -1070,18 +1568,26 @@ async def test_a_successful_command_keeps_the_helper_it_backgrounded(
     started = time.monotonic()
 
     try:
-        result = await _bounded(task, _bound(0.0) + 5.0, "a backgrounded helper")
+        result = await _bounded(
+            task, _bound(0.0) + 5.0 + _START_UP_BOUND, "a backgrounded helper"
+        )
     finally:
-        elapsed = time.monotonic() - started
+        returned = time.monotonic()
         pids = registrar.settle()
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert registrar.announced_at is not None
     _root_pid, helper = pids
+    elapsed = returned - registrar.announced_at
     assert result.exit_code == 0
     assert result.timed_out is False
     assert elapsed <= _bound(0.0)
     assert probe_state(helper) == STATE_ALIVE
-    warnings.warn(f"bash exec backgrounded helper: {elapsed:.3f}s on {sys.platform}", stacklevel=1)
+    warnings.warn(
+        f"bash exec backgrounded helper: {elapsed:.3f}s from the announcement, "
+        f"{returned - started:.3f}s from the call on {sys.platform}",
+        stacklevel=1,
+    )
 
 
 # === 6: stdin ===============================================================
@@ -1292,7 +1798,10 @@ async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
         started = time.monotonic()
 
         try:
-            result = await _bounded(task, _bound(0.0) + 5.0, what)
+            # ``+ _START_UP_BOUND`` (#447): the watchdog runs from the call, so
+            # a slow start-up comes back and fails the literal below, a premise
+            # said and run again, instead of tripping this.
+            result = await _bounded(task, _bound(0.0) + 5.0 + _START_UP_BOUND, what)
         finally:
             returned = time.monotonic()
             elapsed = returned - started
@@ -1426,6 +1935,12 @@ _EARLY_TIMEOUT_SLACK = 0.05
 #: begun 1.344 s after the call (job 117282664054). :func:`_why_the_root_timed_out`
 #: says why the record cannot tell such a start-up stall from a site that
 #: starts its wait late, and what dropping the check leaves unchecked.
+#:
+#: AND NOT OF A GIVE-UP LATE ACROSS A STALL SINCE #447. The half second is the
+#: worker's resume on a process that runs; a process the runner stops across
+#: the deadline stamps the give-up as late as the stop is long — 1.173 s on
+#: windows-latest py3.14 (job 118850881187) — and the witness's pulse is what
+#: tells the two apart (:func:`_stalled_through_the_give_up`).
 _LATE_TIMEOUT_SLACK = 0.5
 
 #: How long before the deadline the site's timed wait was handed
@@ -1459,6 +1974,13 @@ _LOOK_BEFORE_THE_DEADLINE = 0.25
 #: process that exits by itself inside it passes (:func:`_the_timeout_leg_left`
 #: says what else the check cannot see).
 _THE_TREE_IS_DEAD_WITHIN = 2.0
+
+#: How often :class:`_TimeoutWitness`'s pulse stamps the clock (#447). Any
+#: period far below :data:`_LATE_TIMEOUT_SLACK` does: what the rule asks of the
+#: pulse is whether it stamped at all inside a stretch of nearly half a second
+#: or more, and on win32 up to py3.12 the stamps land on the 15.625 ms grain
+#: whatever the period.
+_PULSE = 0.01
 
 
 class _TimeoutWitness:
@@ -1506,6 +2028,19 @@ class _TimeoutWitness:
     (review round 4): ``spawned_at`` splits the late start at the spawn's
     return, and the premise line gives the start from the call and from the
     spawn's return, but the rule judges neither.
+
+    THE PULSE (#447). The give-up is stamped by the worker once ``proc.wait``
+    raises, so a runner that stops this process across the wait's deadline
+    stamps it late, and the rule used to read that as a wait that does not
+    honour its deadline: windows-latest py3.14 failed
+    :func:`test_8a_fails_a_timeout_leg_that_leaves_the_root_running`'s late
+    row so, "gave up 1.173s past its own deadline (4.725s after the call)",
+    on a run whose holder delivered no tick in 4.8 s (job 118850881187). A
+    second thread started by :meth:`install` stamps ``time.monotonic()`` every
+    :data:`_PULSE` into :attr:`beats` until :meth:`settle`. A stalled process
+    stamps nothing, a running one keeps stamping, so the pulse is what tells a
+    give-up late across a stall from a wait that gave up late while this
+    process ran (:meth:`stopped_across`).
     """
 
     def __init__(self) -> None:
@@ -1527,9 +2062,13 @@ class _TimeoutWitness:
         self.look_began: float | None = None
         self.looked_at: float | None = None
         self.looked_saw: str | None = None
+        #: The pulse's stamps, from :meth:`install` to :meth:`settle`.
+        self.beats: list[float] = []
         self._armed = threading.Event()
         self._back = threading.Event()
         self._looker = threading.Thread(target=self._look, daemon=True)
+        self._stopped = threading.Event()
+        self._pulse = threading.Thread(target=self._beat, daemon=True)
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         witness = self
@@ -1559,6 +2098,33 @@ class _TimeoutWitness:
 
         monkeypatch.setattr(bash_module, "_retained_handle", retained)
         self._looker.start()
+        self._pulse.start()
+
+    def _beat(self) -> None:
+        # Bounded only so a witness nobody settles cannot outlive its case by
+        # much; :meth:`settle` stops it.
+        until = time.monotonic() + OUTLIVE
+        self.beats.append(time.monotonic())
+        while not self._stopped.wait(_PULSE) and time.monotonic() < until:
+            self.beats.append(time.monotonic())
+
+    def stopped_across(self, begin: float, end: float) -> tuple[float, float] | None:
+        """The stretch the pulse stamped nothing in, when it covers ``begin`` to ``end``.
+
+        Returns the last stamp at or before ``begin`` and the first at or after
+        ``end`` — the pulse ran on both sides — when no stamp falls between
+        them; ``None`` otherwise, which includes a pulse that did not run on
+        both sides of the stretch (fails closed: nothing on the record then
+        says the process stopped).
+        """
+
+        if end <= begin:
+            return None
+        before = [beat for beat in self.beats if beat <= begin]
+        after = [beat for beat in self.beats if beat >= end]
+        if not before or not after or any(begin < beat < end for beat in self.beats):
+            return None
+        return before[-1], after[0]
 
     def _look(self) -> None:
         # Bounded only so a witness nobody settles cannot outlive its case by
@@ -1581,6 +2147,9 @@ class _TimeoutWitness:
         self._back.set()
         self._armed.set()
         self._looker.join(DEADLINE)
+        self._stopped.set()
+        if self._pulse.ident is not None:
+            self._pulse.join(DEADLINE)
 
 
 #: The site's ``_retained_handle`` as imported, before any witness wraps it.
@@ -1612,7 +2181,8 @@ def _why_the_root_timed_out(
     site's own timed wait was handed the caller's timeout and gave up AT its
     deadline — no earlier than :data:`_EARLY_TIMEOUT_SLACK` before the
     caller's on the case's clock, and no later than :data:`_LATE_TIMEOUT_SLACK`
-    past its own (``waited_at + timeout``) — on a root that had not exited:
+    past its own (``waited_at + timeout``) unless this process was stopped
+    across that stretch (#447, below) — on a root that had not exited:
     still running when the wait gave up, or still running at a look that began
     inside the last :data:`_LOOK_BEFORE_THE_DEADLINE` (plus the clock grain)
     before the wait's deadline and gone by the time it gave up (a dead heat:
@@ -1628,7 +2198,13 @@ def _why_the_root_timed_out(
       caller's deadline: counted from an earlier origin than the call, or not
       honouring the deadline it was handed — "before the caller's";
     - a wait that does not honour its deadline: it gave up later than that past
-      its own — "past its own deadline";
+      its own while this process ran on — "past its own deadline". A give-up
+      that late across a stretch in which the witness's pulse stamped nothing
+      (:func:`_stalled_through_the_give_up`) is the runner stopping this
+      process, worker and all, which then stamps the give-up when it runs
+      again: not the wait's, and judged on the rest (#447; the pulse that is
+      not on the record, or that stamped inside the stretch, leaves the
+      verdict as it was);
     - a wait that does not see the root's exit: the root was already dead
       (``zombie`` on POSIX, ``gone`` on win32) at a look that ended more than
       the clock grain before the wait's deadline — "does not see the root's
@@ -1676,7 +2252,10 @@ def _why_the_root_timed_out(
     other bound on a late start in this file is the wall clock of the two
     timeout containment cases (``elapsed <= _bound(timeout)``: the deadline
     plus :data:`KILL_DRAIN_SECONDS` and :data:`SLACK`, and :data:`WIN32_SLACK`
-    more on win32).
+    more on win32) — since #447 the call's wall clock less the hold their gate
+    puts in front of the site's wait until the tree has started
+    (:class:`_ArmedOnTheStart`), so a site that asks for its wait late still
+    spends it there.
     """
 
     if witness.timed_out_at is None:
@@ -1699,10 +2278,11 @@ def _why_the_root_timed_out(
     waited_at = witness.waited_at if witness.waited_at is not None else started
     deadline = waited_at + timeout
     late = witness.timed_out_at - deadline
-    if late > _LATE_TIMEOUT_SLACK:
+    if late > _LATE_TIMEOUT_SLACK and _stalled_through_the_give_up(witness, deadline) is None:
         return (
             f"the site's timed wait gave up {late:.3f}s past its own deadline ({gave_up:.3f}s "
-            f"after the call) — a wait that does not honour the deadline it waited for"
+            f"after the call), and the witness's pulse does not show this process stopped from "
+            f"the deadline to the give-up — a wait that does not honour the deadline it waited for"
         )
     if witness.root_then == STATE_ALIVE:
         return None
@@ -1733,6 +2313,23 @@ def _why_the_root_timed_out(
         f"the root was {witness.looked_saw} at a look that ended {-ahead:+.3f}s from the "
         f"wait's deadline, and when the wait gave up {gave_up:.3f}s after the call — a look too "
         f"late to place its exit before the deadline, so the case fails closed"
+    )
+
+
+def _stalled_through_the_give_up(
+    witness: _TimeoutWitness, deadline: float
+) -> tuple[float, float] | None:
+    """The stretch across a late give-up in which this process ran nothing, if any (#447).
+
+    From the wait's ``deadline`` to the give-up, each end trimmed by the clock's
+    grain (:data:`_EARLY_TIMEOUT_SLACK`): a worker stopped with the rest of the
+    process across its deadline stamps the give-up when the process runs again,
+    and the pulse stamped nothing in between (:meth:`_TimeoutWitness.stopped_across`).
+    """
+
+    assert witness.timed_out_at is not None
+    return witness.stopped_across(
+        deadline + _EARLY_TIMEOUT_SLACK, witness.timed_out_at - _EARLY_TIMEOUT_SLACK
     )
 
 
@@ -1817,6 +2414,20 @@ def _premise_missed_the_deadline(
     gave_up = (witness.timed_out_at or started) - started
     waited_at = witness.waited_at if witness.waited_at is not None else started
     spawned_at = witness.spawned_at if witness.spawned_at is not None else started
+    # #447: a give-up late past the slack reaches this line only across a
+    # stall, which the line says with the pulse's numbers.
+    deadline = waited_at + timeout
+    late = (witness.timed_out_at or deadline) - deadline
+    stopped = (
+        _stalled_through_the_give_up(witness, deadline) if late > _LATE_TIMEOUT_SLACK else None
+    )
+    stall = (
+        f"; it gave up {late:.3f}s past the wait's own deadline, across a stretch in which this "
+        f"process stamped nothing ({stopped[0] - deadline:+.3f}s to {stopped[1] - deadline:+.3f}s "
+        f"of that deadline, the witness's pulse) — a stall, not the wait"
+        if stopped is not None
+        else ""
+    )
     if witness.root_then == STATE_ALIVE:
         when = f"still running when the site's wait gave up, {gave_up:.3f}s after the call"
     else:
@@ -1837,7 +2448,7 @@ def _premise_missed_the_deadline(
     )
     return (
         f"{what}: THE PREMISE FAILED, NOT THE CASE — the root had not exited by the caller's "
-        f"{timeout}s deadline: {when} ({start}), {stage}. The deadline arm needs a root that "
+        f"{timeout}s deadline: {when} ({start}){stall}, {stage}. The deadline arm needs a root that "
         f"exits inside its deadline, and on win32 that root is a pwsh start plus a python "
         f"child; the site answered as a timeout does (``exit_code=None, timed_out=True``), and "
         f"the exit path's drain, which is what this case measures, never ran, so the case runs "
@@ -1928,8 +2539,9 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     stay, after the record, as its consequence on the case's own clock.
 
     THE CEILINGS ARE JUDGED ON AN ATTEMPT WHOSE RECORD SHOWS NO STALL SINCE
-    #341 (:func:`_judged_on_its_record`). Both are wall clocks from the call —
-    ``elapsed <= _bound(DRAIN_CAP_SECONDS)`` on the ``None`` arm, and
+    #341 (:func:`_judged_on_its_record`). Both are wall clocks — from the
+    root's announcement since #447, ``<= _bound(DRAIN_CAP_SECONDS)`` on the
+    ``None`` arm, where from the call it held the start-up too, and from the call
     ``elapsed < DRAIN_CAP_SECONDS`` (POSIX) or a ``timeout + KILL_DRAIN_SECONDS
     + SLACK`` sanity bound (win32) on the deadline arm — and a process stopped
     across the cap, or across the deadline for as long as the deadline is
@@ -2023,7 +2635,9 @@ async def _the_drain_cap_case(
         started = time.monotonic()
 
         try:
-            result = await _bounded(task, _bound(DRAIN_CAP_SECONDS) + 5.0, what)
+            result = await _bounded(
+                task, _bound(DRAIN_CAP_SECONDS) + 5.0 + _START_UP_BOUND, what
+            )
         finally:
             returned = time.monotonic()
             elapsed = returned - started
@@ -2100,7 +2714,16 @@ async def _the_drain_cap_case(
             f"{timeout}s — the deadline term is gone ({end.summary})"
         )
     if timeout is None:
-        assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
+        # The floor from the call, which a slow start-up only lengthens; the
+        # ceiling from the root's announcement since #447, so the start-up is
+        # not inside it.
+        assert registrar.announced_at is not None
+        since = returned - registrar.announced_at
+        assert elapsed >= DRAIN_CAP_SECONDS
+        assert since <= _bound(DRAIN_CAP_SECONDS), (
+            f"the call came back {since:.3f}s after the root's announcement ({elapsed:.3f}s "
+            f"after the call), past the sanity bound of {_bound(DRAIN_CAP_SECONDS):.1f}s"
+        )
     else:
         # The drain's own soft cap, on both platforms: with ``timeout <=
         # DRAIN_CAP_SECONDS`` and the start before the exit, an
@@ -2222,11 +2845,87 @@ def _the_site_starts_its_first_timed_wait_late(
     monkeypatch.setattr(sys.modules[__name__], "_REAL_RETAINED_HANDLE", retained)
 
 
+class _Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+
+def _stop_this_process(seconds: float) -> None:
+    """Stop every Python thread in this process for ``seconds`` (#447).
+
+    One foreign call through ``ctypes.PyDLL``, which keeps the GIL across the
+    call: no other thread runs a bytecode until it returns, and a thread whose
+    blocking call (a ``proc.wait``) ends meanwhile cannot stamp anything
+    before then — on the record, a runner that stopped the process.
+    """
+
+    if sys.platform == "win32":
+        ctypes.PyDLL("kernel32").Sleep(round(seconds * 1000))
+    else:
+        whole = int(seconds)
+        pause = _Timespec(whole, round((seconds - whole) * 1e9))
+        ctypes.PyDLL(None).nanosleep(ctypes.byref(pause), None)
+
+
+#: How long :func:`test_8a_fails_a_timeout_leg_that_leaves_the_root_running`'s
+#: stalled row stops this process across the site's deadline (#447): about
+#: windows-latest's 1.173 s (job 118850881187), well past
+#: :data:`_LATE_TIMEOUT_SLACK`.
+_A_STALL = 1.2
+
+
+def _the_process_stops_across_the_first_timed_waits_deadline(
+    monkeypatch: pytest.MonkeyPatch, seconds: float
+) -> None:
+    """Stop this whole process from just before the site's first timed wait's deadline (#447).
+
+    Installed in place of the real ``_retained_handle`` that
+    :class:`_TimeoutWitness` calls on, after any late start, so it wraps the
+    witness's wrapper and sees the wait begin when the witness does. From
+    0.1 s before that wait's deadline :func:`_stop_this_process` holds every
+    thread for ``seconds``: the wait's timeout ends inside the stop, and the
+    worker stamps its give-up when the process runs again, as on a stalled
+    runner.
+    """
+
+    real = _REAL_RETAINED_HANDLE
+    fired = False
+
+    def stop_at(deadline: float) -> None:
+        time.sleep(max(0.0, deadline - 0.1 - time.monotonic()))
+        _stop_this_process(seconds)
+
+    def retained(proc: Any) -> int | None:
+        wait = proc.wait
+
+        def stopped(timeout: float | None = None) -> Any:
+            nonlocal fired
+            if timeout is not None and not fired:
+                fired = True
+                deadline = time.monotonic() + timeout
+                threading.Thread(target=stop_at, args=(deadline,), daemon=True).start()
+            return wait(timeout)
+
+        proc.wait = stopped
+        return real(proc)
+
+    monkeypatch.setattr(sys.modules[__name__], "_REAL_RETAINED_HANDLE", retained)
+
+
 @pytest.mark.parametrize(
-    "late_start", [0.0, _A_LATE_START], ids=["as-the-site-starts-it", "the-wait-begins-1.5s-late"]
+    ("late_start", "stall"),
+    [(0.0, 0.0), (_A_LATE_START, 0.0), (_A_LATE_START, _A_STALL)],
+    ids=[
+        "as-the-site-starts-it",
+        "the-wait-begins-1.5s-late",
+        "the-wait-begins-1.5s-late-and-the-process-stops-across-its-deadline",
+    ],
 )
 async def test_8a_fails_a_timeout_leg_that_leaves_the_root_running(
-    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch, late_start: float
+    tmp_path: Path,
+    strays: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    late_start: float,
+    stall: float,
 ) -> None:
     """The same premise shape with a timeout leg that kills nothing fails 8a by name (#446 review rounds 3 and 4).
 
@@ -2248,6 +2947,16 @@ async def test_8a_fails_a_timeout_leg_that_leaves_the_root_running(
     :data:`_A_LATE_START` late on every leg
     (:func:`_the_site_starts_its_first_timed_wait_late`) and must reach the same
     verdict.
+
+    Nor on whether the runner stops the process across the deadline (#447).
+    windows-latest py3.14 failed the late row before the sanity check ran, as
+    "gave up 1.173s past its own deadline (4.725s after the call)", on a run
+    whose holder delivered no tick in 4.8 s (job 118850881187): the worker
+    stamps the give-up, and a stopped process stamps it late. The stalled row
+    stops the whole process for :data:`_A_STALL` from just before the wait's
+    deadline (:func:`_the_process_stops_across_the_first_timed_waits_deadline`)
+    on every leg and must reach the same verdict — the witness's pulse is what
+    tells it from a late wait (:func:`_stalled_through_the_give_up`).
     """
 
     def ends_nothing(tree: ProcessTree, proc: subprocess.Popen[bytes], *, reap: float) -> None:
@@ -2256,6 +2965,8 @@ async def test_8a_fails_a_timeout_leg_that_leaves_the_root_running(
     monkeypatch.setattr(bash_module, "_end_the_tree", ends_nothing)
     if late_start:
         _the_site_starts_its_first_timed_wait_late(monkeypatch, late_start)
+    if stall:
+        _the_process_stops_across_the_first_timed_waits_deadline(monkeypatch, stall)
     with pytest.raises(pytest.fail.Exception) as failed:
         await _the_drain_cap_case(
             tmp_path, strays, monkeypatch, _DEADLINE_ARM_SECONDS, first_root_holds=OUTLIVE
@@ -2367,12 +3078,14 @@ def _the_rule_says(
     look: tuple[float, float, str] | None = None,
     waited_for: float | None = None,
     began: float = 0.03,
+    beats: list[float] | None = None,
 ) -> None:
     """One row of :func:`_why_the_root_timed_out`, every instant relative to the wait's deadline.
 
     The site's wait began ``began`` after the case's start, so the caller's
-    deadline is ``began`` before the wait's. Asserts exactly ``verdict``'s
-    phrase and none of the others, or the premise when ``verdict`` is ``None``.
+    deadline is ``began`` before the wait's. ``beats`` is the witness's pulse
+    (#447), none when not given. Asserts exactly ``verdict``'s phrase and none
+    of the others, or the premise when ``verdict`` is ``None``.
     """
 
     started, timeout = 100.0, _DEADLINE_ARM_SECONDS
@@ -2380,6 +3093,7 @@ def _the_rule_says(
     witness.waited_at = started + began
     witness.waited_for = timeout + (waited_for or 0.0)
     deadline = witness.waited_at + witness.waited_for
+    witness.beats = [deadline + beat for beat in beats or ()]
     if gave_up is not None:
         witness.timed_out_at = deadline + gave_up
         witness.root_then = root_then
@@ -2441,6 +3155,131 @@ def test_a_wait_begun_late_is_judged_on_its_own_deadline(
     """
 
     _the_rule_says(verdict, gave_up=gave_up, root_then=root_then, look=look, began=began)
+
+
+def _pulse(begin: float, end: float) -> list[float]:
+    """A pulse stamping every :data:`_PULSE` from ``begin`` to ``end`` (relative instants)."""
+
+    count = round((end - begin) / _PULSE)
+    return [begin + index * _PULSE for index in range(count + 1)]
+
+
+@pytest.mark.parametrize(
+    ("gave_up", "root_then", "look", "beats", "verdict"),
+    [
+        (1.173, STATE_ALIVE, None, _pulse(-2.0, -0.1) + _pulse(1.18, 1.4), None),
+        (0.55, STATE_ALIVE, None, _pulse(-2.0, -0.1) + _pulse(0.56, 1.0), None),
+        (1.173, STATE_ALIVE, None, _pulse(-2.0, 1.4), "past its own deadline"),
+        (1.173, STATE_ALIVE, None, _pulse(-2.0, -0.1) + _pulse(0.6, 1.4), "past its own deadline"),
+        (1.173, STATE_ALIVE, None, _pulse(-2.0, 0.5) + _pulse(1.18, 1.4), "past its own deadline"),
+        (
+            1.173,
+            STATE_ALIVE,
+            None,
+            [*_pulse(-2.0, -0.1), 0.6, *_pulse(1.18, 1.4)],
+            "past its own deadline",
+        ),
+        (1.173, STATE_ALIVE, None, _pulse(-2.0, -0.1), "past its own deadline"),
+        (1.173, STATE_ALIVE, None, _pulse(1.18, 1.4), "past its own deadline"),
+        (
+            1.173,
+            STATE_GONE,
+            (-0.25, -0.24, STATE_ALIVE),
+            _pulse(-2.0, -0.1) + _pulse(1.18, 1.4),
+            None,
+        ),
+        (
+            1.173,
+            STATE_GONE,
+            (-0.25, -0.24, STATE_GONE),
+            _pulse(-2.0, -0.1) + _pulse(1.18, 1.4),
+            "does not see the root's exit",
+        ),
+    ],
+    ids=[
+        "stopped-from-before-the-deadline-to-the-give-up-as-on-windows-latest",
+        "stopped-just-past-the-slack",
+        "ran-on-through-the-late-give-up",
+        "stopped-and-ran-again-before-the-give-up",
+        "stopped-only-from-half-a-second-past-the-deadline",
+        "one-stamp-inside-the-stop",
+        "no-stamp-after-the-give-up",
+        "no-stamp-before-the-deadline",
+        "a-dead-heat-across-a-stop",
+        "exited-unseen-across-a-stop",
+    ],
+)
+def test_a_give_up_late_across_a_stopped_process_is_the_stop(
+    gave_up: float,
+    root_then: str,
+    look: tuple[float, float, str] | None,
+    beats: list[float],
+    verdict: str | None,
+) -> None:
+    """A give-up late past the slack is the wait's only while this process ran (#447).
+
+    windows-latest stopped the process across the late row's deadline (job
+    118850881187: "gave up 1.173s past its own deadline"), and the worker
+    stamps the give-up when it runs again. With the witness's pulse silent
+    from before the deadline (plus the grain) to the give-up (minus it), the
+    lateness is the stop's, and the attempt is judged on the rest — the
+    premise on a running root, a dead heat across the stop, and still a defect
+    when the look found the root already gone. Any stamp between them — the
+    process ran on, ran again before the give-up, stopped only half a second
+    in, or stamped once inside — and the verdict stays "past its own
+    deadline"; so does a pulse that did not run on both sides of the stretch.
+    """
+
+    _the_rule_says(verdict, gave_up=gave_up, root_then=root_then, look=look, beats=beats)
+
+
+@pytest.mark.parametrize("stopped", [True, False], ids=["the-process-stops", "the-wait-alone"])
+def test_the_witness_pulse_tells_a_stopped_process_from_a_late_wait(
+    monkeypatch: pytest.MonkeyPatch, stopped: bool
+) -> None:
+    """:class:`_TimeoutWitness`'s pulse runs while a wait is late, and not while the process stops (#447).
+
+    The rule table above pins the rule on a pulse it is handed; this pins the
+    pulse the witness keeps, with a stand-in for the site's ``proc`` (a root
+    that never exits: this process) whose timed wait gives up 0.75 s past its
+    deadline. Through :func:`_stop_this_process` — every thread stopped, as on
+    a stalled runner — the pulse stamps nothing across it and the attempt is
+    the premise; through a plain ``time.sleep`` the pulse stamps on, and the
+    verdict is "past its own deadline". A pulse that never ran, or one held
+    with the waiting thread, turns one of the two arms red.
+    """
+
+    timeout = 0.5
+    witness = _TimeoutWitness()
+    witness.install(monkeypatch)
+
+    class _LateOnce:
+        pid = os.getpid()
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            time.sleep(timeout - 0.05)
+            if stopped:
+                _stop_this_process(0.8)
+            else:
+                time.sleep(0.8)
+            raise subprocess.TimeoutExpired("the root", timeout)
+
+    proc = _LateOnce()
+    started = time.monotonic()
+    bash_module._retained_handle(proc)  # what ``exec`` does right after the spawn
+    with pytest.raises(subprocess.TimeoutExpired):
+        proc.wait(timeout)
+    time.sleep(0.05)  # a stamp after the give-up, as the call's return gives one
+    witness.settle()
+    verdict = _why_the_root_timed_out(witness, started=started, timeout=timeout)
+    assert witness.waited_at is not None and witness.timed_out_at is not None
+    late = witness.timed_out_at - witness.waited_at - timeout
+    assert late > _LATE_TIMEOUT_SLACK, f"the wait gave up {late:.3f}s late — the row measures nothing"
+    if stopped:
+        assert verdict is None, verdict
+    else:
+        assert verdict is not None and "past its own deadline" in verdict, verdict
 
 
 def test_the_witness_looks_a_quarter_second_before_the_waits_deadline(
@@ -2603,8 +3442,10 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
     look late near the cap or half a second from the drain's last look to the
     return is the premise failing — said, and run again — so a process
     stopped across the cap no longer decides the sanity bound
-    ``elapsed <= _bound(DRAIN_CAP_SECONDS)``, which stays on the attempt that
-    measured.
+    ``<= _bound(DRAIN_CAP_SECONDS)``, which stays on the attempt that
+    measured — counted from the root's announcement since #447, as 8a's
+    ``None`` arm's: from the call it held the start-up too, and a 5.5 s one
+    (a shell that sleeps before it runs a line) failed it at 7.529 s.
     """
 
     what = "an abort during the exit-path drain"
@@ -2627,7 +3468,7 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
         started = time.monotonic()
 
         try:
-            await _await_pids(registrar, what)
+            await _await_pids(registrar, what, task)
             # On the drain's START, not on a settle after the announcement: the
             # root exits after it announces, and an abort ahead of that exit
             # lands in ``_wait`` (:func:`_into_the_exit_drain`).
@@ -2692,7 +3533,14 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
         f"{DRAIN_CAP_SECONDS / tick:.0f} and the tail's whole life is {hold / tick:.0f}, "
         f"so a count this high means the cap cut nothing"
     )
-    assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
+    # The floor from the call, the ceiling from the announcement (#447), as 8a's.
+    assert registrar.announced_at is not None
+    since = returned - registrar.announced_at
+    assert elapsed >= DRAIN_CAP_SECONDS
+    assert since <= _bound(DRAIN_CAP_SECONDS), (
+        f"the call came back {since:.3f}s after the root's announcement ({elapsed:.3f}s after "
+        f"the call), past the sanity bound of {_bound(DRAIN_CAP_SECONDS):.1f}s"
+    )
     assert probe_state(helper) == STATE_ALIVE, (
         f"the abort at {aborted_at:.3f}s, {INTO_THE_DRAIN}s into the exit-path drain, killed "
         f"the backgrounded helper {helper} — the tree the command exited 0 to leave behind"
@@ -2796,7 +3644,9 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
 
     try:
         with pytest.raises(asyncio.CancelledError):
-            await _bounded(task, hold + 10.0, "a turn cancel in the watcher teardown")
+            await _bounded(
+                task, hold + 10.0 + _START_UP_BOUND, "a turn cancel in the watcher teardown"
+            )
     finally:
         elapsed = time.monotonic() - started
         pids = registrar.settle()
@@ -3042,7 +3892,7 @@ def test_a_cancel_during_the_drain_still_detaches_and_closes(
         # exits AFTER it announces — on win32 that is pwsh's teardown — and a
         # cancel ahead of the exit lands in ``_wait`` and measures the kill
         # branch's drain while the log said the exit drain.
-        await _await_pids(registrar, what)
+        await _await_pids(registrar, what, task)
         if not await _into_the_exit_drain(task, record, what):
             # The call came back before the cancel: the caller says how.
             returned.append(task.result())
@@ -3125,7 +3975,7 @@ def test_a_cancel_during_the_drain_still_detaches_and_closes(
 
 
 async def test_on_data_runs_on_the_loop_thread_and_never_after_the_return(
-    tmp_path: Path, strays: list[int]
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The callback contract the three callers rely on.
 
@@ -3150,9 +4000,19 @@ async def test_on_data_runs_on_the_loop_thread_and_never_after_the_return(
     can see one of them move. The guard's own case is in
     ``tests/process_tree/test_pipe_reader_callbacks.py`` —
     ``test_detach_stops_the_callback_and_the_reader_reads_on``.
+
+    THE DEADLINE IS ARMED ON THE HOLDER'S FIRST DELIVERED TICK SINCE #447
+    (:class:`_ArmedOnTheStart`): the root's announcement and then the first
+    ``on_data``, because both halves need a holder that is already writing when
+    the kill lands. Before, the 2.0 s held the shell's start, the root's, its
+    ``aelix_ai`` import and the holder's, and on windows-latest it ran out
+    first six times — five with no announcement (runs 37519654733,
+    38125116937, 38171423340, 38546781853, 38994209163) and one announced
+    with no tick delivered (run 39020885368: ``on_data never fired``).
     """
 
     marker = tmp_path / "pids.txt"
+    what = "on_data placement"
     registrar = _registrar(marker, strays)
     idents: list[int] = []
     stamps: list[float] = []
@@ -3161,21 +4021,28 @@ async def test_on_data_runs_on_the_loop_thread_and_never_after_the_return(
         idents.append(threading.get_ident())
         stamps.append(time.monotonic())
 
+    gate = _ArmedOnTheStart(
+        lambda: registrar.pids is not None and bool(idents),
+        "the root's announcement and the holder's first delivered tick",
+    )
+    gate.install(monkeypatch)
     ops = create_local_bash_operations()
     command = _holder_command(tmp_path, marker, tick=0.02)
-    # 2.0 for case 4's reason: the timeout clock starts at the ``[shell, flag,
-    # command]`` spawn, so at 0.5 the kill can land before the holder has
-    # written its first tick and ``on_data never fired`` is what the case
-    # reports. Emulating pwsh's 0.5-0.57 s startup it did exactly that.
+    # 2.0 for case 4's reason, from before #447: the timeout clock started at
+    # the ``[shell, flag, command]`` spawn, so at 0.5 the kill could land
+    # before the holder had written its first tick and ``on_data never fired``
+    # was what the case reported. Emulating pwsh's 0.5-0.57 s startup it did
+    # exactly that. The clock starts on the first tick now; the number stays.
     task = asyncio.ensure_future(ops.exec(command, str(tmp_path), on_data=on_data, timeout=2.0))
+    started = time.monotonic()
 
     try:
-        result = await _bounded(task, _bound(2.0) + 5.0, "on_data placement")
+        result = await _bounded(task, _bound(2.0) + 5.0 + _START_UP_BOUND, what)
     finally:
         returned_at = time.monotonic()
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    held = _armed_on_the_start(gate, pids, timeout=2.0, what=what)
     assert result.timed_out is True
     assert idents, "on_data never fired — the case measured nothing"
     assert set(idents) == {threading.get_ident()}, (
@@ -3187,6 +4054,12 @@ async def test_on_data_runs_on_the_loop_thread_and_never_after_the_return(
     # will never look at.
     await asyncio.sleep(0.5)
     assert len(idents) == delivered_by_the_return
+    warnings.warn(
+        f"bash exec on_data placement: {delivered_by_the_return} deliveries in "
+        f"{returned_at - started - held:.3f}s less a {held:.3f}s hold for the first tick on "
+        f"{sys.platform}",
+        stacklevel=1,
+    )
 
 
 # === 12: the belt around the attach =========================================
