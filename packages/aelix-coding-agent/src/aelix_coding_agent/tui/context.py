@@ -2042,6 +2042,13 @@ class AelixTUIContext:
         commonly arrives more than once for one turn, and this keeps that from
         costing extra invalidates on a paint path with a flicker-regression
         history.
+
+        So this method is NOT a repaint a caller can rely on for any other
+        segment (#534): a model switch inside one context window reached the
+        footer only through here, the label did not change, and the ``✱`` id
+        stayed on the old model until the next turn ended. The ``model_select``
+        and ``thinking_level_select`` hooks in ``run_tui`` repaint the footer
+        themselves, unconditionally — once per user-made change, not per turn.
         """
         if label == self._context_label:
             return

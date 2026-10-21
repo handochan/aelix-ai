@@ -386,4 +386,6 @@ job is text.
   status line says why, with the reason the check before every prompt gives. In
   the TUI, a model that cannot run at all (the last two) is refused before that
   check: with the same reason while any model is available, and with "No
-  provider configured. Run /login to add one." when none is.
+  provider configured. Run /login to add one." when none is. The footer's `✱`
+  model and `🧠` level change as soon as the status line appears, and a use
+  that fails leaves them on the model and level you stayed on.

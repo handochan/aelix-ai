@@ -712,7 +712,12 @@ class AgentProfileService:
             # turn at most, and only on a profile that fails AFTER its model was
             # accepted. Left as-is rather than re-emitting, because re-emitting
             # is the thing this block was written not to do; recorded in the
-            # ADR-0116 #249 amendment.
+            # ADR-0116 #249 amendment. #534 keeps it to the denominator: the
+            # same hook (and the ``thinking_level_select`` one) now repaint the
+            # footer's ``✱`` id and ``🧠`` level on the way in, so the TUI's
+            # ``/agents use`` handler repaints the footer again after a failed
+            # use (``tui/commands.py``) and both read the values restored here.
+            # The meter's label is cached, and that repaint does not re-derive it.
             self.parsed.__dict__.update(durable_snapshot)
             self.active = previous_active
             self.skills_holder["result"] = previous_skills

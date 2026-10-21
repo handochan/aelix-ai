@@ -89,7 +89,8 @@ class CommandContext:
     refresh_footer: Callable[[], None] | None = None
     """``run_tui`` wires this to ``context._refresh_footer`` so ``/model`` can
     re-render the footer ``✱ {model}`` segment after a switch (the footer is a
-    cached string recomposed only on refresh). ``None`` in headless tests."""
+    cached string recomposed only on refresh), and ``/agents use`` after a use
+    that succeeded or was rolled back (#534). ``None`` in headless tests."""
     model_picker: Callable[[], Awaitable[None]] | None = None
     trust_action: Callable[[], Awaitable[None]] | None = None
     """``/trust`` — the project-trust selector (#112, pi ``showTrustSelector``).
@@ -253,6 +254,20 @@ async def _help_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(build_help_renderable(ctx.commands))
 
 
+def _refresh_footer_quietly(ctx: CommandContext) -> None:
+    """Recompose the footer from live state, when a host wired it; never raises.
+
+    The footer is a cached string (``CommandContext.refresh_footer``), so a
+    command that changes what a segment reads repaints it here rather than
+    leaving the old value up until the next unrelated repaint. A footer failure
+    must not turn the command's own outcome into an error.
+    """
+
+    if ctx.refresh_footer is not None:
+        with contextlib.suppress(Exception):
+            ctx.refresh_footer()
+
+
 async def _model_handler(ctx: CommandContext, args: str) -> None:
     """``/model [id]`` — no arg opens the rich picker; an id switches directly.
 
@@ -354,9 +369,7 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         )
     # The footer ✱ segment is a cached string — refresh it so it reflects the
     # new model immediately (not only on the next unrelated repaint).
-    if ctx.refresh_footer is not None:
-        with contextlib.suppress(Exception):
-            ctx.refresh_footer()
+    _refresh_footer_quietly(ctx)
 
 
 async def _clear_handler(ctx: CommandContext, args: str) -> None:
@@ -773,7 +786,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3632-3649`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3689-3706`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -904,7 +917,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2822`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2875`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1195,6 +1208,19 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
         except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
             ctx.commit(Text(f"✖ agents use failed: {exc}", style="bold red"))
             return
+        finally:
+            # #534 — repaint the footer from the live harness on BOTH outcomes,
+            # as ``/model`` does after a switch. A use that succeeds is already
+            # repainted by the ``model_select`` / ``thinking_level_select`` hooks
+            # its setters emit; this is for the one that fails after its
+            # ``set_model``: the rollback writes the model and level back
+            # without an event (``agents/service.py``), and either hook's
+            # repaint on the way in would otherwise leave the abandoned
+            # profile's ``✱`` id on screen beside the red line that says
+            # nothing changed. (The context meter's denominator stays the #249
+            # known gap: the label is cached and this repaint does not re-derive
+            # it.)
+            _refresh_footer_quietly(ctx)
         ctx.commit(Text(status, style="green"))
         return
 

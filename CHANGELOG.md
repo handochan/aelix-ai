@@ -660,6 +660,21 @@ unwritten. Add them with the next release.
   has `/new` start on yours; and if such a provider lists both `mygw/x` and
   `mygw/mygw/x`, a profile with `model: mygw/mygw/x` runs `mygw/x`, then
   `mygw/mygw/x` after `/new`.
+- **The footer shows the model and thinking level you switched to as soon as
+  you switch (#534, ADR-0116 amendment 2026-10-22).** After an `/agents use`
+  that changed the model to one with the same context window - another model
+  of the same provider, or of another provider with the same window - the
+  footer's `✱` kept the old model's name until the next answer finished, while
+  your next prompt already went to the new model. Launched with
+  `--model openrouter/auto --agent orprof` (a profile with
+  `provider: openrouter`), `/agents use --none` sent the next prompt as `auto`
+  under a footer reading `openrouter/auto`. An extension's `ctx.set_model` did
+  the same. The `🧠` level stayed on the old value after `/thinking high` (which
+  printed `thinking → high` above `🧠 off`), after a profile's `thinking:` and
+  after an extension's `ctx.set_thinking_level`. All of these now repaint the
+  footer at once. An `/agents use` that fails after switching the model (an
+  extension refused its thinking level, say) leaves the footer on the model you
+  stayed on. `/model`, the pickers and `/settings` already did this.
 - **A compaction or a branch summary whose summary request hits a provider `502` or
   a transient OAuth refresh failure is retried, as the turn is (#409, ADR-0128
   amendment 2026-10-21).** `/compact`, rpc `compact`, an extension's `ctx.compact()`

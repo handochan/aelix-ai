@@ -155,3 +155,62 @@ and `estimate_context_tokens` has been reading it off `_state.messages` at rest
 ever since (`core.py:2761` → `compaction.py:1130`/`:1102`); nothing in
 `aelix-agent-core` changed on this branch. What #249 adds is a second reader of
 the same usage — off the `message_end` event — for the mid-turn figure.
+
+## Amendment (2026-10-22, #534)
+
+The `model_select` hook the #249 amendment registered is the only repaint that
+`/agents use` and an extension's `ctx.set_model` reach, and it repainted the
+footer only through `set_context_label`, which returns on an unchanged label. A
+switch inside one context window, on the same provider or not, therefore left
+the footer's `✱` id on the old model until the next turn ended, while the next
+prompt already went to the new one. Measured on `e8ba1009` in a pty (fake keys,
+a local recorder, `.omc/probes/b4-b-live/534/`): `/agents use` from `gwa/m1`
+onto `gwa/m2` and onto `gwb/n1` (all at 128K), `/agents use --none` after
+`--model openrouter/auto --agent orprof` (the issue's example: footer
+`openrouter/auto`, request `model=auto`), and an extension's `ctx.set_model`.
+A use onto a model with another window repainted at once, because its label
+changed. The `🧠` segment had the same defect with no hook at all: `/thinking
+high` printed `thinking → high` above `🧠 off`, and a profile's `thinking:` and
+an extension's `ctx.set_thinking_level` left it as well. `/model`, the model
+and thinking pickers, the pick after `/login` and the `/settings` thinking row
+repaint themselves and were not affected; a session swap repaints through its
+own path (measured: `/resume` onto a session last run on another model at the
+same label).
+
+Three changes:
+
+- `_model_select_hook` calls `_refresh_footer()` after the meter, whatever the
+  meter did, under its own `suppress` — on both branches (the idle stats read
+  and the synchronous paint while a live `message_end` figure is held).
+- A `thinking_level_select` hook (`_thinking_level_select_hook`,
+  `source="tui-footer"`, `error_mode="continue"` for the same reason as the
+  meter's: `set_thinking_level` raises for a handler error after the level is
+  assigned) repaints the footer. It has the `model_select` hook's lifecycle:
+  registered in `_rebind`, moved to the new bus on every swap and reload,
+  released at teardown.
+- `/agents use` repaints the footer after the use, on success and on failure.
+  The hooks already cover a use that succeeds; this is for the rollback.
+  `AgentProfileService.use` restores the model and the level by assignment,
+  with no event, and with either hook alone the footer kept the abandoned
+  profile's `✱` id beside the red `✖ agents use failed` line (sabotage: red
+  with each hook present and this repaint removed).
+
+pi: the footer reads `session.state.model` on every render
+(`modes/interactive/components/footer.ts` `render`, at `fdce48eb4`), so it has
+no cached id to go stale, and it invalidates on `thinking_level_changed`
+(`interactive-mode.ts` `handleEvent`). The two hooks are the equivalent for a
+footer that is a composed string; pi has no `/agents use`.
+
+The #249 known gap above is unchanged: after a rollback the footer now shows the
+restored id and level, but the context label is cached and only its next
+refresh re-derives it. At idle the label was already right after a refused use
+across windows (`gwa/m1` → `gwa/big`, measured), because the idle branch
+schedules a stats read that lands after the rollback; the gap is the
+synchronous branch.
+
+Cost: one composed string and one `invalidate` per model or level change. Two
+`invalidate`s in one synchronous run cost one redraw (prompt_toolkit's
+`Application.invalidate` returns while one is pending). The unchanged-label
+short-circuit in `set_context_label`, which the flicker history asked for,
+stays; its docstring now says it is not a repaint any other segment can rely
+on.

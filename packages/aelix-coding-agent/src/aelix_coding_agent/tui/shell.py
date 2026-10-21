@@ -2172,6 +2172,9 @@ async def run_tui(
     # #249 — same lifecycle, for the ``model_select`` hook that keeps the meter
     # honest across a model switch.
     model_select_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
+    # #534 — and for the ``thinking_level_select`` hook that repaints the
+    # footer's ``🧠`` segment.
+    thinking_select_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
     context_usage_tasks: set[asyncio.Task[None]] = set()
     history_tasks: set[asyncio.Task[None]] = set()
@@ -2271,7 +2274,9 @@ async def run_tui(
         context.set_context_label(_format_context_label(usage))
 
     async def _model_select_hook(_event: object, _ctx: object = None) -> None:
-        """#249 — every model change re-derives the meter, immediately.
+        """#249 — every model change re-derives the meter, immediately; #534 —
+        and repaints the footer, so its ``✱`` id is the model the next prompt
+        goes to even when the meter's label did not change.
 
         Registered on the harness's own ``model_select`` hook rather than in
         ``/model``'s handler, because ``harness.set_model`` (``core.py:2783``)
@@ -2317,6 +2322,40 @@ async def run_tui(
                 )
             else:
                 _schedule_context_usage_refresh()
+        # #534 — and the footer's ``✱`` id, whatever the meter did. The meter
+        # repaints only through ``set_context_label``, which returns on an
+        # unchanged label, and a switch inside one context window (``gwa/m1`` →
+        # ``gwa/m2``, or across providers at the same window) leaves the label
+        # as it was — so the footer kept the old id until the next turn ended
+        # while the prompt already went to the new one. ``/model`` hid this by
+        # repainting itself; ``/agents use`` and an extension's
+        # ``ctx.set_model`` reach only this hook. Its own guard, so a footer
+        # failure and a meter failure cannot cost each other their repaint.
+        with contextlib.suppress(Exception):
+            context._refresh_footer()
+
+    async def _thinking_level_select_hook(_event: object, _ctx: object = None) -> None:
+        """#534 — every thinking-level change repaints the footer's ``🧠`` segment.
+
+        The same funnel argument as ``_model_select_hook``, one setter over:
+        ``harness.set_thinking_level`` assigns the level and then emits
+        ``thinking_level_select``, and ``/thinking <level>``, ``/agents use`` (a
+        profile's ``thinking:``, set after its model) and an extension's
+        ``ctx.set_thinking_level`` all reach it without repainting — measured,
+        each left ``🧠 off`` on screen after the level changed. The picker and
+        the ``/settings`` row already repaint themselves; a second repaint
+        there costs one composed string. pi invalidates its footer on the same
+        signal (``interactive-mode.ts`` ``case "thinking_level_changed"``).
+
+        Registered with ``error_mode="continue"`` for ``_model_select_hook``'s
+        reason: ``set_thinking_level`` raises ``AgentHarnessError`` for a
+        handler error AFTER ``_state.thinking_level`` is replaced, so a footer
+        bug would otherwise report a level that took as a failed switch. The
+        ``suppress`` is the same redundant local guard.
+        """
+
+        with contextlib.suppress(Exception):
+            context._refresh_footer()
 
     # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
     # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
@@ -2703,6 +2742,20 @@ async def run_tui(
                 "model_select",
                 _model_select_hook,
                 source="tui-context-meter",
+                error_mode="continue",
+            )
+        # #534 — the thinking-level repaint moves with the bus for the same
+        # reason, on the same terms.
+        prior_thinking_select = thinking_select_unsub_holder["u"]
+        if prior_thinking_select is not None:
+            with contextlib.suppress(Exception):
+                prior_thinking_select()
+        thinking_select_unsub_holder["u"] = None
+        with contextlib.suppress(Exception):
+            thinking_select_unsub_holder["u"] = new_harness.hooks.on(
+                "thinking_level_select",
+                _thinking_level_select_hook,
+                source="tui-footer",
                 error_mode="continue",
             )
         # A session swap (/resume, new, fork) builds a BRAND-NEW harness whose
@@ -3328,6 +3381,10 @@ async def run_tui(
         if model_select_unsub is not None:
             with contextlib.suppress(Exception):
                 model_select_unsub()
+        thinking_select_unsub = thinking_select_unsub_holder["u"]
+        if thinking_select_unsub is not None:
+            with contextlib.suppress(Exception):
+                thinking_select_unsub()
         out_chrome.exit()
         # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
         # shutdown lands mid-backoff. The end-event handler is the normal

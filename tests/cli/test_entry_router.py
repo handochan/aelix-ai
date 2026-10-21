@@ -730,7 +730,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     # route, and does NOT claim non-existent doc files.
     # #111 — CORRECTED. This used to assert ``/login`` was ABSENT, on the
     # stated ground that "Aelix does not register one". It does:
-    # ``tui/commands.py:2181`` is ``BuiltinCommand("login", "Sign in / add a
+    # ``tui/commands.py:2207`` is ``BuiltinCommand("login", "Sign in / add a
     # provider API key", …)``, and the first-run wizard has been telling users
     # to run it since #23. The message now names it — prefixed by "run
     # 'aelix'", which is what makes a TUI-only command actionable from a

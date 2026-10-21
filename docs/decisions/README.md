@@ -113,6 +113,14 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the `/model` and `/scoped-models` pickers, a `/model` miss, `/login`, `aelix update --models`);
   `--list-models` reads the cache.
 
+- [0116 — TUI P0 consumer batch: footer meter, real mode, diffs, /export, /thinking, usage capture](0116-tui-p0-consumer-batch.md)
+  (amended 2026-10-22; #534). Every model or thinking-level change repaints the footer when it
+  happens: the `model_select` hook repaints it whatever the meter's label did (a switch inside one
+  context window left `✱` on the old id until the turn ended), a `thinking_level_select` hook does
+  the same for `🧠` (`/thinking <level>`, a profile's `thinking:`, an extension's
+  `ctx.set_thinking_level`), and `/agents use` repaints after a use it rolled back. The #249
+  rollback gap stays the meter's denominator only.
+
 - [0221 — Reasoning streams to a live window, and the renderer must give it back](0221-reasoning-streams-to-a-live-window-the-renderer-must-give-back.md)
   (amended 2026-10-14; #285). A text block that arrives whole (`text_start` → `text_end`, no
   delta) commits when it closes, reasoning first; one mark — "a reasoning flush closed the answer
