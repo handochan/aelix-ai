@@ -1307,6 +1307,35 @@ unwritten. Add them with the next release.
   load, so a hook that times out or is cancelled can freeze the interface for
   a second or more. It is recorded as open in ADR-0238.
 
+- **Tests only: the `run_contained` case whose command leaves a helper behind
+  no longer fails when Windows is slow to start the command or the helper, and
+  it now says how the wait after the command's exit ended (#503).** Nothing
+  users run changed. `test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail`
+  checks that `run_contained` comes back soon after a command exits without
+  waiting for a helper the command left holding its output, and keeps the line
+  the helper writes just after the exit. Its 2.6 s limit counted from the call,
+  so Python's start-up for the command and the helper's launch had to fit in
+  it too. On windows-latest it failed once at 2.718 s with every result right,
+  and its log could not say whether the command had finished late or the wait
+  had run to its 2.0 s cap. The case now times from the flag the command
+  writes as its last action, as #476 did for the same command through `exec`:
+  the 2.0 s cap plus half a second. The start-up waits under the 30 s hang
+  guard instead. On every run the case also reports, from the wait's own
+  record, whether it ended quickly, at its cap or past it, with the time of
+  each stage. The helper had a limit of its own: it had to start within about
+  half a second, or its line came too late and both cases failed. The command
+  now waits for the helper to say it has started. On macOS a command started
+  2.5, 6 or 9 s late and a helper started 1 or 3 s late no longer fail the
+  case, and a wait past the cap still does. On windows-latest the old case and
+  the new one ran interleaved on the same runners (run 39657167068, Python 3.11
+  to 3.14). With no load neither failed in 600 runs. Under eight busy loops
+  on the runner's four CPUs neither failed in 1080 runs either, so that load
+  does not reproduce the CI failure. Every wait after the exit ended quickly
+  and none at its cap. The new case came back a median 0.30 s after the
+  command's exit, and at most 0.52 s. The helper started a median 0.44 to
+  0.49 s after the command and at most 1.04 s, more than the half second the
+  old command left it.
+
 - **Tests only: the bash drain-cap case's deadline arm no longer fails when
   Windows starts the shell too slowly to finish inside the deadline (#446).**
   Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`

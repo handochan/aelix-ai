@@ -3273,7 +3273,7 @@
   "tests/oauth/test_auth_storage.py:64-64": [
    "@pytest.mark.skipif(sys.platform == \"win32\", reason=\"POSIX permissions only\")"
   ],
-  "tests/process_tree/test_run_contained_real_processes.py:477-481": [
+  "tests/process_tree/test_run_contained_real_processes.py:603-607": [
    "# NOT ``+ REAP_GRACE_SECONDS``. A SIGKILLed root is reaped in milliseconds",
    "# — this case measures 1.107-1.118 s end to end on darwin — so folding the",
    "# reap grace in made the bound 8.0 s, which is precisely what let revision",

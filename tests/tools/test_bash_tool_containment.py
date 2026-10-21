@@ -122,7 +122,7 @@ MARK = "aelix222"
 #: formula is #221's and the exclusion is the load-bearing half: ``bound =
 #: timeout + KILL_DRAIN_SECONDS + 1.5``, NEVER ``+ REAP_GRACE_SECONDS`` —
 #: folding the reap grace in is what let a 6.011 s regression pass its own
-#: assertion (``test_run_contained_real_processes.py:477-481``).
+#: assertion (``test_run_contained_real_processes.py:603-607``).
 SLACK = 1.5
 
 #: Added to every bound on win32: ``hard_kill`` shells out to ``taskkill.exe

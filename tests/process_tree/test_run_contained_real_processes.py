@@ -45,9 +45,10 @@ import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import pytest
+from aelix_ai.utils import _process_tree
 from aelix_ai.utils._process_tree import (
     EXIT_DRAIN_SECONDS,
     INTERRUPT_REAP_SECONDS,
@@ -67,6 +68,12 @@ from tests.process_tree.test_process_tree_real_processes import (
     strays as _strays_fixture,
 )
 from tests.process_tree.test_run_contained import _run_bounded
+from tests.rpc._bash_phases import HANG_GUARD_SECONDS
+
+if TYPE_CHECKING:
+    # For a signature only: that file imports this one (``MARK``, ``_registrar``),
+    # so the names its cases need at run time are imported inside them.
+    from tests.process_tree.test_the_drain_asks_the_pipe import HardEnd
 
 _T = TypeVar("_T")
 
@@ -129,6 +136,18 @@ time.sleep(hold)
 #: byte is STRICTLY after the exit on every platform (``os.getppid`` does not
 #: change on Windows when the parent dies, so the flag file is the portable
 #: happens-after, not the ppid).
+#:
+#: THE HOLDER IS STARTED BEFORE THE QUIET SPELL BEGINS (#503). ``late`` reaches
+#: the drain only if the holder is already watching for the flag when the root
+#: writes it, and the holder is a python of its own: until #503 its interpreter
+#: start-up had to fit inside the root's quiet spell and one grace, about
+#: 0.55 s from its spawn, or ``late`` came after the drain's idle end and the
+#: case failed on ``b'done\\n'`` — measured on darwin with only the holder
+#: started 1.0 s late. So the holder writes ``<leaving>.ready`` as its first
+#: statement and the root waits for that before it writes ``done``, the
+#: handshake :data:`ROOT_WITH_A_CHATTY_HOLDER` uses. Both start-ups now come
+#: before ``done``, where a case that bounds the drain from the flag does not
+#: count them, and the quiet spell is still the 0.5 s after ``done``.
 ROOT_WITH_A_LATE_TAIL = """\
 import os
 import subprocess
@@ -141,6 +160,8 @@ child = subprocess.Popen(
         sys.executable,
         "-c",
         "import os, sys, time\\n"
+        "with open(sys.argv[1] + '.ready', 'w', encoding='utf-8') as handle:\\n"
+        "    handle.write('ready')\\n"
         "while not os.path.exists(sys.argv[1]):\\n"
         "    time.sleep(0.01)\\n"
         "time.sleep(0.05)\\n"
@@ -156,6 +177,8 @@ tmp = marker + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     handle.write(f"{os.getpid()} {child.pid}\\n")
 os.replace(tmp, marker)
+while not os.path.exists(leaving + ".ready"):
+    time.sleep(0.005)
 sys.stdout.buffer.write(b"done\\n")
 sys.stdout.buffer.flush()
 time.sleep(0.5)
@@ -393,7 +416,7 @@ def test_timeout_ends_a_pipe_holding_grandchild_and_returns_in_bound(
 
 
 def test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail(
-    tmp_path: Path, strays: list[int]
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Bug 2: a root that exited 0 is a SUCCESS, and its tail is not binned.
 
@@ -414,34 +437,137 @@ def test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail(
     ``b'done\\r\\nlate\\r\\n'`` against this exact-bytes assertion (run
     33959649661). The helper is a byte pipe; the sites own their own newline
     normalisation.
+
+    THE BOUND RUNS FROM THE ROOT'S EXIT, NOT FROM THE CALL (#503). It was
+    ``elapsed <= 0.5 + EXIT_DRAIN_SECONDS + 2.0`` (2.6 s) from the call, which
+    also held the worker thread, the root's interpreter start-up and its
+    holder's spawn with no share of the bound for any of them, and left a drain
+    at its hard cap 0.1 s for all of that. On windows-latest it failed at
+    2.718 s with every result right (PR run 39020757463, py3.13), and its log
+    could not say whether the root had exited late or the drain had run to
+    that cap. It is now #476's bound for the same root through ``exec``: the
+    call is back within 2.0 s — the drain's hard cap, as a literal — plus
+    #341's ``UNEXPLAINED`` of the root's own ``leaving`` flag, its last
+    statement (:class:`_FirstSeen`); the half second is for what lies outside
+    the drain's rule, the root's exit after its flag and the call's way back
+    after the drain's last look. The start-ups are waited for under #449's
+    30 s hang guard (:data:`_START_UP_BOUND`: the registrar and the watchdog),
+    not inside the bound, and the holder's is out of the drain too (the
+    handshake in :data:`ROOT_WITH_A_LATE_TAIL`).
+
+    WHAT THE LITERAL PINS, AND WHAT IT DOES NOT (#503 review round 2). It
+    pins a drain that cannot prove: that drain runs to #260's hard end, which
+    the replay below reads on the same 2.0 s, and there a cap that grew fails
+    the bound instead of growing it. It does not pin this root's usual drain:
+    the holder goes quiet after ``late``, a reader that can prove ends the
+    drain on its idle rule about 0.16 s after the flag, and a cap grown to
+    30 s passes this case and #476's. The cases that run a drain to its cap
+    are what fail that cap: two in ``tests/tools/test_bash_tool_containment.py``,
+    five in ``tests/tools/test_bash_drain_asks_the_pipe.py`` and three in
+    ``tests/process_tree/test_the_drain_asks_the_pipe.py``.
+
+    HOW THE DRAIN ENDED IS READ OFF ITS OWN RECORD, not off the clock: #341's
+    ``DrainLog`` logs the drain's looks and ``the_hard_end`` replays #260's
+    hard end on them, on the same 2.0 s. The drain stopped on its idle rule
+    before that end, AT it — the end #260 documents for a reader that cannot
+    prove, which the call-timed ceiling passed by tens of milliseconds — or
+    went on PAST it, and a look it took late is named. Every run warns the
+    stages (:func:`_exited_root_stages`) and that end before any verdict, and
+    a failure carries both, so a root that exited late and a drain at its cap
+    read apart. Not covered, as at #476: this process stopped for more than
+    about 2.3 s inside the drain itself fails the bound, and the record then
+    shows the late look.
     """
+
+    # Here, not in the module's import block: that file imports this one
+    # (``MARK``, ``_registrar``), so a module-level import would be a cycle.
+    from tests.process_tree.test_the_drain_asks_the_pipe import (
+        UNEXPLAINED,
+        DrainLog,
+        the_hard_end,
+    )
 
     marker = tmp_path / "pids.txt"
     leaving = tmp_path / "leaving.flag"
+    # The holder's half of the handshake: written as its first statement.
+    ready = tmp_path / "leaving.flag.ready"
     argv = [sys.executable, "-c", ROOT_WITH_A_LATE_TAIL, str(marker), str(leaving)]
-    registrar = _registrar(marker, strays)
+    # The claim's hard cap, as the literal the old ceiling had, for the bound
+    # and for the replay alike: one read off DRAIN_CAP_SECONDS would grow with a cap
+    # that grew and pass a drain that cannot prove (#260's hard end), the one it pins.
+    cap = 2.0
+    after_the_exit = cap + UNEXPLAINED
+    log = DrainLog()
+    monkeypatch.setattr(_process_tree, "time", log)
+    monkeypatch.setattr(
+        _process_tree, "_exit_drain_cap", log.exit_drain_cap(_process_tree._exit_drain_cap)
+    )
+    # Every poll runs as long as the watchdog lets the start-ups take, or until
+    # it is settled: one that stopped first would be a start-up limit of its
+    # own (#447's 5 s registrar under a "10 s" wait).
+    registrar = _registrar(marker, strays, bound=_START_UP_BOUND)
+    holder_ready = _first_seen(ready)
+    left = _first_seen(leaving)
     started = time.monotonic()
 
     try:
         result = _run_bounded(
             lambda: run_contained(argv, timeout=None),
-            0.5 + EXIT_DRAIN_SECONDS + 2.0 + 5,
+            _START_UP_BOUND + 0.5 + after_the_exit + 5,
             "an exited root with a pipe holder",
         )
     finally:
-        elapsed = time.monotonic() - started
+        returned = time.monotonic()
+        left_at = left.settle()
+        ready_at = holder_ready.settle()
         pids = registrar.settle()
 
-    assert pids is not None, _NOT_ANNOUNCED
-    _, holder = pids
-    assert result.returncode == 0
-    assert result.stdout == b"done\nlate\n"
-    assert elapsed <= _EXITED_ROOT_BOUND, _late("the exited-root call", elapsed, _EXITED_ROOT_BOUND)
-    assert probe_state(holder) == STATE_ALIVE
-    warnings.warn(
-        f"run_contained exited-root drain: {elapsed:.3f}s on {sys.platform}",
-        stacklevel=1,
+    looks = log.looks()
+    hard = (
+        the_hard_end(log.armed_from, looks, cap=cap, quantum=_process_tree._DRAIN_POLL_SECONDS)
+        if log.leg == "exit" and log.armed_from is not None and looks
+        else None
     )
+    stages = _exited_root_stages(
+        started=started,
+        returned=returned,
+        announced_at=registrar.announced_at,
+        ready_at=ready_at,
+        left_at=left_at,
+        left_late=left.seen_late or (left_at is not None and left_at >= returned),
+        hard=hard,
+        armed=log.leg == "exit",
+    )
+    # On every run, before any verdict, so a green leg's ``-q`` log carries the
+    # stages and the end too (the old warning came only after a pass).
+    warnings.warn(f"run_contained exited-root drain: {stages} on {sys.platform}", stacklevel=1)
+
+    assert pids is not None, (
+        f"the root never announced its tree within {_START_UP_BOUND}s — the case measured "
+        f"nothing ({stages})"
+    )
+    _, holder = pids
+    assert result.returncode == 0, f"the root exited {result.returncode} ({stages})"
+    assert result.stdout == b"done\nlate\n", f"the root's tail is not all there ({stages})"
+    # ``late`` is written only once the holder has seen the flag, so a flag
+    # that is not there now is a case that measured something else.
+    assert left_at is not None, (
+        "the root's leaving flag never appeared, yet the call came back with its tail — "
+        f"the case measured nothing ({stages})"
+    )
+    held = returned - left_at
+    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330, #313): the exit drain ends
+    # the call, not the holder, which lives 30 s past the flag.
+    assert held <= after_the_exit, (
+        f"the exited-root call came back {held:.3f}s after its root's leaving flag, past the "
+        f"{after_the_exit:.1f}s the exit drain may hold it (its {cap} s hard cap past the exit + "
+        f"UNEXPLAINED {UNEXPLAINED} outside the drain's rule; DRAIN_CAP_SECONDS is "
+        f"{_process_tree.DRAIN_CAP_SECONDS}). The drain's record says which: an end PAST its "
+        f"hard end is a drain that held the call for the holder, a late look is this process "
+        f"stopped or a drain armed late, and time outside the drain is its arming or its "
+        f"return ({stages})"
+    )
+    assert probe_state(holder) == STATE_ALIVE
 
 
 # === the asymmetry, and the leaked-reader bound =============================
@@ -1088,9 +1214,14 @@ _NOT_ANNOUNCED = (
     "— the case measured nothing"
 )
 
-#: :func:`test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail`'s
-#: ceiling: the root's 0.5 s quiet spell, one idle grace, and the flat cap.
-_EXITED_ROOT_BOUND = 0.5 + EXIT_DRAIN_SECONDS + 2.0
+#: How long a case here that keeps its root's start-up out of what it asserts
+#: waits for that start-up: its registrar's poll, and on top of its watchdog
+#: (#503, as #476's ``exec`` case does for the same root). #449's hang guard,
+#: sized on windows-latest, where a python root's spawn of its child once took
+#: 4.73 s and put its marker at 5.73 s, past :data:`_ANNOUNCE_BOUND`. A hang
+#: guard, NOT a claim about ``run_contained``: a healthy start never comes
+#: near it.
+_START_UP_BOUND = HANG_GUARD_SECONDS
 
 
 def _late(what: str, elapsed: float, bound: float) -> str:
@@ -1113,7 +1244,8 @@ class _FirstSeen(threading.Thread):
     :data:`ROOT_WITH_A_LATE_TAIL` writes its ``leaving`` flag as its last
     statement, so this stamp is the case's own reading of that root's exit,
     and a bound that runs from it holds the exit drain and the call's return
-    and NONE of the root's start-up, its holder's spawn or its quiet spell. On
+    and NONE of the root's start-up, its holder's spawn and start-up (#503's
+    handshake puts that before the quiet spell) or its quiet spell. On
     windows-latest those are what a stalled runner stretches: every failure
     #476's measurement reproduced under eight busy loops had the root exit
     2.31-2.75 s after the call and the drain take 0.14-0.22 s, against a
@@ -1170,3 +1302,73 @@ def _first_seen(path: Path) -> _FirstSeen:
     thread = _FirstSeen(path)
     thread.start()
     return thread
+
+
+def _exited_root_stages(
+    *,
+    started: float,
+    returned: float,
+    announced_at: float | None,
+    ready_at: float | None,
+    left_at: float | None,
+    left_late: bool,
+    hard: HardEnd | None,
+    armed: bool,
+) -> str:
+    """Where the exited-root case's call spent its time, and how its drain ended (#503).
+
+    Each stamp from the call: the root's announcement (its start-up), its
+    holder's ``ready`` (that start-up, behind the handshake), the root's
+    ``leaving`` flag (the quiet spell's end), then the drain's own record — the
+    exit it was armed from and its last look — and the call's return. The end
+    comes from the replay (``the_hard_end``, on the case's cap), never from the
+    clock: a drain whose last look was its first at or past the hard end ended
+    AT it, proof or no proof; one that looked there and went on ended PAST it
+    (a cap that grew, or a drain that waited for the holder); one that stopped
+    before it ended on its idle rule with a proof, or found every reader at
+    EOF. A look more than a grace after the drain meant to take it is named —
+    this process stopped, or a drain armed late — and so is what lies outside
+    the drain's rule, from the flag to the drain's arming and from its last
+    look to the return. So #503's two readings read apart: a root that exited
+    late has a late flag and a prompt drain, and a drain that ran to its cap
+    ends AT its hard end.
+    """
+
+    def at(stamp: float | None) -> str:
+        return "never seen" if stamp is None else f"{stamp - started:.3f}s"
+
+    flag = at(left_at) + (" (seen only once the call was back)" if left_late else "")
+    parts = [
+        f"the tree announced at {at(announced_at)}",
+        f"the holder ready at {at(ready_at)}",
+        f"the root's leaving flag at {flag}",
+    ]
+    if hard is None:
+        drain = (
+            "the exit drain ended before its first look (every reader had already ended)"
+            if armed
+            else "no exit drain was armed"
+        )
+    else:
+        last = hard.looks[-1][0]
+        parts.append(f"its exit seen by the drain at {at(hard.armed_from)}")
+        parts.append(f"the drain's last look at {at(last)}")
+        if hard.reached is None:
+            ended = "on its idle rule, before its hard end"
+        elif hard.reached == len(hard.looks) - 1:
+            ended = "AT its hard end"
+        else:
+            ended = f"PAST its hard end (look {hard.reached + 1} was at it and the drain went on)"
+        if hard.late_looks:
+            index, _late_at, behind = hard.late_looks[0]
+            ended += (
+                f", with {len(hard.late_looks)} late look(s), the first (look {index + 1}) "
+                f"{behind:.3f}s after it meant to look"
+            )
+        outside = f"the call back {returned - last:.3f}s after its last look"
+        if left_at is not None:
+            outside = f"armed {hard.armed_from - left_at:+.3f}s from the flag, {outside}"
+        drain = f"the drain ended {ended}; {outside} ({hard.summary()})"
+    parts.append(f"the call back at {at(returned)}")
+    held = "" if left_at is None else f", {returned - left_at:.3f}s after the flag"
+    return f"from the call: {', '.join(parts)}{held}; {drain}"
