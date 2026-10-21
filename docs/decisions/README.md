@@ -48,7 +48,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   threshold check that follows passes over an overflow the recovery owns, as pi's
   `_checkCompaction` returns from that case, so a failed recovery is not followed by a second
   compaction in the same prompt. Not covered: the auto-retry's cancelled backoff drops a
-  retriable error the same way (pi alike), a follow-up.
+  retriable error the same way (pi alike), a follow-up. #565 (amended 2026-10-22): the FU2
+  staleness guards compared the answer's seconds (`loop.py` `time.time()`) with the compaction
+  boundary's milliseconds, so after a session's first compaction no automatic compaction ran
+  again; they now read both in milliseconds (`_timestamp_ms`), sessions on disk unchanged.
 
 - [0126 — Auto-compaction trigger](0126-sprint-6h18-auto-compaction-trigger.md)
   (amended 2026-10-22; #469, #546). The harness reads settings.json `compaction` at each decision, as

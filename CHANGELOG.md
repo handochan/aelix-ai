@@ -655,6 +655,21 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Automatic compaction keeps working after a session's first compaction
+  (#565, ADR-0176 amendment 2026-10-22).** The guards that keep an answer from
+  before a compaction from triggering another compared the answer's time in
+  seconds, as aelix stamps it, with the compaction's time in milliseconds, so
+  every later answer read as older than the compaction: neither the threshold
+  compaction nor the compact-and-retry of a request refused as too long ran
+  again in that session, and a long conversation went on to fail every turn
+  with `prompt is too long`. Measured with the real `aelix -p -c` and a local
+  server, every answer reporting 190000 of a 200000 window: a compaction at
+  turn 2 and none at turns 3 to 5; after a first compaction, a request refused
+  as too long exited 1 with nothing compacted. Now both times are read in
+  milliseconds, as pi keeps them: turns 2 to 5 each compact, and the refused
+  request is compacted and sent again. Sessions saved before keep their
+  timestamps and compact again when reopened.
+
 - **The corporate-CA advice no longer reads as "edit certifi's own certificate
   file": its last line now says to use a copy of it with the CA appended (#556,
   ADR-0195 amendment 2026-10-22).** The advice for a certificate from an issuer
@@ -830,8 +845,8 @@ unwritten. Add them with the next release.
   pi's newer z.ai (`Prompt too long`, `Prompt exceeds max length`), DS4 and
   DashScope texts now count as a context overflow, so overflow recovery
   compacts. Not changed: the threshold itself (configurable since #469, above); the compaction
-  summary's own limits went with #506 (above). Found while measuring and left for a follow-up:
-  after a session's first compaction no automatic compaction runs again.
+  summary's own limits went with #506 (above). Found while measuring: after a session's first
+  compaction no automatic compaction ran again - fixed by #565 (above).
 
 - **After an `/agents use` that switches the model, `/new` stays on that model:
   OpenRouter's `auto` no longer turns into `openrouter/auto` (#398, ADR-0196).**

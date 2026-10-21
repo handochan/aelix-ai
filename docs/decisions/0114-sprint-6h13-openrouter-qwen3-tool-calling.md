@@ -196,7 +196,8 @@ After the first compaction in a session, neither threshold nor overflow compacti
 answer's `timestamp` (seconds, `loop.py` `time.time()`) with the compaction boundary in
 milliseconds, so every answer reads as older than the boundary. Measured with the same probe over
 13 turns: one compaction, then turns 11-13 failed with `prompt is too long` (an overflow the
-patterns do read) and no second compaction ran. A follow-up issue.
+patterns do read) and no second compaction ran. Filed as #565 and fixed there (ADR-0176, amendment
+2026-10-22): the guards read both timestamps in milliseconds.
 
 ### Review round 2 (2026-10-22)
 

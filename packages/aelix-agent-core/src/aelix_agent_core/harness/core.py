@@ -2178,9 +2178,9 @@ class AgentHarness:
             # consulted ONLY once the threshold trips so a non-triggering turn pays
             # no ``get_branch()`` boundary read. ``boundary_ms`` is the latest
             # compaction entry's timestamp in unix-ms (``None`` = no compaction
-            # yet). aelix live messages carry no timestamp (``None`` → current /
-            # not-stale); only session-rebuilt messages have a float ms to compare
-            # (the documented aelix divergence — pi messages always have one).
+            # yet). A turn's messages are stamped in seconds (``loop.py``), a rebuilt
+            # summary in ms: both are read in ms (:func:`_timestamp_ms`, #565); a
+            # message with no timestamp (``None``) is current, never stale.
             boundary_ms = get_latest_compaction_boundary_ms(
                 await self._session.get_branch()
             )
@@ -2191,8 +2191,8 @@ class AgentHarness:
                 # compaction on the first prompt after a compaction.
                 if (
                     last_assistant is not None
-                    and last_assistant.timestamp is not None
-                    and last_assistant.timestamp <= boundary_ms
+                    and (stamped_ms := _timestamp_ms(last_assistant.timestamp)) is not None
+                    and stamped_ms <= boundary_ms
                 ):
                     return
                 # Guard B (pi ``:1827-1835``): on the error/aborted estimate path
@@ -2200,7 +2200,7 @@ class AgentHarness:
                 # predates the boundary (its usage is stale).
                 if usage_index is not None:
                     usage_msg = self._state.messages[usage_index]
-                    usage_ts = getattr(usage_msg, "timestamp", None)
+                    usage_ts = _timestamp_ms(getattr(usage_msg, "timestamp", None))
                     if usage_ts is not None and usage_ts <= boundary_ms:
                         return
             # #334 — an ``abort()`` that landed during the branch read above
@@ -2306,9 +2306,9 @@ class AgentHarness:
         # Issue #4 (FU2 Guard A) — pi ``agent-session.ts:1781-1789``. Skip when the
         # most-recent assistant predates the latest compaction: a stale
         # pre-compaction error must not re-trigger overflow recovery on the first
-        # prompt after a compaction. A freshly-generated overflow error carries no
-        # timestamp (``None`` → not stale), so a genuine new overflow still
-        # recovers; only a rebuilt pre-boundary message (float ms) is skipped.
+        # prompt after a compaction. A fresh overflow error is stamped after the
+        # boundary (in seconds, read in ms by :func:`_timestamp_ms`, #565), so it
+        # still recovers; only a message from before the boundary is skipped.
         # Placed AFTER the overflow check so this per-turn recovery pass pays the
         # ``get_branch()`` boundary read ONLY when an overflow is actually present.
         boundary_ms = get_latest_compaction_boundary_ms(
@@ -2316,8 +2316,8 @@ class AgentHarness:
         )
         if (
             boundary_ms is not None
-            and last_assistant.timestamp is not None
-            and last_assistant.timestamp <= boundary_ms
+            and (stamped_ms := _timestamp_ms(last_assistant.timestamp)) is not None
+            and stamped_ms <= boundary_ms
         ):
             return False
         # #334 — an ``abort()`` during the read above: no compaction, no re-run
@@ -6365,6 +6365,35 @@ def _restore_failed_answer(
     ):
         return
     state.messages.append(failed)
+
+
+# === #565 — the staleness guards compare in one unit ==========================
+#
+# pi stamps messages with ``Date.now()`` and reads the compaction boundary with
+# ``new Date(entry.timestamp).getTime()``: both milliseconds. aelix stamps a turn's
+# messages with ``time.time()``, seconds (``loop.py``), and a rebuilt summary with its
+# entry's milliseconds (``session/context.py``), while
+# ``get_latest_compaction_boundary_ms`` is milliseconds. The guards compared the raw
+# numbers, so after a session's first compaction every answer read as older than the
+# boundary and no automatic compaction ran again. Sessions on disk keep their seconds:
+# the reading converts, nothing is rewritten. Here at the end of the module so that
+# no locked citation of the file moves.
+
+_SECONDS_EPOCH_LIMIT = 1e11
+"""Below this a timestamp is seconds, at or above it milliseconds (#565).
+
+The rule ``aelix_ai.providers._token_estimate._as_ms`` already applies (#563): 1e11
+seconds is the year 5138 and 1e11 milliseconds is 1973, so the ranges cannot meet.
+"""
+
+
+def _timestamp_ms(timestamp: Any) -> float | None:
+    """A message's ``timestamp`` in unix milliseconds, or ``None`` without one (#565)."""
+
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+        return None
+    value = float(timestamp)
+    return value * 1000.0 if value < _SECONDS_EPOCH_LIMIT else value
 
 
 def _overflow_case(harness: AgentHarness) -> bool:

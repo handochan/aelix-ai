@@ -1,6 +1,6 @@
 # ADR-0176 — overflow-compaction follow-ups: trailing-error exclusion, staleness guards, compaction events (#4)
 
-- **Status:** Accepted — LIVE. #391 amendment 2026-10-22 (the failed answer the recovery drops before its compaction is put back on every way out that does not re-run the turn, and the threshold check after it passes over that answer - review round 2; see the end).
+- **Status:** Accepted — LIVE. #391 amendment 2026-10-22 (the failed answer the recovery drops before its compaction is put back on every way out that does not re-run the turn, and the threshold check after it passes over that answer - review round 2; see the end). #565 amendment 2026-10-22 (the staleness guards read both timestamps in milliseconds; the divergence note under FU2 was false; see the end).
 - **Date:** 2026-06-30
 - **Sprint:** Moat chain — quick win (folded in after #36). Closes the three remaining #4 follow-ups; the #4 overflow body shipped in Batch 1 (ADR-0171).
 - **Pi pin:** `earendil-works/pi@734e08e`. All three are faithful back-ports of pi `packages/coding-agent/src/core/agent-session.ts` (overflow body cites SHA 927e980; behaviour identical at 734e08e).
@@ -17,6 +17,8 @@ The #4 overflow-recovery machinery (detect provider context-overflow → compact
 **FU2 — compaction-boundary staleness guards** (pi `:1781-1789` Guard A, `:1827-1835` Guard B). New `get_latest_compaction_boundary_ms(branch)` returns the latest compaction entry's timestamp in unix-ms (`None` = no compaction yet). Guard A (in BOTH `_check_auto_compaction` and `_try_overflow_recovery`): skip when the most-recent assistant predates the boundary — a stale pre-compaction usage/error must not re-trigger compaction on the first prompt after a compaction. Guard B (the error/aborted estimate branch of `_check_auto_compaction`): using the new `_EstimateResult.last_usage_index`, skip when the estimate's usage-source message predates the boundary.
 
 > **aelix divergence (documented):** pi messages always carry a timestamp; aelix `AssistantMessage.timestamp` is `float | None` — live adapters leave it `None`, only session-rebuilt messages carry float ms. So `timestamp is None` is treated as **current / not-stale** (a freshly-generated overflow still recovers; only a rebuilt pre-boundary message with a float ms is skipped). Comparison is `<= boundary` (pi parity).
+>
+> **2026-10-22 note (#565):** this was false when written. `loop.py` stamps every message a turn produces with `time.time()` - seconds, not `None` - so the guards compared seconds with the boundary's milliseconds and, after a session's first compaction, read every answer as stale: no automatic compaction ran again. See the #565 amendment at the end.
 
 **FU3 — `compaction_start` / `compaction_end` subscriber events** (pi `:128-140` + emit sites). `compact()` emits `CompactionStartEvent(reason)` right after the phase flip and `CompactionEndEvent(reason, result, aborted, will_retry, error_message)` on BOTH the success path and an `except Exception` path (pi emits `compaction_end` even on the swallowed "Nothing to compact" raise, so threshold/overflow callers that swallow it still see a matched pair). These are **listener-only** events (via `_emit_to_subscribers`, NOT the hook bus), mirroring the AutoRetry* pair (ADR-0128): added to the `AgentEvent` union and to the `_to_hook_event` match as an unreachable raising case. `_emit_to_subscribers` swallows listener errors, so neither emit can break compaction or mask a body exception; `CancelledError`/`KeyboardInterrupt` (BaseException) bypass the error emit and propagate untouched. The `busy`/`no-session` guards raise BEFORE the start emit, so a rejected compact emits no orphan start.
 
@@ -159,3 +161,43 @@ which guards against a second copy. Twelve mutations on a throwaway worktree, ea
 piece reverted and wrong forms (a restore for an `Exception` only or for "Nothing to compact" only, no
 abort check, a restore before the re-run too, an unconditional append, an identity-only guard, an
 insert at the front, a drop that returns nothing or does not pop) - each turn a row red.
+
+## Amendment (2026-10-22, #565) — the staleness guards compare in one unit
+
+**What was wrong.** FU2's guards compare the last answer's `timestamp` (and, for Guard B, the
+estimate's usage source's) with `get_latest_compaction_boundary_ms`, the latest compaction entry's
+time in milliseconds. pi stamps messages with `Date.now()`, milliseconds too. aelix's `loop.py`
+stamps them with `time.time()`, seconds (`:366`, `:396`, `:946`; the #379 setup failure the same),
+so `1.79e9 <= 1.79e12` held for every answer: once a session had one compaction entry,
+`_check_auto_compaction` (Guards A and B) and `_try_overflow_recovery` (Guard A) passed over every
+later answer. The FU2 note above assumed live messages carried no timestamp.
+
+**Measured on `c64bec3f`** with the real `aelix -p -c` against a local Anthropic-Messages recorder
+(isolated HOME, agent dir, settings and session dir, fake key, `keepRecentTokens` 5,
+`.omc/probes/b4-a-live/r2/565-*`): every answer reporting 190000 of a 200000 window (threshold
+183616) - a compaction at turn 2, none at turns 3, 4 and 5; two answers reporting 190000, two
+short turns, then a request refused as `prompt is too long` - exit 1, no compaction, the request
+not sent again. The #563 probe had shown the same over 13 turns (turns 11-13 failed and nothing
+recovered them).
+
+**Decision.** The guards read both in milliseconds: `harness/core.py` `_timestamp_ms` takes a value
+below 1e11 as seconds and multiplies it by 1000 (the rule `providers/_token_estimate.py` `_as_ms`
+already applies for #563; 1e11 seconds is the year 5138, 1e11 milliseconds 1973). The stamps stay
+seconds: what `loop.py` writes is persisted with every session and sent on rpc and `--mode json`,
+so a session on disk keeps its timestamps and is read correctly when reopened - nothing is
+rewritten. A message with no timestamp is still current. The comparison stays `<=`, as pi's.
+
+**After, same probes:** turns 2, 3, 4 and 5 each compact (each `-c` run reopens the session file,
+written with second timestamps); the refused request is compacted (`compaction_end` overflow,
+`will_retry` true) and sent again, exit 0. `tests/harness/test_auto_compaction_after_a_compaction_565.py`
+(9 rows, most through the real `prompt()`: a second and a third threshold compaction, a second overflow
+recovery that compacts and re-runs, a JSONL session reopened as `-c` does - its kept pre-compaction
+answer still stale, its next answer compacted - a refused second overflow that is not followed by a
+threshold compaction, a recovered answer past the threshold compacted in its prompt, and the unit
+rule), plus a failed turn whose estimate's usage source is a fresh answer (Guard B) and an answer
+stamped in the compaction's own millisecond (stale: pi's `<=`). On a throwaway worktree all the
+behaviour rows fail with the three comparisons put back raw, and each guard put back alone, `<`
+for `<=` and an always-x1000 reading each turn a row red. A refused second overflow is still not
+followed by a threshold compaction: the #391 review-round-2 skip passes over it (and Guard B, on
+its usage source from before the recovery's compaction, would too).
+

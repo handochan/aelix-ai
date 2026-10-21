@@ -561,7 +561,10 @@ Until this release none of these keys was read: auto-compaction waited for
 session, `"enabled": false` stopped nothing, and `set_auto_compaction` lasted
 only as long as its rpc session (#469). The `aelix-server` WebSocket bridge has
 no settings file and keeps the defaults. Not read yet: pi's per-model
-`compaction.modelOverrides`, and `branchSummary.*`. The TUI's `/context` still
+`compaction.modelOverrides`, and `branchSummary.*`. Until this release, too, a
+session compacted automatically only once: after its first compaction every
+later answer looked older than it, so neither the threshold nor a request
+refused as too long compacted again (#565). The TUI's `/context` still
 shows the default `16384` as its `autocompact buffer`.
 
 When an automatic compaction fails - its summary request failed past its
