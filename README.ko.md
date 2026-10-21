@@ -337,6 +337,7 @@ Windows에서는 job object의 `kill_on_close`이고, macOS는 둘 다 없어서
 [시작하기](docs/guides/getting-started.md) ·
 [프로바이더와 모델](docs/guides/providers-and-models.md) ·
 [자격증명](docs/guides/credentials.md) ·
+[컴팩션](docs/guides/compaction.md) ·
 [커스텀 모델](docs/guides/models-json.md) ·
 [에이전트 프로필](docs/guides/agent-profiles.md) ·
 [확장 작성](docs/guides/extension-authoring.md) ·

@@ -267,7 +267,7 @@ token limit exits `0`, and `-p` prints it. A failed answer left by an earlier ru
 does not count: `--continue` with no prompt, or with a prompt an extension
 handles, exits `0`. `-p` writes the error to stderr. `--mode json` writes
 nothing extra: the failed answer's `turn_end` event carries its `stop_reason`
-and `error_message`. An [automatic compaction](providers-and-models.md#automatic-compaction)
+and `error_message`. An [automatic compaction](compaction.md#automatic-compaction)
 that fails after the answer does not change the exit code: `-p` prints the
 answer and writes `Auto-compaction failed: <reason>` to stderr. A request the
 provider refused as too long is a failed answer when that compaction could not

@@ -344,6 +344,7 @@ than core; an explicit hook bus for auditability. Full rationale in [`docs/`](do
 [Getting started](docs/guides/getting-started.md) ·
 [Providers & models](docs/guides/providers-and-models.md) ·
 [Credentials](docs/guides/credentials.md) ·
+[Compaction](docs/guides/compaction.md) ·
 [Custom models](docs/guides/models-json.md) ·
 [Agent profiles](docs/guides/agent-profiles.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·

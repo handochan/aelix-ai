@@ -352,6 +352,17 @@ unwritten. Add them with the next release.
   check fails when a link's `#section` names no heading of its guide; it found
   one in `tls-and-corporate-ca.md`, now fixed. The cap was not raised.
 
+- **Compaction has a guide of its own, `compaction.md`, as in pi (ADR-0218).**
+  The compaction fixes in this release (#469, #563, #565 and the others) put
+  `providers-and-models.md` at 52018 bytes, over the 51200 at which `read` cuts
+  a file, while the system prompt tells the model each bundled guide fits in one
+  read. Its `Automatic compaction` section (when it runs, the `compaction`
+  settings, what a failed one leaves) and `How much a request asks the model to
+  write` are now `compaction.md`: `aelix docs compaction`. The text moved as it
+  was; `providers-and-models.md` keeps the `Automatic compaction` heading over a
+  pointer to it. Left: `providers-and-models.md` 7074 bytes. The cap was not
+  raised.
+
 - **Packaging: the `aelix` sdist no longer carries the demo recording, and the
   README's demo image now shows on PyPI (#387).** `docs/assets/demo.gif`
   (2.3 MB, about 40% of the tarball) and the three files that produce it

@@ -445,6 +445,15 @@ _SPLIT_490 = (
     ),
 )
 
+#: The compaction fixes of #469, #563 and #565, on top of the providers edits
+#: merged before them, put ``providers-and-models.md`` at 52018 bytes, over the
+#: cap, so its two compaction sections became ``compaction.md`` (pi keeps
+#: compaction in its own doc too). The stub is the one of the two headings that
+#: stays there, over a pointer.
+_SPLIT_COMPACTION = (("providers-and-models.md", "compaction.md", "automatic-compaction"),)
+
+_SPLITS = _SPLIT_490 + _SPLIT_COMPACTION
+
 
 def _bundled(name: str) -> str:
     return (BUNDLED / name).read_text(encoding="utf-8")
@@ -457,7 +466,7 @@ def test_the_sections_490_moved_are_no_longer_in_the_guide_they_left() -> None:
     a byte count against the pre-split sizes: the trimmed guides are meant to
     grow back into the room the split made."""
     assert BUNDLED_DOCS, _EMPTY
-    for old, new, stub in _SPLIT_490:
+    for old, new, stub in _SPLITS:
         new_anchors = list(_sections(_bundled(new)))
         moved = set(new_anchors[1:]) - {stub}  # [0] is the new guide's title
         assert moved, f"{new} has no sections besides its title and #{stub}"
@@ -470,9 +479,10 @@ def test_the_old_anchors_490_kept_lead_to_the_new_guides() -> None:
     were linked from outside the bundle before #490 (issues, branches, other
     READMEs). No guide links to them now, so the fragment test cannot see them
     go: each must stay a heading of its old guide, over one paragraph that
-    links to the guide the text moved to."""
+    links to the guide the text moved to. ``#automatic-compaction`` is held the
+    same way since the compaction split."""
     assert BUNDLED_DOCS, _EMPTY
-    for old, new, stub in _SPLIT_490:
+    for old, new, stub in _SPLITS:
         sections = _sections(_bundled(old))
         assert stub in sections, f"{old} lost the #{stub} heading"
         pointer = sections[stub]
@@ -490,6 +500,17 @@ _POINTERS_490 = (
     ("providers-and-models.md", "How to pick a model", "credentials.md"),
     ("extension-authoring.md", "`register_login_provider(provider)`", "extension-providers.md"),
     ("extension-authoring.md", "`register_api_adapter(api, stream_fn)`", "extension-providers.md"),
+)
+
+#: The same for the compaction split. This link carries ``#automatic-compaction``,
+#: which the stub heading still defines in ``providers-and-models.md``, so the
+#: fragment test would pass a link left pointing there.
+_POINTERS_COMPACTION = (
+    (
+        "getting-started.md",
+        "that fails after the answer does not change the exit code",
+        "compaction.md",
+    ),
 )
 
 
@@ -510,12 +531,12 @@ def test_the_prose_that_points_at_490s_moved_text_names_the_new_guides() -> None
     longer has the text the sentence promises."""
     assert BUNDLED_DOCS, _EMPTY
     wrong: list[str] = []
-    for guide, words, target in _POINTERS_490:
+    for guide, words, target in _POINTERS_490 + _POINTERS_COMPACTION:
         blocks = _blocks_with(_bundled(guide), words)
         assert len(blocks) == 1, f"{guide}: {len(blocks)} blocks contain {words!r}"
         if f"]({target}" not in blocks[0]:
             wrong.append(f"{guide}: {words!r} does not link to {target}")
-    # The guides index lists every guide, so the two new ones too.
+    # The guides index lists every guide, so the new ones too.
     index = _bundled("README.md")
     wrong += [
         f"README.md does not list {name}"

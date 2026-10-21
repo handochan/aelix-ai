@@ -1,7 +1,8 @@
 # 0218. The guides ship inside the wheel, the prompt names them, and the runtime answers for itself
 
 Status: Accepted (2026-08-14). Amended 2026-10-21 (#490): `credentials.md` and
-`extension-providers.md` are split out of two guides that had reached `read`'s cap.
+`extension-providers.md` are split out of two guides that had reached `read`'s cap. Amended
+2026-10-22: `compaction.md` is split out of `providers-and-models.md`, which had passed it.
 Date: 2026-08-14
 Relates: ADR-0206 (the `_ManifestEntry` repr redaction — §5 reuses its pattern one object
 further along), ADR-0197 §(a) (the band table that decided where `aelix_status` lives, and
@@ -657,3 +658,58 @@ With the four changes' current guide diffs stacked on the split (#371's hunk car
 
 Not done here: no minimum headroom is asserted. The test still fails only at the cap, so the next
 guide that nears it is found the same way these two were.
+
+## Amendment (2026-10-22) — `compaction.md` is split out of `providers-and-models.md`, which the compaction fixes had pushed over `read`'s cap
+
+**The room #490 made is used up.** `providers-and-models.md` was 39 776 bytes after #490. The six
+changes that edited it next (#371, #410, #409, #433, #559, #415) took it to 42 670 bytes on
+`f7d28405`, and the eight compaction and provider fixes on `fix/b4-core-compaction` (#563, #506,
+#469, #546, #391, #551, #556, #565) add 9 348 more, most of it two new sections:
+`## How much a request asks the model to write` (#563, #506) and `## Automatic compaction` (#469,
+#546, #391, #565). On `1a40f281` the guide is 52 018 bytes, and
+`test_every_bundled_guide_fits_in_one_read` failed on every CI test leg with
+`providers-and-models.md is 52018B, over the read cap`. The eight fixes alone, on the tree before
+#559 and #415, left it at 50 737 bytes; those two added 1 281. As in #490 the guide is split; the cap
+and every assertion stay.
+
+1. **`compaction.md` (`# Compaction`)** takes the two sections (8 146 bytes as they stood). pi keeps
+   the subject in its own doc too (`packages/coding-agent/docs/compaction.md` at pi `fdce48eb4`),
+   and its order is followed: when compaction runs and its settings (`## Automatic compaction`)
+   come first, how much a request asks for after, as pi's doc states the summary request's output
+   limit under its trigger. The thinking-level paragraph about compaction and `/tree` summaries
+   (#506) stays under `## Reasoning / thinking level`, where the level rules are.
+2. **The text moved as it was.** Only links changed: in the moved text, the two back-references to
+   the section it left ("as for `retry`", "as for `set_auto_retry`") now link
+   `providers-and-models.md#automatic-retry`; elsewhere, `getting-started.md`'s exit-code paragraph
+   links `compaction.md#automatic-compaction`, and the guides index and both READMEs list the new
+   guide. `providers-and-models.md` keeps `## Automatic compaction` over one sentence that names
+   `compaction.md`. Both headings are new on this branch, so no link from outside the repo can name
+   them yet; the stub keeps the one a reader is likelier to look for under the old guide.
+3. **The rows that pin #490's split pin this one** (`tests/test_docs_bundle_sync.py`): the moved
+   `#how-much-a-request-asks-the-model-to-write` is not left in `providers-and-models.md`, the kept
+   heading leads to `compaction.md`, and the getting-started link, which would still resolve at the
+   stub, names `compaction.md`.
+4. **§2's block lists twelve names.** Its prose is 623 characters, up from 611, under the 640 the
+   test asserts, so the next guide name can be at most 14 characters. No alias was added:
+   `aelix docs compaction` is the file's own name, and `providers` and `models` stay where they
+   were.
+
+Every bundled guide after the split (bytes on disk; all under both caps):
+
+| Guide                     | Bytes  | Left   | Lines |
+| ------------------------- | ------ | ------ | ----- |
+| `providers-and-models.md` | 44 126 |  7 074 | 682   |
+| `extension-authoring.md`  | 38 669 | 12 531 | 705   |
+| `private-catalog.md`      | 36 681 | 14 519 | 583   |
+| `models-json.md`          | 26 897 | 24 303 | 505   |
+| `agent-profiles.md`       | 23 980 | 27 220 | 391   |
+| `getting-started.md`      | 22 536 | 28 664 | 432   |
+| `project-trust.md`        | 19 883 | 31 317 | 360   |
+| `tls-and-corporate-ca.md` | 14 925 | 36 275 | 300   |
+| `extension-providers.md`  | 14 493 | 36 707 | 244   |
+| `credentials.md`          | 11 579 | 39 621 | 183   |
+| `compaction.md`           |  8 748 | 42 452 | 138   |
+| `README.md`               |  2 426 | 48 774 | 40    |
+
+Still not done: no minimum headroom is asserted, so the next guide to near the cap is found the same
+way, at the cap.
