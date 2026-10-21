@@ -56,7 +56,7 @@ from aelix_coding_agent.extensions.subprocess_hooks import (
 )
 
 from tests.asyncio_exit_wait import resolve_wait_at_exit
-from tests.event_waits import check_anti_hang, record_armed_waits
+from tests.event_waits import ArmedWait, check_anti_hang, record_armed_waits
 from tests.process_probe import (
     STATE_ALIVE,
     STATE_GONE,
@@ -65,6 +65,7 @@ from tests.process_probe import (
     is_dead_or_zombie,
     probe_state,
 )
+from tests.rpc._bash_phases import HANG_GUARD_SECONDS
 
 # === Helpers ===
 
@@ -243,27 +244,385 @@ def _pid_file_source(source: str, pid_file: Path) -> str:
     return source.replace("__PID_FILE__", repr(str(pid_file)))
 
 
-async def _await_pid_file(pid_file: Path, *, timeout: float = 15.0) -> list[int]:
+# === the start-up, outside what a case measures (#474) ===
+
+#: How long a case here waits for its hook's root to announce its tree, from just
+#: before the call (:func:`_await_pid_file`), and how long
+#: :class:`_TimeoutFromTheAnnouncement` holds a hook's timeout for that
+#: announcement. A hang guard on the start-up - the shell (``cmd.exe`` on win32),
+#: the interpreter, the root's own spawn of its grandchild - NOT a claim about the
+#: product: since #474 no bound a case here asserts holds that start-up, so the
+#: only cost of this one is how long a root that never starts takes to fail. It
+#: is #449's :data:`~tests.rpc._bash_phases.HANG_GUARD_SECONDS`, the bound #447's
+#: and #476's real-tree cases wait for a start-up under, sized from windows-latest
+#: (a bare pwsh once spent 5.97 s between its creation and its first statement).
+_START_UP_BOUND = HANG_GUARD_SECONDS
+
+
+def _read_pids(pid_file: Path) -> list[int] | None:
+    """The pids in ``pid_file``, in order, or ``None`` while it is not written yet.
+
+    The file is written through ``os.replace``, so a non-empty read is a complete
+    read. An ``OSError`` is "not yet" too: the next poll looks again.
+    """
+
+    try:
+        text = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return [int(line) for line in text.splitlines()] if text else None
+
+
+def _came_back(task: asyncio.Future[Any]) -> str:
+    """How a hook call that is done came back, for a message."""
+
+    if task.cancelled():
+        return "cancelled"
+    error = task.exception()
+    if error is not None:
+        return f"raised {error!r}"
+    outcome = task.result()
+    return f"exit_code={outcome.exit_code}, timed_out={outcome.timed_out}"
+
+
+async def _await_pid_file(
+    pid_file: Path, task: asyncio.Future[Any], *, bound: float | None = None
+) -> list[int]:
     """Wait for the hook's pid file and return the pids it holds, in order.
 
     The cancellation cases have to cancel a hook that has ALREADY spawned what
     they are about to assert on, so the wait is the vacuity guard: without it a
     cancel that lands before the grandchild exists would measure nothing and
-    still pass. The file is written through ``os.replace``, so a non-empty read
-    is a complete read.
+    still pass.
+
+    SINCE #474 it waits :data:`_START_UP_BOUND` from just before the call (a
+    hang guard; it was 15 s), and three things changed with it:
+
+    - It LOOKS ONCE MORE after its bound: each pass reads before it checks the
+      clock, so the last thing a wait that ran out did is a look. It used to
+      check the clock first, and a loop thread held past the deadline (a
+      synchronous ``CreateProcess`` on it, a paused VM) came back to a spent
+      deadline and failed "never appeared" over a file that was on disk -
+      reproduced on darwin with the loop held 16 s right after the spawn.
+    - It stops when the hook has come back: a hook that returned has a root
+      that exited or was killed, and the root writes the file before either,
+      so after one more poll's worth the miss is the command's, said as such.
+    - A miss CANCELS THE HOOK AND WAITS FOR IT. It used to raise with the hook
+      still out, and the loop closed under it: #474's two unraisables
+      (``BaseSubprocessTransport.__del__`` -> "Event loop is closed") were that
+      hook's transport, finalised after its loop.
     """
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if pid_file.exists():
-            text = pid_file.read_text(encoding="utf-8").strip()
-            if text:
-                return [int(line) for line in text.splitlines()]
+    limit = _START_UP_BOUND if bound is None else bound
+    deadline = time.monotonic() + limit
+    while True:
+        pids = _read_pids(pid_file)
+        if pids is not None:
+            return pids
+        if task.done():
+            # One poll's worth more: the root writes the file before it exits.
+            await asyncio.sleep(0.1)
+            pids = _read_pids(pid_file)
+            if pids is not None:
+                return pids
+            pytest.fail(
+                f"{pid_file.name}: the hook came back ({_came_back(task)}) before its root "
+                "announced its tree - the command failed before the case could measure anything"
+            )
+        if time.monotonic() >= deadline:
+            break
         await asyncio.sleep(0.02)
-    raise AssertionError(
-        f"{pid_file} never appeared within {timeout}s — the hook never got far "
-        "enough to spawn anything, so this case would measure nothing"
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(asyncio.shield(task), 10.0)
+    pytest.fail(
+        f"{pid_file} never appeared within {limit}s, looked at once more after it - PREMISE, "
+        "NOT THE CASE: the shell's and the root's start-up on this runner, not what the case "
+        "asserts; the hook was cancelled and the case measured nothing"
     )
+
+
+class _TimeoutFromTheAnnouncement:
+    """Holds a hook's timeout until its root has announced its tree (#474).
+
+    ``run_hook_subprocess`` arms the caller's timeout on ``communicate()`` right
+    after the spawn, so the hook's whole start-up - ``cmd.exe`` or ``sh``, the
+    interpreter, the root's handlers, its grandchild's spawn, the pid file - had
+    to happen inside the 1.5 s the timeout cases hand it. On a runner that
+    stalled through that start-up the timeout's soft signal reached a root that
+    had not written its file yet (and, for a root that ignores the signal, had
+    not installed its handler yet either), and the case failed "never appeared"
+    with every assertion about the teardown unasked (#474). A root that starts
+    2.0 s late reproduces it on darwin in the four 1.5 s cases, and one 3.5 s
+    late in the 3.0 s one.
+
+    So the gate takes the start-up out of the timeout, as #447's
+    ``_ArmedOnTheStart`` took it out of the bash site's: installed as the site's
+    ``asyncio`` name (on top of :func:`record_armed_waits`, so the ladder is
+    still recorded), it lets the FIRST ``wait_for`` the site arms - the timeout
+    on ``communicate()`` - start ``communicate()`` at once, as the product does,
+    and hold the timer until the pid file has been written, ``communicate()``
+    has come back (the root's output closed before it announced), or
+    :data:`_START_UP_BOUND` has passed since the ask. Then the real
+    ``wait_for`` runs with the very timeout the site handed. The hold is after
+    ``ProcessTree.attach``, which the site calls before its first ``await``, so
+    nothing of the tree escapes the job on win32. A cancellation in the hold
+    cancels ``communicate()`` and reaches the site's ``CancelledError`` leg, as
+    one during ``communicate()`` does.
+
+    Every later ``wait_for`` - the teardown's grace, the reap - sets
+    :attr:`parked` as it is armed: the site goes on to park in it before a
+    waiter runs, which is where a case that cancels "inside the teardown"
+    cancels.
+
+    WHAT IT RELIES ON, AND SAYS. It moves the timer only because the site's
+    first bounded wait is the caller's timeout on ``communicate()``.
+    :meth:`premise` fails by name when the first wait was handed anything else.
+    """
+
+    def __init__(self, pid_file: Path) -> None:
+        self.pid_file = pid_file
+        #: When the site armed its first ``wait_for``, and the timeout it handed.
+        self.asked_at: float | None = None
+        self.handed: float | None = None
+        #: When the hold let the timer go, and why: ``"announced"``,
+        #: ``"came back"`` or ``"bound"``.
+        self.armed_at: float | None = None
+        self.why: str | None = None
+        #: Set when the site arms a bounded wait after its timeout's.
+        self.parked = asyncio.Event()
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> list[ArmedWait]:
+        """Gate the site; returns the ladder's record (:func:`record_armed_waits`)."""
+
+        waits = record_armed_waits(monkeypatch, subprocess_hooks)
+        recording = subprocess_hooks.asyncio
+        gate = self
+
+        class _Gated:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(recording, name)
+
+            async def wait_for(self, aw: Any, timeout: float | None) -> Any:
+                if gate.asked_at is not None:
+                    gate.parked.set()
+                    return await recording.wait_for(aw, timeout)
+                gate.asked_at, gate.handed = time.monotonic(), timeout
+                call = asyncio.ensure_future(aw)
+                try:
+                    gate.why = await gate._hold(call)
+                except BaseException:
+                    call.cancel()
+                    raise
+                gate.armed_at = time.monotonic()
+                return await recording.wait_for(call, timeout)
+
+        monkeypatch.setattr(subprocess_hooks, "asyncio", _Gated())
+        return waits
+
+    async def _hold(self, call: asyncio.Future[Any]) -> str:
+        assert self.asked_at is not None
+        until = self.asked_at + _START_UP_BOUND
+        while True:
+            if _read_pids(self.pid_file) is not None:
+                return "announced"
+            if call.done():
+                return "came back"
+            if time.monotonic() >= until:
+                return "bound"
+            await asyncio.sleep(0.01)
+
+    def premise(self, *, timeout: float, what: str) -> None:
+        """The gated case's premise, said apart from the case."""
+
+        assert self.asked_at is not None, f"{what}: the hook never armed its timeout"
+        assert self.armed_at is not None and self.why is not None, (
+            f"{what}: the hook's timeout was never let go"
+        )
+        held = self.armed_at - self.asked_at
+        assert self.why != "bound", (
+            f"{what}: PREMISE, NOT THE CASE - the root had not announced its tree {held:.3f}s "
+            "after the spawn, the whole start-up bound: the start-up on this runner, not the "
+            "timeout ladder; the case measured nothing"
+        )
+        assert self.why != "came back", (
+            f"{what}: the hook's output closed {held:.3f}s after the spawn, before its root "
+            "announced its tree - the command failed before the case could measure anything"
+        )
+        assert self.handed == timeout, (
+            f"{what}: the site's first bounded wait was handed {self.handed}s, not the caller's "
+            f"{timeout}s timeout. The gate holds that wait until the root has announced and "
+            "relies on it being the timeout on communicate(); a site that arms another bounded "
+            "wait first needs the gate moved"
+        )
+
+
+async def _until_the_teardown_waits(
+    gate: _TimeoutFromTheAnnouncement, task: asyncio.Future[Any], what: str
+) -> None:
+    """Return once the hook's timeout teardown is parked in its first wait (#474)."""
+
+    parked = asyncio.ensure_future(gate.parked.wait())
+    try:
+        await asyncio.wait(
+            {parked, task}, timeout=_START_UP_BOUND, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        parked.cancel()
+    if gate.parked.is_set():
+        return
+    if task.done():
+        pytest.fail(
+            f"{what}: the hook came back ({_came_back(task)}) before its timeout teardown armed "
+            "a wait - there was no window to cancel in"
+        )
+    pytest.fail(
+        f"{what}: the hook's timeout teardown armed no wait within {_START_UP_BOUND}s of the "
+        "announcement"
+    )
+
+
+async def test_await_pid_file_looks_once_more_after_its_bound(tmp_path: Path) -> None:
+    """A file written while the loop was held past the bound is still read (#474).
+
+    The stand-in for a synchronous stall on the loop thread: a callback holds
+    the loop 0.4 s, past a 0.2 s bound, and the file lands inside the hold.
+    The wait's next pass reads before it checks the clock, so it returns the
+    pids; the old order - the clock first - failed "never appeared" over a file
+    that was on disk, which is how #474's run looked from the loop. No process
+    is spawned.
+    """
+
+    pid_file = tmp_path / "tree.pid"
+
+    def _hold_the_loop() -> None:
+        time.sleep(0.4)
+        pid_file.write_text("11\n22", encoding="utf-8")
+
+    asyncio.get_running_loop().call_soon(_hold_the_loop)
+    task = asyncio.ensure_future(asyncio.sleep(_START_UP_BOUND))
+    try:
+        assert await _await_pid_file(pid_file, task, bound=0.2) == [11, 22]
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.parametrize("miss", ["the-hook-came-back-first", "the-bound-ran-out"])
+async def test_await_pid_file_says_which_miss_it_was_and_leaves_no_hook_running(
+    tmp_path: Path, miss: str
+) -> None:
+    """:func:`_await_pid_file`'s two misses, over a file no root writes (#474).
+
+    A hook that came back before any announcement is the command failing,
+    said at once rather than after the whole bound; a bound that ran out with
+    the hook still out is the start-up premise, said as one, and the hook is
+    cancelled and waited for rather than left running into the loop's close.
+    Stand-in calls; no process is spawned.
+    """
+
+    pid_file = tmp_path / "never.pid"
+    if miss == "the-hook-came-back-first":
+
+        async def call() -> HookSubprocessOutcome:
+            return _outcome(exit_code=127)
+
+        task: asyncio.Future[Any] = asyncio.ensure_future(call())
+        await task
+        bound = _START_UP_BOUND
+    else:
+        task = asyncio.ensure_future(asyncio.sleep(_START_UP_BOUND))
+        bound = 0.2
+    began = time.monotonic()
+    with pytest.raises(pytest.fail.Exception) as failed:
+        await _await_pid_file(pid_file, task, bound=bound)
+    took = time.monotonic() - began
+    message = str(failed.value)
+    if miss == "the-hook-came-back-first":
+        assert "the hook came back (exit_code=127, timed_out=False)" in message, message
+        assert took < _START_UP_BOUND / 2, f"a hook already back was waited on for {took:.3f}s"
+    else:
+        assert "PREMISE, NOT THE CASE" in message and "within 0.2s" in message, message
+        assert task.cancelled(), "the hook was left running after the premise failed"
+
+
+@pytest.mark.parametrize("why", ["announced", "came back", "bound", "cancelled"])
+async def test_the_gate_holds_the_hook_timeout_until_the_announcement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """:class:`_TimeoutFromTheAnnouncement` on stand-ins for the site's waits (#474).
+
+    The site's first ``wait_for`` - its timeout on ``communicate()`` - runs the
+    call at once and holds the timer until the pid file is written
+    (``announced``), the call has come back (``came back``: a 0.2 s timeout on
+    a 0.3 s call that did not fire, because it was armed after the call), or
+    the start-up bound has run out (``bound``, a short one standing in for
+    :data:`_START_UP_BOUND`); then the real wait runs with the very timeout the
+    site handed, and the ladder's record has it. A cancellation in the hold
+    (``cancelled``) cancels the call and propagates, as one in
+    ``communicate()`` does. Only a LATER bounded wait sets :attr:`parked`, and
+    :meth:`premise` says each miss by name. No process is spawned.
+    """
+
+    if why == "bound":
+        monkeypatch.setattr(sys.modules[__name__], "_START_UP_BOUND", 0.3)
+    pid_file = tmp_path / "tree.pid"
+    timer = _TimeoutFromTheAnnouncement(pid_file)
+    waits = timer.install(monkeypatch)
+    site = subprocess_hooks.asyncio
+    ended: list[str] = []
+
+    async def communicate() -> str:
+        try:
+            await asyncio.sleep(0.3 if why == "came back" else 60.0)
+        except asyncio.CancelledError:
+            ended.append("cancelled")
+            raise
+        ended.append("returned")
+        return "output"
+
+    if why == "announced":
+        asyncio.get_running_loop().call_later(
+            0.3, lambda: pid_file.write_text("1\n2", encoding="utf-8")
+        )
+    if why == "cancelled":
+        call = asyncio.ensure_future(site.wait_for(communicate(), 0.2))
+        await asyncio.sleep(0.2)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await asyncio.sleep(0)
+        assert ended == ["cancelled"], f"the held call was left {ended or 'running'}"
+        assert timer.why is None and waits == [], "the timer was let go of after a cancellation"
+        return
+    if why == "came back":
+        assert await site.wait_for(communicate(), 0.2) == "output"
+    else:
+        with pytest.raises(TimeoutError):
+            await site.wait_for(communicate(), 0.2)
+    assert timer.why == why
+    assert timer.handed == 0.2
+    assert timer.asked_at is not None and timer.armed_at is not None
+    held = timer.armed_at - timer.asked_at
+    assert held >= 0.25, f"the gate held the timeout {held:.3f}s, not until {why}"
+    expected = "returned" if why == "came back" else "timed out"
+    assert [(w.timeout, w.outcome) for w in waits] == [(0.2, expected)]
+    assert not timer.parked.is_set(), "the timeout's own wait set parked"
+    await site.wait_for(asyncio.sleep(0), 1.0)
+    assert timer.parked.is_set(), "a later wait did not set parked"
+    assert [(w.timeout, w.outcome) for w in waits][-1] == (1.0, "returned")
+
+    if why == "announced":
+        timer.premise(timeout=0.2, what="a stand-in")
+        with pytest.raises(AssertionError) as moved:
+            timer.premise(timeout=1.5, what="a stand-in")
+        assert "needs the gate moved" in str(moved.value), moved.value
+    else:
+        with pytest.raises(AssertionError) as missed:
+            timer.premise(timeout=0.2, what="a stand-in")
+        said = "PREMISE, NOT THE CASE" if why == "bound" else "before its root announced its tree"
+        assert said in str(missed.value), missed.value
 
 
 def _write_hook_plugin(
@@ -429,7 +788,9 @@ async def test_run_subprocess_stdout_cap(tmp_path: Path) -> None:
     assert len(outcome.stdout) == 10_000
 
 
-async def test_a_timed_out_hook_does_not_orphan_what_it_spawned(tmp_path: Path) -> None:
+async def test_a_timed_out_hook_does_not_orphan_what_it_spawned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """#202 — the timeout teardown reaches the hook's descendants, not just the shell.
 
     Fails on ``main``: there the teardown was ``proc.terminate()`` /
@@ -444,12 +805,12 @@ async def test_a_timed_out_hook_does_not_orphan_what_it_spawned(tmp_path: Path) 
     pid_file = tmp_path / "grandchild.pid"
     cmd = _py_command(tmp_path, _pid_file_source(_ORPHANED_GRANDCHILD_SOURCE, pid_file))
 
-    # The timeout has to clear the hook's SETUP — shell, interpreter startup,
-    # the grandchild spawn, the pid file — or the case fails on a slow runner
-    # for a reason that has nothing to do with containment. 1500 ms is ~75x the
-    # 16-21 ms measured on darwin, sized for two interpreter startups behind a
-    # cmd.exe on the windows leg, which is the leg this case exists for. Any
-    # bound under the child's 60 s sleep exercises the same teardown.
+    # The hook's SETUP — shell, interpreter startup, the grandchild spawn, the
+    # pid file — is outside the timeout since #474: the gate arms the 1500 ms
+    # once the root has written its file, so a runner slow to start the tree no
+    # longer has the timeout kill the root before the grandchild exists (a root
+    # 2.0 s late failed this case "never appeared" on darwin). Any bound under
+    # the child's 60 s sleep exercises the same teardown.
     #
     # Run as a TASK so the grandchild can be observed ALIVE before the teardown
     # reaches it. #203's lesson, and the sibling in tests/process_tree does the
@@ -458,21 +819,27 @@ async def test_a_timed_out_hook_does_not_orphan_what_it_spawned(tmp_path: Path) 
     # the death assertion below while measuring nothing at all (review
     # posix2/F9). The probe cannot come after the await: by then the teardown
     # has already run, which is the whole point of the case.
+    timer = _TimeoutFromTheAnnouncement(pid_file)
+    timer.install(monkeypatch)
     task = asyncio.ensure_future(run_hook_subprocess(cmd, "", timeout_ms=1500))
-    (grandchild,) = await _await_pid_file(pid_file)
-    assert probe_state(grandchild) == STATE_ALIVE, (
-        f"grandchild {grandchild} was never running — this case would pass for free"
-    )
-    outcome = await task
-
-    assert outcome.timed_out is True
-    assert outcome.exit_code == 124
+    (grandchild,) = await _await_pid_file(pid_file, task)
     try:
+        assert probe_state(grandchild) == STATE_ALIVE, (
+            f"grandchild {grandchild} was never running — this case would pass for free"
+        )
+        outcome = await task
+        timer.premise(timeout=1.5, what="a timed-out hook's grandchild")
+
+        assert outcome.timed_out is True
+        assert outcome.exit_code == 124
         state = await await_dead_or_zombie(grandchild, timeout=5.0)
         assert state in (STATE_GONE, STATE_ZOMBIE), (
             f"grandchild {grandchild} outlived the hook teardown: {state}"
         )
     finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         _reap(grandchild)
 
 
@@ -519,7 +886,7 @@ async def test_a_cancelled_hook_does_not_leave_its_tree_behind(tmp_path: Path) -
     # The timeout is far out of reach: the subject is the cancellation, not the
     # timeout ladder.
     task = asyncio.ensure_future(run_hook_subprocess(cmd, "", timeout_ms=30_000))
-    (grandchild,) = await _await_pid_file(pid_file)
+    (grandchild,) = await _await_pid_file(pid_file, task)
     try:
         assert probe_state(grandchild) == STATE_ALIVE, (
             f"grandchild {grandchild} was never running"
@@ -534,7 +901,166 @@ async def test_a_cancelled_hook_does_not_leave_its_tree_behind(tmp_path: Path) -
             f"grandchild {grandchild} outlived the cancellation: {state}"
         )
     finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         _reap(grandchild)
+
+
+def _record_soft_kill_answers(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Record what each hook tree's ``soft_kill`` answered, in order (#474 review round 2).
+
+    The same seam :func:`test_run_subprocess_timeout` records through: the
+    site's ``ProcessTree.attach``, wrapped so every tree it hands back reports
+    its real ``soft_kill`` answer here and then returns it unchanged.
+    """
+
+    sent: list[bool] = []
+    real_attach = subprocess_hooks.ProcessTree.attach
+
+    class _SoftKillAnswerRecorded:
+        @staticmethod
+        def attach(pid: int, **kwargs: Any) -> Any:
+            tree = real_attach(pid, **kwargs)
+            real_soft_kill = tree.soft_kill
+
+            def _soft_kill(**kw: Any) -> bool:
+                answer = real_soft_kill(**kw)
+                sent.append(answer)
+                return answer
+
+            tree.soft_kill = _soft_kill  # pyright: ignore[reportAttributeAccessIssue]
+            return tree
+
+    monkeypatch.setattr(subprocess_hooks, "ProcessTree", _SoftKillAnswerRecorded)
+    return sent
+
+
+#: The in-teardown cancel's ladder after a soft signal that was SENT: the 1.5 s
+#: timeout fired, and the cancel landed in the 1.0 s grace after it.
+_CANCELLED_IN_THE_GRACE = [(1.5, "timed out"), (1.0, "cancelled")]
+
+#: Its two ladders after a soft signal that could NOT be sent, which only a
+#: win32 runner with no console gives: no grace, the hard kill, and then the
+#: cancel lands in the 5.0 s reap - or the reap's ``proc.wait()`` resolves first,
+#: on the tree the kill already ended, and the hook comes back before the cancel
+#: (the race #474's round-1 verify named; on darwin it is the
+#: ``gh-119710-wait`` row's ladder once ``hard_kill`` holds the loop 0.3 s, as
+#: the whole hard kill was measured to on win32; which part, not measured).
+_UNSENT_LADDERS = (
+    [(1.5, "timed out"), (5.0, "cancelled")],
+    [(1.5, "timed out"), (5.0, "returned")],
+)
+
+
+def _judge_the_in_teardown_ladder(
+    armed: list[tuple[float | None, str]], sent: list[bool], *, platform: str, what: str
+) -> str | None:
+    """The in-teardown cancel's verdict, on what ``soft_kill`` answered (#474 review round 2).
+
+    Returns ``None`` when the cancel landed in the grace, and the warning to
+    give when the case measured less, which only win32 may: a runner with no
+    console cannot send the soft signal, so there is no grace to cancel in.
+    Fails by name otherwise. On POSIX the case's root is alive at the timeout
+    and ignores the signal, and ``soft_kill`` answers ``False`` there only for a
+    closed tree or an OSError (ESRCH, EPERM), which this open tree never gives - so an unsent
+    signal is the product's defect, not the runner's. Round 1 read the ladder
+    alone and warned on its unsent shape on every platform: a ``soft_kill`` that
+    never sends passed the case on darwin, and a reap that resolves before the
+    cancel failed it as a cancel outside the grace - a correct win32 product's
+    ladder, shown on darwin with a stand-in kept in .omc/probes/b4-c-live/r2/.
+    """
+
+    assert len(sent) == 1, (
+        f"{what}: soft_kill answered {sent} - the ladder asks it once, at the timeout, of a "
+        "root that is still running"
+    )
+    if sent[0]:
+        assert armed == _CANCELLED_IN_THE_GRACE, (
+            f"{what}: the hook's ladder armed {armed} after a soft signal that was sent - the "
+            "cancel did not land in the soft grace after the timeout"
+        )
+        return None
+    assert platform == "win32", (
+        f"{what}: soft_kill answered False on {platform}, and the ladder skipped its grace "
+        f"({armed}). The root was alive at the timeout and a live group never gives ESRCH: "
+        "a product that does not send the soft signal, not the runner"
+    )
+    assert armed in _UNSENT_LADDERS, (
+        f"{what}: the hook's ladder armed {armed} after a soft signal that could not be sent, "
+        "not the timeout and then the reap after the hard kill"
+    )
+    return (
+        f"{what}: the soft signal was not sent on {platform} (no console), so the grace was "
+        "skipped and the case measured the cancel in the reap after the hard kill, or the "
+        f"hook back before it, not in the grace: ladder {armed}"
+    )
+
+
+#: The table's ladders, written out rather than read off the constants above, so a
+#: judge whose constants drift does not take its own rows with it.
+_GRACE = [(1.5, "timed out"), (1.0, "cancelled")]
+_REAP = [(1.5, "timed out"), (5.0, "cancelled")]
+_BACK_FIRST = [(1.5, "timed out"), (5.0, "returned")]
+
+
+@pytest.mark.parametrize(
+    ("platform", "sent", "armed", "verdict"),
+    [
+        pytest.param("linux", [True], _GRACE, None, id="posix-in-the-grace"),
+        pytest.param("win32", [True], _GRACE, None, id="win32-in-the-grace"),
+        pytest.param("win32", [False], _REAP, "warn", id="win32-unsent-cancel-in-the-reap"),
+        pytest.param("win32", [False], _BACK_FIRST, "warn", id="win32-unsent-reap-returned-first"),
+        pytest.param(
+            "darwin",
+            [False],
+            _REAP,
+            "a product that does not send",
+            id="posix-unsent-is-the-product",
+        ),
+        pytest.param(
+            "linux",
+            [False],
+            _BACK_FIRST,
+            "a product that does not send",
+            id="posix-unsent-reap-returned-first-is-the-product",
+        ),
+        pytest.param("linux", [], _REAP, "soft_kill answered []", id="never-asked"),
+        pytest.param(
+            "win32",
+            [True],
+            _BACK_FIRST,
+            "after a soft signal that was sent",
+            id="sent-but-no-grace",
+        ),
+        pytest.param(
+            "linux",
+            [True],
+            [(1.5, "timed out"), (1.0, "timed out"), (5.0, "cancelled")],
+            "after a soft signal that was sent",
+            id="sent-cancel-past-the-grace",
+        ),
+        pytest.param("win32", [False], _GRACE, "could not be sent", id="win32-unsent-but-a-grace"),
+    ],
+)
+def test_the_in_teardown_ladder_is_judged_on_what_soft_kill_answered(
+    platform: str,
+    sent: list[bool],
+    armed: list[tuple[float | None, str]],
+    verdict: str | None,
+) -> None:
+    """:func:`_judge_the_in_teardown_ladder`'s table, no processes (#474 review round 2)."""
+
+    what = "a stand-in"
+    if verdict is None:
+        assert _judge_the_in_teardown_ladder(armed, sent, platform=platform, what=what) is None
+    elif verdict == "warn":
+        warning = _judge_the_in_teardown_ladder(armed, sent, platform=platform, what=what)
+        assert warning is not None and "not sent on win32" in warning, warning
+    else:
+        with pytest.raises(AssertionError) as failed:
+            _judge_the_in_teardown_ladder(armed, sent, platform=platform, what=what)
+        assert verdict in str(failed.value), str(failed.value)
 
 
 @pytest.mark.parametrize(
@@ -552,9 +1078,31 @@ async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree
     POSIX — and the whole hook tree survived. The root here SURVIVES the soft
     signal on purpose, which is what makes the grace a window at all.
 
-    The cancel is timed to land inside that grace. If a slow runner makes the
-    hook's setup outlast the timeout, the cancel lands wherever it lands and the
-    case still asserts the thing that matters: nothing of the tree is left.
+    THE CANCEL LANDS IN THE GRACE BY THE LADDER'S OWN RECORD, NOT BY A CLOCK
+    (#474). It used to be timed 1.8 s from the call while the 1.5 s timeout ran
+    from the spawn, so the hook's whole start-up was inside both. On
+    windows-latest a runner slow to start the tree failed the case "tree.pid
+    never appeared within 15.0s" with the hook still out (job 115589879315;
+    on darwin a root 2.0 s late fails it the same way, and so does the loop
+    held 16 s right after the spawn, with the file on disk). Now the timeout is
+    armed once the root has written its file (:class:`_TimeoutFromTheAnnouncement`),
+    which it does after installing its handlers, so the soft signal reaches a
+    root that survives it; and the cancel comes once the teardown is parked in
+    the first wait it arms after the timeout. The record then says where it
+    landed: the 1.5 s timeout fired and the 1.0 s grace was cancelled.
+
+    WHETHER THERE WAS A GRACE IS WHAT ``soft_kill`` ANSWERED, recorded, not
+    guessed from the ladder (#474 review round 2,
+    :func:`_judge_the_in_teardown_ladder`). On POSIX the root is alive at the
+    timeout (asserted above) and ignores the signal, so a send can only fail on
+    a product that does not send it: that fails the case. Before round 2 the
+    unsent branch only warned, on every platform, and a ``soft_kill`` that
+    never sends passed every case in the file. Only on win32 can a runner have
+    no console to send it to; the grace is then skipped and the cancel lands in
+    the reap after the hard kill, or the reap's ``proc.wait()`` resolves first
+    on the tree the kill already ended and the hook comes back before the
+    cancel. The case warns there that it measured less, and still asserts that
+    nothing of the tree is left.
 
     ``gh-119710-wait`` (#192 review round 5): ``Process.wait()`` resolving at the
     shell's EXIT, as from CPython 3.13.15. Where ``sh`` does not ``exec`` the
@@ -568,22 +1116,29 @@ async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree
         resolve_wait_at_exit(monkeypatch)
     pid_file = tmp_path / "tree.pid"
     cmd = _py_command(tmp_path, _pid_file_source(_SIGNAL_SURVIVING_SOURCE, pid_file))
+    what = "a hook cancelled inside its timeout teardown"
 
-    started = time.monotonic()
+    sent = _record_soft_kill_answers(monkeypatch)
+    timer = _TimeoutFromTheAnnouncement(pid_file)
+    waits = timer.install(monkeypatch)
     task = asyncio.ensure_future(run_hook_subprocess(cmd, "", timeout_ms=1500))
-    root, grandchild = await _await_pid_file(pid_file)
+    root, grandchild = await _await_pid_file(pid_file, task)
     try:
         assert probe_state(root) == STATE_ALIVE, f"the hook root {root} was never running"
         assert probe_state(grandchild) == STATE_ALIVE, (
             f"grandchild {grandchild} was never running"
         )
 
-        # 1.5 s timeout + ~0.3 s: the soft signal has gone out and the teardown
-        # is parked in its ``wait_for(proc.wait(), timeout=1.0)``.
-        await asyncio.sleep(max(0.0, 1.8 - (time.monotonic() - started)))
+        await _until_the_teardown_waits(timer, task, what)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+        timer.premise(timeout=1.5, what=what)
+        armed = [(w.timeout, w.outcome) for w in waits]
+        measured_less = _judge_the_in_teardown_ladder(armed, sent, platform=sys.platform, what=what)
+        if measured_less is not None:
+            warnings.warn(measured_less, stacklevel=1)
 
         for label, pid in (("the hook root", root), ("its grandchild", grandchild)):
             state = await await_dead_or_zombie(pid, timeout=5.0)
@@ -591,6 +1146,9 @@ async def test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree
                 f"{label} ({pid}) outlived a cancellation inside the teardown: {state}"
             )
     finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         _reap(grandchild)
         _reap(root)
 
@@ -618,12 +1176,18 @@ async def test_a_timed_out_hook_whose_shell_dies_on_the_soft_signal_still_loses_
         resolve_wait_at_exit(monkeypatch)
     pid_file = tmp_path / "tree.pid"
     cmd = _py_command(tmp_path, _pid_file_source(_SIGNAL_SURVIVING_SOURCE, pid_file))
+    # The 1500 ms is armed once the command has written its file (#474): its
+    # start-up is outside the timeout, so the soft signal reaches a command that
+    # has its handlers and a grandchild to keep.
+    timer = _TimeoutFromTheAnnouncement(pid_file)
+    timer.install(monkeypatch)
     task = asyncio.ensure_future(
         run_hook_subprocess(cmd + " && echo done", "", timeout_ms=1500)
     )
-    root, grandchild = await _await_pid_file(pid_file)
+    root, grandchild = await _await_pid_file(pid_file, task)
     try:
         outcome = await asyncio.wait_for(task, 30)
+        timer.premise(timeout=1.5, what="a hook whose shell dies on the soft signal")
         assert outcome.timed_out is True
         for label, pid in (("the command", root), ("its grandchild", grandchild)):
             state = await await_dead_or_zombie(pid, timeout=5.0)
@@ -674,7 +1238,7 @@ os.replace(path + ".part", path)
 
 @pytest.mark.parametrize("pipes", ["both", "stdout", "stderr"])
 async def test_a_timed_out_hook_loses_a_backgrounded_helper_that_keeps_its_output(
-    tmp_path: Path, pipes: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pipes: str
 ) -> None:
     """#192 review round 6 - stricter than ``wait()`` was, on EVERY interpreter.
 
@@ -701,8 +1265,13 @@ async def test_a_timed_out_hook_loses_a_backgrounded_helper_that_keeps_its_outpu
     )
     cmd = _py_command(tmp_path, source)
     gate = Path(str(pid_file) + ".gate")
+    # The 3000 ms is armed once the launcher has written its file (#474), so
+    # what is left of it is the launcher's exit and the look below, not the
+    # start-up of two interpreters as well.
+    timer = _TimeoutFromTheAnnouncement(pid_file)
+    timer.install(monkeypatch)
     task = asyncio.ensure_future(run_hook_subprocess(cmd, "", timeout_ms=3000))
-    launcher, helper = await _await_pid_file(pid_file)
+    launcher, helper = await _await_pid_file(pid_file, task)
     try:
         # Vacuity guard: the root is gone while the hook is still waiting for
         # its output - the timeout below fires with no root left to signal.
@@ -712,6 +1281,7 @@ async def test_a_timed_out_hook_loses_a_backgrounded_helper_that_keeps_its_outpu
         assert probe_state(helper) == STATE_ALIVE
 
         outcome = await asyncio.wait_for(task, 30)
+        timer.premise(timeout=3.0, what=f"a hook whose helper keeps its {pipes}")
         assert outcome.timed_out is True
         state = await await_dead_or_zombie(helper, timeout=5.0)
         assert state in (STATE_GONE, STATE_ZOMBIE), (

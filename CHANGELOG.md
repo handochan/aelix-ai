@@ -1276,6 +1276,37 @@ unwritten. Add them with the next release.
   none of 1080; there `exec` came back a median 0.42 s after the command's
   exit, and at most 0.88 s.
 
+- **Tests only: the subprocess hook cases no longer fail when Windows is slow
+  to start the hook (#474).** Nothing users run changed.
+  `test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree`
+  failed on windows-latest with "tree.pid never appeared within 15.0s". The
+  hook's 1.5 s timeout counted from the spawn, so `cmd.exe`, the Python root
+  and the root's own child all had to start inside it. When the runner was
+  slow, the timeout's soft signal ended the root before it ran a line, and the
+  case then waited 15 s for a file nothing would write. The timeout cases now
+  start the hook's timeout once its root has written that file. The test
+  holds the hook's own timed wait until then and checks that the wait still
+  got the caller's whole timeout. The in-teardown case now cancels once the
+  teardown is waiting, and checks from the recorded waits that the cancel
+  landed in the 1.0 s grace, instead of cancelling 1.8 s after the call. The
+  wait for the file looks once more after its limit: before, a test process
+  held up past the limit failed over a file that was on disk, which
+  reproduced the CI run's "hook still open when the loop closed" warnings on
+  macOS. It now waits up to the 30 s hang guard, stops if the hook has
+  already returned, and on a miss cancels the hook and waits for it. Three
+  sibling cases with a 1.5 s or 3 s timeout get the same treatment. On
+  windows-latest the old file and the new one ran interleaved on the same
+  runners (run 39644523307, Python 3.11 to 3.14). With no load neither failed
+  in 720 runs. Under eight busy loops the old file failed 9 of 1080 runs with
+  the CI message, each time with the soft signal before the root's first
+  line, and the new one none of 1080; there the root's first line came a
+  median 1.2 s after the spawn. The same measurement found a cost in the
+  product, which is not changed here: on Windows, killing a hook's process
+  tree runs `taskkill.exe` on the event loop and waits for it. That stopped the
+  loop for about 0.05 s with no load, but a median 1.3 s and up to 3 s under
+  load, so a hook that times out or is cancelled can freeze the interface for
+  a second or more. It is recorded as open in ADR-0238.
+
 - **Tests only: the bash drain-cap case's deadline arm no longer fails when
   Windows starts the shell too slowly to finish inside the deadline (#446).**
   Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`

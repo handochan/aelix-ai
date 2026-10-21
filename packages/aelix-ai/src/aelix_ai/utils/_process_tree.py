@@ -498,9 +498,18 @@ def _taskkill_tree(pid: int) -> None:
     It is bounded at 5 s per attempt by ``timeout=``: a ``taskkill.exe`` that
     never returns must cost a stalled escalation, not a frozen loop.
     ``TimeoutExpired`` is a :exc:`subprocess.SubprocessError` and not an
-    :exc:`OSError`, so it is caught by name alongside it. The real duration is
-    unmeasured — #220's windows leg is the first place a stopwatch around it
-    costs nothing.
+    :exc:`OSError`, so it is caught by name alongside it.
+    MEASURED AT THE HOOK LADDER (#474, run 39644523307, windows-latest,
+    py3.11-3.14, 3591 kills on the loop thread, a 10 ms heartbeat beside them):
+    :meth:`ProcessTree.hard_kill` — this run, then ``TerminateJobObject`` —
+    held the event loop a median 0.04-0.06 s, at most 0.50 s, with no load,
+    and a median 1.28-1.34 s, at most 3.05 s, under eight busy loops on the
+    runner's four vCPUs. Only the whole kill was timed, at its entry and its
+    return, so where that time goes - ``taskkill.exe``'s spawn, its run, the
+    job's termination - is NOT measured. So on a loaded Windows box a hook that
+    is killed freezes the TUI's loop for a second or more. That cost is OPEN at that size (ADR-0238, "What stays
+    open"), not accepted; Pi spawns its ``taskkill`` detached and does not
+    wait for it.
 
     ALL THREE STDIO ARE ``DEVNULL``, and that is the #221 bug applied to this
     function rather than a tidy-up (#221 review win-leg/WIN-3). It used to pass

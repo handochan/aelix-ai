@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports; **#330 amendment 2026-09-25** — test-only: the cases that pinned `stop()`'s grace, the hook timeout ladder and `!command`'s two kill sites by the wall clock now assert the bounds the product ARMED and how each one ended; no product behaviour changed; **#350 amendment 2026-10-02** — docs-only: a helper's output after the command's exit is best-effort, and a reader starved for a grace can end the drain on it too, as a blocked event loop does in Pi; ending a POSIX idle wait only on `drained()` was considered and declined, and the caps, the proof and `output_unconfirmed` stay, because Aelix reads in a thread; **#192 amendment 2026-10-08** — the hook timeout ladder's grace and the delegation reaper's grace end when the tree has let go of the child's pipes (`wait_released`), not when `Process.wait()` resolves: from CPython 3.13.15 and 3.14.7 (gh-119710) `wait()` resolves at the ROOT's exit, and a root that died on the soft signal while a descendant kept the pipes ended both graces at once, skipped the hard rung, and left the descendants running; on every interpreter this also kills, after the grace, a helper a timed-out hook backgrounded that still holds the hook's output - before, a hook whose shell had already exited got a `wait()` that returned at once and kept that helper; **#447 amendment 2026-10-21** — test-only: the bash site's real-tree cases keep the shell's and the tree's start-up out of every bound they assert — a timeout leg's deadline is armed once the root has announced its tree, every wait for that announcement runs under #449's 30 s hang guard, and #446's late-give-up check tells a stalled process from a late wait by a pulse; no product behaviour changed; **#476 amendment 2026-10-22** — test-only: the `exec` case whose root backgrounds a pipe holder bounds the call from that root's own exit, not from the call: the exit drain may hold it for the 2.0 s hard cap plus #341's half second, and the root's start-up is waited for under #447's 30 s hang guard instead of inside the bound; no product behaviour changed)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`; **#240 amendment 2026-09-08** — the registry path is no longer uncached: a resolved `!command` is cached per `ModelRegistry`, successes only, dropped at `/reload`, `/login` and a failed interactive turn; **#239 amendment 2026-09-08** — child output is decoded run-wise, UTF-8 strict then the console output code page, and the shells the bash tool spawns are asked for UTF-8; **#239 cross-review amendment 2026-09-09** — a buffer whose end is a byte-exact cut says so, and `exec`'s timeout branch is one; **#239 final-pass amendment 2026-09-09** — a page that decodes all 256 single bytes is offered NOTHING, not even the bad bytes inside a run, so a Western Windows box gets `errors="replace"` byte for byte and the legacy recovery is scoped to DBCS consoles; **#239 windows-leg amendment 2026-09-09** — the `cmd` UTF-8 preamble is DELETED. Its own win32-only probe, written from darwin and unrunnable there, fired on its first leg (CI run 34272507388, windows-latest, py3.11 and py3.12): `chcp 65001 >nul&` in front of an unquoted spaced executable path costs `cmd /c` rule 1 the quotes `list2cmdline` added, and `cmd` answers "is not recognized" — so "stops resolving" did NOT overstate it, and the review's own case, a QUOTED path, is refuted (four quote characters, rule 1 never applied). Rule 1 admits no prefix at all, so no spelling is safe and PowerShell is now the only family asked; a `cmd` child's console-page output goes through the decoder, which costs a Western `cmd` box the UTF-8 the deleted arm briefly bought it — a loss against THIS release's intermediate build only, since `0.1.0-beta.1` decoded those bytes `utf-8`/`errors="replace"` and marked them too; **#243 amendment 2026-09-08** — the errno allowlist that decides "not a runnable shell" moves into that same primitive, and the bash tool's spawn now uses it: a spawn that fails before the command starts is exit 127 instead of an exception out of the tool; **#260 amendment 2026-09-24** — the exit and kill drains end on a proof from the pipe, not on the idle clock alone: the idle rule and the caller's deadline end a drain only when the reader holds nothing over an empty pipe or has handed on everything its first post-exit look saw, up to a hard cap (2.0 s past the exit, 1.0 s past a kill; one grace past a drain's late look at it, once) that the bash tool's result now reports; **#330 amendment 2026-09-25** — test-only: the cases that pinned `stop()`'s grace, the hook timeout ladder and `!command`'s two kill sites by the wall clock now assert the bounds the product ARMED and how each one ended; no product behaviour changed; **#350 amendment 2026-10-02** — docs-only: a helper's output after the command's exit is best-effort, and a reader starved for a grace can end the drain on it too, as a blocked event loop does in Pi; ending a POSIX idle wait only on `drained()` was considered and declined, and the caps, the proof and `output_unconfirmed` stay, because Aelix reads in a thread; **#192 amendment 2026-10-08** — the hook timeout ladder's grace and the delegation reaper's grace end when the tree has let go of the child's pipes (`wait_released`), not when `Process.wait()` resolves: from CPython 3.13.15 and 3.14.7 (gh-119710) `wait()` resolves at the ROOT's exit, and a root that died on the soft signal while a descendant kept the pipes ended both graces at once, skipped the hard rung, and left the descendants running; on every interpreter this also kills, after the grace, a helper a timed-out hook backgrounded that still holds the hook's output - before, a hook whose shell had already exited got a `wait()` that returned at once and kept that helper; **#447 amendment 2026-10-21** — test-only: the bash site's real-tree cases keep the shell's and the tree's start-up out of every bound they assert — a timeout leg's deadline is armed once the root has announced its tree, every wait for that announcement runs under #449's 30 s hang guard, and #446's late-give-up check tells a stalled process from a late wait by a pulse; no product behaviour changed; **#476 amendment 2026-10-22** — test-only: the `exec` case whose root backgrounds a pipe holder bounds the call from that root's own exit, not from the call: the exit drain may hold it for the 2.0 s hard cap plus #341's half second, and the root's start-up is waited for under #447's 30 s hang guard instead of inside the bound; no product behaviour changed; **#474 amendment 2026-10-22** — test-only: the hook site's real-tree cases arm the hook's timeout once its root has written its pid file, the in-teardown cancel lands where the ladder's own record says it did (the 1.0 s grace) instead of 1.8 s after the call, and the pid-file wait looks once more after its bound, runs under #449's 30 s hang guard and cancels and awaits the hook when it gives up; measured on the way, a hook's hard kill holds the event loop a median 1.3 s and up to 3.05 s on a loaded windows runner, which is now an open item below; no product behaviour changed)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -471,6 +471,60 @@ green with no load; under the loops only the unchanged
 against a 1.25 s bound with `taskkill.exe`'s own start inside it.
 No product behaviour changed.
 
+**#474 amendment (2026-10-22) — the hook site's real-tree cases keep the
+start-up out of the hook's timeout.** `tests/subprocess_hooks/test_subprocess_hooks.py`
+drives `run_hook_subprocess` with real trees, and on windows-latest
+`test_a_hook_cancelled_inside_the_timeout_teardown_still_loses_its_tree[gh-119710-wait]`
+failed "tree.pid never appeared within 15.0s" (PR run 38483013203, py3.11),
+with two unraisables saying the hook's transport was still open when the loop
+closed. The site arms the caller's timeout on `communicate()` right after the
+spawn, so `cmd.exe`'s start, the root interpreter's, its handlers, its
+grandchild's spawn and its pid file all had to fit inside the 1.5 s the
+timeout cases hand it; the soft signal at 1.5 s then reached a root that had
+not run a line and ended it, and the case waited 15 s for a file nothing
+would write. Measured on windows-latest (run 39644523307, py3.11-3.14, main's
+file and the fixed one interleaved round by round on the same runners): with
+no load the root's first statement came a median 0.04 s after the spawn and
+neither file failed in 720 runs; under eight busy loops on the four vCPUs it
+came a median 1.20 s after the spawn (at most 2.53 s), main's file failed 9 of
+1080 runs with exactly the CI message — each time the soft signal 1.51-1.56 s
+after the spawn, before the root's first statement, no hard kill and no
+unraisable — and the fixed file failed none of 1080. Those nine are the
+start-up premise. The CI run's unraisables say more than that: its hook was
+still running 15 s in, which a root killed at 1.5 s does not leave. The
+measurement points at the loop: the test process stopped for 0.1-2.4 s in 78
+of 1440 runs with no load (a 10 ms heartbeat and a 5 ms thread poll stopping
+together, at the root's spawn of its grandchild), and the old wait checked
+its clock before it looked, so a loop held past the deadline failed over a
+file on disk — reproduced on darwin by holding the loop 16 s after the
+spawn, with the same "never appeared" and the same unclosed transport. The
+cases now hold the site's first `wait_for` — the timeout on `communicate()`
+— until the root has written its file (which it does after installing its
+handlers), the call has come back or 30 s have passed, and then arm it with
+the very timeout the site handed, asserting that it was the caller's; the
+in-teardown cancel comes once the teardown has armed its next wait, and the
+case asserts the ladder's record, `[1.5 s timed out, 1.0 s cancelled]`,
+instead of timing the cancel 1.8 s from the call. Whether there was a grace
+is what `soft_kill` answered, recorded (review round 2): on POSIX the root is
+alive at the timeout, so a soft signal not sent fails the case as the
+product's; only on win32, where a runner with no console cannot send it, does
+the cancel land in the reap after the hard kill, or the hook come back before
+it, with a warning. Round 1 warned on that shape on every platform, and a
+`soft_kill` that never sends passed every case in the file. The pid-file
+wait reads before it checks its clock, waits #449's 30 s hang guard, stops
+when the hook has come back, and on a miss cancels and awaits the hook. The
+other short-timeout cases of the file are gated the same way: the orphaned
+grandchild (1.5 s), the shell that dies on the soft signal (1.5 s, both rows)
+and the helper that keeps the hook's output (3.0 s, three rows). On darwin a
+root 2.0 s late failed the four 1.5 s cases and one 3.5 s late the 3.0 s one,
+and all pass now; each fix piece reverted goes red again, and the posix2/F6
+handler, the #192 grace on `proc.wait()` and a missing hard kill on the
+cancel path (MUT-4) still fail the gated cases. The cases that run a whole
+hook inside a 2.0 s timeout are the same premise and were left (no
+observation; a stall there reads `timed_out=True`, loudly). No product
+behaviour changed; `_taskkill_tree`'s docstring now carries the kill's
+measured cost (below).
+
 Three things are not tested and are named rather than papered over: breakaway
 from the job (we set no `BREAKAWAY_OK`, so it cannot happen), the assignment
 window (not deterministically reproducible), and `IsProcessInJob` under a
@@ -645,6 +699,25 @@ warning, so the case is not in the console list below.)
   defaults to 60 000 ms and may be 600 000, and a hook fires per event. Recorded
   here as well as in #235, because routing it to an issue alone is the miss #226
   was born from.
+- **A hook's hard kill holds the event loop — measured (#474), open.** On
+  win32 `ProcessTree.hard_kill` runs `taskkill.exe /T /F` to completion and
+  then `TerminateJobObject`, synchronously, and the hook ladder (and its
+  cancellation path) calls it on the loop thread. With a 10 ms heartbeat beside
+  3591 such kills (run 39644523307, windows-latest, py3.11-3.14) the loop
+  stopped a median 0.04-0.06 s, at most 0.50 s, with no load, and a median
+  1.28-1.34 s, at most 3.05 s, under eight busy loops on the four vCPUs. Only
+  the whole kill was timed, at its entry and its return, so how that time
+  splits between `taskkill.exe`'s spawn, its run and the job's termination is
+  not measured (#474 review round 2 withdrew an attribution to `taskkill.exe`'s
+  start that no measurement had made). So on a loaded Windows box a hook that
+  times out or is cancelled freezes the TUI for a second or more, on top of the
+  timeout and the grace it already cost. Not changed in #474, which is
+  test-only: the kill is the shared primitive of every win32 site here, the
+  `to_thread` remedy was rejected in #220 review round 2 for its unshielded
+  suspension point, and the options
+  left — the job first and `taskkill` only for a tree the job does not hold,
+  or Pi's detached `taskkill` that nobody waits for — are a product decision
+  for their own issue.
 
 The README's "Platform support" still says which half is contained and which
 is not, but the split now falls elsewhere: after #220 the Windows verdict is
