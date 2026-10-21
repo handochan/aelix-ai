@@ -681,7 +681,7 @@ def _apply_max_tokens(
     (``simple-options.ts:18-22`` at ``fdce48eb4``): ``min(cap, context_window -
     estimated context - 4096)``, at least 1. Before, it "won unconditionally",
     on the reasoning that the compaction summarizer's ``floor(0.8 *
-    reserveTokens)`` is small; it is small, but a compaction is asked for when
+    reserveTokens)`` (gone since #506) was small; it was, but a compaction runs when
     the window is nearly full, so on an endpoint that checks ``prompt +
     max_tokens <= context_window`` the summary request was the one request that
     did not fit. The model-default rule above stays a divergence from pi,

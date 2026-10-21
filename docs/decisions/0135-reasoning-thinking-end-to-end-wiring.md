@@ -343,7 +343,9 @@ under 1024 still gets that many visible tokens — `adjust(1, 1025, "high")` is
 `(2, 1)` — because that is the number it asked for, and lifting it to 1024
 would return more answer than was requested. Not reachable in-tree (compaction
 sets `max_tokens` but never `reasoning`; the harness sets `reasoning` but never
-`max_tokens`), so this is an embedder-facing invariant, and
+`max_tokens` — *2026-10-22 note (#506, ADR-0142 amendment): compaction and branch
+summaries now set `reasoning` and no `max_tokens`, so no in-tree request sets both
+still*), so this is an embedder-facing invariant, and
 `test_the_carve_never_takes_more_answer_room_than_it_must` now walks both arms
 of that `min` rather than only `base == cap`. On the shipped catalog the two rules agree at every
 *declared* cap (none lands in a window — the closest, 8192 / 16384 / 32768, sit

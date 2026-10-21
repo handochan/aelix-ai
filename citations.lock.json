@@ -634,8 +634,15 @@
   "packages/aelix-agent-core/src/aelix_agent_core/session/compaction.py:1132-1132": [
    "def estimate_context_tokens(messages: list[Any]) -> _EstimateResult:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/session/compaction.py:897-897": [
-   "max_tokens=_summary_max_tokens(model, 0.8),"
+  "packages/aelix-agent-core/src/aelix_agent_core/session/compaction.py:879-886": [
+   "# #506: the session's level and no cap of its own - P0 #6's floor(0.8 *",
+   "# reserveTokens) would be spent by the reasoning too (OpenAI Responses,",
+   "# adaptive Anthropic; pi #11036); the adapter's cap applies, cut by #563.",
+   "options = SimpleStreamOptions(",
+   "api_key=auth.get(\"apiKey\"),",
+   "headers=auth.get(\"headers\") or {},",
+   "validate_request=_summary_validate(auth, attempt),",
+   "reasoning=reasoning,"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/session/entries.py:64-80": [
    "class CompactionEntry:",

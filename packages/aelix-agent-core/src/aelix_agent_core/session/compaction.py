@@ -19,10 +19,10 @@ fidelity) completes it:
   combined with the history summary via the verbatim separator;
 - file-op extraction — ``<read-files>`` / ``<modified-files>`` tail +
   ``details={"readFiles", "modifiedFiles"}`` (seeded from the prior compaction);
-- ``max_tokens`` cap on the summary (``floor(0.8 * RESERVE_TOKENS)``) and the
-  turn-prefix (``floor(0.5 * RESERVE_TOKENS)``) via the new
-  :class:`SimpleStreamOptions.max_tokens` field (honored REAL at the provider
-  payload level).
+- ``max_tokens`` caps on the summary (``0.8 x RESERVE_TOKENS``) and the turn
+  prefix (``0.5 x``) - removed by #506 (ADR-0142 amendment 2026-10-22), which
+  sends the session's thinking level and refuses a cut answer instead
+  (:func:`_summary_reasoning`, :func:`_summary_cut_off`).
 - ``first_kept_entry_id`` maps to the **cut entry** (not the head) so
   :func:`build_session_context` drops the summarized prefix correctly.
 """
@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -136,11 +135,11 @@ TOOL_RESULT_MAX_CHARS = 2000
 # token estimate is within this budget stay; everything older is summarized.
 KEEP_RECENT_TOKENS = 20000
 
-# Pi ``DEFAULT_COMPACTION_SETTINGS.reserveTokens`` (compaction.ts). The summary
-# output cap is ``floor(0.8 * RESERVE_TOKENS)`` and the turn-prefix cap is
-# ``floor(0.5 * RESERVE_TOKENS)`` (P0 #6). Mirrors
+# Pi ``DEFAULT_COMPACTION_SETTINGS.reserveTokens`` (compaction.ts). Mirrors
 # ``core._AUTO_COMPACT_RESERVE_TOKENS`` (same value, separate constants because
-# core has no SettingsManager).
+# core has no SettingsManager). It no longer sizes a summary's output: the
+# ``floor(0.8 * RESERVE_TOKENS)`` / ``floor(0.5 * ...)`` caps of P0 #6 are gone
+# (#506; pi #11036 keeps ``_reserveTokens`` as an unused parameter).
 RESERVE_TOKENS = 16384
 
 # Pi ``TURN_PREFIX_SUMMARIZATION_PROMPT`` (``compaction.ts``) — verbatim. Used
@@ -739,6 +738,7 @@ async def compact(
     *,
     _summarizer_override: SummarizerOverride | None = None,
     retry: SummaryRetry | None = None,
+    thinking_level: str | None = None,
 ) -> CompactResult:
     """Pi ``compact`` (``compaction.ts:626-705``).
 
@@ -747,7 +747,8 @@ async def compact(
     short-circuit the LLM call via ``_summarizer_override`` (Aelix-additive
     test-only seam documented in ADR-0023). ``retry`` (#409) runs each
     summarization request and may send it again (``_SummaryRetry``,
-    ``harness/core.py``); ``None`` sends each once, as before.
+    ``harness/core.py``); ``None`` sends each once, as before. Both requests
+    ask at ``thinking_level`` (#506), fitted by :func:`_summary_reasoning`.
 
     Raises :class:`AgentHarnessError("invalid_state", ...)` when no override
     is supplied and ``get_api_key_and_headers`` is ``None``.
@@ -774,6 +775,7 @@ async def compact(
             "compact requires options.get_api_key_and_headers (Phase 4 owner)",
         )
 
+    reasoning = _summary_reasoning(model, thinking_level)
     # Pi (``compaction.ts`` ``compact``): on a split turn, summarize the history
     # prefix and the turn prefix - here concurrently (``_gather_summaries``; pi at
     # fdce48eb4 awaits one, then the other) - and combine them with the verbatim
@@ -781,12 +783,12 @@ async def compact(
     if preparation.is_split_turn and preparation.turn_prefix_messages:
         if preparation.messages_to_summarize:
             history_coro = _attempt_summary(
-                retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions
+                retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions, reasoning=reasoning
             )
         else:
             history_coro = _resolved("No prior history.")
         turn_prefix_coro = _attempt_summary(
-            retry, _generate_turn_prefix_summary, model, get_api_key_and_headers, preparation.turn_prefix_messages
+            retry, _generate_turn_prefix_summary, model, get_api_key_and_headers, preparation.turn_prefix_messages, reasoning=reasoning
         )
         history_summary, turn_prefix_summary = await _gather_summaries(
             history_coro, turn_prefix_coro
@@ -797,7 +799,7 @@ async def compact(
         )
     else:
         summary = await _attempt_summary(
-            retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions
+            retry, _generate_summary, model, get_api_key_and_headers, preparation, custom_instructions, reasoning=reasoning
         )
 
     file_ops = preparation.file_ops or create_file_ops()
@@ -818,28 +820,14 @@ async def _resolved(value: str) -> str:
     return value
 
 
-def _summary_max_tokens(model: Model, fraction: float) -> int:
-    """Pi parity: ``Math.min(floor(fraction * reserveTokens), model.maxTokens
-    > 0 ? model.maxTokens : +Infinity)``.
-
-    Used for the summary cap (``fraction = 0.8``) and the turn-prefix cap
-    (``fraction = 0.5``). ``model.max_tokens == 0`` means "no model cap"
-    (``+Infinity``), so the floor-of-reserve value stands.
-    """
-
-    cap = math.floor(fraction * RESERVE_TOKENS)
-    model_max = getattr(model, "max_tokens", 0) or 0
-    if model_max > 0:
-        cap = min(cap, model_max)
-    return cap
-
-
 async def _generate_summary(
     model: Model,
     get_api_key_and_headers: Callable[..., Any],
     preparation: CompactionPreparation,
     custom_instructions: str | None,
     attempt: SummaryAttempt | None = None,
+    *,
+    reasoning: str | None = None,
 ) -> str:
     """Pi ``generateSummary`` (``compaction.ts:541-606``).
 
@@ -847,8 +835,9 @@ async def _generate_summary(
     summarization context (system prompt + a single user message wrapping the
     conversation in ``<conversation>`` tags), resolves auth, streams via
     :func:`aelix_ai.streaming.stream_simple`, and accumulates the assistant
-    text. Raises :class:`AgentHarnessError("compaction", ...)` when the
-    provider reports an error or yields an empty summary.
+    text, asking at ``reasoning`` with no cap of its own (#506). Raises
+    :class:`AgentHarnessError("compaction", ...)` when the provider reports an
+    error, the answer was cut at its limit (#506), or it yields an empty summary.
     """
 
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
@@ -887,18 +876,19 @@ async def _generate_summary(
         messages=[UserMessage(content=[TextContent(text=user_text)])],
         tools=[],
     )
-    # Pi caps the summarization call at floor(0.8 * reserveTokens) output tokens
-    # (clamped by model.maxTokens when > 0). Wired through the new
-    # SimpleStreamOptions.max_tokens (P0 #6) so the cap reaches the adapter.
+    # #506: the session's level and no cap of its own - P0 #6's floor(0.8 *
+    # reserveTokens) would be spent by the reasoning too (OpenAI Responses,
+    # adaptive Anthropic; pi #11036); the adapter's cap applies, cut by #563.
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
         validate_request=_summary_validate(auth, attempt),
-        max_tokens=_summary_max_tokens(model, 0.8),
+        reasoning=reasoning,
     )
 
     summary = ""
     done_message: AssistantMessage | None = None
+    done_event: AssistantDoneEvent | None = None
     iterator = await stream_simple(model, context, options)
     async for event in iterator:
         if isinstance(event, TextDeltaEvent):
@@ -912,6 +902,7 @@ async def _generate_summary(
                 _provider_error(attempt, event.error, getattr(event, "error_message", None)) or "summarization failed",
             )
         elif isinstance(event, AssistantDoneEvent):
+            done_event = event
             done_message = event.message
 
     if done_message is not None:
@@ -922,6 +913,9 @@ async def _generate_summary(
                 "compaction",
                 _provider_error(attempt, done_message, done_message.error_message) or "summarization failed",
             )
+        if _summary_cut_off(done_event):
+            # #506: a summary cut at the token limit must not replace the context.
+            raise AgentHarnessError("compaction", _token_cap_failure("Summarization"))
         # Prefer the terminal message's accumulated TextContent (authoritative)
         # over the delta accumulation when present.
         text_blocks = [
@@ -943,17 +937,19 @@ async def _generate_turn_prefix_summary(
     get_api_key_and_headers: Callable[..., Any],
     messages: list[AgentMessage],
     attempt: SummaryAttempt | None = None,
+    *,
+    reasoning: str | None = None,
 ) -> str:
     """Pi ``generateTurnPrefixSummary`` (``compaction.ts``).
 
     Summarizes the PREFIX of a split turn with
     :data:`TURN_PREFIX_SUMMARIZATION_PROMPT` (no previous-summary / custom-focus
-    threading — pi keeps it minimal). Caps output at
-    ``floor(0.5 * reserveTokens)`` (clamped by ``model.max_tokens`` when > 0)
-    via :class:`SimpleStreamOptions.max_tokens` (P0 #6). Shares the
-    ``AssistantErrorEvent``-raises + terminal-text-preferred event loop. Both
-    summarizers record what one request failed on in ``attempt`` (#409), for
-    the caller's retry (:class:`SummaryAttempt`).
+    threading — pi keeps it minimal), asking at ``reasoning`` with no cap of
+    its own (#506: P0 #6's ``floor(0.5 * reserveTokens)`` is gone) and refusing
+    a cut answer. Shares the ``AssistantErrorEvent``-raises +
+    terminal-text-preferred event loop. Both summarizers record what one
+    request failed on in ``attempt`` (#409), for the caller's retry
+    (:class:`SummaryAttempt`).
     """
 
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
@@ -985,11 +981,12 @@ async def _generate_turn_prefix_summary(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
         validate_request=_summary_validate(auth, attempt),
-        max_tokens=_summary_max_tokens(model, 0.5),
+        reasoning=reasoning,
     )
 
     summary = ""
     done_message: AssistantMessage | None = None
+    done_event: AssistantDoneEvent | None = None
     iterator = await stream_simple(model, context, options)
     async for event in iterator:
         if isinstance(event, TextDeltaEvent):
@@ -1001,6 +998,7 @@ async def _generate_turn_prefix_summary(
                 or "turn-prefix summarization failed",
             )
         elif isinstance(event, AssistantDoneEvent):
+            done_event = event
             done_message = event.message
 
     if done_message is not None:
@@ -1009,6 +1007,8 @@ async def _generate_turn_prefix_summary(
                 "compaction",
                 _provider_error(attempt, done_message, done_message.error_message) or "turn-prefix summarization failed",
             )
+        if _summary_cut_off(done_event):
+            raise AgentHarnessError("compaction", _token_cap_failure("Turn prefix summarization"))
         text_blocks = [
             block.text
             for block in (done_message.content or [])
@@ -1242,17 +1242,18 @@ SummaryRetry = Callable[[Callable[["SummaryAttempt"], Awaitable[str]]], Awaitabl
 
 
 async def _attempt_summary(
-    retry: SummaryRetry | None, request: Callable[..., Awaitable[str]], *args: Any
+    retry: SummaryRetry | None, request: Callable[..., Awaitable[str]], *args: Any, **kwargs: Any
 ) -> str:
-    """``request(*args, attempt)``: sent once, or as ``retry`` decides (#409).
+    """``request(*args, attempt, **kwargs)``: sent once, or as ``retry`` decides (#409).
 
     ``request`` takes the :class:`SummaryAttempt` it records its failure in as
-    its last argument (``None`` when nothing retries).
+    its last positional argument (``None`` when nothing retries); ``kwargs``
+    (the ``reasoning`` level, #506) reach every attempt unchanged.
     """
 
     if retry is None:
-        return await request(*args, None)
-    return await retry(lambda attempt: request(*args, attempt))
+        return await request(*args, None, **kwargs)
+    return await retry(lambda attempt: request(*args, attempt, **kwargs))
 
 
 async def _summary_auth(
@@ -1318,6 +1319,57 @@ def _provider_error(attempt: SummaryAttempt | None, message: Any, error: Any) ->
     if attempt is not None:
         attempt.provider_message = message if isinstance(message, AssistantMessage) else None
     return error
+
+
+def _summary_reasoning(model: Model, thinking_level: str | None) -> str | None:
+    """The ``reasoning`` a summarization request sends (#506): the session's
+    thinking level fitted to ``model``, or ``None`` (reasoning off).
+
+    Pi ``createSummarizationOptions`` (``compaction.ts:595-609`` at
+    ``fdce48eb4``, pi ``da6a81d39`` for pi #3438): ``if (model.reasoning &&
+    thinkingLevel && thinkingLevel !== "off") options.reasoning =
+    thinkingLevel``. Fitted here with :func:`aelix_ai.models.clamp_thinking_level`,
+    the clamp every built-in adapter applies to a turn's level, so the level a
+    summary asks at is one the model lists (``xhigh`` on a model that tops out
+    at ``high`` sends ``high``); a level that fits to ``"off"`` is ``None``.
+
+    Before #506 no summary sent a level, so every one went out on the adapter's
+    reasoning-off path, which OpenAI Responses and OpenRouter send as
+    ``reasoning: {effort: "none"}`` - refused by ``o4-mini``, ``o3-mini`` and
+    ``gpt-6-astra`` (400), while the session's turns ran at its level. An
+    ``off`` session still asks with reasoning off; a model that cannot switch
+    reasoning off is the catalog's to describe (#507).
+    """
+
+    if not getattr(model, "reasoning", False) or not thinking_level or thinking_level == "off":
+        return None
+    from aelix_ai.models import clamp_thinking_level
+
+    level = clamp_thinking_level(model, thinking_level)
+    return None if not level or level == "off" else level
+
+
+def _summary_cut_off(event: Any) -> bool:
+    """Whether a summarization answer stopped at its token limit (#506).
+
+    Pi ``getSummarizationFailure`` (``compaction.ts:586-593`` at ``fdce48eb4``,
+    pi ``97fa14e39`` for pi #7048): "A length stop contains partial text and
+    must not become a session checkpoint." ``event`` is the stream's
+    :class:`~aelix_ai.streaming.AssistantDoneEvent`; its ``reason`` or its
+    message's ``stop_reason`` (the built-in adapters set both) is ``"length"``.
+    The refusal is not retried (the request records no provider failure in its
+    :class:`SummaryAttempt`), as pi checks it after ``retryAssistantCall``.
+    """
+
+    if getattr(event, "reason", None) == "length":
+        return True
+    return getattr(getattr(event, "message", None), "stop_reason", None) == "length"
+
+
+def _token_cap_failure(label: str) -> str:
+    """Pi's text for a summary refused by :func:`_summary_cut_off`, verbatim."""
+
+    return f"{label} failed: generation hit the token cap and the summary is incomplete"
 
 
 async def _gather_summaries(

@@ -200,6 +200,7 @@ async def generate_branch_summary(
     replace_instructions: bool | None = None,
     _summarizer_override: BranchSummarizerOverride | None = None,
     retry: SummaryRetry | None = None,
+    thinking_level: str | None = None,
 ) -> str:
     """Pi ``generateBranchSummary`` (``branch-summarization.ts:189-262``).
 
@@ -222,23 +223,37 @@ async def generate_branch_summary(
       ``<read-files>`` / ``<modified-files>``). KEEPS returning ``str`` (the
       harness contract is unchanged — the tail is appended in-line, the
       ``details`` round-trip stays on the compaction path).
-    - ``max_tokens = 2048`` cap via :class:`SimpleStreamOptions.max_tokens`.
 
     ``retry`` (#409) runs the summarization request and may send it again, as
     pi's ``completeSummarization`` does with ``settings.retry``
     (``branch-summarization.ts:348-351`` @ fdce48eb4); the harness passes the
     turn's retry (``_SummaryRetry``). ``None`` sends it once, as before.
 
-    Known bounded divergence from Pi (deferred, not silently dropped):
+    #506 (ADR-0142 amendment 2026-10-22), as for a compaction's summaries: the
+    request asks at ``thinking_level`` (the session's, which the harness
+    passes) fitted to the model (``compaction._summary_reasoning``; ``None`` or
+    ``"off"`` is reasoning off, as before), sets no output cap of its own (the
+    ``max_tokens = 2048`` of P0 #6 is gone; pi #11036 sends the model's cap,
+    and here the adapter's cap applies, cut to the window by #563), and an
+    answer that stopped at its token limit raises instead of becoming the
+    summary (pi ``getSummarizationFailure``).
+
+    Known bounded divergences from Pi (deferred, not silently dropped):
 
     - no ``prepareBranchEntries`` token-budget backward walk; all entries are
       included (a separate fidelity concern not named in P0 #6).
+    - pi at ``fdce48eb4`` sends no thinking level here (its
+      ``generateBranchSummary`` builds ``{apiKey, headers, env, signal}`` and
+      ignores the ``thinkingLevel`` its caller spreads in), so a ``/tree``
+      summary on a model that refuses ``effort: "none"`` fails there; aelix
+      sends the session's level, as pi's compaction does (#506).
     """
 
     from aelix_agent_core.harness.core import AgentHarnessError
     from aelix_agent_core.session.compaction import (
         _attempt_summary,
         _serialize_conversation,
+        _summary_reasoning,
         compute_file_lists,
         create_file_ops,
         extract_file_ops_from_message,
@@ -287,7 +302,8 @@ async def generate_branch_summary(
     user_text = f"<conversation>\n{serialized}\n</conversation>\n\n{instructions}"
 
     summary = await _attempt_summary(
-        retry, _request_branch_summary, model, get_api_key_and_headers, user_text
+        retry, _request_branch_summary, model, get_api_key_and_headers, user_text,
+        reasoning=_summary_reasoning(model, thinking_level),
     )
 
     # P0 #6: append the file-op tail (pi ``summary += formatFileOperations(...)``)
@@ -300,8 +316,14 @@ async def _request_branch_summary(
     get_api_key_and_headers: Callable[..., Any],
     user_text: str,
     attempt: SummaryAttempt | None,
+    *,
+    reasoning: str | None = None,
 ) -> str:
-    """One branch-summary request: what it failed on goes into ``attempt`` (#409)."""
+    """One branch-summary request: what it failed on goes into ``attempt`` (#409).
+
+    Asks at ``reasoning`` with no output cap of its own, and raises when the
+    answer stopped at its token limit (#506).
+    """
 
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
     from aelix_ai.streaming import (
@@ -318,7 +340,9 @@ async def _request_branch_summary(
         SUMMARIZATION_SYSTEM_PROMPT,
         _provider_error,
         _summary_auth,
+        _summary_cut_off,
         _summary_validate,
+        _token_cap_failure,
     )
 
     # Coerces a non-dict (e.g. None from a buggy auth callback) to empty.
@@ -333,12 +357,15 @@ async def _request_branch_summary(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
         validate_request=_summary_validate(auth, attempt),
-        # P0 #6: pi ``generateBranchSummary`` caps the call at maxTokens=2048.
-        max_tokens=2048,
+        # #506: the session's level and no cap of its own - P0 #6's 2048 (pi's
+        # maxTokens at 734e08e) would leave a model that now reasons at that
+        # level too little room to answer (reasoning spends the same cap).
+        reasoning=reasoning,
     )
 
     summary = ""
     done_message: AssistantMessage | None = None
+    done_event: AssistantDoneEvent | None = None
     iterator = await stream_simple(model, context, options)
     async for event in iterator:
         if isinstance(event, TextDeltaEvent):
@@ -353,6 +380,7 @@ async def _request_branch_summary(
                 or "branch summary failed",
             )
         elif isinstance(event, AssistantDoneEvent):
+            done_event = event
             done_message = event.message
 
     if done_message is not None:
@@ -361,6 +389,8 @@ async def _request_branch_summary(
                 "invalid_state",
                 _provider_error(attempt, done_message, done_message.error_message) or "branch summary failed",
             )
+        if _summary_cut_off(done_event):
+            raise AgentHarnessError("invalid_state", _token_cap_failure("Branch summarization"))
         # Prefer the terminal message's TextContent (authoritative) over the
         # delta accumulation when present (Pi joins text parts with "\n").
         text_blocks = [

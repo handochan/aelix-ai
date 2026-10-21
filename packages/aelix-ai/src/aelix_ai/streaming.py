@@ -443,9 +443,9 @@ class SimpleStreamOptions:
     # Pi ``SimpleStreamOptions.maxTokens`` (providers/simple-options.ts). When
     # set, this replaces the model default output cap as the adapter's *base*
     # (pi ``base.maxTokens = options.maxTokens ?? model.maxTokens``). The
-    # compaction summarizer uses it to bound the summary length
-    # (``floor(0.8 * reserveTokens)``) and the turn-prefix summary
-    # (``floor(0.5 * reserveTokens)``); branch summaries cap at ``2048``.
+    # compaction summarizer used it to bound the summary (``floor(0.8 *
+    # reserveTokens)``, the turn prefix ``0.5``, branch summaries ``2048``)
+    # until #506; no in-tree request sets it now - it is an embedder's bound.
     #
     # #250 review: it caps the VISIBLE answer, not the payload's
     # ``max_tokens`` field. On the Anthropic budget-thinking path the thinking

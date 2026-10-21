@@ -504,7 +504,7 @@ async def stream_anthropic(
     # interleaved-thinking beta header is needed. Computed before client
     # creation so the header can be attached to the SDK client default headers.
     # P0 #6 (compaction fidelity): pi ``base.maxTokens = options.maxTokens ??
-    # model.maxTokens``. When the caller (e.g. the compaction summarizer)
+    # model.maxTokens``. When the caller (an embedder; no summary since #506)
     # supplies ``options.max_tokens``, it becomes the base output cap that the
     # thinking-budget math carves from and the request ``max_tokens`` value —
     # replacing the ``model.max_tokens or 4096`` default.
@@ -528,8 +528,8 @@ async def stream_anthropic(
     # ``resolve_anthropic_thinking`` returns a cap that fits: no thinking, adaptive
     # and "off" send the base; the budget path sends ``min(base + budget,
     # ceiling)`` with the budget carved inside the ceiling; its "no room for a
-    # budget" fallback sends ``min(base, ceiling)``. A caller's ``max_tokens`` (a
-    # compaction or branch summary's) is cut the same way.
+    # budget" fallback sends ``min(base, ceiling)``. A caller's ``max_tokens`` (an
+    # embedder's - since #506 no summary sets one) is cut the same way.
     window_room = context_output_room(model, context)
     output_ceiling = model_output_cap
     if window_room is not None:

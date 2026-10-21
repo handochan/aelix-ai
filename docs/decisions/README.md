@@ -36,11 +36,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0142 — Compaction fidelity: entry-level cut point, split turn, file ops and the summary cap](0142-compaction-fidelity-cut-point-split-turn-file-ops.md)
+  (amended 2026-10-22; #506). The history, split-turn prefix and `/tree` branch summaries ask at
+  the session's thinking level, fitted to the model (pi `createSummarizationOptions`; `off` and a
+  non-reasoning row ask with reasoning off, as before), so at any level but `off` `o4-mini`,
+  `o3-mini` and `gpt-6-astra` no longer refuse every compaction with `'none' is not supported`
+  (`off` on such a row is #507's). §4's fixed caps (`0.8` and
+  `0.5 × 16384`, the branch summary's `2048`) are removed, as pi #11036 did, since the reasoning
+  spends them too: each summary gets the adapter's cap for the model, cut to the window by #563.
+  A summary that stopped at its limit (`stop_reason` `length`) is refused with pi's text and not
+  retried, instead of replacing the conversation. Unlike pi, the branch summary carries the level
+  too. Note in ADR-0135.
+
 - [0114 — OpenRouter Qwen3 tool-calling fixes, and the output cap that must fit the window](0114-sprint-6h13-openrouter-qwen3-tool-calling.md)
   (amended 2026-10-21; #563). Every output cap an adapter sends is cut to `context_window -
   estimated context - 4096`, at least 1, as pi's `clampMaxTokensToContext` does: the Anthropic
-  adapter's catalog or caller cap and its thinking ceiling, and a caller's cap (a compaction's) in
-  openai-completions, openai-responses (at least 16) and both Google adapters. The estimate is pi's:
+  adapter's catalog or caller cap and its thinking ceiling, and a caller's cap (an embedder's; no
+  summary sets one since #506) in openai-completions, openai-responses (at least 16) and both Google adapters. The estimate is pi's:
   the last answer's reported usage plus the text after it at 3.5 characters a token (review round 2;
   it was 4), an image flat, no anchor on an answer a compaction summary postdates. openai-completions keeps omitting its own cap when it does not fit
   (now judged with the usage estimate too); pi clamps it. Kept: #149's 32000 ceiling for broken

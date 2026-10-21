@@ -655,6 +655,31 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Compaction and `/tree` summaries work on models that cannot switch reasoning
+  off: they ask at the session's thinking level, set no output cap of their own,
+  and a summary cut at its limit is refused (#506, ADR-0142 amendment
+  2026-10-22).** The history summary, a split turn's prefix summary and the
+  branch summary `/tree` writes always asked with reasoning off, which OpenAI
+  Responses and OpenRouter send as `reasoning: {effort: "none"}`; `o4-mini`,
+  `o3-mini` and `gpt-6-astra` refuse it (`'none' is not supported with the
+  'o4-mini' model`, OpenRouter's `Reasoning is mandatory for this endpoint`),
+  so on those models the conversation worked and every compaction failed, and
+  the context filled up. Measured with a local server that answers as o4-mini
+  and the real `aelix --mode rpc --thinking high`: the turns ran at
+  `effort: high` and `compact` failed with that 400. Now each summary asks at
+  the session's level fitted to the model, as pi does; `off` and a model that
+  does not reason ask with reasoning off, as before. The fixed caps (13107
+  tokens for the summary, 8192 for the prefix, 2048 for `/tree`) are gone, as
+  in pi: the reasoning spends the same cap, and on the same server a summary at
+  `high` under the 13107 cap stopped half way and that half replaced the
+  conversation. Each summary now gets the cap a turn of that model gets, cut to
+  the window. A summary that stops at its limit (`stop_reason` `length`) is
+  refused with `Summarization failed: generation hit the token cap and the
+  summary is incomplete` (`Turn prefix summarization` / `Branch summarization`
+  for the other two) and is not retried; before, only an error was refused, so
+  a cut summary replaced the conversation silently. Unlike pi, the `/tree`
+  summary carries the level too.
+
 - **A long conversation no longer fails on every turn before auto-compaction is
   reached: each request asks the model for no more output than the context
   window still holds, as pi does (#563, ADR-0114 amendment 2026-10-21).** An
@@ -671,9 +696,10 @@ unwritten. Add them with the next release.
   conversation (the last answer's reported usage plus an estimate of what came
   after it at pi's 3.5 characters a token; an image counts as 1372 tokens), less 4096, and at least 1: the
   Anthropic adapter's cap, with its thinking budget inside it (under 2048 tokens
-  of room, budget thinking is off for that request), and a caller's cap - a
-  compaction's or a branch summary's - in openai-completions, OpenAI Responses
-  (never under 16) and both Gemini adapters. On the same server all 8 turns
+  of room, budget thinking is off for that request), and a cap the request
+  sets itself in openai-completions, OpenAI Responses (never under 16) and both
+  Gemini adapters (none of aelix's own requests sets one since #506; an
+  embedder's may). On the same server all 8 turns
   answered and the automatic compaction ran at its threshold. openai-completions
   still leaves its own cap out when it does not fit, now judged with the
   reported usage too (a divergence: pi sends the cut cap). The cost on the
@@ -683,8 +709,8 @@ unwritten. Add them with the next release.
   Hugging Face TGI's `` `inputs` tokens + `max_new_tokens` must be <= `` - and
   pi's newer z.ai (`Prompt too long`, `Prompt exceeds max length`), DS4 and
   DashScope texts now count as a context overflow, so overflow recovery
-  compacts. Not changed: the 16384 threshold itself (#469) and the compaction
-  summary's own limits (#506). Found while measuring and left for a follow-up:
+  compacts. Not changed: the 16384 threshold itself (#469); the compaction
+  summary's own limits went with #506 (above). Found while measuring and left for a follow-up:
   after a session's first compaction no automatic compaction runs again.
 
 - **After an `/agents use` that switches the model, `/new` stays on that model:

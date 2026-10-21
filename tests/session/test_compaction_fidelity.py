@@ -3,7 +3,7 @@
 Deterministic tests for the entry-level cut-point machinery, split-turn
 (turn-prefix) summarization, file-operation extraction (``<read-files>`` /
 ``<modified-files>`` tags), the ``details`` round-trip, prev-compaction
-file-op seeding, and the ``max_tokens`` caps.
+file-op seeding, and (since #506) the absence of a summary ``max_tokens`` cap.
 
 No real LLM calls — ``compact`` is exercised through a monkeypatched
 ``stream_simple`` (patched on the module OBJECT, reload-safe) so the split-turn
@@ -18,10 +18,8 @@ from typing import Any
 import pytest
 from aelix_agent_core.session import MemorySessionStorage, Session
 from aelix_agent_core.session.compaction import (
-    RESERVE_TOKENS,
     CompactionPreparation,
     FileOperations,
-    _summary_max_tokens,
     compact,
     compute_file_lists,
     create_file_ops,
@@ -288,9 +286,15 @@ async def test_compact_split_turn_empty_history_uses_no_prior_history(
     assert "PREFIX_SUMMARY" in result.summary
 
 
-async def test_compact_max_tokens_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_compact_sets_no_summary_max_tokens_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#506 (ADR-0142 amendment 2026-10-22): P0 #6 capped the history summary at
+    ``floor(0.8 * RESERVE_TOKENS)`` and the turn prefix at ``floor(0.5 * ...)``;
+    with the session's thinking level now sent, reasoning would spend those caps
+    too, so neither request sets one (pi #11036) and the adapter's cap applies.
+    ``tests/session/test_summary_reasoning_506.py`` holds the full matrix."""
+
     captured = _patch_stream(monkeypatch, "S")
-    model = Model(api="openai-completions", id="m", provider="openai")  # max_tokens=0
+    model = Model(api="openai-completions", id="m", provider="openai", max_tokens=1000)
     prep = CompactionPreparation(
         first_kept_entry_id="k",
         messages_to_summarize=[_user("history")],
@@ -299,22 +303,7 @@ async def test_compact_max_tokens_caps(monkeypatch: pytest.MonkeyPatch) -> None:
         tokens_before=10,
     )
     await compact(model, lambda _m: {"apiKey": "k"}, prep)
-    # History cap = floor(0.8 * RESERVE_TOKENS); turn-prefix = floor(0.5 * ...).
-    caps = sorted(o.max_tokens for o in captured)
-    assert caps == [
-        int(0.5 * RESERVE_TOKENS),
-        int(0.8 * RESERVE_TOKENS),
-    ]
-
-
-def test_summary_max_tokens_clamped_by_model() -> None:
-    # model.max_tokens > 0 clamps the floor-of-reserve cap.
-    small = Model(api="x", id="m", provider="p", max_tokens=1000)
-    assert _summary_max_tokens(small, 0.8) == 1000
-    # model.max_tokens == 0 → no model clamp → floor(fraction * reserve).
-    unbounded = Model(api="x", id="m", provider="p", max_tokens=0)
-    assert _summary_max_tokens(unbounded, 0.8) == int(0.8 * RESERVE_TOKENS)
-    assert _summary_max_tokens(unbounded, 0.5) == int(0.5 * RESERVE_TOKENS)
+    assert [o.max_tokens for o in captured] == [None, None]
 
 
 # === prepare_compaction — prev-compaction file-op seeding ===================

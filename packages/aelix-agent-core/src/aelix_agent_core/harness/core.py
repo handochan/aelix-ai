@@ -6085,13 +6085,17 @@ async def _with_summary_retry(
     *args: Any,
     **kwargs: Any,
 ) -> Any:
-    """``summarize(model, get_api_key_and_headers, *args, retry=..., **kwargs)`` (#409).
+    """``summarize(model, get_api_key_and_headers, *args, retry=..., thinking_level=..., **kwargs)``.
 
     :func:`session.compaction.compact` or
     :func:`session.branch_summarization.generate_branch_summary`, called by
     :meth:`AgentHarness.compact` / :meth:`AgentHarness.navigate_tree` with the
     model and auth callback as before, plus a :class:`_SummaryRetry` whose abort
-    event is registered for the call and released after it.
+    event is registered for the call and released after it (#409), and the
+    session's thinking level (#506), as pi's ``_getSummarizationRequestAuth``
+    hands ``this.thinkingLevel`` to every summary (``agent-session.ts:573-608``
+    @ fdce48eb4). Before #506 none was passed, so each summary asked with
+    reasoning off while the turns ran at the session's level.
     """
 
     retry = _SummaryRetry(harness)
@@ -6101,6 +6105,7 @@ async def _with_summary_retry(
             harness._options.get_api_key_and_headers,
             *args,
             retry=retry,
+            thinking_level=harness._state.thinking_level,
             **kwargs,
         )
     finally:

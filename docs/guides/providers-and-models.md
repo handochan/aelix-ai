@@ -473,8 +473,14 @@ still holds: `contextWindow`, less the conversation so far, less 4096 tokens,
 and at least 1 - pi's rule. The conversation is counted as the last answer's
 reported usage plus an estimate of what came after it (3.5 characters a token,
 as pi counts; an image counts as 1372 tokens); after a compaction, until a new answer reports usage, the whole
-conversation is estimated. A compaction's or a branch summary's own limit is
-cut the same way.
+conversation is estimated. A compaction's or a branch summary's request asks
+for what a turn of the same model asks for, cut the same way: until this release
+it set a limit of its own (13107 tokens for the summary, 8192 for a split turn's
+prefix, 2048 for a `/tree` summary), which a model that reasons spends on its
+reasoning too (#506). A summary that stops at the limit (`stop_reason`
+`length`) is refused - `Summarization failed: generation hit the token cap and
+the summary is incomplete` - so a cut summary never replaces the conversation,
+and the compaction leaves the session as it was.
 
 Some endpoints refuse a request whose conversation plus its `maxTokens` is
 larger than the window (MiniMax's Anthropic-compatible API, vLLM, many
@@ -489,8 +495,8 @@ cut, and with a thinking budget the budget fits inside it (under 2048 tokens of
 room, budget thinking is off for that request). openai-completions sends its
 own cap only while it fits and otherwise leaves it out, so the provider uses
 whatever room is left. OpenAI Responses and Gemini send a cap only when the
-request sets one (a compaction does; Responses never sends less than 16, which
-the API refuses), and the Codex adapter sends none. A prompt that alone
+request sets one (none of aelix's own requests does; Responses never sends less
+than 16, which the API refuses), and the Codex adapter sends none. A prompt that alone
 overflows the window still goes out, and the provider's error starts a
 compaction. The errors endpoints give when the conversation plus the cap is too
 large - Anthropic's ``input length and `max_tokens` exceed context limit``,
@@ -600,6 +606,17 @@ its next launch. A `session_start` extension handler sees the level: one it sets
 is recorded only if it changes it, and a model it switches to keeps it, as
 `/model` does. `/new` keeps the level and records it unless `off`; `/reload`
 goes back to `--thinking`'s level or `off`.
+
+Compaction (`/compact` and the automatic one) and the summary `/tree` writes
+when you leave a branch ask the model at the session's level too, fitted to the
+model the same way. Until this release they always asked with reasoning off,
+which OpenAI's `o4-mini`, `o3-mini` and `gpt-6-astra` refuse
+(`'none' is not supported with the 'o4-mini' model`, or OpenRouter's
+`Reasoning is mandatory for this endpoint and cannot be disabled`), so on those
+models the conversation worked and every compaction failed (#506). At `off`, and
+on a model that does not reason, they still ask with reasoning off; a model that
+cannot switch reasoning off is tracked as
+[#507](https://github.com/handochan/aelix-ai/issues/507).
 
 What `xhigh` means depends on how the model thinks. On a model that takes a
 Claude-style token budget it sends a larger budget than `high` — 32768 against

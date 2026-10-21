@@ -146,17 +146,19 @@ async def test_generate_branch_summary_real_path_prepends_preamble(
     assert "## Goal" in captured["user_text"]  # BRANCH_SUMMARY_PROMPT appended
 
 
-async def test_generate_branch_summary_file_ops_tail_and_max_tokens_cap(
+async def test_generate_branch_summary_file_ops_tail_and_no_max_tokens_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """P0 #6 branch-summary parity: the abandoned branch's read/write/edit tool
     calls produce a verbatim ``<read-files>`` / ``<modified-files>`` tail (with
-    pi sort/dedup + read-exclusion), and the streamed call is capped at
-    ``max_tokens=2048`` (spec deliverable 3 + branch-summary cap).
+    pi sort/dedup + read-exclusion). P0 #6 also capped the streamed call at
+    ``max_tokens=2048``; #506 (ADR-0142 amendment 2026-10-22) removed that cap
+    with the thinking level now sent (pi #11036), so ``options.max_tokens`` is
+    ``None`` here.
 
-    Without this, a mutation deleting the branch file-op block or dropping the
-    2048 cap passes the whole suite (the only other real-path branch test seeds
-    a text-only session and never inspects ``options``).
+    Without this, a mutation deleting the branch file-op block passes the whole
+    suite (the only other real-path branch test seeds a text-only session and
+    never inspects ``options``).
     """
 
     from aelix_agent_core.session.branch_summarization import (
@@ -221,10 +223,10 @@ async def test_generate_branch_summary_file_ops_tail_and_max_tokens_cap(
         "\n\n<read-files>\nb_read.py\n</read-files>"
         "\n\n<modified-files>\nm_edit.py\nshared.py\nz_write.py\n</modified-files>"
     )
-    # The branch-summary cap reaches the adapter via SimpleStreamOptions.
+    # #506: no cap of its own reaches the adapter; the model's cap applies.
     opts = captured["options"]
     assert isinstance(opts, SimpleStreamOptions)
-    assert opts.max_tokens == 2048
+    assert opts.max_tokens is None
 
 
 async def test_navigate_tree_cancel_via_hook() -> None:

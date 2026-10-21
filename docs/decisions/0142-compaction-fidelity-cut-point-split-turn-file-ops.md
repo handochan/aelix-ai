@@ -1,6 +1,8 @@
 # 0142. Compaction Fidelity — Entry-Level Cut-Point + Split-Turn + File-Ops + max_tokens Cap
 
-Status: Accepted
+Status: Accepted — amended 2026-10-22 (#506): §4's caps are removed; the history, turn-prefix
+and branch summaries ask at the session's thinking level fitted to the model, and a summary that
+stopped at its token limit is refused
 Date: 2026-06-20
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -70,7 +72,7 @@ Turn-prefix uses `TURN_PREFIX_SUMMARIZATION_PROMPT`.
   branch messages and appends the same tail (still returns `str` — the harness
   contract is unchanged).
 
-### 4. Real `max_tokens` cap (NOT cosmetic)
+### 4. Real `max_tokens` cap (NOT cosmetic) — removed 2026-10-22 (#506), see the amendment
 
 `SimpleStreamOptions.max_tokens: int | None` added (`aelix_ai/streaming.py`).
 The cap is `floor(0.8 × reserveTokens)` for the summary, `floor(0.5 ×
@@ -124,3 +126,76 @@ The field is **wired through to the provider request payload** (the whole point
   `compact()` round-trips `result.details` into `append_compaction` **unchanged**
   (no core change required). `build_session_context` still drops the summarized
   prefix given the new entry-level `first_kept_entry_id`.
+
+## Amendment (2026-10-22, #506) — summaries ask at the session's level, with no cap of their own
+
+**What failed.** None of the three summarization requests (the history summary, a split turn's
+prefix summary, a `/tree` branch summary) set `SimpleStreamOptions.reasoning`, and neither
+`compact()` nor `generate_branch_summary()` took a thinking level, so every summary went out on
+the adapter's reasoning-off path while the session's turns ran at its level. OpenAI Responses and
+OpenRouter send that path as `reasoning: {effort: "none"}`, which `o4-mini`, `o3-mini` and
+`gpt-6-astra` refuse: measured 2026-10-21 on `7faf4b9a` against the real APIs (the issue's table:
+`'none' is not supported with the 'o4-mini' model`, OpenRouter's `Reasoning is mandatory for this
+endpoint and cannot be disabled`), and again on `fa7ebb24` with a local recorder that answers as
+o4-mini and the real `aelix --mode rpc` at `--thinking high`: three turns answered at
+`effort: high`, then `compact` failed with that 400 (summary request `effort: none`,
+`max_output_tokens: 13107`); the harness-level probe saw the split turn's two requests
+(`13107`, `8192`) and the branch summary (`2048`) refused the same way. Auto-compaction then
+failed on every threshold, and the conversation ran into its window.
+
+**Decision 1 — the session's level, fitted to the model.** `compact(..., thinking_level=)` and
+`generate_branch_summary(..., thinking_level=)` take the session's level; the harness passes
+`AgentState.thinking_level` read at the call (`_with_summary_retry`), so a `/thinking` change
+between compactions is the one the next summary uses. `_summary_reasoning` is pi's
+`createSummarizationOptions` (`compaction.ts:595-609` at `fdce48eb4`, pi `da6a81d39` for pi
+#3438): no level when the row does not reason or the level is unset or `off` — exactly the
+requests of before — else the level, fitted with `clamp_thinking_level` (`xhigh` on a row that
+tops out at `high` asks at `high`). The built-in adapters clamp a turn's level the same way, so
+on them the fitting changes nothing on the wire; it makes the level an extension provider
+receives one the row lists. An `off` session on a row that cannot switch reasoning off still
+takes the off path, as its turns do; that row is #507's.
+
+**Decision 2 — §4's caps are removed.** With reasoning on, OpenAI Responses and adaptive
+Anthropic spend the output cap on reasoning too, so a fixed `0.8 × 16384` left a summary too
+little room: on the recorder, `effort: high` spending 12000 tokens of reasoning under the 13107
+cap answered `incomplete` with 1107 of the summary's 2000 tokens, and with decision 1 alone that
+cut summary became the session's compaction entry (`has_end_marker: false`, 179 of 327
+characters). pi #11036 (`6fcb48670`) dropped the cap for that reason. No summary request sets
+`max_tokens` now, so each gets what a turn of that model gets, cut to the window by ADR-0114's
+#563 clamp: the catalog cap on Anthropic's Messages API (with the thinking budget inside it),
+openai-completions' own cap while it fits (OpenRouter `openai/o4-mini`: `max_completion_tokens:
+100000`), and no cap on OpenAI Responses, Gemini and Codex. pi sends `model.maxTokens` clamped in
+every adapter (`buildBaseOptions`); the difference on Responses and Gemini is ADR-0114's
+existing one for turns. `SimpleStreamOptions.max_tokens` stays for embedders; no request in this
+tree sets it.
+
+**Decision 3 — a cut summary is refused.** An answer whose done event or message says
+`stop_reason: "length"` raises pi's `getSummarizationFailure` text verbatim (`compaction.ts:586-593`
+at `fdce48eb4`, pi `97fa14e39` for pi #7048): `Summarization failed: …`, `Turn prefix
+summarization failed: …`, `Branch summarization failed: generation hit the token cap and the
+summary is incomplete`, as `AgentHarnessError("compaction")` (`"invalid_state"` for the branch
+summary, as its other failures). Before, only `"error"` was checked, so a cut summary replaced the
+conversation without a word (recorder, reasoning off, a summary that stops half way: the
+compaction entry held 163 characters). The refusal is not retried — it records no provider failure
+in the request's `SummaryAttempt`, so #409's decision says no, as pi checks it after
+`retryAssistantCall` — and nothing is appended to the session; the compaction ends as any failed
+one does (`compaction_end` with the error).
+
+**Divergences from pi, knowingly.** The branch summary carries the level too: pi at `fdce48eb4`
+builds `{apiKey, headers, env, signal}` in `generateBranchSummary` and ignores the
+`thinkingLevel` its caller spreads in, so a `/tree` summary there still takes the off path that
+these models refuse. pi's "attempted to call a tool" refusal is not ported (the summary requests
+send no tools).
+
+**Verification.** `tests/session/test_summary_reasoning_506.py` (each request × each decision;
+the harness reading the level at the call; #409's retry carrying the level; the real OpenAI
+Responses adapter's payload and its `incomplete` status). On `fa7ebb24` all 85 rows fail
+(the new keyword is missing); with a shim that accepts and ignores it, 64 fail and the 21 rows that
+pin `off`, a non-reasoning row and a whole answer pass. On a throwaway worktree each piece
+reverted and the wrong forms (the raw level, no fitting and no gate, `off` fitted like a level,
+each cap restored, each refusal removed, only one of the two stop fields read, the level on the
+first attempt only, another refusal text) fail; dropping only the `model.reasoning` gate passes,
+because the clamp fits a non-reasoning row to `off` (kept for pi's form). Live on the recorder
+with the real CLI: `compact` at `--thinking high` sends `effort: high` and no
+`max_output_tokens` and keeps the whole summary; a cut summary is refused and the session has no
+compaction entry. `.omc/probes/b4-a-live/506/`.

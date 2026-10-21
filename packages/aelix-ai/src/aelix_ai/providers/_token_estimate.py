@@ -340,7 +340,7 @@ def clamp_max_tokens_to_context(model: Any, context: Any, max_tokens: int) -> in
 
     ``min(max_tokens, max(1, context_window - estimate - 4096))``; with no known
     window, ``max(1, max_tokens)``. The adapters apply it to every output cap they
-    send, the caller's (a compaction or branch summary's) as well as the model's:
+    send, a caller's (an embedder's; no summary sets one since #506) as well as the model's:
     an endpoint that checks ``prompt + max_tokens <= context_window`` (MiniMax's
     Anthropic-compatible API in pi #6061; the OpenAI-style "you requested ... in
     the completion" endpoints whose errors ``utils/overflow.py`` reads) otherwise

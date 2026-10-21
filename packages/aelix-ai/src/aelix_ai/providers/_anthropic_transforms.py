@@ -772,8 +772,8 @@ def resolve_anthropic_thinking(
     # (= options.maxTokens ?? model.maxTokens) as the budget base and
     # ``model.maxTokens`` as the hard clamp (simple-options.ts:26-50). P0 #6
     # plumbs ``options.maxTokens`` through ``default_max_tokens`` at the call
-    # site (anthropic.py), so the base honors a caller override (e.g. the
-    # compaction summarizer cap); the clamp stays the model cap.
+    # site (anthropic.py), so the base honors a caller override (the compaction
+    # summarizer's cap until #506; an embedder's now); the clamp stays the model cap.
     base_max = default_max_tokens
     # #149: ``max_tokens_ceiling`` lets the caller substitute a CLAMPED hard
     # clamp for the raw catalog ``model.max_tokens``. It matters because this
