@@ -1097,3 +1097,76 @@ def _late(what: str, elapsed: float, bound: float) -> str:
     """A time bound's failure message: what was timed, the time, the bound."""
 
     return f"{what} took {elapsed:.3f}s, past its {bound:.2f}s bound"
+
+
+# === the root's own exit, as a case sees it (#476) ==========================
+
+#: How often :class:`_FirstSeen` looks for its path: #230's ``_watch`` poll
+#: above, and for its reason — well inside :data:`EXIT_DRAIN_SECONDS`, so a
+#: bound that runs from the stamp is not measurably shortened by the poll.
+_FIRST_SEEN_POLL = 0.005
+
+
+class _FirstSeen(threading.Thread):
+    """Stamps the first instant ``path`` exists, polling on its own daemon thread (#476).
+
+    :data:`ROOT_WITH_A_LATE_TAIL` writes its ``leaving`` flag as its last
+    statement, so this stamp is the case's own reading of that root's exit,
+    and a bound that runs from it holds the exit drain and the call's return
+    and NONE of the root's start-up, its holder's spawn or its quiet spell. On
+    windows-latest those are what a stalled runner stretches: every failure
+    #476's measurement reproduced under eight busy loops had the root exit
+    2.31-2.75 s after the call and the drain take 0.14-0.22 s, against a
+    ceiling that ran from the call.
+
+    Started BEFORE the call, like :class:`_Registrar`, and it polls until it
+    sees the path or :meth:`settle` stops it, with no bound of its own: one
+    that ran out first would be a start-up limit of its own, and the case's
+    watchdog already bounds the call. The stamp is one poll at most after the
+    flag, more if this thread is held up, and that can only SHORTEN what a
+    bound from it measures: a drain that holds its caller for seconds past the
+    exit is seconds late from here too, whatever this thread was doing.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(daemon=True)
+        self._path = path
+        self._done = threading.Event()
+        #: ``time.monotonic()`` when ``path`` was first seen; ``None`` until then.
+        self.seen_at: float | None = None
+        #: True when only :meth:`settle`'s own look found it: this thread was
+        #: held up across the whole stretch between the flag and the call's
+        #: return, so the stamp is that look's, and later than the flag.
+        self.seen_late = False
+
+    def run(self) -> None:
+        while not self._done.is_set():
+            if self._path.exists():
+                self.seen_at = time.monotonic()
+                return
+            self._done.wait(_FIRST_SEEN_POLL)
+
+    def settle(self) -> float | None:
+        """Stop the poll and return the stamp — ``None`` if ``path`` never appeared.
+
+        Shaped for a ``finally`` like :meth:`_Registrar.settle`: it never
+        raises. A path the poll missed but that is there now is stamped by this
+        look and :attr:`seen_late` says so; a bound from that stamp measures
+        less than the drain took, never more.
+        """
+
+        self._done.set()
+        self.join(1.0)
+        if self.seen_at is None and self._path.exists():
+            self.seen_at = time.monotonic()
+            self.seen_late = True
+        return self.seen_at
+
+
+def _first_seen(path: Path) -> _FirstSeen:
+    """Start a :class:`_FirstSeen`. Call it BEFORE the bounded call, as :func:`_registrar`,
+    and settle it in that call's ``finally``."""
+
+    thread = _FirstSeen(path)
+    thread.start()
+    return thread

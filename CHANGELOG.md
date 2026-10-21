@@ -1254,6 +1254,28 @@ unwritten. Add them with the next release.
   start. Once a Python root took 4.73 s to spawn its child, which put the
   marker at 5.73 s, past the old 5 s wait.
 
+- **Tests only: the extension `exec` case with a backgrounded helper no longer
+  fails when Windows is slow to start the command (#476).** Nothing users run
+  changed. `test_exec_with_a_backgrounded_holder_is_the_success_it_was` checks
+  that `exec` comes back once a command that left a helper holding its output
+  has exited, without waiting for the helper. Its 2.6 s limit counted from the
+  call, so Python's start-up for the command and the helper's launch had to fit
+  in it too. On windows-latest it failed once at 3.875 s with every result
+  right, and under eight busy loops in 7 runs of 1080, each time because the
+  command finished late, not because `exec` waited. The case now times from
+  the flag the command writes as its last action, and allows the 2.0 s cap on
+  that wait plus half a second, the same allowance the drain's cap cases use.
+  The start-up waits under the 30 s hang guard instead, and the message says
+  when the command announced itself, when it exited and when `exec` came back.
+  On macOS a command that starts 2.5 s, 6 s or 9 s late no longer fails it,
+  and a wait past the cap (5 s, 30 s, or until the helper exits) still does.
+  On windows-latest the old case and the new one ran interleaved on the same
+  runners (run 39635012356, Python 3.11 to 3.14). With no load neither failed
+  in 600 runs. Under eight busy loops the old one failed 12 of 1080 runs, each
+  time with the command's exit 1.9 to 3.2 s after the call, and the new one
+  none of 1080; there `exec` came back a median 0.42 s after the command's
+  exit, and at most 0.88 s.
+
 - **Tests only: the bash drain-cap case's deadline arm no longer fails when
   Windows starts the shell too slowly to finish inside the deadline (#446).**
   Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`

@@ -36,7 +36,7 @@ from aelix_agent_core.types import AgentTool
 from aelix_ai.streaming import Model
 from aelix_ai.tools import ToolExecutionContext, ToolResult
 from aelix_ai.utils._process_tree import (
-    EXIT_DRAIN_SECONDS,
+    DRAIN_CAP_SECONDS,
     KILL_DRAIN_SECONDS,
     REAP_GRACE_SECONDS,
     AbortHandle,
@@ -65,9 +65,12 @@ from tests.process_tree.test_run_contained_real_processes import (
     OUTLIVE,
     ROOT_SOURCE,
     ROOT_WITH_A_LATE_TAIL,
+    _first_seen,
     _registrar,
     _with_planted_stdin,
 )
+from tests.process_tree.test_the_drain_asks_the_pipe import UNEXPLAINED
+from tests.rpc._bash_phases import HANG_GUARD_SECONDS
 
 #: The process-tree suite's cleanup fixture, RE-EXPORTED rather than re-written
 #: — one definition of "pids this case is responsible for", one root-only reaper
@@ -175,6 +178,37 @@ async def test_exec_missing_command_returns_127() -> None:
 # bound inside ``run_contained`` would otherwise burn GitHub's 360-minute default
 # if that bound were deleted. ``asyncio.run`` inside it gives the coroutine a
 # loop of its own on that daemon thread.
+
+
+#: How long a case here that keeps its root's start-up out of what it asserts
+#: waits for that start-up: its registrar's poll, and on top of its watchdog
+#: (#476). #447's ``tests/tools/test_bash_tool_containment.py::_START_UP_BOUND``,
+#: for its reason: #449's hang guard, sized on windows-latest, where a python
+#: root's spawn of its child once took 4.73 s and put its marker at 5.73 s,
+#: past the sibling registrar's 5.0 s. A hang guard, NOT a claim about
+#: ``exec``: a healthy start never comes near it.
+_START_UP_BOUND = HANG_GUARD_SECONDS
+
+#: How long past its root's exit ``exec`` may hold a call whose root
+#: backgrounded a pipe holder (#476): the drain's hard cap, 2.0 s past the exit,
+#: and #341's :data:`UNEXPLAINED` for what lies outside the drain's own rule —
+#: from the exit the case saw to the instant the drain is armed, and from its
+#: last look to the call's return. It is the bound
+#: ``tests/process_tree/test_the_drain_asks_the_pipe.py``'s hard-cap cases
+#: assert from the exit (``DRAIN_CAP_SECONDS + 0.5``). The cap is the literal
+#: the old ceiling had, not :data:`DRAIN_CAP_SECONDS` read back.
+#:
+#: WHAT THAT LITERAL PINS, AND WHAT IT DOES NOT (#476 review round 2). It pins
+#: a drain that cannot prove: that one runs to #260's hard end, and there a cap
+#: that grew fails this bound instead of growing it (a bound read off the
+#: product would pass it). It does not pin this root's usual drain: the holder
+#: goes quiet after ``late``, a reader that can prove ends the drain on its
+#: idle rule about 0.16 s after the flag, and a cap grown to 30 s passes this
+#: case and #503's ``run_contained`` twin. The cases that run a drain to its
+#: cap are what fail that cap (two in tests/tools/test_bash_tool_containment.py,
+#: five in tests/tools/test_bash_drain_asks_the_pipe.py, three in
+#: tests/process_tree/test_the_drain_asks_the_pipe.py).
+_AFTER_THE_EXIT = 2.0 + UNEXPLAINED
 
 
 def _exec_bounded(
@@ -310,44 +344,98 @@ def test_exec_with_a_backgrounded_holder_is_the_success_it_was(
     timeout. The holder is still ALIVE afterwards — ``kill_on_close=False`` and
     a releasing ``close()`` are what preserve a helper the command deliberately
     backgrounded (the ``strays`` fixture reaps it).
+
+    THE BOUND RUNS FROM THE ROOT'S EXIT, NOT FROM THE CALL (#476). It was
+    ``elapsed <= 0.5 + EXIT_DRAIN_SECONDS + 2.0`` from the call, which also
+    held the harness, the worker thread, the root's interpreter start-up and
+    its holder's spawn, with no share of the bound for any of them. On
+    windows-latest a runner that stalled before the root exited failed it
+    (3.875 s, main run 38508671305) with every result right and a message
+    that blamed the drain, and so did eight busy loops on four vCPUs (7 of
+    1080 runs, each with the root's exit 2.31-2.75 s after the call and the
+    drain 0.14-0.22 s). The case now reads the root's own ``leaving`` flag,
+    its last statement (:class:`_FirstSeen`), and bounds only what comes after
+    it: the exit drain may hold the call for its hard cap, 2.0 s
+    (:data:`DRAIN_CAP_SECONDS`) past the exit, plus #341's :data:`UNEXPLAINED`
+    for what lies outside the drain's own rule — the root's exit after its
+    flag, and the call's way back after the drain's last look. That is the
+    bound the hard-cap cases assert from the exit
+    (``tests/process_tree/test_the_drain_asks_the_pipe.py``). The claim is
+    the one the old ceiling made: the call ends at the drain's cap at the
+    latest, never at the holder, which lives 30 s past the flag. The start-up
+    is waited for under #447's :data:`_START_UP_BOUND`, as a hang guard, and
+    the stretches before the flag are in the message and the warning, not in
+    the bound.
     """
 
     marker = tmp_path / "pids.txt"
     leaving = tmp_path / "leaving.flag"
     args = ["-c", ROOT_WITH_A_LATE_TAIL, str(marker), str(leaving)]
-    ceiling = 0.5 + EXIT_DRAIN_SECONDS + 2.0
-    registrar = _registrar(marker, strays)
+    # The registrar polls as long as the watchdog lets the start-up take, and
+    # the flag poll until it is settled: a poll that stopped first would be a
+    # start-up limit of its own (#447's 5 s registrar under a "10 s" wait).
+    registrar = _registrar(marker, strays, bound=_START_UP_BOUND)
+    left = _first_seen(leaving)
     started = time.monotonic()
 
     try:
         result = _exec_bounded(
-            sys.executable, args, bound=ceiling + 5, what="exec with a backgrounded holder"
+            sys.executable,
+            args,
+            bound=_START_UP_BOUND + 0.5 + _AFTER_THE_EXIT + 5,
+            what="exec with a backgrounded holder",
         )
     finally:
-        elapsed = time.monotonic() - started
+        returned = time.monotonic()
+        left_at = left.settle()
         pids = registrar.settle()
 
-    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert pids is not None, (
+        f"the root never announced its tree within {_START_UP_BOUND}s — the case measured nothing"
+    )
     _root_pid, holder = pids
     assert result.code == 0
     assert result.killed is False
     assert result.stdout == "done\nlate\n"
-    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it, as #313 kept
-    # the drain caps): the exit drain ends the call, not the holder, whose
-    # lifetime is far past this. Its watchdog is ``ceiling + 5``, so this is
-    # the assertion that fires on a drain that waited the holder out — and it
-    # now says so, with the number.
-    assert elapsed <= ceiling, (
-        f"exec with a backgrounded holder returned after {elapsed:.3f}s, past its "
-        f"{ceiling:.1f}s ceiling (0.5 s of root + EXIT_DRAIN_SECONDS "
-        f"{EXIT_DRAIN_SECONDS} + 2.0 s): the drain waited on the holder instead of "
-        "ending at the exit drain — or the runner is loaded; rerun the file alone"
+    # ``late`` is written only once the holder has seen the flag, so a flag
+    # that is not there now is a case that measured something else.
+    assert left_at is not None, (
+        "the root's leaving flag never appeared, yet the call came back with its tail — "
+        "the case measured nothing"
     )
-    if elapsed > ceiling / 2:
-        warnings.warn(
-            f"exec with a backgrounded holder took {elapsed:.3f}s of its {ceiling:.1f}s ceiling",
-            stacklevel=1,
-        )
+    after_the_exit = returned - left_at
+    announced = (
+        "never seen"
+        if registrar.announced_at is None
+        else f"{registrar.announced_at - started:.3f}s"
+    )
+    late_stamp = left.seen_late or left_at >= returned
+    stages = (
+        f"from the call: the tree announced at {announced}, the root's leaving flag seen "
+        f"at {left_at - started:.3f}s{' (only once the call was back)' if late_stamp else ''}, "
+        f"the call back at {returned - started:.3f}s"
+    )
+    cap = "inside" if after_the_exit < DRAIN_CAP_SECONDS else "at or past"
+    # The number reaches the ``-q`` log on every run, so a slow start-up, an
+    # idle end and an end at the hard cap can be told apart on a green leg too.
+    warnings.warn(
+        f"exec with a backgrounded holder came back {after_the_exit:.3f}s after its root's "
+        f"leaving flag, {cap} the {DRAIN_CAP_SECONDS}s hard cap ({stages}) on {sys.platform}",
+        stacklevel=1,
+    )
+    # A GATE WHOSE NUMBER IS THE CLAIM, kept (#330 classified it, as #313 kept
+    # the drain caps): the exit drain ends the call, not the holder. The
+    # watchdog above allows the start-up on top, so this is still the
+    # assertion that fires on a drain that waited the holder out, and it says
+    # so, with the stages.
+    assert after_the_exit <= _AFTER_THE_EXIT, (
+        f"exec with a backgrounded holder came back {after_the_exit:.3f}s after its root's "
+        f"leaving flag, past the {_AFTER_THE_EXIT:.1f}s the exit drain may hold it (its "
+        f"2.0 s hard cap past the exit + UNEXPLAINED {UNEXPLAINED} outside the drain's "
+        f"rule; DRAIN_CAP_SECONDS is {DRAIN_CAP_SECONDS}): the drain did not end at its cap "
+        f"and held the call for the holder, which lives 30 s past the flag — unless this "
+        f"process was stopped inside the drain ({stages})"
+    )
     assert probe_state(holder) == STATE_ALIVE
 
 
