@@ -53,6 +53,24 @@ since round 4 — a loop that reaches the drain late: the pin already taken at
 the exit stamp, and one more grace for a late look at the hard cap. Since round
 6, a kill whose ladder ends the root before the rest of its tree: the pin the
 root's reap asked for proves nothing once the kill stamp follows it.
+
+THE START-UP IS NOT INSIDE WHAT A CASE HERE ASSERTS (#504), by the containment
+file's rule (#447) and with its tools. On the windows leg a root is pwsh's
+start plus a python start or two, and a runner can spend seconds there. The
+two kill-leg cases' 2.0 s timeouts used to hold all of it. When the kill came
+first, the late-drain case failed as "the root's own line: []", which reads as
+a delivery loss, with no marker on disk to say the root had never run. The
+hard-cap case failed as a drain that ended before its hard end. Now both arm
+their deadline once the root has announced (:class:`_ArmedOnTheStart`), and a
+root that never announces fails as the premise, by name. Every
+registrar here polls for :data:`_START_UP_BOUND` (that file's
+:func:`_registrar`), not the sibling's 5.0 s, so a late marker is still a
+tree something registered. The reap-first case's :func:`_await_pids` also
+stops when the call has come back. The full-pipe case's deadline arm needs a
+root that EXITS inside its deadline, so no gate can apply there: the soft cap
+counts from before the spawn. A root still running at that deadline is said
+on the witness's record (:func:`_why_the_root_timed_out`) and the case runs
+again, as 8a's deadline arm does (#446).
 """
 
 from __future__ import annotations
@@ -87,7 +105,6 @@ from aelix_coding_agent.tools.bash import (
     create_local_bash_operations,
 )
 
-from tests.process_tree.test_run_contained_real_processes import _registrar
 from tests.process_tree.test_the_drain_asks_the_pipe import (
     AWAY_AGAIN,
     BOUND,
@@ -112,12 +129,21 @@ from tests.process_tree.test_the_drain_asks_the_pipe import (
 )
 from tests.tools.test_bash_tool_containment import (
     _DEADLINE_ARM_SECONDS,
+    _START_UP_BOUND,
+    ATTEMPTS,
     MARK,
+    _armed_on_the_start,
+    _ArmedOnTheStart,
     _await_pids,
     _bounded,
     _command,
     _exec_task,
+    _premise_missed_the_deadline,
+    _registrar,
     _script,
+    _the_timeout_leg_left,
+    _TimeoutWitness,
+    _why_the_root_timed_out,
 )
 from tests.tools.test_bash_tool_containment import (
     strays as _strays_fixture,
@@ -674,18 +700,27 @@ class _HardCapAttempt:
 
 
 async def _held_reader_attempt(
-    where: Path, command: str, timeout: float, call_id: str
+    where: Path,
+    command: str,
+    timeout: float,
+    call_id: str,
+    *,
+    armed: _ArmedOnTheStart | None = None,
 ) -> _HardCapAttempt:
     """Run ``command`` once, the reader held before its first read until the tool returns.
 
     Every patch is this attempt's own (:class:`Gate`'s ``Popen.wait`` spy
     wraps whatever ``wait`` it finds, so a second attempt on the case's
-    ``monkeypatch`` would stack a second spy on the first).
+    ``monkeypatch`` would stack a second spy on the first). ``armed``, given,
+    holds the site's timed wait until the root has started (#504), installed
+    after that spy so the gated wait calls through it.
     """
 
     with pytest.MonkeyPatch.context() as patch:
         gate = Gate(None)
         gate.arm_from_the_exit(patch)
+        if armed is not None:
+            armed.install(patch)
         seen: list[_PipeReader] = []
         log = _log_the_drain(patch)
         patch.setattr(
@@ -799,7 +834,9 @@ async def test_a_reader_held_past_the_hard_cap_is_reported_not_silent(tmp_path: 
     assert DRAIN_CAP_SECONDS <= after_exit < DRAIN_CAP_SECONDS + 0.5
 
 
-async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(tmp_path: Path) -> None:
+async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(
+    tmp_path: Path, strays: list[int]
+) -> None:
     """The timeout leg: hard cap ``killed_at + KILL_DRAIN_SECONDS``, then the status line.
 
     The root writes its 1000 bytes and sleeps past the timeout; the reader is
@@ -828,31 +865,60 @@ async def test_a_kill_legs_hard_cap_is_the_kill_drain_and_is_reported(tmp_path: 
     that runs from before the 1.0 s cap to past 2.0 s leaves both drains the
     same single late look past 2.0 s, and both the one grace after it — that
     attempt is said as the premise failing, and the next one tells them apart.
+
+    THE KILL COMES AFTER THE ROOT HAS WRITTEN (#504). Nothing can prove the
+    drain done only while the root's 1000 bytes are in the pipe. A root
+    killed before it ran leaves the pipe empty, so the POSIX reader's pipe
+    proves itself drained one grace after the kill, correctly. Until #504
+    that was this case's failure on a slow start: "nothing could prove, yet
+    the drain ended before its hard end". It reads as a drain defect, though
+    the 2.0 s win32 timeout, counted from the site's timed wait, was all
+    that kept pwsh's and the python root's start out of it. On darwin, with
+    the root's start slowed past the 1.0 s timeout, it fails that way. So
+    the root writes a pid marker once its bytes are flushed, and the site's
+    deadline is armed on that marker (:class:`_ArmedOnTheStart`). A
+    start-up longer than :data:`_START_UP_BOUND` fails as the premise, by
+    name. The timeout is 1.0 s on every platform.
     """
 
-    # 2.0 s on win32 for the containment file's reason: pwsh starts in 0.5-0.7 s
-    # there, and the root must have written before the kill.
-    timeout = 2.0 if sys.platform == "win32" else 1.0
+    # From the root's marker (#504): the gate holds the site's timed wait until
+    # its bytes are in the pipe, so no start-up is inside it on any platform.
+    timeout = 1.0
     what = "kill-leg hard cap"
     stalls: list[str] = []
     for number in range(1, HARD_CAP_ATTEMPTS + 1):
         where = tmp_path / f"attempt-{number}"
         where.mkdir()
+        marker = where / "pid.txt"
+        registrar = _registrar(marker, strays, fields=1)
+        armed = _ArmedOnTheStart(lambda r=registrar: r.pids is not None, "the root's marker")
         sleeper = _script(
             where,
             "writes_then_sleeps.py",
-            "import sys, time\n"
+            "import os, sys, time\n"
             "sys.stdout.buffer.write(b'x' * 999 + b'\\n')\n"
             "sys.stdout.buffer.flush()\n"
+            "tmp = sys.argv[1] + '.tmp'\n"
+            "with open(tmp, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(f'{os.getpid()}\\n')\n"
+            "os.replace(tmp, sys.argv[1])\n"
             "time.sleep(30)\n",
         )
-        attempt = await _held_reader_attempt(where, _command(sleeper), timeout, "t260k")
+        try:
+            attempt = await _held_reader_attempt(
+                where, _command(sleeper, str(marker)), timeout, "t260k", armed=armed
+            )
+        finally:
+            pids = registrar.settle()
         after_kill = attempt.returned - attempt.exit_seen
         warnings.warn(
             f"#260 kill-leg hard cap: the tool returned {after_kill:.3f}s after the reap, "
+            f"the deadline armed {armed.held:.3f}s after the wait was asked for ({armed.why}), "
             f"attempt {number}/{HARD_CAP_ATTEMPTS} on {sys.platform}",
             stacklevel=1,
         )
+        # The premise first: the root's bytes were in the pipe before the kill.
+        _armed_on_the_start(armed, pids, timeout=timeout, what=f"{what}, attempt {number}")
         stall = _stopped_at_its_hard_end(attempt, "kill", KILL_DRAIN_SECONDS, what=what)
         if stall is None:
             break
@@ -918,47 +984,105 @@ async def test_a_pipe_that_never_empties_ends_at_the_deadline_on_the_second_proo
 
     Nothing is retained (``on_data`` counts) and nothing spins: the slowed
     reader keeps the helper blocked until ``strays`` ends it.
+
+    THE ROOT HAS TO EXIT INSIDE THE DEADLINE, AND A RUN WHOSE ROOT DID NOT
+    RUNS AGAIN (#504). This is a deadline arm: the drain this case reads
+    runs only after the root's own exit, and :data:`_DEADLINE_ARM_SECONDS`
+    counts from before the spawn, so on win32 pwsh's start and the python
+    root's are inside it. No gate can take them out. The soft cap is the
+    site's ``started_at + timeout``, so a deadline armed later would move
+    the kill but not the cap the case measures. Until #504 a root still
+    running at the deadline failed this case as ``assert None == 0``, which
+    names nothing. On darwin, with the root's start slowed past the 1.0 s
+    deadline, it fails that way every time. Now each attempt carries
+    8a's witness (#446, :class:`_TimeoutWitness`), and a timed-out attempt
+    is judged on its record. The premise is a root still running when the
+    site's own wait, handed the caller's timeout, gave up at its deadline,
+    with nothing the timeout leg owed left running. That attempt is said and
+    the case runs again, up to :data:`ATTEMPTS`. Any other way to
+    ``timed_out=True`` is the site's, and fails here, by name
+    (:func:`_why_the_root_timed_out`).
     """
 
     timeout = _DEADLINE_ARM_SECONDS
-    marker = tmp_path / "pids.txt"
-    registrar = _registrar(marker, strays)
-    log = DrainLog()
-    monkeypatch.setattr(bash_module, "time", log)
-    monkeypatch.setattr(
-        bash_module, "_exit_drain_cap", log.exit_drain_cap(bash_module._exit_drain_cap)
-    )
-    built = slow_the_reader(monkeypatch, bash_module, log=log)
-    root = _script(tmp_path, "full_pipe_root.py", FULL_PIPE_ROOT_TEMPLATE.replace("@MARK@", MARK))
-    first: list[bytes] = []
-    total = [0]
+    what = "a pipe that never empties"
+    real_cap = bash_module._exit_drain_cap
+    premise_failures: list[str] = []
+    for attempt in range(1, ATTEMPTS + 1):
+        where = tmp_path / f"attempt-{attempt}"
+        where.mkdir()
+        marker = where / "pids.txt"
+        registrar = _registrar(marker, strays)
+        witness = _TimeoutWitness()
+        witness.install(monkeypatch)
+        log = DrainLog()
+        monkeypatch.setattr(bash_module, "time", log)
+        monkeypatch.setattr(bash_module, "_exit_drain_cap", log.exit_drain_cap(real_cap))
+        built = slow_the_reader(monkeypatch, bash_module, log=log)
+        root = _script(where, "full_pipe_root.py", FULL_PIPE_ROOT_TEMPLATE.replace("@MARK@", MARK))
+        first: list[bytes] = []
+        total = [0]
 
-    def on_data(chunk: bytes) -> None:
-        if not first:
-            first.append(chunk[:16])
-        total[0] += len(chunk)
+        def on_data(chunk: bytes, first: list[bytes] = first, total: list[int] = total) -> None:
+            if not first:
+                first.append(chunk[:16])
+            total[0] += len(chunk)
 
-    ops = create_local_bash_operations()
-    task = asyncio.ensure_future(
-        ops.exec(
-            _command(root, str(marker), str(timeout + DRAIN_CAP_SECONDS + 3.0)),
-            str(tmp_path),
-            on_data=on_data,
-            timeout=timeout,
+        ops = create_local_bash_operations()
+        task = asyncio.ensure_future(
+            ops.exec(
+                _command(root, str(marker), str(timeout + DRAIN_CAP_SECONDS + 3.0)),
+                str(where),
+                on_data=on_data,
+                timeout=timeout,
+            )
         )
-    )
-    started = time.monotonic()
-    try:
-        result = await _bounded(
-            task, timeout + DRAIN_CAP_SECONDS + 5.0, "a pipe that never empties"
+        started = time.monotonic()
+        try:
+            # ``+ _START_UP_BOUND``, as 8a's watchdog has: an attempt whose root
+            # is timed out spends the kill ladder here too, and on win32 that
+            # is a ``taskkill.exe`` start under a 5 s bound and then the reap.
+            result = await _bounded(task, timeout + DRAIN_CAP_SECONDS + 5.0 + _START_UP_BOUND, what)
+        finally:
+            elapsed = time.monotonic() - started
+            witness.settle()
+            pids = registrar.settle()
+            warnings.warn(
+                f"#260 full pipe: timeout={timeout} elapsed={elapsed:.3f}s "
+                f"delivered={total[0]} B attempt={attempt}/{ATTEMPTS} on {sys.platform}",
+                stacklevel=1,
+            )
+        if not (result.timed_out and result.exit_code is None):
+            break
+        # The call took the timeout leg: the premise only on the witness's
+        # record, and only with nothing the leg owed left running.
+        defect = _why_the_root_timed_out(witness, started=started, timeout=timeout)
+        seen = ""
+        if defect is None:
+            left, seen = _the_timeout_leg_left(witness, pids, marker, strays)
+            if left:
+                defect = f"the timeout leg left a process running: {'; '.join(left)}"
+        if defect is not None:
+            pytest.fail(f"{what}, attempt {attempt}: {defect}")
+        premise_failures.append(
+            _premise_missed_the_deadline(
+                f"{what}, attempt {attempt}/{ATTEMPTS}",
+                witness,
+                started=started,
+                timeout=timeout,
+                announced=pids is not None,
+                seen=seen,
+            )
         )
-    finally:
-        elapsed = time.monotonic() - started
-        registrar.settle()
-        warnings.warn(
-            f"#260 full pipe: timeout={timeout} elapsed={elapsed:.3f}s "
-            f"delivered={total[0]} B on {sys.platform}",
-            stacklevel=1,
+        warnings.warn(premise_failures[-1], stacklevel=1)
+    else:
+        pytest.fail(
+            f"{what}: every one of {ATTEMPTS} attempts met a root still running at the caller's "
+            f"{timeout}s deadline, so the case never measured how the drain ends there. Once is a "
+            f"slow runner; every time is a root that starts slower than the arm on this host "
+            f"(size ``_DEADLINE_ARM_SECONDS`` again from a measured distribution of the root's "
+            f"exit) or a host stalling every run — read the attempts: "
+            + " | ".join(premise_failures)
         )
 
     reader = built[0] if built else None
@@ -1165,10 +1289,31 @@ async def test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waitin
     a complete output would come back flagged. On win32 the job kills the
     helper with the tree, the pipe reaches EOF, and the case is not a
     discriminator there.
+
+    THE KILL COMES AFTER THE ROOT HAS ANNOUNCED ITS TREE (#504). The case
+    needs the root's own line in the pipe and, on POSIX, the helper running
+    before the kill. Until #504 the only thing that gave the root time for
+    that was the timeout: 2.0 s on win32, counted from where the site's
+    timed wait begins, so pwsh's start and the python root's had to fit
+    inside it. On windows-latest py3.11 (job 117361973490) the kill came
+    first. The call delivered 0 B, no marker ever landed, and the case
+    failed "the root's own line: []", which reads as a delivery loss. On
+    darwin, with the root's start slowed past the 1.0 s timeout, it fails
+    that way every time. With the root slowed only inside its spawn of the
+    helper, its line was delivered and the case passed with no helper ever
+    started: on POSIX it then measured nothing. So the site's deadline is
+    armed once the root has announced its tree (:class:`_ArmedOnTheStart`,
+    #447's gate), and the root writes its line before it spawns the helper
+    and announces. A start-up longer than :data:`_START_UP_BOUND` fails as
+    the premise, by name (:func:`_armed_on_the_start`). With the start-up
+    out of the deadline the timeout is one value, 1.0 s, on every platform.
+    0 B after an announcement is a loss of the command's own output and
+    fails as one.
     """
 
     marker = tmp_path / "pids.txt"
     registrar = _registrar(marker, strays)
+    gate = _ArmedOnTheStart(lambda: registrar.pids is not None, "the root's announcement")
     built = slow_the_reader(monkeypatch, bash_module, pause=SLOWER_THAN_A_GRACE)
     loop = asyncio.get_running_loop()
     real_wait = subprocess.Popen.wait
@@ -1183,6 +1328,8 @@ async def test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waitin
         return code
 
     monkeypatch.setattr(subprocess.Popen, "wait", keeps_the_loop_away)
+    # After the class-wide spy, so the gated wait calls through it.
+    gate.install(monkeypatch)
     root = _script(tmp_path, "killed_root.py", KILLED_ROOT_TEMPLATE.replace("@MARK@", MARK))
     first: list[bytes] = []
     total = [0]
@@ -1192,9 +1339,9 @@ async def test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waitin
             first.append(chunk[:16])
         total[0] += len(chunk)
 
-    # 2.0 s on win32 for the containment file's reason: pwsh starts in 0.5-0.7 s
-    # there, and the root must have written before the kill.
-    timeout = 2.0 if sys.platform == "win32" else 1.0
+    # From the root's announcement (#504): the gate holds the site's timed
+    # wait until then, so no start-up is inside it on any platform.
+    timeout = 1.0
     never = asyncio.Event()
     task = asyncio.ensure_future(
         create_local_bash_operations().exec(
@@ -1205,23 +1352,31 @@ async def test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waitin
             timeout=timeout,
         )
     )
+    what = "a late kill drain"
     try:
+        # ``+ _START_UP_BOUND``: the watchdog runs from the call, and the hold
+        # in front of the deadline is inside it.
         result = await _bounded(
-            task, BOUND + timeout + LATE + DRAIN_CAP_SECONDS + 5.0, "a late kill drain"
+            task, BOUND + timeout + LATE + DRAIN_CAP_SECONDS + 5.0 + _START_UP_BOUND, what
         )
     finally:
         returned = time.monotonic()
-        registrar.settle()
+        pids = registrar.settle()
     reader = built[0] if built else None
-    assert reaped, "the reap was never seen — the case measured nothing"
-    after_reap = returned - reaped[0]
+    after_reap = f"{returned - reaped[0]:.3f}s" if reaped else "(no reap seen)"
     warnings.warn(
-        f"#260 late kill drain: exec returned {after_reap:.3f}s after the reap, "
+        f"#260 late kill drain: exec returned {after_reap} after the reap, "
         f"delivered={total[0]} B, pinned={getattr(reader, 'pinned', None)} "
-        f"handed_on={getattr(reader, 'handed_on', None)} on {sys.platform}",
+        f"handed_on={getattr(reader, 'handed_on', None)}, announced={pids is not None}, "
+        f"the deadline armed {gate.held:.3f}s after the wait was asked for ({gate.why}) "
+        f"on {sys.platform}",
         stacklevel=1,
     )
 
+    # The premise first, said apart from the case: the root announced, and the
+    # deadline was armed on that, with the caller's timeout.
+    _armed_on_the_start(gate, pids, timeout=timeout, what=what)
+    assert reaped, "the reap was never seen — the case measured nothing"
     assert reader is not None, "the slowed reader was never built — the case measured nothing"
     # The late-loop case's reading, for the kill cap (round 6): when the
     # callback let the loop go, not when the call came back.
@@ -1231,7 +1386,14 @@ async def test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waitin
     )
     assert result.exit_code is None
     assert result.timed_out is True
-    assert first and first[0].startswith(b"ROOT-DONE\n"), f"the root's own line: {first!r}"
+    # The root wrote and flushed this line before it spawned the helper and
+    # announced, and the deadline was armed on the announcement, so the line
+    # was in the pipe before the kill (#504).
+    assert first and first[0].startswith(b"ROOT-DONE\n"), (
+        f"the root's own line: {first!r}, {total[0]} B delivered — the root wrote it before it "
+        f"announced its tree and the kill came after that, so this is the command's own output "
+        f"lost, not the start-up"
+    )
     assert result.output_unconfirmed is False, (
         "a complete output came back flagged — the pin was not taken at the kill stamp"
     )
@@ -1326,6 +1488,13 @@ async def test_a_kill_that_reaps_the_root_first_is_proven_only_after_the_whole_l
     either, so ``drained`` cannot answer for the pin and the blocking branch's
     stale-look residual is not in play. The order is modelled, not measured on
     Windows.
+
+    The abort waits for the root's announcement. That wait is the registrar's
+    whole poll, :data:`_START_UP_BOUND` since #504. Before, this file's
+    registrar was the sibling's 5.0 s one. On windows-latest py3.14 (job
+    118116019221) this case failed "the root never announced its tree". On
+    darwin, with the root's start slowed by 6 s, it fails that way every
+    time, though the marker lands at 6 s.
     """
 
     loop_thread = threading.current_thread()
@@ -1415,7 +1584,9 @@ async def test_a_kill_that_reaps_the_root_first_is_proven_only_after_the_whole_l
         timeout=30.0,
     )
     try:
-        await _await_pids(registrar, "the root that reaps first")
+        # The call goes with it (#504): a call back before the announcement is
+        # the command failing, said at once, and a poll that runs out cancels it.
+        await _await_pids(registrar, "the root that reaps first", task)
         abort.set()
         result = await _bounded(task, 3 * BOUND + 10.0, "the root that reaps first")
     finally:

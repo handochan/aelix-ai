@@ -1336,6 +1336,39 @@ unwritten. Add them with the next release.
   0.49 s after the command and at most 1.04 s, more than the half second the
   old command left it.
 
+- **Tests only: the bash drain cases that kill a command, or need it to finish
+  inside a deadline, no longer fail when Windows is slow to start the command,
+  and they say so when the start-up is what went wrong (#504).** Nothing users
+  run changed. `test_a_kill_leg_whose_drain_starts_late_finds_the_readers_proof_waiting`
+  failed once on windows-latest with "the root's own line: []" and 0 bytes
+  delivered, which reads as lost output. Its 2.0 s timeout had to cover the
+  start of PowerShell and of Python, and the kill came before the command had
+  written anything. The case now starts that timeout only once the command
+  has written its line and reported its process ids, so no start-up is inside
+  it. A command that never starts fails as that. A second kill case in the
+  same file had the same 2.0 s timeout. On macOS and Linux it failed, when the
+  start was slow, as a wait that ended too early; it now waits the same way.
+  Both timeouts are now 1.0 s on every platform. The case that aborts its
+  command, like every case in the file, waited only 5 s for the command's
+  process ids, and failed once on windows-latest for that reason. They now
+  wait under the 30 s hang guard. The case that needs the command to exit
+  inside its deadline failed as `assert None == 0` when the command was still
+  starting at the deadline. It now recognises that from the timed wait's own
+  record, says so, and runs again, up to three times, as its counterpart in
+  the containment cases does. On macOS, with the command started 1.5 to 6 s
+  late, each old case failed every time (4 or 5 runs each), and none of the
+  new ones did. On windows-latest the old file and the new one ran
+  interleaved on the same runners (run 39666366493, Python 3.11 to 3.14).
+  With no load neither failed in 280 runs of each case. Under eight busy
+  loops on the runner's four CPUs the command took a median 5 s to start, and
+  up to 9.4 s. The old kill case then failed all 280 runs with the CI's own
+  message, and the old abort case 176 of 280; the new ones failed none. Under
+  that load no command could finish inside the 2.0 s deadline, so the
+  deadline case failed every time in both files, the new one saying why. The
+  new file also ran whole six times per runner (run 39668047399). With no
+  load every run passed. Under the loops every run failed only that deadline
+  case, by name.
+
 - **Tests only: the bash drain-cap case's deadline arm no longer fails when
   Windows starts the shell too slowly to finish inside the deadline (#446).**
   Nothing users run changed. `test_a_holder_that_never_falls_idle_hits_the_drain_cap[deadline-arm]`
