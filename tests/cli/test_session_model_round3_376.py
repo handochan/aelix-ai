@@ -145,7 +145,7 @@ async def test_an_input_an_extension_handles_works_without_a_credential(
     seen: list[Any] = []
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         live = runtime_host.harness
         seen.append(await _handle_prompt(live, RpcCommandPrompt(message="ping", id="p1")))
@@ -175,7 +175,7 @@ async def test_a_model_an_input_hook_switches_to_that_cannot_run_is_refused(
     seen: list[Any] = []
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         live = runtime_host.harness
         seen.append(_ident(live.current_model))
@@ -233,7 +233,7 @@ async def test_a_turn_session_start_triggers_on_a_model_that_cannot_run_writes_n
     seen: list[Any] = []
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         live = runtime_host.harness
         seen.append([str(o) for o in await _settle(live)])
@@ -271,7 +271,7 @@ async def test_the_fallback_line_names_the_model_session_start_moved_to(
     seen: list[Any] = []
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         seen.append((_ident(runtime_host.harness.current_model), runtime_host.model_fallback_message))
         await runtime_host.switch_session(other)

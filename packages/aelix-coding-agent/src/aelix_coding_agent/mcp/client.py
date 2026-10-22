@@ -238,7 +238,8 @@ class McpServerConnection:
                     f"MCP server {self._contrib.name!r}: transport=http requires url"
                 )
             read, write, _get_session_id = await self._exit_stack.enter_async_context(
-                streamablehttp_client(url=self._contrib.url)
+                streamablehttp_client(url=self._contrib.url, headers=self._contrib.headers)
+                 if self._contrib.headers else streamablehttp_client(url=self._contrib.url)
             )
             return read, write
         if t == "sse":
@@ -248,7 +249,8 @@ class McpServerConnection:
                 )
             # SSE is deprecated (MCP spec) — supported for legacy servers only.
             read, write = await self._exit_stack.enter_async_context(
-                sse_client(url=self._contrib.url)
+                sse_client(url=self._contrib.url, headers=self._contrib.headers)
+                 if self._contrib.headers else sse_client(url=self._contrib.url)
             )
             return read, write
         raise McpConnectionError(

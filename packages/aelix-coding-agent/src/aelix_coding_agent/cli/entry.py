@@ -4416,6 +4416,11 @@ async def _async_main(argv: list[str]) -> int:
                 model_registry=model_registry,
                 runtime_host=runtime,
                 harness_factory=_harness_factory,
+                permission_posture=permission_posture,
+                settings_manager=settings_manager,
+                auth_storage=auth_storage,
+                agent_service=agent_service,
+                extension_errors=discovered_extension_errors,
             )
             return 0
 

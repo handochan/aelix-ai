@@ -2136,6 +2136,11 @@ async def run_rpc_mode(
     stdin: asyncio.StreamReader | None = None,
     stdout_write: Callable[[bytes], None] | None = None,
     install_signal_handlers: bool = True,
+    permission_posture: Any = None,
+    settings_manager: Any = None,
+    auth_storage: Any = None,
+    agent_service: Any = None,
+    extension_errors: Any = None,
 ) -> None:
     """Pi parity: ``rpc-mode.ts:runRpcMode`` (lines 50-492).
 
@@ -2260,6 +2265,11 @@ async def run_rpc_mode(
         model_registry, runtime_host=runtime_host
     )
 
+    from aelix_coding_agent.rpc.control import RpcControlPlane
+    control = RpcControlPlane(runtime_host, permission_posture=permission_posture,
+                              settings_manager=settings_manager, auth_storage=auth_storage,
+                              model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output)
+
     # === Event pipe ===========================================================
     # Pi parity: session.subscribe((event) => output(event)). The Aelix
     # harness exposes ``subscribe`` with the same signature.
@@ -2331,6 +2341,8 @@ async def run_rpc_mode(
         way for every reason.
         """
         capture.harness = new_harness
+        await control.mcp.attach(new_harness)
+        control.bind_progress(new_harness)
         capture.unsubscribe()
         capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
 
@@ -2406,9 +2418,10 @@ async def run_rpc_mode(
             )
             return
         # Route extension UI responses to a no-op for Sprint 6d (bridge
-        # deferred to Sprint 6f per ADR-0058). The wire shape is recognised
-        # but not yet correlated.
+        # deferred to Sprint 6f per ADR-0058). Runtime-control v1 correlates
+        # explicitly enabled command dialogs separately from ordinary tools.
         if payload.get("type") == "extension_ui_response":
+            control.ui.respond(payload)
             return
 
         async def _dispatch() -> None:
@@ -2417,9 +2430,16 @@ async def run_rpc_mode(
             # rebind result. When no replace has occurred,
             # ``capture.harness`` is identical to the original ``harness``
             # argument — zero behavior change for the 26 wired handlers.
-            response = await _handle_command(
-                capture.harness, payload, dispatch
-            )
+            if payload.get("type") == "aelix_control":
+                try:
+                    data = await control.handle(payload.get("method"), payload.get("params", {}))
+                    response = RpcSuccessResponse(id=payload.get("id"), command="aelix_control", data=data)
+                except asyncio.CancelledError:
+                    response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error="Command cancelled")
+                except Exception as exc:  # noqa: BLE001 — one correlated error, never model fallthrough
+                    response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error=str(exc))
+            else:
+                response = await _handle_command(capture.harness, payload, dispatch)
             try:
                 _output(response.to_json())
             except BrokenPipeError:
@@ -2464,6 +2484,9 @@ async def run_rpc_mode(
                 ],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # Dialogs must settle on EOF before waiting for their command tasks.
+            control.ui.close()
+            await control.handle("commands/cancel", {})
             # Drain any in-flight command dispatches before tearing down.
             if pending_command_tasks:
                 await asyncio.gather(*pending_command_tasks, return_exceptions=True)
@@ -2474,6 +2497,8 @@ async def run_rpc_mode(
         # Sprint 6h₄b (P-303): the LIVE unsubscribe handle lives on the
         # capture cell — rebinds replace it each time.
         capture.unsubscribe()
+        control.unbind_progress()
+        await control.mcp.close()
         # Restore signal handlers.
         if install_signal_handlers:
             for sig, previous in installed_handlers:

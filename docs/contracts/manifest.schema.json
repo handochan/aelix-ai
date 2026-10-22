@@ -246,6 +246,13 @@
           "title": "Env",
           "type": "object"
         },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
         "name": {
           "title": "Name",
           "type": "string"

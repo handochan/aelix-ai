@@ -166,7 +166,7 @@ def _stub_modes(monkeypatch: pytest.MonkeyPatch, drive: Any = None) -> dict[str,
         return 0
 
     async def _rpc(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         await _record(runtime_host)
 

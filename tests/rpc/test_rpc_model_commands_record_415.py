@@ -356,14 +356,14 @@ async def test_rpc_set_model_then_close_then_continue_reopens_on_the_pick(
     seen: list[tuple[str, str]] = []
 
     async def pick(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         table = build_dispatch_table(model_registry, runtime_host=runtime_host)
         cmd = RpcCommandSetModel(provider=_SONNET[0], model_id=_SONNET[1], id="s")
         answers.append(await table["set_model"](runtime_host.harness, cmd))
 
     async def look(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         seen.append(_ident(runtime_host.harness.current_model))
 
@@ -384,7 +384,7 @@ async def test_rpc_cycle_model_then_close_then_continue_reopens_on_the_next_mode
     seen: list[tuple[str, str]] = []
 
     async def cycle(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         table = build_dispatch_table(model_registry, runtime_host=runtime_host)
         answer = await table["cycle_model"](runtime_host.harness, RpcCommandCycleModel(id="c"))
@@ -392,7 +392,7 @@ async def test_rpc_cycle_model_then_close_then_continue_reopens_on_the_next_mode
         rotated.append((answer.data["model"]["provider"], answer.data["model"]["id"]))
 
     async def look(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         seen.append(_ident(runtime_host.harness.current_model))
 

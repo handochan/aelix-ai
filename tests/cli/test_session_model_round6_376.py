@@ -165,7 +165,7 @@ async def test_a_keyed_mistral_prompt_through_the_real_cli_is_rejected(
     seen: dict[str, Any] = {}
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         live = runtime_host.harness
         seen["model"] = live.current_model

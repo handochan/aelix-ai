@@ -778,7 +778,7 @@ async def test_rebuilds_after_a_late_refusal_stay_held(
         return (model.provider, model.id, model.api)
 
     async def _drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         runtime = runtime_host
         routes["launch"] = _held(runtime)

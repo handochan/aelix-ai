@@ -133,7 +133,7 @@ def _stub_modes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return 0
 
     async def _rpc(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         _record(runtime_host)
 
@@ -381,7 +381,7 @@ async def test_switch_session_restores_and_new_session_keeps_the_launch_model(
     seen: list[tuple[tuple[str, str], str | None]] = []
 
     async def _drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         def _note() -> None:
             seen.append(
@@ -469,7 +469,7 @@ async def test_a_rebuild_that_restores_is_not_held_for_the_launch_inputs(
     seen: list[tuple[tuple[str, str], str | None]] = []
 
     async def _drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         h = runtime_host.harness
         seen.append((_ident(h.current_model), h.turns_held))

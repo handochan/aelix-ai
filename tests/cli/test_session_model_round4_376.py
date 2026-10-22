@@ -142,7 +142,7 @@ async def test_request_level_auth_is_not_refused_by_the_prompt_check(
     seen: dict[str, Any] = {}
 
     async def drive(
-        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any
+        harness: Any, *, model_registry: Any, runtime_host: Any, harness_factory: Any, **_host_services: Any
     ) -> None:
         live = runtime_host.harness
         seen["check"] = live._prompt_check(live.current_model)

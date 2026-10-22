@@ -230,6 +230,7 @@ class McpServerContrib(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     transport: Literal["stdio", "http", "sse"]
+    headers: dict[str, str] = Field(default_factory=dict, exclude=True, repr=False)
     command: str | None = None
     # Argv for the stdio ``command`` (e.g. ``["-y", "@modelcontextprotocol/
     # server-filesystem", "/tmp"]`` for npx-style servers). Additive optional
