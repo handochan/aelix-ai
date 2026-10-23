@@ -10,7 +10,7 @@ snapshot is built inside a tool the model calls, and a tool that throws because
 one source was unbound teaches the model that introspection is unreliable — which
 sends it straight back to guessing. Every source is therefore probed and degraded
 individually, and the degraded value is one that is safe to be wrong about.
-``rpc_ws.py:90-94`` is the live example: it builds ``AgentHarnessOptions(model=,
+``rpc_ws.py:92-96`` is the live example: it builds ``AgentHarnessOptions(model=,
 session=, cwd=)`` with no ``tools=`` and no ``project_trusted=``, so a snapshot
 taken under it must survive several missing sources at once.
 
@@ -314,7 +314,7 @@ def resolve_project_trusted_fail_closed(
       (``harness/core.py:308``), both citing pi's ``runner.ts:273`` pre-bind
       default.
 
-    That second case is not hypothetical. ``rpc_ws.py:90-94`` constructs
+    That second case is not hypothetical. ``rpc_ws.py:92-96`` constructs
     ``AgentHarnessOptions`` with three arguments and no ``project_trusted=``, so
     an extension there is told "trusted" by a harness that was never asked.
     Reporting "trusted, go ahead" on the strength of a default is precisely the

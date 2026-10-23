@@ -36,6 +36,23 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0275 — ACP runtime controls use a separate RPC envelope](0275-acp-runtime-controls-use-a-separate-rpc-envelope.md)
+  (Accepted 2026-10-23; review remediation 2026-10-23; #593, #594). RPC mode accepts an additive
+  `aelix_control` request beside pi's 29-command roster, which is unchanged. It is answered with
+  the usual correlated `response`, and `capabilities` lists only what the host's injected services
+  can serve. Mutations serialize, need an idle runtime and exclude the classic turn and
+  session-replacing commands both ways. `commands/cancel` targets one operation. No harness
+  replacement is cut half-way: not a reload or branch, and not an extension command's own
+  `ctx.new_session`/`fork`/`switch_session`/`reload`, whose cancel lands after the replacement.
+  EOF runs nothing queued. `ui/enable` dialogs exist only
+  around `commands/run`, `agents/run` and `auth/login`, always end, and never approve tools: the
+  built-in gate keeps its headless verdict. `permissions/evaluate` shares the gate's posture
+  logic and reads provenance from the tool object. A project agent profile needs `--approve` or
+  the RPC confirmation, never a client boolean. `settings/set` reports success only after the
+  write is flushed. Client MCP leases never widen an explicit tool selection, and removing a
+  selected tool narrows it. `sessions/branch` returns to the original session with its selection,
+  or says it did not. Diverges from pi, whose RPC mode binds its UI for the whole session.
+
 - [0176 — Overflow-compaction follow-ups: trailing-error exclusion, staleness guards, compaction events](0176-overflow-compaction-followups.md)
   (amended 2026-10-22; #391). The overflow recovery drops the failed answer from the live context
   before its compaction and, when no re-run follows - nothing to compact, a summary that failed or

@@ -277,7 +277,7 @@ async def test_aelix_write_prompts_under_auto_accept() -> None:
     """Interactive AUTO_ACCEPT + ``.aelix/agents/x.md`` → preview runner.
 
     The deliberate, user-visible behaviour change (ADR-0197 §(i) / CHANGELOG):
-    branch (f) declines, control reaches the prompt at ``permission.py:747-755``
+    branch (f) declines, control reaches the prompt at ``permission.py:811-819``
     instead of returning ``None``.
     """
 

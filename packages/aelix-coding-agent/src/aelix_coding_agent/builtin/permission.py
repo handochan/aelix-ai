@@ -567,6 +567,108 @@ def _is_auto_allowable_write(path: str, cwd: str) -> bool:
     )
 
 
+def posture_decision(
+    mode: PermissionMode,
+    provenance: ToolProvenance | None,
+    args: dict[str, Any],
+    cwd: Callable[[], str],
+    classify_bash: Callable[[dict[str, Any]], str],
+) -> Literal["allow", "deny"] | None:
+    """What the posture alone decides for a MUTATING call: branches (e)-(g).
+
+    ``None`` means the posture leaves the call to an approver (the prompt, or the
+    headless verdict when there is none). Shared by :meth:`PermissionExtension.
+    _on_tool_call` and :func:`evaluate_tool_call`, so the RPC control surface's
+    ``permissions/evaluate`` cannot drift from the gate (#594). ``cwd`` is a
+    callable because only the in-project write check reads it.
+    """
+
+    # (e) YOLO — skip the PROMPT for every mutating tool. The
+    # GuardrailExtension already ran FIRST (prepend order in cli/entry.py:
+    # ``[GuardrailExtension(), permission_ext]``, first-block-wins), so
+    # catastrophic patterns (rm -rf / fork-bomb / .env|.git writes) are STILL
+    # hard-denied — YOLO bypasses the prompt, NOT the floor. DO NOT reorder the
+    # prepend or merge the two extensions or this guarantee breaks.
+    if mode == PermissionMode.YOLO:
+        return "allow"
+
+    # (f) AUTO_ACCEPT — auto-allow aelix's OWN write/edit without a prompt;
+    # bash still prompts (bash can do arbitrary damage). SECURITY (finding
+    # WP-0 #4): only auto-allow writes that resolve INSIDE the project root
+    # and are not security-sensitive (SSH keys / shell rc / cron / .env);
+    # anything else falls through to the prompt so AUTO_ACCEPT can never
+    # silently plant a backdoor outside cwd.
+    #
+    # ADR-0253 (#188): "auto-accept EDITS" means the edits aelix itself
+    # performs. A tool aelix did not build is never auto-allowed here, with
+    # a path argument or without one — a ``path`` key says nothing about what
+    # an MCP or extension tool does with it — so it asks like bash does.
+    #
+    # (g) AUTO — aelix's own write/edit behave like AUTO_ACCEPT: allowed ONLY
+    # inside the project root and not security-sensitive (finding WP-0 #4).
+    if (
+        mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)
+        and provenance == "write"
+        and _is_auto_allowable_write(_path_from_args(args), cwd())
+    ):
+        return "allow"
+
+    # (g) AUTO — classify bash via tree-sitter (ADR-0158): ALLOW→no prompt,
+    # ASK→prompt, DENY→block. If the classifier is unavailable the bash path
+    # falls through to the prompt (DEFAULT semantics) — NEVER silent-allow. A
+    # tool aelix did not build is neither classified nor auto-allowed (ADR-0253):
+    # the classifier reads a bash grammar, and its verdict says nothing about a
+    # tool that is not aelix's bash.
+    if mode == PermissionMode.AUTO and provenance == "bash":
+        decision = classify_bash(args)
+        if decision == "allow":
+            return "allow"
+        if decision == "deny":
+            return "deny"
+    return None
+
+
+def evaluate_tool_call(
+    mode: PermissionMode,
+    provenance: ToolProvenance | None,
+    args: dict[str, Any],
+    cwd: str,
+) -> Literal["allow", "deny", "ask"]:
+    """The gate's verdict for one call with no session grant (#594).
+
+    ``"ask"`` means the gate leaves the call to an approver. The gate's own
+    headless verdict, and any other ``tool_call`` hook (an RPC host's approval
+    bridge), decide such a call — this function deliberately does not, because
+    which approver exists is a property of the host, not of the call.
+    """
+
+    if provenance in _UNGATED_PROVENANCE:
+        return "allow"
+    if mode == PermissionMode.PLAN:
+        return "deny"
+    decision = posture_decision(
+        mode, provenance, args, lambda: cwd, PermissionExtension._auto_classify_bash
+    )
+    return decision or "ask"
+
+
+def _has_approval_ui(ctx: ExtensionContext) -> bool:
+    """Whether the bound UI is one the gate may ask about a tool call.
+
+    ``ctx.has_ui`` says a UI is bound; it does not say that UI answers tool
+    approvals. The RPC control surface binds a dialog UI only around its own
+    command and delegation calls while the host keeps tool approval on its own
+    ``tool_call`` hook (ADR-0275), and marks that UI with
+    ``provides_tool_approval = False``. Such a call keeps the headless verdict
+    instead of being prompted on, or refused by, a channel that is not the
+    approval path (#594).
+    """
+
+    if not ctx.has_ui:
+        return False
+    return getattr(ctx.ui, "provides_tool_approval", True) is not False
+
+
 @dataclass
 class PermissionExtension:
     """Interactive allow/deny gate registered as a built-in extension.
@@ -649,8 +751,6 @@ class PermissionExtension:
         # ``None`` is any tool aelix did not build (MCP, extension, pack), and
         # such a tool is mutating.
         provenance = _resolve_provenance(event)
-        is_bash = provenance == "bash"
-        is_builtin_write = provenance == "write"
         is_mutating = provenance not in _UNGATED_PROVENANCE
 
         # (b) PLAN mode blocks ALL mutating tools — even on the headless / print /
@@ -675,59 +775,20 @@ class PermissionExtension:
         if self._is_session_allowed(rule_key):
             return None
 
-        # (e) YOLO — skip the PROMPT for every mutating tool. The
-        # GuardrailExtension already ran FIRST (prepend order in cli/entry.py:
-        # ``[GuardrailExtension(), permission_ext]``, first-block-wins), so
-        # catastrophic patterns (rm -rf / fork-bomb / .env|.git writes) are STILL
-        # hard-denied — YOLO bypasses the prompt, NOT the floor. DO NOT reorder the
-        # prepend or merge the two extensions or this guarantee breaks.
-        if mode == PermissionMode.YOLO:
+        # (e)-(g) YOLO, AUTO_ACCEPT's in-project built-in writes and AUTO's bash
+        # classifier — see :func:`posture_decision`, which ``permissions/evaluate``
+        # shares. ``None`` (an AUTO_ACCEPT write outside cwd, an AUTO "ask") falls
+        # through to the prompt or the headless verdict below.
+        decision = posture_decision(
+            mode, provenance, event.args, lambda: ctx.cwd, self._auto_classify_bash
+        )
+        if decision == "allow":
             return None
-
-        # (f) AUTO_ACCEPT — auto-allow aelix's OWN write/edit without a prompt;
-        # bash still prompts (bash can do arbitrary damage). SECURITY (finding
-        # WP-0 #4): only auto-allow writes that resolve INSIDE the project root
-        # and are not security-sensitive (SSH keys / shell rc / cron / .env);
-        # anything else falls through to the prompt so AUTO_ACCEPT can never
-        # silently plant a backdoor outside cwd.
-        #
-        # ADR-0253 (#188): "auto-accept EDITS" means the edits aelix itself
-        # performs. A tool aelix did not build is never auto-allowed here, with
-        # a path argument or without one — a ``path`` key says nothing about what
-        # an MCP or extension tool does with it — so it asks like bash does.
-        if (
-            mode == PermissionMode.AUTO_ACCEPT
-            and is_builtin_write
-            and _is_auto_allowable_write(_path_from_args(event.args), ctx.cwd)
-        ):
-            return None
-        # else (AUTO_ACCEPT write outside cwd / sensitive): fall through to the
-        # prompt (or headless-allow below).
-
-        # (g) AUTO — classify bash via tree-sitter (ADR-0158): ALLOW→no prompt,
-        # ASK→prompt, DENY→block. aelix's own write/edit behave like
-        # AUTO_ACCEPT. If the classifier is unavailable the bash path falls
-        # through to the prompt (DEFAULT semantics) — NEVER silent-allow. A tool
-        # aelix did not build is neither classified nor auto-allowed (ADR-0253):
-        # the classifier reads a bash grammar, and its verdict says nothing about
-        # a tool that is not aelix's bash.
-        if mode == PermissionMode.AUTO:
-            if is_builtin_write:
-                # Writes auto-allowed ONLY inside the project root and not
-                # security-sensitive (finding WP-0 #4); else fall through to the
-                # headless-allow / prompt path below (same as AUTO_ACCEPT).
-                if _is_auto_allowable_write(_path_from_args(event.args), ctx.cwd):
-                    return None
-            elif is_bash:
-                decision = self._auto_classify_bash(event.args)
-                if decision == "allow":
-                    return None
-                if decision == "deny":
-                    return ToolCallResult(
-                        block=True,
-                        reason="Auto mode: command classified as dangerous; blocked.",
-                    )
-                # "ask" (or classifier unavailable) → fall through to the prompt.
+        if decision == "deny":
+            return ToolCallResult(
+                block=True,
+                reason="Auto mode: command classified as dangerous; blocked.",
+            )
 
         # (d) Headless / print / RPC default = ALLOW for DEFAULT / AUTO_ACCEPT /
         # YOLO / AUTO-ask (preserve non-interactive behaviour; the guardrail
@@ -739,7 +800,10 @@ class PermissionExtension:
         # ``headless_default``, leaving every existing ``-p`` / json / rpc user
         # untouched. NOT the child-authority guarantee on its own — branch (f)
         # above returns before this line — see the field docstring.
-        if not ctx.has_ui:
+        #
+        # #594: a bound UI that does not answer tool approvals (the RPC control
+        # surface's command dialogs) is no UI for this decision.
+        if not _has_approval_ui(ctx):
             if self.headless_default == "block":
                 return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)
             return None

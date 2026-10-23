@@ -2265,7 +2265,7 @@ async def run_rpc_mode(
         model_registry, runtime_host=runtime_host
     )
 
-    from aelix_coding_agent.rpc.control import RpcControlPlane
+    from aelix_coding_agent.rpc.control import RpcControlPlane, control_error_message
     control = RpcControlPlane(runtime_host, permission_posture=permission_posture,
                               settings_manager=settings_manager, auth_storage=auth_storage,
                               model_registry=model_registry, agent_service=agent_service, extension_errors=extension_errors, emit=_output)
@@ -2340,8 +2340,15 @@ async def run_rpc_mode(
         the widened rebind-callback contract; headless RPC re-subscribes the same
         way for every reason.
         """
+        previous_harness = capture.harness
         capture.harness = new_harness
-        await control.mcp.attach(new_harness)
+        # #594: client MCP tools follow the native selection rules — a reload
+        # keeps the user's selection, any other replacement starts from launch.
+        # A failure here must not abort a replacement that has already swapped.
+        try:
+            await control.mcp.attach(new_harness, previous_harness, reason)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[rpc] client MCP tools were not reattached: {exc!r}", file=sys.stderr, flush=True)
         control.bind_progress(new_harness)
         capture.unsubscribe()
         capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
@@ -2432,14 +2439,34 @@ async def run_rpc_mode(
             # argument — zero behavior change for the 26 wired handlers.
             if payload.get("type") == "aelix_control":
                 try:
-                    data = await control.handle(payload.get("method"), payload.get("params", {}))
+                    data = await control.handle(
+                        payload.get("method"), payload.get("params", {}), payload.get("id")
+                    )
+                    # Serialise here, inside the guard: a result the wire cannot
+                    # carry must still answer its id (#594).
+                    json.dumps(data, ensure_ascii=False)
                     response = RpcSuccessResponse(id=payload.get("id"), command="aelix_control", data=data)
                 except asyncio.CancelledError:
                     response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error="Command cancelled")
                 except Exception as exc:  # noqa: BLE001 — one correlated error, never model fallthrough
-                    response = RpcErrorResponse(id=payload.get("id"), command="aelix_control", error=str(exc))
+                    response = RpcErrorResponse(
+                        id=payload.get("id"), command="aelix_control", error=control_error_message(exc)
+                    )
             else:
-                response = await _handle_command(capture.harness, payload, dispatch)
+                # #594: a classic command that starts a turn or replaces the
+                # session waits out a control mutation; a lifecycle transition
+                # admits reads and aborts only.
+                refusal, counted = control.classic_gate(payload.get("type"))
+                if refusal is not None:
+                    response = RpcErrorResponse(
+                        id=payload.get("id"), command=str(payload.get("type")), error=refusal
+                    )
+                else:
+                    try:
+                        response = await _handle_command(capture.harness, payload, dispatch)
+                    finally:
+                        if counted:
+                            control.classic_done()
             try:
                 _output(response.to_json())
             except BrokenPipeError:
@@ -2484,9 +2511,10 @@ async def run_rpc_mode(
                 ],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # Dialogs must settle on EOF before waiting for their command tasks.
-            control.ui.close()
-            await control.handle("commands/cancel", {})
+            # #594: nothing new starts, nothing queued runs, open dialogs settle
+            # as cancelled, and a running lifecycle transition finishes — all
+            # before waiting for the command tasks.
+            control.begin_shutdown()
             # Drain any in-flight command dispatches before tearing down.
             if pending_command_tasks:
                 await asyncio.gather(*pending_command_tasks, return_exceptions=True)

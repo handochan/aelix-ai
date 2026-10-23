@@ -55,6 +55,10 @@ _EXPECTED: dict[tuple[str, str, str], list[bool]] = {
     # tui/commands.py: aelix's own questions through runtime.ui.select (review round 3).
     ("tui/commands.py", "_confirm_project_agent_for_run", "select_declared"): [True],
     ("tui/commands.py", "_extension_new", "select_declared"): [True],
+    # rpc/control.py: the same project-agent confirm sent as an RPC dialog (#594). Its
+    # ``ui`` is RpcCommandUI, not a TUI picker: ``select`` takes no ``own`` and the
+    # host draws the dialog, so there is no picker layout to mark.
+    ("rpc/control.py", "_consent_to_project_profile", "ui.select"): [False],
     # The model's words: spawn consent and the permission gate's fallback. Not
     # own; they name their own cancel rows.
     ("aelix_agents/consent.py", "_ask", "select_with_cancel"): [False],

@@ -135,13 +135,14 @@ async def test_command_cancellation_does_not_wait_for_the_control_lock():
     extension = Extension(name="fixture")
     extension.commands["wait"] = RegisteredCommand(name="wait", handler=wait, description="Wait", source="fixture")
     harness = make_harness([extension])
-    plane = RpcControlPlane(_make_passthrough_runtime(harness, None))
+    plane = RpcControlPlane(_make_passthrough_runtime(harness, None), permission_posture=PermissionPosture())
     try:
         command = asyncio.create_task(plane.handle("commands/run", {"text": "/wait"}))
         await entered.wait()
         verdict = await asyncio.wait_for(plane.handle("permissions/evaluate", {"args": {"command": "pwd"}}), 1)
         assert verdict["decision"] in {"allow", "ask", "deny"}
-        assert await asyncio.wait_for(plane.handle("commands/cancel", {}), 1) == {"cancelled": True}
+        assert await asyncio.wait_for(plane.handle("commands/cancel", {}), 1) == {
+            "cancelled": True, "method": "commands/run"}
         with pytest.raises(asyncio.CancelledError):
             await command
     finally:
@@ -228,13 +229,14 @@ server.run()
     controller = RpcMcpController()
     harness, replacement = make_harness(), make_harness()
     try:
-        status = await controller.configure([{"name": "fixture", "command": sys.executable, "args": [str(script)]}], harness)
+        status = await controller.configure([{"name": "fixture", "command": sys.executable, "args": [str(script)]}],
+                                            lambda: harness)
         assert status["servers"][0]["connected"] is True
         result = await controller.manager.connections["acp_fixture"].call_tool("echo", {"value": "MCP_OK"})
         assert result.content[0].text == "MCP_OK"
         await controller.attach(replacement)
         assert any(tool.name == "acp_fixture__echo" for tool in replacement.state.tools)
-        await controller.configure([], replacement)
+        await controller.configure([], lambda: replacement)
         assert not any(tool.name == "acp_fixture__echo" for tool in replacement.state.tools)
     finally:
         await controller.close()

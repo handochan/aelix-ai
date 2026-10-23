@@ -23,6 +23,29 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **RPC hosts: native runtime controls beside pi's roster (#593, #594, ADR-0275).**
+  `--mode rpc` accepts `{"type": "aelix_control", "method": ..., "params": ...}`
+  requests, answered with the usual correlated `response`. They cover extension
+  commands, prompt-template and skill preparation, resources and reload, typed
+  settings, permission posture and evaluation, the active tools, client MCP
+  servers, provider auth, extension inventory, agent profiles and delegation, and
+  branching. The 29 pi commands are unchanged. `capabilities` lists only what the
+  host's services can serve, so the WebSocket server advertises fewer methods
+  than the CLI. Mutations serialize and need an idle runtime. A classic prompt
+  or session replacement waits out a running mutation, and the reverse.
+  `commands/cancel` targets one operation and never cuts a harness replacement
+  half-way. That covers a reload, a branch, and an extension command's own
+  `ctx.new_session` / `fork` / `switch_session` / `reload`. A cancelled command
+  stops once its replacement has finished. A mutation queued when stdin closes
+  does not run. Dialogs (after
+  `ui/enable`) exist only around `commands/run`, `agents/run` and `auth/login`,
+  end on a reply, timeout, signal or shutdown, and do not approve tool calls. A
+  project agent profile needs `--approve` or the RPC confirmation. A setting is
+  reported saved only after it is written. Client MCP servers never widen an
+  explicit tool selection. Verified with synthetic tests and a real-provider
+  native RPC run. Aelix Studio, real-provider OAuth and Windows packaged installs
+  are not yet verified.
+
 - **Maintainers: the release can be dry-run before its tag (#535, ADR-0269).**
   `release.yml` now also runs by hand: `gh workflow run release.yml --ref main
   -f tag=v0.1.0-beta.3` builds the commit and runs `candidate-smoke` on

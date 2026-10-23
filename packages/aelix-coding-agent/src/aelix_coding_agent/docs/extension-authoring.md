@@ -93,6 +93,17 @@ with a reason asking the host to configure a file-change preview approval runner
 Bash and third-party tools keep their whole-command or whole-argument select fallback;
 existing session grants, automatic postures and headless policy are unchanged.
 
+Over `--mode rpc`, a host that enables dialogs (`aelix_control` `ui/enable`,
+[ADR-0275](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0275-acp-runtime-controls-use-a-separate-rpc-envelope.md))
+gets one only while its `commands/run` or `agents/run` request runs. There
+`ctx.has_ui` is true: `select` / `confirm` / `input` / `editor` go to the host
+and come back as a timeout or cancel when nobody answers, `notify`, `set_status`,
+`set_title` and line-list `set_widget` reach it as notices, and terminal-only
+methods (`custom`, editor control, working indicators, themes) do nothing. That
+dialog channel does not approve tool calls: the permission gate keeps its
+`--mode rpc` verdict in the table above, and the host approves through its own
+`tool_call` hook.
+
 There is no flag your tool can set to skip this. For an MCP tool, a
 `readOnlyHint` annotation does not skip it either, because a hint is the tool
 describing itself. If a read-only tool of yours prompts too often, "Yes, for

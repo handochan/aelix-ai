@@ -370,7 +370,7 @@ def test_project_trust_is_not_read_from_the_context_default() -> None:
     """The regression this issue exists to prevent.
 
     ``ctx.is_project_trusted()`` answers ``True`` here — the harness below was
-    built with the field's own default, exactly as ``rpc_ws.py:90-94`` builds
+    built with the field's own default, exactly as ``rpc_ws.py:92-96`` builds
     one. A snapshot that consulted the context would report "trusted" for a
     process where nothing ever resolved trust.
     """
@@ -422,7 +422,7 @@ def test_a_snapshot_taken_before_any_hook_still_answers() -> None:
 
 
 async def test_it_degrades_under_an_rpc_ws_shaped_harness(tmp_path: Path) -> None:
-    """``rpc_ws.py:90-94`` builds options with no ``tools=`` and no trust.
+    """``rpc_ws.py:92-96`` builds options with no ``tools=`` and no trust.
 
     The whole snapshot must survive several missing sources at once, because
     that call site is real and is not going to grow arguments for this tool.
