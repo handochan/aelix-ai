@@ -128,6 +128,19 @@ Re-run the same `curl … | sh` line to upgrade: it resolves the newest release 
 re-runs the whole checksum-verified install, and `uv tool install --force` makes
 that idempotent.
 
+When aelix notices a newer release at launch, it prints that line with the
+release it named pinned on the `sh` side of the pipe, so what installs is what
+it told you about:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | env AELIX_VERSION=vX.Y.Z-beta.N sh
+```
+
+`env` rather than a bare `AELIX_VERSION=… sh` prefix, so the line also works
+in csh and tcsh. Until [#386](https://github.com/handochan/aelix-ai/issues/386)
+the notice printed `AELIX_VERSION=… curl … | sh`, the shape the knobs section
+above warns about, and that line reinstalled the newest release instead.
+
 ```bash
 uv tool uninstall aelix          # remove it again
 ```
@@ -159,6 +172,21 @@ session, so it sees them (measured on PowerShell 7.6.5):
 $env:AELIX_VERSION = 'vX.Y.Z-beta.N'
 irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex
 ```
+
+On an `install.ps1` install the launch-time update notice prints a one-line
+form of the same thing. Like the install line above, it runs from `cmd.exe` and
+from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "Set-Item env:AELIX_VERSION 'vX.Y.Z-beta.N'; irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
+```
+
+It has no `$` on purpose. Typed into PowerShell, a `$env:AELIX_VERSION='…'`
+inside that double-quoted string is expanded by your session before the inner
+one runs, and the install comes out unpinned: asked for `v0.1.0-beta.1`, it
+installed `0.1.0b2` (#386; measured with pwsh 7.6.5 as both the outer and the
+inner shell, and on CI's Windows legs). The pin lives only in the inner
+`powershell` process, so your session is left as it was.
 
 One knob differs from POSIX: `AELIX_EXTRAS=` cannot select the bare CLI here.
 Assigning `''` to a Windows environment variable deletes it, so an empty value is

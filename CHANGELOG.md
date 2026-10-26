@@ -689,6 +689,23 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The update notice's install command now installs the release it names
+  (#386, ADR-0230 amendment 2026-10-27).** For an `install.sh` install the
+  notice printed `AELIX_VERSION=<tag> curl … | sh`. That pin goes to `curl`
+  and never reaches the installer. Run as shown and asked for
+  `v0.1.0-beta.1`, the line resolved the newest release, installed `0.1.0b2`
+  and exited 0. It now prints `curl -fsSL …/install.sh | env
+  AELIX_VERSION=<tag> sh`, with `env` so csh and tcsh take it too. A Windows
+  install made by `install.ps1` was told the same POSIX line, because both
+  installers leave the same uv receipt. It now gets
+  `powershell -ExecutionPolicy Bypass -c "Set-Item env:AELIX_VERSION '<tag>'; irm …/install.ps1 | iex"`,
+  which runs from `cmd.exe` and from PowerShell and installs the pinned tag.
+  The notice also stopped hard-wrapping the line. At 80 columns it printed the
+  line in pieces, and the PowerShell line broke at 120 as well. A copy of what
+  was on screen was then not one command, and a pasted `… | env` piece printed
+  the environment. Now the terminal wraps the line, and a copy gives back the
+  whole command. A feed tag that cannot sit in a command unquoted gets the
+  release link and no command.
 - **A launch with no thinking level, or a resumed `off` session, no longer
   fails on OpenAI's o-series (#397, ADR-0264 and ADR-0239 amendments
   2026-10-26).** On a model that cannot switch reasoning off, a level fitted

@@ -228,7 +228,9 @@ def test_the_uv_receipt_separates_install_sh_from_a_plain_uv_tool_install(
     (prefix / "uv-receipt.toml").write_text(receipt, encoding="utf-8")
     monkeypatch.setattr(uc, "_dist_files", lambda: (None, None))
     monkeypatch.setattr(uc.sys, "prefix", str(prefix))
-    assert detect_install_method() is expected
+    # POSIX spelled out: on Windows the installers' receipt means install.ps1
+    # (#386, tests/test_update_command_386.py), and CI runs this file there too.
+    assert detect_install_method(platform="linux") is expected
 
 
 def test_pipx_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,12 +266,18 @@ def test_an_unrecognised_install_gets_a_link_and_no_command(
 
 def test_the_install_sh_command_carries_the_version_pin() -> None:
     """Re-running the installer unpinned would fetch whatever is newest, which
-    is not necessarily what the user was just told about."""
+    is not necessarily what the user was just told about.
+
+    The pin has to be on the ``sh`` side of the pipe. This test used to check
+    two substrings, and ``AELIX_VERSION=<tag> curl … | sh`` passed them while
+    installing the newest release (#386); tests/test_update_command_386.py runs
+    the command through real shells.
+    """
 
     cmd = upgrade_command(InstallMethod.INSTALL_SH, "v0.1.0-beta.2")
     assert cmd is not None
-    assert "AELIX_VERSION=v0.1.0-beta.2" in cmd
-    assert "install.sh" in cmd
+    assert cmd.startswith("curl -fsSL ") and "install.sh" in cmd
+    assert cmd.endswith("| env AELIX_VERSION=v0.1.0-beta.2 sh")
 
 
 # === the cache =============================================================

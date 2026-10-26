@@ -1249,7 +1249,7 @@ class AelixChrome:
         self._sync_update(True)
         try:
             async with in_terminal():
-                self._console.print(renderable)
+                _print_to(self._console, renderable)
         finally:
             self._sync_update(False)
         self.app.invalidate()
@@ -1293,7 +1293,7 @@ class AelixChrome:
         try:
             async with in_terminal():
                 for renderable in renderables:
-                    self._console.print(renderable)
+                    _print_to(self._console, renderable)
                 if apply_before_redraw is not None:
                     apply_before_redraw()
         finally:
@@ -1663,4 +1663,31 @@ class AelixChrome:
     interrupt_armed: bool = False
 
 
-__all__ = ["AelixChrome"]
+class SoftWrapped:
+    """A scrollback commit whose long lines the TERMINAL wraps, not Rich (#386).
+
+    Rich hard-wraps a line wider than the console with real newlines. That is
+    right for prose and wrong for a command meant to be copied: the update
+    notice's install line broke at 80 columns, and the PowerShell one at 120
+    (Windows Terminal's default width), and what a user copied was pieces of
+    it. Printed with ``soft_wrap=True`` each line is written whole, the terminal
+    wraps it, and a terminal joins a soft wrap again on copy. ``renderable`` is
+    the attribute name the commit spies already unwrap.
+    """
+
+    __slots__ = ("renderable",)
+
+    def __init__(self, renderable: object) -> None:
+        self.renderable = renderable
+
+
+def _print_to(console: Console, renderable: object) -> None:
+    """One scrollback write; a :class:`SoftWrapped` one is not hard-wrapped."""
+
+    if isinstance(renderable, SoftWrapped):
+        console.print(renderable.renderable, soft_wrap=True)
+    else:
+        console.print(renderable)
+
+
+__all__ = ["AelixChrome", "SoftWrapped"]

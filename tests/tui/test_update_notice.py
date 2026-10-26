@@ -24,6 +24,7 @@ from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.shell import run_tui
 
 from tests.tui.test_run_tui_smoke import (
+    FakeHarness,
     FakeRuntime,
     _harness_chrome,
     _quit_within,
@@ -262,3 +263,44 @@ async def test_the_launch_path_survives_a_check_that_RAISES(
     shown = "\n".join(commits)
     for noise in ("blew up", "RuntimeError", "Traceback", "is available"):
         assert noise not in shown, f"a raising check leaked {noise!r} to the user"
+
+
+@pytest.mark.parametrize("method_name", ["INSTALL_SH", "INSTALL_PS1"])
+async def test_the_install_line_reaches_the_terminal_whole_at_80_columns(
+    _isolated: Path, monkeypatch: pytest.MonkeyPatch, method_name: str
+) -> None:
+    """#386: Rich hard-wraps a line wider than the console with real newlines.
+    At 80 columns (macOS Terminal's default; the PowerShell line also broke at
+    Windows' 120) the notice printed the install line in pieces, and a copy of
+    what was on screen was not the command — pasted, a ``… | env`` piece just
+    prints the environment. The notice is committed soft-wrapped, so the line
+    is written whole and the terminal wraps it."""
+
+    import io
+
+    import aelix_coding_agent.update_check as uc
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from rich.console import Console
+
+    method = uc.InstallMethod[method_name]
+    monkeypatch.setattr(uc, "default_fetch", lambda: _feed("0.1.0b2"))
+    monkeypatch.setattr(uc, "detect_install_method", lambda **_: method)
+    command = uc.upgrade_command(method, "v0.1.0-beta.2")
+    assert command is not None and len(command) > 80
+
+    buf = io.StringIO()
+    console = Console(file=buf, width=80, force_terminal=False, color_system=None)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(FakeHarness())
+        chrome = AelixChrome(console=console)
+        task = _launch(runtime, chrome, _Settings())
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text(f"{_BARRIER}\n")
+        await _wait(lambda: _BARRIER in buf.getvalue(), what="the barrier echo")
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+
+    lines = buf.getvalue().splitlines()
+    assert f"   {command}" in lines, "\n".join(lines[-12:])

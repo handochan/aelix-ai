@@ -62,7 +62,7 @@ from aelix_coding_agent.tui.activity_tracker import (
     SessionActivityTracker,
     derive_resumed_activity,
 )
-from aelix_coding_agent.tui.chrome import AelixChrome
+from aelix_coding_agent.tui.chrome import AelixChrome, SoftWrapped
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
@@ -415,7 +415,7 @@ async def _commit_update_notice(
         lines.append(Text(f"   {rel.url}", style="dim"))
         from rich.console import Group
 
-        commit(Group(*lines))
+        commit(SoftWrapped(Group(*lines)))  # copied, so never hard-wrapped (#386)
     except Exception:  # noqa: BLE001
         return
 

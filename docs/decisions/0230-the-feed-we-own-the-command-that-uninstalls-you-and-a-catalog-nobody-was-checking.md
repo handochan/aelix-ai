@@ -1,11 +1,12 @@
 # 0230. The feed we own, the command that uninstalls you, and a catalog nobody was checking
 
-Status: Accepted (2026-08-19).
+Status: Accepted (2026-08-19) — amended 2026-10-27 (#386): the installer command hands the pin to the installer, and an `install.ps1` install gets a PowerShell line.
 Date: 2026-08-19
 Relates: ADR-0203 (no new environment names), ADR-0218 (the guides that ship inside
 the wheel), ADR-0224 (text-pinned citations), ADR-0229 (the gate that was pointed at
 the wrong thing).
-GitHub: #172 (partially — the pipeline stays open). The update notifier had no issue.
+GitHub: #172 (partially — the pipeline stays open). The update notifier had no issue;
+#386 amends its command.
 
 Two tracks before the beta tag: tell a user when a newer release exists, and stop
 `models_generated.json` and its guide from being wrong in ways nothing measured.
@@ -168,3 +169,77 @@ label, and the row's key and read callable are both gated. Removing the row is R
 * `starlette` is imported directly by `aelix-server` while only `fastapi` is declared.
   Recorded in the new dependency gate's exemption list with the reason rather than
   fixed silently — it is a change to a shipped package's dependency list.
+
+## Amendment (2026-10-27, #386) — the pin reaches the installer, and Windows gets its own line
+
+**The command for an `install.sh` install installed the wrong release.** It was
+`AELIX_VERSION=<tag> curl … | sh`. That assignment belongs to `curl`, and the `sh` on
+the other side of the pipe never sees it. Measured on 0447024d: an installer-style
+sandbox install, launched with a cached feed naming `v0.1.0-beta.3`, showed that line.
+Run verbatim, the installer printed "resolving the newest release from GitHub...",
+reinstalled `0.1.0b2` and exited 0. The same line asked for `v0.1.0-beta.1` also
+installed `0.1.0b2`. The guide and RELEASING.md already warned about this shape. The
+only test checked two substrings, and the broken line passed both.
+
+**A Windows install was told to run `curl … | sh`.** `install.ps1` writes the same uv
+receipt as `install.sh` (an `==` pin and `--find-links`), so detection called it an
+`install.sh` install.
+
+Decided:
+
+* **POSIX:** `curl -fsSL …/install.sh | env AELIX_VERSION=<tag> sh`. It stays the
+  README's one-liner with the pin added, on the side of the pipe that reads it. The
+  pin goes through `env` because csh and tcsh (and fish before 3.1) do not parse a
+  prefix assignment. Measured: with `| AELIX_VERSION=<tag> sh`, the csh and tcsh runs
+  of the new test fail and the other five shells pass. The guide's
+  `sh -c "$(curl …)"` knob form was not used, because `$(…)` is not csh syntax either.
+* **Windows:** the installers' receipt on `sys.platform == "win32"` is
+  `InstallMethod.INSTALL_PS1`. That includes an `install.sh` run from Git Bash,
+  whose Python is a native Windows one. Its line is
+  `powershell -ExecutionPolicy Bypass -c "Set-Item env:AELIX_VERSION '<tag>'; irm …/install.ps1 | iex"`.
+  Like the documented install line, it runs from `cmd.exe` and from PowerShell. It
+  carries no `$`. Typed into PowerShell, `$env:AELIX_VERSION='<tag>'` inside the
+  double-quoted string is expanded by the outer session, and the child installs
+  unpinned. Measured with the real `install.ps1` and pwsh 7.6.5 as both the outer
+  and the inner shell: that spelling, asked for `v0.1.0-beta.1`, installed
+  `0.1.0b2`. The cause is the outer session, so the inner being Windows
+  PowerShell 5.1 does not change it. The pin lives only in the child `powershell`
+  process, so the user's own session is left as it was.
+* **The notice no longer hard-wraps the line.** Rich wraps a line wider than the
+  console with real newlines, so at 80 columns both lines came out in pieces, and
+  at 120 (Windows Terminal's default) the PowerShell one did. A reviewer measured
+  the POSIX pieces pasted into `sh`: they install nothing, and the `… | env` piece
+  prints the user's environment. The notice is now committed as
+  `tui/chrome.py` `SoftWrapped`, printed with `soft_wrap=True`. Each line is written
+  whole, the terminal wraps it, and a copy gives back one command. The POSIX line
+  already wrapped at 80 before #386.
+* A tag outside `[A-Za-z0-9][A-Za-z0-9._+-]*` gets the release link and no command.
+  The feed is ours, but a quote or a `;` in a tag would print a command that does
+  something else.
+
+Measured after the change, with real installs into a throwaway HOME and uv tool dir:
+
+* `install.sh` from zsh and from tcsh, asked for `v0.1.0-beta.1`, printed "using
+  pinned release tag" and installed `0.1.0b1`.
+* The PowerShell line from zsh and from pwsh (through a `powershell` shim on macOS,
+  with the real `install.ps1`) did the same.
+* The TUI notice shows the new line. Run verbatim, it pins `v0.1.0-beta.3` and stops at
+  "SHA256SUMS not found … is the Release published?", because that release does not
+  exist.
+* At 80 columns, both lines reach the terminal with no newline inside them.
+
+`tests/test_update_command_386.py` runs each line through real shells and lets the
+real installer report the tag it took, offline. On POSIX that is every installed
+shell. On the Windows CI legs it is `cmd.exe` and PowerShell, with `install.ps1`
+served over loopback and its downloads stubbed. Each harness also has a control
+that resolves the newest release. The POSIX harness runs the shape it replaced. The
+PowerShell harness runs the `$env:` spelling the line avoids, because the shape it
+replaced was the POSIX line, which PowerShell does not run at all. The same file
+holds both guides to the lines `upgrade_command` prints.
+`tests/tui/test_update_notice.py` holds the 80-column rendering.
+
+Not changed here: the feed still announces a release before the Release exists
+(#536). In that window the line now fails with the message above, where before it
+quietly reinstalled the old release. Windows upgrades are still unwitnessed on a real
+Windows host. CI runs the line through `cmd.exe` and `powershell.exe` against a
+stubbed installer, and the macOS pwsh run used the real one.

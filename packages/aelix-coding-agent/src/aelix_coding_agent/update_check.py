@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -97,6 +98,7 @@ class InstallMethod(StrEnum):
     """
 
     INSTALL_SH = "install.sh"
+    INSTALL_PS1 = "install.ps1"
     UV_TOOL = "uv-tool"
     PIPX = "pipx"
     PIP = "pip"
@@ -242,7 +244,7 @@ def _is_editable(direct_url: Path | None) -> bool:
     return isinstance(info, dict) and bool(info.get("editable", False))
 
 
-def detect_install_method() -> InstallMethod:
+def detect_install_method(*, platform: str | None = None) -> InstallMethod:
     """How this process was installed. Never raises.
 
     The evidence, in the order it is decisive:
@@ -250,11 +252,19 @@ def detect_install_method() -> InstallMethod:
     ``direct_url.json`` with ``dir_info.editable``  -> a checkout
     ``sys.prefix/pipx_metadata.json``               -> pipx
     ``sys.prefix/uv-receipt.toml``                  -> a uv tool install, and its
-        contents separate ``install.sh`` (which pins ``==`` and passes
+        contents separate the installers (which pin ``==`` and pass
         ``--find-links``) from a plain ``uv tool install aelix``
     ``INSTALLER`` == ``pip``                        -> pip
+
+    The two installers write the same receipt, so ``platform`` (default
+    ``sys.platform``) tells them apart: on Windows the installer to re-run is
+    ``install.ps1`` (#386), even for an install.sh run from Git Bash, whose
+    Python is a native Windows one. Until then a Windows install was told to
+    run ``curl … | sh``.
     """
 
+    if platform is None:
+        platform = sys.platform
     installer, direct_url = _dist_files()
     if _is_editable(direct_url):
         return InstallMethod.CHECKOUT
@@ -270,9 +280,11 @@ def detect_install_method() -> InstallMethod:
             # that is a checkout by another name and must not be "upgraded".
             if "directory" in text:
                 return InstallMethod.CHECKOUT
-            # install.sh's signature: it pins an exact version so the SHA256SUMS
-            # gate is load-bearing, and it installs from a --find-links dir.
+            # The installers' signature: they pin an exact version so the
+            # SHA256SUMS gate is load-bearing, and install from a --find-links dir.
             if "find-links" in text or "==" in text:
+                if platform == "win32":
+                    return InstallMethod.INSTALL_PS1
                 return InstallMethod.INSTALL_SH
             return InstallMethod.UV_TOOL
     except Exception:  # noqa: BLE001
@@ -290,12 +302,20 @@ def detect_install_method() -> InstallMethod:
     return InstallMethod.UNKNOWN
 
 
-#: Where ``install.sh`` lives, for the one method whose upgrade is "run the
-#: installer again". Kept beside the command that uses it so the two cannot
+#: Where the installers live, for the two methods whose upgrade is "run the
+#: installer again". Kept beside the command that uses them so the two cannot
 #: drift apart.
 _INSTALL_SH_URL = (
     "https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh"
 )
+_INSTALL_PS1_URL = (
+    "https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1"
+)
+
+#: A tag that can sit inside either installer command unquoted. The feed is
+#: ours, but a tag outside this shape (a space, a quote, a ``;``) would print a
+#: command that does something other than install it.
+_TAG_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
 def upgrade_command(method: InstallMethod, tag: str) -> str | None:
@@ -304,10 +324,36 @@ def upgrade_command(method: InstallMethod, tag: str) -> str | None:
     ``None`` for a checkout (a contributor upgrades with ``git pull``, and being
     told otherwise is noise) and for ``UNKNOWN`` (a guess here can uninstall
     someone — see the module docstring). Both still get the release link.
+
+    THE PIN HAS TO REACH THE INSTALLER, not the download (#386). Until then this
+    printed ``AELIX_VERSION=<tag> curl … | sh``, where the assignment is
+    ``curl``'s alone; measured, asked for ``v0.1.0-beta.1`` the installer
+    resolved the newest release, installed ``0.1.0b2`` and exited 0. So the
+    variable goes on the ``sh`` side of the pipe, through ``env`` rather than
+    as a prefix assignment, which csh, tcsh and fish before 3.1 do not parse.
+
+    The PowerShell line runs from ``cmd.exe`` and from PowerShell alike, as the
+    documented install line does, and it carries no ``$``: from PowerShell,
+    ``$env:AELIX_VERSION`` inside the double-quoted ``-c`` string is expanded
+    by the outer session before the child sees it, and the child installs
+    unpinned. ``Set-Item env:`` names the variable without one. The pin lives
+    in the child ``powershell`` process, so the user's own session is left
+    as it was.
+
+    Both lines are longer than a terminal is wide. The notice commits them
+    soft-wrapped (``tui/chrome.py`` ``SoftWrapped``), so the terminal wraps
+    them and a copy gives back one command.
     """
 
-    if method is InstallMethod.INSTALL_SH:
-        return f"AELIX_VERSION={tag} curl -fsSL {_INSTALL_SH_URL} | sh"
+    if method in (InstallMethod.INSTALL_SH, InstallMethod.INSTALL_PS1):
+        if not _TAG_SHAPE.fullmatch(tag):
+            return None
+        if method is InstallMethod.INSTALL_SH:
+            return f"curl -fsSL {_INSTALL_SH_URL} | env AELIX_VERSION={tag} sh"
+        return (
+            'powershell -ExecutionPolicy Bypass -c "'
+            f"Set-Item env:AELIX_VERSION '{tag}'; irm {_INSTALL_PS1_URL} | iex\""
+        )
     if method is InstallMethod.UV_TOOL:
         return "uv tool upgrade aelix"
     if method is InstallMethod.PIPX:
