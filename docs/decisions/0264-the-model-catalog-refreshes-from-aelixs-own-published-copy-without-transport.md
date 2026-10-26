@@ -3,11 +3,12 @@
 Status: Accepted (2026-10-20, approved by the owner as a whole); rewritten 2026-10-15 on the
 owner's decision (§2), revised after its reviews (r5-r11) and on the owner's decisions of
 2026-10-16, 2026-10-17 and 2026-10-19 (§7). §8 is what the implementation owes. Amended 2026-10-21
-(§10: #172's B4, what the parser and the publisher measured against the shipped catalog).
+(§10: #172's B4, what the parser and the publisher measured against the shipped catalog) and
+2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
-overlay, the triggers), #450 (OpenRouter's key-scoped narrowing)
+overlay, the triggers), #450 (OpenRouter's key-scoped narrowing), #507 (a shipped row's `off`, §10)
 Relates: ADR-0065 and ADR-0140 (the registry and `models.json`), ADR-0189 and ADR-0192 (Ed25519
 sidecars; the marketplace's progressive signature rule), ADR-0203 (what a cwd `.env` may carry),
 ADR-0232 (transport is inherited, never invented; the generator and its ladder), ADR-0235 (pi is a
@@ -418,7 +419,8 @@ calls it.
    public `/api/v1/models` (recording each one's sha256 and the fetch time for the index entry),
    runs `refresh_catalog.py`'s additive plan over the committed catalog with each new reasoning
    row's thinking map derived (§7 Q2), applies it to the checkout, computes the lineage and writes
-   the revision.
+   the revision. The `off: null` the plan finds for shipped rows (§10, 2026-10-26) goes in the
+   summary and is not applied.
 3. Validate, and publish nothing on any failure:
    - The pin test, `tests/test_catalog_corrections_are_pinned.py`, runs against the applied
      checkout, so no revision carries a value the pin test rejects at that commit. So do
@@ -1232,7 +1234,7 @@ hours (§6); the first aelix-only hook event (§4.7); a sixth batch (§4.8).
 2. **Thinking maps for new reasoning ids: derived as pi derives them, and published without one
    where nothing applies** (2026-10-16; §4.2 step 2). No family-predecessor copy, no hold-back. #172
    adds this to `scripts/refresh_catalog.py`, for new rows only (the generator stays additive), in
-   pi's order:
+   pi's order (#507 reads the same evidence for a shipped row's missing `off`, §10, 2026-10-26):
    1. A provider-wide rule hides every level but off and high: pi's Xiaomi rule
       (`packages/ai/scripts/generate-models.ts:2487-2503`, `6374c2ba`) and Together's default
       (`:215-219`, `:578-587`), the map only (pi's Xiaomi `compat` is transport here). pi #10818
@@ -1485,3 +1487,73 @@ skipped `build` is the workflow's `if:` as written, not measured; actionlint 1.7
 shellcheck) passes the workflow except `concurrency.queue`, which it does not know and GitHub's
 documentation (r6) does. Waiting for the owner: the repository, its first real publication and
 §8's GETs of Pages' headers. The fold-back runs once in R's prep.
+
+### 2026-10-26: #507 - a shipped row's `off` comes from the evidence a new row's map comes from
+
+§7 Q2 derives maps for new rows only, and a shipped row's map is a key that exists. A shipped
+reasoning row whose map has no `off` sends off as `effort: "none"` through both Responses adapters
+(`openai-responses`, `openai-codex-responses`; Copilot excepted) and Chat Completions' OpenRouter
+thinking format (`model.thinkingLevelMap?.off ?? "none"`), and a model that takes no `none`
+answers 400. MEASURED on `0dee85d0` (`.omc/probes/507/live-before/`):
+`--thinking off` on OpenRouter's `openai/gpt-5-mini`, `openai/gpt-5-nano`, `openai/gpt-oss-20b`,
+`google/gemini-2.5-pro`, `z-ai/glm-5.3-flash` and `openai/gpt-6-astra` answered "Reasoning is
+mandatory for this endpoint and cannot be disabled." `off: null` omits the field, as pi's maps do
+for such models (pi.dev's published rows, 2026-10-26).
+
+1. **The fold-back writes `off: null` into a shipped map that has no `off`, where the evidence says
+   so.** For each shipped reasoning row on one of those wires, `plan_off_fills` asks §7 Q2's rules,
+   in their order, for the map a new row would get - OpenRouter's `reasoning.mandatory` for an
+   OpenRouter row, models.dev's effort list without `none` for a row that sends the level's name -
+   and takes only its `off`. `--apply` writes it; `--apply --off-only` writes it without the
+   additions. A key that does not exist, so the generator stays additive, and a shipped map's other
+   levels stay `main`'s curation. A shipped `off` string the evidence contradicts is reported for a
+   hand correction (RELEASING.md) and never overwritten.
+2. **Two evidence-only lookups** for providers models.dev does not name as aelix does:
+   `azure-openai-responses` reads models.dev's `azure`, then `openai`; `cloudflare-ai-gateway`
+   reads the gateway's `openai/<id>` (the prefix pi strips), then `openai`. They add no row
+   (`UPSTREAM_IDS` is unchanged). This build has no `azure-openai-responses` adapter (ADR-0254), so
+   its fills change no request today; they are what its wire would need. pi's Azure rows carry no
+   map and send `none`: a divergence (ADR-0235).
+3. **The publish job reports and does not apply.** Its summary lists the fills and conflicts; a
+   shipped row publishes as `main` has it (§4.3), so a fill reaches clients through a commit, as
+   the fold-back's additions do. Additivity (§4.2 step 3) is unchanged.
+
+MEASURED, models.dev and OpenRouter fetched 2026-10-26 12:50 UTC (sha256 in
+`tests/fixtures/hosted_catalog/off-507-inputs.json.gz`): 91 fills - 72 OpenRouter rows marked
+mandatory and 19 direct rows (`openai`'s o1, o1-pro, o3, o3-mini, o3-pro, o4-mini and
+gpt-realtime-2.1; the same six o-series on `azure-openai-responses`; o1, o3, o3-mini, o3-pro and
+o4-mini on `cloudflare-ai-gateway`; `opencode/gpt-5.3-codex-spark`) - and one conflict:
+`openai/gpt-6-astra`'s `"off": "none"`, copied by hand from `gpt-5.5` on 2026-09-08, corrected to
+`null` (pi: "GPT-6 Astra and GPT-6.1 Sol reject reasoning.effort "none"", `generate-models.ts:1080`
+at `b84d5d1bc`). Committed by `--apply --off-only`; `tests/test_reasoning_off_507.py` takes the fills
+back out, gets them proposed again and the file back byte for byte, and a plan over the shipped
+catalog proposes nothing.
+
+Left alone: 72 rows that still send `none` for off - the two deep-research rows on `openai` and on
+`azure-openai-responses` (no evidence), 54 OpenRouter rows the public list no longer carries or
+lists without a `reasoning` object, and the 14 `openai-codex` rows. models.dev has no Codex
+provider; its `azure` and `opencode` list `gpt-5.1-codex-max`, `gpt-5.1-codex-mini` and
+`gpt-5.2-codex` without `none`, but the ChatGPT backend is another service and is unmeasured, so no
+lookup is added for it.
+
+Found by the independent review (2026-10-26, `.omc/probes/507/review-claude/`), MEASURED and kept:
+
+- **A fitted off lands on `minimal`.** Only `off` is filled, and `clamp_thinking_level` moves an
+  unsupported off up to the next level the map offers, `minimal` on every changed row. A launch with
+  no level and a resumed or carried off session therefore send `minimal`, which a model may refuse
+  too. The evidence says so for 53 of the 92 changed rows (19 direct, every direct o-series row
+  among them), and says nothing past `mandatory` for 26 OpenRouter fills, OpenRouter's o-series
+  (`openai/o1`, `o3`, `o3-mini`, `o3-pro`, `o4-mini`) among them. MEASURED: OpenRouter's
+  `openai/o3` with no `--thinking` answered 400 "Unsupported value: 'minimal' is not supported
+  with the 'o3-2025-04-16' model" (it answered "Reasoning is mandatory" on `0dee85d0`), while
+  `--thinking off` answered. pi's map for that row hides only `off` too. Fitting off to the lowest
+  level a model takes, which the owner decided for #397 on 2026-10-21, is #397's.
+- **OpenRouter's `~…-latest` aliases are filled as pi fills them.** Their public rows say
+  `mandatory: true`, and pi.dev's own maps hide their `off`, yet all eight shipped aliases answered
+  `effort: "none"` with a 200 (`.omc/probes/507/alias-probe/`; five with no reasoning tokens, the
+  Grok and two GLM aliases with 1 to 49), as `~google/gemini-flash-latest` did at off through aelix
+  on `0dee85d0` (`live-after/README.md`), while `google/gemini-3.8-flash`, where that alias routed,
+  refuses it, as does `x-ai/grok-4.5` (the Grok alias routed to `grok-4.7`, not probed). Off is
+  no longer offered on them and costs the model's default reasoning. Kept, as the owner's
+  2026-10-21 decision on #397 follows pi; a follow-up if aliases should diverge.
+- The rows the picker offers no `off` on went from 118 to 210 (`thinking_picker.py`).

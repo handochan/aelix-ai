@@ -4082,6 +4082,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4102,6 +4105,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4122,6 +4128,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4162,6 +4171,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -4181,6 +4193,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4201,6 +4216,9 @@
       "provider": "azure-openai-responses",
       "baseUrl": "",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4921,6 +4939,9 @@
       "provider": "cloudflare-ai-gateway",
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4941,6 +4962,9 @@
       "provider": "cloudflare-ai-gateway",
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -4961,6 +4985,9 @@
       "provider": "cloudflare-ai-gateway",
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -4980,6 +5007,9 @@
       "provider": "cloudflare-ai-gateway",
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -5000,6 +5030,9 @@
       "provider": "cloudflare-ai-gateway",
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15391,6 +15424,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15411,6 +15447,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15431,6 +15470,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15471,6 +15513,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -15490,6 +15535,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15510,6 +15558,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15650,6 +15701,9 @@
       "provider": "openai",
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -15683,7 +15737,7 @@
       "contextWindow": 1050000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
-        "off": "none",
+        "off": null,
         "xhigh": "xhigh",
         "max": "max"
       }
@@ -17282,6 +17336,9 @@
       "provider": "opencode",
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -18884,6 +18941,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -19232,6 +19292,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -19520,6 +19583,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -19540,6 +19606,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -19640,6 +19709,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -19660,6 +19732,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -20032,6 +20107,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -20051,6 +20129,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -20070,6 +20151,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -20108,6 +20192,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -20574,6 +20661,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21177,6 +21267,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21217,6 +21310,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21237,6 +21333,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21257,6 +21356,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21317,6 +21419,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21337,6 +21442,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21357,6 +21465,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21424,6 +21535,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -21447,6 +21559,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -21585,6 +21698,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -21631,6 +21745,7 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -21711,6 +21826,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21749,6 +21867,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21787,6 +21908,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21806,6 +21930,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21826,6 +21953,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21866,6 +21996,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21885,6 +22018,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -21904,6 +22040,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21924,6 +22063,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -21964,6 +22106,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -22275,6 +22420,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -22579,6 +22727,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -22658,6 +22809,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23074,6 +23228,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -23602,6 +23759,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23622,6 +23782,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23642,6 +23805,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23662,6 +23828,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23761,6 +23930,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23781,6 +23953,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -23881,6 +24056,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -23904,6 +24082,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -23927,6 +24108,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -23973,6 +24157,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -24058,6 +24245,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24078,6 +24268,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24098,6 +24291,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24118,6 +24314,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24138,6 +24337,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24158,6 +24360,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24182,6 +24387,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24206,6 +24414,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24306,6 +24517,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24326,6 +24540,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24346,6 +24563,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24406,6 +24626,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24757,6 +24980,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -24876,6 +25102,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -24895,6 +25124,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -24942,6 +25174,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25233,6 +25468,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25298,6 +25536,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25366,6 +25607,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25390,6 +25634,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25414,6 +25661,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25578,6 +25828,7 @@
       "contextWindow": 1050000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh",
         "max": "max"
       }
@@ -25602,6 +25853,7 @@
       "contextWindow": 1050000,
       "maxTokens": 128000,
       "thinkingLevelMap": {
+        "off": null,
         "xhigh": "xhigh",
         "max": "max"
       }
@@ -25613,6 +25865,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"
@@ -25637,6 +25892,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text"
       ],
@@ -25679,6 +25937,9 @@
       "provider": "openrouter",
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null
+      },
       "input": [
         "text",
         "image"

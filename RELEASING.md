@@ -116,6 +116,12 @@ uv run pytest -q tests/test_catalog_corrections_are_pinned.py tests/test_catalog
   risk is the first model of a new wire on a provider) and each derived
   thinking map (ADR-0264 §7 Q2; a map is upstream's claim until `main` curates
   one). Fix by hand what is wrong, in the same commit.
+- A `~` line is a shipped row whose map has no `off` while its model takes no
+  `none` by the same evidence (OpenRouter's `reasoning.mandatory`, models.dev's
+  effort list; #507, ADR-0264 §10): `--apply` writes `off: null` into its map,
+  because otherwise off is sent as `effort: "none"` and answered 400. A `!` line
+  is a shipped `off` string that evidence contradicts; nothing overwrites it, so
+  correct it by hand. `--apply --off-only` writes the `~` fills and no addition.
 - It commits upstream as of now, not exactly what was published, with no
   100-id cap, and it proposes again a row a hold rolled back: the diff review
   is the gate. Drop such a row by hand.

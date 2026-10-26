@@ -193,7 +193,8 @@ supersession. Evidence: `.omc/probes/b4-d-live/172/` (commands in `commands.txt`
   `reasoning_options` for a row whose inherited wire sends the level's own name (the three
   Responses APIs, OpenAI-format Chat Completions with effort support; never `anthropic-messages`),
   else none. `max` is kept (#433). An existing row's map is a key that exists, so additive-only
-  still holds as a shape. `--fetch` downloads OpenRouter's list as well, and `--apply` refuses to
+  still holds as a shape; #507 writes only an absent `off` into one (ADR-0264 §10,
+  2026-10-26). `--fetch` downloads OpenRouter's list as well, and `--apply` refuses to
   run without one, because every new OpenRouter reasoning row would land without its map.
   MEASURED over r7's inputs, r7's counts come back: 265 rows, 230 reasoning, 38 OpenRouter maps,
   15 models.dev, 10 provider rule, 167 none, 39 naming `max`.

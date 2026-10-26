@@ -689,6 +689,33 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **Thinking off is no longer sent as `effort: "none"` to models that refuse
+  it (#507, ADR-0264 amendment 2026-10-26).** On OpenRouter and the OpenAI
+  Responses APIs, a model whose catalog row did not say how to turn reasoning
+  off was sent `reasoning.effort: "none"` for off, and models that take no
+  `none` answered 400. Measured on OpenRouter with `--thinking off`:
+  `openai/gpt-5-mini`, `openai/gpt-5-nano`, `openai/gpt-oss-20b`,
+  `google/gemini-2.5-pro` and `z-ai/glm-5.3-flash` answered "Reasoning is
+  mandatory for this endpoint and cannot be disabled", and now reply; an off
+  session on `gpt-5-nano` answers three turns and compacts where every turn
+  and the compaction failed before. A session at off now sends no reasoning
+  field there, so the model reasons at its default. 91 shipped rows carry
+  `off: null` - 72 OpenRouter rows marked reasoning-mandatory, the o-series on
+  `openai` and `cloudflare-ai-gateway`, `openai/gpt-realtime-2.1`,
+  `opencode/gpt-5.3-codex-spark`, and the six `azure-openai-responses` rows
+  for when that provider has an adapter - and `openai/gpt-6-astra`'s
+  `"off": "none"` is now `null`; `/thinking` no longer offers off on them.
+  `scripts/refresh_catalog.py` derives these from OpenRouter's
+  `reasoning.mandatory` and models.dev's effort lists, as it already did for
+  new rows, so the next fold-back keeps them; `--apply --off-only` writes only
+  them, and the publish job reports one `main` has not committed. Not fixed
+  here (#397): where off is fitted to the model - a launch with no level, a
+  resumed or carried off session - it now moves to `minimal`, which OpenAI's
+  o-series refuses too: `openai/o3` on OpenRouter with no `--thinking`
+  answered 400 "Unsupported value: 'minimal'" (it answered "Reasoning is
+  mandatory" before). Not measured: OpenAI's own API (the test key has no
+  credits) and Cloudflare.
+
 - **Automatic compaction keeps working after a session's first compaction
   (#565, ADR-0176 amendment 2026-10-22).** The guards that keep an answer from
   before a compaction from triggering another compared the answer's time in

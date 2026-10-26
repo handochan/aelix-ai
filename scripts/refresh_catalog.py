@@ -1,4 +1,4 @@
-"""Add models that exist upstream and not here, WITHOUT touching a row we already have.
+"""Add models that exist upstream and not here, WITHOUT overwriting what a shipped row says.
 
 #172. ``models_generated.json`` is a corrected fork of pi's catalog, not a
 mirror of anything: 41 hand edits over six commits, pinned in
@@ -29,14 +29,18 @@ drops.
 THINKING MAPS FOR NEW ROWS (ADR-0264 §7 Q2, the owner's decision of
 2026-10-16). A new reasoning row's ``thinkingLevelMap`` is derived as pi derives
 one, in pi's order, and a row nothing covers gets none:
-:func:`derive_thinking_level_map`. An existing row's map is never touched — it
-is a key that exists.
+:func:`derive_thinking_level_map`. An existing row's map is never overwritten —
+it is a key that exists — with one addition (#507, ADR-0264 §10, 2026-10-26): where its map
+has no ``off`` and the same evidence says the model takes no ``none``,
+``off: null`` is written into it (:func:`plan_off_fills`), because otherwise
+off is sent as ``none`` and answered 400.
 
 Usage::
 
     python scripts/refresh_catalog.py --audit                 # score the rule
     python scripts/refresh_catalog.py --source api.json --openrouter-source models.json
     python scripts/refresh_catalog.py --fetch --apply         # the fold-back (RELEASING.md)
+    python scripts/refresh_catalog.py --fetch --apply --off-only  # only the off fills (#507)
 
 ``--source`` takes a models.dev ``api.json`` on disk and ``--openrouter-source``
 OpenRouter's public ``/api/v1/models``; ``--fetch`` downloads both. ``--apply``
@@ -353,6 +357,13 @@ def sends_level_name(row: Row) -> bool:
         return True
     if row["api"] != "openai-completions":
         return False
+    compat = _merged_compat(row)
+    return compat.thinking_format == "openai" and bool(compat.supports_reasoning_effort)
+
+
+def _merged_compat(row: Row) -> Any:
+    """An ``openai-completions`` row's compat as the adapter merges it: detected, then the row's own."""
+
     from aelix_ai.providers._openai_compat import get_compat
     from aelix_ai.streaming import Model, ModelCost
 
@@ -370,8 +381,7 @@ def sends_level_name(row: Row) -> bool:
         headers=row.get("headers"),
         compat=row.get("compat"),
     )
-    compat = get_compat(model)
-    return compat.thinking_format == "openai" and bool(compat.supports_reasoning_effort)
+    return get_compat(model)
 
 
 def derive_thinking_level_map(
@@ -392,8 +402,9 @@ def derive_thinking_level_map(
     4. ``"none"``: no map. The row offers off to high and the OpenAI-family
        adapters send each level's name, as pi publishes such rows.
 
-    ``"not reasoning"`` for a row that does not reason. Only ever called for
-    rows this script adds: an existing row's map is a key that exists.
+    ``"not reasoning"`` for a row that does not reason. A row this script adds
+    takes the whole map. For a row we already ship, the map is a key that
+    exists; only its ``off`` is read, by :func:`plan_off_fills` (#507).
     """
 
     if not row.get("reasoning"):
@@ -421,11 +432,164 @@ def openrouter_by_id(listing: dict[str, Any] | None) -> dict[str, Row] | None:
     return {item["id"]: item for item in data if isinstance(item, dict) and "id" in item}
 
 
+# ── off for the rows we already ship (#507) ────────────────────────────
+
+OFF_EVIDENCE_IDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "azure-openai-responses": (("azure", ""), ("openai", "")),
+    "cloudflare-ai-gateway": (("cloudflare-ai-gateway", "openai/"), ("openai", "")),
+}
+"""Where a shipped row's ``off`` is looked up when upstream has no row under our id: ``(provider, id prefix)``.
+
+Evidence only. :func:`plan_catalog` adds nothing from these, so the reasoning
+behind :data:`UPSTREAM_IDS` (overlap measures the catalog, not the provider)
+is untouched: the question here is not which models a provider sells, but
+whether a model we already sell takes ``reasoning.effort: "none"``, and that is
+the model's. Only a Responses row reaches the lookup (:func:`sends_none_for_off`),
+and on both providers that row is an OpenAI model:
+
+- ``azure-openai-responses``: models.dev's ``azure`` lists ``o1``, ``o3``,
+  ``o3-mini`` and ``o4-mini`` with ``low``, ``medium`` and ``high``, as its
+  ``openai`` does (fetched 2026-10-26); ``o1-pro`` and ``o3-pro`` are only under
+  ``openai``. pi copies these rows from its OpenAI rows and gives them no map
+  (pi.dev, 2026-10-26), which sends ``none``: a divergence.
+- ``cloudflare-ai-gateway``: models.dev keys the gateway by the upstream it
+  fronts, so our ``o3`` is its ``openai/o3`` — the prefix pi strips
+  (``generate-models.ts:1985-2002`` at ``pi@b84d5d1bc``), and where pi.dev's own
+  ``o3`` takes ``off: null``. ``o1`` and ``o3-pro`` are only under ``openai``.
+"""
+
+
+def sends_none_for_off(row: Row) -> bool:
+    """True when the adapter sends ``effort: "none"`` for off because the map has no ``off`` key.
+
+    The Responses APIs (``model.thinkingLevelMap?.off ?? "none"``,
+    ``openai_responses.py`` and ``openai_codex_responses.py``, both of which
+    leave GitHub Copilot out) and the ``openrouter`` thinking format of Chat
+    Completions (``openai_completions.py``, for any provider). This build has
+    no ``azure-openai-responses`` adapter (ADR-0254), so its rows are filled for
+    when it has one, as pi's wire would send them. An OpenAI-format Chat
+    Completions row sends nothing for an absent ``off``, and every other wire
+    switches reasoning off its own way, so none of them can fail as #507 did.
+    """
+
+    if row["api"] in _DIRECT_EFFORT_APIS:
+        return row.get("provider") != "github-copilot"
+    if row["api"] != "openai-completions":
+        return False
+    return _merged_compat(row).thinking_format == "openrouter"
+
+
+def _sends_off_string(row: Row) -> bool:
+    """True when an ``off`` string in the map goes on the wire: :func:`sends_none_for_off`'s wires,
+    and OpenAI-format Chat Completions with effort support, which sends it as ``reasoning_effort``."""
+
+    return sends_none_for_off(row) or (row["api"] == "openai-completions" and sends_level_name(row))
+
+
+def off_evidence_row(provider: str, model_id: str, upstream: dict[str, Any]) -> Row | None:
+    """The models.dev row whose ``reasoning_options`` say whether ``provider``/``model_id`` takes ``none``.
+
+    Our own provider's row under :data:`UPSTREAM_IDS` when there is one, then
+    the first of :data:`OFF_EVIDENCE_IDS` that lists effort values.
+    """
+
+    found = upstream_models_for(provider, upstream).get(model_id)
+    if found is not None:
+        return found
+    for upstream_id, prefix in OFF_EVIDENCE_IDS.get(provider, ()):
+        candidate = ((upstream.get(upstream_id) or {}).get("models") or {}).get(prefix + model_id)
+        if _models_dev_effort_values(candidate):
+            return candidate
+    return None
+
+
+def plan_off_fills(
+    local: Catalog, upstream: dict[str, Any], openrouter: dict[str, Row] | None
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """``(fills, conflicts)``: shipped rows whose ``off`` upstream says cannot be ``none``.
+
+    #507. A row whose map has no ``off`` key sends ``effort: "none"`` for off
+    (:func:`sends_none_for_off`), and a model that takes no ``none`` answers
+    400 — MEASURED on OpenRouter's mandatory-reasoning endpoints, "Reasoning is
+    mandatory for this endpoint and cannot be disabled", and on OpenAI's own
+    API (#506). ``off: null`` omits the field instead, and the request runs at
+    the model's default. The evidence is the one a new row's map comes from,
+    in the same order (:func:`derive_thinking_level_map`): OpenRouter's
+    ``reasoning.mandatory`` for an OpenRouter row, models.dev's effort list
+    without ``none`` for a row whose wire sends the level's name. Of that map
+    only ``off`` is taken. The other levels a shipped row offers are
+    ``main``'s curation (ADR-0264 §7 Q2), not this issue's.
+
+    A fill is ``off`` written into a map that has no ``off`` — a key that does
+    not exist, so the additive contract holds. A row whose ``off`` string goes
+    on the wire (:func:`_sends_off_string`) and upstream contradicts is a
+    conflict: reported for a hand correction, never overwritten.
+
+    Only ``off`` is filled, so a level the harness clamps — a launch with no
+    level, a resumed off session — lands on ``minimal``, which the o-series
+    refuses too, whether the evidence says so (models.dev's lists) or says
+    nothing past ``mandatory`` (OpenRouter's). MEASURED: OpenRouter's
+    ``openai/o3`` with no ``--thinking`` answered 400 "Unsupported value:
+    'minimal'". Fitting the clamp to the lowest level a model takes is #397's
+    (ADR-0264 §10, 2026-10-26).
+    """
+
+    fills: list[tuple[str, str, str]] = []
+    conflicts: list[tuple[str, str, str]] = []
+    for provider, local_models in local.items():
+        for model_id, row in local_models.items():
+            if not row.get("reasoning") or not _sends_off_string(row):
+                continue
+            mapped, source = derive_thinking_level_map(
+                provider,
+                row,
+                off_evidence_row(provider, model_id, upstream),
+                (openrouter or {}).get(model_id),
+            )
+            if mapped is None or "off" not in mapped or mapped["off"] is not None:
+                continue
+            current = row.get("thinkingLevelMap") or {}
+            if "off" not in current:
+                if sends_none_for_off(row):
+                    fills.append((provider, model_id, source))
+            elif current["off"] is not None:
+                conflicts.append((provider, model_id, source))
+    return fills, conflicts
+
+
+def fill_off(local: Catalog, fills: list[tuple[str, str, str]]) -> Catalog:
+    """``local`` with ``off: null`` written into each fill's map — never over an ``off`` that exists.
+
+    ``off`` goes first in the map, where pi's maps carry it; a row with no map
+    gets one right after ``reasoning``, where the rows that came from pi carry
+    theirs, and a ``"thinkingLevelMap": null`` is replaced where it stands. Row
+    and provider order are untouched (``cycle_model``, :func:`merge`).
+    """
+
+    filled: Catalog = {provider: dict(rows) for provider, rows in local.items()}
+    for provider, model_id, _source in fills:
+        row = filled[provider][model_id]
+        current = row.get("thinkingLevelMap")
+        assert "off" not in (current or {}), f"would overwrite {provider}/{model_id}'s off"
+        mapped = {"off": None, **(current or {})}
+        if "thinkingLevelMap" in row:
+            filled[provider][model_id] = {**row, "thinkingLevelMap": mapped}
+            continue
+        rebuilt: Row = {}
+        for key, value in row.items():
+            rebuilt[key] = value
+            if key == "reasoning":
+                rebuilt["thinkingLevelMap"] = mapped
+        rebuilt.setdefault("thinkingLevelMap", mapped)
+        filled[provider][model_id] = rebuilt
+    return filled
+
+
 # ── planning ───────────────────────────────────────────────────────────
 
 
 class CatalogPlan:
-    """What a refresh would add, what it skipped and why, and each new row's map source.
+    """What a refresh would add, what it skipped and why, each new row's map source, and the off fills.
 
     A plain class, not a dataclass: the tests load this file with
     ``spec_from_file_location`` without registering it in ``sys.modules``, and
@@ -436,6 +600,8 @@ class CatalogPlan:
         self.additions: Catalog = {}
         self.skips: list[tuple[str, str, str]] = []
         self.map_sources: dict[tuple[str, str], str] = {}
+        self.off_fills: list[tuple[str, str, str]] = []
+        self.off_conflicts: list[tuple[str, str, str]] = []
 
 
 def plan_catalog(
@@ -447,14 +613,18 @@ def plan_catalog(
 
     ``openrouter`` is OpenRouter's list by id (:func:`openrouter_by_id`); without
     it rule 2 has nothing to read and new OpenRouter rows get no map, which is
-    why ``--apply`` refuses to run without it.
+    why ``--apply`` refuses to run without it. The off fills and conflicts of
+    the rows ``local`` already has are :func:`plan_off_fills`'s; nothing here
+    applies them.
 
     Providers we ship that upstream does not have — ``openai-codex``,
     ``azure-openai-responses``, ``fireworks``, ``together``,
     ``vercel-ai-gateway``, ``ant-ling``, ``kimi-coding``, ``zai-coding-cn`` —
-    are untouched and not reported: upstream has nothing to say about them, and
-    a provider we do NOT ship is not a gap this script is allowed to decide to
-    fill. Adding one means adding auth, an env var, and a resolver default.
+    get no addition and none is reported: upstream has nothing to say about
+    them (``azure-openai-responses``'s off fills read other providers' rows,
+    :data:`OFF_EVIDENCE_IDS`), and a provider we do NOT ship is not a gap this
+    script is allowed to decide to fill. Adding one means adding auth, an env
+    var, and a resolver default.
     """
 
     result = CatalogPlan()
@@ -485,6 +655,7 @@ def plan_catalog(
                 row["thinkingLevelMap"] = mapped
             result.map_sources[(provider, model_id)] = source
             result.additions.setdefault(provider, {})[model_id] = row
+    result.off_fills, result.off_conflicts = plan_off_fills(local, upstream, openrouter)
     return result
 
 
@@ -647,12 +818,19 @@ def main(argv: list[str] | None = None) -> int:
         "--fetch", action="store_true", help=f"download {UPSTREAM_URL} and {OPENROUTER_URL}"
     )
     parser.add_argument("--apply", action="store_true", help="write the catalog")
+    parser.add_argument(
+        "--off-only",
+        action="store_true",
+        help="with --apply, write the off fills of the rows we ship and no addition (#507)",
+    )
     parser.add_argument("--audit", action="store_true", help="score the transport rule")
     parser.add_argument("--show-skips", action="store_true")
     parser.add_argument(
         "--strict", action="store_true", help="audit without the release-date cutoff"
     )
     args = parser.parse_args(argv)
+    if args.off_only and not args.apply:
+        parser.error("--off-only modifies --apply")
 
     local: Catalog = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
     upstream, openrouter = _load_upstream(args)
@@ -680,7 +858,8 @@ def main(argv: list[str] | None = None) -> int:
     total = sum(len(rows) for rows in additions.values())
     for provider, rows in sorted(additions.items(), key=lambda kv: -len(kv[1])):
         print(f"  + {provider:26} {len(rows):>4}  {', '.join(sorted(rows))[:96]}")
-    print(f"{total} model(s) to add, {len(skips)} skipped")
+    unwritten = " (not written: --off-only)" if args.off_only else ""
+    print(f"{total} model(s) to add, {len(skips)} skipped{unwritten}")
     sources: dict[str, int] = {}
     for source in planned.map_sources.values():
         sources[source] = sources.get(source, 0) + 1
@@ -691,9 +870,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.show_skips:
         for provider, model_id, reason in sorted(skips):
             print(f"  - {provider}/{model_id}: {reason}")
+    print(f"{len(planned.off_fills)} shipped row(s) to take off: null (#507)")
+    for provider, model_id, source in planned.off_fills:
+        print(f"  ~ {provider}/{model_id}: {source}")
+    for provider, model_id, source in planned.off_conflicts:
+        print(f"  ! {provider}/{model_id}: an off string {source} says it cannot take; fix by hand")
 
     if args.apply:
-        write_catalog(merge(local, additions))
+        filled = fill_off(local, planned.off_fills)
+        write_catalog(filled if args.off_only else merge(filled, additions), CATALOG_PATH)
         print(f"wrote {CATALOG_PATH}")
     return 0
 

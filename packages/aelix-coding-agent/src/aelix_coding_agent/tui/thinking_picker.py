@@ -56,10 +56,10 @@ def thinking_level_display(model: Any, level: str) -> str:
 
     - ``off`` — ``harness/core.py`` folds ``off``/unset to ``reasoning=None``
       before an adapter sees it, so ``off`` never reaches one as a tier and there
-      is no true value to show. (The cost, measured: on the 118 reasoning rows
+      is no true value to show. (The cost, measured: on the 210 reasoning rows
       that do not support ``off`` — 103 before #433 gave the Fable mirrors pi's
-      ``off: null`` — the request then carries no reasoning field at all and the
-      model thinks at its own default.)
+      ``off: null``, 118 before #507 gave 92 more theirs — the request then
+      carries no reasoning field at all and the model thinks at its own default.)
     - a case-only rename — Google spells its enum ``HIGH``/``LOW``/``MINIMAL``;
       that is the same tier, so a suffix would be noise on 8 rows (#433's count).
     - a non-``str`` mapping — ``_anthropic_transforms.py`` guards on

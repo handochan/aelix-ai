@@ -171,7 +171,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (Accepted 2026-10-20 by the owner; rewritten 2026-10-15 on the owner's decision, revised after
   review (r5-r11), the owner's decisions of 2026-10-16 to 2026-10-19 recorded; amended 2026-10-21,
   §10: #172's B4 as measured - map values in both cases, `openrouter/auto`'s kept cost, the first
-  publication over the 100-id cap; #172, #434, #450). A
+  publication over the 100-id cap; amended 2026-10-26, §10: #507 - a shipped row whose map has no
+  `off` takes `off: null` where the evidence a new row's map comes from says the model takes no
+  `none`, written by the fold-back and reported, not applied, by the publish job; #172, #434,
+  #450, #507). A
   scheduled job in its own repository, `handochan/aelix-catalog`, with no stored secret, runs
   aelix's own generator (ADR-0232) on the newest `main` commit whose `ci.yml` push run passed, and
   publishes content-addressed revisions to that repository's Pages only when their content changes.

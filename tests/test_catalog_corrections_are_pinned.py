@@ -232,11 +232,18 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     The pin is equality with the sibling, not the literal map: if the
     predecessor's map is corrected later, the flagship must move with it.
 
-    One key may differ, and only one way (#433): pi gives ``gpt-6`` rows a
+    Two keys may differ, each only one way. #433: pi gives ``gpt-6`` rows a
     ``max`` level its ``gpt-5.5`` predecessor does not have
     (``supportsOpenAiMax``, ``generate-models.ts:600-607`` at
     ``pi@fdce48eb4``), so on those rows the flagship carries
-    ``"max": "max"`` on top of the copied map.
+    ``"max": "max"`` on top of the copied map. #507: the flagship may hide
+    ``off`` where its predecessor sends ``none``. ``gpt-6-astra`` takes no
+    ``none`` — models.dev's effort list for it does not list ``none``,
+    OpenRouter marks it mandatory, and pi's rule says "GPT-6 Astra and GPT-6.1
+    Sol reject reasoning.effort "none"" (``generate-models.ts:1080`` at
+    ``pi@b84d5d1bc``). On OpenRouter the missing key was a 400 (MEASURED on
+    ``0dee85d0``); on ``openai`` the copied ``"off": "none"`` sent the same
+    value, unmeasured there (the test key has no credits).
     """
 
     row = _row(provider, model_id)
@@ -245,6 +252,7 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
         f"{provider}/{model_id} lost its thinkingLevelMap — a refresh reverted it"
     )
     flagship = dict(row.thinking_level_map)
+    predecessor = dict(_row(provider, sibling).thinking_level_map or {})
     pi_gives_max = "gpt-6" in model_id and row.api in (
         "openai-responses",
         "azure-openai-responses",
@@ -253,7 +261,10 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     )
     if pi_gives_max:
         assert flagship.pop("max") == "max", f"{provider}/{model_id} lost pi's max level"
-    assert flagship == _row(provider, sibling).thinking_level_map
+    if "off" in flagship and flagship["off"] is None and predecessor.get("off", "none") is not None:
+        del flagship["off"]
+        predecessor.pop("off", None)
+    assert flagship == predecessor
 
 
 def test_sonnet_5_does_not_declare_thinking_off_unsupported() -> None:
