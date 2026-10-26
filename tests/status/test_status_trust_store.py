@@ -116,6 +116,37 @@ async def test_json_carries_the_whole_report_for_scripts(
     assert "openssl_version" in trust
 
 
+async def test_text_names_the_same_certifi_bundle_as_the_running_process_report() -> None:
+    """#573: the human-facing diagnostic must identify Aelix's bundle too."""
+
+    report = await _report()
+    trust = report["trust_store"]
+    assert isinstance(trust, dict)
+    assert trust["certifi_exists"] is True
+    stream = io.StringIO()
+    _render_text(report, stream)
+    text = stream.getvalue()
+
+    assert "certifi bundle" in text
+    assert trust["certifi_path"] in text
+
+
+@pytest.mark.parametrize("path", [None, "/missing/cacert.pem"], ids=["unavailable", "missing"])
+async def test_a_certifi_bundle_that_cannot_be_copied_is_not_reported_as_usable(
+    path: str | None,
+) -> None:
+    report = await _report()
+    trust = report["trust_store"]
+    assert isinstance(trust, dict)
+    trust["certifi_path"] = path
+    trust["certifi_exists"] = False
+    stream = io.StringIO()
+    _render_text(report, stream)
+    row = next(line for line in stream.getvalue().splitlines() if "certifi bundle" in line)
+
+    assert ("MISSING" if path else "not available") in row
+
+
 @pytest.mark.asyncio
 async def test_capath_that_exists_but_holds_no_hashed_certs_is_called_out() -> None:
     """"exists" and "usable" are different claims, and the render must not merge them.
@@ -163,6 +194,8 @@ async def test_environment_supplied_paths_are_neutered_before_they_are_printed()
     trust["capath_exists"] = True
     trust["capath_has_hashed_certs"] = True
     trust["env_overrides"] = {"SSL_CERT_FILE": hostile}
+    trust["certifi_path"] = hostile
+    trust["certifi_exists"] = True
     trust["reason"] = f"something failed {hostile}"
 
     stream = io.StringIO()

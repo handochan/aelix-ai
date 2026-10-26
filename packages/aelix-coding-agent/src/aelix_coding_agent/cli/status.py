@@ -109,7 +109,8 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
     Printed for every ``aelix status``, not behind a flag: someone whose provider
     requests are dying on a corporate network does not know to ask for it, and
     "which trust store is live" is the first question that separates a proxy
-    problem from an auth problem. It costs four lines when everything is fine.
+    problem from an auth problem. The certifi row identifies the bundle this
+    process can copy even when the user's PATH Python has no certifi (#573).
     """
 
     # Every value below comes from the environment or from OpenSSL, i.e. from
@@ -154,6 +155,13 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
         rows.append(("capath", f"{clean(capath)}{note}"))
     else:
         rows.append(("capath", "— (OpenSSL resolved none)"))
+
+    certifi_path = trust.get("certifi_path")
+    if certifi_path:
+        note = "" if trust.get("certifi_exists") else "  ← MISSING"
+        rows.append(("certifi bundle", clean(certifi_path) + note))
+    else:
+        rows.append(("certifi bundle", "— (not available in this Aelix installation)"))
 
     if trust["ca_count"] is not None:
         rows.append(("CAs loaded", str(trust["ca_count"])))

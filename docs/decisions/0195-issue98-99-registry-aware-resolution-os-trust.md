@@ -506,10 +506,36 @@ says to make a copy (both copies).
 
 **Known limitations.**
 
-- The line still names `python -m certifi`, which assumes a `python` with
-  certifi on the user's PATH. On macOS 26.6 a stock PATH has no `python`, and
-  `/usr/bin/python3 -m certifi` answers `No module named certifi`; aelix's own
-  interpreter has certifi. Not changed here.
 - The macOS and Windows path is still a placeholder the user creates; the line
   now says what goes in it, not the command that makes it (the guide has both
   shells' commands).
+
+### 2026-10-26: #573 — the copy comes from the running Aelix installation
+
+The remedy now names the certifi bundle shown by `aelix status`. The plain
+report exposes the existing `trust_store.certifi_path` and `certifi_exists`
+facts, with the same terminal sanitization used for other paths; missing or
+unavailable bundles are explicitly labelled. JSON and trust policy are unchanged.
+The remedy still has five lines and its longest last line is 179 characters,
+under the TUI's 200-character limit. It does not embed a variable-length path.
+
+The POSIX guide has the user paste that reported source path into a quoted
+variable. PowerShell obtains it through `aelix status --json --no-extensions`
+and its built-in `ConvertFrom-Json`. Both recipes create a separate bundle,
+append the corporate CA and point `SSL_CERT_FILE` at the copy; neither calls
+the user's `python`, modifies certifi's own file or disables verification.
+
+`tests/providers/test_tls_bundle_recipe_573.py` drives the real CLI and guide
+recipe through the platform shell with unusable PATH Python commands. A request
+is refused before the copy and reaches the private-CA TLS server after it;
+the server's identifiable API error proves the handshake, not a real model
+response. The copied certificate fingerprints retain the original roots plus
+the corporate root, and certifi's own file hashes the same. Windows runs both
+Windows PowerShell and PowerShell 7; POSIX runs sh. Status tests also pin the
+actual bundle path, missing-path labels and sanitization.
+
+The former PATH-Python limitation is resolved by this change. The earlier #556
+live recipe had put the worktree's Python on PATH, which hid that limitation;
+it is not evidence that the old command worked for an installed user. Pi's
+separate Node CA mechanism remains a reference: proposed [TLS guidance PR #3153](https://github.com/earendil-works/pi/pull/3153)
+is closed **unmerged**; its insecure fallback is not adopted here.

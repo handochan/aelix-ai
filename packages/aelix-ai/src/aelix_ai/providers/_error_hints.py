@@ -242,11 +242,13 @@ def _tls_cert_file_escape() -> str:
     ``uv pip install --reinstall certifi``). Where the example names
     ``ca-bundle.pem`` the line says what that file is, the guide's recipe; on
     Linux, whose example is the system's own bundle, the copy is the
-    alternative. Either way the remedy stays five lines.
+    alternative. #573 obtains the source from ``aelix status``, which reports
+    this process's certifi path even when no user-PATH Python has certifi.
+    Either way the remedy stays five lines.
     """
 
     copy = (
-        "a copy of the bundle `python -m certifi` prints with the corporate CA "
+        "a copy of the certifi bundle shown by `aelix status` with the corporate CA "
         "appended (not certifi's own file, which an upgrade silently reverts), "
         "then retry."
     )

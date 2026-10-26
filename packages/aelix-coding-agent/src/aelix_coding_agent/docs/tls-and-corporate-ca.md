@@ -133,13 +133,23 @@ issuer nothing trusts). The message begins:
    ```
 
    If your platform has no such combined bundle — macOS and Windows keep none
-   that a system-wide install updates — make a **copy** of the bundle
-   `python -m certifi` prints with the corporate CA appended, and point at
-   the copy:
+   that a system-wide install updates — make a **copy** of Aelix's certifi
+   bundle with the corporate CA appended, and point at the copy. Run
+   `aelix status --no-extensions` and find the **certifi bundle** row. It is
+   the bundle in the Aelix process's environment, including a `uv tool`
+   installation; it does not require a `python` with certifi on your PATH.
+   If the row says MISSING or not available, repair that installation first.
+   The full path is also `trust_store.certifi_path` in
+   `aelix status --json --no-extensions` if the text path was shortened.
+
+   In the following POSIX recipe, replace `/full/path/from/aelix-status/cacert.pem`
+   with that full path before running it. `corp-root.pem` is your corporate CA:
 
    ```sh
-   cat "$(python -m certifi)" corp-root.pem > ~/.aelix/ca-bundle.pem
-   export SSL_CERT_FILE=~/.aelix/ca-bundle.pem
+   certifi_bundle='/full/path/from/aelix-status/cacert.pem'
+   mkdir -p "$HOME/.aelix"
+   cat "$certifi_bundle" corp-root.pem > "$HOME/.aelix/ca-bundle.pem"
+   export SSL_CERT_FILE="$HOME/.aelix/ca-bundle.pem"
    ```
 
    In PowerShell on Windows, make the copy with `Set-Content -Encoding ascii`
@@ -148,13 +158,16 @@ issuer nothing trusts). The message begins:
    (`no certificate or crl found`).
 
    ```powershell
-   Get-Content (python -m certifi), corp-root.pem | Set-Content -Encoding ascii "$HOME\.aelix\ca-bundle.pem"
+   $aelixCertifiBundle = (aelix status --json --no-extensions | ConvertFrom-Json).trust_store.certifi_path
+   New-Item -ItemType Directory -Force "$HOME\.aelix" | Out-Null
+   Get-Content -LiteralPath $aelixCertifiBundle, 'corp-root.pem' | Set-Content -Encoding ascii "$HOME\.aelix\ca-bundle.pem"
    $env:SSL_CERT_FILE = "$HOME\.aelix\ca-bundle.pem"
    ```
 
-   This PowerShell recipe has not been run on Windows yet; it was checked
-   only with PowerShell 7 on macOS, where the bundle it wrote loaded with the
-   corporate CA in it.
+   The recipe checks exercise the native shell on each CI platform, including
+   Windows PowerShell and PowerShell 7 on Windows. They verify that the copy
+   retains the original roots plus the corporate CA, leaves certifi's file
+   unchanged, and lets a request reach the corporate-CA TLS server.
 
    The advice `aelix` prints carries the line for the platform it runs on:
    the Debian/Ubuntu one on Linux, the `~/.aelix/ca-bundle.pem` one on macOS

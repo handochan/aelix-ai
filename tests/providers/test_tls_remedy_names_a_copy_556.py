@@ -16,6 +16,8 @@ Now the line says so. Where the printed example names ``ca-bundle.pem`` (macOS,
 Windows, every system but Linux) it says what that file is - the guide's copy;
 on Linux, whose example is the system's own bundle, the copy is the
 alternative. The remedy keeps #411's per-platform examples and its five lines.
+Since #573, the source is the running Aelix process's ``aelix status`` bundle,
+not a certifi installation found through the user's PATH Python.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ GUIDES = (
 )
 
 _COPY = (
-    "a copy of the bundle `python -m certifi` prints with the corporate CA appended "
+    "a copy of the certifi bundle shown by `aelix status` with the corporate CA appended "
     "(not certifi's own file, which an upgrade silently reverts), then retry."
 )
 
@@ -69,17 +71,17 @@ def test_the_last_line_names_a_copy_never_certifi_s_own_file(
     platform: str, example: str, last: str, os_store: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The sentence is pinned, and so is what makes it right: it names a copy,
-    warns off certifi's own file, and no longer says to append to the bundle
-    ``python -m certifi`` prints. RED on 27fa21c5 for all eight."""
+    warns off certifi's own file, and points to Aelix's own diagnostic rather
+    than a PATH Python. RED on 27fa21c5 and the pre-#573 wording."""
 
     lines = _ca_remedy(platform, os_store, monkeypatch)
 
     assert lines[-1] == last, "\n".join(lines)
-    assert "a copy of the bundle `python -m certifi` prints" in lines[-1]
+    assert "a copy of the certifi bundle shown by `aelix status`" in lines[-1]
     assert "not certifi's own file" in lines[-1]
     text = "\n".join(lines)
     assert "append the corporate CA to the bundle" not in text, text
-    assert "printed by `python -m certifi`" not in text, text
+    assert "python -m certifi" not in text, text
 
 
 @pytest.mark.parametrize("os_store", [True, False], ids=["os-store", "certifi"])
@@ -109,9 +111,9 @@ def test_the_last_line_fits_the_example_above_it(
 def _recipe_targets(guide: str) -> dict[str, str]:
     """The file each of the guide's two copy recipes writes, by shell."""
 
-    sh = re.search(r'cat "\$\(python -m certifi\)" corp-root\.pem > (\S+)\n', guide)
+    sh = re.search(r'cat "\$certifi_bundle" corp-root\.pem > (.+)\n', guide)
     ps = re.search(
-        r"Get-Content \(python -m certifi\), corp-root\.pem \| Set-Content -Encoding ascii (\S+)\n", guide
+        r"Get-Content -LiteralPath \$aelixCertifiBundle, 'corp-root\.pem' \| Set-Content -Encoding ascii (.+)\n", guide
     )
     assert sh and ps, "the guide's copy recipes are gone"
     return {"sh": sh.group(1), "powershell": ps.group(1)}
@@ -128,12 +130,12 @@ def test_the_guide_makes_the_copy_the_remedy_names(guide: Path) -> None:
     flat = " ".join(text.split())
 
     targets = _recipe_targets(text)
-    assert targets["sh"] == "~/.aelix/ca-bundle.pem", targets
+    assert targets["sh"] == '"$HOME/.aelix/ca-bundle.pem"', targets
     assert targets["powershell"] == '"$HOME\\.aelix\\ca-bundle.pem"', targets
     by_platform = {p: e for p, e, _ in _PLATFORMS}
     assert by_platform["darwin"].endswith('"$HOME/.aelix/ca-bundle.pem"')  # = ~/.aelix/ca-bundle.pem
     assert by_platform["win32"].endswith(targets["powershell"])
 
-    assert "make a **copy** of the bundle `python -m certifi` prints with the corporate CA appended" in flat
+    assert "make a **copy** of Aelix\'s certifi bundle with the corporate CA appended" in flat
     assert "append the corporate CA to the one" not in flat
     assert "Do not edit `certifi`'s own file in place" in flat
