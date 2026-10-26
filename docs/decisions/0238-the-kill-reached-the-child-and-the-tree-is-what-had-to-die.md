@@ -2093,3 +2093,23 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `tests/asyncio_exit_wait.py` gives one test gh-119710's `wait()`, and the two
   cases above, a new timed-out hook whose shell dies on the soft signal, and
   `tests/process_tree/test_wait_released.py` run under it.
+
+### 2026-10-26: #522's loaded-loop delivery case requires a confirmed run
+
+The owner's 2026-10-23 decision leaves the product's reader, drain bounds and
+reporting unchanged. The natural-load completeness case now treats a command
+timeout or `ExecExitResult.output_unconfirmed` as a failed premise and retries
+within its existing three-attempt budget. A flagged result is not evidence of
+complete delivery even when all bytes arrived: the flag means not proven, not
+necessarily lost. Every attempt reports its flags, exit code, byte counts and
+elapsed time. If all three are flagged, the case fails by name; it never passes
+or skips without measuring a confirmed run.
+
+A confirmed result still has to exit successfully and match the reference
+byte for byte on its first attempt. The deterministic verdict cases in
+`tests/tools/test_bash_loaded_loop_premise.py` drive reported tail loss, complete
+but unconfirmed output, timeout, both flags, silent tail loss, equal-length
+corruption, a bad exit and exhausted attempts through that same procedure.
+The real-child case keeps its 2 MiB writer, busy loop and 20-second command
+timeout. Moving POSIX reading onto the event loop remains #592, outside this
+test-only change.

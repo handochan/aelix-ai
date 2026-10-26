@@ -907,6 +907,8 @@ def test_the_gate_holds_the_first_timed_wait_until_the_tree_has_started(
 #: and, on its deadline arm, a root that had not exited by the caller's
 #: deadline (#446, :func:`_why_the_root_timed_out` and
 #: :func:`_the_timeout_leg_left`).
+#: Case 9 also retries reported incomplete output or a command timeout (#522),
+#: but still fails immediately on any unreported loss or other bad result.
 ATTEMPTS = 3
 
 
@@ -3766,6 +3768,15 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     6.7 s or less, and four of the six no-load py3.11/3.12 medians did not
     (6.99-7.68 s). The time the exec took is in the warning below, so a
     ``-q`` log says how near it a run came.
+
+    #522 (owner's decision, 2026-10-23): a byte-for-byte comparison needs a
+    command that finished with confirmed output. A reported hard-cap end
+    (``output_unconfirmed``), even with every byte delivered, or a command
+    timeout fails that premise and runs again, up to :data:`ATTEMPTS`.
+    Exhausting those attempts FAILS by name; it never skips or passes without
+    a confirmed run. An unreported loss, changed byte or bad exit still fails
+    on the FIRST confirmed attempt. Neither the pressure nor the timeout nor
+    the product's drain bounds change here; the POSIX reader work is #592.
     """
 
     chatty = _script(tmp_path, "chatty.py", CHATTY)
@@ -3779,36 +3790,56 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
         check=False,
         timeout=DEADLINE * 4,
     )
+    assert reference.returncode == 0, "the reference command did not succeed"
     assert len(reference.stdout) >= 2 * 1024 * 1024, "the reference did not produce 2 MiB"
 
-    stop = asyncio.Event()
+    premise_failures: list[str] = []
+    for attempt in range(1, ATTEMPTS + 1):
+        stop = asyncio.Event()
 
-    async def _busy() -> None:
-        # A loaded loop is the condition under which the losses were measured:
-        # a callback queued behind this task's ticks is what the snapshot cuts.
-        while not stop.is_set():
-            sum(range(2000))
-            await asyncio.sleep(0)
+        async def _busy(stop: asyncio.Event) -> None:
+            # Keep the natural GIL pressure that exposed #260 and #522.
+            while not stop.is_set():
+                sum(range(2000))
+                await asyncio.sleep(0)
 
-    busy = asyncio.ensure_future(_busy())
-    chunks: list[bytes] = []
-    task = _exec_task(command, tmp_path, chunks, timeout=DEADLINE * 4)
-    started = time.monotonic()
-    try:
-        result = await _bounded(task, DEADLINE * 4 + 5.0, "delivery completeness")
-    finally:
-        elapsed = time.monotonic() - started
-        stop.set()
-        await busy
+        busy = asyncio.ensure_future(_busy(stop))
+        chunks: list[bytes] = []
+        started = time.monotonic()
+        try:
+            task = _exec_task(command, tmp_path, chunks, timeout=DEADLINE * 4)
+            result = await _bounded(task, DEADLINE * 4 + 5.0, "delivery completeness")
+        finally:
+            elapsed = time.monotonic() - started
+            stop.set()
+            await busy
 
-    warnings.warn(
-        f"delivery under a loaded loop: exec {elapsed:.3f}s of {DEADLINE * 4:.0f}s, "
-        f"{len(chunks)} chunks, on {sys.platform}",
-        stacklevel=1,
+        delivered = b"".join(chunks)
+        measurement = (
+            f"delivery under a loaded loop: attempt {attempt}, exec {elapsed:.3f}s of "
+            f"{DEADLINE * 4:.0f}s, {len(chunks)} chunks, {len(delivered)}/{len(reference.stdout)} "
+            f"bytes, exit_code={result.exit_code}, timed_out={result.timed_out}, "
+            f"output_unconfirmed={result.output_unconfirmed}, on {sys.platform}"
+        )
+        warnings.warn(measurement, stacklevel=1)
+        if result.timed_out or result.output_unconfirmed:
+            reason = (
+                f"attempt {attempt}: THE PREMISE FAILED, NOT THE CASE — the command timed out "
+                f"or its output was not confirmed; {measurement}; the case runs again"
+            )
+            premise_failures.append(reason)
+            warnings.warn(reason, stacklevel=1)
+            continue
+
+        assert result.exit_code == 0
+        assert len(delivered) == len(reference.stdout)
+        assert delivered == reference.stdout
+        return
+
+    pytest.fail(
+        f"delivery completeness: every one of {ATTEMPTS} attempts timed out or had unconfirmed "
+        f"output, so the case never measured confirmed delivery: " + " | ".join(premise_failures)
     )
-    assert result.exit_code == 0
-    assert len(b"".join(chunks)) == len(reference.stdout)
-    assert b"".join(chunks) == reference.stdout
 
 
 # === 10: a cancel that lands in the drain ===================================
