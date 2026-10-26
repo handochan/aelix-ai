@@ -4,11 +4,13 @@ Status: Accepted (2026-10-20, approved by the owner as a whole); rewritten 2026-
 owner's decision (§2), revised after its reviews (r5-r11) and on the owner's decisions of
 2026-10-16, 2026-10-17 and 2026-10-19 (§7). §8 is what the implementation owes. Amended 2026-10-21
 (§10: #172's B4, what the parser and the publisher measured against the shipped catalog) and
-2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from).
+2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from; #397,
+the levels under a hidden `off` a model refuses).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
-overlay, the triggers), #450 (OpenRouter's key-scoped narrowing), #507 (a shipped row's `off`, §10)
+overlay, the triggers), #450 (OpenRouter's key-scoped narrowing), #507 (a shipped row's `off`, §10),
+#397 (the floor under it, §10)
 Relates: ADR-0065 and ADR-0140 (the registry and `models.json`), ADR-0189 and ADR-0192 (Ed25519
 sidecars; the marketplace's progressive signature rule), ADR-0203 (what a cwd `.env` may carry),
 ADR-0232 (transport is inherited, never invented; the generator and its ladder), ADR-0235 (pi is a
@@ -1557,3 +1559,54 @@ Found by the independent review (2026-10-26, `.omc/probes/507/review-claude/`), 
   no longer offered on them and costs the model's default reasoning. Kept, as the owner's
   2026-10-21 decision on #397 follows pi; a follow-up if aliases should diverge.
 - The rows the picker offers no `off` on went from 118 to 210 (`thinking_picker.py`).
+
+### 2026-10-26: #397 - under a hidden `off`, the levels a model refuses are hidden too
+
+A row that hides `off` sends a fitted `off` (a launch with no level, a resumed or carried `off`,
+`/agents use`, RPC `set_model`; ADR-0239 decision 2) as the lowest level its map offers, and a map
+that names nothing below `high` offers `minimal`. MEASURED on `2cbc126b` (`.omc/probes/397/live/`):
+OpenRouter's `openai/o3` with no `--thinking` answered 400 "Unsupported value: 'minimal' is not
+supported with the 'o3-2025-04-16' model", and so did RPC mode's first prompt (`get_state`:
+`minimal`).
+
+1. **`plan_floor_fills` writes `null` for each level below the lowest one the judging API's
+   effort list names, on shipped rows that hide `off`, where the map has no key for it.** Only
+   rows that hide `off`: elsewhere `off` is the floor. Only the levels below the floor: pi's
+   derived maps hide every level a list leaves out, which here stays `main`'s curation (§7 Q2).
+   Reported for a hand correction and never written: a level under the floor that the map names
+   with a string, and a floor at `xhigh` or `max` the map does not name (those levels exist only
+   where a map names them, so hiding the rest would leave none). The plan runs over the shipped
+   rows after their off fills, so a row whose `off` the same run hides gets its floor in that
+   run; a row the run adds gets it at the next fold-back. `--apply` and `--apply --off-only`
+   write it; the publish job reports it and applies nothing (§4.3), in the off fills' section.
+2. **Whose list counts.** A Responses row's models.dev row (§10's #507 lookups), else the same
+   id under models.dev's `openai`, `azure`, `opencode` (`FLOOR_FALLBACK_IDS`): a Responses row is
+   an OpenAI model, and models.dev's `openai` lists nothing for `gpt-5-codex`, `gpt-5.1-codex*`
+   and `gpt-5.2-codex` while its `azure` and `opencode` list them from `low` (pi #1334: OpenAI
+   refused `minimal` on `gpt-5.3-codex`, its body naming `gpt-5.2`). GitHub Copilot is in: its
+   adapters skip only the off branch, so a fitted `off` reaches them as a level's name (pi maps
+   Copilot's `gpt-5` `minimal` to `low` instead, `generate-models.ts:1090` at `b84d5d1bc`, the
+   rule §6.2 left out; the wire is the same `low`). For OpenRouter, only an `openai/` row whose public list names no
+   efforts, read from models.dev's `openai` (`OPENROUTER_PASSTHROUGH`). OpenRouter's own lists
+   are not read, because MEASURED with `effort: "minimal"`
+   (`.omc/probes/397/minimal-2026-10-26.jsonl`) 61 of the 64 live rows #507 filled answered 200,
+   among them the 32 whose list leaves `minimal` out; only `openai/o3`, `o3-mini` and `o3-pro`
+   refused it, with OpenAI's own error body. A 200 does not show which effort ran there, and pi
+   reads those lists (pi.dev's OpenRouter `openai/o3`, with no list, hides only `off`, so the
+   five OpenRouter rows here go past pi).
+
+MEASURED: 95 levels on 83 rows over `2cbc126b`'s catalog (`minimal` 83, `low` 10, `medium` 2;
+`tests/fixtures/hosted_catalog/floor-397-fills.json`): `azure-openai-responses` 23, `openai` 17,
+`opencode` 16, `cloudflare-ai-gateway` 12, `github-copilot` 10 and OpenRouter's `openai/o1`,
+`o3`, `o3-mini`, `o3-pro`, `o4-mini`. Committed by `--apply --off-only`;
+`tests/test_off_floor_397.py` takes the floor back out, gets it proposed again and the file back
+byte for byte, and a plan over the shipped catalog proposes nothing. After it, OpenRouter's
+`openai/o3` with no `--thinking` answered, RPC `get_state` said `low` and the first prompt
+answered, and the `/thinking` picker lists `low`, `medium`, `high`. Unmeasured: OpenAI's own API
+(no credits), Azure (no adapter), Cloudflare, opencode and Copilot.
+
+Not covered: the `gpt-5.1-chat-latest` and `gpt-5.2-chat-latest` rows on `openai` and
+`azure-openai-responses` hide `off` and no source the rule reads lists their efforts, so a
+fitted `off` still lands on `minimal` there, as before; models.dev's `302ai` (and `orcarouter`
+for `gpt-5.2-chat-latest`) list only `medium`, so `minimal` likely fails there (unmeasured). An explicit `off` is not fitted at launch
+(ADR-0239's #397 amendment).

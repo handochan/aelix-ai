@@ -121,7 +121,12 @@ uv run pytest -q tests/test_catalog_corrections_are_pinned.py tests/test_catalog
   effort list; #507, ADR-0264 §10): `--apply` writes `off: null` into its map,
   because otherwise off is sent as `effort: "none"` and answered 400. A `!` line
   is a shipped `off` string that evidence contradicts; nothing overwrites it, so
-  correct it by hand. `--apply --off-only` writes the `~` fills and no addition.
+  correct it by hand. A `~ <row>: <level>: null` line is a level under a hidden
+  `off` that the judging API's effort list leaves out (#397): without it a
+  fitted `off` lands on a level the model refuses (OpenAI's o-series and
+  `minimal`); a `!` line there says why the floor needs a hand (a level named
+  under it, or a floor the map does not name). `--apply --off-only` writes the
+  `~` fills and no addition.
 - It commits upstream as of now, not exactly what was published, with no
   100-id cap, and it proposes again a row a hold rolled back: the diff review
   is the gate. Drop such a row by hand.

@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -1025,3 +1025,27 @@ to `high`, `m3` not at all); driver and outputs in `.omc/probes/b4-b-live/415/`.
   live level (`xhigh` on m1, to m2 and on to m3: `off`), so an answer of the
   level fitted to the model asked for, read before the switch (`high`), is red
   (`.omc/probes/b4-b-live/r2/415-mutants.out`).
+
+## Amendment 2026-10-26 (#397): where a fitted `off` lands
+
+Decision 2 fits `off` on a model that cannot switch reasoning off to "its lowest level", the first
+level its map offers. A map that names nothing below `high` offers `minimal`, and OpenAI's
+o-series refuses it. MEASURED on `2cbc126b` (`.omc/probes/397/live/`): OpenRouter's `openai/o3`
+with no `--thinking` answered 400 "Unsupported value: 'minimal' is not supported with the
+'o3-2025-04-16' model"; in RPC mode `get_state` said `minimal` and the first prompt failed the
+same way. The fix is the catalog's, not the clamp's: the generator hides the levels below the
+lowest one the judging API's effort list names on rows that hide `off` (ADR-0264 §10,
+2026-10-26), so the same clamp lands on `low` there (`medium` or `high` on the `gpt-5` `-pro`
+rows). After it, the same launch answered and RPC
+`get_state` said `low`; the `/thinking` picker on `openai/o3` lists `low`, `medium`, `high`.
+
+Unchanged, and MEASURED to work on that model: `--thinking off`, a launch profile's
+`thinking: "off"` (`--agent`, `--agent-file`, which become `--thinking`) and RPC
+`set_thinking_level` with `off` are not fitted (the divergence from pi listed above). On the
+OpenAI-family wires the request then carries no reasoning field and the model reasons at its
+default; the Anthropic adapter answers such an `off` with the row's lowest level itself
+(`lowest_thinking_level`), and the Google adapter with its lowest `thinkingLevel`. pi's setter
+would send the lowest level everywhere. In-session `/agents use` does fit the level it applies
+(`agents/service.py`), a profile's `off` included, so there it lands on the floor too. Fitting
+the launch flag as well was considered and not done: it changes a working request into one the
+catalog's floor must get right, on rows (OpenAI's own API, Copilot) the test key cannot reach.

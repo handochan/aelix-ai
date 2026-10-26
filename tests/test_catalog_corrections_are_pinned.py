@@ -197,6 +197,10 @@ def test_the_anthropic_flagship_keeps_its_full_context() -> None:
 # === thinkingLevelMap copied by hand onto the 2026-09-08 refresh's flagships ==
 
 
+_FLOOR_397: dict[tuple[str, str], tuple[str, ...]] = {("openai", "gpt-6-astra"): ("minimal",)}
+"""The levels #397's floor hides on a flagship and not on its predecessor."""
+
+
 @pytest.mark.parametrize(
     ("provider", "model_id", "sibling"),
     [
@@ -243,7 +247,10 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     Sol reject reasoning.effort "none"" (``generate-models.ts:1080`` at
     ``pi@b84d5d1bc``). On OpenRouter the missing key was a 400 (MEASURED on
     ``0dee85d0``); on ``openai`` the copied ``"off": "none"`` sent the same
-    value, unmeasured there (the test key has no credits).
+    value, unmeasured there (the test key has no credits). #397: under a hidden
+    ``off``, ``openai``'s flagship also hides ``minimal``, which its effort list
+    leaves out, so a fitted ``off`` lands on ``low`` (``floor-397-fills.json``);
+    ``opencode``'s predecessor hides it too, so the two rows still agree there.
     """
 
     row = _row(provider, model_id)
@@ -261,9 +268,12 @@ def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
     )
     if pi_gives_max:
         assert flagship.pop("max") == "max", f"{provider}/{model_id} lost pi's max level"
-    if "off" in flagship and flagship["off"] is None and predecessor.get("off", "none") is not None:
-        del flagship["off"]
-        predecessor.pop("off", None)
+    if "off" in flagship and flagship["off"] is None:
+        for level in _FLOOR_397.get((provider, model_id), ()):
+            assert flagship.pop(level) is None, f"{provider}/{model_id} lost #397's {level} floor"
+        if predecessor.get("off", "none") is not None:
+            del flagship["off"]
+            predecessor.pop("off", None)
     assert flagship == predecessor
 
 

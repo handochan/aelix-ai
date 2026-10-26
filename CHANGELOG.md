@@ -689,6 +689,34 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A launch with no thinking level, or a resumed `off` session, no longer
+  fails on OpenAI's o-series (#397, ADR-0264 and ADR-0239 amendments
+  2026-10-26).** On a model that cannot switch reasoning off, a level fitted
+  to the model starts at the lowest level the model offers, and for the
+  o-series the catalog still offered `minimal`, which OpenAI refuses:
+  OpenRouter's `openai/o3` with no `--thinking` answered 400 "Unsupported
+  value: 'minimal' is not supported with the 'o3-2025-04-16' model", and in
+  RPC mode the first prompt did too. Now it answers at `low`, RPC `get_state`
+  says `low`, and `/thinking` lists `low`, `medium` and `high`. The catalog
+  hides the levels below the lowest one the model's effort list names on 83
+  rows that hide `off` (95 levels): OpenAI models whose effort list starts
+  above `minimal` - the o-series, codex, `gpt-5.1`-and-later and `-pro` rows,
+  Copilot's `gpt-5` rows and `gpt-6-astra` - on `openai`,
+  `azure-openai-responses`, `cloudflare-ai-gateway`, `opencode` and
+  `github-copilot`, and OpenRouter's
+  `openai/o1`, `o3`, `o3-mini`, `o3-pro` and `o4-mini`.
+  `scripts/refresh_catalog.py` derives them, so the next fold-back keeps them.
+  OpenRouter's other rows keep `minimal`, which every other live row #507
+  changed accepted (61 of 64; the three that refused are the `o3` rows
+  above). The `chat-latest` rows on `openai` and `azure-openai-responses`
+  still start at `minimal`: no source the rule reads lists their efforts
+  (models.dev's `302ai` lists only `medium`, so `minimal` likely fails there,
+  unmeasured). An explicit `--thinking off` (and a launch profile's
+  `thinking: "off"`) is unchanged: on OpenAI and OpenRouter it sends no
+  reasoning field and the model reasons at its default. Not measured:
+  OpenAI's own API (no credits), Azure (no adapter in this build),
+  Cloudflare, opencode and Copilot.
+
 - **Thinking off is no longer sent as `effort: "none"` to models that refuse
   it (#507, ADR-0264 amendment 2026-10-26).** On OpenRouter and the OpenAI
   Responses APIs, a model whose catalog row did not say how to turn reasoning

@@ -33,14 +33,17 @@ one, in pi's order, and a row nothing covers gets none:
 it is a key that exists — with one addition (#507, ADR-0264 §10, 2026-10-26): where its map
 has no ``off`` and the same evidence says the model takes no ``none``,
 ``off: null`` is written into it (:func:`plan_off_fills`), because otherwise
-off is sent as ``none`` and answered 400.
+off is sent as ``none`` and answered 400; and under a hidden ``off``, the levels
+below the lowest one the judging API lists are written ``null`` too
+(:func:`plan_floor_fills`, #397), so a fitted ``off`` lands on a level the
+model takes.
 
 Usage::
 
     python scripts/refresh_catalog.py --audit                 # score the rule
     python scripts/refresh_catalog.py --source api.json --openrouter-source models.json
     python scripts/refresh_catalog.py --fetch --apply         # the fold-back (RELEASING.md)
-    python scripts/refresh_catalog.py --fetch --apply --off-only  # only the off fills (#507)
+    python scripts/refresh_catalog.py --fetch --apply --off-only  # only the off and floor fills
 
 ``--source`` takes a models.dev ``api.json`` on disk and ``--openrouter-source``
 OpenRouter's public ``/api/v1/models``; ``--fetch`` downloads both. ``--apply``
@@ -525,13 +528,11 @@ def plan_off_fills(
     on the wire (:func:`_sends_off_string`) and upstream contradicts is a
     conflict: reported for a hand correction, never overwritten.
 
-    Only ``off`` is filled, so a level the harness clamps — a launch with no
-    level, a resumed off session — lands on ``minimal``, which the o-series
-    refuses too, whether the evidence says so (models.dev's lists) or says
-    nothing past ``mandatory`` (OpenRouter's). MEASURED: OpenRouter's
-    ``openai/o3`` with no ``--thinking`` answered 400 "Unsupported value:
-    'minimal'". Fitting the clamp to the lowest level a model takes is #397's
-    (ADR-0264 §10, 2026-10-26).
+    Only ``off`` is filled here. A level the harness clamps — a launch with no
+    level, a resumed off session — then lands on the lowest level the map
+    offers, and the levels under it a model refuses are :func:`plan_floor_fills`'s
+    (#397): without them OpenRouter's ``openai/o3`` with no ``--thinking``
+    answered 400 "Unsupported value: 'minimal'" (MEASURED, ADR-0264 §10).
     """
 
     fills: list[tuple[str, str, str]] = []
@@ -585,11 +586,187 @@ def fill_off(local: Catalog, fills: list[tuple[str, str, str]]) -> Catalog:
     return filled
 
 
+# ── the floor under a hidden off (#397) ────────────────────────────────
+
+OPENROUTER_PASSTHROUGH: dict[str, str] = {"openai/": "openai"}
+"""OpenRouter id prefixes whose ``reasoning.effort`` reaches the vendor's API as sent: ``{prefix: models.dev provider}``.
+
+Evidence only, for an OpenRouter row whose public list gives no
+``supported_efforts``. MEASURED 2026-10-26 (``.omc/probes/397/``): with
+``effort: "minimal"`` OpenRouter's ``openai/o3``, ``o3-mini`` and ``o3-pro``
+answered 400 with OpenAI's own body, "Unsupported value: 'minimal' is not
+supported with the 'o3-2025-04-16' model", while the 61 other live rows #507
+filled answered 200 — the 42 that list efforts among them, including the 32
+whose list leaves ``minimal`` out. So OpenRouter's own lists are not read for
+the floor: OpenRouter accepts a level they leave out.
+"""
+
+FLOOR_FALLBACK_IDS: tuple[str, ...] = ("openai", "azure", "opencode")
+"""Where a Responses row's floor is looked up when its own evidence lists nothing: the same id.
+
+Evidence only, and only for the floor. A Responses row is an OpenAI model, and
+OpenAI refuses an effort a model does not take (MEASURED on ``openai/o3``
+through OpenRouter; pi #1334 on ``gpt-5.3-codex``, its error naming ``gpt-5.2``). models.dev's ``openai`` has
+no row for ``gpt-5-codex``, ``gpt-5.1-codex``,
+``gpt-5.1-codex-max``, ``gpt-5.1-codex-mini`` or ``gpt-5.2-codex``; its ``azure``
+and ``opencode`` list them from ``low`` (fetched 2026-10-26), and pi.dev's
+``opencode`` maps hide ``minimal`` on them. #507's off lookups stay as they were
+(:data:`OFF_EVIDENCE_IDS`).
+"""
+
+
+def floor_evidence(
+    provider: str,
+    model_id: str,
+    row: Row,
+    upstream: dict[str, Any],
+    openrouter: dict[str, Row] | None,
+) -> tuple[list[Any], str] | None:
+    """The effort values of the API that will judge ``row``'s level, and where they come from.
+
+    A Responses row's API reads the level's name, so its models.dev row speaks
+    for it (:func:`off_evidence_row`), else the same id under
+    :data:`FLOOR_FALLBACK_IDS`. GitHub Copilot is in: its adapters skip only the
+    off branch (#507), and a fitted ``off`` reaches them as a level's name. An
+    OpenRouter row with no effort list of its own speaks through
+    :data:`OPENROUTER_PASSTHROUGH`. ``None`` for every other row: its wire maps
+    the level itself (Anthropic, Google) or does not refuse it (OpenRouter with a
+    list, MEASURED).
+    """
+
+    if row["api"] in _DIRECT_EFFORT_APIS:
+        values = _models_dev_effort_values(off_evidence_row(provider, model_id, upstream))
+        if values:
+            return values, "models.dev"
+        for upstream_id in FLOOR_FALLBACK_IDS:
+            candidate = ((upstream.get(upstream_id) or {}).get("models") or {}).get(model_id)
+            if _models_dev_effort_values(candidate):
+                return _models_dev_effort_values(candidate), f"models.dev {upstream_id}"
+        return None
+    if provider != "openrouter":
+        return None
+    listed = (((openrouter or {}).get(model_id) or {}).get("reasoning") or {}).get(
+        "supported_efforts"
+    )
+    if listed:
+        return None
+    for prefix, upstream_id in OPENROUTER_PASSTHROUGH.items():
+        if model_id.startswith(prefix):
+            vendor = ((upstream.get(upstream_id) or {}).get("models") or {}).get(
+                model_id[len(prefix) :]
+            )
+            return _models_dev_effort_values(vendor), f"models.dev {upstream_id}"
+    return None
+
+
+def plan_floor_fills(
+    local: Catalog, upstream: dict[str, Any], openrouter: dict[str, Row] | None
+) -> tuple[list[tuple[str, str, str, str]], list[tuple[str, str, str, str]]]:
+    """``(fills, conflicts)``: the levels under a hidden off a model refuses, and what needs a hand.
+
+    A fill is ``(provider, id, level, source)``, a conflict ``(provider, id, level, why)``.
+
+    #397. Where a row hides ``off``, a level the harness fits to the model — a
+    launch with no level, a resumed or carried ``off`` — moves up to the lowest
+    level the map offers (``clamp_thinking_level``, pi's ``clampThinkingLevel``),
+    and a map that names nothing below ``high`` offers ``minimal``. MEASURED on
+    ``2cbc126b``: OpenRouter's ``openai/o3`` with no ``--thinking`` answered 400
+    "Unsupported value: 'minimal'". So each level below the lowest one the
+    evidence (:func:`floor_evidence`) lists is written ``null`` where the map
+    has no key for it, and the fitted ``off`` lands on a level the model takes,
+    as pi's derived maps hide them (pi.dev's ``openai`` rows ``o3`` and
+    ``gpt-5.5-pro``, 2026-10-26; its OpenRouter ``openai/o3`` hides only ``off``,
+    so the OpenRouter rows go past pi). Only rows that hide ``off``: elsewhere
+    ``off`` is the floor. Only the levels below the floor: pi's maps hide every
+    level a list leaves out, which here stays ``main``'s curation (§7 Q2).
+
+    A key that does not exist, so the generator stays additive. Reported for a
+    hand correction, never written: a level below the floor that the map names
+    with a string, and a floor at ``xhigh`` or ``max`` the map does not name,
+    which would leave the model no level at all (those two exist only where a
+    map names them).
+    """
+
+    fills: list[tuple[str, str, str, str]] = []
+    conflicts: list[tuple[str, str, str, str]] = []
+    for provider, local_models in local.items():
+        for model_id, row in local_models.items():
+            current = row.get("thinkingLevelMap") or {}
+            if not row.get("reasoning") or "off" not in current or current["off"] is not None:
+                continue
+            found = floor_evidence(provider, model_id, row, upstream, openrouter)
+            if found is None:
+                continue
+            values, source = found
+            listed = [level for level in _EFFORT_LEVELS if level in values]
+            if not listed:
+                continue
+            if listed[0] in ("xhigh", "max") and current.get(listed[0]) is None:
+                conflicts.append(
+                    (
+                        provider,
+                        model_id,
+                        listed[0],
+                        f"{source}'s floor, which the map does not name",
+                    )
+                )
+                continue
+            for level in _EFFORT_LEVELS[: _EFFORT_LEVELS.index(listed[0])]:
+                if level not in current:
+                    fills.append((provider, model_id, level, source))
+                elif current[level] is not None:
+                    conflicts.append(
+                        (provider, model_id, level, f"named under the floor {source} lists")
+                    )
+    return fills, conflicts
+
+
+def fill_floor(local: Catalog, fills: list[tuple[str, str, str, str]]) -> Catalog:
+    """``local`` with each fill's level written ``null`` — never over a level that exists.
+
+    The floor — the new levels, with any hidden level already below the
+    highest of them — goes right after ``off``, wherever ``off`` stands, in the
+    order pi's maps carry them; the rest of the map keeps its order, and so do
+    the rows and providers.
+    """
+
+    hidden: dict[tuple[str, str], list[str]] = {}
+    for provider, model_id, level, _source in fills:
+        hidden.setdefault((provider, model_id), []).append(level)
+    filled: Catalog = {provider: dict(rows) for provider, rows in local.items()}
+    for (provider, model_id), levels in hidden.items():
+        row = filled[provider][model_id]
+        current = row["thinkingLevelMap"]
+        assert current.get("off", "") is None, f"{provider}/{model_id} does not hide off"
+        for level in levels:
+            assert level not in current, f"would overwrite {provider}/{model_id}'s {level}"
+        top = max(_EFFORT_LEVELS.index(level) for level in levels)
+        floor = [
+            level
+            for level in _EFFORT_LEVELS[: top + 1]
+            if level in levels or (level in current and current[level] is None)
+        ]
+        mapped: dict[str, Any] = {}
+        for key, value in current.items():
+            if key in floor:
+                continue
+            mapped[key] = value
+            if key == "off":
+                mapped.update({level: None for level in floor})
+        filled[provider][model_id] = {**row, "thinkingLevelMap": mapped}
+    return filled
+
+
 # ── planning ───────────────────────────────────────────────────────────
 
 
 class CatalogPlan:
     """What a refresh would add, what it skipped and why, each new row's map source, and the off fills.
+
+    ``floor_fills`` (#397) are planned over the shipped rows after their off
+    fills, so a row #507's rule hides ``off`` on in this run gets its floor in
+    the same run; a row this run ADDS gets its floor at the next refresh, once
+    it is shipped.
 
     A plain class, not a dataclass: the tests load this file with
     ``spec_from_file_location`` without registering it in ``sys.modules``, and
@@ -602,6 +779,8 @@ class CatalogPlan:
         self.map_sources: dict[tuple[str, str], str] = {}
         self.off_fills: list[tuple[str, str, str]] = []
         self.off_conflicts: list[tuple[str, str, str]] = []
+        self.floor_fills: list[tuple[str, str, str, str]] = []
+        self.floor_conflicts: list[tuple[str, str, str, str]] = []
 
 
 def plan_catalog(
@@ -656,6 +835,9 @@ def plan_catalog(
             result.map_sources[(provider, model_id)] = source
             result.additions.setdefault(provider, {})[model_id] = row
     result.off_fills, result.off_conflicts = plan_off_fills(local, upstream, openrouter)
+    result.floor_fills, result.floor_conflicts = plan_floor_fills(
+        fill_off(local, result.off_fills), upstream, openrouter
+    )
     return result
 
 
@@ -821,7 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--off-only",
         action="store_true",
-        help="with --apply, write the off fills of the rows we ship and no addition (#507)",
+        help="with --apply, write the off and floor fills of the rows we ship and no addition (#507, #397)",
     )
     parser.add_argument("--audit", action="store_true", help="score the transport rule")
     parser.add_argument("--show-skips", action="store_true")
@@ -875,9 +1057,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ~ {provider}/{model_id}: {source}")
     for provider, model_id, source in planned.off_conflicts:
         print(f"  ! {provider}/{model_id}: an off string {source} says it cannot take; fix by hand")
+    print(f"{len(planned.floor_fills)} level(s) to hide under a hidden off (#397)")
+    for provider, model_id, level, source in planned.floor_fills:
+        print(f"  ~ {provider}/{model_id}: {level}: null ({source})")
+    for provider, model_id, level, why in planned.floor_conflicts:
+        print(f"  ! {provider}/{model_id}: {level}, {why}; fix by hand")
 
     if args.apply:
-        filled = fill_off(local, planned.off_fills)
+        filled = fill_floor(fill_off(local, planned.off_fills), planned.floor_fills)
         write_catalog(filled if args.off_only else merge(filled, additions), CATALOG_PATH)
         print(f"wrote {CATALOG_PATH}")
     return 0

@@ -588,9 +588,23 @@ which OpenAI's `o4-mini`, `o3-mini` and `gpt-6-astra` refuse
 (`'none' is not supported with the 'o4-mini' model`, or OpenRouter's
 `Reasoning is mandatory for this endpoint and cannot be disabled`), so on those
 models the conversation worked and every compaction failed (#506). At `off`, and
-on a model that does not reason, they still ask with reasoning off; a model that
-cannot switch reasoning off is tracked as
-[#507](https://github.com/handochan/aelix-ai/issues/507).
+on a model that does not reason, they still ask with reasoning off; on a model
+that cannot switch reasoning off, that means no reasoning field, as its turns
+send ([#507](https://github.com/handochan/aelix-ai/issues/507)).
+
+A model that cannot switch reasoning off - OpenRouter's reasoning-mandatory
+endpoints, OpenAI's o-series and `gpt-6-astra`, the `gpt-5` rows that hide it on
+other providers and on Copilot - does not offer `off` in `/thinking`. A level
+that is fitted to the model - a launch with no level, `defaultThinkingLevel:
+off`, a resumed or carried `off`, `/agents use`, RPC `set_model` - starts at the
+lowest level the model's effort list names: `low` where OpenAI refuses
+`minimal` (the o-series, the codex rows and most `gpt-5.1`-and-later rows),
+`medium` or `high` on the `gpt-5` `-pro` rows, and `minimal` on the other OpenRouter
+rows, which accept it. An explicit `--thinking off`, a launch profile's
+`thinking: "off"` and RPC `set_thinking_level` with `off` are not fitted: on
+OpenAI and OpenRouter the request then carries no reasoning field and the model
+reasons at its own default, while Claude and Gemini rows answer it with their
+lowest level ([#397](https://github.com/handochan/aelix-ai/issues/397)).
 
 What `xhigh` means depends on how the model thinks. On a model that takes a
 Claude-style token budget it sends a larger budget than `high` — 32768 against

@@ -3564,7 +3564,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -3633,7 +3634,10 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null
       },
       "input": [
         "text",
@@ -3656,7 +3660,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -3702,7 +3707,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -3725,7 +3731,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -3748,7 +3755,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -3772,6 +3780,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3820,6 +3829,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3844,6 +3854,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3892,6 +3904,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3916,6 +3929,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3940,6 +3954,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3964,6 +3979,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -3988,6 +4004,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4012,6 +4029,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4036,6 +4055,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4060,6 +4080,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4083,7 +4105,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4106,7 +4129,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4129,7 +4153,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4172,7 +4197,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text"
@@ -4194,7 +4220,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4217,7 +4244,8 @@
       "baseUrl": "",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4774,7 +4802,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4797,7 +4826,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4821,6 +4851,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4845,6 +4876,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4869,6 +4901,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4893,6 +4926,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4917,6 +4951,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -4940,7 +4975,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4963,7 +4999,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -4986,7 +5023,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text"
@@ -5008,7 +5046,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -5031,7 +5070,8 @@
       "baseUrl": "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -6615,7 +6655,8 @@
       },
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -6645,6 +6686,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -6675,6 +6717,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -6705,6 +6748,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -6735,6 +6779,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -6765,6 +6810,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -6795,6 +6841,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -7007,6 +7054,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh",
         "max": "max"
       },
@@ -7038,6 +7086,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh",
         "max": "max"
       },
@@ -7069,6 +7118,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh",
         "max": "max"
       },
@@ -14906,7 +14956,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -14975,7 +15026,10 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "medium": null
       },
       "input": [
         "text",
@@ -15044,7 +15098,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15067,7 +15122,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15090,7 +15146,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15162,6 +15219,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -15186,6 +15244,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -15258,6 +15318,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -15354,6 +15415,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -15402,6 +15465,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -15425,7 +15490,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15448,7 +15514,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15471,7 +15538,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15514,7 +15582,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text"
@@ -15536,7 +15605,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15559,7 +15629,8 @@
       "baseUrl": "https://api.openai.com/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -15738,6 +15809,7 @@
       "maxTokens": 128000,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh",
         "max": "max"
       }
@@ -16421,7 +16493,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -16467,7 +16540,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -16490,7 +16564,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -16513,7 +16588,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -16536,7 +16612,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -16560,6 +16637,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16584,6 +16662,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16608,6 +16687,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16632,6 +16712,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16656,6 +16737,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16680,6 +16762,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16704,6 +16787,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16728,6 +16813,7 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -16752,6 +16838,8 @@
       "reasoning": true,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
+        "low": null,
         "xhigh": "xhigh"
       },
       "input": [
@@ -17337,7 +17425,8 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text"
@@ -17635,6 +17724,7 @@
       "maxTokens": 128000,
       "thinkingLevelMap": {
         "off": null,
+        "minimal": null,
         "xhigh": "xhigh",
         "max": "max"
       }
@@ -21931,7 +22021,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -21954,7 +22045,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -21997,7 +22089,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text"
@@ -22041,7 +22134,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",
@@ -22064,7 +22158,8 @@
       "baseUrl": "https://openrouter.ai/api/v1",
       "reasoning": true,
       "thinkingLevelMap": {
-        "off": null
+        "off": null,
+        "minimal": null
       },
       "input": [
         "text",

@@ -10,8 +10,9 @@ commit ``main``'s CI passed and runs this script, which
 2. runs ``refresh_catalog.py``'s additive plan over the COMMITTED catalog, each
    new reasoning row's thinking map derived (§7 Q2), and applies it to the
    checkout. The ``off: null`` the plan finds for shipped rows (#507,
-   ADR-0264 §10, 2026-10-26) is reported, not applied: a shipped row publishes as ``main``
-   has it, and the fold-back commits the fill;
+   ADR-0264 §10, 2026-10-26), and the levels under it a model refuses (#397), are
+   reported, not applied: a shipped row publishes as ``main`` has it, and the
+   fold-back commits the fill;
 3. computes the lineage from ``main``'s first-parent history and writes the
    revision with :mod:`aelix_ai.hosted_catalog`'s one serializer;
 4. validates, and publishes nothing on any failure: the pin, overlay and
@@ -664,13 +665,21 @@ def _summary(
     lines += [f"- {provider}/{model_id}: {source}" for provider, model_id, source in reasoning]
     if not reasoning:
         lines.append("- none")
-    lines += ["", "## Shipped rows upstream says cannot take off as none (#507; not published)", ""]
+    lines += [
+        "",
+        "## Shipped rows' off, and the levels under it, upstream says a model refuses (#507, #397; not published)",
+        "",
+    ]
     lines += [f"- {p}/{m}: off: null, from {source}" for p, m, source in planned.off_fills]
     lines += [
         f"- {p}/{m}: its off string contradicts {source}; fix by hand"
         for p, m, source in planned.off_conflicts
     ]
-    if not planned.off_fills and not planned.off_conflicts:
+    lines += [f"- {p}/{m}: {lvl}: null, from {source}" for p, m, lvl, source in planned.floor_fills]
+    lines += [f"- {p}/{m}: {lvl}, {why}; fix by hand" for p, m, lvl, why in planned.floor_conflicts]
+    if not (
+        planned.off_fills or planned.off_conflicts or planned.floor_fills or planned.floor_conflicts
+    ):
         lines.append("- none")
     lines += [
         "",

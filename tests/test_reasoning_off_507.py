@@ -409,7 +409,7 @@ def test_a_publication_carries_the_fills_to_the_client() -> None:
         row = parsed.rows[provider][model_id]
         assert row["thinkingLevelMap"]["off"] is None, (provider, model_id)
     assert (
-        "## Shipped rows upstream says cannot take off as none (#507; not published)\n\n- none"
+        "## Shipped rows' off, and the levels under it, upstream says a model refuses (#507, #397; not published)\n\n- none"
         in built["summary"]
     )
 
@@ -459,5 +459,6 @@ def test_off_only_writes_the_fills_and_no_addition(
     rc.main(["--source", str(source), "--openrouter-source", str(listing), "--apply", "--off-only"])
     written = json.loads(catalog.read_text(encoding="utf-8"))
     assert set(written["acme"]) == {"m-1"}
-    assert written["acme"]["m-1"]["thinkingLevelMap"] == {"off": None}
+    # #397 hides the level under the hidden off that the effort list leaves out.
+    assert written["acme"]["m-1"]["thinkingLevelMap"] == {"off": None, "minimal": None}
     assert written["openrouter"]["a/m"]["thinkingLevelMap"] == {"off": None}
