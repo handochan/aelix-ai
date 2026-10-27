@@ -106,6 +106,7 @@ the REPL.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 
@@ -297,12 +298,21 @@ async def run_scoped_models(
     settings_manager: Any,
     multiselect: Callable[..., Awaitable[Any]],
     commit: Callable[[object], None],
+    refresh: Callable[[], Awaitable[Any]] | None = None,
+    request_render: Callable[[], None] | None = None,
 ) -> None:
     """Drive the ``/scoped-models`` picker end-to-end (ImplConsumers, ADR-0161).
 
     ``registry`` must expose ``get_available() -> list[Model]``;
     ``settings_manager`` must expose ``get_enabled_models`` / ``set_enabled_models``
     / ``flush``. ``multiselect`` is :meth:`AelixTUIContext.multiselect`.
+
+    ``refresh`` (#434, ADR-0264 §4.6) runs the model catalog refresh while the
+    picker is open, which shows the cached list at once. When the run lands the
+    picker says so in one status line under its preview, with how many models
+    the new list adds; its rows stay as opened, because a row arriving
+    mid-selection would change what a confirm saves (#153's carry-forward and
+    collapse rules read the rows the picker opened with). Reopening shows them.
     """
 
     from rich.text import Text  # local import keeps this module import-light
@@ -508,7 +518,31 @@ async def run_scoped_models(
         else ""
     )
 
-    def _preview(chosen: set[str], _toggles: dict[str, bool]) -> list[str]:
+    status: list[str] = []
+    landing: dict[str, Any] = {}
+
+    async def _land() -> None:
+        assert refresh is not None
+        from .model_picker import refresh_status
+
+        result = await refresh()
+        line = refresh_status(result)
+        try:
+            fresh = {f"{m.provider}/{m.id}" for m in registry.get_available()}
+        except Exception:  # noqa: BLE001 - the line without a count then
+            fresh = set()
+        added = len(fresh - {oid for oid, _, _ in all_rows})
+        if added:
+            line += f" ({added} new — reopen /scoped-models to see them)"
+        status[:] = [line]
+        if request_render is not None:
+            with contextlib.suppress(Exception):
+                request_render()
+
+    def _preview(chosen: set[str], toggles: dict[str, bool]) -> list[str]:
+        return _preview_lines(chosen, toggles) + status
+
+    def _preview_lines(chosen: set[str], _toggles: dict[str, bool]) -> list[str]:
         # Previews the DECISION, not an approximation of it: same ``_final`` /
         # ``_collapses`` the save runs, so the line a user reads before pressing
         # Enter is the outcome of pressing Enter.
@@ -530,6 +564,8 @@ async def run_scoped_models(
             lines.append(hidden_note)
         return lines
 
+    if refresh is not None:
+        landing["task"] = asyncio.ensure_future(_land())
     try:
         result = await multiselect(
             "Scoped models — choose which models are enabled",
@@ -540,6 +576,10 @@ async def run_scoped_models(
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ scoped-models picker failed: {exc}", style="bold red"))
         return
+    finally:
+        task = landing.get("task")
+        if task is not None and not task.done():
+            task.cancel()
     if result is None:
         return  # Esc / cancelled — no write
 

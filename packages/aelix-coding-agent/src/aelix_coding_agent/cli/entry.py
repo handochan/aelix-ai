@@ -131,12 +131,16 @@ from .project_trust import (
     resolve_project_trusted,
 )
 from .runtime_bootstrap import (
+    ResolvedRoute,
     enrich_copilot_base_url,
     load_dotenv,
+    record_settings_seed,
     register_providers,
+    removed_selection,
     resolve_route,
     restore_fallback_message,
     restore_session_route,
+    withdrawn_default_message,
 )
 from .skills_prompt import format_skills_for_prompt, skills_catalog_visible
 from .system_prompt_files import MAX_PROMPT_FILE_BYTES
@@ -1812,6 +1816,9 @@ async def _build_harness_options(
     # #376 — a holder the resolve below fills: ``"route"`` is the restored
     # :class:`ResolvedRoute`, or ``None`` when ``parsed`` decided the model.
     restore_report: dict[str, Any] | None = None,
+    # #434 — ``/reload``'s current model (``ReloadSeed.model``): kept when a hold
+    # removed its id, where the restore below would fall back (ADR-0264 §4.4).
+    keep_model: Model | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -2021,6 +2028,15 @@ async def _build_harness_options(
         if restore_selection is not None
         else None
     )
+    if (
+        route is None
+        and keep_model is not None
+        and removed_selection(model_registry, keep_model.provider, keep_model.id)
+    ):
+        # #434 (ADR-0264 §4.4) — ``/reload`` keeps the open session's model on a
+        # removed id, as pi's ``/reload`` keeps its ``AgentSession``; a resume,
+        # ``/fork`` or ``/import`` of it falls back.
+        route = ResolvedRoute(keep_model, "session")
     if restore_report is not None:
         restore_report["route"] = route
     if route is None:
@@ -2465,6 +2481,13 @@ async def _async_main(argv: list[str]) -> int:
         from aelix_coding_agent.cli.status import run_status_command
 
         return await run_status_command(command_argv[1:])
+
+    # #434 (ADR-0264 §4.6) — ``aelix update --models`` refreshes the model
+    # catalogs and exits. Same placement and same reason as the three above.
+    if command_argv and command_argv[0] == "update":
+        from aelix_coding_agent.cli.update_command import run_update_command
+
+        return await run_update_command(command_argv[1:])
 
     parsed = parse_args(argv)
 
@@ -3205,11 +3228,18 @@ async def _async_main(argv: list[str]) -> int:
                 profile_baseline.model = default_model
             if persisted_provider:
                 profile_baseline.provider = persisted_provider
+            # #434 (ADR-0264 §4.4) — the baseline's pair is the settings default:
+            # recorded, active only when ``parsed`` takes it below (an ``--agent``
+            # profile that names the route keeps its own).
+            record_settings_seed(default_model or None, persisted_provider or None, active=False)
         if not user_named_a_model and parsed.model is None and parsed.provider is None:
             if default_model:
                 parsed.model = default_model
             if persisted_provider:
                 parsed.provider = persisted_provider
+            # #434 (ADR-0264 §4.4) — these strings are the settings default, not
+            # the user's: ``resolve_route`` skips a removed id they name.
+            record_settings_seed(parsed.model, parsed.provider, active=True)
         elif parsed.provider is None and persisted_provider:
             default_provider = persisted_provider
 
@@ -3455,7 +3485,14 @@ async def _async_main(argv: list[str]) -> int:
     # ``message`` (pi's ``Could not restore model …``, or ``None``). The launch
     # block below reads the first build's; ``_settle_late_route`` reads each
     # rebuild's, and the runtime carries ``message`` for the TUI.
-    session_model: dict[str, Any] = {"route": None, "message": None, "failed": None}
+    session_model: dict[str, Any] = {
+        "route": None,
+        "message": None,
+        "failed": None,
+        # #434 — the removed id a settings default (or OPENROUTER_DEFAULT_MODEL)
+        # named, which the latest build skipped (ADR-0264 §4.4).
+        "withdrawn": None,
+    }
     # #413 — a rebuild whose start record waits for its late-route decision:
     # ``harness`` (the rebuild) and ``created_empty`` (read when it was built).
     start_record: dict[str, Any] = {}
@@ -3474,6 +3511,9 @@ async def _async_main(argv: list[str]) -> int:
 
         failed = session_model["failed"]
         if failed is None:
+            withdrawn = session_model["withdrawn"]
+            if withdrawn is not None:
+                return withdrawn_default_message(withdrawn, active, model_registry)
             return None
         return restore_fallback_message(failed, active, model_registry)
 
@@ -3526,6 +3566,7 @@ async def _async_main(argv: list[str]) -> int:
             new_session,
             restore_selection=restore_selection,
             restore_report=restore_report,
+            keep_model=getattr(reload_seed, "model", None),
             mcp_tools=mcp_tools,
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
@@ -3583,6 +3624,10 @@ async def _async_main(argv: list[str]) -> int:
         )
         restored = restore_report.get("route")
         session_model["route"] = restored
+        built_route = restore_report.get("built")
+        session_model["withdrawn"] = (
+            getattr(built_route, "withdrawn", None) if restored is None else None
+        )
         # A restored model is the session's record, not the launch inputs, so
         # the late-provider hold below (which asks where THOSE land) is not
         # owed; nor is it after ``session_start`` (``_settle_late_route``).

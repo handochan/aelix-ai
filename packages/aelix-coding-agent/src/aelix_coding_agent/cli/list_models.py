@@ -108,6 +108,18 @@ async def list_models(
             file=sys.stderr,
         )
 
+    # #434 (ADR-0264 §4.6) — the list reads the model catalog cache, never the
+    # network (pi ``list-models.ts:29-39``); say which published revision it is.
+    from aelix_ai.models import installed_overlay
+
+    revision = installed_overlay()
+    if revision:
+        print(
+            f"Model catalog: published revision {revision[:19]} (cached; "
+            "`aelix update --models` refreshes it)",
+            file=sys.stderr,
+        )
+
     if settings_manager is not None:
         # ADR-0162: scope to the persisted enabled_models allow-list (parity
         # with the /model picker). The helper degrades an empty-match list to

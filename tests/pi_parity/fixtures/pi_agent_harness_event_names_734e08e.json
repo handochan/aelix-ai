@@ -66,5 +66,9 @@
   "since_pin_event_pi_lines": {
     "project_trust": "503-525"
   },
-  "since_pin_event_added_by": "Issue #5 Lane C — adopted since-pin pi project_trust event"
+  "since_pin_event_added_by": "Issue #5 Lane C — adopted since-pin pi project_trust event",
+  "aelix_only_event_names": [
+    "model_catalog_refresh"
+  ],
+  "aelix_only_event_added_by": "#434 (ADR-0264 §4.7) - aelix's first event pi lacks: a model catalog source's refresh finished"
 }

@@ -457,6 +457,9 @@ class ParsedRevision:
     transport kept, then each new id with inherited transport, in the
     revision's order. A shipped row the revision does not list stays as
     shipped, and a revision can never remove one.
+
+    ``ignored_providers`` holds the published keys as published, unbounded:
+    count them, never print them (the client reports the count only, #434).
     """
 
     lineage: tuple[str, ...]
@@ -563,7 +566,7 @@ def parse_revision(
         raise RevisionRefused(f"{total} rows, over {MAX_ROWS}")
     for provider, rows in providers.items():
         if len(rows) > MAX_PROVIDER_ROWS:
-            raise RevisionRefused(f"{provider}: {len(rows)} rows, over {MAX_PROVIDER_ROWS}")
+            raise RevisionRefused(f"{_quoted(provider)}: {len(rows)} rows, over {MAX_PROVIDER_ROWS}")
 
     new_total = 0
     for provider, rows in providers.items():

@@ -1349,7 +1349,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
     ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
     (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
     aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
-    at ``extensions/api.py:151-164`` whose snake_case fields
+    at ``extensions/api.py:152-165`` whose snake_case fields
     (``tokens`` / ``context_window`` / ``percent``) map directly into
     the Pi camelCase wire keys.
     """
@@ -1376,7 +1376,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
         cu = stats.context_usage
         # Pi parity: extensions/types.ts ContextUsage = { tokens,
         # contextWindow, percent }. Aelix ContextUsage at
-        # extensions/api.py:151-164 already matches Pi field names
+        # extensions/api.py:152-165 already matches Pi field names
         # (tokens / context_window / percent → snake_case ↔ camelCase
         # mapping).
         out["contextUsage"] = {
@@ -2501,6 +2501,22 @@ async def run_rpc_mode(
 
     pump_task = asyncio.create_task(_pump_stdin())
 
+    # #434 (ADR-0264 §4.6-§4.7) — the RPC start-up refresh, once the harness
+    # exists: every source, in the background, bounded at 15 s (pi
+    # ``main.ts:938-945``). Never in a delegated child (``AELIX_SUBAGENT_DEPTH``
+    # of 1 or more), which reads the cache its parent wrote, and never offline.
+    # ``model_catalog_refresh`` goes to the live harness's bus (``capture``
+    # follows every rebind).
+    from aelix_coding_agent.model_refresh import (
+        bind_catalog_events,
+        refresher,
+        start_background_refresh,
+    )
+
+    catalog_unbind = bind_catalog_events(model_registry, lambda: capture.harness)
+    if model_registry is not None:
+        start_background_refresh(model_registry, trigger="rpc-startup")
+
     # === Main loop ============================================================
     try:
         with stdout_redirect_cm:
@@ -2522,6 +2538,11 @@ async def run_rpc_mode(
         pump_task.cancel()
         with contextlib.suppress(BaseException):
             await pump_task
+        # #434 — a catalog refresh still running is cancelled before it publishes.
+        with contextlib.suppress(Exception):
+            catalog_unbind()
+        with contextlib.suppress(BaseException):
+            await refresher().cancel_all()
         # Sprint 6h₄b (P-303): the LIVE unsubscribe handle lives on the
         # capture cell — rebinds replace it each time.
         capture.unsubscribe()

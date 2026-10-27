@@ -57,9 +57,15 @@ class ReloadSeed:
     :meth:`AgentSessionRuntime.reload`), NOT here, because the intersect that
     drops names a removed extension no longer provides needs the fully-merged
     tool registry — which only exists after the rebuild.
+
+    :attr:`model` is the harness's current model at the reload (#434, ADR-0264
+    §4.4): a factory keeps it when a hold removed its id from the published
+    catalog, where a resume of the same session falls back, as pi's ``/reload``
+    keeps its ``AgentSession`` and model (``agent-session.ts:3690-3729``@99fe148).
     """
 
     flag_values: Mapping[str, bool | str] | None = None
+    model: Any = None
 
 
 HarnessFactory = Callable[..., Awaitable["AgentHarness"]]

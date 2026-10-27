@@ -8,7 +8,7 @@ must never disagree:
   delegation channels launch a child process with.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2980-2987``).
+  (``cli/entry.py:3003-3010``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -38,8 +38,8 @@ two sides can agree on a field that nothing reads, and both can collapse
 Two flag choices are not cosmetic:
 
 * ``--tools`` takes ONE comma-separated token and is NOT repeatable
-  (``args.py:648-655`` overwrites), so the list is joined, never repeated.
-* ``--system-prompt`` takes a LITERAL string (``args.py:588-592``); a profile
+  (``args.py:651-658`` overwrites), so the list is joined, never repeated.
+* ``--system-prompt`` takes a LITERAL string (``args.py:591-595``); a profile
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 
@@ -150,7 +150,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the rest of the resolver's order (#98,
-``cli/entry.py:2001-2006``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:2008-2013``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -393,7 +393,7 @@ def profile_to_flags(
         if not profile.tools:
             # ``()`` means NO tools. ``--tools ''`` would mean the OPPOSITE:
             # ``parse_args`` yields ``[]``, which ``_resolve_active_tools``
-            # (``entry.py:1105-1127``) reads as falsy → ``None`` → every tool active.
+            # (``entry.py:1109-1131``) reads as falsy → ``None`` → every tool active.
             flags.append("--no-tools")
         else:
             flags += ["--tools", ",".join(profile.tools)]
@@ -491,7 +491,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:3430-3434``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:3460-3464``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

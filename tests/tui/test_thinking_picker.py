@@ -166,7 +166,7 @@ def test_display_resolves_a_clamp_down_to_the_level_the_request_carries() -> Non
 
 
 def test_display_resolves_a_clamp_up_too() -> None:
-    # C3b — clamp_thinking_level scans FORWARD first (models.py:213-216), so the
+    # C3b — clamp_thinking_level scans FORWARD first (models.py:214-217), so the
     # parenthesis can name a tier ABOVE the chosen level. deepseek-v4-pro's shape:
     # minimal/low/medium are unsupported, so "low" is served by "high".
     model = _Model(
@@ -208,7 +208,7 @@ def test_display_degrades_on_a_missing_or_partial_model() -> None:
     assert thinking_level_display(bare, "high") == "high"
     assert thinking_level_display(_Model(thinking_level_map={"low": "sub"}), "high") == "high"
     # A ``None`` VALUE is not a missing rename — it means the level is not
-    # supported (models.py:160-162), so the clamp answers and the suffix is real.
+    # supported (models.py:161-163), so the clamp answers and the suffix is real.
     assert thinking_level_display(_Model(thinking_level_map={"high": None}), "high") == (
         "high (medium)"
     )

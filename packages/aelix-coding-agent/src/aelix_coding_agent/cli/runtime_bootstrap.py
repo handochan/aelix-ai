@@ -353,7 +353,7 @@ _DOTENV_GATE = "AELIX_DOTENV_ALLOW"
 # rather than pattern-matching this list.
 #
 # Measured with this set, one exported name per run, ``.env`` supplying the value:
-#   HELD     all 14 below
+#   HELD     all 14 below; the 15th, #434's AELIX_MODEL_CATALOG_URL, is held by its test
 #   UNLOCKED OPENROUTER_BASE_URL, PI_OFFLINE  <- the hatch keeps its use case
 _DOTENV_LOCKED = frozenset(
     {
@@ -364,6 +364,9 @@ _DOTENV_LOCKED = frozenset(
         "AELIX_AUTH_PATH",  # the oauth auth store
         "XDG_CONFIG_HOME",  # storage.py, the same store by a third door
         "HOME",  # everything anchored at ~
+        # #434 (ADR-0264 §4.3) — the hosted model catalog's URL decides what the
+        # global ``models-store.json`` holds, for every directory.
+        "AELIX_MODEL_CATALOG_URL",
         # B. gate integrity — a .env must not widen the gate it is judged by.
         _DOTENV_GATE,
         # C. code execution from the VALUE alone.
@@ -1426,6 +1429,7 @@ class ResolvedRoute:
     kind: str
     error: str | None = None
     warning: str | None = None
+    withdrawn: tuple[str, str] | None = None
 
 
 def route_authenticated(registry: Any, provider: str, *, runtime_overrides: bool = True) -> bool:
@@ -1953,6 +1957,9 @@ def resolve_route(
     captured them from an OpenRouter user (#362 critique S1/S2).
     """
 
+    withdrawn = _withdrawn_default(model_flag, provider_flag, registry)
+    if withdrawn is not None:
+        return _withdrawn_route(withdrawn, registry, typed_key=typed_key)
     user_defined = user_defined_providers(registry)
     overrides = runtime_overrides
 
@@ -2258,7 +2265,7 @@ def restore_session_route(selection: tuple[str, str], registry: Any = None) -> R
     from aelix_coding_agent.core.runnable_models import turn_refusal
 
     provider, model_id = selection
-    if not provider or not model_id:
+    if not provider or not model_id or removed_selection(registry, provider, model_id):
         return None
     found = _find_in(provider, model_id, registry)
     if found is not None:
@@ -2298,6 +2305,8 @@ def restore_fallback_message(
 
     provider, model_id = selection
     message = f"Could not restore model {provider}/{model_id}"
+    if removed_selection(registry, provider, model_id):
+        message += f" ({WITHDRAWN_NOTE})"
     if (
         fallback is not None
         and fallback.provider
@@ -2740,7 +2749,185 @@ class LateRoute:
         )
 
 
+# ── #434 (ADR-0264 §4.4): a default a hold withdrew ────────────────────
+#
+# Declared here, at the end of the module, so the lines above keep their
+# numbers. A **removed id** is one a hold took out of the published catalog
+# that the route rows lack (``ModelRegistry.is_removed``). A settings default,
+# or ``OPENROUTER_DEFAULT_MODEL``, naming one counts as unset wherever it is
+# resolved, and the run falls back the way pi's resume picks a model
+# (``core/sdk.ts:223-251``@99fe148): the first runnable model in
+# ``DEFAULT_MODEL_PER_PROVIDER`` order, else the first runnable one, else none.
+# A typed string still resolves as typed, a removed id included.
+
+WITHDRAWN_NOTE = "withdrawn from the published catalog"
+
+_settings_seed: tuple[str | None, str | None] | None = None
+_seed_active = False
+
+
+def record_settings_seed(model: str | None, provider: str | None, *, active: bool = True) -> None:
+    """Remember the settings pair the launch seeded into ``parsed`` (``cli/entry.py``).
+
+    :func:`resolve_route` compares its strings with it while it is ACTIVE, that
+    is while ``parsed``'s pair is the one the settings supplied, not the user's
+    or a profile's: then a removed id there is skipped. Every caller that
+    resolves ``parsed``'s pair (the factory, the late-route hold, ``/agents use``
+    dropping a route) is covered without passing anything. A launch whose
+    ``--agent`` profile names the route records the pair inactive (it is only
+    the ``/agents use`` baseline then), and ``/agents use`` sets it to whether
+    the pair it leaves in ``parsed`` is that baseline's
+    (:func:`set_settings_seed_active`).
+    """
+
+    global _settings_seed, _seed_active
+    _settings_seed = (model, provider) if (model or provider) else None
+    _seed_active = active and _settings_seed is not None
+
+
+def settings_seed_active() -> bool:
+    return _seed_active
+
+
+def set_settings_seed_active(active: bool) -> None:
+    """Whether ``parsed``'s pair is the recorded settings pair again (``/agents use``)."""
+
+    global _seed_active
+    _seed_active = active and _settings_seed is not None
+
+
+def clear_settings_seed() -> None:
+    global _settings_seed, _seed_active
+    _settings_seed = None
+    _seed_active = False
+
+
+def removed_selection(
+    registry: Any, provider: str | None, model_id: str | None
+) -> tuple[str, str] | None:
+    """``(provider, id)`` when the pair names a removed id, else ``None``.
+
+    With no provider, a ``<provider>/<id>`` string is read by its first slash.
+    A registry without ``is_removed`` (an embedder's, a test double) removes
+    nothing.
+    """
+
+    is_removed = getattr(registry, "is_removed", None)
+    if not callable(is_removed) or not model_id:
+        return None
+
+    def canonical(name: str) -> str:
+        # The provider as resolution names it: aelix's case rule.
+        try:
+            return canonical_provider_name(name, registry) or name
+        except Exception:  # noqa: BLE001 - a registry double; the spelling as given
+            return name
+
+    candidates: list[tuple[str, str]] = []
+    if provider:
+        named = canonical(provider)
+        candidates.append((named, model_id))
+        prefix = f"{named}/"
+        if model_id.lower().startswith(prefix.lower()) and len(model_id) > len(prefix):
+            candidates.append((named, model_id[len(prefix) :]))  # pi's ``<provider>/`` strip
+    else:
+        head, sep, rest = model_id.partition("/")
+        if sep and rest:
+            candidates.append((canonical(head), rest))
+    for pair in candidates:
+        if is_removed(*pair):
+            return pair
+    return None
+
+
+def _withdrawn_default(
+    model_flag: str | None, provider_flag: str | None, registry: Any
+) -> tuple[str, str] | None:
+    """The removed id a default would resolve to: the settings seed, or the variable."""
+
+    if model_flag:
+        if not _seed_active or (model_flag, provider_flag) != _settings_seed:
+            return None
+        return removed_selection(registry, provider_flag, model_flag)
+    variable = os.environ.get("OPENROUTER_DEFAULT_MODEL")
+    if (
+        variable
+        and openrouter_default_named(provider_flag, registry)
+        and _configured_auth(registry, "openrouter")
+    ):
+        return removed_selection(registry, "openrouter", variable)
+    return None
+
+
+def withdrawn_fallback(registry: Any, *, provider: str | None = None) -> Model | None:
+    """The model a withdrawn default falls back to (``find_initial_model``'s steps 4-5).
+
+    As the post-``/login`` pick runs them: the first runnable ``get_available()``
+    model in ``DEFAULT_MODEL_PER_PROVIDER`` order, else the first runnable one,
+    over the pool guard 1 allows (``tui/shell.py``'s ``_RouteAuthView``).
+    ``provider`` keeps the pick on that provider's models: a launch with
+    ``--api-key`` attaches the key to the route's provider, so a hold must not
+    choose another host for it.
+    """
+
+    if registry is None or not callable(getattr(registry, "get_available", None)):
+        return None
+    from aelix_coding_agent.core.model_argument import _route_aware_pool
+    from aelix_coding_agent.core.model_resolver import _pick_runnable_default
+
+    try:
+        if provider is not None:
+            # The typed key is attached after resolution, so no credential test:
+            # the provider's own rows, its default first.
+            available = [m for m in registry.get_all() if m.provider == provider]
+        else:
+            available, _dropped = _route_aware_pool(list(registry.get_available()), registry)
+    except Exception:  # noqa: BLE001 - no candidate is the answer then
+        return None
+    return _pick_runnable_default(available)
+
+
+def _withdrawn_route(
+    removed: tuple[str, str], registry: Any, *, typed_key: bool = False
+) -> ResolvedRoute:
+    # With ``--api-key`` the key goes to the route's provider (ADR-0250 §2.7,
+    # #370): the fallback stays on the withdrawn default's provider, or there is
+    # none — a published file never chooses which host gets a typed key.
+    fallback = withdrawn_fallback(registry, provider=removed[0] if typed_key else None)
+    if fallback is None:
+        return ResolvedRoute(Model(id="", provider=""), "none", withdrawn=removed)
+    model = _openrouter_base(_launch_shape(fallback, registry))
+    return ResolvedRoute(model, "withdrawn_default", withdrawn=removed)
+
+
+def withdrawn_default_message(
+    removed: tuple[str, str], active: Model | None, registry: Any = None
+) -> str:
+    """``Default model <p>/<id> was withdrawn from the published catalog. Using <p>/<id>``.
+
+    Said in #376's place when a launch had no session model to restore. The
+    ``. Using`` half names ``active`` only when a turn can run on it, as
+    :func:`restore_fallback_message` does.
+    """
+
+    from aelix_coding_agent.core.runnable_models import turn_refusal
+
+    provider, model_id = removed
+    message = f"Default model {provider}/{model_id} was {WITHDRAWN_NOTE}"
+    if (
+        active is not None
+        and active.provider
+        and active.id
+        and active.api != "unknown"
+        and turn_refusal(active) is None
+        and _configured_auth(registry, active.provider, active)
+    ):
+        message += f". Using {active.provider}/{active.id}"
+    return message
+
+
 __all__ = [
+    "WITHDRAWN_NOTE",
     "ambiguous_provider_message",
     "ambiguous_provider_name",
     "ambiguous_provider_name_message",
@@ -2756,7 +2943,12 @@ __all__ = [
     "load_dotenv",
     "openrouter_default_named",
     "openrouter_namespaces",
+    "clear_settings_seed",
+    "record_settings_seed",
+    "set_settings_seed_active",
+    "settings_seed_active",
     "register_providers",
+    "removed_selection",
     "ResolvedRoute",
     "resolve_model",
     "resolve_route",
@@ -2764,4 +2956,6 @@ __all__ = [
     "restore_session_route",
     "route_authenticated",
     "user_defined_providers",
+    "withdrawn_default_message",
+    "withdrawn_fallback",
 ]
