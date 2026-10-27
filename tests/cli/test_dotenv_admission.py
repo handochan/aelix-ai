@@ -547,8 +547,9 @@ def test_dotenv_can_configure_cloudflare_at_the_consumer(tmp_path, monkeypatch) 
 
     Measured A/B at ``is_runnable`` over the whole catalog: 847 runnable on
     ``0c9da7d``, 804 with the ids refused (delta 43, exactly two providers
-    moved), 847 with them admitted. The delta was 43 rows then and is 54 now —
-    #172 added 11 Cloudflare models — so the count below is a scan guard that
+    moved), 847 with them admitted. The delta was 43 rows then, 54 after #172
+    added 11 Cloudflare models and 57 after the fold-back of 2026-10-27 — so the
+    count below is a scan guard that
     has to be re-derived when the catalog moves, not the claim being tested.
     The claim is the two assertions around it: none of them runnable without
     the ``.env``, all of them runnable with it.
@@ -563,7 +564,7 @@ def test_dotenv_can_configure_cloudflare_at_the_consumer(tmp_path, monkeypatch) 
         for provider in ("cloudflare-ai-gateway", "cloudflare-workers-ai")
         for m in MODELS[provider].values()
     ]
-    assert len(cf) == 56, "catalog changed; re-derive this count and the two below"
+    assert len(cf) == 57, "catalog changed; re-derive this count and the two below"
 
     for name in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"):
         monkeypatch.delenv(name, raising=False)
@@ -578,7 +579,7 @@ def test_dotenv_can_configure_cloudflare_at_the_consumer(tmp_path, monkeypatch) 
     runnable = sum(1 for m in cf if is_runnable(m, apis))
     for name in ("CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"):
         os.environ.pop(name, None)
-    assert runnable == 56, "a Cloudflare developer's .env no longer surfaces their models"
+    assert runnable == 57, "a Cloudflare developer's .env no longer surfaces their models"
 
 
 def test_every_templated_base_url_token_is_admissible() -> None:

@@ -5,7 +5,8 @@ owner's decision (§2), revised after its reviews (r5-r11) and on the owner's de
 2026-10-16, 2026-10-17 and 2026-10-19 (§7). §8 is what the implementation owes. Amended 2026-10-21
 (§10: #172's B4, what the parser and the publisher measured against the shipped catalog) and
 2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from; #397,
-the levels under a hidden `off` a model refuses).
+the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fold-back, run once,
+and what its review had to correct by hand).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -1610,3 +1611,184 @@ Not covered: the `gpt-5.1-chat-latest` and `gpt-5.2-chat-latest` rows on `openai
 fitted `off` still lands on `minimal` there, as before; models.dev's `302ai` (and `orcarouter`
 for `gpt-5.2-chat-latest`) list only `medium`, so `minimal` likely fails there (unmeasured). An explicit `off` is not fitted at launch
 (ADR-0239's #397 amendment).
+
+### 2026-10-27: #172 - the fold-back, run once, and what its review corrected by hand
+
+§8 owed "the fold-back step in `RELEASING.md`, run once", before the first publication: measured
+on 2026-10-21, that publication would have added 288 ids against `main`, over the 100 cap. This is
+that run.
+
+Inputs: models.dev's `api.json` and OpenRouter's `/api/v1/models`, fetched once at
+2026-10-27T00:08:01Z (sha256 `14d7540b…` and `80d8f47c…`) and fed to `--source` /
+`--openrouter-source`, so the plan is reproducible. The plan over `0447024d`: **348 ids to add,
+409 skipped, no `off` or floor fill on a shipped row** (#507 and #397 had already run). After
+`--apply`, a second dry run proposes nothing. The added rows' maps leave no `~` or `!` line
+either. Compared row by row against `0447024d` (not with `git diff`, which re-anchors this
+file):
+- 0 rows removed and 0 moved.
+- 2 shipped rows changed by hand (Copilot, below).
+- 1529 → 1877 rows over the same 35 providers.
+
+The review measured the rows it could reach with the keys at hand: Anthropic's API, a Copilot
+seat (zero cost) and OpenRouter. It compared every added row with three sources:
+- pi.dev's published row for the same provider and id (288 of 348 are there);
+- the request this build's adapters build from it;
+- Copilot's own `GET /models`, which gives each model's policy and `supported_endpoints`.
+
+Two independent reviews (Codex, and a fresh-context Claude) found more. Corrected by hand in the
+same commit, each pinned in `tests/test_catalog_corrections_are_pinned.py`:
+
+- **Copilot rows that Copilot serves on `/responses` only now ride `openai-responses`:**
+  `grok-4.6`, `grok-4.7` and `mai-code-1.1-flash`. In Copilot's listing they were the only rows
+  whose `api` disagreed with their endpoints. On `/chat/completions`, `grok-4.7` and
+  `mai-code-1.1-flash` answered 400 *"not accessible via the /chat/completions endpoint"*.
+  On `/responses`, all three answered (`grok-4.7` also at `minimal`, `low` and `high`). Two of
+  the three were shipped rows: `grok-4.6` and `mai-code-1.1-flash`.
+- **Claude Haiku 5.5 is adaptive** on its five `anthropic-messages` rows (compat
+  `forceAdaptiveThinking: true`). `supports_adaptive_thinking`'s family fallback names opus,
+  sonnet and fable, so `anthropic/claude-haiku-5-5` at `high` was sent a budget and answered 400
+  *"thinking.type.enabled is not supported for this model"*. With the flag it answered with no
+  level, at `minimal`, `low`, `high`, `xhigh` and `max`, and Copilot's at `high` and `max`. Its
+  map names `xhigh` and `max`, which an absent key would not offer.
+- **Claude Opus and Sonnet 5.5 hide `off`** on their nine `anthropic-messages` rows
+  (`{off: null, minimal: null, low … max}`). They refuse thinking off. With no level,
+  `anthropic/claude-opus-5-5` answered 400 *'"thinking.type.disabled" is not supported'*.
+  `anthropic/claude-sonnet-5-5` and `github-copilot/claude-sonnet-5.5` answered 400 *'To turn
+  thinking off on this model, send "thinking": {"type": "between_tools"}'*: a shape this build
+  does not send. With `off` hidden: no level, `--thinking off`, `low`, `high` and `max` all
+  answered, and `/thinking` lists `low` to `max`. pi.dev hides `off` on three of the nine rows:
+  the `anthropic` Opus and Sonnet rows and Copilot's Opus. It offers `off` on the other six
+  (Copilot's Sonnet, opencode's two, Vercel's three), presumably because pi now sends
+  `between_tools`. The measurement decides here.
+- **Claude 5.5's 14 `anthropic-messages` rows take no temperature** (`supportsTemperature:
+  false`), as pi.dev's rows and the shipped `claude-opus-5` rows do. Unmeasured: the adapter
+  sends a temperature only when a caller supplies one and thinking is off.
+- **MiniMax M3.1 Flash (`minimax`, `minimax-cn`) is adaptive.** pi.dev's rows carry
+  `forceAdaptiveThinking` and hide `off` and `minimal`, and models.dev lists `low` to `max` with
+  no toggle. The shipped M3 and M2.x rows are budget rows in both sources. Unmeasured: no MiniMax
+  key.
+- **Nine opencode rows ride `openai-responses`:** `grok-4.5` to `4.7`, `grok-build-0.1`, the
+  `muse` rows and their `-contributor-free` twins. models.dev's per-model `provider.npm` is
+  `@ai-sdk/openai` for all nine, and on opencode 74 of the 75 shipped rows follow `npm`. Every
+  shipped `@ai-sdk/openai` row there is `openai-responses`, and pi.dev agrees for the seven it
+  lists. The nine had inherited `openai-completions` from the provider's family-less rows. Their
+  derived maps already equal pi.dev's; `grok-build-0.1`, with no effort list, takes pi.dev's map.
+  Unmeasured: no opencode key.
+- **`opencode-go/claude-haiku-5-5` rides `anthropic-messages` at `https://opencode.ai/zen/go`.**
+  It had inherited a qwen sibling's `openai-completions` transport with `thinkingFormat: "qwen"`.
+  The fix follows pi.dev and opencode-go's one shipped `anthropic-messages` row. It is kept
+  rather than dropped, because the generator, and the publish job, would propose a dropped id
+  again with the same transport. Unmeasured.
+- **Four Gemini rows hide `off` and `minimal`:** `google/gemini-pro-latest`,
+  `google/gemini-4-argon`, `google-vertex/gemini-4-argon` and `opencode/gemini-4-argon`.
+  - With `off` offered, the Google adapters send `thinkingBudget: 0` for a launch with no level.
+  - models.dev lists effort `low`/`medium`/`high` with no toggle, and pi.dev hides both levels on
+    all four.
+  - `gemini-pro-latest`'s canonical row, `gemini-3.1-pro-preview`, carries the shipped hand map
+    that hides them.
+
+  Unmeasured: no Google key.
+- **`deepseek/deepseek-flash` (V4.1 Flash 1017 by its canonical id) takes the Flash map**
+  `{minimal: null, low, medium: null, high, max}`. It had none, so it offered `minimal` and
+  `medium`, which DeepSeek does not list. Unmeasured.
+- **The nine `eu.*` Bedrock rows the fold-back added are served from `eu-central-1`**, as the 10
+  shipped `eu.*` rows and pi.dev say. Five had inherited `us-east-1`. They are inert: this build
+  has no Bedrock adapter (ADR-0266 decision 6).
+- **ADR-0266 decision 5's rules on the 24 added rows they cover.**
+  - Claude 4.7+ and 5.x `{xhigh, max}` on 20 Bedrock rows.
+  - The DeepSeek V4 map on four V4.1 Flash rows that came with none: the Flash map on `opencode`
+    (2) and `opencode-go`, where models.dev lists `low`, and the V4 map on `nvidia`, as on its
+    shipped V4 rows.
+  - The rule is for a row "that has no map". The two OpenRouter V4.1 Flash rows and the
+    Cloudflare one keep the maps derived from OpenRouter's `supported_efforts`
+    (`[max, high, low, none]`) and models.dev's effort list.
+
+  ADR-0266's #172 amendment records the test.
+
+Measured working as committed (one short prompt each; `.omc/probes/172/live/`, not in the tree):
+- **Copilot:** `claude-haiku-5.5`, `claude-sonnet-5.5`, `gpt-6-luna` (default, `off`, `high`),
+  `grok-4.6`, `grok-4.7` and `mai-code-1.1-flash`.
+- **Anthropic:** `claude-haiku-5-5`, `-sonnet-5-5` and `-opus-5-5`. On the committed maps all
+  three answered at `xhigh` and `max`, which reach the request as adaptive
+  `output_config.effort: "xhigh"` / `"max"`. Copilot's `claude-sonnet-5.5` answered at `max`.
+- **OpenRouter:** 17 runs over 9 added rows covering every map source.
+  `deepseek/deepseek-v4.1-flash-1017` answered at `max`, which its kept map offers.
+- **OpenRouter `inception/mercury-2.5`:** with `--thinking off` it ran a bash tool call and
+  returned its unguessable output. pi's Mercury 2 rule hides `off` because instant mode
+  disables tool calling; that does not hold for 2.5 today, so the derived map stays.
+
+Copilot `gemini-4-argon` answered 400 `model_not_supported`. Copilot's `/models` lists it on
+`/chat/completions`, the transport it has, with its policy `disabled` for this seat, and `/login`
+enables policies, so that is not a catalog fault.
+
+**Routing.** OpenRouter now lists `fireworks/ember-1`, so `fireworks` became an OpenRouter
+namespace. ADR-0249: 10 of the 35 catalogued providers overlap, was 9.
+- **A catalogued Fireworks id** (`fireworks/accounts/fireworks/models/…`, 20 of them, none listed
+  on OpenRouter) now goes to OpenRouter for a user who holds an OpenRouter key of their own and no
+  Fireworks key of their own. On `0447024d` it stayed on `fireworks`.
+  - "Their own" means exported, `/login` or `models.json`. A cwd `.env` key authenticates a route
+    but never chooses one (ADR-0250 guard 1), so an exported OpenRouter key plus a `.env`
+    Fireworks key now lands on OpenRouter.
+  - A Fireworks key of their own, `--api-key`, or `--provider fireworks` keeps the id on Fireworks.
+- **An id OpenRouter lists and Fireworks' catalog does not** (`fireworks/ember-1`) goes to
+  OpenRouter even with a Fireworks key of the user's own, and with no key at all. Only
+  `--provider fireworks`, or a Fireworks key of the user's own with no OpenRouter key of their
+  own, keeps it on Fireworks. On `0447024d` it went to `fireworks`, which could not resolve it.
+- MEASURED, `--model fireworks/ember-1` with only an OpenRouter key: on `0447024d` it went to the
+  `fireworks` provider; now it goes to OpenRouter, which answered 402 for that key's credit. The
+  other cases were resolved offline by the round-2 verifier with `resolve_route` and fake keys.
+
+ADR-0249's note records it.
+
+What this run shows the generator does not do. Each fold-back's review does these by hand until
+it does, and the first publication and #434 should take them into account:
+- It does not apply ADR-0266's family rules to a new row (decision 9: it writes the derived map
+  only). The test catches that on `main`, but the publish job runs the same generator.
+- It derives no map for an `anthropic-messages` row: it reads models.dev's effort list only
+  where the wire sends the level's name. A new Claude or MiniMax generation's `off`, `xhigh`,
+  `max` and adaptive flag are therefore hand work. pi's generator carries them as family rules
+  (`generate-models.ts` at `fdce48eb4`: `:1142-1181` for Claude's `xhigh`/`max`, Fable's `off`,
+  the adaptive flag at `:1160` and temperature; per-model overrides for MiniMax M3.1 Flash at
+  `:2414-2434` and for Claude 5.5's `off` at `:2827-2848`).
+- It inherits the first transport a provider used for a family (ADR-0232's residual risk) and
+  does not read the evidence that now exists:
+  - models.dev's per-model `provider.npm` or `provider.api`, present on 34 providers on
+    2026-10-27 (`scripts/refresh_catalog.py` and `catalog_inherit.py` said `api.json` has no
+    transport at all, and now say what it has);
+  - Copilot's `/models` for Copilot rows.
+
+Left as inherited and unmeasured (no key). Each follows the same provider's shipped rows:
+- 18 rows whose `api` differs from pi.dev's:
+  - opencode `qwen3.8-max`, as the shipped `qwen3-coder`;
+  - opencode-go `gemini-4-argon`, `gpt-6-luna` and `grok-4.7`. opencode-go's shipped rows
+    disagree with `npm` on 8 of 34, among them `gpt-5.6-luna` and the `muse` rows;
+  - `xai/grok-4.7`;
+  - xiaomi's `mimo-v2.6` on its Anthropic endpoints;
+  - OpenRouter's Claude 5.5 rows and `google/gemini-nano-banana-2.1` (pi.dev:
+    `openrouter-images`) on OpenRouter's OpenAI endpoint.
+- `openai/gpt-6-luna`, where pi.dev names a wire, `openai-decisions`, that this build lacks.
+- The `zen` → `inference` base URLs pi.dev now uses for opencode, which every shipped opencode
+  row shares.
+- The three `google-vertex` Claude 5.5 `@default` rows on the Gemini transport. All 14 shipped
+  Vertex Claude rows are on it too, and pi.dev has none. They offer `off` and `minimal` and would
+  send `thinkingBudget: 0` at `off`. The whole provider needs Vertex configuration to run at
+  all, and ADR-0266 left these ids out (Not applied).
+- `cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017` keeps the map models.dev's
+  `[none, low, high, max]` derives (`off: "none"`, `low` offered). Its two shipped V4 siblings
+  carry decision 5's map although models.dev lists the same efforts for them, and pi.dev gives
+  this row that map plus the DeepSeek format. So at `off` it sends `reasoning_effort: "none"`
+  where they send none. Unmeasured: no Cloudflare credentials.
+
+Follow-ups found on shipped rows and left to their own issues:
+- opencode-go: the transports `npm` disagrees with, and `thinkingFormat: "qwen"` on its non-Qwen
+  rows.
+- Moonshot `kimi-k3`, whose `supportsReasoningEffort: false` the new K3.1 rows inherited (pi.dev:
+  `true`).
+- `nvidia`'s DeepSeek V4 rows, which send no effort (ADR-0266 decision 6; pi.dev: the DeepSeek
+  format).
+- Six Vercel realtime or live-audio rows on `anthropic-messages`.
+- Large `maxTokens` caps that OpenRouter's credit check refuses for a small balance.
+- Four shipped OpenRouter DeepSeek V4 rows (`-v4-pro-0813`, `-v4-flash-0731`,
+  `~deepseek-v4-flash-latest`, `-v4-flash-vision-exp`). OpenRouter lists `[max, high, low, none]`
+  for them, and pi.dev now carries those derived maps. They keep decision 5's
+  `{xhigh: xhigh, max: null}` and send an `xhigh` OpenRouter does not list for them.

@@ -336,7 +336,7 @@ def test_off_understates_the_non_reasoning_google_rows() -> None:
         for m in MODELS[provider].values()
         if not m.reasoning
     ]
-    assert len(non_reasoning) == 13
+    assert len(non_reasoning) == 19  # 13 before the #172 fold-back of 2026-10-27
 
 
 def test_display_matches_the_vendored_catalog_for_opus_4_6() -> None:

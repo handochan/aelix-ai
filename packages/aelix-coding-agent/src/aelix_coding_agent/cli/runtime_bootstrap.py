@@ -951,17 +951,17 @@ def _catalogued_providers() -> frozenset[str]:
 def openrouter_namespaces() -> frozenset[str]:
     """First path segments of the bundled catalog's OpenRouter ids, lower-cased.
 
-    Derived, never listed: measured on ``fbead6e0`` there are 50 (``openai``,
-    ``anthropic``, ``meta-llama``, ``x-ai``, ``~openai`` …), and 9 of them are
+    Derived, never listed: measured on ``fbead6e0`` there were 50 (``openai``,
+    ``anthropic``, ``meta-llama``, ``x-ai``, ``~openai`` …), and 9 of them were
     also catalogued provider names — ``anthropic deepseek google minimax
     moonshotai nvidia openai openrouter xiaomi``. A prefix in this set can be an
     OpenRouter id (``openai/gpt-4o-mini``), so ADR-0250's guard 2 may send such
     a string to OpenRouter when the user holds no key of their own for that
-    vendor and does hold an OpenRouter one; the other 26 catalogued providers
+    vendor and does hold an OpenRouter one; the other 26 (then) catalogued
     (``openai-codex``, ``xai``, ``groq``, ``mistral`` …) cannot be, so a string
     under them never leaves them. A catalog regeneration that adds an OpenRouter
     namespace equal to a provider name widens guard 2 at that build, with no
-    code change — the release notes of that regeneration are where it shows.
+    code change, shown in its release notes (``fireworks``, 2026-10-27: 10/25).
     """
 
     from aelix_ai.models import get_models

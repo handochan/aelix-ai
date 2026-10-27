@@ -23,6 +23,44 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **348 models the catalog was missing**, folded back from models.dev and
+  OpenRouter with `scripts/refresh_catalog.py --apply` (#172, ADR-0264 §10
+  2026-10-27). That is 1529 → 1877 rows across the same 35 providers. Nothing
+  was removed or moved; two shipped rows changed (below). Among them: Claude
+  Opus, Sonnet and Haiku 5.5 on `anthropic`, `github-copilot`, OpenRouter and
+  the gateways; `gpt-6-luna`, `gpt-6-sol`, `gpt-6.1-sol` and `gpt-6.1-terra`
+  (openai, Copilot); and `grok-4.7`. The first publication of the hosted
+  catalog (#434) now starts from them instead of 288 ids behind. The review
+  measured what its keys reached (Anthropic, a Copilot seat, OpenRouter) and
+  corrected these by hand:
+  - Copilot's `grok-4.6`, `grok-4.7` and `mai-code-1.1-flash` use the
+    Responses API, the only endpoint Copilot lists for them. On chat
+    completions, `grok-4.7` and `mai-code-1.1-flash` answered 400. `grok-4.6`
+    and `mai-code-1.1-flash` were already shipped that way.
+  - Claude Haiku 5.5 thinks adaptively: given a thinking level, it answered
+    400 "thinking.type.enabled is not supported" (measured at `high`). MiniMax
+    M3.1 Flash gets the same flag (pi.dev's; unmeasured).
+  - Claude Opus and Sonnet 5.5 no longer offer `off`, which they refuse. A
+    launch with no level now starts at `low` instead of answering 400.
+  - Nine opencode rows (Grok 4.5 to 4.7, Grok Build 0.1, the Muse models) use the Responses
+    API, as models.dev's per-model package and opencode's other OpenAI-package
+    rows say. Four Gemini rows no longer offer `off`, where it sent a thinking
+    budget of 0. Both are unmeasured.
+  - Smaller fixes: Bedrock's new `eu.*` rows use the EU region; one Claude row
+    on opencode-go no longer rides a qwen transport; `deepseek-flash` offers
+    DeepSeek's levels; Claude 5.5 sends no temperature. The rows ADR-0266's
+    `max` rules cover got them.
+- **`--model fireworks/<id>` can go to OpenRouter now** (ADR-0249's
+  2026-10-27 note). OpenRouter lists `fireworks/ember-1` since the fold-back,
+  which makes `fireworks/` an OpenRouter namespace. A catalogued Fireworks id
+  (`fireworks/accounts/fireworks/models/…`, none of them on OpenRouter) now
+  goes to OpenRouter when you hold an OpenRouter key of your own and no
+  Fireworks key of your own. Before, it stayed on the `fireworks` provider.
+  "Your own" means exported, `/login` or `models.json`; a key only in a
+  project's `.env` never chooses a route (ADR-0250). A Fireworks key of your
+  own, `--api-key` or `--provider fireworks` keeps it on Fireworks.
+  `fireworks/ember-1`, which only OpenRouter lists, goes to OpenRouter unless
+  you pass `--provider fireworks` or hold only a Fireworks key of your own.
 - **RPC hosts: native runtime controls beside pi's roster (#593, #594, ADR-0275).**
   `--mode rpc` accepts `{"type": "aelix_control", "method": ..., "params": ...}`
   requests, answered with the usual correlated `response`. They cover extension

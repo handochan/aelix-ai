@@ -772,12 +772,12 @@
    "clamped = clamp_thinking_level(model, options.reasoning)",
    "effort = \"high\" if clamped in (\"off\", None) else clamped"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:424-425": [
-   "return _VERTEX_BUDGET_2_5_PRO.get(effort, -1)",
-   "if \"2.5-flash\" in model_id:"
-  ],
   "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:443-443": [
    "clamped = clamp_thinking_level(model, options.reasoning)"
+  ],
+  "packages/aelix-ai/src/aelix_ai/providers/google_vertex.py:443-444": [
+   "clamped = clamp_thinking_level(model, options.reasoning)",
+   "effort = \"high\" if clamped in (\"off\", None) else clamped"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:677-677": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"

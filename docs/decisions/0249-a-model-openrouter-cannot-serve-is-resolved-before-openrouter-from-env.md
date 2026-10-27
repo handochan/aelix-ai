@@ -1,6 +1,6 @@
 # 0249. A `--model` OpenRouter cannot serve is resolved before OpenRouter-from-env
 
-Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7)
+Status: Accepted (2026-09-30) — §2.1's rung 0 and OpenRouter-from-env rung, §2.6's split rule and §5 superseded by ADR-0250 (2026-10-02, #362); §2.3's `session_start` switch amended 2026-10-03 (#367): a launch no registered provider claimed is refused, as in pi, where its inputs land on such a provider; a launch on a registered provider stays there, and later re-resolutions landing on one are held; no turn starts while the `session_start` of a pending launch or a held rebuild runs (round 5); a hold is checked after it is applied, and a gated `trigger_turn` ends as a refused turn (round 6); every hold is applied under the turn gate (round 7); noted 2026-10-27 (#172's fold-back): `fireworks` became an OpenRouter namespace, 10 of 35 overlap
 Superseded by: [ADR-0250](0250-model-routing-follows-pi-and-a-dotenv-credential-cannot-choose-a-route.md) (§2.1, §2.6, §5; X1 §2.3, S §2.4 and §2.7 stand); [ADR-0251](0251-own-api-key-before-environment-and-composed-launch-model.md) (2026-10-06, #363: §2.4's bearer paragraph and its "only the host moves" paragraph); [ADR-0262](0262-explicit-provider-registrations-own-model-routes.md) (2026-10-11, #365: explicit registration scope in sections 2.1/2.2, and the provider-name-only delegated pin)
 Date: 2026-09-30
 Amends: **ADR-0195 §Decision 4** (the precedence ladder `resolve_model` owns — a rung 0
@@ -732,3 +732,30 @@ rejecting `model_select` (no request). Found, and what round 4 did:
   `ambiguous_rpc_mock_requests []`; print unchanged (refused, no request).
 - **F4 — the tests did not cover these.** 20 rows added (§4), red on `ebfe411a` where they
   pin a fix.
+
+## Note (2026-10-27, #172's fold-back): `fireworks` is an OpenRouter namespace now
+
+The fold-back added OpenRouter's `fireworks/ember-1`, so 10 of the 35 catalogued providers overlap
+an OpenRouter namespace (was 9: `fireworks` joins). As `runtime_bootstrap.openrouter_namespaces`
+says, that widens guard 2 with no code change.
+
+Who it reaches:
+- **The 20 catalogued Fireworks ids**, none of which OpenRouter lists. A user who holds an
+  OpenRouter key of their own and no Fireworks key of their own now reaches OpenRouter with them,
+  where they stayed on `fireworks` before.
+  - "Their own" means exported, `/login` or `models.json`. A key in a cwd `.env` authenticates a
+    route but does not choose one (guard 1, ADR-0250). So an exported OpenRouter key plus a `.env`
+    Fireworks key moved from `fireworks` to OpenRouter, and an OpenRouter key only in `.env`
+    moves nothing.
+  - A Fireworks key of their own, `--api-key`, or `--provider fireworks` keeps them on Fireworks.
+- **`fireworks/ember-1`**, which OpenRouter lists and Fireworks' catalog does not, goes to
+  OpenRouter even with a Fireworks key of the user's own, and with no key at all. Only
+  `--provider fireworks`, or a Fireworks key of the user's own with no OpenRouter key of their
+  own, keeps it on Fireworks.
+
+MEASURED with only an OpenRouter key: `--model fireworks/ember-1` ended on the `fireworks`
+provider on `0447024d` ("could not be resolved to a known API protocol") and on OpenRouter after
+the fold-back (OpenRouter's 402 for that key's credit). The other cases were resolved offline with
+`resolve_route` and fake keys (the #172 round-2 verification). `tests/cli/test_provider_prefix_rung.py`
+pins the partition at (35, 10, 25).
+

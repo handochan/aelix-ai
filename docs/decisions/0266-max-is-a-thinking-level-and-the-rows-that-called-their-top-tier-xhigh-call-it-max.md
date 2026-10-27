@@ -1,7 +1,8 @@
 # 0266. `max` is a thinking level of its own, and the rows that called their top tier `xhigh` call it `max`
 
 Status: Accepted (2026-10-20, the owner's decision on #433; corrected 2026-10-21 by the owner's
-decisions on OpenRouter's DeepSeek V4 rows and on the map-less DeepSeek V4 rows, review round 2)
+decisions on OpenRouter's DeepSeek V4 rows and on the map-less DeepSeek V4 rows, review round 2);
+amended 2026-10-27 (#172's fold-back: decision 5's rules applied by hand to the rows it adds)
 Date: 2026-10-20
 Issue: #433
 Amends: ADR-0064 (the level scale, dated note); ADR-0135 ("`EXTENDED_THINKING_LEVELS` is
@@ -204,3 +205,26 @@ changed rows: 132; distinct (old -> new) pairs: 17; no other field and no row se
 - `{"off": "none", "minimal": null, "low": "high", "medium": "high", "xhigh": "max"}` → `{"off": "none", "minimal": null, "low": "high", "medium": "high", "max": "max"}` (1): `fireworks/accounts/fireworks/models/glm-5p2`
 
 - `{"off": null, "minimal": null, "low": null, "medium": null, "high": "high", "xhigh": "max"}` → `{"off": null, "minimal": null, "low": null, "medium": null, "high": "high", "max": "max"}` (1): `opencode-go/glm-5.2`
+
+## Amendment (2026-10-27, #172) - the fold-back's rows take decision 5's rules by hand
+
+The generator still writes only the map it derives (decision 9), so the 348 rows the #172
+fold-back added arrived without decision 5's rules where those apply. Applied by hand in that
+commit, to 24 rows:
+- `{xhigh, max}` merged on 20 Bedrock Claude 4.7+ and 5.x rows, as pi's `mergeThinkingLevelMap`
+  does.
+- The DeepSeek V4 rule on the four `openai-completions` V4.1 Flash rows that came with no map:
+  - `opencode` (2) and `opencode-go` take the Flash map (`low: "low"`), because models.dev lists
+    `low` for them. pi's `includes("deepseek-v4-flash")` misses the `.1`, and pi.dev's own rows
+    have `low`.
+  - `nvidia` takes the V4 map, as its shipped V4 rows do.
+
+The rule is for a row "that has no map". The two OpenRouter V4.1 Flash rows and the Cloudflare
+one came with maps derived from OpenRouter's `supported_efforts` (`[max, high, low, none]`) and
+models.dev's effort list, and keep them. A review caught the first version of the commit
+overwriting them.
+
+`test_every_deepseek_v4_completions_row_follows_pis_rule` keeps its exact checks. It names those
+three rows as derived-map rows, which must offer `high`, and counts the 27 the rule covers (23 +
+4). `test_pis_max_rules_hold_on_every_row_they_cover` is unchanged. ADR-0264 §10 (2026-10-27)
+lists the fold-back's other corrections.

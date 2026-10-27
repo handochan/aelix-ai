@@ -126,10 +126,11 @@ def test_kimi_k2_7_code_present() -> None:
 
 @pytest.mark.parametrize(
     ("provider", "expected_count"),
-    # #172 grew two of the three: nvidia 19 → 62 → 65, zai-coding-cn 6 → 16 → 18
-    # (the 2026-09-08 refresh). The counts are here so a provider SHRINKING
-    # fails; they are re-derived when the catalog grows, never lowered to meet it.
-    [("ant-ling", 3), ("nvidia", 65), ("zai-coding-cn", 18)],
+    # #172 grew two of the three: nvidia 19 → 62 → 65 → 72, zai-coding-cn
+    # 6 → 16 → 18 → 20 (the 2026-09-08 refresh, then the fold-back of
+    # 2026-10-27). The counts are here so a provider SHRINKING fails; they are
+    # re-derived when the catalog grows, never lowered to meet it.
+    [("ant-ling", 3), ("nvidia", 72), ("zai-coding-cn", 20)],
 )
 def test_new_provider_present(provider: str, expected_count: int) -> None:
     assert provider in MODELS

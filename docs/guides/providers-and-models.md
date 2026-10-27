@@ -538,8 +538,9 @@ one bare word is one the model calls by the same name. `off` is always
 bare — it is folded into "no reasoning requested" before a provider adapter sees
 it, so there is no tier to name.
 
-One place that reading is currently too generous: on the thirteen non-reasoning
-Google entries (Gemini 1.5 / 2.0, Gemma, and the Vertex-hosted Llamas) the Google
+One place that reading is currently too generous: on the nineteen non-reasoning
+Google entries (Gemini 1.5 / 2.0, Gemma, and the Vertex-hosted Llama, Mistral,
+Codestral and Grok models) the Google
 adapter turns that disabled level back into a thinking request, so a `high (off)`
 there understates what actually goes out. That is an adapter defect, tracked as
 [#256](https://github.com/handochan/aelix-ai/issues/256).

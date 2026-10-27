@@ -44,8 +44,8 @@ def thinking_level_display(model: Any, level: str) -> str:
 
     One adapter breaks that contract, and the break is the adapter's rather than
     this rule's: both Google adapters revive a clamped ``off`` back into ``high``
-    (``google_generative_ai.py:309-310``, ``google_vertex.py:424-425``), so
-    ``(off)`` understates the 13 non-reasoning Gemini/Gemma/Vertex-Llama catalog
+    (``google_generative_ai.py:309-310``, ``google_vertex.py:443-444``), so
+    ``(off)`` understates the 19 non-reasoning Google and Vertex-hosted catalog
     rows — those requests do carry thinking. The other adapter families honour it
     (``_anthropic_transforms.py`` returns ``{}`` on a non-reasoning model and
     ``thinking: disabled`` otherwise, both OpenAI Responses adapters map a clamped
@@ -56,10 +56,11 @@ def thinking_level_display(model: Any, level: str) -> str:
 
     - ``off`` — ``harness/core.py`` folds ``off``/unset to ``reasoning=None``
       before an adapter sees it, so ``off`` never reaches one as a tier and there
-      is no true value to show. (The cost, measured: on the 210 reasoning rows
+      is no true value to show. (The cost, measured: on the 269 reasoning rows
       that do not support ``off`` — 103 before #433 gave the Fable mirrors pi's
-      ``off: null``, 118 before #507 gave 92 more theirs — the request then
-      carries no reasoning field at all and the model thinks at its own default.)
+      ``off: null``, 118 before #507 gave 92 more theirs, 210 before the #172
+      fold-back of 2026-10-27 added 59 — the request then carries no reasoning
+      field at all and the model thinks at its own default.)
     - a case-only rename — Google spells its enum ``HIGH``/``LOW``/``MINIMAL``;
       that is the same tier, so a suffix would be noise on 8 rows (#433's count).
     - a non-``str`` mapping — ``_anthropic_transforms.py`` guards on

@@ -711,7 +711,7 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
         and model.reasoning
         and not supports_adaptive_thinking(model)
     ]
-    # 282 rows at this commit, 13 of which offer xhigh — all
+    # 338 rows since the #172 fold-back of 2026-10-27 (282 before), 13 of which offer xhigh — all
     # vercel-ai-gateway rows serving OpenAI ids over the Anthropic Messages
     # API, since #258 moved every Claude row of that generation to adaptive.
     assert rows, "no budget-path reasoning model — the walk lost its subject"
@@ -723,7 +723,7 @@ def test_every_budget_path_xhigh_model_differs_from_high() -> None:
         _xmax, xhigh_budget = adjust_max_tokens_for_thinking(cap, cap, effective)
         assert high_budget == expected(cap, 16384), model.id
         if "xhigh" not in get_supported_thinking_levels(model):
-            # 269 rows: the picker never offers xhigh, so an xhigh that arrives
+            # 325 rows (269 before the fold-back): the picker never offers xhigh, so an xhigh that arrives
             # anyway must land on high's budget — 0985fcf behaviour exactly.
             assert effective == "high", model.id
             assert xhigh_budget == high_budget, model.id

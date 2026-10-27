@@ -781,14 +781,20 @@ def _catalogue_partition() -> tuple[frozenset[str], frozenset[str], frozenset[st
 
 
 def test_the_catalogue_partition_has_the_sizes_the_adr_states() -> None:
-    """35 catalogued, 9 overlap, 26 do not (ADR-0249). A regeneration that moves
-    these moves prefixes between rung 0c and OpenRouter — make it visible."""
+    """35 catalogued, 10 overlap, 25 do not (ADR-0249). A regeneration that moves
+    these moves prefixes between rung 0c and OpenRouter — make it visible.
+
+    The #172 fold-back of 2026-10-27 moved ``fireworks`` (9 → 10): OpenRouter
+    now lists ``fireworks/ember-1``, so ``fireworks/<id>`` with no Fireworks
+    key of the user's own and an OpenRouter one goes to OpenRouter (ADR-0249's
+    2026-10-27 note, the CHANGELOG)."""
 
     catalogued, overlapping, rest = _catalogue_partition()
-    assert (len(catalogued), len(overlapping), len(rest)) == (35, 9, 26)
+    assert (len(catalogued), len(overlapping), len(rest)) == (35, 10, 25)
     assert overlapping == {
         "anthropic",
         "deepseek",
+        "fireworks",
         "google",
         "minimax",
         "moonshotai",
@@ -806,9 +812,9 @@ async def test_every_catalogued_prefix_lands_where_the_partition_says(
     """Codex C5: dropping ``groq/`` from rung 0c passed every earlier test.
 
     Each catalogued provider, with an id from its own catalogue and
-    ``OPENROUTER_API_KEY`` exported, no vendor key: the 26 that are not an
+    ``OPENROUTER_API_KEY`` exported, no vendor key: the 25 that are not an
     OpenRouter namespace resolve to themselves (ADR-0250: nothing can take them
-    elsewhere). The 9 that are go to OpenRouter as the whole string (#362 /
+    elsewhere). The 10 that are go to OpenRouter as the whole string (#362 /
     ADR-0250: pi's swap when OpenRouter's snapshot lists it, guard 2 when it does
     not — the user holds no key of their own for that vendor), except
     ``openrouter/<id>``, an explicit route whose prefix pi strips.
