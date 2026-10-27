@@ -23,6 +23,15 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **The published model catalog can be checked only when you ask** (#609).
+  `/settings` → **Check model catalogs** off (the global setting
+  `checkModelCatalog: false`) stops the automatic checks at start-up, in the
+  model pickers, on a `/model` miss and after `/login`; `aelix update --models`
+  still checks, and the stored catalog is still used. Default on, as before. A
+  project `.aelix/settings.json` cannot change it. With it off, a withdrawn model
+  reaches you only when you run the command, and a session already open only when
+  you restart it. The README's list of requests aelix
+  makes for itself now names the model catalog check (#434 had left it out).
 - **Models published between releases reach you without a release** (#434,
   ADR-0264 §10 2026-10-27). aelix now reads its own published catalog,
   `https://handochan.github.io/aelix-catalog/v1/index.json`, as pi reads

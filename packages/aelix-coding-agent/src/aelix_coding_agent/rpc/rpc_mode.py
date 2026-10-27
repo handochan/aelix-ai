@@ -2515,7 +2515,9 @@ async def run_rpc_mode(
 
     catalog_unbind = bind_catalog_events(model_registry, lambda: capture.harness)
     if model_registry is not None:
-        start_background_refresh(model_registry, trigger="rpc-startup")
+        start_background_refresh(
+            model_registry, trigger="rpc-startup", settings_manager=settings_manager
+        )
 
     # === Main loop ============================================================
     try:

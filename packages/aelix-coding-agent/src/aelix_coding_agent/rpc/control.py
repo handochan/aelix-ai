@@ -66,6 +66,7 @@ SETTING_FIELDS: dict[str, tuple[str, type, tuple[Any, ...] | None]] = {
     "hide_compaction_summary": ("hide_compaction_summary", bool, None),
     "respect_gitignore": ("respect_gitignore", bool, None),
     "check_for_updates": ("check_for_updates", bool, None),
+    "check_model_catalog": ("check_model_catalog", bool, None),
     "skill_paths": ("skill_paths", list, None),
     "prompt_template_paths": ("prompt_template_paths", list, None),
     "enabled_models": ("enabled_models", list, None),

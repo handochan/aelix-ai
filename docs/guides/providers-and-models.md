@@ -696,6 +696,13 @@ on its own.
 - **Where it lives.** `~/.aelix/agent/models-store.json` (and its
   `models-store.json.lock`), shared by every aelix that uses that directory.
   Deleting them loses only the cache.
+- **Checking only when you ask.** `/settings` → **Check model catalogs** off (the
+  global `checkModelCatalog: false`; a project `.aelix/settings.json` cannot set
+  it) stops every automatic check: start-up, the pickers, a `/model` miss and
+  `/login`. `aelix update --models` still checks, and the stored catalog is still
+  used. The price: a withdrawn model leaves your lists only when you run the
+  command, since nothing else checks, and an aelix session already open sees
+  what the command fetched only after you restart it.
 - **Turning it off.** `--offline`, `AELIX_OFFLINE` / `PI_OFFLINE`, or
   `AELIX_MODEL_CATALOG_URL=` (empty). The variable can also point at another
   `https://` copy (or a loopback `http://127.0.0.1:<port>` for testing); a

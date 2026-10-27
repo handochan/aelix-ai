@@ -207,7 +207,12 @@ consent very much is:
   revision must hash to its own name. Delegated agents and `-p` never check;
   they read what the last check stored. Turn it off with `--offline` /
   `PI_OFFLINE=1` / `AELIX_OFFLINE=1`, or with `AELIX_MODEL_CATALOG_URL=` (empty),
-  which a project `.env` cannot set.
+  which a project `.env` cannot set. `/settings` → "Check model catalogs" (the
+  global `checkModelCatalog`, which a project `.aelix/settings.json` cannot set
+  either) turns off the automatic checks and leaves `aelix update --models` as
+  the only one; the stored catalog is still used, so a withdrawal then reaches
+  this machine only when that command runs, and a session already open only
+  when it restarts.
   **What a published catalog can and cannot do.** It can add model ids to the
   providers this build ships and change a known id's facts (name, limits, prices,
   thinking levels), so a published id is selectable, and routes, as if a release

@@ -237,16 +237,16 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 44 optional fields — every field defaults to ``None`` so unset →
+# 45 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, render_max_width, session_dir, default_project_trust,
-# hide_compaction_summary, features, respect_gitignore) — all 44 are covered by
-# SETTINGS_PY_TO_JSON.
+# hide_compaction_summary, features, respect_gitignore, check_model_catalog) —
+# all 45 are covered by SETTINGS_PY_TO_JSON.
 # (This count has been wrong before — it read 42 while the dataclass held 41,
 # then 42 while it held 43. Re-measured 2026-09-07 under #238: 43 before this
-# field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same. Recount before
-# trusting it.)
+# field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same; 45 after #609's
+# ``check_model_catalog``. Recount before trusting it.)
 
 
 @dataclass
@@ -294,6 +294,13 @@ class Settings:
     # ``SettingsManager.get_respect_gitignore``, which reads the GLOBAL cell only
     # so the ``/settings`` row cannot show a project override it failed to change.
     respect_gitignore: bool | None = None
+    # AELIX-ORIGINAL (#609, ADR-0264 §10): whether the published model catalog is
+    # checked at its automatic triggers (start-up, the model pickers, a ``/model``
+    # miss, ``/login``). Off leaves ``aelix update --models`` as the only check.
+    # ``None`` reads as ON (pi's triggers, the owner's choice of 2026-10-19), and
+    # the getter reads the GLOBAL cell only, as ``respect_gitignore``'s does: a
+    # project file must not decide what the global model store fetches.
+    check_model_catalog: bool | None = None
     # NOTE (#111 B-2): Pi's ``enableInstallTelemetry`` is deliberately NOT
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
@@ -403,6 +410,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "collapse_changelog": "collapseChangelog",
     "check_for_updates": "checkForUpdates",
     "respect_gitignore": "respectGitignore",
+    "check_model_catalog": "checkModelCatalog",
     "packages": "packages",
     "extension_sources": "extensionSources",
     "extensions": "extensions",

@@ -80,7 +80,7 @@ async def switch_model_argument(
             # named with a key — a published row may be about to hold it.
             resolution.model is not None and resolution.caution is not None
         )
-        if missed and await _refreshed(model_registry, warn):
+        if missed and await _refreshed(model_registry, warn, settings_manager):
             # #434 (ADR-0264 §4.6) — nothing matched: refresh the model catalogs
             # (not forced: the hosted 4-hour interval holds), then match once more.
             resolution = await resolve_model_argument(
@@ -139,7 +139,9 @@ async def switch_model_argument(
     return ModelSwitch(model=model, caution=caution)
 
 
-async def _refreshed(model_registry: Any, warn: Callable[[str], None]) -> bool:
+async def _refreshed(
+    model_registry: Any, warn: Callable[[str], None], settings_manager: Any = None
+) -> bool:
     """Refresh the model catalogs for a ``/model`` that matched nothing; True when one ran.
 
     pi's ``/model <term>`` with no cached match (``interactive-mode.ts:5233-5265``):
@@ -147,9 +149,11 @@ async def _refreshed(model_registry: Any, warn: Callable[[str], None]) -> bool:
     matches again. Nothing runs offline or without a refreshable registry.
     """
 
-    from aelix_coding_agent.model_refresh import refresh_allowed, refresh_catalogs
+    from aelix_coding_agent.model_refresh import auto_refresh_allowed, refresh_catalogs
 
-    if not callable(getattr(model_registry, "refresh_models", None)) or not refresh_allowed():
+    if not callable(getattr(model_registry, "refresh_models", None)) or not auto_refresh_allowed(
+        settings_manager
+    ):
         return False
     warn("Refreshing model catalogs…")
     try:

@@ -1051,6 +1051,30 @@ class SettingsManager:
         self._mark_modified("respect_gitignore")
         self._save()
 
+    # --- checkModelCatalog (AELIX-ORIGINAL, #609; pi has no such switch) ---
+    def get_check_model_catalog(self) -> bool:
+        """Whether the published model catalog is checked at its automatic triggers.
+
+        DEFAULTS ON: pi's triggers (start-up, the model pickers, a ``/model``
+        miss, ``/login``), the owner's choice of 2026-10-19 (ADR-0264 §7). Off,
+        only ``aelix update --models`` checks, and a withdrawal reaches this
+        machine only when that runs (ADR-0264 §10, #609). The cache is used
+        either way. GLOBAL cell only, as :meth:`get_respect_gitignore` reads: a
+        project ``.aelix/settings.json`` neither turns it on nor off, so the
+        ``/settings`` row always shows what it changes. Read at each trigger, so
+        a flip applies from the next check.
+        """
+
+        value = self._global_settings.check_model_catalog
+        return True if value is None else bool(value)
+
+    def set_check_model_catalog(self, enabled: bool) -> None:
+        """Persist the automatic model catalog check switch (GLOBAL scope)."""
+
+        self._global_settings.check_model_catalog = bool(enabled)
+        self._mark_modified("check_model_catalog")
+        self._save()
+
     # --- sessionDir (Pi `:576-588`) ---
     def get_session_dir(self) -> str | None:
         """Pi parity: ``settings-manager.ts::getSessionDir`` (line 576-588).

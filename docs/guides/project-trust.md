@@ -23,7 +23,7 @@ The complete list comes from
 
 | Resource | Why it is gated |
 | --- | --- |
-| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs` and `respectGitignore`. Read only when the project is trusted (#369). |
+| `<cwd>/.aelix/settings.json` | Your settings, overridden by the repository's: it can choose the default model and provider your prompts go to, and almost every other setting. The exceptions are read from your global settings only, trusted or not: `defaultProjectTrust`, `features.agents`, `extensionSources`, `suppressedDefaultCatalogs`, `respectGitignore` and `checkModelCatalog`. Read only when the project is trusted (#369). |
 | `<cwd>/.aelix/extensions/` | `importlib` `exec_module`s arbitrary Python with your privileges. |
 | `<cwd>/.aelix/mcp.json` | Declares MCP servers; a `stdio` one spawns a subprocess on connect. |
 | `<cwd>/.aelix/SYSTEM.md` | Replaces the generated system prompt, including the agent identity and tool guidance (#287, ADR-0257). |
@@ -319,9 +319,10 @@ What still holds in a **trusted** directory:
   settings, so a repository's pair can no longer be laundered into the
   default every other directory uses.
 - **Some settings are global-only whatever the trust:** `defaultProjectTrust`,
-  `features.agents`, and the extension install sources (`extensionSources`,
-  `suppressedDefaultCatalogs`, which `aelix extension source …` reads and
-  writes). A repository cannot choose them by shipping its own file.
+  `features.agents`, `respectGitignore`, `checkModelCatalog`, and the extension
+  install sources (`extensionSources`, `suppressedDefaultCatalogs`, which
+  `aelix extension source …` reads and writes). A repository cannot choose them
+  by shipping its own file.
 
 ## One sharp edge, on the record
 

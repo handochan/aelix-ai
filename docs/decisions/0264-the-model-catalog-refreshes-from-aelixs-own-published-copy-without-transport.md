@@ -7,7 +7,7 @@ owner's decision (§2), revised after its reviews (r5-r11) and on the owner's de
 2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from; #397,
 the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fold-back, run once,
 and what its review had to correct by hand; #434's client as built: the store, the source, the
-triggers, and what its live checks changed).
+triggers, and what its live checks changed; #609's opt-in manual mode).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -1960,3 +1960,28 @@ findings FIXED, 2 PARTIAL, 3 new should-fix). Fixed, each with a test that fails
 - Not tested, as the verifier found: `/fork`, `/import` and `/new` on a removed id beyond
   `switch_session` and the reviewers' probes (the behaviour measured fine). Per the two-round
   cap, nothing further was reviewed.
+
+### 2026-10-27: #609 - an opt-in switch: check only when the user asks
+
+The owner's choice of 2026-10-27, after #434 merged: keep pi's triggers (§4.6, the owner's choice
+of 2026-10-19) as the default, and add an opt-in mode where only `aelix update --models` checks.
+
+- **The switch** is a global setting, `checkModelCatalog` (default on), shown in `/settings` as
+  "Check model catalogs". Its getter reads the GLOBAL cell only, as `respectGitignore`'s does, so
+  a project `.aelix/settings.json` can neither turn it off nor on and the row shows what it
+  changes. A setting rather than an environment name, for the reason `checkForUpdates` gives: no
+  new variable a cwd `.env` could try to drive.
+- **What it gates**: every automatic trigger of §4.6 (TUI and RPC start-up, the `/model` and
+  `/scoped-models` pickers, a `/model` miss, `/login`) asks `model_refresh.auto_refresh_allowed`
+  off the session's settings manager when it fires, so a flip applies from the next trigger.
+  `aelix update --models` asks `refresh_allowed` alone, and the cache phase installs the stored
+  revision either way. With no settings manager (an embedder) it reads as on.
+- **The price, written in the guide and SECURITY.md**: nothing checks between commands, so a hold
+  (a rollback or a withdrawal) reaches a machine with the switch off only when the user runs
+  `aelix update --models`, and new models appear only then. A session already open sees what the
+  command stored only after a restart: with the switch on, the next picker check adopts another
+  process's store even inside the 4 hours, but with it off nothing in the session reads the store
+  (review round 1 measured it; reading the store on picker open without a request is left out).
+- The README's list of the requests aelix makes for itself now names the model catalog check,
+  which #434 had left out.
+

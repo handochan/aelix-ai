@@ -1363,8 +1363,8 @@ async def run_tui(
 
     async def _apply_live_setting(key: str, value: object) -> None:
         # Mirror a persisted dual-write row onto the LIVE session — except the
-        # two PULL rows, ``respect_gitignore`` and ``enable_skill_commands``,
-        # whose branches are documented no-ops; see below.
+        # three PULL rows, ``respect_gitignore``, ``enable_skill_commands`` and
+        # ``check_model_catalog``, whose branches are documented no-ops; see below.
         # The persist half already ran in apply_setting; this is the in-session
         # half so the change takes effect this run (not only next launch). Steering/follow-up
         # write the harness (no persist of their own); hide-thinking writes the
@@ -1406,6 +1406,10 @@ async def run_tui(
                 # reason as above — the absence would otherwise read as an
                 # omission, and until #244 the classifier in
                 # tests/tui/test_settings_rows.py could not tell the two apart.
+                pass
+            elif key == "check_model_catalog":
+                # #609 — PULL as well: each automatic catalog trigger asks
+                # ``auto_refresh_allowed`` off this SettingsManager when it fires.
                 pass
 
     async def _open_settings() -> None:
@@ -1580,12 +1584,15 @@ async def run_tui(
         )
 
     def _picker_catalog_refresh(trigger: str) -> Callable[[], Awaitable[Any]] | None:
-        """A picker's catalog refresh (#434): ``None`` offline or with no registry."""
+        """A picker's catalog refresh (#434).
 
-        from aelix_coding_agent.model_refresh import refresh_allowed, refresh_catalogs
+        ``None`` offline, with no registry, or with ``checkModelCatalog`` off (#609).
+        """
+
+        from aelix_coding_agent.model_refresh import auto_refresh_allowed, refresh_catalogs
 
         registry = model_registry
-        if registry is None or not refresh_allowed():
+        if registry is None or not auto_refresh_allowed(settings_manager):
             return None
         return lambda: refresh_catalogs(registry, trigger=trigger)
 
@@ -1612,6 +1619,7 @@ async def run_tui(
             model_registry,
             trigger="startup",
             on_done=lambda _result: _repaint_footer_for_model_in_force(),
+            settings_manager=settings_manager,
         )
 
     async def _open_thinking_picker() -> None:
@@ -1815,9 +1823,10 @@ async def run_tui(
             # the model chosen meanwhile (pi ``interactive-mode.ts:6152-6170``).
             # The key-scoped source this would force is #450's.
             with contextlib.suppress(Exception):
-                from aelix_coding_agent.model_refresh import refresher
+                from aelix_coding_agent.model_refresh import auto_refresh_allowed, refresher
 
-                refresher().background(model_registry, trigger="login")
+                if auto_refresh_allowed(settings_manager):
+                    refresher().background(model_registry, trigger="login")
 
         available: list[Any] = []
         if model_registry is not None:

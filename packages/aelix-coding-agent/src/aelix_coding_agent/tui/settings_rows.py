@@ -42,7 +42,7 @@ PULL — nothing is mirrored: the consumer holds a callable onto the getter and
 re-reads it on every use, so the persist half IS the live half.
 ``_apply_live_setting`` carries an explicit pass-only branch so the absence of a
 mirror reads as a decision, not an omission.
-  PULL keys: respect_gitignore, enable_skill_commands
+  PULL keys: respect_gitignore, enable_skill_commands, check_model_catalog
 
 These helpers own the persist half + the canonical cycle orderings + the
 human-readable labels under both mechanisms.
@@ -105,7 +105,8 @@ class SettingsRow:
         mechanisms — the shell mirrors the new value onto the live session (the PUSH
         rows, see the module docstring), or the consumer holds a callable onto the
         getter and re-reads it on every use so nothing is mirrored (the PULL rows:
-        ``respect_gitignore`` #238, ``enable_skill_commands`` #244). ``False`` =
+        ``respect_gitignore`` #238, ``enable_skill_commands`` #244,
+        ``check_model_catalog`` #609). ``False`` =
         persist-only. Note that ``live=False`` does NOT imply "applies next
         launch" — for the ten inert rows (#111 B-11, #84) nothing reads the value
         at any point, and it also does not imply INERT: ``features_agents`` is
@@ -267,6 +268,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         #   * ``render_max_width``      -> tui/shell.py -> tui/width.py (live)
         #   * ``enable_skill_commands`` -> tui/shell.py -> cli/resource_commands.py (live)
         #   * ``check_for_updates``     -> tui/shell.py::_start_update_check
+        #   * ``check_model_catalog``   -> model_refresh.auto_refresh_allowed (live, PULL)
         #
         # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
         # commit. A row that works but claims to be inert is the same defect
@@ -304,6 +306,22 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             # banner paints. ``live=True`` would promise a mid-session effect
             # that nothing delivers — the #84 defect, pointing the usual way.
             live=False,
+        ),
+        SettingsRow(
+            key="check_model_catalog",
+            label="Check model catalogs",
+            kind="bool",
+            read=lambda s: _on_off(s.get_check_model_catalog()),
+            # Short, for the reason ``respect_gitignore``'s help gives (the
+            # picker's detail line is not wrapped). The cost of off — a
+            # withdrawal reaches this machine only when the command runs — is in
+            # the guide and SECURITY.md (#609, ADR-0264 §10).
+            help="Off → only aelix update --models checks for new models (live).",
+            # LIVE by the PULL mechanism: every automatic trigger (a model
+            # picker, a ``/model`` miss, ``/login``) asks
+            # ``model_refresh.auto_refresh_allowed`` off this SettingsManager when
+            # it fires; only the start-up check, already run, is not repeated.
+            live=True,
         ),
         SettingsRow(
             key="autocomplete_max_visible",
@@ -526,11 +544,12 @@ def apply_setting(
             # Re-read before rendering, for the reason the ``int`` arm below
             # already re-reads: the value that comes back is not always the value
             # asked for. EVERY bool setter writes the GLOBAL cell, while most bool
-            # getters read the MERGED view (``get_features_agents`` and
-            # ``get_respect_gitignore`` deliberately read the global cell too, so
-            # those two can never mismatch — see their docstrings), so for the
-            # other ten a project ``.aelix/settings.json`` carrying the key wins
-            # and the write is a no-op on screen. Measured on
+            # getters read the MERGED view (``get_features_agents``,
+            # ``get_respect_gitignore`` and ``get_check_model_catalog``
+            # deliberately read the global cell too, so those three can never
+            # mismatch — see their docstrings), so for the other ten a project
+            # ``.aelix/settings.json`` carrying the key wins and the write is a
+            # no-op on screen. Measured on
             # ``check_for_updates`` (global ``true`` / project ``false``):
             # ``set_check_for_updates(True)`` leaves the getter ``False``, so
             # rendering ``new`` would draw a green "→ on" over a row that redraws
@@ -629,6 +648,8 @@ _BOOL_GETTERS: dict[str, str] = {
     # swallowed it into ``✖ Check for updates: 'check_for_updates'``, and nothing
     # was written — while both READMEs said ``/settings`` turned the check off.
     "check_for_updates": "get_check_for_updates",
+    # #609 — the automatic model catalog check (same table contract).
+    "check_model_catalog": "get_check_model_catalog",
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
@@ -646,6 +667,7 @@ _BOOL_SETTERS: dict[str, str] = {
     "respect_gitignore": "set_respect_gitignore",
     # #244 — see the getter note above; the row was undispatchable on both halves.
     "check_for_updates": "set_check_for_updates",
+    "check_model_catalog": "set_check_model_catalog",
 }
 # The bool rows whose live half is PUSH (see the module docstring): the shell
 # mirrors ``ApplyResult.live`` onto a renderer flag, so the session changes

@@ -10,8 +10,11 @@ The triggers (§4.6) call :func:`refresh_catalogs` (and wait) or
 :func:`start_background_refresh` (and do not). Neither runs while the process
 is offline (``--offline``, ``AELIX_OFFLINE``, ``PI_OFFLINE``), and a start-up
 trigger never runs in a delegated child (``AELIX_SUBAGENT_DEPTH`` of 1 or more),
-which reads the cache its parent wrote. The refresher holds its tasks with
-strong references; event-loop teardown cancels a run before it publishes.
+which reads the cache its parent wrote. With the global ``checkModelCatalog``
+off (#609) only ``aelix update --models`` runs: the automatic triggers ask
+:func:`auto_refresh_allowed`, the command :func:`refresh_allowed` alone. The
+refresher holds its tasks with strong references; event-loop teardown cancels a
+run before it publishes.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ if TYPE_CHECKING:
 __all__ = [
     "TRIGGER_TIMEOUT",
     "ModelCatalogRefresher",
+    "auto_refresh_allowed",
     "bind_catalog_events",
     "refresh_allowed",
     "refresh_catalogs",
@@ -57,12 +61,31 @@ def refresh_allowed() -> bool:
     return not is_offline() and catalog_base_url() is not None
 
 
-def startup_refresh_allowed() -> bool:
+def auto_refresh_allowed(settings_manager: Any = None) -> bool:
+    """An AUTOMATIC trigger's gate: :func:`refresh_allowed` and the ``checkModelCatalog`` setting.
+
+    #609: with the setting off, only ``aelix update --models`` checks (it asks
+    :func:`refresh_allowed` alone); the start-up, picker, ``/model`` miss and
+    ``/login`` triggers ask this. Read at each trigger, so a ``/settings``
+    flip applies from the next one. No settings manager (an embedder) reads as on.
+    """
+
+    if not refresh_allowed():
+        return False
+    if settings_manager is None or not hasattr(settings_manager, "get_check_model_catalog"):
+        return True
+    try:
+        return bool(settings_manager.get_check_model_catalog())
+    except Exception:  # noqa: BLE001 - an unreadable setting is the default
+        return True
+
+
+def startup_refresh_allowed(settings_manager: Any = None) -> bool:
     """A start-up trigger also skips a delegated child, which reads its parent's cache."""
 
     from .subagent_contract import subagent_depth
 
-    return refresh_allowed() and subagent_depth() < 1
+    return auto_refresh_allowed(settings_manager) and subagent_depth() < 1
 
 
 @dataclass
@@ -273,9 +296,11 @@ def start_background_refresh(
     *,
     trigger: str,
     on_done: Callable[[ModelsRefreshResult | None], Any] | None = None,
+    settings_manager: Any = None,
 ) -> asyncio.Task[Any] | None:
-    """A start-up refresh: background, bounded, skipped offline and in a delegated child."""
+    """A start-up refresh: background, bounded, skipped offline, in a delegated child
+    and with ``checkModelCatalog`` off (#609)."""
 
-    if not startup_refresh_allowed():
+    if not startup_refresh_allowed(settings_manager):
         return None
     return _REFRESHER.background(registry, trigger=trigger, on_done=on_done)

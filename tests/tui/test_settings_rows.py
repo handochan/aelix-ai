@@ -39,7 +39,8 @@ async def test_build_rows_count_and_keys() -> None:
     # #238 — the ``@``-menu gitignore toggle, appended at the END of the LIVE
     # block (index 7), so ``keys[:7]`` below is unchanged by it.
     assert "respect_gitignore" in keys
-    assert len(rows) == 23
+    assert "check_model_catalog" in keys  # #609
+    assert len(rows) == 24
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",
@@ -287,6 +288,7 @@ WIRED_PERSIST_BLOCK_ROWS = (
     "render_max_width",
     "enable_skill_commands",
     "check_for_updates",
+    "check_model_catalog",  # #609, read by model_refresh.auto_refresh_allowed
 )
 
 
@@ -437,6 +439,7 @@ _PERSIST_BLOCK_GETTERS = {
     "tool_card_max_lines": "get_tool_card_max_lines",
     "render_max_width": "get_render_max_width",
     "check_for_updates": "get_check_for_updates",
+    "check_model_catalog": "get_check_model_catalog",  # #609
 }
 
 #: Where a getter is DEFINED rather than consumed. Excluded so the definition
@@ -534,7 +537,7 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:4009 is a docstring; a substring scan would report 2.
+    # prose. shell.py:4018 is a docstring; a substring scan would report 2.
     skill_sites = sites["get_enable_skill_commands"]
     assert len(skill_sites) == 1, skill_sites
     assert "tui/shell.py" in skill_sites[0]
@@ -803,7 +806,7 @@ async def test_every_bool_row_is_dispatchable() -> None:
 
     probe = SettingsManager.in_memory({})
     rows = _bool_rows(probe)
-    assert len(rows) == 12, [r.key for r in rows]
+    assert len(rows) == 13, [r.key for r in rows]
     for row in rows:
         assert row.key in _BOOL_GETTERS, f"{row.key} cannot be READ by apply_setting"
         assert row.key in _BOOL_SETTERS, f"{row.key} cannot be WRITTEN by apply_setting"
