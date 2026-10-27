@@ -1196,7 +1196,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1114-1114": [
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1373-1380": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1372-1379": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",

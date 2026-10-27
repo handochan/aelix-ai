@@ -330,6 +330,12 @@ unwritten. Add them with the next release.
     and for the turn without a limit (`RpcClient.prompt_and_wait` gains
     `unbounded=True`; its default is unchanged).
   - `SubagentRuntime.spawn` still accepts `timeout_ms` and ignores it.
+  - On Python 3.14, stopping a delegation no longer prints `Unhandled
+    exception in event loop … Press ENTER to continue...` in the TUI and eats
+    the next line you type. 3.14's `asyncio.shield` reports a shielded future
+    that ends with an exception after its waiter gave up, and the delegation's
+    output readers were waited on through one and then cancelled; they are now
+    waited on with `asyncio.wait`, which does neither.
 
 - **A delegated agent that is stopped or fails tells the parent what it had
   done (#604, ADR-0276).** It used to come back as whatever its stderr said —

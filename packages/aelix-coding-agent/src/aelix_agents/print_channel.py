@@ -824,7 +824,7 @@ async def _pump_stdout(
 def _swallow(future: asyncio.Future[Any]) -> None:
     """Retrieve a future's outcome so asyncio stops complaining about it.
 
-    The pump gather is awaited only through ``asyncio.shield``, so on the abort
+    The pump gather is waited on only through ``asyncio.wait``, so on the abort
     path it finishes cancelled with nobody holding a reference. Without this
     callback asyncio logs a "exception was never retrieved" traceback for a
     shutdown that went exactly as designed, and that noise is indistinguishable
@@ -1323,32 +1323,31 @@ class PrintChannel:
             ),
             asyncio.ensure_future(_pump_stderr(proc.stderr, ring)),
         )
-        # The gather is repeatedly SHIELDED and can end up cancelled on the abort
-        # path, where nothing awaits it again. Retrieving the outcome here keeps
-        # asyncio from logging "exception was never retrieved" over a shutdown
-        # that went exactly as designed.
+        # The gather can end up cancelled on the abort path, where nothing awaits
+        # it again. Retrieving the outcome here keeps asyncio from logging
+        # "exception was never retrieved" over a shutdown that went exactly as
+        # designed.
         pumps.add_done_callback(_swallow)
         lingered = False
         exit_code: int | None = None
         exited = asyncio.ensure_future(_wait_for_exit(proc))
         exited.add_done_callback(_swallow)
         try:
-            # Shielded so that ending the WAIT never cancels the pumps: when the
-            # child exits first, the pipes still have to drain to EOF or its
-            # last words — the partial summary §(j) promises — are thrown away.
-            pumps_wait = asyncio.ensure_future(asyncio.shield(pumps))
-            pumps_wait.add_done_callback(_swallow)
-            try:
-                # NO ``timeout=`` (#604, ADR-0276) — see the docstring. A run
-                # still going is a child still working, and the 10-minute
-                # default that used to end this wait cut off children that were.
-                await asyncio.wait(
-                    {pumps_wait, exited},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            finally:
-                if not pumps_wait.done():
-                    pumps_wait.cancel()
+            # ``asyncio.wait`` never cancels what it waits on, so ending the WAIT
+            # never cancels the pumps: when the child exits first, the pipes
+            # still have to drain to EOF or its last words — the partial summary
+            # §(j) promises — are thrown away. NOT through ``asyncio.shield``:
+            # from Python 3.14 a shield whose outer side ends first logs its
+            # inner's exception (``tasks._log_on_exception``), and a cancelled
+            # gather ends with ``set_exception(CancelledError())``, not
+            # cancelled. Every stopped delegation then reached the loop's handler
+            # as "CancelledError exception in shielded future" — in the TUI,
+            # prompt_toolkit's "Unhandled exception in event loop … Press ENTER
+            # to continue", which ate the next line typed (#604, CI py3.14).
+            # NO ``timeout=`` (#604, ADR-0276) — see the docstring. A run still
+            # going is a child still working, and the 10-minute default that
+            # used to end this wait cut off children that were.
+            await asyncio.wait({pumps, exited}, return_when=asyncio.FIRST_COMPLETED)
 
             if pumps.done():
                 # Both pipes reached EOF — every writer closed them, so the
@@ -1468,13 +1467,14 @@ class PrintChannel:
         if pumps.done():
             return
         links = _child_pipe_links(proc)
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(asyncio.shield(pumps), POST_EXIT_DRAIN_SECONDS)
+        # ``asyncio.wait``, not ``wait_for(shield(pumps))``: it neither cancels
+        # the pumps at the bound nor, on Python 3.14, leaves the shield's logger
+        # on them for the ``cancel()`` below (see ``_stream_and_reap``).
+        await asyncio.wait({pumps}, timeout=POST_EXIT_DRAIN_SECONDS)
         if pumps.done():
             return
         kill_tree(proc, pipe_holder_pids(links), tree=tree)
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(asyncio.shield(pumps), POST_EXIT_DRAIN_SECONDS)
+        await asyncio.wait({pumps}, timeout=POST_EXIT_DRAIN_SECONDS)
         # Cancelled unconditionally: a pump still blocked on a pipe some
         # unkillable holder owns would otherwise outlive the delegation.
         pumps.cancel()

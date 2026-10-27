@@ -651,6 +651,18 @@ whose session, trail and files are all filled (critique 15).
   in `error` and `reason`, with `(no output)` as its `summary` (D9); a failure
   the channel reports with an error of its own carries the stderr after that
   error (D17).
+- Stopping a delegation on Python 3.14 is quiet. The print channel waited on
+  its two output pumps through `asyncio.shield` and then cancelled them; 3.14's
+  shield logs an inner future that ends with an exception after its outer side
+  ended (`tasks._log_on_exception`), and a cancelled `gather` ends with
+  `set_exception(CancelledError())`, not cancelled. So every stop reached the
+  loop's exception handler, which in the TUI is prompt_toolkit's "Unhandled
+  exception in event loop … Press ENTER to continue" — it ate the next line
+  typed. Measured at `7e76f925` in the real TUI on 3.14.5 (Esc during a
+  delegation), and caught by this record's own D15 tests on the CI's py3.14
+  legs. The pumps are now waited on with `asyncio.wait`, which neither cancels
+  them nor attaches that logger
+  (`test_a_cancelled_run_reports_nothing_to_the_loops_exception_handler`).
 
 ## Limits and unverified risks
 

@@ -1031,6 +1031,55 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
 # === No deadline, the post-EOF bound, and the kill legs (#604) ===============
 
 
+async def test_a_cancelled_run_reports_nothing_to_the_loops_exception_handler(
+    tmp_path: Path,
+) -> None:
+    """A stopped delegation is not an "Unhandled exception in event loop".
+
+    From Python 3.14, ``asyncio.shield`` logs its inner future's exception once
+    its outer side has ended (``tasks._log_on_exception``), and a cancelled
+    ``gather`` ends with ``set_exception(CancelledError())`` rather than
+    cancelled. The pumps were waited on through a shield that the cancel ended,
+    then cancelled — so every stopped delegation reached the loop's handler as
+    "CancelledError exception in shielded future". Under the TUI that handler
+    is prompt_toolkit's, which prints "Unhandled exception in event loop" and
+    waits on "Press ENTER to continue", swallowing the next line the user typed
+    (#604's D15 tests on the CI's py3.14 legs). On 3.11-3.13 the logger does not
+    exist and this passes either way; the 3.14 legs are what pin it.
+    """
+
+    loop = asyncio.get_running_loop()
+    reported: list[dict[str, Any]] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        channel = _stub_channel(
+            _stub(
+                """
+                start()
+                say("working on it", input=1, output=1, total_tokens=2)
+                import time
+                time.sleep(120)
+                """
+            ),
+            grace=1.0,
+        )
+        row = RunningChild(id="sub-quiet-cancel", profile="scout")
+        task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+        pid = await _wait_for_pid(row)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await _await_death(pid, 10.0)
+        # The pumps' gather settles a few loop turns after the run returns; the
+        # logger fires then, so give it time to (and it must not).
+        await asyncio.sleep(0.5)
+    finally:
+        loop.set_exception_handler(previous)
+
+    assert [context.get("message") for context in reported] == []
+
+
 def _leaping_clock(monkeypatch: pytest.MonkeyPatch, module: Any, *, step: float) -> None:
     """Make every ``time.monotonic()`` *module* reads jump ``step`` seconds.
 
