@@ -551,7 +551,9 @@ _RETRYABLE_ERROR_PATTERN = re.compile(
     r"network.?error|connection.?error|connection.?refused|connection.?lost|"
     r"websocket.?closed|websocket.?error|other side closed|fetch failed|"
     r"upstream.?connect|reset before headers|socket hang up|ended without|"
-    r"stream ended before message_stop|http2 request did not get a response|"
+    r"stream ended before message_stop|"
+    r"openai responses stream ended before a terminal response event|"
+    r"http2 request did not get a response|"
     r"timed? out|timeout|terminated|retry delay",
     re.IGNORECASE,
 )

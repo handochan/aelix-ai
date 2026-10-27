@@ -428,6 +428,51 @@ async def _collect(gen: AsyncIterator[Any]) -> list[Any]:
 # === End-to-end stream ===
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+async def test_stream_sse_frame_boundaries_at_every_byte(newline: bytes) -> None:
+    events = [
+        {"type": "response.created", "response": {"id": "r"}},
+        {"type": "response.done", "response": {"id": "r", "status": "completed"}},
+    ]
+    raw = _sse(events).replace(b"\n", newline)
+    for split in range(1, len(raw)):
+        client = _FakeClient([_FakeResponse(200, [raw[:split], raw[split:]])])
+        opts = OpenAIResponsesOptions(api_key=_make_token(), client=client)
+        out = await _collect(stream_openai_codex_responses(_model(), Context(), opts))
+        assert isinstance(out[-1], AssistantDoneEvent), (newline, split, out[-1])
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+async def test_stream_premature_eof_remains_an_error(newline: bytes) -> None:
+    raw = _sse([{"type": "response.created", "response": {"id": "r"}}])
+    client = _FakeClient([_FakeResponse(200, [raw.replace(b"\n", newline)])])
+    opts = OpenAIResponsesOptions(api_key=_make_token(), client=client)
+    out = await _collect(stream_openai_codex_responses(_model(), Context(), opts))
+    assert isinstance(out[-1], AssistantErrorEvent)
+    assert "ended before a terminal response event" in (out[-1].error_message or "")
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+@pytest.mark.parametrize("terminal", ["response.failed", "response.incomplete"])
+async def test_stream_terminal_error_and_incomplete(newline: bytes, terminal: str) -> None:
+    response = {"id": "r", "status": "incomplete"}
+    if terminal == "response.failed":
+        response = {"id": "r", "status": "failed", "error": {"message": "failure"}}
+    raw = _sse([
+        {"type": "response.created", "response": {"id": "r"}},
+        {"type": terminal, "response": response},
+    ]).replace(b"\n", newline)
+    client = _FakeClient([_FakeResponse(200, [raw[i:i + 1] for i in range(len(raw))])])
+    opts = OpenAIResponsesOptions(api_key=_make_token(), client=client)
+    out = await _collect(stream_openai_codex_responses(_model(), Context(), opts))
+    if terminal == "response.failed":
+        assert isinstance(out[-1], AssistantErrorEvent)
+        assert "failure" in (out[-1].error_message or "")
+    else:
+        assert isinstance(out[-1], AssistantDoneEvent)
+        assert out[-1].reason == "length"
+
+
 async def test_stream_end_to_end_text_tool_thinking_usage() -> None:
     raw = _sse(_full_stream_events())
     # Split across tiny chunk boundaries to exercise the SSE buffer.
