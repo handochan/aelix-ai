@@ -111,7 +111,6 @@ async def test_a_real_child_writes_its_transcript_into_the_file_its_parent_made(
             _grant(profile),
             _resolved(profile),
             "write the file",
-            timeout_ms=90_000,
             record=SpawnRecordMeta(tool_call_id="tc-real", mode="single", index=0),
         ),
         120,
@@ -171,7 +170,7 @@ async def test_an_early_exit_child_leaves_its_header_and_origin(tmp_path: Path) 
     )
 
     result = await asyncio.wait_for(
-        runtime.spawn_granted(_grant(profile), _resolved(profile), "go", timeout_ms=90_000),
+        runtime.spawn_granted(_grant(profile), _resolved(profile), "go"),
         120,
     )
 

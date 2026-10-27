@@ -1,6 +1,8 @@
 """The JSON one-shot delegation channel — ADR-0197 §(j)/(k).
 
-argv, env, cwd, stdio, both pumps, the timeout and the envelope hand-off.
+argv, env, cwd, stdio, both pumps, the kill legs and the envelope hand-off.
+There is no time limit on a delegation (#604, ADR-0276): the bounds below are on
+waits that follow the child's own exit, never on the work.
 Product-core contains no line of this: the 3-band rule (ADR-0008, amended by
 ADR-0197) gives product-core the CONTRACT and this bundled extension every
 process-touching statement, and ``tests/agents/test_p2_band_boundaries.py``
@@ -52,7 +54,7 @@ stylistic.
    second time.
 
 And one artefact: the 0600 prompt file is unlinked on EVERY exit path — normal,
-error, timeout, kill, spawn failure and cancellation — because the ``finally``
+error, kill, spawn failure and cancellation — because the ``finally``
 that removes it is synchronous (nothing to interrupt) and because the directory
 is recorded on the :class:`RunningChild` registry row before the process starts,
 so ``stop`` / ``stop_all`` / the extension teardown can remove it even when the
@@ -129,11 +131,6 @@ independent anti-nesting layer beside the depth env var), and it must be able
 to do so without importing the tool module — which would invert the dependency
 and drag the roster/description machinery into the spawn path."""
 
-DEFAULT_TIMEOUT_MS = 600_000
-"""Wall clock for one delegation, when neither the caller nor the profile names
-one. Aelix-original: pi has no timeout of any kind, so a wedged child there is
-a wedged parent forever."""
-
 STREAM_LIMIT_BYTES = 8 * 1024 * 1024
 """``StreamReader`` buffer ceiling, passed EXPLICITLY to
 ``create_subprocess_exec``. It must exceed
@@ -157,22 +154,29 @@ the child's stdout/stderr can cost us. Generous enough that an ordinary
 kernel-buffered tail always lands, small enough that a pipe-holder converts a
 finished delegation into a two-second delay instead of a ten-minute one."""
 
-POST_EOF_EXIT_GRACE_SECONDS = 2.0
-"""Minimum time :meth:`PrintChannel._stream_and_reap` gives ``returncode`` to
-appear AFTER both pipes have reached EOF (P2 review, MEDIUM #3).
+POST_EOF_EXIT_BOUND_SECONDS = 30.0
+"""How long :meth:`PrintChannel._stream_and_reap` waits for ``returncode`` AFTER
+both pipes have reached EOF, before it reaps the child (#604, ADR-0276 D4).
 
-Both pumps at EOF means every writer closed fd 1 and fd 2 — the child is
-exiting. But pipe EOF happens at ``exit()`` while ``proc.returncode`` is only
-set when the loop's child watcher delivers the status, milliseconds to tens of
-milliseconds later. Charging that gap against the caller's deadline made any
-deadline landing inside it report a COMPLETE run as ``status="timeout",
-ok=False`` with the right answer sitting in ``summary``. Measured on a child that
-answers and exits at ~679 ms, sweeping ``timeout_ms`` across the band above it:
-``686 ms -> timeout / ok=False / summary='the complete answer'``.
+Both pumps at EOF means every writer closed fd 1 and fd 2 — normally the child is
+exiting, and the gap to ``proc.returncode`` is the loop's child watcher,
+milliseconds to tens of milliseconds. The child's own MCP and extension teardown
+runs BEFORE that EOF (a child closes its stdio when its process ends), so it is
+spent inside the main wait, which has no bound. What is left for this wait is a
+child that closed its stdio and then wedged, and that must not hold the parent
+open forever.
 
-So the exit wait after EOF gets ``max(remaining budget, this)`` rather than the
-remaining budget alone. It is a floor, not an extension: a child that closed its
-stdio and then wedged still times out — two seconds later, and correctly."""
+IT USED TO BORROW THE DELEGATION'S DEADLINE: ``max(remaining budget, 2 s)``, the
+2 s being ``POST_EOF_EXIT_GRACE_SECONDS``. That floor existed because charging
+the watcher's gap to the deadline reported COMPLETE runs as timeouts (P2 review,
+MEDIUM #3; measured on a child answering at ~679 ms: ``686 ms -> timeout /
+ok=False / summary='the complete answer'``). With no deadline left the wait needs
+a bound of its own. 30 s is far above any watcher latency and short enough that
+a wedged child costs half a minute rather than the session.
+
+A child reaped here is reported with ``lingered=True``
+(``envelope.build_result``): a stream that had already reached its terminator
+stays ``ok`` with a note, and anything less is ``error``."""
 
 EXIT_POLL_SECONDS = 0.05
 """How often :func:`_wait_for_exit` reads ``proc.returncode``.
@@ -280,7 +284,6 @@ class SpawnPlan:
     one. That was every child before #354 — on a reasoning-mandatory model it
     started at ``off`` and its first request died with ``400 Reasoning is
     mandatory for this endpoint and cannot be disabled``."""
-    timeout_ms: int | None = None
     output_cap: int | None = None
     session_path: str | None = None
     """The ABSOLUTE path of the session file the parent allocated for this child
@@ -600,7 +603,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1153`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1168`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -692,8 +695,8 @@ def build_child_env(
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
     # forever" (``cli/entry.py:329-338``), and a child that waits forever on a
-    # stdin nobody will ever write to is a delegation that only ends at the
-    # timeout.
+    # stdin nobody will ever write to is a delegation that never ends on its
+    # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
 
     # Otherwise every child fans out its own copy of every configured MCP
@@ -1073,17 +1076,13 @@ class PrintChannel:
         output_cap = (
             plan.output_cap if plan.output_cap is not None else profile.output_cap
         )
-        timeout_ms = (
-            plan.timeout_ms
-            if plan.timeout_ms is not None
-            else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)
-        )
 
         def _envelope(
             *,
             outcome: SubagentOutcome,
             exit_code: int | None,
             error: str | None = None,
+            lingered: bool = False,
         ) -> SubagentResult:
             # Folded HERE and nowhere else: the drop happens at the byte layer,
             # so ``LineAssembler`` owns the counter and ``_StreamState`` — which
@@ -1105,6 +1104,7 @@ class PrintChannel:
                 dropped_tools=narrowing.dropped,
                 error=error,
                 session_recorded=plan.session_path is not None,
+                lingered=lingered,
             )
 
         # Written BEFORE the process starts and recorded on the row in the same
@@ -1116,7 +1116,7 @@ class PrintChannel:
                 # ``stop`` / ``stop_all`` landed while we were being set up. The
                 # registry row is published as soon as the spawn is accepted, so
                 # this window is real and it is the difference between "stopped"
-                # and "stopped, and also ran for its full timeout".
+                # and "stopped, and also ran to completion".
                 row.state = "stopped"
                 return _envelope(outcome="aborted", exit_code=None)
             argv = self._argv_builder(
@@ -1152,7 +1152,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2078-2095``) nor child
+                    # neither parent (``tui/shell.py:2079-2096``) nor child
                     # (``modes/print_mode.py:234-293``) installs a SIGINT
                     # handler to convert that into a result.
                     #
@@ -1236,7 +1236,6 @@ class PrintChannel:
                 assembler=assembler,
                 ring=ring,
                 on_stream=on_stream,
-                timeout_ms=timeout_ms,
                 envelope=_envelope,
             )
         finally:
@@ -1282,10 +1281,15 @@ class PrintChannel:
         assembler: LineAssembler,
         ring: StderrRing,
         on_stream: Callable[[_StreamState], None] | None,
-        timeout_ms: int,
         envelope: Callable[..., SubagentResult],
     ) -> SubagentResult:
-        """Both pumps, the deadline, and the kill legs.
+        """Both pumps, the post-EOF bound, and the kill legs.
+
+        THERE IS NO DEADLINE (#604, ADR-0276). The main wait ends when the child
+        does — its exit, or its pipes' EOF — or when a human ends it: ``stop`` /
+        ``stop_all`` kill the child (so one of those follows), and Esc, a signal
+        or ``/agents run``'s interrupt cancel this task. The only bounded wait
+        left is the one after EOF (:data:`POST_EOF_EXIT_BOUND_SECONDS`).
 
         COMPLETION IS RACED AGAINST THE CHILD'S EXIT, NOT GATED ON PIPE EOF
         (P2 review, HIGH #4). An earlier shape awaited both pumps first and only
@@ -1324,23 +1328,23 @@ class PrintChannel:
         # asyncio from logging "exception was never retrieved" over a shutdown
         # that went exactly as designed.
         pumps.add_done_callback(_swallow)
-        deadline = time.monotonic() + max(timeout_ms, 0) / 1000
-        timed_out = False
+        lingered = False
         exit_code: int | None = None
         exited = asyncio.ensure_future(_wait_for_exit(proc))
         exited.add_done_callback(_swallow)
         try:
-            # Shielded so the deadline cancels the WAIT, not the pumps: after
-            # the kill leg the pipes still have to drain to EOF or the child's
-            # last words — including the partial summary §(j) promises on a
-            # timeout — are thrown away.
+            # Shielded so that ending the WAIT never cancels the pumps: when the
+            # child exits first, the pipes still have to drain to EOF or its
+            # last words — the partial summary §(j) promises — are thrown away.
             pumps_wait = asyncio.ensure_future(asyncio.shield(pumps))
             pumps_wait.add_done_callback(_swallow)
             try:
+                # NO ``timeout=`` (#604, ADR-0276) — see the docstring. A run
+                # still going is a child still working, and the 10-minute
+                # default that used to end this wait cut off children that were.
                 await asyncio.wait(
                     {pumps_wait, exited},
                     return_when=asyncio.FIRST_COMPLETED,
-                    timeout=max(deadline - time.monotonic(), 0.0),
                 )
             finally:
                 if not pumps_wait.done():
@@ -1349,40 +1353,29 @@ class PrintChannel:
             if pumps.done():
                 # Both pipes reached EOF — every writer closed them, so the
                 # child is exiting. Still bounded (a child that closed its stdio
-                # and then wedged must not hold the parent open), but with a
-                # FLOOR under the remaining budget: the gap between pipe EOF and
-                # ``returncode`` being set is the loop's child watcher, not the
-                # child, and charging it to the caller's deadline reported
-                # finished runs as timeouts (MEDIUM #3, see
-                # :data:`POST_EOF_EXIT_GRACE_SECONDS`).
+                # and then wedged must not hold the parent open), by its own
+                # :data:`POST_EOF_EXIT_BOUND_SECONDS` now that there is no
+                # deadline to borrow one from.
                 try:
                     exit_code = int(
-                        await asyncio.wait_for(
-                            asyncio.shield(exited),
-                            max(
-                                deadline - time.monotonic(),
-                                POST_EOF_EXIT_GRACE_SECONDS,
-                            ),
-                        )
+                        await asyncio.wait_for(asyncio.shield(exited), POST_EOF_EXIT_BOUND_SECONDS)
                     )
                 except TimeoutError:
-                    timed_out = True
+                    lingered = True
                     exit_code = await self._reap(proc, row)
-            elif exited.done():
-                # THE CHILD IS GONE but the pipes are not. Its answer is already
-                # in ``state``; the only open question is who is squatting.
+            else:
+                # THE CHILD IS GONE but the pipes are not — with no timeout on
+                # the wait above, an unfinished pump means ``exited`` ended it.
+                # Its answer is already in ``state``; the only open question is
+                # who is squatting.
                 exit_code = exited.result()
                 await self._drain_after_exit(proc, pumps, row.tree)
-            else:
-                # Neither: the deadline fired first.
-                timed_out = True
-                exit_code = await self._reap(proc, row)
         except asyncio.CancelledError:
             self._eager_abort(proc, row)
             # The pumps must not outlive an aborted run: they hold the child's
-            # pipes and nobody is left to await them. NOT done in a ``finally`` —
-            # on the timeout path the pumps are still draining the dying child's
-            # last words, which is exactly the partial summary §(j) promises.
+            # pipes and nobody is left to await them. Every path that RETURNS
+            # below has already seen them finish or had ``_drain_after_exit``
+            # cancel them, so this is the one place that has to.
             pumps.cancel()
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1404,23 +1397,20 @@ class PrintChannel:
         finally:
             exited.cancel()
 
-        if timed_out and not pumps.done():
-            # Drain whatever the kill legs left in the pipes — the dying child's
-            # last words ARE the partial summary §(j) promises. Bounded, because
-            # a pump wedged on a pipe some survivor still holds must not convert
-            # a timeout into a hang, and then cancelled so nothing lingers.
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(
-                    asyncio.shield(pumps), POST_EXIT_DRAIN_SECONDS
-                )
-            pumps.cancel()
+        # No post-kill drain here any more (#604). It ran only when the deadline
+        # fired with the pumps still open; the one kill left on this path — the
+        # post-EOF reap — happens after both pumps have finished.
 
         if row.stopped:
             row.state = "stopped"
             return envelope(outcome="aborted", exit_code=exit_code)
-        if timed_out:
-            row.state = "error"
-            return envelope(outcome="timeout", exit_code=exit_code)
+        if lingered:
+            # The exit code is the REAPER's, so it is not evidence about the
+            # answer: ``build_result`` reads the stream to decide whether the
+            # child had finished (ADR-0276 D4), and the row follows its verdict.
+            result = envelope(outcome="ok", exit_code=exit_code, lingered=True)
+            row.state = "done" if result.ok else "error"
+            return result
         # ``outcome="ok"`` is a PROPOSAL, not a verdict: ``build_result``
         # tightens it when the exit code or the stream disagrees (§(j)). Never
         # trust the return code alone — until #410 a JSON-mode child whose model
@@ -1547,8 +1537,9 @@ class PrintChannel:
         # deliberately runs no POSIX group kill of its own, so on macOS — where
         # ``descendant_pids`` is ``[]`` — the line above is a root-only
         # ``SIGKILL`` and a non-``setsid`` grandchild survives it. MEASURED on
-        # Darwin: a delegation cancelled before its deadline (``reaper_task is
-        # None``) left the grandchild alive, while the timeout path killed it.
+        # Darwin: a delegation cancelled with no reaper running (``reaper_task
+        # is None``) left the grandchild alive, while the deadline path — gone
+        # since #604, and a reaper path like ``stop`` — killed it.
         # Ctrl+C is ``turn_task.cancel()`` (``batch.py``), so that is the path a
         # human actually drives.
         #
@@ -1567,9 +1558,8 @@ class PrintChannel:
 
 __all__ = [
     "AGENT_TOOL_NAME",
-    "DEFAULT_TIMEOUT_MS",
     "EXIT_POLL_SECONDS",
-    "POST_EOF_EXIT_GRACE_SECONDS",
+    "POST_EOF_EXIT_BOUND_SECONDS",
     "POST_EXIT_DRAIN_SECONDS",
     "READ_CHUNK_BYTES",
     "STDERR_RING_BYTES",

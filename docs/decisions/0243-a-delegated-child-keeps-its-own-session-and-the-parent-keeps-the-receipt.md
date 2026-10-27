@@ -14,6 +14,11 @@ the parent's context**.
 Issue: #199. Follow-up: #296 (a TUI viewer for child sessions), #304 (the same
 late-binding rule, applied to the four host getters A.3a and §9 left behind —
 recorded in §9).
+**Amended 2026-10-28 (ADR-0276, #604): a delegation has no time limit, so the
+settle status `timeout` and the deadline in the `cost_known` paragraph now
+describe old records only; §5's no-path rule is kept, and the child session
+the result now carries reaches the model as its id only — see the dated notes
+under the record table, the exit-path table, `cost_known` and §5.**
 **Amended 2026-10-07 (#354): the parent's thinking level now reaches a child
 that inherits the parent's model, by the same late-bound rule — see
 `## Amendment (2026-10-07, #354)`.**
@@ -139,6 +144,14 @@ unique on the Google adapter across restarts).
 | `aelix.child_session` settle | every start field except `error`, then `status` (`ok` / `error` / `timeout` / `aborted` / `cancelled`), `model` and `provider` (what actually ran, from the envelope), `usage: {input, output, cache_read, cache_write, cost}`, `cost_known`, `context_tokens` (a level, never summed), `turns`, `elapsed_ms`, `exit_code`, `stop_reason`, `truncated`, `summary_bytes`, `details_bytes`, `error` (the run's own, at most 300 characters) |
 | `aelix.usage` final | `{v, key, state: "final", usage, cost_known}` — the same two values the settle carries |
 
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): no bundled channel
+proposes `timeout` any more — a delegation has no time limit — so a settle
+with that status is an old record (or a third-party channel's). It stays in
+the vocabulary because records on disk carry it, and every reader keeps
+handling it. The settle's fields are unchanged: the envelope's new `reason`,
+session and file fields are not recorded here, the receipt already names the
+child file.*
+
 `tool_call_id`, `index` and `mode` are the call's: `(id, 0, "single")` for a
 single delegation, `(id, member index, "parallel" | "chain")` for a batch, and
 `null` for `/agents run`. `rel` is `<stem>/<spawn id>.jsonl`, relative to the
@@ -158,6 +171,12 @@ The exit paths, and what each leaves (`aelix_agents/runtime.py` `_run`):
 | an exception before or inside `channel.run` (e.g. `write_prompt_file`) | `_run`'s `finally` | start, pending, settle (`error`, `"<ExcType>: <message>"`), final — and the exception still propagates |
 | cancel — Ctrl+C (`harness.abort()` cancels the turn task), or the event loop ending with the turn still running | `_run`'s `finally`, under `asyncio.shield` | start, pending, settle (`cancelled`, the partial spend priced first), final |
 | the process killed mid-run | — | start, pending (outcome unknown, spend unconfirmed) |
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the first row's
+`timeout` is no longer produced. The cancel row now also builds an `aborted`
+envelope from the same live stream — synchronously, before the shielded
+append — and leaves it for the `agent` call, which queues it as a report for
+the next turn (ADR-0276 D14). The records this row writes are unchanged.*
 | not admitted | — | none |
 
 Quit can take either of the first and third rows: `stop_all` runs at
@@ -217,6 +236,11 @@ mid-turn still reads as unfinished. What an incomplete run recorded is a floor
 (`≥ $X`), priced or not. Two Codex reviews found the holes this closes: a
 Ctrl+C before any usage arrived recorded zeros as a confirmed `$0`, and a first
 version of the fix trusted a latched `agent_end`.
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): "the deadline
+(`timeout`)" is no longer a way the parent cuts a run — there is none — and
+is read only off old records; Ctrl+C and `stop`/`stop_all` are the parent's
+cuts now. `CUT_BY_THE_PARENT` keeps `timeout` for those records.*
 A run that ended, or never began one, is known when a `message_end` carried a
 cost of its own (zero counts), when the registry fallback priced the run
 (`apply_cost_fallback` now returns whether it did), when the recorded cost is
@@ -315,6 +339,12 @@ came from the child's own stream (its answer or its own error message);
 error is not in that file. No path is ever written: it would put a home
 directory and a user name into the model's context, and the parent's records
 carry it already. The marker also flows into a chain's `{previous}`.
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the rule is KEPT
+and now covers a second value. `SubagentResult` gains `session_id` and
+`session_path` (ADR-0276 D8); a started child that did not finish shows the
+model `Session: <id>` — the id names the file — and never the path, which is
+for hosts (RPC `agents/run`) and UIs only.*
 
 `SubagentResult` gains `output_recorded: bool = False` (additive and defaulted,
 so `CONTRACT_VERSION` does not move). The batch renderer is a pure function

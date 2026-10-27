@@ -4,6 +4,11 @@ Status: Accepted (2026-07-28) — owner-ratified scope (S1), owner-ratified
 topology (S3), owner-ratified UI surfaces (S10) and owner-ratified stop story
 (S11). Design record that lands with the P3 implementation (same pattern as
 ADR-0196/0197/0198).
+**Amended 2026-10-28 (ADR-0276, #604): `MAX_TIMEOUT_MS`, `MAX_BATCH_WALL_MS`,
+`KILL_LEG_RESERVE_MS` and the member clocks derived from them are gone — a batch
+runs until its members finish or a human ends it; the "read-only for 30
+minutes" bound goes with them. See the dated notes in the context, the scope's
+item 2, §(d), §(f), §(j), §(k), the deferred list and the consequences.**
 **Amended 2026-09-19 (ADR-0243, #199, owner decision (c)): a parallel or chain
 call shares one 64 KiB summary budget — see the note closing §(i).**
 **Amended 2026-10-08 (#178): the tool card's "byte for byte with P2" holds for
@@ -40,6 +45,10 @@ wall-clock ceiling, no per-prompt delegation budget and no batch consent dialog.
 There is no pi source to be faithful to; every number below was chosen here and
 every one of them is justified in place.
 
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): aelix has
+no aggregate wall-clock ceiling and no per-task maximum either now; the
+delegation time limits are removed (ADR-0276).*
+
 **Anchor convention.** Every `file:line` was re-read against the shipped tree at
 the moment this record was written, i.e. *after* the P3 hunks landed. Anchors
 are the evidence for a decision, not a maintenance contract.
@@ -56,6 +65,9 @@ are the evidence for a decision, not a maintenance contract.
    **refuses** rather than trims, a per-task size cap, a maximum `timeout_ms`,
    an aggregate wall-clock ceiling for one call, the per-prompt budget charged
    **per child**, and the depth guard re-proved under fan-out.
+   *Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the
+   maximum `timeout_ms` and the aggregate wall-clock ceiling are gone
+   (ADR-0276 D1, D3); the other bounds stand.*
 
 **Out, and moved to its own sprint: items 3 and 4 — the long-lived `RpcChannel`
 and the cross-channel parity test.** This is decision S1, taken by the owner,
@@ -394,6 +406,9 @@ that skipped a release would shrink `MAX_CONCURRENCY` **permanently**, and after
 four leaks the next `agent()` call in the session would park on `acquire()`
 forever — with §(m) making the REPL read-only and the batch deadline consulted
 only *after* the acquire, nothing would ever end it.
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): there is
+no batch deadline at all now, so only the human's interrupt would end it —
+which is why the permit stays held by a context manager.*
 
 **TOCTOU.** `_run`'s admission block — `_admit_live()` → budget check → `+= 1` →
 `_new_id()` → registry insert (`runtime.py:578-592`) — contains **no `await`**,
@@ -478,6 +493,11 @@ things, and conflating them produces the wrong answer for two of them:
    (`envelope.py:37-40`), `dropped_lines`, and the uncapped `details`. It is not
    what "errors, not truncation" means, and this ADR states the exclusion so
    nobody re-derives it.
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the batch
+wall-clock exhaustion envelope above is gone with the batch clock, and so is the
+`timeout_ms > MAX_TIMEOUT_MS` refusal below — a call that still sends
+`timeout_ms` runs and the value is ignored (ADR-0276 D1, D3).*
 
 The same "refuse, never trim" rule governs `timeout_ms > MAX_TIMEOUT_MS`
 (`tool.py:456`) and an oversize task (`tool.py:424-431`, the parse-time
@@ -804,6 +824,14 @@ is harmed by 7 s on 30 min; someone is harmed by a document that says 30 and
 means 31. `mode="single"` does not enter the executor and is bounded by
 `MAX_TIMEOUT_MS` — the same 30 minutes — alone.
 
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the
+`MAX_TIMEOUT_MS`, `MAX_BATCH_WALL_MS` and `KILL_LEG_RESERVE_MS` rows, the member
+clock derived from the remaining budget, its refusal envelope and this outer
+bound are all removed. A member's `spawn_granted` carries no clock and a batch
+has no wall-clock ceiling; cancellation (above) is how a human ends one, and it
+reaches every member. `BatchOutcome.wall_ms` stays as a measurement
+(ADR-0276 D3, D5).*
+
 ### (k) The parent's LIVE posture is a per-member FLOOR; the human's answer is a CEILING
 
 `_host_posture()` is a live getter (`extension.py:344`) but under P2 it was read
@@ -818,6 +846,9 @@ Under P2 the resulting window was one child and milliseconds. Under P3, an
 and `MAX_BATCH_WALL_MS` makes that window **up to 30 minutes** — while §(m) has
 deliberately removed every other mid-turn control, so shift+tab is the only
 lever there is.
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the window
+has no bound now (no `MAX_BATCH_WALL_MS`); shift+tab is still the only lever
+that keeps the batch running, and interrupting the turn ends it.*
 
 The executor therefore passes a `permission_floor` to `spawn_granted`
 (`runtime.py:420-450`, keyword-only, `None` default, private door only), and
@@ -849,6 +880,8 @@ clamp is provably `PLAN` — rank 0, the bottom of the lattice — so
 posture_now × has_ui) matrix.** A human who granted `auto-accept-edits` and then
 pressed shift+tab back to plan mid-batch got four more writing children, with
 §(m) leaving no other mid-turn lever and `MAX_BATCH_WALL_MS` = 30 minutes.
+(*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): there is no `MAX_BATCH_WALL_MS` any more, so that window
+is unbounded.*)
 
 The missing input was not a different comparison of the same two derived values;
 it was the **parent's own posture**, which does not saturate — a widening is only
@@ -1261,7 +1294,9 @@ asserted to be.
   measured consequence is recorded in §(m): during a delegation `chrome.py:746`
   routes any Enter to `steer()` as a **message**, including text starting with
   `/`, so the REPL is effectively read-only for the whole call, bounded only by
-  `MAX_BATCH_WALL_MS`.
+  `MAX_BATCH_WALL_MS`. (*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): no clock bounds the call now; the
+  human's interrupt — Esc, Ctrl+C, or SIGTERM/SIGHUP, which also aborts a running
+  turn — is what ends it.*)
 * **The per-tool child→parent approval back-channel — its own sprint** (ADR-0197
   *Deferred*, with its four measured blockers). It is the only complete answer
   to residual R-A.
@@ -1309,7 +1344,8 @@ product-core. §(n) is now the machine gate for that clause.
   rung); at 40 rows it admits 20+. The refusal names the size that will fit.
 * **The parent REPL is read-only for the whole call**, bounded at 30 minutes
   plus at most one 7-second kill leg. shift+tab still works and now tightens the
-  members that have not started.
+  members that have not started. (*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the 30-minute bound is
+  gone; the call ends when its members finish or the human interrupts it.*)
 * **`mode="single"` is byte-identical to P2 for a clean snapshot** — same code
   path, same renderer, same tool card, same statusline row, no group, no panel.
   Since #178 a child-authored field that is not clean (a steering character,

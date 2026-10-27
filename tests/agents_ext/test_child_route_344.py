@@ -184,7 +184,6 @@ async def _spawn(
         cwd=str(repo),
         parent_cwd=str(repo),
         permission_mode=PermissionMode.PLAN,
-        timeout_ms=90_000,
     )
     result = await asyncio.wait_for(channel.run(plan), 120)
     assert len(built) == 1

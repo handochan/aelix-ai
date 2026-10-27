@@ -60,7 +60,7 @@ import pytest
 from aelix_agents import print_channel as pc
 from aelix_agents import reaper as rp
 from aelix_agents.consent import SpawnGrant
-from aelix_agents.envelope import STREAM_ENDED_EARLY
+from aelix_agents.envelope import LINGERED_NOTE, LINGERED_REASON, STREAM_ENDED_EARLY
 from aelix_agents.print_channel import (
     PrintChannel,
     RunningChild,
@@ -562,6 +562,38 @@ async def _wait_for_tree(row: RunningChild, timeout: float = 10.0) -> ProcessTre
     return row.tree
 
 
+async def _start_the_soft_kill(
+    channel: PrintChannel, row: RunningChild, *, after: str | None = None
+) -> asyncio.Task[int]:
+    """Start SIGTERM -> grace -> SIGKILL on a LIVE child, the way the deadline did.
+
+    Until #604 the delegation's deadline called ``channel._reap(proc, row)`` from
+    inside the run: the one kill leg that sends the soft signal and then WAITS
+    the grace before it escalates (``stop``, ``stop_all`` and a cancel all kill
+    eagerly). There is no deadline now, and in the product that leg is reached
+    only by a child that closed its output and would not exit
+    (``POST_EOF_EXIT_BOUND_SECONDS``). The cases that use this are about the leg
+    itself, so they start it directly — the same call with the same arguments —
+    and the run observes the child's death exactly as it did before.
+
+    ``after`` is the answer the stub emits once its signal disposition is in
+    place. The deadline used to give a stub hundreds of milliseconds to get
+    there; starting the kill on the bare pid instead would SIGTERM a child that
+    has not yet ignored it (measured: ``exit_code=-15`` in 0.05 s). So the kill
+    waits for the OBSERVED answer, never a guess about interpreter start-up.
+    """
+
+    await _wait_for_pid(row)
+    if after is not None:
+        await wait_until(
+            lambda: row.stream.summary == after,
+            what=f"the stub to say {after!r} before the soft kill starts",
+        )
+    proc = row.proc
+    assert proc is not None
+    return asyncio.ensure_future(channel._reap(proc, row))
+
+
 def _spy_hard_kill(tree: ProcessTree) -> list[tuple[float, float]]:
     """Wrap the INSTANCE's ``hard_kill``; return the ``(entered, returned)`` log.
 
@@ -668,7 +700,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2078-2095``) nor child (``modes/print_mode.py:234-293``)
+    (``tui/shell.py:2079-2096``) nor child (``modes/print_mode.py:234-293``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -682,15 +714,18 @@ async def test_startup_death_zero_stdout(tmp_path: Path) -> None:
     """A child with no API key exits 1 having written ZERO stdout bytes.
 
     Not even the session header. ``state`` is completely empty, so stderr is the
-    only rung of the fallback chain that can explain anything — which is why
-    that rung is mandatory.
+    only thing that can explain anything — which is why it is mandatory. It
+    explains it as the run's ``error`` (ADR-0276 D17): the summary of a failure
+    is the child's own text, and this child wrote none (#604 review).
     """
 
     result = await _stub_channel(_STDERR_ONLY).run(_plan(tmp_path))
     assert result.ok is False
     assert result.status == "error"
     assert result.exit_code == 1
-    assert "boom: the child could not start" in result.summary
+    assert result.summary == "(no output)"
+    assert result.error is not None
+    assert "boom: the child could not start" in result.error
     assert result.details is not None
     assert "boom" in result.details
 
@@ -813,7 +848,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:595-601``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:821-827``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -895,11 +930,19 @@ async def test_a_poisoned_usage_line_does_not_orphan_the_child(
 
     row = RunningChild(id="sub-poison", profile="scout")
     channel = _stub_channel(_POISONED_USAGE, grace=0.5)
-    result = await asyncio.wait_for(
-        channel.run(_plan(tmp_path, timeout_ms=1500), child=row), 30
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    # A STOP ENDS IT (#604). The trigger was the run's own 1.5 s deadline, and
+    # there is none now: the child sleeps 120 s after its last line, so the stop
+    # is what ends the run — once the line AFTER the poisoned one has reduced,
+    # which is the observation the summary assertion below rests on.
+    await wait_until(
+        lambda: row.stream.summary == "still here",
+        what="the line after the poisoned one to reduce",
     )
+    await pc.abort_child(row, grace=0.5)
+    result = await asyncio.wait_for(run, 30)
 
-    assert result.status == "timeout"
+    assert result.status == "aborted"
     assert result.ok is False
     # The line AFTER the poisoned one still reduced — the pump kept going.
     assert result.summary == "still here"
@@ -928,9 +971,7 @@ async def test_an_unexpected_failure_still_returns_an_envelope_and_kills(
 
     row = RunningChild(id="sub-boom", profile="scout")
     result = await asyncio.wait_for(
-        _stub_channel(_SLEEPER, grace=0.5).run(
-            _plan(tmp_path, timeout_ms=30_000), child=row
-        ),
+        _stub_channel(_SLEEPER, grace=0.5).run(_plan(tmp_path), child=row),
         30,
     )
 
@@ -967,21 +1008,17 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
     """
 
     marker = tmp_path / "grandchild.pid"
-    # The anti-hang bound sits PAST the 30 s budget (#330): the budget firing is
-    # the regression, and it must be the status below that says so — a
-    # ``timeout`` — not a watchdog that happened to fire first. The old
-    # ``took < 15.0`` under a 30 s ``wait_for`` restated the same claim on the
-    # runner's clock.
+    # With no deadline (#604) the regression — completion gated on pipe EOF —
+    # no longer ends in a ``timeout`` status: the run would simply wait on the
+    # held pipes for the grandchild's 120 s. So the anti-hang bound is what
+    # says so here, and 60 s sits far past what the fixed run takes.
     result = await within(
-        _stub_channel(_pipe_holding_stub(marker), grace=0.5).run(
-            _plan(tmp_path, timeout_ms=30_000)
-        ),
+        _stub_channel(_pipe_holding_stub(marker), grace=0.5).run(_plan(tmp_path)),
         bound=60.0,
         what="a run whose grandchild holds the child's stdio after it exits",
     )
 
-    # ``ok``, not ``timeout``: the child's own exit is what ended the run, not
-    # the 30 s budget, which is the event the old ``took < 15.0`` stood for.
+    # The child's own exit is what ended the run.
     assert result.status == "ok"
     assert result.ok is True
     assert result.summary == "the answer"
@@ -991,128 +1028,90 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
     await _await_death(kid, 5.0)
 
 
-# === Timeout + the kill legs ==================================================
+# === No deadline, the post-EOF bound, and the kill legs (#604) ===============
 
 
-def _record_clock_readings(
-    monkeypatch: pytest.MonkeyPatch, module: Any, waits: list[Any]
-) -> list[tuple[int, float]]:
-    """Every ``time.monotonic()`` *module* reads, as ``(len(waits) then, value)``.
+def _leaping_clock(monkeypatch: pytest.MonkeyPatch, module: Any, *, step: float) -> None:
+    """Make every ``time.monotonic()`` *module* reads jump ``step`` seconds.
 
-    *waits* is the same module's :func:`record_armed_waits` log, so a reading's
-    mark says which armed wait it came before: the readings marked ``i`` were
-    taken after wait ``i - 1`` was armed and before wait ``i`` was. The swap is
-    of the module's ``time`` name only (a proxy that delegates everything else),
-    undone by *monkeypatch*; ``time.monotonic`` is looked up at call time, so
-    a clock plugin that replaced it is what the product reads here too.
+    The swap is of the module's ``time`` name only (a proxy that delegates
+    everything else), undone by *monkeypatch*. Under it any deadline the module
+    derived from its own clock would already be spent by the time it was armed,
+    so a run that still finishes is a run nothing timed.
     """
 
-    readings: list[tuple[int, float]] = []
+    readings = {"n": 0}
 
     class _Clock:
         def __getattr__(self, name: str) -> Any:
             return getattr(time, name)
 
         def monotonic(self) -> float:
-            value = time.monotonic()
-            readings.append((len(waits), value))
-            return value
+            readings["n"] += 1
+            return time.monotonic() + step * readings["n"]
 
     assert module.time is time, f"{module.__name__} does not read a module-global ``time``"
     monkeypatch.setattr(module, "time", _Clock())
-    return readings
 
 
-async def test_timeout_kills_and_returns_partial(
+async def test_the_main_wait_arms_no_deadline_and_a_run_past_the_old_default_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """§(j): a timeout is an OUTCOME carrying the partial work, not an exception.
+    """#604 (ADR-0276 D3) — the channel's first wait has NO timeout.
 
-    pi throws on abort (``index.ts:413``) and discards everything the child
-    streamed first, so the user loses the work AND the diagnosis.
+    It used to be ``asyncio.wait(..., timeout=deadline - now)`` with a 600 s
+    default, and a child still working at the deadline was killed and reported
+    ``timeout``. Here the channel's own clock leaps 700 s on every read — past
+    the old default before the wait is even armed, so the old code timed out at
+    once (its deadline was set on one read and armed on the next) — and the
+    run still ends the only way it should: when the child finishes.
+
+    Asserted through the wait the channel ARMED, not through the runner's clock:
+    the first ``asyncio.wait`` carries ``timeout=None`` and returned because the
+    child did. The elapsed time on the envelope is the leaping clock's, which is
+    what proves the clock was read at all.
     """
 
     waits = record_armed_waits(monkeypatch, pc)
-    readings = _record_clock_readings(monkeypatch, pc, waits)
+    _leaping_clock(monkeypatch, pc, step=700.0)
+    child = _stub(
+        """
+        start()
+        say("slow, and whole", input=2, output=2, total_tokens=4)
+        done()
+        """
+    )
     result = await within(
-        _stub_channel(_SLEEPER, grace=0.5).run(_plan(tmp_path, timeout_ms=1500)),
+        _stub_channel(child, grace=0.5).run(_plan(tmp_path)),
         bound=30.0,
-        what="a 1.5 s-budget run of a child that sleeps 60 s",
-    )
-    assert result.status == "timeout"
-    assert result.ok is False
-    assert result.summary == "partial work done"
-    assert result.usage.turns == 1
-    # THE DEADLINE, AS THE CHANNEL ARMED IT (#330). This was ``1.0 < elapsed``,
-    # a floor on the runner's clock standing for "the budget was honoured, not
-    # cut short". The channel's first ``asyncio.wait`` IS the deadline, armed
-    # with what is left of ``timeout_ms`` between the channel's OWN two clock
-    # readings: ``deadline = time.monotonic() + budget``, then
-    # ``max(deadline - time.monotonic(), 0.0)`` about six lines later, with no
-    # ``await`` between. So the armed bound is exactly the budget less the gap
-    # the channel itself read — which is what is asserted, not a window under
-    # 1.5 s: a window (``1.4 <``) went red whenever the process was paused for
-    # 100 ms between those two lines, though the product was right. A deadline
-    # cut short (x0.6, /10) arms less than the budget minus that gap, on any
-    # runner, paused or not. And the deadline must be what ended the wait, not
-    # the pumps or the child's exit.
-    deadline_wait = next(w for w in waits if w.kind == "wait")
-    at = waits.index(deadline_wait)
-    before = [value for mark, value in readings if mark == at]
-    assert len(before) >= 2, (
-        f"the channel read its clock {len(before)} time(s) before arming the "
-        f"deadline wait, not twice (the deadline, then what is left of it); "
-        f"readings: {readings}, waits: {waits}"
-    )
-    set_at, armed_at = before[-2], before[-1]
-    left = max(1.5 - (armed_at - set_at), 0.0)
-    assert deadline_wait.timeout is not None and abs(deadline_wait.timeout - left) < 1e-6, (
-        f"the run's deadline was armed with {deadline_wait.timeout!r}s for a "
-        f"timeout_ms=1500 plan, {armed_at - set_at:.6f}s after the channel set it: "
-        f"{left:.6f}s was left of the budget; waits: {waits}"
-    )
-    assert deadline_wait.outcome == "timed out", (
-        f"the deadline did not fire ({deadline_wait.outcome}) on a child that "
-        f"sleeps 60 s; waits: {waits}"
+        what="a run whose clock leaps past the old 600 s default",
     )
 
+    assert (result.ok, result.status) == (True, "ok"), result
+    assert result.summary == "slow, and whole"
+    assert result.elapsed_ms >= 600_000, "the channel never read the leaping clock"
+    main_wait = next(w for w in waits if w.kind == "wait")
+    assert main_wait.timeout is None, f"the main wait armed a deadline: {waits}"
+    assert main_wait.outcome == "returned", waits
 
-async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
+
+async def test_a_slow_exit_status_after_eof_is_a_finished_run_not_a_lingering_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MEDIUM #3 — pipe EOF and ``returncode`` are not the same instant.
+    """MEDIUM #3, re-pointed at the post-EOF bound (#604, ADR-0276 D4).
 
-    Both pumps reaching EOF means every writer closed fd 1 and fd 2, i.e. the
-    child is exiting. But the status only appears when the loop's child watcher
-    delivers it, milliseconds to tens of milliseconds later, and that gap used to
-    be charged against the caller's deadline: any deadline landing inside it
-    produced ``status="timeout", ok=False`` with the COMPLETE answer sitting in
-    ``summary``. Measured on a child answering at ~679 ms, sweeping ``timeout_ms``
-    over the band above it: ``686 ms -> timeout / ok=False / summary='the
-    complete answer'``, 4/30 runs in the reviewer's own sweep.
+    Both pumps reaching EOF means the child is exiting, but ``returncode``
+    appears only when the loop's child watcher delivers it, milliseconds to tens
+    of milliseconds later. That gap used to be charged against the caller's
+    deadline (``686 ms -> timeout / ok=False / summary='the complete answer'``,
+    measured); with no deadline left it is charged against
+    :data:`~aelix_agents.print_channel.POST_EOF_EXIT_BOUND_SECONDS`, and a gap
+    inside that bound must not be judged lingering.
 
-    The race is made DETERMINISTIC here by slowing the exit-status poll rather
-    than by sweeping timeouts and hoping: the poll interval stands in for the
-    watcher latency, and the budget guarantees the deadline lands inside the gap.
-    Before the fix that is a ``timeout``; after it, the floor covers the gap and
-    the run is what it actually was.
-
-    THE TWO NUMBERS BELOW ARE A LOAD-TOLERANCE FIX, and both halves matter.
-    The budget must cover the CHILD'S BOOT, because the channel starts its clock
-    at ``run()`` and a real interpreter has to start before it can write
-    anything. At the original 300 ms this test was load-sensitive: 6/6 in
-    isolation but an intermittent failure inside a full-suite run on a 2-core
-    box, where boot alone can exceed the whole budget and the pumps never reach
-    EOF in time — a scheduler measurement wearing this test's name.
-
-    Widening it does NOT weaken the subject, because the floor stays the only
-    thing that can save the run. Two inequalities have to hold and both still
-    do: the pumps must finish before the deadline (``boot < 1.5 s``, five times
-    the old headroom), and the remaining budget at that moment must be SHORTER
-    than the exit gap (``1.5 s − boot < 1.9 s``, true for any boot at all) while
-    the gap stays under :data:`~aelix_agents.print_channel.POST_EOF_EXIT_GRACE_SECONDS`
-    so the floor can cover it (``1.9 s < 2.0 s``). Take the floor away and the
-    wait is the remaining budget alone, which expires before the status lands.
+    The gap is made DETERMINISTIC by slowing the exit-status poll to 1.9 s — the
+    old 2 s floor's worst case — rather than by hoping. The verdict is the
+    envelope (a clean exit 0, no note), and the post-EOF wait the channel armed
+    is the bound itself and RETURNED, which no runner's load can fake.
     """
 
     original = pc._wait_for_exit
@@ -1121,6 +1120,7 @@ async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
         return await original(proc, poll=1.9)
 
     monkeypatch.setattr(pc, "_wait_for_exit", _slow_status)
+    waits = record_armed_waits(monkeypatch, pc)
 
     child = _stub(
         """
@@ -1129,28 +1129,36 @@ async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
         done()
         """
     )
-    result = await asyncio.wait_for(
-        _stub_channel(child, grace=0.5).run(_plan(tmp_path, timeout_ms=1500)), 30
-    )
+    result = await asyncio.wait_for(_stub_channel(child, grace=0.5).run(_plan(tmp_path)), 30)
 
     assert result.status == "ok"
     assert result.ok is True
     assert result.summary == "the complete answer"
     assert result.exit_code == 0
+    assert result.note is None
+    post_eof = [
+        w for w in waits if w.kind == "wait_for" and w.timeout == pc.POST_EOF_EXIT_BOUND_SECONDS
+    ]
+    assert post_eof and post_eof[0].outcome == "returned", waits
 
 
-def _wedged_stub(ready: Path) -> str:
+def _wedged_stub(ready: Path, *, finished: bool = True) -> str:
     """Emit, close both pipes, ANNOUNCE READINESS, then wedge.
 
     The SIGTERM disposition is deliberately NOT set here. It is set by the shell
     in :func:`_wedged_argv` before this interpreter exists — see there for why.
+
+    ``finished=False`` closes the pipes BEFORE the stream's terminator — the
+    child that went quiet mid-turn, which a lingering reap must report as a
+    failure (#604, ADR-0276 D4).
     """
 
+    terminator = "done()" if finished else "pass"
     return _stub(
         f"""
         start()
         say("closing my pipes now")
-        done()
+        {terminator}
         os.close(1)
         os.close(2)
         # THE LAST set-up action, and every earlier line is part of the state it
@@ -1175,7 +1183,9 @@ def _wedged_argv(script: str) -> list[str]:
     ignore is not), so ``trap '' TERM`` in the shell is the child's disposition
     from its very first instruction. That deletes CPython start-up — ~40 ms,
     the dominant term — from the window in which a SIGTERM could still take its
-    default action. It is the belt; :func:`_await_readiness` is the braces.
+    default action. (Its one user since #604 needs nothing more: the post-EOF
+    bound starts only after the child has closed its pipes, i.e. after Python
+    exists and the answer is out.)
 
     ``exec`` REPLACES the shell, so there is still exactly ONE process: the
     process group, ``pdeathsig`` and ``descendant_pids`` behave exactly as they
@@ -1189,12 +1199,12 @@ def _wedged_argv(script: str) -> list[str]:
 async def _await_readiness(
     marker: Path, run: asyncio.Future[Any], *, timeout: float = 10.0
 ) -> None:
-    """Block until the wedged child says it is wedged, or fail LEGIBLY.
+    """Block until the child says it reached the state under test, or fail LEGIBLY.
 
-    The bound (10 s) is deliberately larger than the run's own 5 s deadline: if
-    a machine really is too loaded to start an interpreter in ten seconds, the
-    test must say *that*, not ``-15 != -SIGKILL``. Also fails fast if the run
-    finishes first, which is the other way the precondition can be false.
+    If a machine really is too loaded to start an interpreter within the bound,
+    the test must say *that*, not fail on an exit code that measures the wrong
+    thing. Also fails fast if the run finishes first, which is the other way the
+    precondition can be false.
     """
 
     deadline = time.monotonic() + timeout
@@ -1210,76 +1220,70 @@ async def _await_readiness(
         await asyncio.sleep(0.01)
     raise AssertionError(
         f"the child never wrote {marker} within {timeout}s: it never reached "
-        "the state under test (SIGTERM ignored, answer emitted, pipes at EOF, "
-        "process wedged). This is a machine/environment failure, not a "
-        "regression in the timeout path."
+        "the state under test. This is a machine/environment failure, not a "
+        "regression in the kill path."
     )
 
 
 @sigterm_ignoring_fixture_buildable
-async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
-    tmp_path: Path,
+@pytest.mark.parametrize("finished", [True, False], ids=["after-agent-end", "before-agent-end"])
+async def test_a_child_that_closed_its_stdio_and_wedged_is_reaped_after_the_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finished: bool
 ) -> None:
-    """The other half of MEDIUM #3 — the grace is a FLOOR, not an amnesty.
+    """#604 (ADR-0276 D4) — the post-EOF wait is bounded, and the verdict reads the stream.
 
-    ``POST_EOF_EXIT_GRACE_SECONDS`` must not turn "the pipes closed" into "wait
-    forever". A child that closes stdout/stderr and then refuses to exit is
-    still killed, just two seconds after the deadline rather than at it.
+    A child that closes stdout/stderr and then refuses to exit must not hold the
+    parent open: it is reaped after :data:`~aelix_agents.print_channel.POST_EOF_EXIT_BOUND_SECONDS`
+    (shortened here; the bound is the channel's module constant, read at call
+    time). That half is the old MEDIUM #3 guard, and it had to move: the wait
+    used to borrow the delegation's deadline, which is gone.
 
-    DETERMINISM (S13). This test used to assume a fresh CPython reached
-    ``signal.signal(SIGTERM, SIG_IGN)`` inside a 300 ms budget; under load it
-    did not, SIGTERM took its default action, and the test failed with
-    ``assert -15 == -SIGKILL`` and ``summary='(no output)'``. It no longer makes
-    any assumption about interpreter start-up: the disposition is set
-    pre-``exec`` (:func:`_wedged_argv`) and the run's deadline is not allowed to
-    matter until the child has been OBSERVED to be wedged
-    (:func:`_await_readiness`).
+    The other half is new. The exit code after such a reap is the REAPER's
+    (``-SIGKILL``: this child ignores SIGTERM from before Python exists, see
+    :func:`_wedged_argv`), so it says nothing about the answer:
+
+    * ``after-agent-end`` — the stream reached its terminator first, so the
+      answer is whole and the run is ``ok`` with the note;
+    * ``before-agent-end`` — the pipes closed mid-turn, so it is ``error`` with
+      the lingering reason — the ``reason`` since D10, and never the reaper's
+      ``killed by signal`` in ``error`` (D17).
+
+    Asserted through the wait the channel armed (the bound, and it timed out)
+    rather than a duration, and the outer ``wait_for`` is the hang detector.
     """
 
+    monkeypatch.setattr(pc, "POST_EOF_EXIT_BOUND_SECONDS", 1.0)
+    waits = record_armed_waits(monkeypatch, pc)
     ready = tmp_path / "wedged.ready"
     # The script rides in via ``argv`` (wrapped in the shell), so the positional
     # ``script`` argument is unused — ``_stub_channel`` ignores it when ``argv``
     # is given.
-    channel = _stub_channel("", grace=0.5, argv=_wedged_argv(_wedged_stub(ready)))
-    started = time.monotonic()
-    # ``timeout_ms`` is 5 000, not 300, and that is SAFE here only because the
-    # readiness gate below observes the precondition first: raising the budget
-    # on its own would move the race rather than remove it (S13). What the pair
-    # buys is that the deadline is not allowed to fire until the state under
-    # test — SIGTERM ignored, answer emitted, pipes at EOF, process wedged — has
-    # been OBSERVED to exist, on any machine at any load.
-    run = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=5_000)),
+    channel = _stub_channel(
+        "", grace=0.5, argv=_wedged_argv(_wedged_stub(ready, finished=finished))
     )
-    try:
-        await _await_readiness(ready, run)
-    except BaseException:
-        # A failed precondition must not leak the child: cancel the run, which
-        # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1380-1387) and kills the tree.
-        run.cancel()
-        with contextlib.suppress(BaseException):
-            await run
-        raise
-
-    result = await asyncio.wait_for(run, 40)
+    started = time.monotonic()
+    result = await asyncio.wait_for(channel.run(_plan(tmp_path)), 40)
     elapsed = time.monotonic() - started
 
-    assert result.status == "timeout"
-    assert result.ok is False
-    assert result.exit_code == -signal.SIGKILL
-    # Safe ONLY because readiness was observed: the emit demonstrably happened
-    # before the deadline, so this is an assertion about the reducer and not a
-    # second bet on interpreter start-up latency (the bet that produced the
-    # observed ``summary='(no output)'``).
-    assert result.summary == "closing my pipes now"
-    # 5 s deadline + 0.5 s SIGTERM grace + reap, with headroom for a loaded box;
-    # the outer ``wait_for(..., 40)`` is the real hang detector. An anti-hang
-    # bound, so it states what it timed and against what (#330).
+    detail = f"result={result!r} waits={waits!r}"
+    assert result.exit_code == -signal.SIGKILL, detail
+    # Safe without a readiness gate now: the bound starts only at EOF, and the
+    # child wrote its answer before it closed the pipes.
+    assert result.summary == "closing my pipes now", detail
+    if finished:
+        assert (result.ok, result.status) == (True, "ok"), detail
+        assert result.note == LINGERED_NOTE, detail
+    else:
+        assert (result.ok, result.status) == (False, "error"), detail
+        assert result.reason == LINGERED_REASON, detail
+        assert "killed by signal" not in (result.error or ""), detail
+        assert result.note is None, detail
+    bound = [w for w in waits if w.kind == "wait_for" and w.timeout == 1.0]
+    assert bound and bound[0].outcome == "timed out", detail
     check_anti_hang(
         elapsed,
         bound=30.0,
-        what="a wedged child's timeout (the floor is a grace, not an unbounded wait)",
+        what="a wedged child's post-EOF reap (a bound, not an unbounded wait)",
     )
 
 
@@ -1480,13 +1484,13 @@ async def test_reap_still_escalates_after_the_signal_change(tmp_path: Path) -> N
     marker = tmp_path / "soft-signal.seen"
     channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=0.4)
     row = RunningChild(id="sub-escalate", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=800), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     tree = await _wait_for_tree(row)
     hard_kills = _spy_hard_kill(tree)
     started = time.monotonic()
+    soft_kill = await _start_the_soft_kill(channel, row, after="i will not die politely")
     result = await asyncio.wait_for(task, 40)
+    await asyncio.wait_for(soft_kill, 40)
     elapsed = time.monotonic() - started
     detail = (
         f"exit_code={result.exit_code} elapsed={elapsed:.3f}s "
@@ -1708,20 +1712,28 @@ async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
     marker = tmp_path / "soft-signal.seen"
     channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=0.5)
     row = RunningChild(id="sub-escalate", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=1500), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     tree = await _wait_for_tree(row)
     hard_kills = _spy_hard_kill(tree)
+    # The answer is OBSERVED before the kill starts, so the summary assertion
+    # below is about the reducer and not a bet on interpreter start-up.
+    await wait_until(
+        lambda: row.stream.summary == "i will not die politely",
+        what="the stub's answer to reduce",
+    )
     started = time.monotonic()
+    soft_kill = await _start_the_soft_kill(channel, row)
     result = await asyncio.wait_for(task, 40)
+    await asyncio.wait_for(soft_kill, 40)
     elapsed = time.monotonic() - started
     detail = (
         f"exit_code={result.exit_code} elapsed={elapsed:.3f}s "
         f"details={result.details!r}"
     )
 
-    assert result.status == "timeout", detail
+    # ``error``, not the ``timeout`` it was: the kill is no longer a deadline's
+    # (#604), and a child that died to a signal mid-turn is a failure.
+    assert result.status == "error", detail
     # The spy is the load-bearing half on BOTH platforms; the exit code below
     # only corroborates it. See the sibling test for why win32's ``1`` cannot
     # stand on its own, and why the POSIX count exists only because Q1 landed.
@@ -1744,7 +1756,9 @@ async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
 
 
 @linux_only
-async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
+async def test_double_cancellation_still_kills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """FINDING B1 — the whole reason the reaper is written the way it is.
 
     ``tui/chrome.py::_interrupt`` (``:854``) has NO debounce on its running
@@ -1756,24 +1770,40 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
 
     Here the grace is 5 s and the child ignores SIGTERM, so a reaper that merely
     "waited it out" would leave the pid alive well past the assertion window.
+
+    THE RUN ENTERS ITS OWN REAPER THROUGH THE POST-EOF BOUND (#604). It used to
+    get there through the delegation's deadline, which is gone; the one path
+    left on which the run itself awaits ``_reap`` is a child that closed its
+    pipes and would not exit, so that is the child this case now uses — the
+    window B1 is about is unchanged.
     """
 
-    channel = _stub_channel(
-        _sigterm_ignoring_stub(tmp_path / "soft-signal.seen"), grace=5.0
+    monkeypatch.setattr(pc, "POST_EOF_EXIT_BOUND_SECONDS", 0.3)
+    child = _stub(
+        """
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        start()
+        say("closing my pipes, staying alive")
+        done()
+        os.close(1)
+        os.close(2)
+        for _ in range(2400):
+            time.sleep(0.05)
+        """
     )
+    channel = _stub_channel(child, grace=5.0)
     row = RunningChild(id="sub-cancel", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=1200), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     pid = await _wait_for_pid(row)
-    # Wait past the 1.2 s deadline so the run is INSIDE the reaper's grace when
-    # the cancellations land — that is the exact window finding B1 is about, and
-    # cancelling earlier would only exercise the pump-phase abort. Asserted
-    # rather than assumed: the reaper task must exist before the first cancel.
+    # Wait until the post-EOF bound has started the reaper, so the run is
+    # INSIDE the reaper's grace when the cancellations land — that is the exact
+    # window finding B1 is about, and cancelling earlier would only exercise the
+    # pump-phase abort. Asserted rather than assumed: the reaper task must exist
+    # before the first cancel.
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and row.reaper_task is None:
         await asyncio.sleep(0.05)
-    assert row.reaper_task is not None, "the deadline never started the reaper"
+    assert row.reaper_task is not None, "the post-EOF bound never started the reaper"
     assert _alive(pid), "SIGTERM was supposed to be ignored"
 
     task.cancel()
@@ -1812,10 +1842,18 @@ async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
 
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_grandchild_stub(marker), grace=0.5)
-    result = await asyncio.wait_for(
-        channel.run(_plan(tmp_path, timeout_ms=1500)), 40
+    row = RunningChild(id="sub-grandchild", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    # The grandchild exists BEFORE the soft kill starts, so the descendant walk
+    # the reaper takes at that moment can name it (the deadline used to fire
+    # long after the stub's announcement; #604 made the trigger explicit).
+    await wait_until(
+        lambda: _announced_pid(marker) is not None, what="the stub to announce its grandchild"
     )
-    assert result.status == "timeout"
+    soft_kill = await _start_the_soft_kill(channel, row)
+    result = await asyncio.wait_for(run, 40)
+    await asyncio.wait_for(soft_kill, 40)
+    assert result.status == "error"
     grandchild = int(marker.read_text())
     assert await _await_death(grandchild, 5.0) < 5.0
 
@@ -1987,9 +2025,7 @@ def _runtime(tmp_path: Path, script: str, *, grace: float = 0.5) -> _SubagentRun
 
 async def test_stop_by_id_kills_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, _SLEEPER)
-    task = asyncio.ensure_future(
-        runtime.spawn(_resolved(), "go", timeout_ms=60_000)
-    )
+    task = asyncio.ensure_future(runtime.spawn(_resolved(), "go"))
     await wait_until(lambda: runtime.list(), what="the delegation to register")
     live = runtime.list()
     assert len(live) == 1
@@ -2013,10 +2049,7 @@ async def test_stop_by_id_kills_child(tmp_path: Path) -> None:
 
 async def test_stop_all_kills_every_child(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, _SLEEPER)
-    tasks = [
-        asyncio.ensure_future(runtime.spawn(_resolved(), f"go {n}", timeout_ms=60_000))
-        for n in range(2)
-    ]
+    tasks = [asyncio.ensure_future(runtime.spawn(_resolved(), f"go {n}")) for n in range(2)]
     await wait_until(lambda: len(runtime.list()) >= 2, what="both delegations to register")
     assert len(runtime.list()) == 2
 
@@ -2093,7 +2126,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:995-999``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:998-1002``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2149,7 +2182,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:203``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:207``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2211,9 +2244,7 @@ async def test_stop_of_an_unknown_id_is_silent(tmp_path: Path) -> None:
 
 async def test_status_reports_the_live_tool(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, _SLEEPER)
-    task = asyncio.ensure_future(
-        runtime.spawn(_resolved(), "go", timeout_ms=60_000)
-    )
+    task = asyncio.ensure_future(runtime.spawn(_resolved(), "go"))
     await wait_until(lambda: runtime.list(), what="the delegation to register")
     row = runtime.list()[0]
     assert row["profile"] == "scout"
@@ -2363,8 +2394,8 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:763`` and
-    ``aggregate.py:360`` both gate on ``if usage.cost:``, so a structurally-zero
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:749`` and
+    ``aggregate.py:559`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
     ``build_child_argv`` is patched BEFORE the runtime is constructed because
@@ -2489,14 +2520,17 @@ async def test_prompt_file_mode_is_0600(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "script", "timeout_ms"),
+    ("case", "script"),
     [
-        ("ok", _HAPPY, None),
-        ("error", _STDERR_ONLY, None),
-        ("timeout", _SLEEPER, 600),
+        ("ok", _HAPPY),
+        ("error", _STDERR_ONLY),
+        # The two kill paths were the deadline's until #604, which drove both
+        # through one ``timeout``; they are driven explicitly now: a ``stop``,
+        # and the soft kill whose grace a SIGTERM-ignoring child outlasts.
+        ("stopped", _SLEEPER),
         # ``None`` because the killed case's stub is built per-test: it plants a
         # breadcrumb under ``tmp_path``, which does not exist at collection time.
-        ("killed", None, 600),
+        ("killed", None),
     ],
 )
 async def test_prompt_file_unlinked_on_every_path(
@@ -2504,7 +2538,6 @@ async def test_prompt_file_unlinked_on_every_path(
     tmp_path: Path,
     case: str,
     script: str | None,
-    timeout_ms: int | None,
 ) -> None:
     body = (
         script
@@ -2512,7 +2545,17 @@ async def test_prompt_file_unlinked_on_every_path(
         else _sigterm_ignoring_stub(tmp_path / "soft-signal.seen")
     )
     channel = _stub_channel(body, grace=0.3)
-    await asyncio.wait_for(channel.run(_plan(tmp_path, timeout_ms=timeout_ms)), 40)
+    row = RunningChild(id=f"sub-{case}", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    soft_kill: asyncio.Task[int] | None = None
+    if case == "stopped":
+        await _wait_for_pid(row)
+        await pc.abort_child(row, grace=0.3)
+    elif case == "killed":
+        soft_kill = await _start_the_soft_kill(channel, row, after="i will not die politely")
+    await asyncio.wait_for(run, 40)
+    if soft_kill is not None:
+        await asyncio.wait_for(soft_kill, 40)
     assert _leaked(_isolated_tmpdir) == [], case
 
 
@@ -2617,9 +2660,7 @@ async def test_prompt_file_unlinked_when_the_owner_is_cancelled(
         _sigterm_ignoring_stub(tmp_path / "soft-signal.seen"), grace=5.0
     )
     row = RunningChild(id="sub-cancel", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     pid = await _wait_for_pid(row)
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -2844,7 +2885,6 @@ async def _run_real_child(
         resolved=resolved if resolved is not None else _write_profile(tmp_path),
         cwd=str(child_cwd),
         parent_cwd=str(parent_cwd),
-        timeout_ms=90_000,
     )
     return await asyncio.wait_for(channel.run(plan), 120)
 
@@ -2993,9 +3033,10 @@ async def test_a_real_child_without_a_key_is_an_error_envelope_not_a_hang(
 ) -> None:
     """The shape every other real-child test here depends on.
 
-    No provider key → exit 1 with ZERO stdout bytes, so the whole envelope comes
-    from the stderr rung. It is also the cheapest end-to-end proof that the
-    spawner's argv is accepted by a real ``-m aelix_coding_agent``.
+    No provider key → exit 1 with ZERO stdout bytes, so the whole diagnosis
+    comes from stderr — as the run's ``error`` and ``reason`` (#604 review). It
+    is also the cheapest end-to-end proof that the spawner's argv is accepted
+    by a real ``-m aelix_coding_agent``.
     """
 
     repo = tmp_path / "repo"
@@ -3003,7 +3044,8 @@ async def test_a_real_child_without_a_key_is_an_error_envelope_not_a_hang(
     result = await _run_real_child(tmp_path, child_cwd=repo, parent_cwd=repo)
     assert result.ok is False
     assert result.exit_code == 1
-    assert "model" in result.summary.lower()
+    assert result.error is not None and "model" in result.error.lower()
+    assert result.reason is not None and result.reason in result.error
     assert result.permission_mode == "plan"
 
 
@@ -3334,9 +3376,7 @@ async def test_the_child_is_contained(tmp_path: Path) -> None:
 
     row = RunningChild(id="sub-contained", profile="scout")
     channel = _stub_channel(_SLEEPER, grace=0.5)
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=30_000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     try:
         tree = await _wait_for_tree(row)
         pid = await _wait_for_pid(row)
@@ -3395,9 +3435,7 @@ async def test_the_soft_signal_is_delivered_and_survived(tmp_path: Path) -> None
     marker = tmp_path / "soft-signal.seen"
     channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=3.0)
     row = RunningChild(id="sub-soft-signal", profile="scout")
-    run = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=1000), child=row)
-    )
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     # WHAT ``soft_kill`` ITSELF REPORTED, recorded but never asserted on. §D.6
     # lists "CTRL_BREAK delivery on a runner with no console" as genuinely not
     # measurable in CI: if the runner has no console, ``ctrl_break`` raises
@@ -3418,7 +3456,11 @@ async def test_the_soft_signal_is_delivered_and_survived(tmp_path: Path) -> None
             return sent
 
         tree.soft_kill = _soft  # type: ignore[method-assign]
+    # The soft kill starts only once the spy is on the tree (#604: it used to be
+    # the deadline's, a second after the spawn).
+    soft_kill = await _start_the_soft_kill(channel, row, after="i will not die politely")
     result = await asyncio.wait_for(run, 60)
+    await asyncio.wait_for(soft_kill, 60)
 
     detail = (
         f"exit_code={result.exit_code} soft_kill_reported={sends!r} "
@@ -3482,11 +3524,20 @@ async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) ->
     # inside it. Reading it after the ``wait_for`` left a 120 s grandchild
     # running on every failure mode that fired before that line — the stray a
     # post-suite ``ps`` check would find (#220 review round 2, posix2/P4).
-    run = asyncio.ensure_future(channel.run(_plan(tmp_path, timeout_ms=1500)))
+    row = RunningChild(id="sub-nonsetsid", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     grandchild: int | None = None
     try:
+        # The grandchild exists BEFORE the soft kill starts — the deadline used
+        # to fire long after the announcement; #604 made the trigger explicit.
+        await wait_until(
+            lambda: _announced_pid(marker) is not None,
+            what="the stub to announce its grandchild",
+        )
+        soft_kill = await _start_the_soft_kill(channel, row)
         result = await asyncio.wait_for(run, 60)
-        assert result.status == "timeout"
+        await asyncio.wait_for(soft_kill, 60)
+        assert result.status == "error"
         grandchild = int(marker.read_text())
         assert await _await_death(grandchild, 10.0) < 10.0
     finally:
@@ -3648,7 +3699,7 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
     daemon is never killed, ``proc.wait()`` never resolves, and this test fails
     on its ``wait_for`` instead of quietly measuring less.
 
-    Cancellation, not the timeout path, because the timeout path returns with a
+    Cancellation, not the uncancelled soft kill, because that one returns with a
     FINISHED reaper and takes the other arm of the same ``if`` — which
     :func:`test_the_tree_is_closed_when_a_run_returns_with_no_reaper` covers.
 
@@ -3669,9 +3720,8 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
         _pipe_holding_daemon_stub(ready, pid_file), grace=2.0
     )
     row = RunningChild(id="sub-close-order", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=1000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    soft_kill: asyncio.Task[int] | None = None
     order: list[str] = []
     closed_at_hard_kill: list[bool] = []
     try:
@@ -3689,12 +3739,14 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
 
         tree.hard_kill, tree.close = _hk, _cl  # type: ignore[method-assign]
 
-        # Wait until the deadline has started the reaper, so the cancellation
-        # lands INSIDE the grace — the window the rule is about.
+        # Start the soft kill (the deadline's leg until #604) and wait until it
+        # has built the reaper, so the cancellation lands INSIDE the grace — the
+        # window the rule is about.
+        soft_kill = await _start_the_soft_kill(channel, row, after="holding my pipes open")
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and row.reaper_task is None:
             await asyncio.sleep(0.02)
-        assert row.reaper_task is not None, "the deadline never started the reaper"
+        assert row.reaper_task is not None, "the soft kill never started the reaper"
 
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -3725,13 +3777,16 @@ async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
         task.cancel()
         with contextlib.suppress(BaseException):
             await task
+        if soft_kill is not None:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(soft_kill, 30)
 
     assert order.count("close") == 1, order
     assert order[-1] == "close", order
     # ``>= 1`` and not ``== 1``: a cancelled run reaches ``kill_tree`` from
     # ``_eager_abort`` twice as well as from the reaper's own escalation, and on
     # win32 both of those are ``hard_kill``. "Exactly once" is asserted only in
-    # the two TIMEOUT tests.
+    # the two soft-kill escalation tests.
     assert order.count("hard_kill") >= 1, order
     assert all(seen is False for seen in closed_at_hard_kill), closed_at_hard_kill
     assert row.tree is None, "closing must NULL the row's reference in the same breath"
@@ -3877,11 +3932,12 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
 ) -> None:
     """The CANCEL path's own Q1 — the hole round 2 measured (posix2/P2).
 
-    ``test_a_non_setsid_grandchild_dies_on_the_escalation`` drives the TIMEOUT
-    path, where ``reap`` supplies the group kill. Ctrl+C does not go that way:
-    it is ``turn_task.cancel()`` (``batch.py``, ``reaper.py``'s module
-    docstring), and on a delegation that has not reached its deadline there is no
-    reaper task at all — the cancellation lands in ``_stream_and_reap``'s
+    ``test_a_non_setsid_grandchild_dies_on_the_escalation`` drives the SOFT
+    KILL (the deadline's leg until #604), where ``reap`` supplies the group kill.
+    Ctrl+C does not go that way: it is ``turn_task.cancel()`` (``batch.py``,
+    ``reaper.py``'s module docstring), and on a delegation nothing else has
+    started killing there is no reaper task at all — the cancellation lands in
+    ``_stream_and_reap``'s
     ``except asyncio.CancelledError`` with a LIVE child, ``_eager_abort`` runs
     ``kill_tree`` with an empty walk on macOS, ``run()``'s ``finally`` closes the
     tree (a POSIX no-op) and the grandchild is beyond anyone's reach for the rest
@@ -3897,11 +3953,9 @@ async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
     marker = tmp_path / "grandchild.pid"
     channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
     row = RunningChild(id="sub-cancel-grandchild", profile="scout")
-    # A deadline far beyond the test, so NOTHING builds a reaper: the cancel is
-    # the only kill, which is the shape a first Ctrl+C really has.
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=120_000), child=row)
-    )
+    # No deadline exists (#604), so NOTHING builds a reaper: the cancel is the
+    # only kill, which is the shape a first Ctrl+C really has.
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     grandchild: int | None = None
     try:
         # A WHOLE pid, not an existing file (#406): ``exists()`` was true of the
@@ -4073,11 +4127,16 @@ async def test_a_real_print_child_reports_the_signal_exit_code(
     cooperative code that is not 1 the hard kill and the polite exit are
     indistinguishable except by stderr.
 
-    The deadline is GATED on a breadcrumb the child writes from inside its own
+    The soft kill is GATED on a breadcrumb the child writes from inside its own
     stream, not on a guess about interpreter start-up: reaching that line means
     the signal handlers are installed and a turn is really in flight (S13's
     lesson). If the child is too slow the gate fails saying so, rather than this
     test failing on an exit code that measures the wrong thing.
+
+    The soft kill is STARTED by the test since #604. It was the delegation's
+    deadline, which reached ``_reap`` — the leg that sends the soft signal and
+    waits the grace; ``stop`` and a cancel kill eagerly, and there is no
+    deadline any more (:func:`_start_the_soft_kill`).
     """
 
     script = tmp_path / "print_child.py"
@@ -4100,18 +4159,13 @@ async def test_a_real_print_child_reports_the_signal_exit_code(
         argv=[sys.executable, str(script), "--wedge", "--ready", str(ready)],
         env=_hermetic_env(tmp_path),
     )
-    # 30 s, not the 8 s of revision 1: the delegation's own deadline is what
-    # bounds the child's BOOT, because ``_await_readiness`` fails fast the moment
-    # ``run.done()`` and ``run`` completes when the deadline fires — the 60 s
-    # handed to the gate is not the operative budget. A cold windows-latest
+    # The 60 s gate is the operative budget for the child's BOOT: there is no
+    # delegation deadline to end the run first (#604). A cold windows-latest
     # runner touching an editable install for the first time, with Defender
-    # reading every ``.py``, is the slow case, and it would fail here with "the
-    # run finished before the child signalled readiness" rather than on an exit
-    # code. The repo's only other real print child budgets 90 s for the same
-    # interpreter (``tests/cli/test_print_mode_json_contract.py``). A slow start
-    # must cost wall time, not a red on a number that measures nothing
-    # (#220 review round 2, W32-6).
-    run = asyncio.ensure_future(channel.run(_plan(tmp_path, timeout_ms=30_000)))
+    # reading every ``.py``, is the slow case; a slow start must cost wall time,
+    # not a red on a number that measures nothing (#220 review round 2, W32-6).
+    row = RunningChild(id="sub-real-print", profile="scout")
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     try:
         await _await_readiness(ready, run, timeout=60.0)
     except BaseException:
@@ -4120,8 +4174,10 @@ async def test_a_real_print_child_reports_the_signal_exit_code(
             await run
         raise
 
+    soft_kill = await _start_the_soft_kill(channel, row)
     result = await asyncio.wait_for(run, 120)
-    assert soft_at, "the deadline never reached the reaper"
+    await asyncio.wait_for(soft_kill, 120)
+    assert soft_at, "the soft kill never reached the reaper"
     elapsed = time.monotonic() - soft_at[0]
     tail = f"{result.details or ''}\n{result.summary or ''}"
     # The windows leg's ``-q`` log carries no durations, so the number has to be

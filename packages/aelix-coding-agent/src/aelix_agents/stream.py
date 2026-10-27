@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aelix_ai.utils._child_output import decode_child_output
+from aelix_coding_agent.builtin.guardrail import _WRITE_TOOLS
 
 # Per-line budget. A line longer than this is DISCARDED and counted, never
 # raised on and never buffered — an unbounded line is the one shape in which a
@@ -219,6 +220,19 @@ class _StreamState:
     stop_reason: str | None = None
     error_message: str | None = None
 
+    final_error: str | None = None
+    """The error of the LAST assistant message — and only when that message
+    ended with ``stop_reason: "error"`` (#604, ADR-0276 D17).
+
+    :attr:`error_message` is last-NON-EMPTY-wins, so it means "some turn
+    errored", never "the run ended in an error": a 429 the harness's auto-retry
+    recovered from stays in it for the rest of the run. Reported as the reason a
+    child that was later stopped or killed did not finish, that recovered rate
+    limit would be the wrong diagnosis. This field is reset on EVERY assistant
+    ``message_end``, so it names an error only while the latest message is that
+    error. The stale value stays readable in :attr:`error_message` and in the
+    envelope's ``details``."""
+
     input: int = 0
     output: int = 0
     cache_read: int = 0
@@ -303,6 +317,98 @@ class _StreamState:
     it says nothing about how many of them arrive. An unbounded accumulator here
     would reintroduce the parent-memory-exhaustion shape that budget exists to
     close, on a child that simply runs a lot of tools."""
+
+    file_writes: dict[str, FileWrite] = field(default_factory=dict)
+    """Every path a WRITER tool was called on, keyed by the RAW path (#604, D8).
+
+    Collected APART FROM :attr:`tool_trail`, because the trail cannot give a
+    path back: its arguments are clipped to :data:`MAX_TRAIL_ARG_CHARS`, it keeps
+    only the first :data:`MAX_TRAIL_ENTRIES` calls, and its rendering is cut at a
+    byte budget. Insertion-ordered, bounded at :data:`MAX_FILE_PATHS` distinct
+    paths; past that :attr:`files_overflow` counts.
+
+    THE KEY IS THE PATH AS THE CHILD WROTE IT, NOT AS IT IS SHOWN (#604 review).
+    Keyed by the sanitised spelling, a confirmed write to ``a\\nb.txt`` and an
+    unfinished one to ``a b.txt`` — two files — became one entry, listed as
+    changed: the unfinished write vanished and the file named did not exist.
+    Sanitising is for display only (:func:`path_for_display`); resolving a path
+    against the child's directory is ``runtime._run``'s job, because it is the
+    one place that knows the directory."""
+
+    write_calls: dict[str, str] = field(default_factory=dict)
+    """``tool_call_id`` → path, for a writer call that has not reported its end.
+
+    An end event pops its entry, so what stays is what is in flight — or what
+    a child stopped mid-write left behind. Bounded by :data:`MAX_OPEN_WRITE_CALLS`
+    against a stream that starts calls and never ends them."""
+
+    files_overflow: int = 0
+    """Distinct written paths past :data:`MAX_FILE_PATHS`, counted rather than
+    kept so the parent can say "+N more" (see :attr:`file_writes`)."""
+
+    overflow_paths: set[int] = field(default_factory=set, repr=False)
+    """Hashes of the paths already counted in :attr:`files_overflow`, so a path
+    written twice past the cap counts once. Bounded at
+    :data:`MAX_OVERFLOW_TRACKED`; beyond it every overflowing call counts, which
+    can only overstate the "+N more" — never hide a file."""
+
+
+MAX_FILE_PATHS = 64
+"""How many DISTINCT written paths one child's result may list (ADR-0276 D8).
+
+A count bound for the same reason :data:`MAX_TRAIL_ENTRIES` is one: a child that
+writes ten thousand files must not grow the parent's memory. Past it, paths are
+counted (:attr:`_StreamState.files_overflow`), never silently dropped."""
+
+MAX_FILE_PATH_CHARS = 512
+"""How much of one written path is SHOWN (:func:`path_for_display`). A longer
+string is clipped with ``…`` so it cannot pass for a whole one."""
+
+MAX_FILE_PATH_KEY_CHARS = 4096
+"""How much of one written path is KEPT, as the key that tells files apart.
+
+A memory bound, not a display one: a path arrives on a line of up to
+:data:`MAX_LINE_BYTES`, and :data:`MAX_FILE_PATHS` of those plus the open calls
+would otherwise pin megabytes of a hostile child's strings. 4096 is Linux's
+``PATH_MAX`` (macOS's is 1024), so on POSIX no file a writer tool could open
+differs from another only past it."""
+
+MAX_OPEN_WRITE_CALLS = 256
+"""How many writer calls may be awaiting their end event at once. A real child
+runs a handful in parallel; this bounds a stream that only ever starts them."""
+
+MAX_OVERFLOW_TRACKED = 4096
+"""How many overflowing paths are remembered to count each one ONCE."""
+
+WRITER_TOOLS = _WRITE_TOOLS
+"""The tools whose calls name a file they write: ``edit`` and ``write``, plus the
+``create_file`` / ``write_file`` spellings the guardrail already polices.
+
+IMPORTED, not re-spelled (ADR-0276 D8): ``builtin/guardrail.py`` is the one list
+of "tools that write a path" product-core keeps, and a second copy here would
+drift the day an extension spelling is added there. ``bash`` is not on it and
+cannot be — what a shell command writes is not in its arguments."""
+
+_FILE_ARG_KEYS = ("path", "file_path")
+"""The argument names a writer tool takes its path under — ``path`` for the
+built-ins, ``file_path`` for the edit family (the same pair
+``guardrail._path_from_event`` reads)."""
+
+
+@dataclass
+class FileWrite:
+    """One path a child's writer tools touched, and what became of it.
+
+    ``changed`` latches: one call that ended without an error is enough, and a
+    later failed call on the same path does not undo a write that happened.
+    ``open_calls`` counts calls on the path that started and have not reported
+    an end — non-zero at the end of the run means a write may have been cut off
+    mid-way.
+    """
+
+    path: str
+    changed: bool = False
+    open_calls: int = 0
 
 
 MAX_TRAIL_ENTRIES = 200
@@ -448,6 +554,126 @@ def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
         if entry.call_id == call_id:
             entry.failed = failed
             return
+
+
+def _written_path(args: Any) -> str | None:
+    """The path a writer call names, AS WRITTEN (bounded), or ``None``.
+
+    Raw, because it is the key that tells two files apart (see
+    :attr:`_StreamState.file_writes`); only :func:`path_for_display` cleans it.
+    A path with nothing to show — empty once its control characters are gone —
+    is not recorded, as before: a list entry has to name something.
+    """
+
+    if not isinstance(args, dict):
+        return None
+    for key in _FILE_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            if not _strip_control(value):
+                return None
+            return value[:MAX_FILE_PATH_KEY_CHARS]
+    return None
+
+
+def path_for_display(path: str) -> str:
+    """One written path as a file list SHOWS it: one line, no controls, bounded.
+
+    Through :func:`_strip_control`, which also collapses newlines: a path is
+    child-authored and is rendered one per line, so a newline inside one could
+    otherwise forge extra entries in a list the parent reads as a record. Clipped
+    at :data:`MAX_FILE_PATH_CHARS` with ``…``. Two different paths may display
+    alike (``a\\nb.txt``, ``a b.txt``); they stay two entries, because the
+    reducer keys them by what the child wrote.
+    """
+
+    shown = _strip_control(path)
+    if len(shown) > MAX_FILE_PATH_CHARS:
+        return shown[: MAX_FILE_PATH_CHARS - 1] + "…"
+    return shown
+
+
+def _open_file_write(state: _StreamState, tool_name: str, event: dict[str, Any]) -> None:
+    """Record a writer call the child just started. NEVER raises.
+
+    A path past :data:`MAX_FILE_PATHS` is counted, not kept — once per path as
+    far as :data:`MAX_OVERFLOW_TRACKED` reaches. A call with no usable
+    ``tool_call_id`` can never be matched to its end, so it stays open and its
+    path reads as unconfirmed unless another call on it is confirmed: "we did
+    not see it finish" is the truth about it.
+    """
+
+    try:
+        if tool_name not in WRITER_TOOLS:
+            return
+        path = _written_path(event.get("args"))
+        if path is None:
+            return
+        entry = state.file_writes.get(path)
+        if entry is None:
+            if len(state.file_writes) >= MAX_FILE_PATHS:
+                key = hash(path)
+                if key in state.overflow_paths:
+                    return
+                if len(state.overflow_paths) < MAX_OVERFLOW_TRACKED:
+                    state.overflow_paths.add(key)
+                state.files_overflow += 1
+                return
+            entry = FileWrite(path=path)
+            state.file_writes[path] = entry
+        entry.open_calls += 1
+        call_id = event.get("tool_call_id")
+        if isinstance(call_id, str) and call_id and len(state.write_calls) < MAX_OPEN_WRITE_CALLS:
+            # The entry's own string, so an open call pins no second copy.
+            state.write_calls[call_id] = entry.path
+    except Exception:  # noqa: BLE001 — a file list is never worth a failed run
+        return
+
+
+def _close_file_write(state: _StreamState, event: dict[str, Any]) -> None:
+    """Settle the writer call this event ends. NEVER raises.
+
+    Matched on ``tool_call_id`` only, like the trail: a wrong pairing would
+    report one file as written because another was.
+    """
+
+    try:
+        call_id = event.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return
+        path = state.write_calls.pop(call_id, None)
+        if path is None:
+            return
+        entry = state.file_writes.get(path)
+        if entry is None:
+            return
+        entry.open_calls = max(entry.open_calls - 1, 0)
+        if not event.get("is_error"):
+            entry.changed = True
+    except Exception:  # noqa: BLE001 — a file list is never worth a failed run
+        return
+
+
+def written_paths(state: _StreamState) -> tuple[list[str], list[str]]:
+    """``(changed, unconfirmed)`` as the child wrote them — RAW — first-seen order.
+
+    Raw on purpose: ``runtime._written_files`` resolves each against the
+    child's directory and only then cleans it for display
+    (:func:`path_for_display`).
+
+    CHANGED BEATS UNCONFIRMED: a path some call wrote successfully was written,
+    whatever a later call on it was doing when the child stopped. A path whose
+    every call ended in an error is in neither list — nothing was written.
+    """
+
+    changed: list[str] = []
+    unconfirmed: list[str] = []
+    for entry in state.file_writes.values():
+        if entry.changed:
+            changed.append(entry.path)
+        elif entry.open_calls > 0:
+            unconfirmed.append(entry.path)
+    return changed, unconfirmed
 
 
 def _usage_field(usage: dict[str, Any] | None, *names: str) -> int:
@@ -615,6 +841,14 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
     error_message = message.get("error_message")
     if isinstance(error_message, str) and error_message:
         state.error_message = error_message
+    # RESET ON EVERY ASSISTANT MESSAGE, unlike the two fields above (ADR-0276
+    # D17): it answers "did the LATEST message end in an error", so a turn that
+    # recovered from an earlier one clears it.
+    state.final_error = (
+        error_message
+        if stop_reason == "error" and isinstance(error_message, str) and error_message
+        else None
+    )
     provider = message.get("provider")
     if isinstance(provider, str) and provider:
         state.provider = provider
@@ -735,6 +969,7 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         if isinstance(tool_name, str) and tool_name:
             state.current_tool = tool_name
             _open_trail_entry(state, tool_name, event)
+            _open_file_write(state, tool_name, event)
     elif kind == _TOOL_EXECUTION_END:
         # NEWLY CONSUMED, and the reversal is deliberate. This event was ignored
         # because nothing downstream had a use for it; the trail does. It is the
@@ -742,6 +977,7 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         # status from the exit code and the stream terminator, so a child whose
         # every tool errored still reports ``ok``.
         _close_trail_entry(state, event)
+        _close_file_write(state, event)
     elif kind == _AGENT_END:
         state.saw_agent_end = True
         state.run_open = False
@@ -750,12 +986,19 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
 
 
 __all__ = [
+    "MAX_FILE_PATHS",
+    "MAX_FILE_PATH_CHARS",
+    "MAX_FILE_PATH_KEY_CHARS",
+    "WRITER_TOOLS",
+    "FileWrite",
     "LineAssembler",
     "MAX_LINE_BYTES",
     "MAX_TRAIL_ARG_CHARS",
     "MAX_TRAIL_ENTRIES",
     "ToolCall",
     "_StreamState",
+    "path_for_display",
     "reduce_event",
     "reduce_line",
+    "written_paths",
 ]

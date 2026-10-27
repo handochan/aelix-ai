@@ -184,6 +184,32 @@ async def test_agent_profiles_use_the_native_service_without_mutating_extensions
         await harness.dispose()
 
 
+async def test_agents_show_still_carries_the_ignored_timeout_ms_key():
+    """#604 (ADR-0276 D2) — hosts keep the key they already read.
+
+    ``agents/show`` returns ``asdict`` of the parsed profile. ``timeout_ms`` no
+    longer does anything, but the field is KEPT (deprecated, never read) so this
+    payload does not lose a key a host may be displaying or round-tripping.
+    """
+
+    from aelix_coding_agent.agents.profile import parse_profile
+
+    parsed = parse_profile(
+        "---\nname: reviewer\ndescription: Review\ntimeout_ms: 60000\n---\nbody\n",
+        file_path="/user/reviewer.md",
+        scope="user",
+    )
+    assert parsed.profile is not None
+    harness = make_harness()
+    service = SimpleNamespace(active=None, show=lambda name: parsed.profile)
+    plane = RpcControlPlane(_make_passthrough_runtime(harness, None), agent_service=service)
+    try:
+        shown = await plane.handle("agents/show", {"name": "reviewer"})
+        assert shown["profile"]["timeout_ms"] == 60000
+    finally:
+        await harness.dispose()
+
+
 async def test_native_rpc_roster_and_additive_control_coexist():
     harness = make_harness()
     source = asyncio.StreamReader()

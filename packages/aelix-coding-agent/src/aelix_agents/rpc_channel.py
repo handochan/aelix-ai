@@ -91,7 +91,6 @@ from aelix_coding_agent.rpc.rpc_client import (
 
 from aelix_agents.envelope import DEFAULT_OUTPUT_CAP, build_result
 from aelix_agents.print_channel import (
-    DEFAULT_TIMEOUT_MS,
     POST_EXIT_DRAIN_SECONDS,
     STDERR_RING_BYTES,
     STREAM_LIMIT_BYTES,
@@ -126,7 +125,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:154``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:164``) and
 ``progress._TERMINAL_STATES`` (``progress.py:97``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -143,6 +142,18 @@ command channel is a request to finish — no signal, no grace window, and the
 child unwinds its own extensions and session. Only a child that does not take
 the hint is signalled. Generous enough for a real teardown, bounded because one
 child per task means the child MUST die before the delegation is done.
+"""
+
+RPC_COMMAND_TIMEOUT_MS = 180_000
+"""How long one COMMAND may wait for its correlated answer (#604, ADR-0276 D4).
+
+A protocol bound, not a bound on the work: the answer to ``prompt`` means "I
+accepted the turn", and the turn itself is then waited for without a limit
+(``prompt_and_wait(unbounded=True)``). It used to be the whole delegation's
+budget, which is gone. Left unset it would fall back to the client's 30 s
+default, which ADR-0201 rejected: a cold real child spends ~25 s reaching its
+read loop, so the first answer would be a coin flip. 180 s is the value the
+real-child pins already use (``tests/agents/test_rpc_sprint_pins.py``).
 """
 
 
@@ -310,11 +321,6 @@ class RpcChannel:
         output_cap = (
             plan.output_cap if plan.output_cap is not None else profile.output_cap
         )
-        timeout_ms = (
-            plan.timeout_ms
-            if plan.timeout_ms is not None
-            else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)
-        )
         # Captured as the run goes, because the client drops its process on
         # ``stop`` and the envelope is built after teardown.
         captured: dict[str, Any] = {"stderr": "", "dropped": 0, "exit_code": None}
@@ -356,12 +362,12 @@ class RpcChannel:
             #
             # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
             # the event ``prompt_and_wait`` itself waits on
-            # (``rpc_client.py:1018-1021``), so a line after it is by definition
+            # (``rpc_client.py:1029-1032``), so a line after it is by definition
             # not this turn's data — and folding one in is last-write-wins on
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:448-452``) is NOT gated on the caller's
+            # disjunct (``envelope.py:950-956``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:
@@ -369,7 +375,7 @@ class RpcChannel:
             # against ``ok=True summary='the real answer' turns=1 tokens=10``.
             #
             # GATED ON THE STREAM, NOT ON THE CALLER'S OUTCOME, and the
-            # difference is the whole of fix ①: a child that timed out, was
+            # difference is the whole of fix ①: a child that was stopped, was
             # cancelled, was aborted or died mid-turn never emitted
             # ``agent_end``, so ``saw_agent_end`` is ``False`` on every one of
             # those paths and the teardown drain still folds everything. The
@@ -410,14 +416,14 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1380-1387``); this channel
+            # ``_eager_abort`` (``print_channel.py:1373-1380``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
             #
-            # NOT gated on the terminator too, on purpose: on the timeout path
-            # ``saw_agent_end`` flips mid-drain and progress must keep flowing
-            # there — the drain IS the payload.
+            # NOT gated on the terminator too, on purpose: on a teardown drain
+            # (a stop, a dead child) ``saw_agent_end`` can flip mid-drain and
+            # progress must keep flowing there — the drain IS the payload.
             #
             # Two consequences, both deliberate and both narrow. Progress goes
             # QUIET through a cancelled or aborted teardown; the runtime's
@@ -440,7 +446,7 @@ class RpcChannel:
                 # ``stop`` landed while we were being set up. The registry row
                 # is published as soon as the spawn is accepted, so this window
                 # is real, and it is the difference between "stopped" and
-                # "stopped, and also ran for its full timeout".
+                # "stopped, and also ran to completion".
                 row.state = "stopped"
                 return _envelope(outcome="aborted")
 
@@ -473,15 +479,16 @@ class RpcChannel:
                     # envelope's UNCAPPED details field.
                     stderr_max_bytes=STDERR_RING_BYTES,
                     stdout_line_max_bytes=MAX_LINE_BYTES,
-                    # The whole delegation budget, because a cold real child
-                    # costs ~25 s to reach its read loop and the 30 s default
-                    # would make that a coin flip.
-                    send_timeout_ms=timeout_ms,
+                    # Its own bound, because a cold real child costs ~25 s to
+                    # reach its read loop and the 30 s default would make that a
+                    # coin flip. It used to be the whole delegation budget; there
+                    # is none since #604. See :data:`RPC_COMMAND_TIMEOUT_MS`.
+                    send_timeout_ms=RPC_COMMAND_TIMEOUT_MS,
                     # pi DISCARDS a `success: false` on prompt/steer/abort, and
                     # aelix ports that faithfully. Nobody is watching this
                     # child, so a discarded refusal — the busy preflight's exact
-                    # shape — would become a full-budget wait for a terminator
-                    # that is never coming, reported as a timeout.
+                    # shape — would become an endless wait for a terminator that
+                    # is never coming, now that the turn wait has no limit.
                     raise_on_command_error=True,
                 )
             )
@@ -573,8 +580,6 @@ class RpcChannel:
                 client,
                 plan,
                 row,
-                timeout_ms=timeout_ms,
-                started=started,
                 captured=captured,
                 envelope=_envelope,
                 unsubscribe=unsubscribe,
@@ -599,8 +604,6 @@ class RpcChannel:
         plan: SpawnPlan,
         row: RunningChild,
         *,
-        timeout_ms: int,
-        started: float,
         captured: dict[str, Any],
         envelope: Callable[..., SubagentResult],
         unsubscribe: Callable[[], None],
@@ -614,9 +617,7 @@ class RpcChannel:
         """
 
         try:
-            result = await self._run_turn(
-                client, plan, row, timeout_ms=timeout_ms, started=started
-            )
+            result = await self._run_turn(client, plan)
         except asyncio.CancelledError:
             self._eager_abort(row)
             raise
@@ -654,7 +655,9 @@ class RpcChannel:
             # so what this recovers is not a "closing report" the child composes
             # on its way out. It is everything the child had ALREADY written
             # that the parent had not yet reduced: bytes in the pipe when the
-            # deadline fired, and a turn that finished inside the window.
+            # turn was given up on (a stop, a refused command, a dead child —
+            # the deadline that was measured here is gone since #604), and a
+            # turn that finished inside the window.
             #
             # WHAT STAYS LIVE HERE IS THE ACCUMULATOR, NOT THE PROGRESS TAP.
             # One subscription can only mean that because ``_listener`` gates
@@ -689,26 +692,17 @@ class RpcChannel:
             row.state = "error"
         return envelope(outcome=result.outcome, error=result.error)
 
-    async def _run_turn(
-        self,
-        client: RpcClient,
-        plan: SpawnPlan,
-        row: RunningChild,
-        *,
-        timeout_ms: int,
-        started: float,
-    ) -> _TurnOutcome:
+    async def _run_turn(self, client: RpcClient, plan: SpawnPlan) -> _TurnOutcome:
         """Hand the child its task and wait for the turn to terminate.
 
-        The budget is the WHOLE delegation's, so what is left for the turn is
-        what the spawn did not already spend. A real child's boot is the
-        dominant term (~25 s cold, ~18.6 s of it import time), which is why the
-        remaining budget is recomputed rather than passed through.
+        THE TURN HAS NO TIME LIMIT (#604, ADR-0276). It used to get what was
+        left of the delegation's budget; ``unbounded=True`` is how that is
+        expressed now, because ``prompt_and_wait`` turns a ``None`` or ``0``
+        budget into pi's 60 s rather than into "no limit". The wait still ends
+        when the child dies (the client's death leg) or when this task is
+        cancelled, and ``stop`` / ``stop_all`` end it by killing the child.
         """
 
-        remaining_ms = timeout_ms - int((time.monotonic() - started) * 1000)
-        if remaining_ms <= 0:
-            return _TurnOutcome(outcome="timeout")
         try:
             # ``collect=False`` because the return value is discarded, and that
             # is the reason the flag exists rather than a use of it. This
@@ -717,11 +711,14 @@ class RpcChannel:
             # list nobody looked at — measured at 25.6 MB of peak parent memory
             # for one turn of 5 000 ``message_update`` deltas of 4 KB, against
             # 0.36 MB without it, and there is no ceiling on either factor.
-            await client.prompt_and_wait(
-                plan.task, timeout_ms=remaining_ms, collect=False
+            await client.prompt_and_wait(plan.task, collect=False, unbounded=True)
+        except TimeoutError as exc:
+            # Only a COMMAND can time out now — the ``prompt`` answer, bounded
+            # by :data:`RPC_COMMAND_TIMEOUT_MS`. A child that never acknowledged
+            # its task did not do it, which is an error, not a time limit.
+            return _TurnOutcome(
+                outcome="error", error=str(exc) or "the agent did not accept its task"
             )
-        except TimeoutError:
-            return _TurnOutcome(outcome="timeout")
         except RpcServerExited as exc:
             # The child died mid-turn. Its exit status is read during teardown;
             # ``build_result`` turns a non-zero one into a failure on its own,
@@ -850,6 +847,7 @@ def _stderr_of(exc: BaseException, client: RpcClient) -> str:
 
 
 __all__ = [
+    "RPC_COMMAND_TIMEOUT_MS",
     "STDIN_EOF_EXIT_SECONDS",
     "RpcChannel",
     "build_rpc_child_argv",

@@ -113,11 +113,16 @@ def test_the_envelope_claims_the_file_only_for_the_childs_own_stream() -> None:
     assert early_exit.output_recorded is False
     assert _RECORDED not in early_exit.summary
 
-    # The child's OWN error message is in its file (its harness wrote it).
+    # The child's OWN error message is in its file (its harness wrote it). Its
+    # final one — the reducer sets ``final_error`` from the last assistant
+    # message that ended in an error (#604, ADR-0276 D17).
     own_error = build_result(
-        id="sub-d", profile="scout",
-        state=_state(stop_reason="error", error_message="e" * 200), exit_code=0,
-        output_cap=50, session_recorded=True,
+        id="sub-d",
+        profile="scout",
+        state=_state(stop_reason="error", error_message="e" * 200, final_error="e" * 200),
+        exit_code=0,
+        output_cap=50,
+        session_recorded=True,
     )
     assert own_error.output_recorded is True
     assert own_error.summary.endswith(_RECORDED + "]")
@@ -224,7 +229,11 @@ def _failed_child(error_bytes: int) -> SubagentResult:
 
     return build_result(
         id="sub-f", profile="scout",
-        state=_state(stop_reason="error", error_message="E" * error_bytes),
+        state=_state(
+            stop_reason="error",
+            error_message="E" * error_bytes,
+            final_error="E" * error_bytes,
+        ),
         exit_code=0, session_recorded=True,
     )
 

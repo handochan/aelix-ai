@@ -371,7 +371,7 @@ async def test_an_empty_live_grant_hands_the_child_no_tools_not_every_tool(
     the obvious tidy-up reverses the fix. ``return list(...) or None``, or any
     ``if not tools: return None``, reads as harmless and is not: ``None`` on
     :attr:`SubagentHost.active_tools` means "the parent holds every built-in"
-    (``print_channel.py:256-258``), so it would hand a parent running
+    (``print_channel.py:260-262``), so it would hand a parent running
     ``--no-tools`` a child running EVERY tool. That is the fail-open hole #304
     closed, re-opened from the other end.
 
@@ -464,7 +464,7 @@ async def test_has_ui_is_true_when_the_live_context_has_a_ui_bound(
     singleton, so any concrete binding is the real signal and a stand-in is a
     faithful one. ``tui/shell.py`` installs the real ``AelixTUIContext`` at
     run-start and re-binds it onto the new runtime after every ``/new``,
-    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2868-2870``) — which is
+    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2928-2930``) — which is
     why this is time-varying and why it is a getter.
     """
 

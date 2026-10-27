@@ -21,8 +21,9 @@ Layering, deliberately flat:
 Phase 1 (this package) ships identity only. **Nothing spawns**: there is no
 subagent runtime, no ``agent`` tool, no delegation — those are Phase 2, and the
 profile fields that only they consume (``role`` / ``output_cap`` /
-``timeout_ms`` / ``approval_mode``) are parsed and validated here purely so the
-on-disk format never changes shape between phases.
+``approval_mode``) are parsed and validated here purely so the on-disk format
+never changes shape between phases. ``timeout_ms`` is parsed too, and since #604
+only to warn that it is ignored: a delegated agent has no time limit.
 
 The kernel (``aelix-agent-core``) is not touched by any of this.
 """

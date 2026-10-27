@@ -65,6 +65,17 @@ class BuiltinCommand:
     aliases: tuple[str, ...] = ()
 
 
+class CommandInterrupted(Exception):
+    """The user interrupted work a handler ran through
+    :attr:`CommandContext.run_cancellable` (#604, ADR-0276 D15).
+
+    An ``Exception`` and not the ``CancelledError`` it replaces, deliberately:
+    the handler was NOT cancelled — only the work it handed over was — and a
+    ``CancelledError`` escaping a handler would unwind the REPL loop that
+    awaits it. A handler catches this, says what stopped, and returns.
+    """
+
+
 @dataclass
 class CommandContext:
     """Everything a built-in handler needs to act on the live TUI.
@@ -239,6 +250,19 @@ class CommandContext:
     to the CLI baseline. Returns the status line the handler commits; raises
     ``ProfileError`` for anything it refuses. ``None`` in headless tests / when
     entry.py built no service (ADR-0196)."""
+    run_cancellable: Callable[[Awaitable[Any]], Awaitable[Any]] | None = None
+    """``run_tui`` wires this so a handler's LONG work can be interrupted
+    (#604, ADR-0276 D15). It runs the awaitable as a task, marks the TUI running
+    (spinner on, Esc and Ctrl+C live) and sends the interrupt to THAT task
+    instead of to the harness — there is no turn to abort — then restores both.
+    An interrupt surfaces as :class:`CommandInterrupted`; the result is returned
+    otherwise.
+
+    It exists because a handler is awaited INSIDE the REPL loop and outside the
+    turn wrapper, so Esc is inert there and Ctrl+C only arms the exit window: a
+    ``/agents run`` whose child stalled held the TUI until the delegation's time
+    limit, and there is no time limit any more. ``None`` in headless tests; a
+    handler then awaits its work directly, as before."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -800,7 +824,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3801-3818`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3865-3882`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -931,7 +955,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2976`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3036`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1017,7 +1041,7 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
     ``model``/``provider`` are read off the child's own ``message_end`` verbatim
-    (``stream.py:619-623`` → ``envelope.py:529-530``), so they are attacker
+    (``stream.py:853-857`` → ``envelope.py:1048-1049``), so they are attacker
     controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
     parsing but writes raw content ESC / C1 straight to the terminal — a
     ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its
@@ -1068,6 +1092,10 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
     if result.error:
         error = _sanitize_child_prose(result.error)
         body.append(f"\n\n{error}", style="red")
+    if result.note:
+        # A fact about a run that SUCCEEDED (ADR-0276 D4): yellow, not red —
+        # the answer above is whole, and the panel border stays green.
+        body.append(f"\n\nNote: {_sanitize_child_prose(result.note)}.", style="yellow")
 
     usage = result.usage
     grid = Table.grid(padding=(0, 2))
@@ -1273,11 +1301,40 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                     Text(f"✖ agents run failed: {error}", style="bold red")
                 )
                 return
+        # The progress states say whether a child ever ran, so an interrupt that
+        # lands before one did — during the spawn-time consent dialog, most
+        # often — is not reported as an agent "ended before it finished" (#604
+        # review). ``running`` is a live child, ``stopped`` the kill of one,
+        # ``done`` one that finished; a run that never got a process only ever
+        # says ``starting`` (and ``error`` on its way out).
+        states: set[str] = set()
         try:
             # ``spawn`` takes its OWN spawn-time consent (§(i)) and returns a
             # ``status="declined"`` result rather than raising when the human
             # says no — so an exception here is a real failure, not a refusal.
-            result = await runtime.spawn(resolved, task)
+            #
+            # THROUGH ``run_cancellable`` WHEN THE HOST HAS ONE (#604, D15): the
+            # delegation has no time limit, so the interrupt is the only way to
+            # end one whose child stalled. Cancelling ``spawn`` kills the child
+            # the way Esc kills a cancelled ``agent`` call.
+            work = runtime.spawn(
+                resolved, task, on_event=lambda progress: states.add(progress.state)
+            )
+            if ctx.run_cancellable is not None:
+                result = await ctx.run_cancellable(work)
+            else:
+                result = await work
+        except CommandInterrupted:
+            name = sanitize_for_terminal(resolved.name)
+            ctx.commit(
+                Text(
+                    f"Delegation to {name!r} stopped — the agent was ended before it finished."
+                    if states & {"running", "stopped", "done"}
+                    else f"Delegation to {name!r} stopped before the agent started.",
+                    style="yellow",
+                )
+            )
+            return
         except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
             error = _sanitize_child_prose(str(exc))
             ctx.commit(Text(f"✖ agents run failed: {error}", style="bold red"))
@@ -2312,6 +2369,7 @@ __all__ = [
     "BUILTIN_COMMANDS",
     "BuiltinCommand",
     "CommandContext",
+    "CommandInterrupted",
     "build_help_renderable",
     "match_command",
     "slash_word",
