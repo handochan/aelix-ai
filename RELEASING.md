@@ -103,7 +103,13 @@ uv run python scripts/refresh_catalog.py --fetch --show-skips  # what it refused
 uv run python scripts/refresh_catalog.py --fetch --apply       # write models_generated.json
 uv run pytest -q tests/test_catalog_corrections_are_pinned.py tests/test_catalog_overlay.py \
     tests/test_hosted_catalog_contract.py tests/test_max_thinking_level_433.py
+uv run pytest -p no:cacheprovider -q                            # then the whole suite
 ```
+
+The four files are the catalog's own gates. The whole suite is not optional: the
+2026-10-27 fold-back left ten tests elsewhere red. Some were counts to re-derive.
+Others record behaviour the new rows move, such as ADR-0249's OpenRouter-namespace
+partition and #149's output ceiling.
 
 - `--fetch` downloads models.dev's `api.json` and OpenRouter's public
   `/api/v1/models`; no key is sent. `--apply` refuses to run without
@@ -130,6 +136,32 @@ uv run pytest -q tests/test_catalog_corrections_are_pinned.py tests/test_catalog
 - It commits upstream as of now, not exactly what was published, with no
   100-id cap, and it proposes again a row a hold rolled back: the diff review
   is the gate. Drop such a row by hand.
+- What the generator does not do yet, so the review does (the 2026-10-27
+  fold-back, ADR-0264 §10):
+  - `tests/test_max_thinking_level_433.py` fails until ADR-0266's family rules
+    are merged onto the rows they cover. The DeepSeek V4 rule applies only to a
+    row that came with no map.
+  - A new Claude or MiniMax generation arrives with no map, and as a budget row
+    if its id escapes the adaptive family fallback. Check `off` (some refuse
+    `disabled`), `xhigh`, `max`, `forceAdaptiveThinking` and
+    `supportsTemperature` against the API or pi.dev's row
+    (`https://pi.dev/api/models/providers/<id>?types=chat`).
+  - The evidence for a row's wire:
+    - models.dev's per-model `provider.npm` (`@ai-sdk/openai`, `@ai-sdk/anthropic`,
+      `@ai-sdk/google`, `@ai-sdk/openai-compatible`) where a provider's shipped
+      rows follow it;
+    - Copilot's `GET /models` (`supported_endpoints`) for Copilot rows;
+    - pi.dev's row.
+
+    An added row whose `api` disagrees with all of them is the first-wire case
+    to measure or correct.
+  - Build each added row's request at every level, as committed and with
+    pi.dev's compat, and read the rows where the two differ. pi.dev can be
+    wrong for this build. On 2026-10-27 it offered `off` on Claude Sonnet 5.5
+    mirrors, where this build's `disabled` is a 400, and hid `off` on Mercury
+    2.5, which runs tools at `off`. So a measurement beats it.
+  - Correct a row with a wrong transport rather than dropping it: the generator
+    proposes a dropped id again.
 
 The next slot publishes from the new `main`, whose catalog is then the
 lineage's last entry.

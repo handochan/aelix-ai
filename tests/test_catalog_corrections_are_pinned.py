@@ -306,3 +306,185 @@ def test_sonnet_5_does_not_declare_thinking_off_unsupported() -> None:
     # The two rows the same upstream field is RIGHT about keep their null.
     for fable in ("claude-fable-5", "claude-fable-5-1"):
         assert (_row("anthropic", fable).thinking_level_map or {})["off"] is None
+
+
+# === the #172 fold-back of 2026-10-27 — what the generator inherited wrong ===
+#
+# The fold-back's rows take their transport from a sibling already in the
+# catalog (ADR-0232) and their map from OpenRouter or models.dev (ADR-0264 §7
+# Q2). Its residual risk is the first model of a wire a provider had not used
+# for that family; the review measured these and corrected them by hand.
+
+
+def test_copilot_rows_copilot_serves_on_responses_only_ride_the_responses_api() -> None:
+    """Copilot's own ``GET /models`` lists ``grok-4.6``, ``grok-4.7`` and
+    ``mai-code-1.1-flash`` with only ``/responses`` among their
+    ``supported_endpoints``. On ``/chat/completions``, the transport all three
+    carried, ``grok-4.7`` and ``mai-code-1.1-flash`` answered 400 *"not
+    accessible via the /chat/completions endpoint"*; on ``/responses`` they
+    answered (``grok-4.7`` at the default level, ``minimal``, ``low`` and
+    ``high``). ``grok-4.6`` and ``mai-code-1.1-flash`` shipped with the wrong
+    wire; the fold-back review found them against that listing, in which they
+    were the only rows that disagreed."""
+
+    for model_id in ("grok-4.6", "grok-4.7", "mai-code-1.1-flash"):
+        row = _row("github-copilot", model_id)
+        assert row.api == "openai-responses", (model_id, row.api)
+
+
+_HAIKU_55 = (
+    ("anthropic", "claude-haiku-5-5"),
+    ("github-copilot", "claude-haiku-5.5"),
+    ("opencode", "claude-haiku-5-5"),
+    ("opencode-go", "claude-haiku-5-5"),
+    ("vercel-ai-gateway", "anthropic/claude-haiku-5.5"),
+)
+
+
+@pytest.mark.parametrize(("provider", "model_id"), _HAIKU_55)
+def test_claude_haiku_5_5_thinks_adaptively(provider: str, model_id: str) -> None:
+    """The adaptive family fallback names opus, sonnet and fable, not haiku, so
+    without the flag ``anthropic/claude-haiku-5-5`` at ``high`` was sent a
+    budget and answered 400 *"thinking.type.enabled is not supported for this
+    model"*. With it: off and minimal through max answered. pi.dev ships the
+    flag on its anthropic and github-copilot rows."""
+
+    from aelix_ai.providers._anthropic_transforms import supports_adaptive_thinking
+
+    row = _row(provider, model_id)
+    assert row.api == "anthropic-messages"
+    assert (row.compat or {}).get("forceAdaptiveThinking") is True
+    # pi.dev's rows, and the shipped claude-opus-5 rows: no temperature beside
+    # adaptive thinking (review round 1).
+    assert (row.compat or {}).get("supportsTemperature") is False
+    assert supports_adaptive_thinking(row)
+    levels = get_supported_thinking_levels(row)
+    assert {"off", "xhigh", "max"} <= set(levels), levels
+
+
+_OPUS_SONNET_55 = (
+    ("anthropic", "claude-opus-5-5"),
+    ("anthropic", "claude-sonnet-5-5"),
+    ("github-copilot", "claude-opus-5.5"),
+    ("github-copilot", "claude-sonnet-5.5"),
+    ("opencode", "claude-opus-5-5"),
+    ("opencode", "claude-sonnet-5-5"),
+    ("vercel-ai-gateway", "anthropic/claude-opus-5.5"),
+    ("vercel-ai-gateway", "anthropic/claude-opus-5.5-fast"),
+    ("vercel-ai-gateway", "anthropic/claude-sonnet-5.5"),
+)
+
+
+@pytest.mark.parametrize(("provider", "model_id"), _OPUS_SONNET_55)
+def test_claude_opus_and_sonnet_5_5_do_not_offer_off(provider: str, model_id: str) -> None:
+    """Both refuse thinking off. With no ``--thinking``,
+    ``anthropic/claude-opus-5-5`` answered 400 *'"thinking.type.disabled" is
+    not supported'*, and ``anthropic/claude-sonnet-5-5`` and
+    ``github-copilot/claude-sonnet-5.5`` a 400 *'To turn thinking off on this
+    model, send "thinking": {"type": "between_tools"}'*. Hiding off, as pi.dev's
+    rows do, fits a launch with no level onto ``low``. Measured after: no
+    level, ``--thinking off``, ``low``, ``high`` and ``max`` all answered."""
+
+    row = _row(provider, model_id)
+    levels = get_supported_thinking_levels(row)
+    assert "off" not in levels, levels
+    assert levels[0] == "low" and levels[-1] == "max", levels
+    assert (row.compat or {}).get("supportsTemperature") is False  # pi.dev's rows (round 1)
+
+
+def test_opencode_go_claude_haiku_5_5_is_not_on_a_qwen_transport() -> None:
+    """It inherited a qwen sibling's ``openai-completions`` transport with
+    ``thinkingFormat: "qwen"``. pi.dev puts it on ``anthropic-messages``, and
+    opencode-go's one shipped ``anthropic-messages`` row (``minimax-m2.5``) is
+    served from ``https://opencode.ai/zen/go``. Unmeasured: no opencode key.
+    Kept rather than dropped, because a generator run would propose a dropped
+    id again with the same transport."""
+
+    row = _row("opencode-go", "claude-haiku-5-5")
+    assert row.api == "anthropic-messages"
+    assert row.base_url == _row("opencode-go", "minimax-m2.5").base_url == "https://opencode.ai/zen/go"
+    assert "thinkingFormat" not in (row.compat or {})
+
+
+def test_every_bedrock_eu_profile_is_served_from_an_eu_region() -> None:
+    """``eu.*`` inference profiles are called in an EU region; the shipped
+    ``eu.*`` rows and pi.dev say ``eu-central-1``. Five rows the fold-back added
+    inherited ``us-east-1`` from a sibling. Asserted over all of them, as the
+    Copilot cap above is: the defect is that they disagreed."""
+
+    eu = {k: r.base_url for k, r in MODELS["amazon-bedrock"].items() if k.startswith("eu.")}
+    assert len(eu) >= 19, f"only {len(eu)} eu.* rows — bad scan"
+    assert set(eu.values()) == {"https://bedrock-runtime.eu-central-1.amazonaws.com"}, eu
+
+
+@pytest.mark.parametrize("provider", ["minimax", "minimax-cn"])
+def test_minimax_m3_1_flash_is_adaptive_where_its_predecessors_are_not(provider: str) -> None:
+    """Review round 1. Without the flag it was sent ``thinking: disabled`` with
+    no level and a 16384-token budget at ``high``. pi.dev's rows carry
+    ``forceAdaptiveThinking`` and hide ``off``/``minimal``, and models.dev lists
+    ``low`` to ``max``; the shipped M3 and M2.x rows are budget rows in both.
+    Unmeasured: no MiniMax key."""
+
+    from aelix_ai.providers._anthropic_transforms import supports_adaptive_thinking
+
+    row = _row(provider, "MiniMax-M3.1-Flash")
+    assert supports_adaptive_thinking(row)
+    assert get_supported_thinking_levels(row) == ["low", "medium", "high", "xhigh", "max"]
+    assert not supports_adaptive_thinking(_row(provider, "MiniMax-M3"))
+
+
+def test_deepseek_flash_offers_deepseeks_tiers() -> None:
+    """Review round 1. It came with no map, so it offered ``minimal`` and
+    ``medium``. DeepSeek's API takes ``high`` and ``max``, and ``low`` on Flash
+    (ADR-0266's measurement over the map-less V4 rows); that is the shipped
+    ``deepseek-v4-flash-vision-exp`` map and pi.dev's row. Unmeasured: no
+    DeepSeek key."""
+
+    row = _row("deepseek", "deepseek-flash")
+    assert get_supported_thinking_levels(row) == ["off", "low", "high", "max"]
+
+
+_OPENCODE_RESPONSES = (
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7",
+    "grok-build-0.1",
+    "muse-spark-1.2",
+    "muse-spark-1.3",
+    "muse-wonder-1.0",
+    "muse-spark-1.2-contributor-free",
+    "muse-spark-1.3-contributor-free",
+)
+
+
+@pytest.mark.parametrize("model_id", _OPENCODE_RESPONSES)
+def test_opencode_rows_on_openais_package_ride_the_responses_api(model_id: str) -> None:
+    """Review round 1. models.dev's per-model ``provider.npm`` is
+    ``@ai-sdk/openai`` for these nine, and on opencode every shipped
+    ``@ai-sdk/openai`` row is ``openai-responses`` (74 of the 75 shipped rows
+    follow ``npm``); pi.dev agrees for the seven it lists. They had inherited
+    ``openai-completions``. Unmeasured: no opencode key."""
+
+    row = _row("opencode", model_id)
+    assert row.api == "openai-responses"
+    assert row.base_url == "https://opencode.ai/zen/v1"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model_id"),
+    [
+        ("google", "gemini-pro-latest"),
+        ("google", "gemini-4-argon"),
+        ("google-vertex", "gemini-4-argon"),
+        ("opencode", "gemini-4-argon"),
+    ],
+)
+def test_gemini_rows_that_cannot_switch_thinking_off_do_not_offer_it(provider: str, model_id: str) -> None:
+    """Review round 1. With ``off`` offered, the Google adapters send
+    ``thinkingBudget: 0`` for a launch with no level. models.dev lists effort
+    low/medium/high with no toggle, pi.dev hides ``off`` and ``minimal``, and
+    ``gemini-pro-latest``'s canonical row ``gemini-3.1-pro-preview`` carries
+    the shipped hand map that hides both. Unmeasured: no Google key."""
+
+    levels = get_supported_thinking_levels(_row(provider, model_id))
+    assert "off" not in levels and "minimal" not in levels, levels

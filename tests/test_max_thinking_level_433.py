@@ -303,26 +303,63 @@ def test_the_map_less_deepseek_v4_rows_get_pis_map(
     assert clamp_thinking_level(model, "medium") == "high"
 
 
+#: DeepSeek V4 rows a refresh added with a map of their own: OpenRouter's
+#: ``supported_efforts`` (the two OpenRouter rows) and models.dev's effort list
+#: (Cloudflare's). Decision 5's rule is for a row "that has no map" (ADR-0266),
+#: so these keep the evidence they came with (#172's fold-back, review round 1).
+_DERIVED_MAP_DEEPSEEK_V4 = {
+    ("openrouter", "deepseek/deepseek-v4.1-flash"),
+    ("openrouter", "deepseek/deepseek-v4.1-flash-1017"),
+    ("cloudflare-workers-ai", "@cf/deepseek-ai/deepseek-v4.1-flash-1017"),
+}
+#: What they derive to: OpenRouter's ``supported_efforts`` ``[max, high, low,
+#: none]`` (and models.dev's ``[none, low, high, max]`` for Cloudflare's), as
+#: pi.dev's OpenRouter rows publish. OpenRouter's rule map would instead hide
+#: ``low`` and ``max`` and offer an ``xhigh`` neither list names; the other
+#: rule map would hide ``low`` and ``off``'s ``none``.
+_DERIVED_DEEPSEEK_V4_1_MAP = {
+    "off": "none",
+    "minimal": None,
+    "low": "low",
+    "medium": None,
+    "high": "high",
+    "xhigh": None,
+    "max": "max",
+}
+
+
 def test_every_deepseek_v4_completions_row_follows_pis_rule() -> None:
     """Over the whole shipped catalog, not only the rows listed above: every
     ``openai-completions`` DeepSeek V4 row on OpenRouter has OpenRouter's map,
     and every other one names ``high`` and ``max`` and no ``xhigh``. The three
     Flash rows that carried a map before #433 keep ``low: null`` (pi's Flash
-    ``low`` is not a ``max`` rule; ADR-0266, Not applied)."""
+    ``low`` is not a ``max`` rule; ADR-0266, Not applied). The rows a refresh
+    added with a derived map are outside the rule and keep that map."""
 
-    covered = 0
+    covered = derived = 0
     for provider, rows in MODELS.items():
         for model_id, model in rows.items():
             if model.api != "openai-completions" or "deepseek-v4" not in model_id:
                 continue
-            covered += 1
             tm = model.thinking_level_map or {}
+            if (provider, model_id) in _DERIVED_MAP_DEEPSEEK_V4:
+                derived += 1
+                assert tm == _DERIVED_DEEPSEEK_V4_1_MAP, (provider, model_id, tm)
+                continue
+            covered += 1
             if provider == "openrouter":
                 assert tm == _OPENROUTER_DEEPSEEK_V4_MAP, (provider, model_id, tm)
             else:
                 assert tm.get("high") == "high" and tm.get("max") == "max", (provider, model_id)
                 assert "xhigh" not in tm, (provider, model_id, tm)
-    assert covered == 23  # 15 map-less on 7faf4b9a + the 8 DeepSeek V4 rows of the 24
+            if provider in ("opencode", "opencode-go") and "deepseek-v4.1-flash" in model_id:
+                # The Flash map: models.dev lists ``low`` for these, and pi.dev's
+                # rows have it; pi's substring rule misses the ``.1``.
+                assert tm.get("low") == "low", (provider, model_id, tm)
+    # 15 map-less on 7faf4b9a + the 8 DeepSeek V4 rows of the 24, + the 4
+    # map-less V4.1 Flash rows the #172 fold-back of 2026-10-27 added.
+    assert covered == 27
+    assert derived == len(_DERIVED_MAP_DEEPSEEK_V4)
 
 
 def test_pis_max_rules_hold_on_every_row_they_cover() -> None:

@@ -99,9 +99,12 @@ def test_every_affected_first_party_row_takes_the_adaptive_branch() -> None:
 def test_the_catalog_flag_decides_in_both_directions() -> None:
     """``compat.forceAdaptiveThinking`` is read, and it is believed.
 
-    12 shipped rows carry it (counted 2026-09-09) and none carries it as
-    ``false``; the two synthetic rows below pin both answers, so a catalog
-    refresh can move a row either way without touching this package.
+    12 shipped rows carried it (counted 2026-09-09), 22 since the #172
+    fold-back of 2026-10-27 (the Claude 5.5 rows on ``anthropic``, its
+    mirrors and ``github-copilot``, and the two MiniMax M3.1 Flash rows), and
+    none carries it as ``false``. The two synthetic rows below pin both
+    answers, so a catalog refresh can move a row either way without touching
+    this package.
     """
 
     flagged = [
@@ -109,11 +112,16 @@ def test_the_catalog_flag_decides_in_both_directions() -> None:
         for model in _anthropic_messages_rows()
         if (model.compat or {}).get("forceAdaptiveThinking")
     ]
-    assert len(flagged) == 12
+    assert len(flagged) == 22
     assert {model.provider for model in flagged} == {
         "anthropic",
         "cloudflare-ai-gateway",
+        "github-copilot",
+        "minimax",
+        "minimax-cn",
         "opencode",
+        "opencode-go",
+        "vercel-ai-gateway",
     }
     for model in flagged:
         assert supports_adaptive_thinking(model) is True, model.id
@@ -187,7 +195,9 @@ def test_the_fix_only_adds_rows() -> None:
     The old whitelist is a subset of the new answer, and the new answer is
     strictly bigger — 37 adaptive rows against 15, the 22 added being the
     4.8 / 5-family rows across ``anthropic`` and its three mirrors (counted
-    2026-09-09).
+    2026-09-09); 53 since the #172 fold-back of 2026-10-27. Every adaptive row
+    the family fallback answers is a Claude id; the two MiniMax M3.1 Flash rows
+    are adaptive by the catalog's flag alone.
     """
 
     rows = _anthropic_messages_rows()
@@ -197,9 +207,10 @@ def test_the_fix_only_adds_rows() -> None:
     for model in old:
         assert supports_adaptive_thinking(model) is True, model.id
     assert len(old) == 15
-    assert len(new) == 37
+    assert len(new) == 53
     for model in new:
-        assert "claude" in (model.id or ""), model.id
+        flagged = (model.compat or {}).get("forceAdaptiveThinking") is True
+        assert "claude" in (model.id or "") or flagged, model.id
 
 
 def test_a_budget_row_still_sends_budget_tokens() -> None:

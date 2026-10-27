@@ -549,11 +549,11 @@ def test_blocked_message_agrees_with_blocked_reason_for_every_catalog_row(
             elif reason == rm.BLOCKED_VERTEX_CONFIG:
                 assert "Google Cloud configuration" in message
             checked += 1
-    # 124 + 42 + 32 + 37 + 19 + 44, in _EXPECTED_BLOCKED order. Was 212 before
-    # #172 and 286 before the 2026-09-08 refresh; every new row passed the
-    # per-row checks above, which run first — this line only guards against the
-    # scan silently shrinking.
-    assert checked == 298
+    # 199 + 42 + 42 + 37 + 20 + 62, in _EXPECTED_BLOCKED order. Was 298 before
+    # the #172 fold-back of 2026-10-27, 212 before #172 and 286 before the
+    # 2026-09-08 refresh; every new row passed the per-row checks above, which
+    # run first — this line only guards against the scan silently shrinking.
+    assert checked == 402
 
 
 def test_blocked_message_is_empty_for_a_runnable_model() -> None:

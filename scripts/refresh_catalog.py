@@ -9,10 +9,12 @@ already exists. Reverting a correction is then not a thing it can do — not a
 rule it follows, a shape it has.
 
 WHAT UPSTREAM CANNOT TELL US. models.dev serves model metadata: cost, limits,
-modalities, ``tool_call``. It carries NO transport — there is no ``api``, no
-``baseUrl``, no ``headers``, no ``compat`` anywhere in ``api.json``. Those four
-fields come from pi's per-provider model files, and they are what makes a row
-actually run. A row with the wrong ``api`` is worse than an absent one: it
+modalities, ``tool_call``. It carries no transport this build can use as one:
+no ``api`` wire name, no ``headers``, no ``compat``. Some rows now name an AI
+SDK package or an endpoint (``provider.npm``, ``provider.api``; 34 providers in
+the 2026-10-27 fetch), which the fold-back review reads as evidence (ADR-0264
+§10) and the ladder does not. Transport comes from pi's per-provider model
+files, and it is what makes a row actually run. A row with the wrong ``api`` is worse than an absent one: it
 shows up in ``/model``, the user picks it, and it fails at request time with a
 transport error nobody can read.
 

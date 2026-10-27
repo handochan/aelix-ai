@@ -1,8 +1,10 @@
 """ADR-0232's ladder: the transport a new model id inherits from rows already shipped.
 
 #172, ADR-0264 §4.3 and §4.8. models.dev serves model metadata (cost, limits,
-modalities, ``tool_call``) and carries NO transport: there is no ``api``, no
-``baseUrl``, no ``headers`` and no ``compat`` anywhere in its ``api.json``. A
+modalities, ``tool_call``) and carries no transport this build can use as one:
+no ``api`` wire name, no ``headers`` and no ``compat``. Some rows now name an AI
+SDK package and an endpoint (``provider.npm``, ``provider.api``), evidence the
+fold-back review reads (ADR-0264 §10, 2026-10-27) and this ladder does not. A
 row with the wrong ``api`` is worse than an absent one, because it shows up in
 ``/model``, the user picks it, and it fails at the provider. So transport is
 INHERITED from a model the catalog already ships, never invented, and where it

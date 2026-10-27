@@ -240,11 +240,12 @@ def test_an_unsat_row_never_exceeds_the_absolute_ceiling_at_any_window() -> None
 
 
 def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
-    """All 72 UNSAT anthropic-messages rows, not just the blocker.
+    """All 86 UNSAT anthropic-messages rows, not just the blocker.
 
-    Was 36 before #172, 55 after it, 72 after the 2026-09-08 refresh. Every
-    row added at both steps is ``vercel-ai-gateway`` (60 of the 72 now; the
-    other 12 are fireworks), whose every row speaks ``anthropic-messages``, and
+    Was 36 before #172, 55 after it, 72 after the 2026-09-08 refresh, 86 after
+    the fold-back of 2026-10-27. Every row added at those steps is
+    ``vercel-ai-gateway`` (74 of the 86 now; the other 12 are fireworks),
+    whose every row speaks ``anthropic-messages``, and
     each arrived with upstream's own ``output == context`` — the shape
     ``xai/grok-4.5`` already shipped. The count assertion sits BEFORE the
     loop, so a stale number does not weaken this test, it silently stops
@@ -261,7 +262,7 @@ def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
         and row.get("contextWindow")
         and row["maxTokens"] >= row["contextWindow"]
     ]
-    assert len(unsat) == 72, "the UNSAT population moved; re-read the evidence"
+    assert len(unsat) == 86, "the UNSAT population moved; re-read the evidence"
     for provider, model_id, row in unsat:
         model = _model(
             id=model_id, provider=provider, base_url="https://h",
@@ -290,8 +291,9 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
     5/5 live by sending ``catalog maxTokens + 1`` (claude-opus-4-5-20251101 /
     claude-sonnet-4-5-20250929 / claude-haiku-4-5-20251001 → "64001 > 64000";
     claude-opus-4-7 / claude-sonnet-4-6 → "128001 > 128000"). So the satisfiable
-    rows are the trustworthy evidence, and 32000 is (a) their lower quartile and
-    (b) an actual first-party Anthropic ceiling.
+    rows are the trustworthy evidence, and 32000 is (a) their lower quartile (up
+    to 327 rows; since the 2026-10-27 fold-back the largest first-party ceiling
+    under it) and (b) an actual first-party Anthropic ceiling.
     """
 
     catalog = json.loads((files("aelix_ai") / "models_generated.json").read_text())
@@ -304,15 +306,25 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
         and (not row.get("contextWindow") or row["maxTokens"] < row["contextWindow"])
     )
     # 228 → 230 when two ``claude-opus-5`` rows were hand-added, → 309 when
-    # #172 added 422, → 327 with the 2026-09-08 refresh. RE-DERIVED at each
-    # step rather than nudged, which is the whole point of asserting the
-    # population size first: p25 is now ``sat[81]`` and it is STILL 32000. The
-    # margin is not thin — ``sat[77:85]`` are all 32000, where before #172 p25
-    # sat two rows above a pair of 24000s.
-    assert len(sat) == 327
-    assert sat[len(sat) // 4] == _UNSAT_ABSOLUTE_OUTPUT_CEILING, (
-        "32000 is the p25 of the trustworthy rows; if the catalog moved, "
-        "re-derive the ceiling rather than nudging this assertion"
+    # #172 added 422, → 327 with the 2026-09-08 refresh, → 391 with the
+    # fold-back of 2026-10-27. RE-DERIVED at each step rather than nudged,
+    # which is the whole point of asserting the population size first. Up to
+    # 327 rows p25 was itself 32000. At 391 it is ``sat[97]`` = 32768: the 64
+    # rows the fold-back added are mostly 32768 and up, and the last 32000 is
+    # ``sat[93]``, four rows below. 32768 is the value the last assertion below
+    # rules out, so the rule is restated as what it always selected: the
+    # largest REAL first-party Anthropic ceiling at or under the trustworthy
+    # rows' p25. At 327 rows that was 32000, and it is still 32000. The two
+    # positions are pinned too, so the next drift is seen, not absorbed.
+    assert len(sat) == 391
+    p25 = sat[len(sat) // 4]
+    assert p25 == 32768 and sat[93] == 32000 < sat[94]
+    first_party_ceilings = {
+        row["maxTokens"] for row in catalog["anthropic"].values() if row.get("maxTokens")
+    }
+    assert max(v for v in first_party_ceilings if v <= p25) == _UNSAT_ABSOLUTE_OUTPUT_CEILING, (
+        "the ceiling is the largest first-party Anthropic ceiling under the trustworthy "
+        "rows' p25; if the catalog moved, re-derive it rather than nudging this assertion"
     )
     first_party_at_the_ceiling = {
         model_id
