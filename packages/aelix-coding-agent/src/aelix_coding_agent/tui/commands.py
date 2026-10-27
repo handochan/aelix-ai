@@ -600,7 +600,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1105-1127``).
+    made ``--tools ''`` enable everything (``entry.py:1109-1131``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -800,7 +800,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3741-3758`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3801-3818`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -895,7 +895,7 @@ def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
 
     Shown in the confirmation dialog because the PATH is the part a human can go
     and read; a bare name is exactly what a name collision weaponises (a project
-    profile WINS against the user's own of the same name — ``agents/service.py:106-107``).
+    profile WINS against the user's own of the same name — ``agents/service.py:108-109``).
     Resolved through the same listing ``/agents show`` uses, and ``None`` when no
     listing is wired, in which case the dialog says so rather than inventing one.
     """
@@ -931,7 +931,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2927`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2976`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1978,11 +1978,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1756-1759``
+    # The double count was the same text twice over: ``cli/entry.py:1760-1763``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:677-683``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1756``.
+    # level up, at ``cli/entry.py:1760``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

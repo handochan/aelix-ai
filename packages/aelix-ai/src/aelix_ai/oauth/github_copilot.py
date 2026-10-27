@@ -24,7 +24,7 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -572,7 +572,10 @@ async def enable_github_copilot_model(
     """
 
     base_url = get_github_copilot_base_url(token, enterprise_domain)
-    url = f"{base_url}/models/{model_id}/policy"
+    # #434 (ADR-0264 §4.3): the id is quoted into the path. Shipped ids are
+    # plain, but an id reaches this URL as a path segment, and ``/`` in one
+    # must not open a second segment.
+    url = f"{base_url}/models/{quote(model_id, safe='')}/policy"
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
             with quoting_transport_errors():
@@ -641,9 +644,12 @@ async def enable_all_github_copilot_models(
     cost the token.
     """
 
-    from aelix_ai.models import get_models
+    # #434 (ADR-0264 §4.3): this writes to the user's GitHub account, so it
+    # reads this build's shipped rows, never a hosted overlay's, as pi reads its
+    # shipped constant here (``github-copilot.ts:124-131``).
+    from aelix_ai.models import get_shipped_models
 
-    models = get_models(GITHUB_COPILOT_OAUTH_ID)
+    models = get_shipped_models(GITHUB_COPILOT_OAUTH_ID)
 
     async def _enable_one(model_id: str) -> BaseException | None:
         """Never raises: returns the transport error so the caller can weigh it

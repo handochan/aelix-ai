@@ -31,14 +31,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import functools
 import hashlib
+import inspect
 import json
 import os
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from aelix_ai.models_store import (
+    HOSTED_ENTRY,
+    AbortSignal,
+    ModelsPublication,
+    ModelsRefreshResult,
+    ModelsStore,
+    RefreshModelsContext,
+    SourceOutcome,
+)
 from aelix_ai.oauth import AuthStorage, StoredCredentialError
 from aelix_ai.oauth._resolve_config import (
     resolve_config_value_or_throw,
@@ -49,6 +61,7 @@ from aelix_ai.oauth.types import AuthStatus, OAuthProvider
 from aelix_ai.streaming import Model, _model_request_identity
 
 from .models_json import (
+    LoadCustomModelsResult,
     ProviderOverride,
     compose_built_in_model,
     empty_custom_models_result,
@@ -56,6 +69,30 @@ from .models_json import (
     load_custom_models,
     merge_custom_models,
 )
+
+if TYPE_CHECKING:
+    from .hosted_catalog_source import HostedUpdate
+
+REFRESH_SOURCES: tuple[str, ...] = (HOSTED_ENTRY,)
+"""The sources :meth:`ModelRegistry.refresh_models` runs by default (#450 adds OpenRouter's)."""
+
+
+def _install_hosted(update: HostedUpdate) -> bool:
+    """Install or remove the process's hosted overlay as ``update`` says; True when it changed."""
+
+    from aelix_ai import models as catalog
+
+    if update.action == "install" and update.rows is not None:
+        if catalog.installed_overlay() == update.revision:
+            return False
+        catalog.install_overlay(update.rows, revision=update.revision)
+        return True
+    if update.action == "remove":
+        if catalog.installed_overlay() is None:
+            return False
+        catalog.install_overlay(None)
+        return True
+    return False
 
 
 @dataclass
@@ -183,6 +220,8 @@ class ModelRegistry:
         self,
         auth_storage: AuthStorage,
         models_json_path: str | None = None,
+        *,
+        models_store: ModelsStore | None = None,
     ) -> None:
         # Pi parity: constructor stores ``authStorage`` + ``modelsJsonPath``
         # then runs ``loadModels``. ``models_json_path=None`` = in-memory
@@ -226,6 +265,25 @@ class ModelRegistry:
         # the models handed out) of the last :meth:`_served_models` call. Keyed
         # on the list's identity: every load assigns a new one.
         self._served_cache: tuple[list[Model], str | None, list[Model]] | None = None
+        # #434 (ADR-0264 §4.3) - the hosted catalog. Where its entry is stored
+        # (``None`` for an in-memory registry, which refreshes nothing); the ids
+        # a hold removed, per provider (§4.4); each source's current run, which
+        # a newer run supersedes; who hears each run's outcome; and the last
+        # load's ``models.json`` result, which a publication recomposes from
+        # without reading the file again.
+        self._models_store = models_store
+        self._removed: dict[str, frozenset[str]] = {}
+        self._refresh_runs: dict[str, int] = {}
+        self._refresh_listeners: list[Callable[[SourceOutcome, str], Any]] = []
+        self._last_custom_result: LoadCustomModelsResult | None = None
+        # The hosted revision this registry's rows were composed over: the
+        # overlay is process-global, so another registry's publication can
+        # install one this registry has not composed yet.
+        self._composed_overlay: str | None = None
+        # When this process last failed to write the store, per source: a store
+        # this build cannot write (an unknown version, a read-only agent dir)
+        # keeps no ``failedAt``, so the backoff is kept here instead.
+        self._write_failed_at: dict[str, float] = {}
         self._load_models()
 
     # ── Factories ──────────────────────────────────────────────────
@@ -247,14 +305,30 @@ class ModelRegistry:
             from .cli.config import get_agent_dir
 
             models_json_path = str(Path(get_agent_dir()) / "models.json")
-        return cls(auth_storage, models_json_path)
+        # #434 (ADR-0264 §4.3) - the hosted catalog's cache phase, before the
+        # first composition and offline included: the stored entry's revision
+        # for this build, when its lineage holds this build's catalog. The store
+        # sits beside ``models.json`` (``<agent dir>/models-store.json``), never
+        # in the cwd.
+        from .cli.config import VERSION
+        from .hosted_catalog_source import catalog_base_url, load_cached
+        from .models_store import STORE_FILENAME, FileModelsStore
+
+        store = FileModelsStore(Path(models_json_path).parent / STORE_FILENAME)
+        update = load_cached(store, base_url=catalog_base_url(), version=VERSION)
+        _install_hosted(update)
+        registry = cls(auth_storage, models_json_path, models_store=store)
+        registry._removed = dict(update.removed or {})
+        return registry
 
     @classmethod
     def in_memory(cls, auth_storage: AuthStorage) -> ModelRegistry:
         """Pi parity: ``model-registry.ts::ModelRegistry.inMemory``.
 
         In-memory registry (no ``models.json`` path). Sprint 6f₁'s
-        canonical factory until Sprint 6g lands the disk loader.
+        canonical factory until Sprint 6g lands the disk loader. It has no
+        models store, so it installs no hosted overlay and refreshes nothing
+        (#434); it composes over whatever overlay the process has.
         """
 
         return cls(auth_storage, None)
@@ -867,6 +941,223 @@ class ModelRegistry:
 
         self.refresh()
 
+    # ── The hosted catalog (#434, ADR-0264 §4.3-§4.7) ──────────────
+    async def refresh_models(
+        self,
+        *,
+        allow_network: bool,
+        force: bool = False,
+        sources: Sequence[str] | None = None,
+        signal: AbortSignal | None = None,
+        trigger: str = "api",
+    ) -> ModelsRefreshResult:
+        """Run each source's network phase once and publish what it finds (pi ``refreshModels``).
+
+        ``allow_network`` is forced false while the process is offline, so an
+        extension that calls this honours ``--offline`` (§4.3 rule 1). ``force``
+        skips the hosted source's 4-hour interval. ``signal`` is the trigger's:
+        cancellation belongs to the caller (pi ``fed6009cc``), and this method
+        has no timer. A run supersedes the source's previous run, and its
+        publication is refused once it is superseded or aborted.
+
+        A publication installs or removes the hosted overlay and recomposes
+        the route rows from the last load's configuration, never advancing the
+        registration generation (rule 3), so a request authenticated before it
+        still sends. The ``model_catalog_refresh`` outcome of each source goes
+        to every listener (:meth:`add_refresh_listener`) after its publication.
+        A registry with no models store (:meth:`in_memory`) refreshes nothing.
+        """
+
+        from .cli.config import VERSION
+        from .hosted_catalog_source import catalog_base_url, refresh_hosted
+        from .util.offline import is_offline
+
+        signal = signal if signal is not None else AbortSignal()
+        allow_network = allow_network and not is_offline()
+        wanted = tuple(sources) if sources is not None else REFRESH_SOURCES
+        outcomes: list[SourceOutcome] = []
+        for source in wanted:
+            skip = None if force else self._write_backoff(source)
+            if source != HOSTED_ENTRY or self._models_store is None:
+                # #450's narrowing source is not in this build.
+                outcome = SourceOutcome(source, "not-applicable")
+            elif not self._store_readable():
+                # A version this build does not know: neither read nor rewritten,
+                # and nothing is fetched (§4.3 The store).
+                outcome = SourceOutcome(
+                    source,
+                    "failed" if force else "skipped",
+                    error="the models store has a version this aelix does not know",
+                )
+            elif skip is not None:
+                # The backoff stops the network, not the adoption of an entry
+                # another aelix stored meanwhile (the skip's rule, §10 item 3).
+                outcome = skip
+                self._adopt_stored(source)
+            else:
+                run = self._refresh_runs.get(source, 0) + 1
+                self._refresh_runs[source] = run
+                try:
+                    stored = self._models_store.read(source)
+                except Exception:  # noqa: BLE001 - an unreadable store is an empty one
+                    stored = None
+                context = RefreshModelsContext(
+                    source=source,
+                    trigger=trigger,
+                    stored=stored,
+                    allow_network=allow_network,
+                    force=force,
+                    signal=signal,
+                    base_url=catalog_base_url(),
+                    _publish=functools.partial(self._publish, source, run, signal),
+                )
+                try:
+                    outcome = await refresh_hosted(context, version=VERSION)
+                except asyncio.CancelledError:
+                    signal.abort("cancelled")
+                    with contextlib.suppress(Exception):
+                        await self._emit_refresh(SourceOutcome(source, "aborted"), trigger)
+                    raise
+                except Exception as exc:  # noqa: BLE001 - a source never fails its trigger
+                    from aelix_ai.utils.terminal_text import safe_for_terminal
+
+                    outcome = SourceOutcome(
+                        source,
+                        "failed",
+                        error=safe_for_terminal(f"{type(exc).__name__}: {exc}", max_chars=200),
+                    )
+            outcomes.append(outcome)
+            await self._emit_refresh(outcome, trigger)
+        return ModelsRefreshResult(
+            aborted=signal.aborted or any(o.outcome == "aborted" for o in outcomes),
+            errors=tuple(o.error for o in outcomes if o.outcome == "failed" and o.error),
+            published=tuple(o.source for o in outcomes if o.outcome == "published"),
+            skipped=tuple(o.source for o in outcomes if o.outcome == "skipped"),
+            outcomes=tuple(outcomes),
+        )
+
+    def _publish(
+        self, source: str, run: int, signal: AbortSignal, publication: ModelsPublication
+    ) -> bool:
+        """``RefreshModelsContext.publish`` for one run (§4.3 rule 2).
+
+        Refused when the run is superseded or aborted, checked before
+        persisting and again before updating memory. The persist runs first and
+        raises :class:`~aelix_ai.models_store.ModelsStoreError` on failure,
+        publishing nothing in memory. When another process persisted meanwhile,
+        its newer entry is what memory takes.
+        """
+
+        def current() -> bool:
+            return self._refresh_runs.get(source) == run and not signal.aborted
+
+        if not current():
+            return False
+        update = publication.update
+        if publication.persist is not None and self._models_store is not None:
+            try:
+                newer = self._models_store.write(
+                    source, publication.persist, base=publication.base
+                )
+            except Exception:
+                self._write_failed_at[source] = time.time()
+                raise
+            self._write_failed_at.pop(source, None)
+            if newer is not None:
+                update = publication.on_lost(newer) if publication.on_lost is not None else None
+        if not current():
+            return False
+        if update is not None:
+            self._apply_hosted_update(update)
+        return True
+
+    def _adopt_stored(self, source: str) -> None:
+        from .cli.config import VERSION
+        from .hosted_catalog_source import adopt_entry, catalog_base_url
+
+        try:
+            stored = self._models_store.read(source) if self._models_store is not None else None
+            self._apply_hosted_update(
+                adopt_entry(stored, base_url=catalog_base_url(), version=VERSION)
+            )
+        except Exception:  # noqa: BLE001 - adoption is best-effort; the cache stands
+            return
+
+    def _store_readable(self) -> bool:
+        readable = getattr(self._models_store, "readable", None)
+        try:
+            return bool(readable()) if callable(readable) else True
+        except Exception:  # noqa: BLE001 - an unreadable store is an empty one
+            return True
+
+    def _write_backoff(self, source: str) -> SourceOutcome | None:
+        """``skipped`` within 15 minutes of this process's last failed store write."""
+
+        from .hosted_catalog_source import FAILURE_INTERVAL
+
+        failed_at = self._write_failed_at.get(source)
+        if failed_at is None or time.time() - failed_at >= FAILURE_INTERVAL:
+            return None
+        return SourceOutcome(
+            source, "skipped", error="the models store could not be written; retrying later"
+        )
+
+    def _apply_hosted_update(self, update: HostedUpdate) -> None:
+        """Install what a hosted publication says, then recompose without a generation bump."""
+
+        from aelix_ai.models import installed_overlay
+
+        _install_hosted(update)
+        if update.removed is not None:
+            self._removed = dict(update.removed)
+        if installed_overlay() != self._composed_overlay:
+            self._recompose()
+
+    def _recompose(self) -> None:
+        """Rebuild the route rows over the installed overlay from the last load (rule 3)."""
+
+        self._compose_models(self._last_custom_result or empty_custom_models_result())
+
+    def is_removed(self, provider: str, model_id: str) -> bool:
+        """True for a **removed id**: one a hold took out (§4.4) that the route rows lack.
+
+        A shipped, user-defined or registered id under that spelling is not
+        removed: the route rows have it. The answer is read at each call, so a
+        hold stored mid-process reaches the next resolution.
+        """
+
+        ids = self._removed.get(provider)
+        if not ids or model_id not in ids:
+            return False
+        return not any(m.provider == provider and m.id == model_id for m in self._models)
+
+    def add_refresh_listener(
+        self, listener: Callable[[SourceOutcome, str], Any]
+    ) -> Callable[[], None]:
+        """Hear each source's outcome, with the trigger, after its publication; returns the unsubscribe.
+
+        The shell and RPC mode bind one that emits ``model_catalog_refresh`` on
+        the live harness's bus (§4.7). A listener's failure never fails a
+        refresh, and a listener cannot change a list.
+        """
+
+        self._refresh_listeners.append(listener)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._refresh_listeners.remove(listener)
+
+        return remove
+
+    async def _emit_refresh(self, outcome: SourceOutcome, trigger: str) -> None:
+        for listener in list(self._refresh_listeners):
+            try:
+                returned = listener(outcome, trigger)
+                if inspect.isawaitable(returned):
+                    await returned
+            except Exception:  # noqa: BLE001 - a listener never fails a refresh
+                continue
+
     def clear_config_value_cache(self) -> None:
         """Drop the cached ``models.json`` ``!command`` values (#240).
 
@@ -1201,10 +1492,6 @@ class ModelRegistry:
             }
         )
 
-        # Step 2: built-ins (with overrides) + merge custom on top.
-        built_in = load_built_in_models(result.overrides, result.model_overrides)
-        loaded = merge_custom_models(built_in, result.models)
-
         # Step 3: compose provider request settings. The extension's configured
         # key wins when present; headers merge over JSON and only None inherits
         # its authHeader (explicit False clears it). Every load starts from JSON,
@@ -1218,6 +1505,29 @@ class ModelRegistry:
                 auth_header=config.auth_header if config.auth_header is not None else prior.auth_header,
                 from_models_json=config.api_key is None and prior.from_models_json,
             )
+
+        self._last_custom_result = result
+        self._compose_models(result)
+
+    def _compose_models(self, result: LoadCustomModelsResult) -> None:
+        """Steps 2, 3b and 4 of :meth:`_load_models`: the route rows, from one load's result.
+
+        #434: a hosted publication recomposes through here (:meth:`_recompose`)
+        over the overlay it installed, from the last load's ``models.json``
+        result: no file read, no command-cache clear, no credential command, no
+        token refresh, and no generation advance (ADR-0264 §4.3 rule 3).
+        """
+
+        # A recomposition re-runs the OAuth step below, which appends its
+        # failures; start from the load's own error so none is listed twice.
+        self._load_error = result.error
+        from aelix_ai.models import installed_overlay
+
+        self._composed_overlay = installed_overlay()
+
+        # Step 2: built-ins (with overrides) + merge custom on top.
+        built_in = load_built_in_models(result.overrides, result.model_overrides)
+        loaded = merge_custom_models(built_in, result.models)
 
         # Step 3b (#365): an explicit model map owns the entire provider row set.
         # Models were copied and namespace-stamped at registration; OAuth may

@@ -130,6 +130,18 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         #
         # A FRAMING cap is not a DELEGATION cap — but this list cannot tell
         # them apart, so the right move was to not need an entry.
+        #
+        # #434 (ADR-0264 §4.3, §4.6): the hosted model catalog's client. Read and
+        # wait bounds on ONE first-party document and its local cache, the
+        # posture ``MAX_FEED_BYTES`` above has toward the update feed; none bounds
+        # delegation, and nothing in ``aelix_agents`` can act on them. Their
+        # values are the ADR's, which a different subagent runtime has no reason
+        # to choose.
+        "MAX_REDIRECTS",  # hosted_catalog_source.py — HTTPS redirects followed
+        "REQUEST_TIMEOUT",  # hosted_catalog_source.py — httpx's own bound
+        "MAX_REMOVED",  # hosted_catalog_source.py — ids a hold's bookkeeping keeps
+        "TRIGGER_TIMEOUT",  # model_refresh.py — how long a refresh trigger waits
+        "LOCK_TIMEOUT",  # models_store.py — the store's sidecar lock retry bound
     }
 )
 
@@ -625,6 +637,20 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # record any tool may write. No ``aelix_agents`` import, no spawn site, no
         # cap, no consent path and no registry surface —
         # ``test_kernel_has_no_subagent_surface`` still passes.
+        #
+        # ADR-0264 §4.4 and §4.7, #434. ``runtime/_types.py`` is NEW to this list,
+        # for one defaulted field: ``ReloadSeed.model``, the harness's current
+        # model at ``/reload``, which the factory keeps when a hold removed its
+        # id from the published model catalog (pi's ``/reload`` keeps its
+        # session and model). ``runtime/agent_session_runtime.py`` (listed above)
+        # changed again to fill it: one read of ``current_model`` before the
+        # teardown, passed in the seed. ``harness/hooks.py`` (listed above)
+        # changed again for one observational event, ``model_catalog_refresh``
+        # (a frozen dataclass, its name in the two Literals, its table entries,
+        # a handler alias and one ``on`` overload): the first event pi lacks,
+        # which the hosted catalog's refresher emits. No ``aelix_agents``
+        # import, no spawn site, no cap, no consent path, no registry surface.
+        "packages/aelix-agent-core/src/aelix_agent_core/runtime/_types.py",
     }
 )
 

@@ -75,6 +75,21 @@ async def switch_model_argument(
             settings_manager=settings_manager,
             warn=warn,
         )
+        missed = resolution.no_match or (
+            # #136's backfill: an id the registry does not hold, under a provider
+            # named with a key — a published row may be about to hold it.
+            resolution.model is not None and resolution.caution is not None
+        )
+        if missed and await _refreshed(model_registry, warn):
+            # #434 (ADR-0264 §4.6) — nothing matched: refresh the model catalogs
+            # (not forced: the hosted 4-hour interval holds), then match once more.
+            resolution = await resolve_model_argument(
+                argument,
+                registry=model_registry,
+                current_model=getattr(harness, "current_model", None),
+                settings_manager=settings_manager,
+                warn=warn,
+            )
         if resolution.error is not None:
             # Refuse HERE, before any switch/persist/success line: a mismatched
             # provider that is only reported at send time costs the user the turn
@@ -122,6 +137,26 @@ async def switch_model_argument(
             )
             await settings_manager.flush()
     return ModelSwitch(model=model, caution=caution)
+
+
+async def _refreshed(model_registry: Any, warn: Callable[[str], None]) -> bool:
+    """Refresh the model catalogs for a ``/model`` that matched nothing; True when one ran.
+
+    pi's ``/model <term>`` with no cached match (``interactive-mode.ts:5233-5265``):
+    "Refreshing model catalogs…", a wait of at most 15 s, then the caller
+    matches again. Nothing runs offline or without a refreshable registry.
+    """
+
+    from aelix_coding_agent.model_refresh import refresh_allowed, refresh_catalogs
+
+    if not callable(getattr(model_registry, "refresh_models", None)) or not refresh_allowed():
+        return False
+    warn("Refreshing model catalogs…")
+    try:
+        await refresh_catalogs(model_registry, trigger="model-command")
+    except Exception:  # noqa: BLE001 - the second match runs on what is cached
+        return True
+    return True
 
 
 __all__ = ["ModelSwitch", "switch_model_argument"]

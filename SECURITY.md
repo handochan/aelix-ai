@@ -180,8 +180,8 @@ consent very much is:
   download entirely.
   These archives are **not** checksum-pinned by Aelix; they are fetched over HTTPS
   from the upstream project's release assets.
-- **One request is made about Aelix itself: the update check.** At most once a
-  day, an interactive launch fetches
+- **Two requests are made about Aelix itself.** The first is the update check:
+  at most once a day, an interactive launch fetches
   `https://handochan.github.io/aelix-ai/latest-version.json` — a static file on
   this project's own GitHub Pages site — and prints the upgrade command if a
   newer release exists. The request is a plain unauthenticated GET carrying no
@@ -192,6 +192,35 @@ consent very much is:
   skip it with `--offline` / `PI_OFFLINE=1` / `AELIX_OFFLINE=1`. Nothing is
   downloaded or executed by the check — installing the update is a command you
   run yourself.
+- **The second is the model catalog check** (ADR-0264). An interactive or RPC
+  launch, opening the `/model` or `/scoped-models` picker, a `/model` that
+  matched nothing, a `/login`, and `aelix update --models` fetch
+  `https://handochan.github.io/aelix-catalog/v1/index.json` and, when it names a
+  catalog not yet stored, that catalog's `v1/revisions/sha256-<hex>.json`: at
+  most once every 4 hours unless forced (`aelix update --models` forces it),
+  and every 15 minutes while a first check keeps failing with nothing stored.
+  The request is a plain unauthenticated GET; its `User-Agent` carries the
+  Aelix version, so the server learns an IP address and that version, as pi's
+  does to pi.dev. No credential is ever sent: a catalog URL or a redirect that
+  carries `user:password@` is refused, since an HTTP client would send it as
+  Basic authentication. HTTPS only, at most 3 redirects, each to HTTPS; the index is capped at 64 KiB and a revision at 16 MiB, and a
+  revision must hash to its own name. Delegated agents and `-p` never check;
+  they read what the last check stored. Turn it off with `--offline` /
+  `PI_OFFLINE=1` / `AELIX_OFFLINE=1`, or with `AELIX_MODEL_CATALOG_URL=` (empty),
+  which a project `.env` cannot set.
+  **What a published catalog can and cannot do.** It can add model ids to the
+  providers this build ships and change a known id's facts (name, limits, prices,
+  thinking levels), so a published id is selectable, and routes, as if a release
+  had shipped it. It never carries transport: the API, base URL, headers and
+  compatibility flags of every row come from the catalog this build ships, a new
+  id inherits them from its provider's shipped rows or is dropped, and a
+  provider this build does not ship is ignored. So no published file can send a
+  request, or a key, anywhere a release does not already send one. What a check
+  stores goes to `~/.aelix/agent/models-store.json` (mode `0600`, its directory
+  `0700`, written atomically under a lock on `models-store.json.lock`); every
+  stored revision is re-verified against its name and re-parsed at each start,
+  so editing the file adds nothing the network could not. Deleting both files
+  loses only the cache.
 
 Reports we do want, among others: a way to escape or bypass the permission gate in
 an interactive session, path-traversal out of the workspace, credential or

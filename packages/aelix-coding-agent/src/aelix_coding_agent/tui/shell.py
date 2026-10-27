@@ -1551,6 +1551,9 @@ async def run_tui(
             settings_manager=settings_manager,
             multiselect=context.multiselect,
             commit=_commit,
+            # #434 (ADR-0264 §4.6) — pi's selector refreshes the catalog behind it.
+            refresh=_picker_catalog_refresh("scoped-models-picker"),
+            request_render=context.chrome.invalidate,
         )
 
     async def _open_model_picker() -> None:
@@ -1571,6 +1574,44 @@ async def run_tui(
             # a model the ``model_select`` hook did not see (a handler raised).
             refresh_footer=_repaint_footer_for_model_in_force,
             settings_manager=settings_manager,
+            # #434 (ADR-0264 §4.6) — the cached list at once, re-rendered when
+            # the catalog refresh lands (pi's model selector).
+            refresh=_picker_catalog_refresh("model-picker"),
+        )
+
+    def _picker_catalog_refresh(trigger: str) -> Callable[[], Awaitable[Any]] | None:
+        """A picker's catalog refresh (#434): ``None`` offline or with no registry."""
+
+        from aelix_coding_agent.model_refresh import refresh_allowed, refresh_catalogs
+
+        registry = model_registry
+        if registry is None or not refresh_allowed():
+            return None
+        return lambda: refresh_catalogs(registry, trigger=trigger)
+
+    # #434 (ADR-0264 §4.6-§4.7) — the interactive start-up refresh and the
+    # ``model_catalog_refresh`` event. Bound once; the event reads the live
+    # harness at each emit, so a hot-swap needs no rebind.
+    catalog_refresh_holder: dict[str, Any] = {"unbind": None}
+
+    def _start_catalog_refresh() -> None:
+        from aelix_coding_agent.model_refresh import (
+            bind_catalog_events,
+            start_background_refresh,
+        )
+
+        if model_registry is None:
+            return
+        catalog_refresh_holder["unbind"] = bind_catalog_events(
+            model_registry, lambda: runtime_host.harness
+        )
+        # Does not wait: 15 s in the background, and the footer repaints when
+        # it lands (pi ``interactive-mode.ts:1149-1156``). Skipped offline and
+        # in a delegated child, which reads the cache its parent wrote.
+        start_background_refresh(
+            model_registry,
+            trigger="startup",
+            on_done=lambda _result: _repaint_footer_for_model_in_force(),
         )
 
     async def _open_thinking_picker() -> None:
@@ -1769,6 +1810,14 @@ async def run_tui(
         if model_registry is not None:
             with contextlib.suppress(Exception):
                 model_registry.refresh()
+            # #434 (ADR-0264 §4.6) — the hosted catalog when stale, in the
+            # background: nothing waits on it, and a publication never changes
+            # the model chosen meanwhile (pi ``interactive-mode.ts:6152-6170``).
+            # The key-scoped source this would force is #450's.
+            with contextlib.suppress(Exception):
+                from aelix_coding_agent.model_refresh import refresher
+
+                refresher().background(model_registry, trigger="login")
 
         available: list[Any] = []
         if model_registry is not None:
@@ -1812,7 +1861,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4262``) always passes one, so this is
+            # production caller (``entry.py:4307``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2362,7 +2411,7 @@ async def run_tui(
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
-        ``_safe_invoke`` (``hooks.py:1386-1391``) logs and swallows exactly
+        ``_safe_invoke`` (``hooks.py:1423-1428``) logs and swallows exactly
         ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
         redundant on purpose, not a second class of failure: it catches the same
         class, and it is here so the guarantee survives a future registration
@@ -2751,7 +2800,7 @@ async def run_tui(
         # remains useful after releasing the direct live usage figure.
         #
         # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
-        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1386``; the
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1423``; the
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
@@ -3308,6 +3357,7 @@ async def run_tui(
         # synchronous hold here paints NOTHING — not even the banner — which is
         # the same trap the replay chunking below exists for.
         update_task = _start_update_check(settings_manager)
+        _start_catalog_refresh()
         _commit(
             _build_banner(
                 runtime_host.harness,
@@ -3437,6 +3487,16 @@ async def run_tui(
         if thinking_select_unsub is not None:
             with contextlib.suppress(Exception):
                 thinking_select_unsub()
+        # #434 — a catalog refresh still running is cancelled before it
+        # publishes (the refresher holds its tasks; ADR-0264 §4.6).
+        catalog_unbind = catalog_refresh_holder["unbind"]
+        if catalog_unbind is not None:
+            with contextlib.suppress(Exception):
+                catalog_unbind()
+        with contextlib.suppress(Exception):
+            from aelix_coding_agent.model_refresh import refresher
+
+            await refresher().cancel_all()
         out_chrome.exit()
         # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
         # shutdown lands mid-backoff. The end-event handler is the normal
@@ -3690,11 +3750,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1756``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1760``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1739`` already printed at startup, and one that
+    #       what ``entry.py:1743`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4192,7 +4252,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4193-4209 and
+            # Two audiences, discriminated exactly as entry.py:4238-4254 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

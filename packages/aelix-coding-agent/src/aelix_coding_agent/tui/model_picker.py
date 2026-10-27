@@ -12,6 +12,7 @@ Pi parity: ``interactive-mode.ts`` model selector (numbered, provider-tagged row
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 
@@ -105,6 +106,21 @@ def _api_key_env(provider: str) -> str:
     return "—"
 
 
+def refresh_status(result: Any) -> str:
+    """The picker's one status line after a catalog refresh (#434, ADR-0264 §4.6).
+
+    ``None`` is a run that did not land in time; a failed source is "could not
+    refresh"; anything else (published, unchanged, skipped within the interval,
+    unavailable, withdrawn) is "refreshed".
+    """
+
+    if result is None:
+        return "Model catalogs: refresh timed out; showing cached models"
+    if getattr(result, "errors", ()):
+        return "Model catalogs: could not refresh; showing cached models"
+    return "Model catalogs refreshed"
+
+
 async def run_model_picker(
     *,
     registry: Any,
@@ -113,6 +129,7 @@ async def run_model_picker(
     commit: Callable[[object], None],
     refresh_footer: Callable[[], None] | None = None,
     settings_manager: Any = None,
+    refresh: Callable[[], Awaitable[Any]] | None = None,
 ) -> None:
     """Drive the ``/model`` picker end-to-end (Sprint 6h₂₆, ADR-0154, WP-7).
 
@@ -133,6 +150,12 @@ async def run_model_picker(
     An empty-match allow-list degrades to the full list with a warning (never a
     lockout). When ``settings_manager`` is :data:`None` the full auth-filtered
     list is shown (unchanged behaviour).
+
+    ``refresh`` (#434, ADR-0264 §4.6) runs the model catalog refresh: the picker
+    shows the cached list at once, and when the run lands it re-renders with the
+    new list and one status line (:func:`refresh_status`). Closing the picker
+    leaves the run, and the refresher aborts it when no other trigger waits on
+    it. ``select`` must then accept ``on_open`` (``AelixTUIContext.select``).
     """
 
     from rich.text import Text  # local import keeps this module import-light
@@ -206,9 +229,53 @@ async def run_model_picker(
         models, getattr(current, "id", None), getattr(current, "provider", None)
     )
     # ``detail`` gets the ORIGINAL option index; labels and models share order.
-    choice = await select(
-        "Select Model", labels, detail=lambda i: model_detail_lines(models[i])
-    )
+    # #434 — a refresh replaces both lists IN PLACE, so ``detail`` and the
+    # chosen-row lookup below read what is on screen.
+    landing: dict[str, asyncio.Task[None]] = {}
+
+    def _on_open(update: Callable[..., None]) -> None:
+        run = refresh
+        assert run is not None
+
+        async def _land() -> None:
+            result = await run()
+            try:
+                fresh = list(await scoped_available(registry, settings_manager, warn=None))
+            except Exception:  # noqa: BLE001 - keep the cached list
+                fresh = []
+            fresh, _blocked = partition_runnable(fresh)
+            if not fresh:
+                update([], status=refresh_status(result))
+                return
+            fresh_labels = model_picker_labels(
+                fresh, getattr(current, "id", None), getattr(current, "provider", None)
+            )
+            # A row is its model: its label's number shifts when a row is added.
+            stands_for = {
+                label: (getattr(m, "provider", ""), getattr(m, "id", ""))
+                for label, m in [*zip(labels, models, strict=True), *zip(fresh_labels, fresh, strict=True)]
+            }
+            update(list(fresh_labels), status=refresh_status(result), identity=stands_for.get)
+            models[:] = fresh
+            labels[:] = fresh_labels
+
+        async def _land_quietly() -> None:
+            # The cached list stays on any failure here; the picker never breaks.
+            with contextlib.suppress(Exception):
+                await _land()
+
+        landing["task"] = asyncio.ensure_future(_land_quietly())
+
+    # ``on_open`` only with a refresh: a test's ``select`` need not take it.
+    live: dict[str, Any] = {"on_open": _on_open} if refresh is not None else {}
+    try:
+        choice = await select(
+            "Select Model", labels, detail=lambda i: model_detail_lines(models[i]), **live
+        )
+    finally:
+        task = landing.get("task")
+        if task is not None and not task.done():
+            task.cancel()
     if not choice:
         return
     # Recover the chosen Model by exact-label index (lossless — labels carry a

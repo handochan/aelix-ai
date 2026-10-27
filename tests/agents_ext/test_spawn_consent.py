@@ -141,7 +141,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:1111-1113``).
+    (``tui/context.py:1158-1160``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -175,7 +175,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over ``self.flag`` on purpose. The real one
-    (``extensions/api.py:1217`` → ``:1237-1238``) is
+    (``extensions/api.py:1218`` → ``:1238-1239``) is
     ``runtime.ui is not HEADLESS_UI_CONTEXT`` — a TIME-VARYING value, not a
     mode: ``False`` during ``harness.bootstrap()``, ``True`` after the TUI
     binds, re-pointed on every harness rebuild, and ``False`` again on exit
@@ -394,7 +394,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:1111-1113``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:1158-1160``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)

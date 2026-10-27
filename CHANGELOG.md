@@ -23,6 +23,40 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Models published between releases reach you without a release** (#434,
+  ADR-0264 §10 2026-10-27). aelix now reads its own published catalog,
+  `https://handochan.github.io/aelix-catalog/v1/index.json`, as pi reads
+  pi.dev: a model id the catalog adds for a provider this build ships becomes
+  selectable and routes as a shipped one would, and a known id takes the facts
+  `main` has for it. A published row never carries transport: every row keeps,
+  or inherits from its provider's shipped rows, this build's API, base URL,
+  headers and compatibility flags, so no published file can send a request
+  anywhere a release does not. A revision is used only when it was built from a
+  `main` that holds this build's catalog.
+  - It checks at an interactive or RPC start-up (in the background, at most
+    15 s, never in a delegated agent), when the `/model` or `/scoped-models`
+    picker opens, when `/model <term>` matched nothing ("Refreshing model
+    catalogs…", then it matches again), after `/login`, and at the new
+    `aelix update --models` (forced; each outcome on stderr; exit 1 on a
+    failure). Unforced, at most every 4 hours. The `/model` picker shows the
+    cached list at once and re-renders when the check lands.
+  - The cache is `~/.aelix/agent/models-store.json` (`0600`, written
+    atomically under `models-store.json.lock`); `--list-models` and `-p` read
+    it and never check. `--offline`, `AELIX_OFFLINE`/`PI_OFFLINE` or
+    `AELIX_MODEL_CATALOG_URL=` turn it off; a project `.env` cannot set that
+    variable.
+  - A rollback or withdrawal reaches you at the next check: the models it
+    took out leave the lists, a resume on one falls back with
+    `Could not restore model … (withdrawn from the published catalog)`, and a
+    settings default or `OPENROUTER_DEFAULT_MODEL` naming one counts as unset;
+    `/reload` keeps the model the session is on, and a typed id still
+    resolves as typed.
+  - Extensions get `model_catalog_refresh`, an observational hook event and
+    aelix's first one pi lacks.
+  - Copilot's policy enablement at `/login` reads only this build's shipped
+    rows, and quotes the id in the request path.
+  - The catalog repository does not exist yet, so for now every check answers
+    404 and nothing is overlaid.
 - **348 models the catalog was missing**, folded back from models.dev and
   OpenRouter with `scripts/refresh_catalog.py --apply` (#172, ADR-0264 §10
   2026-10-27). That is 1529 → 1877 rows across the same 35 providers. Nothing

@@ -207,7 +207,7 @@ async def test_a_declined_dialog_blocks_and_starts_nothing(
 ) -> None:
     """Esc, Cancel and a nonsense answer are all the same decision: no.
 
-    A ``None`` answer is Esc (``tui/context.py:1111-1113``). Anything that is not
+    A ``None`` answer is Esc (``tui/context.py:1158-1160``). Anything that is not
     a rendered option is treated identically, because the alternative is
     inferring consent from a string nobody was shown.
 
@@ -945,7 +945,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:1923-1925``), so a handler registered after it is not hypothetical.
+    (``entry.py:1930-1932``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —

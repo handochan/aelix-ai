@@ -33,9 +33,10 @@ Public surface (Pi parity):
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
-from aelix_ai.models_generated import MODELS
+from aelix_ai.models_generated import MODELS, SHIPPED_CATALOG, model_from_row
 from aelix_ai.streaming import Model, Usage, UsageCost
 
 # Pi parity: ``models.ts:11-18`` — at module load Pi builds
@@ -233,6 +234,108 @@ def models_are_equal(a: Model | None, b: Model | None) -> bool:
     return a.id == b.id and a.provider == b.provider
 
 
+# ── The effective built-in catalog (#434, ADR-0264 §4.3) ───────────────
+#
+# Declared here, at the end of the module, so the lines above keep their
+# numbers. ``_PROVIDER_MODELS`` above is the EFFECTIVE catalog every reader of
+# :func:`get_model`, :func:`get_models` and :func:`get_providers` sees: the
+# shipped rows, or, once a hosted revision is installed, the rows that revision
+# makes of them (a known id's published facts on its shipped transport, plus
+# the new ids that inherited one). The shipped rows stay here, untouched.
+
+_SHIPPED_MODELS: dict[str, dict[str, Model]] = _PROVIDER_MODELS
+_installed_revision: str | None = None
+_shipped_digest: str | None = None
+
+
+def install_overlay(
+    rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None,
+    *,
+    revision: str | None = None,
+) -> None:
+    """Make ``rows`` the effective built-in catalog, or the shipped one when ``None``.
+
+    ``rows`` is :attr:`aelix_ai.hosted_catalog.ParsedRevision.rows`: every
+    shipped provider and row in shipped order, a known id's hosted facts in
+    place, then each new id. Only a validated revision may be installed; the
+    parser is what keeps transport out of it. A provider this build does not
+    ship is ignored, and a shipped row ``rows`` lacks stays as shipped, so an
+    overlay can neither add a provider nor remove a row.
+
+    The swap is one assignment: a reader sees the old map or the new one, never
+    a mix. A row equal to its shipped row keeps the shipped :class:`Model`
+    object. ``revision`` names what is installed (:func:`installed_overlay`).
+    """
+
+    global _PROVIDER_MODELS, _installed_revision
+    if rows is None:
+        _PROVIDER_MODELS = _SHIPPED_MODELS
+        _installed_revision = None
+        return
+    effective: dict[str, dict[str, Model]] = {}
+    for provider, shipped_models in _SHIPPED_MODELS.items():
+        shipped_rows = SHIPPED_CATALOG.get(provider, {})
+        published = rows.get(provider)
+        if published is None:
+            effective[provider] = dict(shipped_models)
+            continue
+        out: dict[str, Model] = {}
+        for model_id, row in published.items():
+            shipped_model = shipped_models.get(model_id)
+            if shipped_model is not None and row == shipped_rows.get(model_id):
+                out[model_id] = shipped_model
+            else:
+                out[model_id] = model_from_row(row)
+        for model_id, shipped_model in shipped_models.items():
+            out.setdefault(model_id, shipped_model)
+        effective[provider] = out
+    _PROVIDER_MODELS = effective
+    _installed_revision = revision or "unnamed"
+
+
+def installed_overlay() -> str | None:
+    """The name of the installed hosted revision, or ``None`` on the shipped catalog."""
+
+    return _installed_revision
+
+
+def get_shipped_model(provider: str, model_id: str) -> Model | None:
+    """:func:`get_model` over this build's shipped rows, whatever overlay is installed.
+
+    Copilot's policy enablement reads these (§4.3): it writes to the user's
+    GitHub account, as pi's reads its shipped constant there.
+    """
+
+    return _SHIPPED_MODELS.get(provider, {}).get(model_id)
+
+
+def get_shipped_models(provider: str) -> list[Model]:
+    """:func:`get_models` over this build's shipped rows, whatever overlay is installed."""
+
+    return list(_SHIPPED_MODELS.get(provider, {}).values())
+
+
+def shipped_catalog() -> Mapping[str, Mapping[str, Mapping[str, Any]]]:
+    """This build's ``models_generated.json`` as parsed, transport included. Read-only."""
+
+    return SHIPPED_CATALOG
+
+
+def shipped_digest() -> str:
+    """This build's catalog digest (:func:`aelix_ai.hosted_catalog.catalog_digest`), computed once.
+
+    A hosted revision overlays this build only when its lineage holds this
+    digest (§4.2's ordering rule).
+    """
+
+    global _shipped_digest
+    if _shipped_digest is None:
+        from aelix_ai.hosted_catalog import catalog_digest
+
+        _shipped_digest = catalog_digest(SHIPPED_CATALOG)
+    return _shipped_digest
+
+
 __all__ = [
     "EXTENDED_THINKING_LEVELS",
     "ThinkingLevel",
@@ -241,6 +344,12 @@ __all__ = [
     "get_model",
     "get_models",
     "get_providers",
+    "get_shipped_model",
+    "get_shipped_models",
     "get_supported_thinking_levels",
+    "install_overlay",
+    "installed_overlay",
     "models_are_equal",
+    "shipped_catalog",
+    "shipped_digest",
 ]

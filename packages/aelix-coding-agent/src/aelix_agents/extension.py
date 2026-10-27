@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:1923-1925`` documents Guardrail-first as a security
+``Permission`` (``entry.py:1930-1932`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -196,7 +196,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2947-2963`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2970-2986`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -256,7 +256,7 @@ class AgentsExtension:
     overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
     factory closed over. Probed on one object — ``apply_profile_to_args`` with
     a ``context_files: false`` profile flips it to ``True``, and
-    ``agents/service.py:404``'s ``__dict__.update`` reset flips it back — same
+    ``agents/service.py:407``'s ``__dict__.update`` reset flips it back — same
     ``id()`` throughout. A bool captured at construction would be stale in both
     directions.
 
@@ -1224,7 +1224,7 @@ class AgentsExtension:
         # are separated by the kernel's parallel execute phase, and the profile
         # search path is a directory the model's own tools can write. If the
         # name now resolves to a DIFFERENT file — a project-scoped profile that
-        # appeared and wins the collision (``agents/service.py:106-107``), a
+        # appeared and wins the collision (``agents/service.py:108-109``), a
         # user-scope file replaced by one somewhere else on the search path —
         # then what the human approved is not what would run.
         #

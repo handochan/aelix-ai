@@ -1123,6 +1123,9 @@ class AgentSessionRuntime:
         #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
         #    survives the subsequent dispose. pi :2384.
         previous_flag_values = self._harness.extension_runner.get_flag_values()
+        # #434 — the model this session is on now, which the rebuild keeps when a
+        # hold removed its id from the published catalog (``ReloadSeed.model``).
+        previous_model = self._harness.current_model
         # Snapshot the LIVE active-tool filter BEFORE teardown so a user's runtime
         # tool selection survives the rebuild (#24-FU). ``None`` => "all tools
         # active"; a list => an explicit filter. Copied because ``state`` is a
@@ -1160,7 +1163,8 @@ class AgentSessionRuntime:
         #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
         #    then skips the default).
         await self._apply(
-            session, reload_seed=ReloadSeed(flag_values=previous_flag_values)
+            session,
+            reload_seed=ReloadSeed(flag_values=previous_flag_values, model=previous_model),
         )
 
         # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU). Restore the user's pre-reload active

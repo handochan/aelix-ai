@@ -66,7 +66,7 @@ _ROWS: list[tuple[str, Any, Any, bool]] = [
     # (``messages.py:127`` is the module's only one), so the user-message row
     # above stays green with the type check deleted. This shape — a non-assistant
     # object that DOES carry usage — is reachable through a ``message_end``
-    # reducer replacement (``harness/hooks.py:313``) or an RPC-decoded message,
+    # reducer replacement (``harness/hooks.py:319``) or an RPC-decoded message,
     # and repainting from it would show a number the estimator will never anchor
     # on.
     (

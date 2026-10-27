@@ -200,6 +200,31 @@ def _no_default_catalog(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_hosted_catalog(monkeypatch):
+    """Keep the hosted model catalog (#434, ADR-0264 §4.3) out of every test that does not ask.
+
+    Its overlay, the refresher's shared runs and the settings seed the launch
+    records are process-global, so a test that installs an overlay (or seeds a
+    default) would leak it into the next one: after every test, no overlay is
+    installed and the refresher and the seed are reset. ``AELIX_MODEL_CATALOG_URL``
+    is emptied (the source is off), so a ``ModelRegistry.create()`` reads no
+    user's real ``models-store.json`` into the catalog and no trigger reaches
+    GitHub Pages. A test that needs the source sets the variable itself
+    (a loopback ``http://127.0.0.1:<port>`` is allowed) and installs what it needs.
+    """
+
+    monkeypatch.setenv("AELIX_MODEL_CATALOG_URL", "")
+    yield
+    from aelix_ai.models import install_overlay
+    from aelix_coding_agent.cli.runtime_bootstrap import clear_settings_seed
+    from aelix_coding_agent.model_refresh import reset_refresher
+
+    install_overlay(None)
+    reset_refresher()
+    clear_settings_seed()
+
+
+@pytest.fixture(autouse=True)
 def _restore_api_registry():
     """Undo per-test writes to the PROCESS-GLOBAL api-provider registry.
 
