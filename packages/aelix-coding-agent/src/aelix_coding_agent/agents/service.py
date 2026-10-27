@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3430-3591``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3460-3621``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -49,6 +49,8 @@ from aelix_coding_agent.cli.runtime_bootstrap import (
     LateRouteHold,
     enrich_copilot_base_url,
     resolve_route,
+    set_settings_seed_active,
+    settings_seed_active,
 )
 from aelix_coding_agent.core.runnable_models import (
     is_runnable,
@@ -80,15 +82,15 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:3430-3434``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:3460-3464``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2575``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:2598``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": LoadSkillsResult}`` box the factory
-        reads on every (re)build (``cli/entry.py:3409`` / ``:3707``).
+        reads on every (re)build (``cli/entry.py:3439`` / ``:3752``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -384,6 +386,7 @@ class AgentProfileService:
         # to restore the SAME ``Args`` object the factory closed over, so the
         # rollback is an in-place ``update`` exactly like the reset in step 2.
         durable_snapshot = copy.deepcopy(self.parsed.__dict__)
+        previous_seed_active = settings_seed_active()
         previous_active = self.active
         previous_skills = self.skills_holder["result"]
         live_prompt = harness.state.system_prompt
@@ -410,6 +413,7 @@ class AgentProfileService:
             # drops the route of the profile it replaces, which re-resolves the
             # launch inputs (#412).
             profile_named_route = False
+            profile_named_model = False
             if profile is None:
                 self.active = None
             else:
@@ -434,7 +438,14 @@ class AgentProfileService:
                         f"{', '.join(application.skipped)}"
                     )
                 profile_named_route = bool({"model", "provider"} & set(application.applied))
+                profile_named_model = "model" in application.applied
                 self.active = profile
+            # #434 (ADR-0264 §4.4) — whose model string ``parsed`` now holds: the
+            # baseline's (the settings default, when the launch seeded it) unless
+            # the profile named a model. A provider-only profile keeps the
+            # default's model string; ``resolve_route`` skips a removed default
+            # only when the pair still equals it.
+            set_settings_seed_active(not profile_named_model)
 
             # === 4. Apply to the live harness (immediate half) ==============
             #
@@ -719,6 +730,7 @@ class AgentProfileService:
             # the same, since nothing re-emits (ADR-0116, the #559
             # amendment's review round 2).
             self.parsed.__dict__.update(durable_snapshot)
+            set_settings_seed_active(previous_seed_active)
             self.active = previous_active
             self.skills_holder["result"] = previous_skills
             harness.state.system_prompt = live_prompt

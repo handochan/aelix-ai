@@ -822,6 +822,7 @@ class AelixTUIContext:
         *,
         own: bool = False,
         cancel_options: Collection[str] = (),
+        on_open: Callable[[Callable[..., None]], None] | None = None,
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -873,6 +874,13 @@ class AelixTUIContext:
 
         ``own`` and ``cancel_options`` are deliberately NOT on the protocol.
 
+        ``on_open`` (#434, ADR-0264 §4.6; ``own`` pickers only) is called once,
+        before the first paint, with ``update(options, *, status=None)``: the
+        ``/model`` picker shows the cached list at once and calls it when its
+        catalog refresh lands, which replaces the rows (the cursor stays on the
+        same label when it is still listed) and sets one dim status line. Also
+        NOT on the protocol.
+
         #179: option/detail controls are displayed by name before owned styling,
         in both paths. Newlines stay rows; filtering and width use this display
         text. The return value, detail index and cancel identity remain ORIGINAL.
@@ -883,7 +891,11 @@ class AelixTUIContext:
         if not options:
             return None
 
+        # The picker's own copy: a caller that refreshes its list (#434) changes
+        # these rows only through ``on_open``'s update, never under the cursor.
+        options = list(options)
         displayed = [_picker_payload(option) for option in options]
+        live_status: list[str] = []
 
         # Per-call mutable state. ``idx`` is into the FILTERED view, not
         # ``options`` — the filter changes the visible set so the cursor is
@@ -907,6 +919,38 @@ class AelixTUIContext:
             return [
                 (i, o) for i, o in enumerate(displayed) if needle in _ANSI_RE.sub("", o).lower()
             ]
+
+        def _update(
+            new_options: list[str],
+            *,
+            status: str | None = None,
+            identity: Callable[[str], object] | None = None,
+        ) -> None:
+            # #434 — the picker's catalog refresh landed: new rows, same filter,
+            # the cursor kept on the row it was on when that row is still listed.
+            # ``identity`` maps a label to what it stands for (the /model picker's
+            # labels carry a number that a new row shifts).
+            nonlocal options, displayed
+            key = identity or (lambda label: label)
+            if new_options:
+                items = filtered()
+                current = (
+                    key(options[items[max(0, min(state["idx"], len(items) - 1))][0]])
+                    if items
+                    else None
+                )
+                options = list(new_options)
+                displayed = [_picker_payload(option) for option in options]
+                state["idx"] = next(
+                    (
+                        n
+                        for n, (i, _text) in enumerate(filtered())
+                        if current is not None and key(options[i]) == current
+                    ),
+                    0,
+                )
+            live_status[:] = [_picker_payload(status)] if status else []
+            self.chrome.invalidate()
 
         def render() -> ANSI:
             # Sprint 6h₃₀ (ADR-0163) — framed + colored. Current row is bold cyan
@@ -947,6 +991,7 @@ class AelixTUIContext:
                 [_visible_len(title), _visible_len(counter), _visible_len(hint)]
                 + [_visible_len(f"▸ {items[i][1]}") for i in range(start, end)]
                 + [_visible_len(d) for d in detail_lines]
+                + [_visible_len(f"  {line}") for line in live_status]
             )
             body: list[str] = []
             if start > 0:
@@ -960,6 +1005,8 @@ class AelixTUIContext:
             if end < len(items):
                 body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
             body.append(f"{_PICK_DIM}  {counter}{_PICK_RST}")
+            for line in live_status:
+                body.append(f"{_PICK_DIM}  {line}{_PICK_RST}")
             for d in detail_lines:
                 body.append(f"{_PICK_DIM}{d}{_PICK_RST}")
             return _picker_frame(title, body, hint, width)
@@ -1147,6 +1194,8 @@ class AelixTUIContext:
                 )
             return Window(control, dont_extend_height=True)
 
+        if on_open is not None and own:
+            on_open(_update)
         return await show_modal(self.chrome, build)
 
     async def tabbed(

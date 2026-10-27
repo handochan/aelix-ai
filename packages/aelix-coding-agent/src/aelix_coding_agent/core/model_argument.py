@@ -117,6 +117,10 @@ class ArgumentResolution:
     model: Model | None = None
     error: str | None = None
     caution: str | None = None
+    # #434 (ADR-0264 §4.6) — the refusal is "nothing this session holds matches":
+    # the one a model catalog refresh can change, so ``/model`` refreshes and
+    # matches once more (pi ``interactive-mode.ts:5233-5265``).
+    no_match: bool = False
 
 
 _UNDECIDED = ArgumentResolution()
@@ -514,7 +518,8 @@ async def resolve_model_argument(
             "this build's catalog does not know, write it as <provider>/<id> "
             "with a provider you are logged in to."
             + _dotenv_hint(sorted(p for p in dropped if head and p.lower() == head))
-        )
+        ),
+        no_match=True,
     )
 
 

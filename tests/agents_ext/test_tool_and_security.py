@@ -3,7 +3,7 @@
 Driven against the REAL extension objects — :class:`_ExtensionRuntime`,
 :class:`ExtensionAPI`, :class:`ExtensionContext` — and not against fakes of
 them, for one reason that matters: ``ctx.has_ui`` is
-``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1237-1238``), a
+``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1238-1239``), a
 TIME-VARYING value (finding OC-7). A hand-rolled context with a boolean
 attribute cannot express "the UI was bound after this extension loaded", which
 is the state every interactive session is actually in.
@@ -595,7 +595,7 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
     (``loop.py:905``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
-    (``agents/service.py:106-107``) — the exact B5 shape, arriving one step later.
+    (``agents/service.py:108-109``) — the exact B5 shape, arriving one step later.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")

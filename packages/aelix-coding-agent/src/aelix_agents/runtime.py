@@ -296,7 +296,7 @@ class SubagentHost:
     holds the design argument.
 
     LIVE, like every other field here, and measurably so: ``/agents use`` edits
-    the parent's ``Args`` IN PLACE — ``agents/service.py:404`` resets it with
+    the parent's ``Args`` IN PLACE — ``agents/service.py:407`` resets it with
     ``__dict__.update`` and then ``apply_profile_to_args`` sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Probed
     on one ``Args``: same object id throughout, ``False → True`` on the
@@ -517,7 +517,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:719``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:720``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a
@@ -554,10 +554,10 @@ class _SubagentRuntimeImpl:
         SECURITY (finding B5). Directory trust is a yes-once decision that
         ancestors inherit (``cli/project_trust.py:79-80``); it is NOT consent to
         a project-local IDENTITY, which additionally WINS a name collision
-        against the user's own (``agents/service.py:106-107``). So a
+        against the user's own (``agents/service.py:108-109``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a
         per-identity confirmation happened, exactly as
-        ``agents/service.py:352-368`` does for ``/agents use``.
+        ``agents/service.py:354-370`` does for ``/agents use``.
 
         NAME ONLY, and that is a security choice, not a limitation. The
         Protocol parameter is spelled ``name_or_path`` for P3 shape stability,
@@ -1205,7 +1205,7 @@ class _SubagentRuntimeImpl:
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
-        containment ``EventBus`` itself applies (``extensions/api.py:330-336``).
+        containment ``EventBus`` itself applies (``extensions/api.py:331-337``).
         """
 
         progress = SubagentProgress(

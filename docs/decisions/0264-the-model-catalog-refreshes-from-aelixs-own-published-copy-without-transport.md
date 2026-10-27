@@ -6,7 +6,8 @@ owner's decision (§2), revised after its reviews (r5-r11) and on the owner's de
 (§10: #172's B4, what the parser and the publisher measured against the shipped catalog) and
 2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from; #397,
 the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fold-back, run once,
-and what its review had to correct by hand).
+and what its review had to correct by hand; #434's client as built: the store, the source, the
+triggers, and what its live checks changed).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -1792,3 +1793,170 @@ Follow-ups found on shipped rows and left to their own issues:
   `~deepseek-v4-flash-latest`, `-v4-flash-vision-exp`). OpenRouter lists `[max, high, low, none]`
   for them, and pi.dev now carries those derived maps. They keep decision 5's
   `{xhigh: xhigh, max: null}` and send an `xhigh` OpenRouter does not list for them.
+
+### 2026-10-27: #434 - the client: the store, the source, the triggers, as built and measured
+
+§4.3-§4.7 as one change on `2fea1de8` (the fold-back's merge). Evidence:
+`.omc/probes/434/` (the loopback catalog `tools/serve_catalog.py`, which builds revisions from the
+checkout the way the publisher does; the pty driver `tools/tui_drive.py`; `live/` for every
+screen and log below; `integration-map-e0fd2b96.md`).
+
+**What landed, where §4.7 put it.**
+- aelix-ai: `models_store.py` (`ModelsStore`, `InMemoryModelsStore`, `RefreshModelsContext`,
+  `ModelsPublication`, `ModelsRefreshResult`, `SourceOutcome`, `AbortSignal`); in `models.py`,
+  `install_overlay`, `get_shipped_model(s)`, `shipped_catalog` and `shipped_digest` (at the end of
+  the module); `models_generated.SHIPPED_CATALOG` and `model_from_row`.
+- coding-agent: `models_store.FileModelsStore`; `hosted_catalog_source.py` (the cache phase,
+  `load_cached`, and the network phase, `refresh_hosted`); `model_refresh.py` (the refresher and
+  the event binding); in `model_registry.py`, `refresh_models`, the publication, `is_removed` and
+  the recomposition; the triggers; `cli/update_command.py`.
+- agent-core: `model_catalog_refresh` (`ModelCatalogRefreshHookEvent`), in the pi-parity fixture's
+  new `aelix_only_event_names` bucket; `ReloadSeed.model`.
+
+**Decided while implementing, within the rules above.**
+1. **The store entry keeps the index document as published** (`index`, re-validated by
+   `parse_index` at every read) rather than its `catalogs` alone, so `hold` is there when
+   `removed` is updated; each revision is stored as its exact text, so the sha256 re-check at
+   every start holds; `removed` is `{provider: [[id, addedAt], ...]}`. A 404 stores an empty index
+   marked `unavailable`.
+2. **`ModelsStore.write` compares, then writes** (`base`: the stamp of the entry the run started
+   from) and returns the newer stored entry when it lost, `{}` when that entry was deleted, so
+   rule 2's "the stored entry is published instead" is one call under the lock. The outcome a run
+   reports is then the newer entry's, not its own.
+3. **A check skipped within the 4 hours adopts the stored entry into memory** (nothing is
+   written), except after a 404. Another aelix on the same agent dir may have stored a newer
+   index (`aelix update --models`, a second session); without this an open TUI took a hold only
+   when its own 4 hours ran out. MEASURED (`live/L5a-*`): a hold stored by another process
+   reached the open TUI at its next `/model`, whose list lost the withdrawn id.
+4. **The removed-default skip sits in `resolve_route` and reads a recorded settings seed.** The
+   launch records the pair it seeds into `parsed` (`record_settings_seed`); `resolve_route` skips
+   a removed id those strings name, and step 0's variable, before any other step, while the seed
+   is active (`parsed` holds the settings pair, not a profile's or a typed model: review rounds 1
+   and 2 below). The callers that resolve `parsed`'s pair (11 of the 21 resolution calls: the
+   launch, the factory, the late-route hold, `/agents use`) need not pass anything, and
+   `tests/cli/test_withdrawn_default_sweep_434.py` classifies all 21 from the code (a new one
+   fails it). `ResolvedRoute.withdrawn` carries the removed pair, and with no session to restore
+   the line is `Default model <p>/<id> was withdrawn from the published catalog. Using …`.
+5. **`/scoped-models` does not re-render its rows when the run lands**, where §4.6 says "as the
+   `/model` picker". Its save reads the rows it opened with (#153's carry-forward and collapse
+   rules): a row arriving mid-selection is unticked in the picker's state, so with no scoping a
+   plain confirm would save an explicit list without it. It shows one status line with how many
+   models the new list adds, and a reopen shows them (MEASURED, `live/L3-*`). The `/model` picker
+   re-renders in place (MEASURED, `live/L2-*`: 4 rows, then 5, filter and cursor kept, "Model
+   catalogs refreshed").
+6. **`/model <term>` refreshes on two refusals**: nothing matched, and #136's backfill (an id the
+   registry does not hold under a provider named with a key). The live check found the second:
+   `/model openrouter/<new id>` switched to a custom id without asking the catalog (`live/L1-*`
+   first run). Now it says "Refreshing model catalogs…", and the run published the row it then
+   matched.
+7. **`/login` runs the hosted source unforced in the background; `/logout` runs nothing.** The
+   forced key-scoped source and the narrowing entry's deletion are #450's.
+8. **Cancellation is a task cancel plus `AbortSignal`.** The refresher shares one run per
+   registry; a forced trigger supersedes an unforced run; a waiter that leaves (cancelled or at
+   15 s) leaves the run to the others, and the last one aborts it. The event is emitted by a
+   registry listener that reads the live harness at each emit, so a hot-swap needs no rebind.
+9. **#172's note of 2026-10-22**: `RevisionRefused`'s per-provider message quotes the published
+   key (`_quoted`), and `ignored_providers` is counted, never printed.
+10. **`aelix update` is the fourth root command**; `aelix update -h` prints its usage and exits 0.
+    `--list-models` names the cached revision on stderr.
+11. **`ModelRegistry.create()` puts the store beside `models.json`**
+    (`<agent dir>/models-store.json` for the default path), so a test or an embedder that passes
+    its own `models.json` gets its own store.
+
+**Measured live** (`uv run aelix` from the lane, a loopback catalog built from its tree, real
+OpenRouter):
+- a start-up refresh whose index answered after 20 s ended at 15 s and published nothing; the
+  real URL's start-up stored the 404 as `unavailable` (the repository does not exist yet);
+- `/model openrouter/openai/gpt-6.1-terra-pro` (an id this build does not ship): "Refreshing model
+  catalogs…", the index and the revision fetched, `model → openai/gpt-6.1-terra-pro (openrouter)`,
+  and a request on it answered `pong`;
+- `aelix update --models`: `published`, then `unchanged` on a 304, `unavailable` on the real URL,
+  `failed: index: ConnectError` (exit 1) on an unreachable one, exit 1 offline with no request,
+  exit 2 bare; `--list-models` from the cache with no request;
+- a rollback (hold) stored by another process, then `/reload` in the session on the id it
+  removed: the next request was answered by that id (the session record); a resume of it, with
+  that id as the settings default, said `Could not restore model openrouter/openai/gpt-6.1-terra-pro
+  (withdrawn from the published catalog). Using anthropic/claude-opus-4-7` (both keys held:
+  Anthropic's default comes first in `DEFAULT_MODEL_PER_PROVIDER`);
+- RPC at depth 0 fetched the index and the revision; at depth 1 nothing; `AELIX_OFFLINE=1` made
+  no request.
+
+**Not in this change.** #450's narrowing (§4.5), so r4's narrowing comparisons are #450's; the
+catalog repository and its first publication (§8's #172 list), which wait for the owner, and so
+Pages' headers. No test runs on Windows a reader during `os.replace` or the in-process lock
+alone (the cross-process lock test is POSIX-only); CI's Windows legs run the rest of these tests,
+and no Windows host was used.
+
+**Review round 1** (Codex cross-review and an independent Claude review of the first version;
+`.omc/probes/434/review-codex/`, `review-claude/`). Fixed, each with a test that fails on the
+first version:
+- **The settings seed carries its provenance.** Equality with the recorded pair was not enough:
+  a launch through `--agent` left the removed default in the `/agents use` baseline unrecorded
+  (`--none` and the `/new` after went back to the removed id), and a profile that named the same
+  pair was skipped as if it were the default. The launch records the pair active only when
+  `parsed` takes it, and `/agents use` sets it to whether the profile named its own route
+  (restored on rollback). The provider is canonicalized (case, a `<provider>/` prefix) before
+  the removed check. Item 4 above now reads with this.
+- **A running process adopts a stored entry as a running process** (`adopt_entry`): a newer
+  entry from another URL changes nothing, a 404's keeps the overlay, and a missing or refused
+  revision keeps it; the start-up cache phase still installs nothing in those cases. Losing the
+  persist to another aelix's 404 had removed the live overlay.
+- **Each registry tracks the revision it composed over**, so a second registry recomposes over
+  an overlay another one installed.
+- **A URL or redirect with userinfo is refused**: httpx turns `user:pass@` into a Basic
+  `Authorization` header whatever `auth=` says.
+- **A 304 goes through the revision fetch too**, so a revision the stored index names and the
+  store lacks is fetched on a 304 (§4.3 step 3), not only on a 200.
+- **A hold whose other revision failed keeps its candidates pending** (`pendingRemoved`) until a
+  check has every revision the index names; the first version dropped the old revisions and
+  with them the removal.
+- **Both locks share one 2-second deadline** (the in-process wait counted on top of the file
+  lock's).
+- **The event's `removed` counts** the published ids a publication took out of the effective
+  catalog.
+- **The `/model` picker keeps its own rows** and keeps the cursor on the same model across a
+  renumbering refresh (a test drives the real `select` and its key bindings); an exception in
+  the landing never reaches the picker.
+- **With `--api-key`, a withdrawn default falls back only on its own provider**, else there is no
+  model: the key is attached to the route's provider after resolution (ADR-0250 §2.7), and the
+  first version handed an OpenRouter-typed key to Anthropic's default (independent review).
+- **Every failure after the fetch goes through the failed check** (with its `failedAt`): a
+  revision whose bytes hash to their name but are not UTF-8 is a failed fetch of that revision,
+  and a deeply nested revision that the parser cannot read is a failure, not an exception. The
+  first version stored nothing and refetched at every trigger.
+- **No fetch against a store this build cannot write**: a store of an unknown version is not
+  fetched for (`skipped`, `failed` when forced), and after a failed write the source backs off
+  for 15 minutes in the process, as `failedAt` would. The first version re-downloaded the
+  revision at every trigger.
+- **The cache phase never stops a launch** on a stored entry it cannot read; a `{}` file is an
+  empty store, rewritten on the next write.
+- **Nothing says "Refreshing model catalogs…" with the source off** (`AELIX_MODEL_CATALOG_URL=`),
+  and `aelix update --models --offline` takes `--offline` after the command, as `aelix extension`
+  does.
+- Tests: a run stopped (aborted or superseded) during its persist publishes nothing in memory;
+  an aborted context publishes nothing (the first version's test never reached publication); the
+  registry's first check refuses an aborted run; a trigger waits at most its bound and the last
+  waiter aborts the run; a forced trigger supersedes an unforced run; teardown cancels a running
+  refresh before it publishes; `/agents use` with an `--agent` launch and with a profile naming
+  the removed pair (both through `_async_main`).
+- Left as they are: the lock wait (at most 2 s) runs on the event loop's thread; the TUI and RPC
+  triggers are bounded, so it is bounded too.
+
+**Review round 2** (a fresh verifier of round 1, `.omc/probes/434/verify-r1.md`: 17 of 19
+findings FIXED, 2 PARTIAL, 3 new should-fix). Fixed, each with a test that fails when reverted:
+- **A provider-only profile keeps the seed active**: the seed is active while `parsed`'s model
+  string is the default's, not only while no profile named a route; round 1 had marked it
+  inactive and landed `/agents use <provider-only profile>` (and `/new` after) on the removed id.
+  A rolled-back use restores the flag (now tested), and the canonical provider and the
+  `<provider>/` strip are tested.
+- **With `--api-key`, the withdrawn default's provider's own rows** are the fallback pool, with
+  no credential test: the key is attached after resolution, so round 1's pool was empty and the
+  launch had no model.
+- **The write backoff stops the network only**: the entry another aelix stored is still adopted
+  (round 1 skipped item 3's adoption for 15 minutes after a failed write).
+- A 404 keeps `pendingRemoved`; `aelix update --offline` alone prints the usage; a refused
+  `AELIX_MODEL_CATALOG_URL` warns once; SECURITY.md says the 15-minute retry; the guide says the
+  `--api-key` rule.
+- Not tested, as the verifier found: `/fork`, `/import` and `/new` on a removed id beyond
+  `switch_session` and the reviewers' probes (the behaviour measured fine). Per the two-round
+  cap, nothing further was reviewed.

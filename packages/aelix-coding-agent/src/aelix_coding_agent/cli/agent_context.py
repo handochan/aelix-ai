@@ -542,14 +542,14 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:1934`` passes
+    exists to kill. ``cli/entry.py:1941`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:791-793``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:1941``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:1948``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
@@ -690,7 +690,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1365-1691``). A model told
+        # typed overloads at ``extensions/api.py:1366-1692``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a
@@ -819,7 +819,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3690``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3750``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:139-155``) /reload routes to

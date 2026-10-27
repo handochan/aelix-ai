@@ -36,7 +36,7 @@ papers over with an ``aelix_agents``-private channel.
 
 THREE MEASURED CAVEATS, all of which shape this file.
 
-1. ``EventBus.emit`` (``extensions/api.py:330-336``) calls handlers
+1. ``EventBus.emit`` (``extensions/api.py:331-337``) calls handlers
    SYNCHRONOUSLY, DISCARDS the return value — so an ``async def`` subscriber's
    body never runs — and swallows every handler exception under
    ``contextlib.suppress(Exception)`` with NO logging. A broken subscriber
@@ -562,7 +562,7 @@ class SubagentProgressBridge:
         Read through ``api.runtime`` rather than a captured ``ctx.ui`` for the
         reason in caveat 2, and compared by IDENTITY against the headless
         singleton — the same test ``ExtensionContext.has_ui`` itself performs
-        (``extensions/api.py:1237-1238``).
+        (``extensions/api.py:1238-1239``).
         """
 
         try:
@@ -599,7 +599,7 @@ class SubagentProgressBridge:
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:1726-1741`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:1775-1790`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

@@ -717,7 +717,7 @@ async def test_enable_all_enumerates_catalog_and_reports_progress() -> None:
     seen: list[tuple[str, bool]] = []
 
     with patch(
-        "aelix_ai.models.get_models",
+        "aelix_ai.models.get_shipped_models",
         return_value=[_M("gpt-4o"), _M("claude-opus-4.6"), _M("grok-code-fast-1")],
     ), patch(
         "aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake
@@ -796,7 +796,7 @@ async def test_enable_all_survives_every_model_timing_out() -> None:
 
     seen: list[tuple[str, bool]] = []
     with patch(
-        "aelix_ai.models.get_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
+        "aelix_ai.models.get_shipped_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
     ), patch(
         "aelix_ai.oauth.github_copilot.httpx.AsyncClient",
         side_effect=httpx.ConnectTimeout("slow network"),
@@ -825,7 +825,7 @@ async def test_enable_all_tolerates_a_partial_transport_failure() -> None:
 
     seen: list[tuple[str, bool]] = []
     with patch(
-        "aelix_ai.models.get_models",
+        "aelix_ai.models.get_shipped_models",
         return_value=[_M("gpt-4o"), _M("claude-opus-4.6"), _M("grok-code-fast-1")],
     ), patch(
         "aelix_ai.oauth.github_copilot.enable_github_copilot_model", side_effect=_one
@@ -853,7 +853,7 @@ async def test_enable_all_raises_when_every_model_is_unreachable() -> None:
         raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] ...")
 
     with patch(
-        "aelix_ai.models.get_models",
+        "aelix_ai.models.get_shipped_models",
         return_value=[_M("gpt-4o"), _M("claude-opus-4.6")],
     ), patch(
         "aelix_ai.oauth.github_copilot.enable_github_copilot_model",
@@ -870,7 +870,7 @@ async def test_enable_all_non_2xx_for_every_model_does_not_raise() -> None:
     fake._next_response = _FakeResponse(403, {"error": "forbidden"})  # type: ignore[attr-defined]
     seen: list[tuple[str, bool]] = []
     with patch(
-        "aelix_ai.models.get_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
+        "aelix_ai.models.get_shipped_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
     ), patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake):
         await enable_all_github_copilot_models(
             _TOKEN_WITH_PROXY, None, on_model=lambda mid, ok: seen.append((mid, ok))
@@ -882,7 +882,7 @@ async def test_enable_all_empty_catalog_does_not_raise() -> None:
     """``len([]) == len([])`` must not read as "every model failed" and turn a
     no-op into a login failure."""
 
-    with patch("aelix_ai.models.get_models", return_value=[]):
+    with patch("aelix_ai.models.get_shipped_models", return_value=[]):
         await enable_all_github_copilot_models(_TOKEN_WITH_PROXY, None)
 
 

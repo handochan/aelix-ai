@@ -149,6 +149,9 @@ AgentHarnessEventName = Literal[
     # ``emit_project_trust_event`` helper, NOT the reducer pipeline) before any
     # project-local code executes so a user-trusted extension can decide trust.
     "project_trust",
+    # #434 (ADR-0264 §4.7) - aelix-only, the first event pi lacks: one model
+    # catalog source's refresh finished. Observational.
+    "model_catalog_refresh",
 ]
 
 # Union of both (31 names total — Sprint 5a Phase 3.1 added 3 own events).
@@ -198,6 +201,9 @@ HookEventName = Literal[
     # Issue #5 (Lane C) — Project Trust extension surface (see
     # ``AgentHarnessEventName`` above for the Pi citation).
     "project_trust",
+    # #434 (ADR-0264 §4.7) - aelix-only, the first event pi lacks: one model
+    # catalog source's refresh finished. Observational.
+    "model_catalog_refresh",
 ]
 
 
@@ -893,6 +899,36 @@ class ResourcesUpdateHookEvent(HookEvent):
 
 
 @dataclass(frozen=True)
+class ModelCatalogRefreshHookEvent(HookEvent):
+    """One model catalog source's refresh run finished (#434, ADR-0264 §4.7). Aelix-only.
+
+    Emitted on the live harness's bus once per source per run, after the
+    source published (or did not). Observational: a handler cannot veto or edit
+    a list, and its failure never fails a refresh or a turn.
+
+    ``source`` is ``aelix-hosted`` (or ``openrouter`` with #450); ``trigger``
+    is what started the run (``startup``, ``model-picker``, ``update``, ...);
+    ``outcome`` is ``published``, ``unchanged``, ``unavailable``, ``withdrawn``,
+    ``not-applicable``, ``failed``, ``aborted`` or ``skipped``. The counts are
+    the rows the installed revision added, changed and removed, and the new ids
+    it dropped for want of transport. ``error`` is bounded and escaped. No
+    credential and no URL.
+    """
+
+    source: str = "aelix-hosted"
+    trigger: str = ""
+    outcome: str = "skipped"
+    revision: str | None = None
+    added: int = 0
+    changed: int = 0
+    removed: int = 0
+    dropped: int = 0
+    error: str | None = None
+    checked_at: float | None = None
+    type: Literal["model_catalog_refresh"] = "model_catalog_refresh"
+
+
+@dataclass(frozen=True)
 class SettledHookEvent(HookEvent):
     """Observational event emitted at the end of each run of a turn.
 
@@ -1350,6 +1386,7 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     # Result type lets ``on("project_trust", ...)`` register; the decision is
     # consumed by the standalone ``emit_project_trust_event`` walk, not the bus.
     "project_trust": ProjectTrustEventResult,
+    "model_catalog_refresh": None,  # #434 (ADR-0264 §4.7) - aelix-only, observational
 }
 
 
@@ -1937,6 +1974,7 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     # ``emit_project_trust_event`` walk, never the bus; the observational entry
     # only keeps the bus safe if a handler is wired in (it never fires there).
     "project_trust": _reducer_observational,
+    "model_catalog_refresh": _reducer_observational,  # #434 - aelix-only, observational
 }
 
 
@@ -2056,6 +2094,10 @@ ThinkingLevelSelectHandler = Callable[
 ]
 ResourcesUpdateHandler = Callable[
     [ResourcesUpdateHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+ModelCatalogRefreshHandler = Callable[
+    [ModelCatalogRefreshHookEvent, "ExtensionContext"],
     None | Awaitable[None],
 ]
 # Sprint 5a (Phase 3.1) additions --------------------------------------------
@@ -2413,6 +2455,16 @@ class HookBus:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["model_catalog_refresh"],
+        handler: ModelCatalogRefreshHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
     # --- Sprint 5a (Phase 3.1) additions ---
     @overload
     def on(
@@ -2702,6 +2754,8 @@ __all__ = [
     "MessageStartHookEvent",
     "MessageUpdateHandler",
     "MessageUpdateHookEvent",
+    "ModelCatalogRefreshHandler",
+    "ModelCatalogRefreshHookEvent",
     "ModelSelectHandler",
     "ModelSelectHookEvent",
     "ProjectTrustContext",

@@ -55,13 +55,14 @@ def _make_bus() -> HookBus:
 # === Registry sanity ===
 
 
-async def test_hook_result_types_registry_has_36_entries() -> None:
-    """36 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input/user_bash/resources_discover) +
+async def test_hook_result_types_registry_has_37_entries() -> None:
+    """37 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input/user_bash/resources_discover) +
     Sprint 6h₅a Phase 4.14 (session_start/session_before_switch/
-    session_before_fork/session_shutdown) + Issue #5 Lane C (project_trust).
+    session_before_fork/session_shutdown) + Issue #5 Lane C (project_trust) +
+    #434 (the aelix-only model_catalog_refresh).
     """
 
-    assert len(HOOK_RESULT_TYPES) == 36
+    assert len(HOOK_RESULT_TYPES) == 37
 
 
 async def test_all_new_sprint_3a_event_names_registered() -> None:

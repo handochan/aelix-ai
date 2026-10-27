@@ -74,7 +74,7 @@ out of the fence and speak as the host. The whole block is capped at 32768 bytes
 `--no-approve`. The `--help` line used to read "Ignore project-local files for
 this run", which a user wanting *"do not let this cloned repo influence the
 agent"* would reasonably read as covering `AGENTS.md`. It does not, and the help
-text now says so (`cli/args.py:890-891`).
+text now says so (`cli/args.py:893-894`).
 
 **Trust is not a sandbox.** Answering "Trust" runs that repository's Python in
 your process, with your files and your credentials. It is a decision about
@@ -237,7 +237,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:922-924`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3395-3400`, the text at `:949-954`), because a silent drop looks identical to a
+(`cli/entry.py:3425-3430`, the text at `:953-958`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

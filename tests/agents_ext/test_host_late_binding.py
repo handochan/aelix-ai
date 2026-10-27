@@ -460,11 +460,11 @@ async def test_has_ui_is_true_when_the_live_context_has_a_ui_bound(
     ``PLAN``, with nothing red anywhere to say so.
 
     ``ExtensionContext.has_ui`` is ``runtime.ui is not HEADLESS_UI_CONTEXT``
-    (``extensions/api.py:1237-1238``) — an IDENTITY check against the headless
+    (``extensions/api.py:1238-1239``) — an IDENTITY check against the headless
     singleton, so any concrete binding is the real signal and a stand-in is a
     faithful one. ``tui/shell.py`` installs the real ``AelixTUIContext`` at
     run-start and re-binds it onto the new runtime after every ``/new``,
-    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2819-2821``) — which is
+    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2868-2870``) — which is
     why this is time-varying and why it is a getter.
     """
 

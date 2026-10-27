@@ -55,13 +55,17 @@ def test_hook_event_name_literal_matches_pi_734e08e() -> None:
     # (pi SHA ``927e980``); the fixture records it separately so the drift
     # detector still distinguishes "pinned @734e08e" from "since-pin adopted".
     pi_since_pin = set(fixture["since_pin_event_names"])
+    # #434 (ADR-0264 §4.7): aelix's first event pi lacks, ``model_catalog_refresh``,
+    # sits in its own aelix-only bucket so the pi buckets above still pin pi.
+    aelix_only = set(fixture["aelix_only_event_names"])
     aelix = set(get_args(HookEventName))
 
-    expected = pi_loop | pi_own | pi_coding | pi_ext_session | pi_since_pin
+    expected = pi_loop | pi_own | pi_coding | pi_ext_session | pi_since_pin | aelix_only
     missing = expected - aelix
     extra = aelix - expected
     assert aelix == expected, f"missing={missing}, extra={extra}"
-    assert len(aelix) == 36, f"expected 36 names, got {len(aelix)}"
+    assert len(aelix) == 37, f"expected 37 names, got {len(aelix)}"
+    assert not aelix_only & (pi_loop | pi_own | pi_coding | pi_ext_session | pi_since_pin)
 
 
 def test_agent_event_name_matches_pi_loop_set() -> None:
@@ -90,14 +94,15 @@ def test_agent_harness_event_name_matches_pi_own_set() -> None:
     pi_coding = set(fixture["coding_agent_event_names"])
     pi_ext_session = set(fixture["extension_session_lifecycle_event_names"])
     pi_since_pin = set(fixture["since_pin_event_names"])  # Issue #5 — project_trust
+    aelix_only = set(fixture["aelix_only_event_names"])  # #434 — model_catalog_refresh
     aelix_own = set(get_args(AgentHarnessEventName))
-    expected = pi_own | pi_coding | pi_ext_session | pi_since_pin
+    expected = pi_own | pi_coding | pi_ext_session | pi_since_pin | aelix_only
     assert aelix_own == expected, (
         f"missing={expected - aelix_own}, extra={aelix_own - expected}"
     )
     # 18 harness-own + 3 coding-agent (Sprint 5a) + 4 ext-session (Sprint 6h₅a)
-    # + 1 since-pin (Issue #5 Lane C — project_trust)
-    assert len(aelix_own) == 26
+    # + 1 since-pin (Issue #5 Lane C — project_trust) + 1 aelix-only (#434)
+    assert len(aelix_own) == 27
 
 
 def test_loop_and_harness_name_sets_disjoint() -> None:

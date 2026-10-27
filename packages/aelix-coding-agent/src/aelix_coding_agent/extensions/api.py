@@ -75,6 +75,7 @@ from aelix_agent_core.harness.hooks import (
     MessageEndHandler,
     MessageStartHandler,
     MessageUpdateHandler,
+    ModelCatalogRefreshHandler,
     ModelSelectHandler,
     ProjectTrustHandler,
     QueueUpdateHandler,
@@ -629,7 +630,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:589-597``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:590-598``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -1611,6 +1612,15 @@ class ExtensionAPI:
         self,
         event: Literal["resources_update"],
         handler: ResourcesUpdateHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["model_catalog_refresh"],
+        handler: ModelCatalogRefreshHandler,
         *,
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",

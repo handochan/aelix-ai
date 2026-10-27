@@ -107,6 +107,23 @@ picked without the session and says so:
 Warning: Could not restore model anthropic/claude-haiku-4-5. Using openrouter/anthropic/claude-sonnet-4.5
 ```
 
+A model the published catalog withdrew (a rollback or a withdrawal, see
+[The published catalog](#the-published-catalog)) does not come back, even on
+your own key, and the line says why:
+
+```
+Warning: Could not restore model openrouter/acme/new-model-1 (withdrawn from the published catalog). Using openrouter/openai/gpt-5.4
+```
+
+A settings default, or `OPENROUTER_DEFAULT_MODEL`, naming such a model counts
+as unset: the run takes the first runnable model in the provider-default order
+(the pick `/login` makes), and with no session to restore says
+`Default model <provider>/<id> was withdrawn from the published catalog. Using …`.
+With `--api-key` the fallback stays on the default's provider (the key was
+typed for it), or there is none. A model you type (`--model`, `/model`, an
+agent profile's `model:`) still resolves as typed, and `/reload` keeps the
+model the session is on.
+
 It is shown under the banner in the TUI and after each in-session command
 above, and printed on stderr in `-p`, `--mode json` and RPC (at startup and
 after `switch_session`, `fork` and `clone`). The `Using …` half names the model
@@ -256,8 +273,9 @@ Then the two guards:
   surrounding spaces, or - both 8 characters or longer - with it inside) does
   not count as one - a resolver must not derive its answer from a variable a
   project `.env` supplied (`aelix_ai.dotenv_record.dotenv_supplied`).
-- **New OpenRouter ids.** This build's catalog lacks many of OpenRouter's live
-  ids (pi refreshes its catalog from pi.dev; aelix does not). So a
+- **New OpenRouter ids.** This build's catalog lacks some of OpenRouter's live
+  ids, even with [the published catalog](#the-published-catalog) adding what
+  aelix's generator admits between releases. So a
   `<vendor>/<model>` string **that OpenRouter's part of this build's catalog does
   not list** goes to OpenRouter as written, with a one-line note, **only when you
   hold an OpenRouter key of your own** (exported, `/login`, or `models.json`) —
@@ -644,6 +662,52 @@ not to show it. `anthropic/claude-sonnet-5` behaves the same way because its
 catalog row says it has no `off` level — which is also why the picker does not
 offer you one.
 
+## The published catalog
+
+aelix publishes its own corrected model catalog between releases, as pi does
+from pi.dev (ADR-0264): `https://handochan.github.io/aelix-catalog/v1/index.json`
+names a content-addressed revision per minimum aelix version, built on weekdays
+from `main`. A build uses the revision only when it was built from a `main`
+whose history holds this build's own catalog, so an older revision never
+overlays a newer build, and a dev checkout with an unmerged catalog edit stays
+on its own.
+
+- **What it changes.** A model id this release does not ship becomes selectable
+  and routes as if a release had shipped it: `--model`, `/model`, the picker,
+  `--list-models` and a delegated agent's pin all see it. A known id takes the
+  facts `main` has for it (name, context window, output cap, prices, thinking
+  levels). Your `models.json` still wins over both.
+- **What it never changes.** Transport: every row keeps (or, for a new id,
+  inherits from its provider's shipped rows) the API, base URL, headers and
+  compatibility flags this build ships, and an id that cannot inherit them is
+  dropped. It cannot add a provider. The model a session is on keeps its numbers
+  until you select it again.
+- **When it checks.** At an interactive or RPC start-up (in the background, at
+  most 15 s; a delegated agent never checks, it reads what its parent stored),
+  when the `/model` or `/scoped-models` picker opens (the cached list shows at
+  once; `/model`'s list re-renders when the check lands, `/scoped-models` says
+  how many models it added and shows them when you reopen it), when `/model
+  <term>` matched nothing (`Refreshing model catalogs…`, then it matches again),
+  after `/login`, and at `aelix update --models`. Unforced, it checks at most
+  every 4 hours (15 minutes after a failure with nothing stored); `aelix update
+  --models` forces it, prints each source's outcome on stderr and exits 1 when
+  one failed. `-p` and `--list-models` read the cache and never check; the list
+  names the cached revision on stderr.
+- **Where it lives.** `~/.aelix/agent/models-store.json` (and its
+  `models-store.json.lock`), shared by every aelix that uses that directory.
+  Deleting them loses only the cache.
+- **Turning it off.** `--offline`, `AELIX_OFFLINE` / `PI_OFFLINE`, or
+  `AELIX_MODEL_CATALOG_URL=` (empty). The variable can also point at another
+  `https://` copy (or a loopback `http://127.0.0.1:<port>` for testing); a
+  project `.env` cannot set it.
+- **When a revision is withdrawn.** A rollback or withdrawal reaches you at the
+  next check. Models it took out leave the lists; a resume on one, or a default
+  naming one, falls back as [above](#a-resumed-session-keeps-its-model) says.
+
+Extensions can watch each check through the `model_catalog_refresh` hook event
+(the source, what started it, the outcome, the revision and its counts); it is
+observational and cannot change a list.
+
 ## Offline
 
 `--offline` (equivalent to `PI_OFFLINE=1` or `AELIX_OFFLINE=1`) skips the
@@ -660,8 +724,10 @@ network operations aelix starts on its own:
   per-source notice, and a bare `aelix extension install <pkg>` with no
   `--index-url` is refused rather than silently reaching PyPI.
 - the once-a-day update check.
+- the model catalog check ([The published catalog](#the-published-catalog)).
 
-Only `--offline` may precede the root commands `extension`, `docs`, and `status`.
+Only `--offline` may precede the root commands `extension`, `docs`, `status`
+and `update`.
 Other launch options before a command, such as `-e policy.py status` or
 `--provider anthropic --model example status`, fail with exit 2 before a
 session starts. `aelix --offline docs` and `aelix --offline status` work;

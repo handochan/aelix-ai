@@ -214,7 +214,7 @@ def runtime_tripwires(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_offline_dispatch_precedes_agent_parser_and_exports_before_handler(
     command: str, monkeypatch: pytest.MonkeyPatch, runtime_tripwires: None
 ) -> None:
-    from aelix_coding_agent.cli import docs, extension_install, status
+    from aelix_coding_agent.cli import docs, extension_install, status, update_command
 
     calls: list[list[str]] = []
     monkeypatch.delenv("PI_OFFLINE", raising=False)
@@ -232,6 +232,7 @@ async def test_offline_dispatch_precedes_agent_parser_and_exports_before_handler
     monkeypatch.setattr(docs, "run_docs_command", record)
     monkeypatch.setattr(status, "run_status_command", record_async)
     monkeypatch.setattr(extension_install, "run_extension_command_async", record_async)
+    monkeypatch.setattr(update_command, "run_update_command", record_async)
     assert await entry._async_main(["--offline", "--offline", command, "--help"]) == 17
     assert calls == [["--help"]]
 
@@ -263,12 +264,13 @@ async def test_rejected_prefix_never_reaches_handlers_parser_or_runtime(
     capsys: pytest.CaptureFixture[str],
     runtime_tripwires: None,
 ) -> None:
-    from aelix_coding_agent.cli import docs, extension_install, status
+    from aelix_coding_agent.cli import docs, extension_install, status, update_command
 
     monkeypatch.setattr(entry, "parse_args", _forbid)
     monkeypatch.setattr(docs, "run_docs_command", _forbid)
     monkeypatch.setattr(status, "run_status_command", _forbid)
     monkeypatch.setattr(extension_install, "run_extension_command_async", _forbid)
+    monkeypatch.setattr(update_command, "run_update_command", _forbid)
     assert await entry._async_main(["--offline", *prefix, command]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""

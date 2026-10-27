@@ -10,7 +10,7 @@ this module removed covered LATER calls, whose tasks nobody had seen).
 WHAT MAKES THIS FILE DIFFERENT FROM ``test_spawn_consent.py``: a batch dialog can
 be TOO TALL, and the failure is silent. ``ctx.ui.select`` composes title and
 options into ONE non-wrapping, non-scrolling ``Window``
-(``tui/context.py:149-227``, ``:954-957``) and ``tui/overlay.py``'s
+(``tui/context.py:149-227``, ``:999-1002``) and ``tui/overlay.py``'s
 ``_CappedContainer`` clamps its height (``overlay.py:221-231``), so the overflow
 is BOTTOM TRUNCATION — and ``build_options`` appends ``Cancel`` LAST. A naive
 8-task dialog at 80x24 composes to 23 rows against a cap of 19: the hint, the
@@ -132,7 +132,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over a mutable flag because the real one
-    (``extensions/api.py:1217`` → ``:1237-1238``) is TIME-VARYING, not a mode
+    (``extensions/api.py:1218`` → ``:1238-1239``) is TIME-VARYING, not a mode
     (finding OC-7).
     """
 
