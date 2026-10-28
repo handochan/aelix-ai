@@ -975,6 +975,7 @@ class RpcClient:
         timeout_ms: int | None = None,
         *,
         collect: bool = True,
+        unbounded: bool = False,
     ) -> list[dict[str, Any]]:
         """Pi parity: ``rpc-client.ts:promptAndWait``.
 
@@ -1007,11 +1008,21 @@ class RpcClient:
         :attr:`RpcClientOptions.raise_on_command_error` set in this file: pi's
         behaviour is the default, and the caller driving a child unattended
         opts out of it.
+
+        ``unbounded=True`` waits for the turn with NO time limit (#604,
+        ADR-0276), and ``timeout_ms`` is then not read. It is a flag rather
+        than a ``timeout_ms`` spelling because pi turns ``None`` and ``0`` into
+        its 60 s default, and that parity is kept for every existing caller.
+        The wait still ends on the turn's ``agent_end``, on the child's death
+        (:class:`RpcServerExited`) and on a cancellation of the caller. Only the
+        TURN is unbounded: the ``prompt`` command's own answer keeps the send
+        timeout (:attr:`RpcClientOptions.send_timeout_ms`), so a child that
+        never reads its stdin still fails, after that bound.
         """
 
         # Wire the listener BEFORE sending so we don't miss the
         # ``agent_end`` that fires synchronously in fast-stub scenarios.
-        timeout_s = (timeout_ms or self.DEFAULT_WAIT_FOR_IDLE_MS) / 1000.0
+        timeout_s = None if unbounded else (timeout_ms or self.DEFAULT_WAIT_FOR_IDLE_MS) / 1000.0
         collected: list[dict[str, Any]] = []
         done = asyncio.get_running_loop().create_future()
 
@@ -1030,9 +1041,13 @@ class RpcClient:
         return collected
 
     async def _await_terminator(
-        self, done: asyncio.Future[Any], timeout_s: float, what: str
+        self, done: asyncio.Future[Any], timeout_s: float | None, what: str
     ) -> None:
         """Wait for ``done``, the child's death, or the deadline.
+
+        ``timeout_s=None`` is NO deadline (``prompt_and_wait(unbounded=True)``,
+        #604): ``asyncio.wait`` then returns only on ``done`` or the death leg,
+        and a cancellation of the caller still propagates exactly as below.
 
         The child-death leg is the aelix-original half and the reason this
         helper exists at all: without it, every one of the three public waits

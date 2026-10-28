@@ -97,7 +97,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `thinking` | string | inherit | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Absent → the parent's level if the profile also names no `model` or `provider`, otherwise the `defaultThinkingLevel` in your global `settings.json` (see below). A bad value here **rejects the profile**. |
 | `role` | `leaf` \| `orchestrator` | `leaf` | A `leaf` child cannot delegate further. See the note below. |
 | `output_cap` | int | `51200` | Byte budget for the summary returned to the parent; past it the summary is truncated with a visible marker. A parallel or chain call also shares one 64 KiB budget, split evenly across its tasks (8 192 bytes each for eight) and covering each task's summary and error note together, so a member can be cut shorter than its own cap. A single delegation gets this cap alone. When the child has a session file, the full text is kept there. |
-| `timeout_ms` | int | none | Wall clock for the whole delegation. The `agent` tool bounds a caller-supplied value to 1 000 … 1 800 000 ms. |
+| `timeout_ms` | int | none | **Ignored (#604).** A delegated agent has no time limit; it runs until it finishes or you stop it (Esc, Ctrl+C). The key still loads, with one warning in `/agents list`, so an old profile keeps working. |
 | `approval_mode` | `inherit` \| `ask` \| `auto` \| `deny` | `inherit` | How the profile **declares** it needs write authority. |
 
 ### The ones that are easy to get wrong
@@ -327,7 +327,6 @@ skills: [/opt/team/skills/house-style.md]
 inherit_skills: false
 thinking: low
 output_cap: 8192
-timeout_ms: 60000
 ---
 
 You turn long input into a brief a busy reader can act on. No preamble.

@@ -62,7 +62,7 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:582``, ``consent.py:551``, ``posture.py:222``,
+literal ``"project"`` (``runtime.py:703``, ``consent.py:551``, ``posture.py:222``,
 ``profile.py``'s ``extensions:`` cut, ``discovery.py:357``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 
@@ -232,9 +232,14 @@ class AgentProfile:
     marker."""
 
     timeout_ms: int | None = None
-    """READ by both channels as the whole delegation's wall clock. The ``agent``
-    tool additionally bounds a caller-supplied value to
-    ``MIN_TIMEOUT_MS`` (1 000) … ``MAX_TIMEOUT_MS`` (1 800 000)."""
+    """DEPRECATED AND NEVER READ (#604, ADR-0276 D2). It used to be the whole
+    delegation's wall clock; a delegated agent now has no time limit.
+
+    Kept as a field, not deleted, for two readers: RPC ``agents/show`` returns
+    ``asdict`` of this class, so removing it would drop a key hosts already see;
+    and the spawn-time warning (``aelix_agents.runtime``) needs to know the key
+    was set. Parsed leniently — any value is a WARNING, never an error, and a
+    profile is never dropped for it. Only an integer is stored here."""
 
     approval_mode: Literal["inherit", "ask", "auto", "deny"] = "inherit"
     """READ by ``posture.child_permission_mode`` and by the consent gate: it is
@@ -395,7 +400,7 @@ def parse_profile(
             )
 
     output_cap = _parse_positive_int(frontmatter, "output_cap", 51200, _err)
-    timeout_ms = _parse_positive_int(frontmatter, "timeout_ms", None, _err)
+    timeout_ms = _parse_ignored_timeout(frontmatter, _warn)
 
     if any(diag.type == "error" for diag in diagnostics):
         return ParseProfileResult(diagnostics=diagnostics)
@@ -577,6 +582,37 @@ def _parse_enum(
         f"{key} must be one of {', '.join(allowed)} (got {raw!r})",
     )
     return default
+
+
+_TIMEOUT_IGNORED = "timeout_ms is ignored: delegated agents run without a time limit (#604)"
+"""The one warning a profile's ``timeout_ms`` produces (ADR-0276 D2)."""
+
+
+def _parse_ignored_timeout(frontmatter: dict[str, Any], warn: Any) -> int | None:
+    """``timeout_ms`` — accepted, warned about once, never an error.
+
+    It used to be validated as a positive integer, and a bad value DROPPED THE
+    WHOLE PROFILE. With the key now meaning nothing, refusing ``timeout_ms: -5``
+    would cost a user their agent over a value that does nothing either way, so
+    every spelling loads. The key stays in ``_KNOWN_KEYS`` so the generic
+    unknown-key loop does not warn a second time about the same line.
+
+    ``unknown_field`` and not a new code: the code set is a ``Literal`` that
+    surfaces render as-is, and "a key this build does not act on" is exactly
+    what that code already means. The value is kept only when it is a real
+    integer (``bool`` is an ``int`` subclass and is not one), so the spawn-time
+    warning can name it.
+    """
+
+    if "timeout_ms" not in frontmatter:
+        return None
+    raw = frontmatter["timeout_ms"]
+    is_int = isinstance(raw, int) and not isinstance(raw, bool)
+    if raw is None or is_int:
+        warn("unknown_field", _TIMEOUT_IGNORED)
+    else:
+        warn("unknown_field", f"{_TIMEOUT_IGNORED}; its value {raw!r} is not an integer either")
+    return raw if is_int else None
 
 
 def _parse_positive_int(

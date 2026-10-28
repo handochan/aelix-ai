@@ -1,6 +1,10 @@
 # 0197. Subagent-runtime seam & the bundled `aelix-agents` extension (P2)
 
 Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
+**Amended 2026-10-28 (ADR-0276, #604): a delegation has no time limit. §(k)'s
+`timeout_ms` precedence and its 600 000 ms default are gone, and §(j)'s exit
+wait after both pipes close has its own 30 s bound instead of the deadline — see
+the dated notes there.**
 **Amended 2026-10-11 (#407): `/agents run` sanitises child-influenced display
 text through the shared terminal helper — see §(l).**
 **Amended 2026-10-08 (#399): R2's 300-character task cut is removed — see R2.**
@@ -1080,10 +1084,21 @@ wait therefore takes `max(remaining budget, POST_EOF_EXIT_GRACE_SECONDS = 2.0)`.
 It is a **floor, not an amnesty**: a child that closes its stdio and then wedges
 still times out, two seconds later.
 
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)):
+there is no budget, so the wait has a bound of its own,
+`POST_EOF_EXIT_BOUND_SECONDS = 30.0`. A child still not gone after it is reaped
+as before, and the channel tells the envelope so (`lingered=True`): a stream that
+had reached its terminator with a clean stop reason stays `ok` with a `note`,
+anything less is `error` (ADR-0276 D4).*
+
 ### (k) The envelope — always returned, never raised
 
 `SubagentResult` is returned on every path, including spawn failure, timeout,
 abort and decline. Failure detection never trusts the return code alone:
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): no
+bundled channel produces `timeout` any more; the outcome stays readable for the
+records that already carry it (ADR-0276 D7).*
 
 ```
 failed = exit_code != 0 or stop_reason in ("error", "aborted") or outcome != "ok"
@@ -1125,6 +1140,14 @@ and the envelope is `status="timeout", ok=False` **carrying the partial summary
 and partial usage** — never an exception. **The consent dialog is outside the
 timeout budget**: the clock starts at `create_subprocess_exec`, not at the tool
 call, so a human thinking for two minutes does not consume the child's ten.
+
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): there
+is no precedence and no default any more. The tool argument is gone (a call that
+still sends it runs, and the value is ignored), the profile key is a warning that
+never drops the profile, and the 600 000 ms default is removed: a child runs until
+it finishes or a human ends it — Esc, Ctrl+C, `stop`, a teardown or a signal
+(ADR-0276 D1–D5). The envelope keeps carrying the partial summary and usage on
+every path that ends a child early.*
 
 `permission_mode` records the posture the child actually ran under, so
 `/agents run`, a later dashboard and any audit story can all show what authority
@@ -1277,7 +1300,8 @@ catalogued.
   `spawn(mode=...)` accepts `"single"`; anything else raises
   `ValueError("mode %r is P3")`. `SubagentMode` declares all three so the type
   does not change shape between phases, exactly as ADR-0196 did with `role` /
-  `output_cap` / `timeout_ms` / `approval_mode`.
+  `output_cap` / `timeout_ms` / `approval_mode`. (*`timeout_ms` is parsed only to
+  warn that it is ignored since ADR-0276, #604.*)
 * **A keyed multi-runtime `bind_subagents` registry (P3/P4)** — §(b).
 * **cgroup / `pidfd_open` subtree containment, and a stray-pid sweeper (P3)** —
   §(j).
@@ -1341,7 +1365,9 @@ behaviour, cap, registry or consent policy in product-core.
   bounded how many of those one turn could start; measured against the shipped
   runtime, `dialogs shown to the human: 0` / `child processes started: 200`, each
   a full `-m aelix_coding_agent` process holding the parent's API keys with up to
-  `DEFAULT_TIMEOUT_MS` (10 min) of wall clock, and `"agent"` is deliberately
+  `DEFAULT_TIMEOUT_MS` (10 min) of wall clock (*no wall-clock limit at all since
+  ADR-0276, #604, which leaves this budget and the live cap as the bounds on what
+  one turn can start*), and `"agent"` is deliberately
   absent from `_MUTATING` so the parent's own permission ladder never saw them
   either. A prompt-injected README saying *"call agent() 200 times"* therefore
   cost real money and 200 real processes with no gate and no ceiling. Two

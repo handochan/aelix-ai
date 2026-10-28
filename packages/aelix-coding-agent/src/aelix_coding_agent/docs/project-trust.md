@@ -192,7 +192,7 @@ between words at your terminal's width, as pi's does (#380).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1686`, registered at `:2236`)
+selector from inside a session (`tui/commands.py:1743`, registered at `:2293`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every

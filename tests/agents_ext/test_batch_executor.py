@@ -8,22 +8,25 @@ invisible against a channel that returns immediately, because every member would
 find an empty registry and a free permit.
 
 MOSTLY L1 (channel substitution, no process), because the quantities being
-pinned — permits, registry rows, budget charges, ``SpawnPlan.timeout_ms``,
-``SpawnPlan.permission_mode`` — are all decided before ``create_subprocess_exec``
+pinned — permits, registry rows, budget charges, the ABSENCE of a member
+clock (#604), ``SpawnPlan.permission_mode`` — are all decided before
+``create_subprocess_exec``
 is reached, and a real child would make them slower and less deterministic
 without making them more true. The TWO L2 tests at the bottom earn their cost:
 they are the only ones that can fail on a LIVE CHILD rather than on a missing
 exception, which is the actual P2 finding (B1) the cancellation design guards.
 
 THE MACHINE HAS 2 CORES. Nothing here asserts a wall-clock speedup; concurrency
-is observed by counting what is simultaneously inside the channel, and the batch
-deadline arithmetic is driven by a fake clock rather than by sleeping.
+is observed by counting what is simultaneously inside the channel, and the one
+test about time (there is no batch deadline since #604) drives a fake clock
+rather than sleeping.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import os
 import signal
 import sys
@@ -35,9 +38,8 @@ from typing import Any
 import pytest
 from aelix_agents import batch as batch_module
 from aelix_agents.batch import (
-    KILL_LEG_RESERVE_MS,
-    MAX_BATCH_WALL_MS,
     MAX_CONCURRENCY,
+    _Batch,
     run_batch,
 )
 from aelix_agents.chain import (
@@ -49,7 +51,6 @@ from aelix_agents.chain import (
 from aelix_agents.consent import SpawnGrant, _may_widen
 from aelix_agents.posture import child_permission_mode, posture_rank
 from aelix_agents.print_channel import (
-    DEFAULT_TIMEOUT_MS,
     PrintChannel,
     RunningChild,
     SpawnPlan,
@@ -63,7 +64,7 @@ from aelix_agents.runtime import (
     SubagentHost,
     _SubagentRuntimeImpl,
 )
-from aelix_agents.tool import MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, AgentCall
+from aelix_agents.tool import AgentCall
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import (
@@ -109,14 +110,11 @@ def _grant(
     )
 
 
-def _agent_call(
-    mode: str, n: int, *, timeout_ms: int | None = None, tasks: list[str] | None = None
-) -> AgentCall:
+def _agent_call(mode: str, n: int, *, tasks: list[str] | None = None) -> AgentCall:
     return AgentCall(
         profile="scout",
         tasks=tuple(tasks if tasks is not None else [f"task {i}" for i in range(n)]),
         mode=mode,  # type: ignore[arg-type]
-        timeout_ms=timeout_ms,
     )
 
 
@@ -430,7 +428,7 @@ async def test_the_budget_is_charged_per_child_and_across_calls(
     Charging per CALL would give ``MAX_DELEGATIONS_PER_PROMPT ×
     MAX_PARALLEL_TASKS`` = 96 children per user prompt, against a measured
     pre-cap failure of 0 dialogs / 200 processes
-    (``test_tool_and_security.py:690-706``). Two batches of four in one prompt
+    (``test_tool_and_security.py:689-705``). Two batches of four in one prompt
     must therefore leave four, not ten.
     """
 
@@ -577,7 +575,7 @@ async def test_the_previous_summary_reaches_the_next_step_fenced(
     The substitution happens inside the TASK STRING and never touches argv — the
     ``"Task: "`` prefix ``profile_to_argv`` prepends is what keeps a summary
     beginning with ``--`` from being swallowed into ``parsed.unknown_flags``
-    (``print_channel.py:608-613``). So the assertion is on
+    (``print_channel.py:611-616``). So the assertion is on
     ``SpawnPlan.task``, which is exactly what rides that one argv element.
     """
 
@@ -608,7 +606,7 @@ async def test_what_feeds_the_next_link_is_the_summary_and_never_the_details(
 
     The module docstring says it in capitals: what feeds the next link is
     ``SubagentResult.summary``, verbatim, NOT ``details``. The reason is not
-    cosmetic — ``envelope._build_details`` (``envelope.py:364-385``) appends the
+    cosmetic — ``envelope._build_details`` (``envelope.py:728-749``) appends the
     RAW, UNSANITISED stderr tail on every failure path (provider SDK logging,
     SIGTERM tracebacks) and sets ``details = state.summary`` UNCAPPED on an OK
     run, with no truncation marker. Feeding that into the next step's task would
@@ -731,243 +729,51 @@ async def test_single_mode_never_reaches_the_executor(tmp_path: Path) -> None:
         await _drive(runtime, _agent_call("single", 1), tmp_path)
 
 
-# === S12 / §3.5.3 — the aggregate ceiling =====================================
+# === #604 (ADR-0276) — a batch has no clock =================================
 
 
-async def test_a_members_clock_is_derived_from_what_is_left_of_the_batch_budget(
+async def test_a_batch_derives_no_clock_and_refuses_no_member_for_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The wave-2 shrink and the per-step kill-leg reserve, under a fake clock.
+    """No member is given a deadline, and no member is refused for lack of one.
 
-    ``asyncio.wait_for`` around the batch was REJECTED: it cancels the inner
-    task, so every member's ``CancelledError`` propagates and EVERY ENVELOPE IS
-    LOST — including the completed ones — which contradicts ``envelope.py:8-12``.
-    Deriving each member's own ``timeout_ms`` from the remaining budget at the
-    moment its clock starts bounds the same quantity while every member still
-    returns a real envelope.
+    Until #604 each member got ``min(requested, 30 min, what was left of the
+    call's 30 minutes)`` and was REFUSED once less than a second remained, so a
+    chain of honest, long steps lost its tail to a clock and the model read
+    "wall-clock budget" for work nobody had stopped. Here three steps of an hour
+    each — six times the old ceiling — all run, under a fake clock so nothing
+    sleeps. The clock is still READ, for ``wall_ms``, which is a measurement.
 
-    The arithmetic, spelled out because the constants are otherwise invisible: a
-    three-step chain, 700 s consumed per step, ``KILL_LEG_RESERVE_MS`` held back
-    once per step STILL TO RUN (a chain's kill legs are sequential).
+    Parallel too, with the profile asking for a minute: the frontmatter key is
+    ignored (ADR-0276 D2), so no plan carries any clock at all.
     """
 
     clock = _Clock()
     monkeypatch.setattr(batch_module, "_now", clock)
-    channel = _ClockChannel(clock, advance_s=700.0)
-    runtime = _runtime(tmp_path, channel)
-
-    await _drive(runtime, _agent_call("chain", 3), tmp_path)
-
-    budget = MAX_BATCH_WALL_MS
-    assert channel.plans[0].timeout_ms == DEFAULT_TIMEOUT_MS
-    assert channel.plans[1].timeout_ms == DEFAULT_TIMEOUT_MS
-    # Step 3 starts 1 400 s in, so the remainder is smaller than the per-child
-    # default and becomes the child's actual clock.
-    assert channel.plans[2].timeout_ms == (
-        budget - 1_400_000 - KILL_LEG_RESERVE_MS * 1
-    )
-    assert channel.plans[2].timeout_ms < DEFAULT_TIMEOUT_MS
-
-
-async def test_the_kill_leg_reserve_is_per_step_for_chain_and_flat_for_parallel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Why the two modes reserve differently, made observable.
-
-    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:120``)
-    plus the bounded ``POST_EXIT_DRAIN_SECONDS = 2.0``
-    (``print_channel.py:151``). In parallel those legs OVERLAP, so one reserve
-    covers the wave; in a chain they are strictly sequential, so an eight-step
-    chain would overshoot the ceiling by up to 8 × 7 s. Asking for the maximum
-    per-task clock is what makes the reserve the binding term and therefore
-    visible.
-    """
-
-    clock = _Clock()
-    monkeypatch.setattr(batch_module, "_now", clock)
-
-    parallel_channel = _RecordingChannel()
-    await _drive(
-        _runtime(tmp_path, parallel_channel),
-        _agent_call("parallel", 3, timeout_ms=MAX_TIMEOUT_MS),
-        tmp_path,
-    )
-    assert {p.timeout_ms for p in parallel_channel.plans} == {
-        MAX_BATCH_WALL_MS - KILL_LEG_RESERVE_MS
-    }
-
-    chain_channel = _RecordingChannel()
-    await _drive(
-        _runtime(tmp_path, chain_channel),
-        _agent_call("chain", 3, timeout_ms=MAX_TIMEOUT_MS),
-        tmp_path,
-    )
-    assert chain_channel.plans[0].timeout_ms == (
-        MAX_BATCH_WALL_MS - KILL_LEG_RESERVE_MS * 3
-    )
-
-
-async def test_a_member_with_no_clock_left_gets_an_envelope_not_a_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Below ``MIN_TIMEOUT_MS`` there is nothing honest to start.
-
-    It is a ``did_not_start`` envelope and not a raise, and not a silently
-    dropped member: the batch is NEVER trimmed, so the model reads which task got
-    no clock and why. And it stops the chain, because every later step was going
-    to be fed this one's summary.
-    """
-
-    clock = _Clock()
-    monkeypatch.setattr(batch_module, "_now", clock)
-    channel = _ClockChannel(clock, advance_s=MAX_BATCH_WALL_MS / 1000 - 1.0)
+    channel = _ClockChannel(clock, advance_s=3600.0)
     runtime = _runtime(tmp_path, channel)
 
     outcome = await _drive(runtime, _agent_call("chain", 3), tmp_path)
 
-    assert [m.outcome for m in outcome.members] == ["ok", "did_not_start"]
-    assert "wall-clock budget" in (outcome.members[1].result.error or "")
-    assert len(channel.plans) == 1
-    assert outcome.not_run == 1
-    assert runtime._delegations_this_prompt == 1, "no charge for a child not started"
+    assert [m.outcome for m in outcome.members] == ["ok", "ok", "ok"]
+    assert len(channel.plans) == 3
+    assert outcome.not_run == 0
+    assert outcome.wall_ms == 3 * 3_600_000
+    assert not any("budget" in (m.result.error or "") for m in outcome.members)
+    assert "timeout_ms" not in {f.name for f in dataclasses.fields(channel.plans[0])}
+    assert "deadline" not in {f.name for f in dataclasses.fields(_Batch)}
 
-
-async def test_a_member_with_less_than_the_minimum_clock_is_refused_not_squeezed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The refusal threshold is ``MIN_TIMEOUT_MS``, not zero.
-
-    The sibling test above leaves a NEGATIVE remainder, so it passes just as
-    happily against ``if remaining_ms < 0``. The interesting window is the one
-    between: half a second of budget is arithmetically startable and completely
-    useless — the child would be SIGTERM'd before its provider handshake
-    finished, and the model would read a timeout envelope for a task that was
-    never given a chance, having spent a delegation on it.
-
-    ``MIN_TIMEOUT_MS`` is the same floor ``parse_agent_call`` refuses below, so
-    the two doors agree about what "too little time to bother" means.
-    """
-
-    clock = _Clock()
-    monkeypatch.setattr(batch_module, "_now", clock)
-    # Step 1 consumes everything except 7.5 s; one kill-leg reserve (7 s) leaves
-    # 500 ms — positive, and far below MIN_TIMEOUT_MS.
-    channel = _ClockChannel(clock, advance_s=MAX_BATCH_WALL_MS / 1000 - 7.5)
-    runtime = _runtime(tmp_path, channel)
-
-    outcome = await _drive(runtime, _agent_call("chain", 2), tmp_path)
-
-    assert [m.outcome for m in outcome.members] == ["ok", "did_not_start"]
-    assert len(channel.plans) == 1, "a sub-second child is not worth starting"
-    assert "wall-clock budget" in (outcome.members[1].result.error or "")
-
-
-async def test_a_requested_timeout_is_capped_by_the_per_task_ceiling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``MAX_TIMEOUT_MS`` bounds the member even when the batch budget is larger.
-
-    Belt for ``parse_agent_call``'s own ceiling: the parse is the gate a model
-    passes through, this is the one every OTHER caller of the executor passes
-    through, and the two are equal on purpose so neither can be used to buy the
-    other's clock.
-    """
-
-    monkeypatch.setattr(batch_module, "_now", _Clock())
-    monkeypatch.setattr(batch_module, "MAX_BATCH_WALL_MS", 10 * MAX_TIMEOUT_MS)
-    channel = _RecordingChannel()
+    parallel = _RecordingChannel()
     await _drive(
-        _runtime(tmp_path, channel),
-        _agent_call("parallel", 1, timeout_ms=MAX_TIMEOUT_MS),
+        _runtime(tmp_path, parallel),
+        _agent_call("parallel", 3),
         tmp_path,
+        resolved=_resolved(_profile(timeout_ms=60_000)),
     )
-    assert channel.plans[0].timeout_ms == MAX_TIMEOUT_MS
-    assert MIN_TIMEOUT_MS < MAX_TIMEOUT_MS  # the window the parse validates into
+    assert len(parallel.plans) == 3
 
 
 # === §3.5.1 — cancellation ====================================================
-
-
-async def test_a_batch_member_falls_back_to_the_profiles_own_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The default when the model omits ``timeout_ms`` is the PROFILE's, not ours.
-
-    ``PrintChannel.run`` resolves the clock as ``plan.timeout_ms if ... is not
-    None else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)``
-    (``print_channel.py:1076-1080``), and the executor is what decides whether
-    ``plan.timeout_ms`` is ``None``. Substituting ``DEFAULT_TIMEOUT_MS`` here
-    made the channel's profile fallback UNREACHABLE for every batch member: an
-    author who wrote ``timeout_ms: 60000`` in frontmatter
-    (``agents/profile.py:398``) silently got ten minutes per child, times up to
-    eight children, while the same profile under ``mode="single"`` — which passes
-    ``pending.call.timeout_ms`` straight through — still got one.
-
-    Both directions are pinned, because they are two different decisions: the
-    profile's value is the DEFAULT (a loosening if dropped), and an explicit
-    call-level value still WINS over it (the model may ask for less, and the
-    ceilings below still bind).
-    """
-
-    monkeypatch.setattr(batch_module, "_now", _Clock())
-    minute = 60_000
-    resolved = _resolved(_profile(timeout_ms=minute))
-
-    channel = _RecordingChannel()
-    await _drive(
-        _runtime(tmp_path, channel),
-        _agent_call("parallel", 3),
-        tmp_path,
-        resolved=resolved,
-    )
-    assert [p.timeout_ms for p in channel.plans] == [minute] * 3
-    assert minute != DEFAULT_TIMEOUT_MS, "the constants must differ or this proves nothing"
-
-    chain_channel = _ScriptedChannel([_ok(), _ok()])
-    await _drive(
-        _runtime(tmp_path, chain_channel),
-        _agent_call("chain", 2),
-        tmp_path,
-        resolved=resolved,
-    )
-    assert [p.timeout_ms for p in chain_channel.plans] == [minute] * 2
-
-    explicit = _RecordingChannel()
-    await _drive(
-        _runtime(tmp_path, explicit),
-        _agent_call("parallel", 2, timeout_ms=5_000),
-        tmp_path,
-        resolved=resolved,
-    )
-    assert [p.timeout_ms for p in explicit.plans] == [5_000] * 2
-
-
-async def test_a_profile_timeout_is_still_bounded_by_the_batch_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The profile supplies the DEFAULT, never an exemption from the ceilings.
-
-    ``min(requested, MAX_TIMEOUT_MS, remaining_ms)`` is unchanged by the
-    fallback, so a profile declaring more than the whole batch budget cannot buy
-    wall clock the call does not have — otherwise a frontmatter field would be a
-    way around S12.
-    """
-
-    clock = _Clock()
-    monkeypatch.setattr(batch_module, "_now", clock)
-    greedy = _resolved(_profile(timeout_ms=MAX_BATCH_WALL_MS * 10))
-    channel = _RecordingChannel()
-
-    await _drive(
-        _runtime(tmp_path, channel),
-        _agent_call("parallel", 1),
-        tmp_path,
-        resolved=greedy,
-    )
-
-    assert channel.plans[0].timeout_ms == min(
-        MAX_TIMEOUT_MS, MAX_BATCH_WALL_MS - KILL_LEG_RESERVE_MS
-    )
 
 
 async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
@@ -982,7 +788,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1495-1498``.
+    ``print_channel.py:1485-1488``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -1021,7 +827,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1495-1498``.
+    escalation at ``print_channel.py:1485-1488``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1288,13 +1094,13 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
 ) -> None:
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
-    ``_host_posture()`` is a live getter (``extension.py:470-476``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:1052``), and baked into
+    ``_host_posture()`` is a live getter (``extension.py:475-481``) but it is read
+    once per call, inside ``_grant_for`` (``extension.py:1057``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
     self.is_modal_open())`` (``chrome.py:967-970``). Under P2 the resulting window
-    was one child and milliseconds; here wave 2 may start up to
-    ``MAX_BATCH_WALL_MS`` later. A user who watches the first four children do
+    was one child and milliseconds; here wave 2 may start any time later —
+    no clock bounds wave 1 since #604. A user who watches the first four children do
     something alarming and tightens must reach members 5-8.
     """
 
@@ -1343,7 +1149,7 @@ async def test_losing_the_ui_mid_batch_tightens_the_next_wave(
     ``runtime.py:33-35``).
 
     Read once and frozen, the stale value is the LOOSE one, so an ``ask`` batch
-    that outlived its UI kept write authority for up to ``MAX_BATCH_WALL_MS`` —
+    that outlived its UI kept write authority for as long as the batch ran —
     the identical defect §3.9 exists to close, in the identical function, for
     the other argument. Wave 1 runs with a UI and gets what the human approved;
     wave 2 starts after the UI is gone and must be clamped to ``PLAN``.
@@ -1428,8 +1234,9 @@ async def test_tightening_the_parent_mid_batch_revokes_a_widening(
     (:func:`test_tightening_the_parent_mid_batch_tightens_the_next_wave`): the
     human RAISED authority to ``auto-accept-edits`` at the dialog, watched wave 1,
     and pressed shift+tab back to plan mode. S11 leaves no other mid-turn lever
-    and ``MAX_BATCH_WALL_MS`` is 30 minutes, so if wave 2 ignores that press the
-    user has no way at all to stop four more children from writing.
+    short of interrupting the whole turn, and no clock ends the batch (#604), so
+    if wave 2 ignores that press the user cannot keep the batch AND stop four
+    more children from writing.
 
     Why it was inert. The gate compared the live CHILD CLAMP against
     ``clamp_at_start``, and that reference point SATURATES: ``_may_widen``
@@ -1470,7 +1277,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1295-1306``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1587-1598``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1539,15 +1346,15 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
 ) -> None:
     """S8, asserted at the layer where it is actually assertable.
 
-    ``SpawnPlan`` (``print_channel.py:237-271``) carries no argv and no env —
+    ``SpawnPlan`` (``print_channel.py:241-275``) carries no argv and no env —
     both are built inside ``PrintChannel.run`` — so "a batch member cannot nest"
     cannot be read off a recording channel. And the one L1-reachable statement
     ("set ``AELIX_SUBAGENT_DEPTH=1`` and the batch is blocked at the hook") merely
     re-tests the parent-side guard already covered at
-    ``test_tool_and_security.py:671-683``.
+    ``test_tool_and_security.py:670-682``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
-    (``print_channel.py:664``, unconditional, so it survives any settings gate)
+    (``print_channel.py:667``, unconditional, so it survives any settings gate)
     and the depth env var. That is what would fire if a future refactor cached
     member 1's argv and mutated only the task.
     """
@@ -1580,7 +1387,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:953``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1080``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.
@@ -1709,9 +1516,7 @@ async def test_l2_four_real_processes_overlap_and_eight_envelopes_come_back(
     marker_dir = tmp_path / "markers"
     marker_dir.mkdir()
     runtime = _runtime(tmp_path, _l2_channel(marker_dir))
-    task = asyncio.ensure_future(
-        _drive(runtime, _agent_call("parallel", 8, timeout_ms=60_000), tmp_path)
-    )
+    task = asyncio.ensure_future(_drive(runtime, _agent_call("parallel", 8), tmp_path))
 
     pids = await _await_markers(marker_dir, MAX_CONCURRENCY)
     assert len(pids) == MAX_CONCURRENCY, "wave 2 started before wave 1 finished"
@@ -1748,9 +1553,7 @@ async def test_l2_stop_all_mid_batch_leaves_no_process_behind(
     marker_dir = tmp_path / "markers"
     marker_dir.mkdir()
     runtime = _runtime(tmp_path, _l2_channel(marker_dir))
-    task = asyncio.ensure_future(
-        _drive(runtime, _agent_call("parallel", 8, timeout_ms=60_000), tmp_path)
-    )
+    task = asyncio.ensure_future(_drive(runtime, _agent_call("parallel", 8), tmp_path))
 
     wave_one = await _await_markers(marker_dir, MAX_CONCURRENCY)
     await runtime.stop_all()
@@ -1782,15 +1585,13 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1495-1498`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1485-1488`` at once.
     """
 
     marker_dir = tmp_path / "markers"
     marker_dir.mkdir()
     runtime = _runtime(tmp_path, _l2_channel(marker_dir))
-    task = asyncio.ensure_future(
-        _drive(runtime, _agent_call("parallel", 8, timeout_ms=60_000), tmp_path)
-    )
+    task = asyncio.ensure_future(_drive(runtime, _agent_call("parallel", 8), tmp_path))
 
     pids = await _await_markers(marker_dir, MAX_CONCURRENCY)
     task.cancel()

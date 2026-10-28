@@ -53,8 +53,6 @@ from aelix_agents.tool import (
     DESCRIPTION_HEAD_MAX_BYTES,
     MAX_PARALLEL_TASKS,
     MAX_ROSTER,
-    MAX_TIMEOUT_MS,
-    MIN_TIMEOUT_MS,
     ROSTER_DESCRIPTION_CHARS,
     ROSTER_MAX_BYTES,
     AgentCallError,
@@ -191,10 +189,11 @@ class _AdmissionBarrier:
 
         THE ONE PRECONDITION: every one of ``members`` must actually reach
         ``_run``. That holds for the live-cap shape this exists for — the batch
-        executor calls ``spawn_granted`` once per member and the only refusals
-        above ``_admit_live`` are consent and a spent batch deadline, neither of
-        which is in play here — but a future caller that can refuse a member
-        earlier would leave the admitted ones parked. ``_BlockingChannel``
+        executor calls ``spawn_granted`` once per member and the only refusal
+        above ``_admit_live`` is consent, which is not in play here (a spent
+        batch deadline was the other until #604 removed it) — but a future
+        caller that can refuse a member earlier would leave the admitted ones
+        parked. ``_BlockingChannel``
         rejects an UNARMED barrier outright so the common mistake is a red test;
         a partially-armed one would hang, which is why the count is passed in
         explicitly rather than inferred.
@@ -699,7 +698,8 @@ async def test_one_prompt_cannot_start_unbounded_delegations(tmp_path: Path) -> 
           child processes started   : 200
 
     Each is a full ``-m aelix_coding_agent`` process holding the parent's API
-    keys with up to ``DEFAULT_TIMEOUT_MS`` (10 min) of wall clock, and
+    keys with — then — up to 10 minutes of wall clock (no limit at all since
+    #604), and
     ``"agent"`` passes ``builtin/permission.py``'s ladder unasked by design
     (ADR-0197 §(i); ADR-0253 keys that on the aelix-built tool's ``delegation``
     provenance), so the parent's own permission ladder never saw them either. A
@@ -733,7 +733,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:952``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:1079``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1087,7 +1087,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:901-904``) rendered by the kernel
+# the model as a blocked call (``extension.py:906-909``) rendered by the kernel
 # as an immediate error result (``loop.py:534-547``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
@@ -1375,64 +1375,72 @@ async def test_rule_7_a_blank_cwd_is_refused(tmp_path: Path, cwd: Any) -> None:
     assert bench.channel.plans == []
 
 
-@pytest.mark.parametrize(
-    ("timeout_ms", "because"),
-    [
-        (MIN_TIMEOUT_MS - 1, "at least"),
-        (MAX_TIMEOUT_MS + 1, "at most"),
-        ("1000", "integer number of ms"),
-        (1000.5, "integer number of ms"),
-        (True, "integer number of ms"),
-    ],
-)
-async def test_rule_8_timeout_ms_is_bounded_at_both_ends(
-    tmp_path: Path, timeout_ms: Any, because: str
+@pytest.mark.parametrize("timeout_ms", [60_000, 1, -5, 2_000_000, "1000", 1000.5, True, None])
+async def test_a_call_carrying_timeout_ms_runs_and_the_value_is_ignored(
+    tmp_path: Path, timeout_ms: Any
 ) -> None:
-    """Both bounds, both type refusals — AND WHICH REFUSAL FIRED.
+    """#604 (ADR-0276 D1) — ``timeout_ms`` is gone, and a call that still sends it RUNS.
 
-    The message is asserted because ``is_error`` alone cannot tell two refusals
-    apart, and for ``True`` that is the whole test. ``isinstance(True, int)`` is
-    True, so ``timeout_ms: true`` reaches the range check as the integer ``1``
-    and today's ``MIN_TIMEOUT_MS`` of 1000 refuses it anyway — dropping
-    ``isinstance(timeout_ms, bool) or`` from ``tool.py:502`` therefore changes
-    nothing an ``is_error`` assertion can see. (An earlier version of this
-    docstring claimed a bare ``true`` would "become a 1 ms deadline". It would
-    not, and a reader who believed it would conclude the guard was load-bearing
-    for a reason it is not.)
+    The schema no longer offers the key, but a model that learned it in an older
+    session, or a provider replaying an old call, can still send it, and the
+    kernel validator delivers unknown keys untouched. Until #604 the parse
+    REFUSED every value outside 1 000-1 800 000 and every non-integer; a refusal
+    costs a round trip and teaches the model nothing it can act on, because there
+    is no longer a limit for the value to set. So every spelling here — including
+    the ones that used to be refused — reaches the channel, and nothing on the way
+    can carry the value: neither the parsed call nor the plan has the field.
 
-    What the guard actually buys, and what this pins: a bad TYPE is answered as
-    a bad type. ``'timeout_ms' must be at least 1000`` invites the model to
-    re-send ``timeout_ms: true`` alongside a bigger number it has no way to
-    express; ``must be an integer number of ms`` names the real fault. It is
-    also the belt if ``MIN_TIMEOUT_MS`` is ever lowered to 0 or 1, at which point
-    it becomes the ONLY thing standing between a JSON ``true`` and a 1 ms
-    deadline on every child.
+    ``background`` stays refused (``test_background_true_is_rejected_always``):
+    it names something that would NOT happen, which is the opposite case.
     """
 
+    assert "timeout_ms" not in AGENT_TOOL_PARAMETERS["properties"]
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path)
     result = await _call(
         bench, {"profile": "scout", "task": "go", "timeout_ms": timeout_ms}
     )
-    assert result.is_error is True
-    assert because in _text(result)
-    assert bench.channel.plans == []
+    assert result.is_error is False, _text(result)
+    assert len(bench.channel.plans) == 1
+    assert "timeout_ms" not in {f.name for f in dataclasses.fields(bench.channel.plans[0])}
+    parsed = parse_agent_call({"profile": "scout", "task": "go", "timeout_ms": timeout_ms})
+    assert "timeout_ms" not in {f.name for f in dataclasses.fields(parsed)}
 
 
-def test_rule_8_the_timeout_ceiling_matches_the_schema() -> None:
-    """The schema is advice to the provider; the parse is the gate.
+async def test_a_profiles_ignored_timeout_ms_is_logged_once_per_profile_at_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#604 (ADR-0276 D2) — the spawn-time half of the profile warning.
 
-    ``validate_tool_arguments`` is "additive, never strips", so a provider that
-    ignores ``maximum`` delivers the value here regardless — the two numbers must
-    therefore be one number, not two that can drift.
+    The parse-time diagnostic reaches ``/agents list`` and RPC ``agents/list``
+    only, so a user who delegates without ever listing would go on believing
+    ``timeout_ms: 60000`` bounds the child. ``_run`` — the one place both doors
+    pass — logs it, ONCE per profile file: two delegations to the same profile
+    log one line, a second profile with the key logs its own, and a profile
+    without the key logs nothing. The delegations themselves all run.
     """
 
-    timeout = AGENT_TOOL_PARAMETERS["properties"]["timeout_ms"]
-    assert timeout["minimum"] == MIN_TIMEOUT_MS
-    assert timeout["maximum"] == MAX_TIMEOUT_MS
-    assert parse_agent_call(
-        {"profile": "scout", "task": "go", "timeout_ms": MAX_TIMEOUT_MS}
-    ).timeout_ms == MAX_TIMEOUT_MS
+    import logging
+
+    from aelix_agents import runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_IGNORED_TIMEOUT_WARNED", set())
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout", extra="timeout_ms: 60000")
+    _write_profile(tmp_path / "agent" / "agents" / "fixer.md", "fixer", extra="timeout_ms: 5")
+    _write_profile(tmp_path / "agent" / "agents" / "plain.md", "plain")
+    bench = _bench(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="aelix_agents.runtime"):
+        for index, name in enumerate(["scout", "scout", "fixer", "plain"]):
+            result = await _call(bench, {"profile": name, "task": "go"}, tool_call_id=f"tc-{index}")
+            assert result.is_error is False, _text(result)
+
+    logged = [r.getMessage() for r in caplog.records if "timeout_ms" in r.getMessage()]
+    assert len(logged) == 2, logged
+    assert "scout.md" in logged[0] and "60000" in logged[0]
+    assert "fixer.md" in logged[1]
+    assert all("ignored" in line for line in logged)
+    assert len(bench.channel.plans) == 4
 
 
 def test_the_schema_and_the_parser_agree_on_the_mode_set() -> None:
@@ -1470,7 +1478,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so the note's repeat check could be dropped from
-    ``tool.py:867`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:1048`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the

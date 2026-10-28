@@ -238,7 +238,6 @@ class _Fixture:
             parent_cwd=str(self.cwd),
             permission_mode=mode,
             parent_tools=("read", "write", "ls"),
-            timeout_ms=90_000,
         )
         return await asyncio.wait_for(channel.run(plan), 120)
 

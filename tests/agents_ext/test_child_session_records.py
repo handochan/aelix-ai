@@ -18,6 +18,7 @@ built here are called ``p.jsonl`` so a child's staged ``.tmp`` stays well under
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import stat
@@ -976,7 +977,11 @@ async def test_a_lone_surrogate_in_the_details_does_not_cost_the_result(
     session, _repo, _path = await _parent(tmp_path)
     runtime = _runtime(tmp_path, _Channel(envelope), session=session)
 
-    assert await _spawn(runtime) is envelope
+    result = await _spawn(runtime)
+    # The envelope the channel built, plus the one fact ``_run`` adds once the
+    # receipt allocated a file (#604, ADR-0276 D8): which session it is.
+    assert result.session_id is not None and result.session_path is not None
+    assert dataclasses.replace(result, session_id=None, session_path=None) == envelope
     records = await _records(session)
     assert _shape(records) == ["start", "pending", "settle", "final"]
     assert records[2][1]["details_bytes"] == len(
@@ -1290,8 +1295,14 @@ def test_cost_is_known_exactly_when_the_design_says() -> None:
 # with no ``message_end`` ever reaching it. Nothing about that run is a whole
 # bill — not zeros, and not a priced partial (Codex review of #199: a Ctrl+C
 # before any usage arrived was recorded as a confirmed "$0").
-_CUT_SHORT = {"saw_agent_start": True, "run_open": True}
-_RAN_TO_THE_END = {"saw_agent_start": True, "saw_agent_end": True, "run_open": False}
+# ``dict[str, Any]``, not the inferred ``dict[str, bool]``: splatted into
+# ``_StreamState``, the narrower type reads as a ``bool`` for every field.
+_CUT_SHORT: dict[str, Any] = {"saw_agent_start": True, "run_open": True}
+_RAN_TO_THE_END: dict[str, Any] = {
+    "saw_agent_start": True,
+    "saw_agent_end": True,
+    "run_open": False,
+}
 
 
 def test_usage_is_complete_only_when_the_run_ended_or_never_began() -> None:

@@ -312,6 +312,83 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A delegated agent is no longer cut off by a time limit (#604, ADR-0276).**
+  A child that was still working used to be killed at its deadline: the
+  `agent` tool's `timeout_ms` (1 000 – 1 800 000 ms), the profile key of the
+  same name, a 10-minute default, and a 30-minute cap on one parallel or chain
+  call. All four are gone, and a delegation runs until it finishes or you stop
+  it — `Esc` or `Ctrl+C` in a turn, the session's `stop`, quitting, or a signal.
+  - A call that still sends `timeout_ms` runs; the value is ignored.
+  - A profile with `timeout_ms` still loads — `timeout_ms: -5` used to drop
+    the whole profile — and says once in `/agents list` that the key is
+    ignored; the first delegation to it logs the same. RPC `agents/show` keeps
+    the key.
+  - `/agents run` can now be stopped with `Esc` or `Ctrl+C`: before, neither
+    key reached it, and a stalled child held the TUI. It prints
+    `Delegation to '<profile>' stopped — the agent was ended before it
+    finished.`, or `… stopped before the agent started.` when no agent had
+    started yet. A line typed while it runs is queued as your next input. An
+    extension's own command that delegates cannot be stopped this way yet.
+  - `SIGTERM` / `SIGHUP` to the TUI now aborts a running turn (or stops a
+    running `/agents run`) before it exits, instead of waiting for the
+    delegation inside it to end.
+  - A child that closes its output and then does not exit is stopped after
+    30 s. If it had finished its answer the result stays a success with a
+    `Note:` saying so; otherwise it is an error that says the child would not
+    exit. `SubagentResult` gains the defaulted field `note` for this.
+  - The RPC delegation channel waits for a command's answer for up to 180 s
+    and for the turn without a limit (`RpcClient.prompt_and_wait` gains
+    `unbounded=True`; its default is unchanged).
+  - `SubagentRuntime.spawn` still accepts `timeout_ms` and ignores it.
+  - On Python 3.14, stopping a delegation no longer prints `Unhandled
+    exception in event loop … Press ENTER to continue...` in the TUI and eats
+    the next line you type. 3.14's `asyncio.shield` reports a shielded future
+    that ends with an exception after its waiter gave up, and the delegation's
+    output readers were waited on through one and then cancelled; they are now
+    waited on with `asyncio.wait`, which does neither.
+
+- **A delegated agent that is stopped or fails tells the parent what it had
+  done (#604, ADR-0276).** It used to come back as whatever its stderr said —
+  for an agent you stopped, `Request aborted` — with its partial answer, its
+  tool calls, the files it wrote and its session nowhere in what the parent
+  model read, so the model tended to delegate the same task again from
+  scratch. Now a started agent that did not finish comes back as:
+  - the reason first (`stopped by the session …`, `the turn was cancelled`,
+    the agent's own abort, or the first line of its error — of a Python
+    traceback or exception group, its exception line);
+  - its partial answer — only text the agent wrote; stderr is never shown as
+    its partial result;
+  - the error it left: its LAST message's error (a rate limit it recovered
+    from earlier is no longer reported as the reason), else its stderr, else
+    the exit status (`killed by signal SIGKILL`), capped at 4 KiB, and left
+    out when it is one line that is the reason. When aelix's own side of the
+    delegation failed, its error comes first and the agent's stderr follows
+    it;
+  - its tool calls, the files it changed or was writing when it stopped
+    (shown relative to your directory; files changed through `bash` or other
+    tools cannot be listed, and the result says so), and its session id —
+    never the session's path.
+  - Text the agent wrote reaches these results without terminal control
+    characters, escape sequences (removed whole) or invisible formatting
+    characters; an emoji joined with a zero-width joiner shows as its parts.
+  - A member of a parallel or chain call gets the same, inside its share of
+    the call's 64 KiB budget.
+  - Pressing `Esc` while a delegation runs used to leave the model with
+    "No result provided". What the agents had done — including a parallel
+    member that was still shutting down — is now added ahead of your next
+    message, as a system report that marks the agents' own text as data, not
+    instructions; a forged report header or closing tag in the agents' text
+    is neutralised in any case or spacing. A member that had already failed
+    on an internal error is named as such, not as never started.
+  - A failed delegation whose only output was stderr (no API key, say) now
+    returns that stderr as its `error` and `reason`, with `(no output)` as its
+    `summary`, in RPC `agents/run` too.
+  - A successful delegation, and one that never started (refused, declined),
+    reads exactly as before.
+  - `SubagentResult` gains the defaulted fields `started`, `reason`,
+    `session_id`, `session_path`, `changed_files`, `unconfirmed_files` and
+    `files_overflow`; RPC `agents/run` returns them.
+
 - **A release is installed and run on Linux, macOS and Windows before anything
   is published (#382, ADR-0269).** `release.yml` used to create the GitHub
   Release and start the PyPI upload straight after the build, and no job had

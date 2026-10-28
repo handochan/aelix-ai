@@ -7,8 +7,10 @@ parser's internal shape.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
+import pytest
 from aelix_coding_agent.agents.profile import ProfileScope, parse_profile
 
 _MINIMAL = """---
@@ -65,6 +67,8 @@ def test_minimal_profile_parses() -> None:
     assert profile.thinking is None
     assert profile.role == "leaf"
     assert profile.output_cap == 51200
+    # Deprecated and never read (#604, ADR-0276 D2), but still a field — it is
+    # how RPC ``agents/show`` and the spawn-time warning see the key.
     assert profile.timeout_ms is None
     assert profile.approval_mode == "inherit"
 
@@ -293,14 +297,18 @@ def test_invalid_thinking_is_error() -> None:
 
 
 def test_p2_fields_validated_not_consumed() -> None:
-    """Parsed + validated in P1 so the format never changes shape in P2."""
+    """Parsed + validated in P1 so the format never changes shape in P2.
+
+    ``timeout_ms`` left this list with #604: it is ignored now, so a bad value is
+    a warning and the profile still loads
+    (:func:`test_timeout_ms_is_ignored_with_one_warning_and_never_drops_the_profile`).
+    """
 
     for frontmatter in (
         "role: overlord",
         "approval_mode: whatever",
         "output_cap: -1",
         "output_cap: 0",
-        "timeout_ms: -5",
     ):
         result = _parse(
             f"---\nname: scout\ndescription: d\n{frontmatter}\n---\nbody\n"
@@ -325,3 +333,56 @@ body
     assert good.profile.approval_mode == "deny"
     assert good.profile.output_cap == 4096
     assert good.profile.timeout_ms == 30000
+
+
+_IGNORED = "timeout_ms is ignored: delegated agents run without a time limit (#604)"
+
+
+@pytest.mark.parametrize(
+    ("line", "stored", "not_an_integer"),
+    [
+        ("timeout_ms: 30000", 30000, False),
+        ("timeout_ms: -5", -5, False),
+        ("timeout_ms: 0", 0, False),
+        ("timeout_ms:", None, False),
+        ("timeout_ms: soon", None, True),
+        ("timeout_ms: true", None, True),
+        ("timeout_ms: 1.5", None, True),
+    ],
+)
+def test_timeout_ms_is_ignored_with_one_warning_and_never_drops_the_profile(
+    line: str, stored: int | None, not_an_integer: bool
+) -> None:
+    """#604 (ADR-0276 D2) — the key does nothing, so it can no longer cost a profile.
+
+    It used to be validated as a positive integer, and ``timeout_ms: -5`` DROPPED
+    THE WHOLE PROFILE: a user lost their agent over a value that, since #604,
+    would do nothing either way. Every spelling now loads with exactly ONE
+    warning — the key stays in ``_KNOWN_KEYS``, so the generic "unknown
+    frontmatter key" warning does not fire a second time for the same line —
+    and only a real integer is stored, for the spawn-time warning to name.
+    """
+
+    result = _parse(f"---\nname: scout\ndescription: d\n{line}\n---\nbody\n")
+
+    assert result.profile is not None, result.diagnostics
+    assert _errors(result) == []
+    assert result.profile.timeout_ms == stored
+    warnings = [d for d in result.diagnostics if d.type == "warning"]
+    assert [d.code for d in warnings] == ["unknown_field"]
+    assert warnings[0].message.startswith(_IGNORED)
+    assert ("not an integer" in warnings[0].message) is not_an_integer
+
+
+def test_the_timeout_ms_field_stays_on_the_profile_hosts_read() -> None:
+    """RPC ``agents/show`` returns ``asdict(AgentProfile)`` (``rpc/control.py``).
+
+    Deleting the field would drop a key every host already sees, so it is kept
+    (deprecated, never read) and still carries the parsed value. The RPC door
+    itself is pinned in ``tests/rpc/test_runtime_control.py``.
+    """
+
+    result = _parse("---\nname: scout\ndescription: d\ntimeout_ms: 60000\n---\nbody\n")
+    assert result.profile is not None
+    shown = dataclasses.asdict(result.profile)
+    assert shown["timeout_ms"] == 60000

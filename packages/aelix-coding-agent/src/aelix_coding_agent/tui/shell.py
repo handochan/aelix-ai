@@ -67,6 +67,7 @@ from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
     CommandContext,
+    CommandInterrupted,
     active_tool_views,
     match_command,
     sanitize_for_terminal,
@@ -2183,6 +2184,52 @@ async def run_tui(
             return "Agent profile switching is unavailable."
         return await agent_service.use(name, harness=runtime_host.harness)
 
+    # #604 (ADR-0276 D15) — a handler's work, made interruptible. ``cancel`` is
+    # set only while such work runs; the steer re-route and the signal handler
+    # below read it to tell "a command is running" from "a turn is running",
+    # since both now show as ``out_chrome.running``.
+    running_command: dict[str, Callable[[], None] | None] = {"cancel": None}
+
+    async def _run_cancellable(work: Awaitable[Any]) -> Any:
+        # A TASK, so the interrupt has something to cancel: a handler is awaited
+        # inside the input loop, outside the ``set_running`` turn wrapper, and
+        # Esc / Ctrl+C reach ``on_interrupt`` only while ``running`` (or a retry
+        # countdown) says so. Both are set for exactly the life of the task, and
+        # ``on_interrupt`` points at THIS task rather than ``_safe_abort`` —
+        # there is no harness turn here for an abort to reach.
+        task = asyncio.ensure_future(work)
+        interrupted = {"hit": False}
+
+        def _cancel_command() -> None:
+            interrupted["hit"] = True
+            if not task.done():
+                task.cancel()
+
+        prior_interrupt = out_chrome.on_interrupt
+        prior_running = out_chrome.running
+        running_command["cancel"] = _cancel_command
+        out_chrome.on_interrupt = _cancel_command
+        out_chrome.set_running(True)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            # OURS only when the interrupt fired, the work really ended
+            # cancelled, and nobody is cancelling THIS coroutine (a teardown
+            # cancelling the input loop must keep propagating as a cancel).
+            current = asyncio.current_task()
+            if (
+                interrupted["hit"]
+                and task.cancelled()
+                and (current is None or not current.cancelling())
+            ):
+                raise CommandInterrupted from None
+            raise
+        finally:
+            running_command["cancel"] = None
+            if out_chrome.on_interrupt is _cancel_command:
+                out_chrome.on_interrupt = prior_interrupt
+            out_chrome.set_running(prior_running)
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -2219,6 +2266,7 @@ async def run_tui(
         # ``/agents`` degrades to a committed message rather than raising.
         agent_profiles=agent_service.list if agent_service is not None else None,
         use_agent=_use_agent if agent_service is not None else None,
+        run_cancellable=_run_cancellable,
     )
 
     loop = asyncio.get_running_loop()
@@ -2226,6 +2274,18 @@ async def run_tui(
     if install_signal_handlers and sys.platform != "win32":
 
         def _handle_signal() -> None:
+            # #604 (ADR-0276 D16) — END WHAT IS RUNNING FIRST. The EOF below is
+            # read by the input loop only once its current await returns, and
+            # that await is ``harness.prompt`` (or a cancellable command): with
+            # no time limit on a delegation, a SIGTERM mid-delegation used to
+            # wait for the child to finish. The turn is aborted through the same
+            # ``_safe_abort`` Esc uses; a command through its own interrupt, so
+            # its handler reports the stop and returns instead of unwinding.
+            cancel_command = running_command["cancel"]
+            if cancel_command is not None:
+                cancel_command()
+            elif out_chrome.running:
+                asyncio.ensure_future(_safe_abort(runtime_host.harness))
             # Request a clean shutdown: EOF the input loop + stop the chrome so
             # run_tui's finally runs full teardown (unbind UI, unsubscribe,
             # dispose, restore terminal). Avoids sys.exit from a detached task,
@@ -3005,7 +3065,11 @@ async def run_tui(
             # in the queue — echoed + counted but inert until the next prompt.
             # If the turn already ended, re-route through the normal submit path
             # so it drives a real turn (no misleading "Steering:" echo).
-            if not out_chrome.running:
+            #
+            # A running COMMAND (#604 D15) shows as ``running`` too, but there is
+            # no turn to steer: the line is queued as the next input, which is
+            # what Enter did while a handler blocked the loop before D15.
+            if not out_chrome.running or running_command["cancel"] is not None:
                 out_chrome.submit_line(text)
                 return
             # ``renderer.render_width()`` rather than a second ``terminal_columns``

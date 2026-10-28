@@ -655,6 +655,8 @@ Python 3.12.13.
   `inherit_skills`·`extensions`·`inherit_extensions`·`context_files`·`thinking`·`system_prompt`(append/replace)+본문
   (`agents/resolver.py` `profile_to_flags`). 부모 쪽에서 집행하는 것: `role`(`print_channel.py`, leaf면 위임 도구를 주지 않음),
   `output_cap`(두 채널), `timeout_ms`(`batch.py`: 호출 인자 > profile > 기본), `approval_mode`(`consent.py`·`batch.py`).
+  **개정 2026-10-28 (ADR-0276, #604):** `timeout_ms`는 이제 집행되지 않는다 — 위임에 시간 제한이 없고, 키는 경고 한 번으로만 남는다
+  (프로필은 버려지지 않고 필드는 RPC `agents/show`에 남는다). 호출 인자 `timeout_ms`·10분 기본값·배치 30분 상한도 함께 없어졌다.
   알려진 빈틈: 한 호출에 서로 다른 profile을 섞는 것은 미지원(ADR-0199가 P4로 미룸) · CLI `--model`이 profile의 model을 조용히 가린다(#157) ·
   RPC 채널은 프로덕션 호출자가 없다(#123) · 확장이 profile을 실어 나르는 tier가 없다(#253) · 위임 중 개입·중단이 없다(P4).
   `uv run --no-sync pytest tests/agents tests/agents_ext -q`는 2026-09-19 main에서 **1712 passed / 11 skipped**(96초)였다.

@@ -291,7 +291,10 @@ money until it finishes or you stop it. `Esc`, the 600 s `bash` *default* timeou
 real backstops; none of them bounds spend
 ([#14](https://github.com/handochan/aelix-ai/issues/14),
 [#6](https://github.com/handochan/aelix-ai/issues/6),
-[#52](https://github.com/handochan/aelix-ai/issues/52)).
+[#52](https://github.com/handochan/aelix-ai/issues/52)). A delegated agent has no
+time limit either: it runs until it finishes or you stop it — `Esc` or `Ctrl+C`,
+during a turn and during `/agents run`
+([#604](https://github.com/handochan/aelix-ai/issues/604)).
 
 **Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
 `--mode rpc` have no terminal for an approval dialog, so `write`, `edit`, `bash` and

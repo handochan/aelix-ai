@@ -7,7 +7,7 @@ even though this phase ships parallel and chain — passing a topology to the se
 is a programming error, not a request, and a P4 runtime author must find that out
 immediately rather than by watching one child run where eight were asked for.
 
-FOUR BOUNDS, AND THEY ARE FOUR DIFFERENT THINGS. Getting these confused is how
+THREE BOUNDS, AND THEY ARE THREE DIFFERENT THINGS. Getting these confused is how
 this file grows a defect that only shows up under load:
 
 * :data:`MAX_CONCURRENCY` — how many members of THIS batch may be inside
@@ -22,12 +22,12 @@ this file grows a defect that only shows up under load:
 * ``runtime.MAX_DELEGATIONS_PER_PROMPT`` — how many CHILDREN one user prompt may
   start (S6). Charged per child, inside ``_run``'s await-free window, and only
   once a row actually exists.
-* :data:`MAX_BATCH_WALL_MS` — the aggregate wall-clock ceiling for ONE
-  ``agent()`` call. Enforced by DERIVING each member's ``timeout_ms`` from what
-  is left of the batch budget at the moment its clock starts — never by
-  ``asyncio.wait_for`` around the batch, which would cancel the inner task and
-  destroy every COMPLETED member's envelope, contradicting ``envelope.py:8-12``
-  ("THE ENVELOPE ALWAYS RETURNS, NEVER RAISES").
+
+THERE IS NO WALL-CLOCK BOUND (#604, ADR-0276). ``MAX_BATCH_WALL_MS`` — 30
+minutes for the whole call, enforced by deriving each member's ``timeout_ms``
+from what was left of it — is gone with every other delegation time limit: it
+cut off chains that were still working. A batch runs until its members finish
+or a human ends it, and cancellation (below) is how a human does.
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
@@ -52,10 +52,8 @@ from aelix_coding_agent.subagent_contract import SubagentResult
 from aelix_agents.aggregate import MemberOutcome
 from aelix_agents.chain import TaskTooLarge, check_task_size, render_step
 from aelix_agents.posture import child_permission_mode, posture_rank
-from aelix_agents.print_channel import DEFAULT_TIMEOUT_MS
 from aelix_agents.runtime import MAX_LIVE_CHILDREN, SpawnRecordMeta
 from aelix_agents.runtime import _new_id as _new_spawn_id
-from aelix_agents.tool import MAX_TIMEOUT_MS, MIN_TIMEOUT_MS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,7 +61,6 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission_mode import PermissionMode
     from aelix_coding_agent.subagent_contract import (
         ResolvedProfile,
-        SubagentMode,
         SubagentProgress,
     )
 
@@ -82,41 +79,16 @@ author raising one will not be looking at the other.
 
 It WAITS rather than refusing. That is the whole difference between this bound
 and the registry ceiling: a batch of eight is a legal call, so its members queue;
-a ninth live child in a session that already holds four is a resource refusal."""
+a ninth live child in a session that already holds four is a resource refusal.
 
-MAX_BATCH_WALL_MS = 1_800_000
-"""The aggregate wall-clock ceiling for ONE ``agent()`` call — 30 minutes.
-
-Chosen so the honest batch is never cut short and the pathological one is: with
-:data:`MAX_CONCURRENCY` = 4 an eight-task parallel batch at the 600 s per-child
-default runs in two waves = 1 200 s = 20 min and completes untouched, while an
-eight-step CHAIN at the same default would be 80 minutes — verbatim the case S12
-names. Deliberately equal to ``tool.MAX_TIMEOUT_MS``, so a model cannot buy more
-wall clock by splitting a job across tasks or by merging tasks into one.
-
-It is the only bound on how long the user is locked out, because S11 ships no
-mid-turn stop overlay: while a delegation runs, Enter is routed to ``steer()`` as
-a MESSAGE (``chrome.py:784-790``) and the queue drains only after the turn.
-
-IT IS A CEILING ON THE MEMBERS' TIMEOUTS, NOT ON THE CALL'S WALL CLOCK. A member
-that hits its deadline then runs its kill legs — ``reap(grace=5.0)``
-(``reaper.py:120``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
-2.0`` (``print_channel.py:151``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
-ceiling is honoured rather than approximately honoured; the honest outer bound is
-this number plus at most one kill leg for whatever was in flight when it fired."""
-
-KILL_LEG_RESERVE_MS = 7_000
-"""Grace (5 s) + post-kill drain (2 s), reserved out of the remaining budget.
-
-Per REMAINING STEP in a chain, because a chain's kill legs are sequential; FLAT
-for parallel, because there they overlap. See :func:`_kill_leg_reserve_ms`."""
-
-_BATCH_BUDGET_EXHAUSTED = (
-    "Delegation refused: this agent() call has used its whole wall-clock budget "
-    f"({MAX_BATCH_WALL_MS // 60_000} minutes for the call, however many tasks it "
-    "carries), so there was not enough time left to start this one. No process "
-    "was created. Run the remaining tasks in a new call, or make them smaller."
-)
+WHAT BOUNDS HOW LONG THE USER WAITS is the human, not a clock (#604, ADR-0276).
+While a delegation runs, Enter is still routed to ``steer()`` as a MESSAGE
+(``chrome.py:784-790``), so the way out is the interrupt: Esc or Ctrl+C cancel
+the turn, which cancels this batch and kills every live member
+(``print_channel._eager_abort``); SIGTERM / SIGHUP abort the turn the same way
+(``tui/shell.py``), and ``-p`` turns SIGINT into the same cancellation. The
+30-minute ``MAX_BATCH_WALL_MS`` used to be documented here as "the only bound on
+how long the user is locked out"; it was a bound on the work, and it is gone."""
 
 # ONE SEMAPHORE PER RUNNING LOOP, and the precedent is ``consent.py:117-136``.
 # ``asyncio.Semaphore`` binds itself to the first loop that CONTENDS on it (the
@@ -193,12 +165,12 @@ class _Batch:
     decides what ``approval_mode: "ask"`` clamps to — ``PLAN`` with no UI, the
     full inherit baseline with one (``posture.py:201-204``). A value captured at
     ``_execute`` would therefore keep the LOOSE clamp for a batch that outlives
-    its UI, for up to :data:`MAX_BATCH_WALL_MS`."""
+    its UI, for as long as the batch runs — which no clock bounds (#604)."""
     posture: Callable[[], PermissionMode]
     """The parent's LIVE posture getter (``extension._host_posture``), read once
     per member — never a value captured at call time. shift+tab stays bound while
-    a turn runs (``chrome.py:967-970``), and wave 2 may start half an hour after
-    wave 1."""
+    a turn runs (``chrome.py:967-970``), and wave 2 may start any time after
+    wave 1 — there is no time limit on wave 1 (#604)."""
     clamp_at_start: PermissionMode
     """The child clamp implied by the parent posture when the batch began. It is
     ONE of the two reference points the per-member live read is compared AGAINST
@@ -217,8 +189,6 @@ class _Batch:
     requires ``AUTO_ACCEPT`` strictly looser than the clamp), and a ``DEFAULT``
     parent still has ``PLAN`` below it to shift+tab into. See
     :func:`_live_floor`."""
-    deadline: float
-    """Monotonic instant past which no member may be given any clock."""
     on_event: Callable[[int, SubagentProgress], None] | None
     record: SpawnRecordMeta | None = None
     """The call's record template (#199) — ``tool_call_id`` and topology, no
@@ -251,7 +221,7 @@ async def run_batch(
     (``SubagentProgress`` carries no batch id — §3.6 explains why it stays that
     way). The index is available before the child's id exists, which is the
     property that makes the whole grouping design work: ``spawn_id = _new_id()``
-    is minted INSIDE ``_run`` (``runtime.py:953``), and for members 5-8 not until
+    is minted INSIDE ``_run`` (``runtime.py:1080``), and for members 5-8 not until
     wave 2.
     """
 
@@ -279,10 +249,6 @@ async def run_batch(
             # re-reads both (:func:`_live_floor`) and compares against it.
             has_ui=has_ui(),
         ),
-        # CAPTURED ONCE, BEFORE MEMBER 1. Every member derives its own clock from
-        # this instant, so waves compose with no extra machinery: a later wave
-        # simply computes a smaller remainder.
-        deadline=started_at + MAX_BATCH_WALL_MS / 1000,
         on_event=on_event,
         record=record,
     )
@@ -316,12 +282,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1520-1522`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1510-1512`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:1045-1053``,
+      it kills the child eagerly before re-raising (``print_channel.py:1048-1056``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -344,10 +310,11 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     argument re-derived for no gain.
     """
 
-    coros = [
-        _member(batch, index, task, steps_left=1)
-        for index, task in enumerate(batch.call.tasks)
-    ]
+    coros = [_member(batch, index, task) for index, task in enumerate(batch.call.tasks)]
+    # On a cancel, CPython's ``gather`` raises here as soon as the FIRST member
+    # ends cancelled (its ``_done_callback`` sets the outer exception) while the
+    # others may still be cleaning up — which is why the call's cancel report
+    # builds those from their live streams (``runtime.CallEnvelopes``, #604).
     members = await asyncio.gather(*coros, return_exceptions=False)
     return list(members), 0
 
@@ -357,7 +324,7 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     STOPS AT THE FIRST ``ok=False`` AND RETURNS THE PARTIAL CHAIN (§3.3).
     ``{previous}`` makes step *k+1* depend on step *k*'s summary, so continuing
-    would feed a failure message — or ``"(no output)"`` (``envelope.py:32``) —
+    would feed a failure message — or ``"(no output)"`` (``envelope.py:34``) —
     into the next child AS IF IT WERE A RESULT. A ``status="declined"`` member
     stops it too: consent covers the whole batch (S4), so a decline is a decline
     of the batch.
@@ -392,14 +359,18 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
                 MemberOutcome.never_started(_refusal_envelope(batch.resolved, str(exc)))
             )
             break
-        outcome = await _member(
-            batch, index, rendered, steps_left=len(tasks) - index
-        )
+        outcome = await _member(batch, index, rendered)
         members.append(outcome)
         if not outcome.ok:
             break
         # ``summary``, verbatim, INCLUDING any truncation marker — never
         # ``details`` (§3.1, and the reasoning is in ``chain.py``'s docstring).
+        #
+        # ONLY AN ``ok`` STEP REACHES THIS LINE, which is why #604's failure
+        # templates (ADR-0276 D11/D12: a reason, a partial answer, written files)
+        # never enter ``{previous}`` and this hand-off needed no change: the
+        # ``break`` above ends the chain at the first step that did not finish,
+        # and the model reads that step's D12 block in the aggregate instead.
         previous = outcome.result.summary
         # …and the EVIDENCE behind it. ``summary`` is the child's conclusion
         # only; without this, step k+1 cannot tell what ground step k covered,
@@ -411,24 +382,21 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     return members, len(tasks) - len(members)
 
 
-async def _member(
-    batch: _Batch, index: int, task: str, *, steps_left: int
-) -> MemberOutcome:
-    """One member: acquire a permit, derive a clock, spawn exactly one child.
+async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
+    """One member: acquire a permit, spawn exactly one child.
 
     THE PERMIT IS HELD BY A CONTEXT MANAGER, never ``await sem.acquire()`` with a
     bare ``release()`` after the body. A ``CancelledError`` mid-batch would skip
     that release, and because :data:`_SEM_BY_LOOP` is module level the leak is not
     scoped to this batch: :data:`MAX_CONCURRENCY` becomes permanently smaller and
     after four leaks the NEXT ``agent()`` call in the session parks on
-    ``acquire()`` forever. S11 makes the REPL read-only while a turn runs and the
-    batch deadline is only consulted AFTER the acquire, so nothing would ever end
-    it.
+    ``acquire()`` forever, and nothing but the human's interrupt would end it —
+    there is no clock on a delegation (#604).
 
     THE ACQUIRE IS THE ONLY ``await`` BEFORE ``spawn_granted``, AND IT IS OUTSIDE
     BOTH TOCTOU WINDOWS (S5 / dossier H12). ``_run``'s admission block —
     ``_admit_live()`` → budget check → ``+= 1`` → ``_new_id()`` → registry insert
-    (``runtime.py:941-955``) — contains no ``await``, so asyncio cannot interleave
+    (``runtime.py:1068-1082``) — contains no ``await``, so asyncio cannot interleave
     two members inside it. Putting the acquire anywhere inside that block would
     split it and let two members both pass ``_admit_live`` before either
     registered. It is here, one frame above, where the only thing it orders is how
@@ -444,9 +412,9 @@ async def _member(
 
     # WHETHER A CHILD ROW EVER EXISTED, observed rather than inferred. ``_run``
     # publishes a first snapshot IMMEDIATELY after the registry insert
-    # (``runtime.py:999``) and every refusal that precedes the insert —
+    # (``runtime.py:1125``) and every refusal that precedes the insert —
     # ``_admit_live``, the per-prompt budget, a non-consented grant — returns
-    # BEFORE it (``runtime.py:939-951``). So "this tap fired at least once" is
+    # BEFORE it (``runtime.py:1066-1078``). So "this tap fired at least once" is
     # exactly "a delegation was admitted", which is the fact
     # ``aggregate.MemberOutcome`` needs.
     #
@@ -457,7 +425,7 @@ async def _member(
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1244-1245``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1536-1537``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -468,38 +436,16 @@ async def _member(
             # A cancellation that lands while parked cancels HERE: no process
             # exists, nothing to reap, nothing to release beyond the permit the
             # context manager owns.
-            remaining_ms = int((batch.deadline - _now()) * 1000) - _kill_leg_reserve_ms(
-                batch.call.mode, steps_left
-            )
-            if remaining_ms < MIN_TIMEOUT_MS:
-                # An ENVELOPE, not a raise and not a silent drop: the batch is
-                # never trimmed, so the model is told which tasks got no clock.
-                return MemberOutcome.never_started(
-                    _refusal_envelope(batch.resolved, _BATCH_BUDGET_EXHAUSTED)
-                )
-            # THE PROFILE'S OWN BUDGET IS THE DEFAULT, NOT ``DEFAULT_TIMEOUT_MS``
-            # — this line mirrors ``print_channel.py:1076-1080`` exactly, and it
-            # must, because the executor is what makes ``plan.timeout_ms`` non-
-            # ``None``. Substituting the module default here would mean the
-            # channel's own ``profile.timeout_ms`` fallback is UNREACHABLE for
-            # every batch member, so an author who bounded their agent to one
-            # minute in frontmatter (``agents/profile.py:398``) would silently
-            # get ten — times up to eight children — while ``mode="single"``,
-            # which passes ``pending.call.timeout_ms`` straight through
-            # (``extension.py:1354``), still honoured it. Same profile, two modes,
-            # two clocks.
-            requested_ms = (
-                batch.call.timeout_ms
-                if batch.call.timeout_ms is not None
-                else (batch.resolved.profile.timeout_ms or DEFAULT_TIMEOUT_MS)
-            )
-            effective_ms = min(requested_ms, MAX_TIMEOUT_MS, remaining_ms)
+            #
+            # NO CLOCK IS DERIVED HERE ANY MORE (#604, ADR-0276). A member used
+            # to get ``min(requested, 30 min, what was left of the call's 30
+            # minutes)`` and was refused below one second; a member now runs
+            # until it finishes, exactly as a ``mode="single"`` child does.
             result = await batch.runtime.spawn_granted(
                 batch.grant,
                 batch.resolved,
                 task,
                 cwd=batch.cwd,
-                timeout_ms=effective_ms,
                 permission_floor=_live_floor(batch),
                 on_event=_tap,
                 record=(
@@ -538,17 +484,18 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:470-476``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1052``), and baked into ``grant.mode``, which
+    (``extension.py:475-481``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:1057``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
-    (``runtime.py:979``). Meanwhile shift+tab stays live during a running
+    (``runtime.py:1106``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
     (``chrome.py:967-970``), and the input window holds focus while a turn runs;
     that is precisely how Enter reaches ``steer()``. Under P2 the resulting window
-    was one child and milliseconds. Here it is up to
-    :data:`MAX_BATCH_WALL_MS`, and S11 has deliberately removed every other
-    mid-turn control, so shift+tab is the only lever there is.
+    was one child and milliseconds. Here it is as long as the batch runs — no
+    clock bounds it since #604 — and S11 has deliberately removed every other
+    mid-turn control short of interrupting the turn, so shift+tab is the only
+    lever that leaves the batch running.
 
     IT IS A GATE, NOT AN UNCONDITIONAL RANK-MIN, and that much is a deliberate
     correction to the two lines §3.9 spells out. ``mode = min(grant.mode, live,
@@ -594,7 +541,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:1295-1306``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:1587-1598``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 
@@ -614,7 +561,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     Both reference points are read at the top of :func:`run_batch` rather than at
     the hook, so a shift+tab in the hook→execute gap is missed. That gap is the
     one P2 already has for a single spawn and is milliseconds wide; the window
-    this function exists for is the wave-1→wave-2 one, which is up to 30 minutes.
+    this function exists for is the wave-1→wave-2 one, which nothing bounds.
     """
 
     live_posture = batch.posture()
@@ -639,26 +586,6 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
         # <= the live parent by construction (``posture.py:227``).
         return live
     return None
-
-
-def _kill_leg_reserve_ms(mode: SubagentMode, steps_left: int) -> int:
-    """Wall clock held back so a timing-out member's kill legs fit under the cap.
-
-    A member that hits its deadline does not stop there: ``reap`` waits
-    ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:120``) and then drains for a
-    bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:151``).
-
-    In PARALLEL those legs overlap, so one reserve covers the whole wave. In a
-    CHAIN they are strictly sequential, so an eight-step chain that runs into the
-    ceiling would overshoot by up to 8 × 7 s ≈ 56 s — hence one reserve per step
-    still to run, INCLUDING this one, which is the step whose own kill leg is
-    being paid for. Reserving rather than overshooting is why the ADR can state
-    the ceiling as a number it actually means.
-    """
-
-    if mode == "chain":
-        return KILL_LEG_RESERVE_MS * max(steps_left, 1)
-    return KILL_LEG_RESERVE_MS
 
 
 def _semaphore() -> asyncio.Semaphore:
@@ -710,7 +637,8 @@ def _refusal_envelope(resolved: ResolvedProfile, message: str) -> SubagentResult
 
 
 def _now() -> float:
-    """Monotonic seconds. A module-level indirection so the deadline arithmetic
+    """Monotonic seconds, for :attr:`BatchOutcome.wall_ms` — a measurement, not a
+    bound (there is none since #604). A module-level indirection so the arithmetic
     is testable under a fake clock without sleeping — the same shape
     ``runtime._now`` uses."""
 
@@ -718,8 +646,6 @@ def _now() -> float:
 
 
 __all__ = [
-    "KILL_LEG_RESERVE_MS",
-    "MAX_BATCH_WALL_MS",
     "MAX_CONCURRENCY",
     "BatchOutcome",
     "run_batch",
