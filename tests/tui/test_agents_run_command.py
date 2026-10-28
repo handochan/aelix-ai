@@ -1,7 +1,7 @@
 """ADR-0197 §(c)/§(f)/§(l) — ``/agents run <name> <task>`` in the TUI.
 
 ``/agents run`` is a product-core BUILT-IN and it could not be anything else:
-``shell.py:3810-3827`` runs ``match_command`` first and only falls through to
+``shell.py:3874-3891`` runs ``match_command`` first and only falls through to
 ``dispatch.try_execute`` when no built-in claims the leading word, and
 ``extensions/command_dispatch.py::_split_command`` splits an extension command on
 the FIRST SPACE, so an extension command name can never contain one. Spec §6.3's
@@ -27,6 +27,8 @@ No ``__init__.py`` in ``tests/tui`` — local convention.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,12 +40,14 @@ from aelix_ai.streaming import Model
 from aelix_coding_agent.extensions.command_dispatch import _split_command
 from aelix_coding_agent.subagent_contract import (
     ResolvedProfile,
+    SubagentProgress,
     SubagentResult,
     SubagentUsage,
 )
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     CommandContext,
+    CommandInterrupted,
     _render_subagent_result,
     _sanitize_child_field,
     match_command,
@@ -322,7 +326,7 @@ async def test_a_widened_grant_is_visible_in_the_panel(bench: _Bench) -> None:
 
 
 async def test_the_child_model_is_shown_on_the_result_panel(bench: _Bench) -> None:
-    """``SubagentResult.model`` is already populated (``envelope.py:529-530``) but
+    """``SubagentResult.model`` is already populated (``envelope.py:1048-1049``) but
     P2 named it nowhere. A profile with no ``model:`` runs the persisted default
     at a different price, and before this row the only way to notice was the
     bill — so the grid states ``provider/id`` on its own line."""
@@ -352,7 +356,7 @@ async def test_the_model_row_is_omitted_when_the_child_named_no_model(
 
 def test_a_hostile_child_model_cannot_drive_the_result_grids_terminal() -> None:
     """FINDING 1 (HIGH). ``model``/``provider`` are read off the child's own
-    ``message_end`` verbatim (``stream.py:618-623`` → ``envelope.py:529-530``), so
+    ``message_end`` verbatim (``stream.py:852-857`` → ``envelope.py:1048-1049``), so
     they are attacker-controlled. Rich ``Text`` blocks MARKUP but writes raw
     content ESC / C1 to the terminal, so a ``\\x1b[2J`` in the model would clear
     the parent's screen and a one-byte ``\\x9b`` would drive its cursor.
@@ -471,6 +475,113 @@ async def test_a_spawn_that_raises_does_not_kill_the_repl(bench: _Bench) -> None
 
     assert "agents run failed" in out
     assert "boom" in out
+
+
+async def test_run_hands_its_work_to_the_hosts_run_cancellable(bench: _Bench) -> None:
+    """#604 (ADR-0276 D15) — the spawn runs through the host's interruptible door.
+
+    A delegation has no time limit any more, so ``/agents run`` must not await
+    the spawn bare inside the input loop, where no key can reach it. The host's
+    ``run_cancellable`` gets the work; its result is rendered as before.
+    """
+
+    runtime = bench.bind(_FakeRuntime(result=_ok_result()))
+    handed: list[object] = []
+
+    async def _run_cancellable(work: Any) -> Any:
+        handed.append(work)
+        return await work
+
+    bench.ctx.run_cancellable = _run_cancellable
+    out = await bench.run("/agents run scout list files")
+
+    assert len(handed) == 1
+    assert runtime.spawn_calls == [("scout", "list files")]
+    assert "Found 3 files under packages/." in out
+
+
+async def test_an_interrupted_run_says_it_stopped_and_returns(bench: _Bench) -> None:
+    """The interrupt surfaces as ``CommandInterrupted``: one calm line, no panel.
+
+    Not a red failure — the user stopped it — and not a raise: the handler is
+    awaited inside the REPL loop, which must survive it.
+    """
+
+    bench.bind(_FakeRuntime(result=_ok_result()))
+
+    async def _interrupted(work: Any) -> Any:
+        task = asyncio.ensure_future(work)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise CommandInterrupted
+
+    bench.ctx.run_cancellable = _interrupted
+    out = await bench.run("/agents run scout list files")
+
+    assert "stopped" in out
+    assert "scout" in out
+    assert "Found 3 files" not in out
+    assert "failed" not in out
+
+
+class _ProgressThenPark(_FakeRuntime):
+    """``spawn`` publishes ``before`` as progress states, parks, and on the
+    cancel publishes ``on_cancel`` (the runtime's terminal snapshot) first."""
+
+    def __init__(self, before: tuple[str, ...], on_cancel: str | None) -> None:
+        super().__init__(result=_ok_result())
+        self.before = before
+        self.on_cancel = on_cancel
+
+    async def spawn(self, resolved: ResolvedProfile, task: str, **kwargs: Any) -> SubagentResult:
+        on_event = kwargs.get("on_event")
+        assert on_event is not None, "/agents run must ask for progress"
+        for state in self.before:
+            on_event(SubagentProgress(id="sa-1", profile=resolved.name, state=state))  # type: ignore[arg-type]
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if self.on_cancel is not None:
+                on_event(
+                    SubagentProgress(id="sa-1", profile=resolved.name, state=self.on_cancel)  # type: ignore[arg-type]
+                )
+        raise AssertionError("unreachable: the interrupt cancels the spawn first")
+
+
+@pytest.mark.parametrize(
+    ("before", "on_cancel", "line"),
+    [
+        ((), None, "stopped before the agent started."),
+        (("starting",), "error", "stopped before the agent started."),
+        (("starting", "running"), "stopped", "stopped — the agent was ended before it finished."),
+        (("starting",), "stopped", "stopped — the agent was ended before it finished."),
+    ],
+    ids=["during-consent", "admitted-no-process", "running", "killed-before-its-first-line"],
+)
+async def test_an_interrupt_says_whether_an_agent_had_started(
+    bench: _Bench, before: tuple[str, ...], on_cancel: str | None, line: str
+) -> None:
+    """#604 review: an interrupt that landed before any child ran — during the
+    spawn-time consent dialog, most often — said "the agent was ended before it
+    finished" about an agent that never started. The progress states tell the
+    two apart: ``running`` / ``stopped`` mean a child process existed."""
+
+    bench.bind(_ProgressThenPark(before, on_cancel))
+
+    async def _interrupted(work: Any) -> Any:
+        task = asyncio.ensure_future(work)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise CommandInterrupted
+
+    bench.ctx.run_cancellable = _interrupted
+    out = await bench.run("/agents run scout list files")
+
+    assert f"Delegation to 'scout' {line}" in out, out
 
 
 async def test_an_unknown_profile_surfaces_the_runtimes_own_message(
@@ -799,7 +910,7 @@ async def test_the_confirm_dialog_reuses_the_startup_copy(bench: _Bench) -> None
 def test_builtin_still_shadows_extension() -> None:
     """``/agents run …`` resolves to the built-in ``agents`` command.
 
-    ``shell.py:3810-3827`` consults ``match_command`` first and only reaches
+    ``shell.py:3874-3891`` consults ``match_command`` first and only reaches
     ``dispatch.try_execute`` on a miss, so a built-in always wins the leading
     word — which is the whole reason this branch lives in product-core.
     """

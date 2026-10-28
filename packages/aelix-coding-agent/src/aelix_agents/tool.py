@@ -46,7 +46,19 @@ from aelix_coding_agent.tools.provenance import builtin_provenance, mark_builtin
 from rich.cells import cell_len, set_cell_size
 
 from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
-from aelix_agents.envelope import error_repeats_summary
+from aelix_agents.envelope import (
+    MAX_ERROR_NOTE_BYTES,
+    NO_OUTPUT,
+    REASON_UNSPECIFIED,
+    cap_summary,
+    child_line,
+    child_prose,
+    count_trail_calls,
+    error_repeats_summary,
+    error_says_only_the_reason,
+    says_nothing,
+    summary_is_the_error,
+)
 from aelix_agents.panel import _flatten
 from aelix_agents.print_channel import AGENT_TOOL_NAME
 
@@ -88,18 +100,6 @@ tokens`` — re-sent on EVERY request of the parent session, so a 40-turn sessio
 pays ~62 000 tokens of description alone. That is the whole reason there is a cap
 at all, and why both halves are pinned by a test rather than by good intentions."""
 
-MIN_TIMEOUT_MS = 1000
-
-MAX_TIMEOUT_MS = 1_800_000
-"""Ceiling on a per-task wall clock, in ms — 30 minutes.
-
-Deliberately EQUAL to ``batch.MAX_BATCH_WALL_MS``: one task and a whole batch are
-bounded by the same number, so a model cannot buy more wall clock by splitting a
-job across tasks or by merging tasks into one. Declared here and not only as the
-schema's ``maximum`` because the kernel's ``validate_tool_arguments`` is
-"additive, never strips" (``aelix_ai/tools.py``) — the schema is advice to the
-provider and :func:`parse_agent_call` is the gate."""
-
 MAX_PARALLEL_TASKS = 8
 """Tasks one ``agent`` call may carry (S3, and S7 clause 1).
 
@@ -109,7 +109,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:901-904``), and NO process is
+into a blocked call the model reads (``extension.py:906-909``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -117,7 +117,7 @@ _MODES: tuple[SubagentMode, ...] = ("single", "parallel", "chain")
 """The one spelling of the mode set, shared by the schema's ``enum`` and by
 :func:`parse_agent_call`. Two hand-maintained copies is how a schema starts
 advertising a mode the parser refuses. Mirrors ``SubagentMode``
-(``subagent_contract.py:71``), which is imported for TYPE CHECKING only —
+(``subagent_contract.py:74``), which is imported for TYPE CHECKING only —
 evaluating it at runtime would pull a product-core symbol into this module's
 import graph to save one tuple."""
 
@@ -169,15 +169,11 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
                 "be inside the parent's working directory."
             ),
         },
-        "timeout_ms": {
-            "type": "integer",
-            "minimum": MIN_TIMEOUT_MS,
-            "maximum": MAX_TIMEOUT_MS,
-            "description": (
-                "Optional per-task wall clock. One call is additionally capped "
-                "in total, however many tasks it carries."
-            ),
-        },
+        # NO ``timeout_ms`` (#604, ADR-0276). A delegated agent has no time
+        # limit: the 10-minute default and the 30-minute caps cut off children
+        # that were still doing the work, and the human — Esc, a signal,
+        # ``/agents run``'s own interrupt — is the bound. A call that still
+        # carries the key is not refused; ``parse_agent_call`` explains why.
     },
     # ``required`` names ONLY ``profile``, and that is not laxity. The real rule
     # is CONDITIONAL — ``task`` for mode=single, ``tasks`` for the other two —
@@ -186,7 +182,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:901-904``) with no process created.
+    # (``extension.py:906-909``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -275,7 +271,6 @@ class AgentCall:
     code path rather than two that must be kept in agreement."""
     mode: SubagentMode = "single"
     cwd: str | None = None
-    timeout_ms: int | None = None
 
     @property
     def task(self) -> str:
@@ -424,7 +419,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:901-904``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:906-909``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:534-547``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -497,22 +492,14 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     if cwd is not None and (not isinstance(cwd, str) or not cwd.strip()):
         raise AgentCallError("'cwd' must be a directory path inside your own.")
 
-    timeout_ms = args.get("timeout_ms")
-    if timeout_ms is not None:
-        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
-            raise AgentCallError("'timeout_ms' must be an integer number of ms.")
-        if timeout_ms < MIN_TIMEOUT_MS:
-            raise AgentCallError(
-                f"'timeout_ms' must be at least {MIN_TIMEOUT_MS}."
-            )
-        # PER TASK, not per call: the call is additionally bounded in total by
-        # the batch executor's own deadline, so a batch cannot buy N × this.
-        if timeout_ms > MAX_TIMEOUT_MS:
-            raise AgentCallError(
-                f"'timeout_ms' must be at most {MAX_TIMEOUT_MS} "
-                f"({MAX_TIMEOUT_MS // 60_000} minutes) per task."
-            )
-
+    # ``timeout_ms`` IS NEVER READ, AND A CALL CARRYING IT STILL RUNS (#604,
+    # ADR-0276). The schema no longer offers it, but a model that learned it
+    # from an older session, or a provider replaying an old call, can still
+    # send it, and the kernel validator delivers unknown keys untouched (see
+    # the docstring). Refusing would cost a round trip and teach the model
+    # nothing it can act on; ignoring loses nothing, because there is no time
+    # limit left for the value to set. ``background`` is the opposite case: it
+    # names something that would NOT happen, so it is refused below.
     if args.get("background"):
         raise AgentCallError(
             "Background delegation is not available: a background child has no "
@@ -525,7 +512,6 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
         tasks=tasks,
         mode=mode,
         cwd=cwd.strip() if isinstance(cwd, str) else None,
-        timeout_ms=timeout_ms,
     )
 
 
@@ -674,7 +660,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:621-623`` → ``envelope.py:529``), which makes it attacker-supplied
+(``stream.py:855-857`` → ``envelope.py:1048``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""
@@ -713,7 +699,7 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     """The ``[agent … ]`` footer both renderers print.
 
     ``status`` overrides ``result.status`` and exists for exactly one caller:
-    ``aggregate._member_block`` (``aggregate.py:219-266``) rendering a member
+    ``aggregate._member_block`` (``aggregate.py:244-305``) rendering a member
     that NEVER STARTED. Its envelope carries ``status="error"`` like every other
     refusal, so without the override the footer says ``error`` one line under a
     heading that says ``did not start``. Keyword-only with a ``None`` default so
@@ -844,6 +830,190 @@ def _room_for(field: str, text: str) -> int:
     return max(cell_len(field) - overflow, _USAGE_FIELD_MIN_CELLS)
 
 
+UNFINISHED_HEAD = "The delegated agent did not finish: {reason}"
+"""The first line a model reads about a started child that did not finish
+(ADR-0276 D11). The status used to come LAST, in the footer, after a summary
+that read like an answer."""
+
+DO_NOT_REDELEGATE = (
+    "Do not delegate the same task again from scratch — it already did the work "
+    "below. Check the changed files and its tool calls first."
+)
+"""The phase-0 retry guidance (ADR-0276 D11); #610's resume replaces it.
+
+Printed ONLY when there is work to point at — a tool call or a written file. A
+child that failed on its first request (no API key, a bad model id) did nothing,
+and "it already did the work" would be as false of it as it is of a refusal
+(D18, design critique 5): the right move there is to fix the cause and retry."""
+
+NO_TEXT_YET = "(it wrote no text before it stopped — see its tool calls)"
+"""What stands for the partial answer of a child that wrote none of its own."""
+
+NO_TEXT = "(it wrote no text before it stopped)"
+"""The same, for a child that made no tool call either: there is nothing to see
+(a child that failed on its first request — no API key, a bad model id)."""
+
+MAX_FILE_LIST_BYTES = 2048
+"""The single-mode budget for the written-file lists, labels included (D11)."""
+
+FILES_VIA_BASH = "files changed through bash or other tools are not listed"
+"""The limit every file list states, because nothing can lift it: what a shell
+command writes is not in its arguments (ADR-0276 D8), and only the writer tools
+are read — a file an MCP or extension tool wrote is not listed either."""
+
+
+def render_file_lists(
+    changed: Sequence[str],
+    unconfirmed: Sequence[str],
+    overflow: int,
+    *,
+    budget: int,
+) -> list[str]:
+    """The written-file block: one path per line, inside ``budget`` bytes.
+
+    ONE PATH PER LINE because a comma-joined list is ambiguous for a path that
+    contains ", " (design critique 8); the paths were collapsed onto one line
+    each by the reducer, so the line count is structural. Labels are paid for out
+    of the same budget, and a path that does not fit is counted into the closing
+    ``(+N more files; …)`` with the ones the reducer already could not keep —
+    never dropped in silence. The closing line is always there: what ``bash``
+    (or any tool but the writers) wrote is never listed, and a list that looks
+    complete would say otherwise. Each path is folded onto one line again here
+    (:func:`~aelix_agents.envelope.child_line`), whoever built the result.
+    """
+
+    lines: list[str] = []
+    used = 0
+    hidden = overflow
+    sections = (("Files changed:", changed), ("Unconfirmed (stopped mid-write):", unconfirmed))
+    for label, paths in sections:
+        if not paths:
+            continue
+        label_cost = len(label.encode("utf-8", "surrogatepass")) + 1
+        for index, path in enumerate(paths):
+            line = f"  {child_line(path)}"
+            cost = len(line.encode("utf-8", "surrogatepass")) + 1
+            extra = label_cost if index == 0 else 0
+            if used + extra + cost > budget:
+                hidden += len(paths) - index
+                break
+            if extra:
+                lines.append(label)
+            lines.append(line)
+            used += extra + cost
+    if not lines and not hidden:
+        return [f"Files changed: none recorded ({FILES_VIA_BASH})"]
+    if hidden:
+        lines.append(f"(+{hidden} more files; {FILES_VIA_BASH})")
+    else:
+        lines.append(f"({FILES_VIA_BASH})")
+    return lines
+
+
+def did_work(result: SubagentResult) -> bool:
+    """Is there anything to point the parent at — a tool call or a written file?"""
+
+    return bool(
+        result.tool_trail
+        or result.changed_files
+        or result.unconfirmed_files
+        or result.files_overflow
+    )
+
+
+def _render_unfinished(result: SubagentResult) -> str:
+    """The D11 template: a STARTED child that did not finish (ADR-0276).
+
+    Reason first, then what to do with it, then the evidence — its partial
+    answer, the error that answer does not already say (capped, D17), its tool
+    calls, the files it wrote and the session that holds the rest. Never the
+    session's PATH (ADR-0243 §5): the id names it without putting a home
+    directory into the model's context.
+
+    EVERY CHILD-AUTHORED PART IS CLEANED (#604 review) — the reason and the
+    session id onto one line (:func:`~aelix_agents.envelope.child_line`), the
+    answer, the error, the note and the trail through
+    :func:`~aelix_agents.envelope.child_prose`. Which blocks appear is decided
+    on the values as they came — whether the summary is the error, whether the
+    error repeats it — with two exceptions taken on what the model will read
+    (#604 review round 2): a partial answer with nothing left once cleaned is
+    no text (:func:`~aelix_agents.envelope.says_nothing`), and the error is
+    compared with the reason as both are shown. The same text is what the
+    cancel report quotes (D14).
+
+    The ``Error:`` block is left out when the summary already says it, and
+    when it is one line that IS the reason: a one-line provider 400 was printed
+    twice, as the heading's reason and again as the note under it.
+    """
+
+    summary = result.summary or NO_OUTPUT
+    reason = result.reason or REASON_UNSPECIFIED
+    worked = did_work(result)
+    head = UNFINISHED_HEAD.format(reason=child_line(reason))
+    blocks = [f"{head}\n{DO_NOT_REDELEGATE}" if worked else head]
+    error = result.error
+    if (
+        summary == NO_OUTPUT
+        or summary_is_the_error(summary, error, truncated=result.truncated)
+        or says_nothing(summary, truncated=result.truncated)
+    ):
+        # The summary is the fallback chain's, not the child's — or nothing the
+        # model could read once cleaned: say so, and let the error be printed
+        # as the error.
+        blocks.append(f"Partial result:\n{NO_TEXT_YET if result.tool_trail else NO_TEXT}")
+        summary = NO_OUTPUT
+    else:
+        blocks.append(f"Partial result:\n{child_prose(summary)}")
+    if (
+        error
+        and not error_repeats_summary(summary, error, truncated=result.truncated)
+        and not error_says_only_the_reason(error, result.reason)
+    ):
+        note, _cut, _lost = cap_summary(child_prose(error), MAX_ERROR_NOTE_BYTES)
+        blocks.append(f"Error: {note}")
+    if result.note:
+        # Never set on a failure by the bundled envelope (D4's note is a
+        # success's), and printed if a third-party one sets it: a fact the
+        # envelope carries is not dropped by the renderer.
+        blocks.append(f"Note: {child_prose(result.note)}.")
+    if result.tool_trail:
+        trail = child_prose(result.tool_trail)
+        blocks.append(f"Tool calls ({count_trail_calls(trail)}):\n{trail}")
+    if worked:
+        blocks.append(
+            "\n".join(
+                render_file_lists(
+                    result.changed_files,
+                    result.unconfirmed_files,
+                    result.files_overflow,
+                    budget=MAX_FILE_LIST_BYTES,
+                )
+            )
+        )
+    if result.session_id:
+        blocks.append(f"Session: {child_line(result.session_id)}")
+    blocks.extend(_tail_notes(result))
+    blocks.append(_usage_line(result))
+    return "\n\n".join(blocks)
+
+
+def _tail_notes(result: SubagentResult) -> list[str]:
+    """The notes every rendering ends with, before the footer."""
+
+    notes: list[str] = []
+    if result.dropped_tools:
+        notes.append(
+            "Tools not granted to this agent: "
+            + ", ".join(result.dropped_tools)
+            + " (it holds no tool you do not hold)."
+        )
+    if result.dropped_lines:
+        notes.append(
+            f"{result.dropped_lines} oversize output line(s) were dropped."
+        )
+    return notes
+
+
 def render_subagent_result(result: SubagentResult) -> ToolResult:
     """Fold the envelope into what the parent's model reads.
 
@@ -857,26 +1027,36 @@ def render_subagent_result(result: SubagentResult) -> ToolResult:
     exits 0 while its stream carries ``stop_reason: "error"`` is a failure), so
     re-deriving a verdict here could only disagree with it.
 
+    TWO TEMPLATES (ADR-0276 D11, D18). A child that STARTED and did not finish
+    gets :func:`_render_unfinished` — reason, partial answer, error, tool calls,
+    files and session. Every other result — a success, a refusal, a decline, a
+    child that never got a process — renders exactly as it always did, byte for
+    byte: a success needs none of that, and "it did the work below" is false of
+    a child that never ran.
+
     The ``Error:`` note is left out when it would only repeat the summary —
     including when the summary is that error cut at ``output_cap``
-    (:func:`~aelix_agents.envelope.error_repeats_summary`).
+    (:func:`~aelix_agents.envelope.error_repeats_summary`) — and is capped at
+    :data:`~aelix_agents.envelope.MAX_ERROR_NOTE_BYTES` (D17). Below the cap,
+    which is every refusal, nothing changes.
     """
 
-    body = result.summary or "(no output)"
-    notes: list[str] = []
-    if result.error and not error_repeats_summary(body, result.error, truncated=result.truncated):
-        notes.append(f"Error: {result.error}")
-    if result.dropped_tools:
-        notes.append(
-            "Tools not granted to this agent: "
-            + ", ".join(result.dropped_tools)
-            + " (it holds no tool you do not hold)."
-        )
-    if result.dropped_lines:
-        notes.append(
-            f"{result.dropped_lines} oversize output line(s) were dropped."
-        )
-    text = "\n\n".join([body, *notes, _usage_line(result)])
+    if result.started and not result.ok:
+        text = _render_unfinished(result)
+    else:
+        body = result.summary or "(no output)"
+        notes: list[str] = []
+        if result.error and not error_repeats_summary(
+            body, result.error, truncated=result.truncated
+        ):
+            note, _cut, _lost = cap_summary(result.error, MAX_ERROR_NOTE_BYTES)
+            notes.append(f"Error: {note}")
+        if result.note:
+            # A fact about a run that SUCCEEDED (ADR-0276 D4) — labelled ``Note:``
+            # and never ``Error:``, so a finished answer is not read as a failure.
+            notes.append(f"Note: {result.note}.")
+        notes.extend(_tail_notes(result))
+        text = "\n\n".join([body, *notes, _usage_line(result)])
     return ToolResult(
         content=[TextContent(text=text)],
         details=result.details,
@@ -897,8 +1077,6 @@ __all__ = [
     "DESCRIPTION_HEAD_MAX_BYTES",
     "MAX_PARALLEL_TASKS",
     "MAX_ROSTER",
-    "MAX_TIMEOUT_MS",
-    "MIN_TIMEOUT_MS",
     "ROSTER_DESCRIPTION_CHARS",
     "ROSTER_MAX_BYTES",
     "AgentCall",

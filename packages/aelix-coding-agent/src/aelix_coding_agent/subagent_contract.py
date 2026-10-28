@@ -64,6 +64,9 @@ SUBAGENT_TOOL = "subagent_tool"
 SUBAGENT_END = "subagent_end"
 
 SubagentState = Literal["starting", "running", "done", "error", "stopped"]
+# ``"timeout"`` is no longer produced (#604, ADR-0276 D7): a delegation has no
+# time limit. It stays in the literal because settle records already on disk
+# carry it (ADR-0243) and a reader of those must still type-check.
 SubagentOutcome = Literal["ok", "error", "timeout", "aborted", "declined"]
 # Only "single" is live in P2 — ``spawn`` raises ``ValueError`` on the other
 # two. The literal ships whole so the on-the-wire vocabulary never changes
@@ -187,6 +190,86 @@ class SubagentResult:
     parent, an allocation that failed, a refusal, a decline. Additive +
     defaulted: does NOT bump ``CONTRACT_VERSION``."""
 
+    note: str | None = None
+    """A fact about a SUCCESSFUL run that its summary cannot carry (#604).
+
+    Set today for one case: the child finished its stream and then did not exit,
+    so the parent stopped it after a fixed wait (ADR-0276 D4). The answer is
+    whole and ``ok`` stays ``True``, but a reader should know the process was
+    ended rather than exiting on its own. Deliberately NOT ``error``: every
+    renderer prints ``error`` as a failure note, and a finished answer under an
+    ``Error:`` line invites the parent to redo work that is done. ``None`` on
+    every other envelope. Additive + defaulted: does NOT bump
+    ``CONTRACT_VERSION``."""
+
+    started: bool = False
+    """Did a child PROCESS exist for this result? (#604, ADR-0276 D8, D18)
+
+    ``True`` once the channel launched one — ``runtime._run`` reads it off the
+    registry row after the channel returns — so a refusal (a draining session,
+    the live-child cap, the per-prompt budget), a decline, a stop that landed
+    before the spawn and a spawn that failed are all ``False``. Renderers read it
+    to choose a template: "it already did the work below" is false of a child
+    that never ran, and a model told so stops retrying something it should
+    retry. ``session_id is None`` cannot stand in for it — a ``--no-session``
+    parent's children have no session either. Additive + defaulted: does NOT
+    bump ``CONTRACT_VERSION``."""
+
+    reason: str | None = None
+    """One line saying why a run that was not ``ok`` did not finish (ADR-0276 D10).
+
+    Written by ``envelope.build_result`` for a failure or a stop and ``None`` on
+    a success: ``stopped by the session (…)`` for ``stop`` / ``stop_all``, ``the
+    turn was cancelled`` for a cancelled turn, ``the agent's own run was
+    aborted`` for the child's own abort, the lingering sentence (D4), or the
+    first line of :attr:`error` (a traceback's exception line), at most 300
+    characters. Child-authored in that last case, so a renderer treats it as it
+    treats :attr:`error`. Additive + defaulted: does NOT bump
+    ``CONTRACT_VERSION``."""
+
+    session_id: str | None = None
+    """The id of the session file the parent allocated for this child (#199).
+
+    Filled by ``runtime._run`` from the receipt, for both channels and both
+    doors. The one handle on the child's transcript a model may be shown — the
+    file's PATH may not be (:attr:`session_path`). ``None`` for a
+    ``--no-session`` parent, a failed allocation, a refusal and a decline.
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
+    session_path: str | None = None
+    """The ABSOLUTE path of that session file, for hosts and UIs ONLY.
+
+    NEVER written into text a model reads (ADR-0243 §5, ``envelope.py``'s
+    truncation marker): it carries the user's home directory and name, and the
+    parent's own records already hold it. RPC ``agents/run`` returns it through
+    ``asdict``. Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
+    changed_files: tuple[str, ...] = ()
+    """Files the child wrote through ``edit`` / ``write`` (and the guardrail's
+    ``create_file`` / ``write_file``) whose call ENDED without an error.
+
+    Collected by the reducer from each call's ``path`` / ``file_path`` argument,
+    apart from the trail; resolved against the child's directory and shown
+    relative to the parent's (``runtime._run``), so a child running in
+    ``packages/api`` reports ``packages/api/src/app.py``, not ``src/app.py``. A
+    path outside the parent's directory stays as the child wrote it. Shown on
+    one line with control characters removed, so two files can read alike;
+    they are still two entries. Files changed through ``bash`` or any other
+    tool (MCP, an extension's) are not here and cannot be. Additive +
+    defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
+    unconfirmed_files: tuple[str, ...] = ()
+    """Files a write call was STARTED on and never reported an end for — a child
+    stopped mid-write. A path that some other call changed is in
+    :attr:`changed_files` instead; a path whose every call failed is in neither.
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
+    files_overflow: int = 0
+    """Written paths the reducer did not keep: past 64 distinct paths it counts
+    instead of recording, so the lists stay bounded and a renderer can say "+N
+    more" rather than look complete. Additive + defaulted: does NOT bump
+    ``CONTRACT_VERSION``."""
+
 
 @dataclass(frozen=True)
 class SubagentProgress:
@@ -303,7 +386,15 @@ class SubagentRuntime(Protocol):
         ``SubagentResult(status="declined", ok=False)`` — never an exception,
         never a silent spawn. The model-driven ``agent`` tool does NOT come
         through here: it uses an implementation-private entry point carrying a
-        grant already taken in the ``tool_call`` hook."""
+        grant already taken in the ``tool_call`` hook.
+
+        ``timeout_ms`` is DEPRECATED and ignored (#604, ADR-0276 D6): a
+        delegation has no time limit, and the bundled runtime accepts the
+        argument without reading it. It stays on the signature so a caller
+        that passes it keeps working; removing it would be a shape change, and
+        :data:`CONTRACT_VERSION` exists to avoid exactly that. Callers should
+        stop passing it — the way to end a delegation is to cancel ``spawn``
+        or ``stop`` the child."""
         ...
 
     # THE REGISTRY IS LIVE-ONLY, and a consumer has to know that (P2 review,

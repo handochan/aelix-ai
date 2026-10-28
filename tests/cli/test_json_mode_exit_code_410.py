@@ -478,7 +478,7 @@ async def test_a_delegated_json_child_whose_model_errored_reports_exit_1(tmp_pat
         argv=[sys.executable, str(script), "--errored"],
         env=_hermetic_env(tmp_path),
     )
-    result = await channel.run(_plan(tmp_path, timeout_ms=90_000))
+    result = await channel.run(_plan(tmp_path))
     assert result.exit_code == 1, result
     assert result.ok is False
     assert result.status == "error"

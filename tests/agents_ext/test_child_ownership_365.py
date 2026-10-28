@@ -193,7 +193,6 @@ async def test_child_owner_wire_and_controls(tmp_path, channel_kind, case):
         cwd=str(scratch),
         parent_cwd=str(scratch),
         permission_mode=PermissionMode.PLAN,
-        timeout_ms=30_000,
     )
     result = await asyncio.wait_for(channel.run(plan), 45)
     records = (

@@ -53,7 +53,9 @@ can ask the LIVE harness instead — ``model``, ``active_tools``,
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -70,7 +72,7 @@ from aelix_coding_agent.subagent_contract import (
     subagent_depth,
 )
 
-from aelix_agents.aggregate import render_batch_result
+from aelix_agents.aggregate import render_batch_result, render_cancel_report
 from aelix_agents.batch import run_batch
 from aelix_agents.consent import (
     SpawnGrant,
@@ -90,6 +92,7 @@ from aelix_agents.progress import SubagentProgressBridge
 from aelix_agents.prompt_file import sweep_stale_prompt_dirs
 from aelix_agents.runtime import (
     MAX_DELEGATIONS_PER_PROMPT,
+    CallEnvelopes,
     SpawnRecordMeta,
     SubagentHost,
     _SubagentRuntimeImpl,
@@ -118,6 +121,8 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
     from aelix_coding_agent.subagent_contract import SubagentMode, SubagentProgress
+
+logger = logging.getLogger(__name__)
 
 _DEPTH_REFUSAL = (
     "Delegation is not available inside a delegated agent (max depth "
@@ -927,7 +932,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:944-952``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1071-1079``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -953,7 +958,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:273-275``), so the single and batch doors are
+        # always non-empty (``tool.py:269-271``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -1102,7 +1107,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1120-1129``).
+        seam is released on teardown, ``extension.py:1125-1134``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1168,6 +1173,57 @@ class AgentsExtension:
 
     # ── the tool body ─────────────────────────────────────────────
 
+    def _report_cancelled(self, pending: PendingSpawn, envelopes: CallEnvelopes) -> None:
+        """Queue what a cancelled call's children had done for the next turn (D14).
+
+        THE NEXT-TURN QUEUE, because it is the one place a message survives the
+        cancel that is happening right now: ``AgentHarness.abort()`` clears the
+        steer and follow-up queues and leaves this one alone, and the next
+        ``prompt()`` drains it and puts its messages ahead of the user's own
+        (``harness/core.py``). ``send_message`` with ``trigger_turn=False``
+        appends to it and does nothing else — no turn is started on the user's
+        behalf, and the call is SYNCHRONOUS, because this runs in a task that is
+        being cancelled and an ``await`` here would invite the second cancel in.
+
+        The collector is SNAPSHOTTED here (:meth:`CallEnvelopes.snapshot`): a
+        batch member still on its way out of its own cancellation is built from
+        its live stream now, rather than waited for. This frame runs once the
+        cancel reaches it — in a batch, when ``gather``'s outer future completes,
+        which is after the FASTEST member's own cancellation has finished; in
+        single mode, after its one member's — and it waits for none of the
+        slower members. The members that had a process and ended on an internal
+        error (:meth:`CallEnvelopes.lost`) are named apart from those that never
+        had one.
+
+        Nothing is queued when no child had started (``render_cancel_report``
+        returns ``None``). NEVER RAISES: the cancel must leave this frame as
+        the cancel, and a report is never worth replacing it. A session switched
+        under the turn is the case that needs the breadth: the runner
+        invalidates this extension's runtime before ``dispose()`` aborts the
+        turn, so ``send_message`` raises ``ExtensionError`` — the report is lost
+        (the session it was for is gone) and the cancel goes on.
+
+        In memory only: a session closed and reopened with ``--continue``, or
+        replaced by ``/reload``, before another prompt does not carry it. The
+        settle records the runtime wrote for each child are in the session file
+        either way (ADR-0243), and #610's resume reads those.
+        """
+
+        try:
+            text = render_cancel_report(
+                pending.resolved.name,
+                pending.call.mode,
+                len(pending.call.tasks),
+                envelopes.snapshot(),
+                lost=envelopes.lost(),
+            )
+            api = self._api
+            if text is None or api is None:
+                return
+            api.send_message(text, trigger_turn=False)
+        except Exception:  # noqa: BLE001 — the cancel must propagate as the cancel
+            logger.debug("could not queue the cancelled delegation's report", exc_info=True)
+
     async def _execute(
         self, args: dict[str, Any], ctx: ToolExecutionContext
     ) -> ToolResult:
@@ -1187,7 +1243,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:306-323``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:301-318``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1252,7 +1308,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:953``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1080``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1284,7 +1340,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1241-1245``) with no ``await`` between them, so THIS
+            # (``runtime.py:1533-1537``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a
@@ -1339,22 +1395,31 @@ class AgentsExtension:
             bridge.begin_group(
                 key, expected=total, tasks=tuple(pending.call.tasks)
             )
+        # THE CALL'S ENVELOPES, for the one path that returns none (#604,
+        # ADR-0276 D14). ``_run`` leaves each child's here — the channel's when
+        # it came back, one built from the live stream when it was cancelled,
+        # and a builder while it runs — and the ``except`` below reports them
+        # when the turn is cancelled.
+        envelopes = CallEnvelopes()
         try:
             if pending.call.mode == "single":
                 # UNCHANGED FROM P2, deliberately: one child, ``spawn_granted``
                 # directly, ``render_subagent_result``. Routing a single task
-                # through the executor would put a semaphore, a batch deadline
-                # and an aggregate renderer under the shape that is already
-                # shipped and already tested.
+                # through the executor would put a semaphore and an aggregate
+                # renderer under the shape that is already shipped and already
+                # tested. No ``timeout_ms`` (#604, ADR-0276): the call no longer
+                # carries one and the child runs until it finishes or is stopped.
                 result = await runtime.spawn_granted(
                     pending.grant,
                     pending.resolved,
                     pending.call.task,
                     cwd=pending.cwd,
-                    timeout_ms=pending.call.timeout_ms,
                     on_event=lambda progress: _on_event(0, progress),
                     record=SpawnRecordMeta(
-                        tool_call_id=key, mode=pending.call.mode, index=0
+                        tool_call_id=key,
+                        mode=pending.call.mode,
+                        index=0,
+                        envelopes=envelopes,
                     ),
                 )
                 return render_subagent_result(result)
@@ -1369,7 +1434,7 @@ class AgentsExtension:
                 # below, and it has to be, because these are the TWO ARGUMENTS OF
                 # THE SAME CLAMP CALL that ``batch._live_floor`` re-evaluates per
                 # member. A ``bool(...)`` here read the UI live exactly once and
-                # then froze it for up to ``MAX_BATCH_WALL_MS``, and the stale
+                # then froze it for as long as the batch ran, and the stale
                 # value is the LOOSE one: ``has_ui`` is the only input deciding
                 # what ``approval_mode: "ask"`` clamps to (``posture.py:201-204``),
                 # so a batch that outlived its UI kept write authority a live read
@@ -1385,7 +1450,11 @@ class AgentsExtension:
                 posture=self._host_posture,
                 on_event=_on_event,
                 # #199 — the template; the executor binds each member's index.
-                record=SpawnRecordMeta(tool_call_id=key, mode=pending.call.mode),
+                # The collector rides on it to every member (``dataclasses.
+                # replace`` shares the dict).
+                record=SpawnRecordMeta(
+                    tool_call_id=key, mode=pending.call.mode, envelopes=envelopes
+                ),
             )
             return render_batch_result(
                 pending.resolved.name,
@@ -1394,6 +1463,17 @@ class AgentsExtension:
                 not_run=outcome.not_run,
                 wall_ms=outcome.wall_ms,
             )
+        except asyncio.CancelledError:
+            # ESC GIVES THE MODEL NOTHING without this (design critique 1). The
+            # cancel goes up through the tool, no ``ToolResult`` is returned,
+            # and on the next turn the provider transform answers the orphaned
+            # tool call with "No result provided" — so the model learns nothing
+            # about work it paid for and is likely to delegate it again from
+            # scratch, the outcome #604 exists to prevent. What the children
+            # had done is queued for that next turn instead, then the cancel
+            # goes on exactly as before.
+            self._report_cancelled(pending, envelopes)
+            raise
         finally:
             if grouped and bridge is not None:
                 bridge.end_group(key)
