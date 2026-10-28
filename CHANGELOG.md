@@ -64,8 +64,9 @@ unwritten. Add them with the next release.
     aelix's first one pi lacks.
   - Copilot's policy enablement at `/login` reads only this build's shipped
     rows, and quotes the id in the request path.
-  - The catalog repository does not exist yet, so for now every check answers
-    404 and nothing is overlaid.
+  - The catalog repository, `handochan/aelix-catalog`, is live (#172, ADR-0264
+    §10 2026-10-28). It publishes on weekdays at 10:17, 12:17 and 14:17 KST,
+    and only when the content changes.
 - **348 models the catalog was missing**, folded back from models.dev and
   OpenRouter with `scripts/refresh_catalog.py --apply` (#172, ADR-0264 §10
   2026-10-27). That is 1529 → 1877 rows across the same 35 providers. Nothing
@@ -169,10 +170,10 @@ unwritten. Add them with the next release.
   `tests/test_hosted_catalog_contract.py` runs the publisher and the parser
   together on every pull request, without network, with a frozen schema-1
   sample. Users see no change yet: the client that reads the hosted catalog is
-  #434. Not done here: `handochan/aelix-catalog` itself (the owner creates it)
-  and its first publication; measured on 2026-10-21, that one would add 288
-  ids against `main`'s catalog, over the 100 cap, so it needs the fold-back
-  first or a raised `max_additions` once.
+  #434. `handochan/aelix-catalog` itself and its first publication came later
+  (2026-10-27), after the fold-back of 348 models: measured on 2026-10-21, a
+  first publication would have added 288 ids against `main`'s catalog, over
+  the 100 cap.
 
 - **Contributors: CI now fails when a package imports one above it (#292,
   ADR-0015).** The packages stack as `aelix-ai` <- `aelix-agent-core` <-

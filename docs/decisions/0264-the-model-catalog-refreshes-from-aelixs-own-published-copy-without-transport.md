@@ -7,7 +7,8 @@ owner's decision (§2), revised after its reviews (r5-r11) and on the owner's de
 2026-10-26 (§10: #507, a shipped row's `off` from the evidence a new row's map comes from; #397,
 the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fold-back, run once,
 and what its review had to correct by hand; #434's client as built: the store, the source, the
-triggers, and what its live checks changed; #609's opt-in manual mode).
+triggers, and what its live checks changed; #609's opt-in manual mode) and 2026-10-28 (§10:
+#172's catalog repository, its first publication and §8's last checks, as measured).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -675,7 +676,8 @@ upstream addition stop the slots; clients keep the last revision until the owner
     index stored, while `failedAt` is within 15 minutes. A timestamp in the future counts as absent.
   1. `GET {base}/v1/index.json`. It sends `If-None-Match` or `If-Modified-Since` only when every
      revision the stored index names is stored and verifies, as pi revalidates only when a stored
-     body backs it (`:144-147`). Pages' validators were not measured; nothing depends on them.
+     body backs it (`:144-147`). Pages sends an `ETag` and a `Last-Modified` and answers
+     `If-None-Match` with 304 (measured 2026-10-27, §10 2026-10-28); nothing depends on them.
      - 304 keeps the stored index and its revisions.
      - 404 means no hosted catalog: store an empty index. The overlay already installed stays for
        the rest of the process, and the next start has none. That is pi's 404 (§3.1).
@@ -1173,11 +1175,12 @@ started when #434 merges. R starts one serial lane later either way.
 - A credential command's narrowing applies only after a request has run the command in the process.
   An OAuth credential with no stable account identity is narrowed in memory only.
 - Windows has no cross-process lock on the store.
-- Not measured: Pages' validators, cache headers and cache lifetime on the catalog repository (it
-  does not exist yet); whether a workflow's own pushes reset GitHub's 60-day schedule timer;
-  GitHub's `queue: max`; a ladder replay with models.dev's `family` and dates; an authenticated
-  `/models/user`; Q2's derivation inside the generator (r7 probed pi's rules over the generator's
-  plan only); Windows; Python 3.11.
+- Not measured: Pages' cache lifetime behind the `max-age=600` it sends (its headers and validators
+  were measured on 2026-10-27, §10 2026-10-28); whether a workflow's own pushes reset GitHub's
+  60-day schedule timer; `queue: max` with two runs pending at once (§10 2026-10-28 never had more
+  than one); a ladder replay with models.dev's `family` and dates; an authenticated `/models/user`;
+  Q2's derivation inside the generator (r7 probed pi's rules over the generator's plan only);
+  Windows; Python 3.11.
 
 ### 6.2 Open follow-ups
 
@@ -1985,3 +1988,73 @@ of 2026-10-19) as the default, and add an opt-in mode where only `aelix update -
 - The README's list of the requests aelix makes for itself now names the model catalog check,
   which #434 had left out.
 
+### 2026-10-28: #172 - the catalog repository, its first publication and §8's last checks
+
+The owner's instructions of 2026-10-27: create the repository and publish once, then run the
+rollback check. These are §8's last #172 items. Evidence: `.omc/probes/172/first-publication/` and
+`.omc/probes/172/rollback-check/`.
+
+- **The repository.** `handochan/aelix-catalog` (public) holds B4's prepared workflow,
+  `tools/publish_job.py`, `control/` and a README (first commit `e12cde8`). Pages builds from
+  GitHub Actions (`build_type=workflow`, the `github-pages` environment). GitHub accepted the
+  workflow, `concurrency.queue: max` included, and its weekday schedule is on.
+- **The first publication** (dispatched 2026-10-27T15:31Z, run 40531811294): build and publish
+  succeeded, and commit `b31d048` published `sha256-1e01c1c0…7faa`, built from aelix-ai `2fea1de8`
+  (the fold-back, then the newest `main` whose `ci.yml` push run had passed). Its entry: floor
+  `0.1.0b2`, 1878 rows, one more than the fold-back's 1877 (`openrouter/openai/gpt-6.1-terra-pro`).
+- **Pages, as served** (§8's GETs): `v1/index.json` (510 bytes) and the revision (483,615 bytes)
+  answer 200 with `content-type: application/json; charset=utf-8`, `cache-control: max-age=600`,
+  an `ETag` and a `Last-Modified`. The revision's sha256 is its name, and `If-None-Match` on the
+  index answers 304, so §4.3's validators exist on Pages and its 304 path runs there.
+- **The client** (`main` `3cec8c0c`, a scratch agent dir, the real URL): `aelix update --models`
+  published the revision, with one model this release does not ship, and a second run was
+  `unchanged`. Over the shipped catalog the revision changed 2 rows and dropped none, and
+  its lineage admits the build. A `-p` request on the new id answered `pong`.
+- **A rollback dispatched while a slot runs, with the next slot queued behind it** (runs
+  40539401207 to 40540123469, 2026-10-27 16:17-16:22Z). The target was the only deployed revision,
+  so the rollback could remove no id.
+
+  | run | action | dispatched | result |
+  | --- | --- | --- | --- |
+  | A 40539401207 | publish | first | `unchanged` |
+  | R 40539435075 | rollback | while A ran | waited for A; commit `5e826a1`, the index with `hold` |
+  | B 40539471268 | publish | while R ran | waited for R; `unchanged` |
+  | C 40539913547 | publish | after R | stopped at the build's hold check |
+  | D 40540027747 | release-hold | after C | commit `a497281`, `control/hold.json` gone, nothing deployed |
+  | E 40540123469 | publish | after D | commit `02e4821`, the index again without `hold` |
+
+  - Each run waited for the one before it, and none was cancelled. At most one run was pending at
+    any moment: R's jobs started when A ended (16:17:34Z), and B was dispatched at 16:17:37Z.
+    GitHub's default concurrency with `cancel-in-progress: false` does the same, so `queue: max`,
+    which §4.2 has from GitHub's documentation only, was not exercised.
+  - `publish` ran after a skipped `build` (R and D), which B4's dry run could only read from the
+    workflow's `if:` (§10, 2026-10-21).
+  - After R, the served index carried `hold: {action: rollback, at: …}`, and `control/hold.json`
+    carried the revision, the reason and the run's URL.
+  - After E, the client said `unchanged`.
+- **What it found.**
+  - **A queued slot reads the hold at its dispatch commit.** B's `build` job checks out the run's
+    own commit (`b31d048`, before R's hold commit). Its "Stop while a hold exists" therefore saw no
+    hold, and it built.
+    - The guard that matters is the `publish` job's re-read of `control/hold.json` at the branch
+      head. B ended `unchanged`, so that job never ran with a revision to publish.
+    - A slot queued behind a rollback therefore reaches the publish job instead of stopping first.
+      Checking out the default branch in `build` too would stop it at the first step.
+    - Filed as #616, together with the publish job's missing tests, `_commit`'s `control`
+      pathspec, the `result.json` that `build --fetch` leaves unwritten when a fetch fails, and
+      three mutants no test pins.
+  - **The floor policy is still open.** The summary check parses with the latest release's parser,
+    v0.1.0-beta.2's. It drops 128 rows, every one for `thinkingLevelMap: level 'max'`. The build
+    log shows only its last 40 lines, 31 of them drops; the 128 is `release_report` run again over
+    the published revision with v0.1.0-beta.2's catalog and levels.
+    - The published revision keeps those rows. Beta.2 has no catalog client, so nothing is lost.
+    - §4.2 says only when the floor rises. What the publisher does once a client in the wild lacks
+      a level is undecided: #617.
+- **Not measured.**
+  - The weekday schedule had not fired by the time of writing; its first slot is 2026-10-28 10:17
+    KST.
+  - Pages' cache lifetime behind `max-age=600`.
+  - Two runs pending at once, the case `queue: max` exists for. It needs a rollback and a slot both
+    dispatched while one build runs, which takes about 18 s.
+
+With this, §8's #172 list is done, except that `queue: max` itself was not exercised (above).

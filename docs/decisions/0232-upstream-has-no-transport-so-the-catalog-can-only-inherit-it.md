@@ -1,7 +1,8 @@
 # 0232. Upstream has no transport, so the catalog can only inherit it
 
 Status: Accepted (2026-08-19); amended 2026-10-21 (#172, ADR-0264 §4.8 B4: the ladder moved to
-`aelix_ai/catalog_inherit.py`, new rows get a derived thinking map, the generator runs in CI).
+`aelix_ai/catalog_inherit.py`, new rows get a derived thinking map, the generator runs in CI);
+noted 2026-10-28 (#172: the catalog repository is live, ADR-0264 §10).
 Date: 2026-08-19
 Relates: ADR-0067 (the catalog and its shape contract), ADR-0230 §catalog (the coverage
 measurement that opened this), ADR-0034 (the pi pin a regeneration would follow).
@@ -200,9 +201,9 @@ supersession. Evidence: `.omc/probes/b4-d-live/172/` (commands in `commands.txt`
   15 models.dev, 10 provider rule, 167 none, 39 naming `max`.
 - **It runs in CI.** The Consequences above say "nothing here runs in CI"; aelix-ai's own CI now
   runs `tests/test_hosted_catalog_contract.py`, which runs the generator's plan, without network.
-  It will also run on a schedule in the catalog repository, `handochan/aelix-catalog`, once the
-  owner creates it (ADR-0264 §7 Q1; its workflow is prepared, the repository does not exist yet),
-  through `scripts/publish_catalog.py build`, which plans over the committed catalog, applies it
+  It also runs on a schedule in the catalog repository, `handochan/aelix-catalog`, live since
+  2026-10-27 (ADR-0264 §7 Q1, and §10 2026-10-28 for its first publication), through
+  `scripts/publish_catalog.py build`, which plans over the committed catalog, applies it
   to a throwaway checkout, runs the pin test, this ADR's overlay test and ADR-0264's contract test
   against it, and publishes the rows without transport (ADR-0264 §4.2). A row reaches `main`, and
   a release, only through the fold-back (`RELEASING.md`), reviewed in a diff as every run before
