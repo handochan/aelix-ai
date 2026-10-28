@@ -352,7 +352,7 @@ async def _iter_codex_events(response: Any) -> AsyncIterator[dict[str, Any]]:
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
-        buffer += chunk
+        buffer = (buffer + chunk).replace(b"\r\n", b"\n")
         if len(buffer) > _MAX_SSE_BUFFER_BYTES:
             raise RuntimeError(
                 "OpenAI Codex SSE stream exceeded the maximum frame buffer "

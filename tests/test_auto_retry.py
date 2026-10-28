@@ -56,6 +56,7 @@ def _err(text: str = "overloaded_error: provider returned error") -> AssistantMe
         "socket hang up",
         "websocket closed",
         "stream ended before message_stop",
+        "OpenAI Responses stream ended before a terminal response event",
         "Request timed out",
         "request timeout",
         "terminated",
@@ -546,6 +547,57 @@ def _retryable_stream_fn(calls: list[int]) -> Any:
         )
 
     return stream_fn
+
+
+async def test_eof_retry_keeps_completed_tool_result_without_replaying_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_agent_core import AgentTool
+    from aelix_ai.messages import ToolCallContent, ToolResultMessage
+    from aelix_ai.streaming import AssistantEndEvent, AssistantErrorEvent, AssistantStartEvent
+    from aelix_ai.tools import ToolExecutionContext, ToolResult
+
+    monkeypatch.setattr("aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 1)
+    calls: list[int] = []
+    contexts: list[list[Any]] = []
+
+    async def execute(args: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        calls.append(1)
+        return ToolResult(content=[TextContent(text="done")])
+
+    async def stream_fn(model: Any, context: Any, options: Any = None) -> Any:
+        contexts.append(list(context.messages))
+        yield AssistantStartEvent(partial=AssistantMessage(content=[]))
+        if len(contexts) == 1:
+            yield AssistantEndEvent(message=AssistantMessage(
+                content=[ToolCallContent(tool_call_id="t1", tool_name="side_effect", input={})],
+                stop_reason="tool_use",
+            ))
+        elif len(contexts) == 2:
+            error = "OpenAI Responses stream ended before a terminal response event"
+            failed = AssistantMessage(
+                content=[
+                    TextContent(text="partial"),
+                    ToolCallContent(tool_call_id="t2", tool_name="side_effect", input={}),
+                ],
+                stop_reason="error",
+                error_message=error,
+            )
+            yield AssistantErrorEvent(reason="error", error=failed, error_message=error)
+        else:
+            yield AssistantEndEvent(message=AssistantMessage(content=[TextContent(text="ok")], stop_reason="end_turn"))
+
+    h = AgentHarness(AgentHarnessOptions(
+        session=Session(MemorySessionStorage()), stream_fn=stream_fn,
+        tools=[AgentTool(name="side_effect", execute=execute)],
+    ))
+    h._state.auto_retry_enabled = True
+    h._state.auto_compaction_enabled = False
+    await h.prompt("go")
+    assert len(contexts) == 3
+    assert calls == [1]
+    assert any(isinstance(message, ToolResultMessage) for message in contexts[2])
+    await h.dispose()
 
 
 async def _run_with_abort_during_backoff(
