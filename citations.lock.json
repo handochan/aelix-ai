@@ -779,7 +779,7 @@
    "clamped = clamp_thinking_level(model, options.reasoning)",
    "effort = \"high\" if clamped in (\"off\", None) else clamped"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:677-677": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_codex_responses.py:692-692": [
    "clamped = clamp_thinking_level(model, opts.reasoning)"
   ],
   "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1253-1254": [

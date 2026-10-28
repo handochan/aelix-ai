@@ -1,6 +1,6 @@
 # 0128. Sprint 6h₂₀ — Auto-retry with exponential backoff (pi-faithful port)
 
-Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events — amended 2026-10-22 (#551): aelix's own retries do not resend a TLS certificate verification failure, unless the session's strict relaxation answers it (the OpenAI and Anthropic SDKs' two connection retries inside one request remain - review round 2)
+Status: Accepted (6h₂₀ shipped — v1, UI countdown deferred to v2) — amended 2026-10-14 (#408): the retry reads `settings.json`'s `retry` block — amended 2026-10-14 (#414): `520` and `524` are retried (pi's seven statuses), matched anywhere in the text as pi matches them — amended 2026-10-21 (#409): a compaction's and a branch summary's summary requests retry on the same classification, settings and events — amended 2026-10-22 (#551): aelix's own retries do not resend a TLS certificate verification failure, unless the session's strict relaxation answers it (the OpenAI and Anthropic SDKs' two connection retries inside one request remain - review round 2) — amended 2026-10-28 (#597, PR #614): a Responses stream that ends before its terminal event is retried, as pi retries it, and the Codex adapter frames CRLF SSE as well as LF, beyond pi
 Superseded by: [ADR-0260](0260-retry-recovery-closes-at-the-successful-assistant-response.md)
 for successful retry completion timing only; classification, backoff and failure cleanup remain accepted.
 Date: 2026-05-28
@@ -477,7 +477,8 @@ request id holding `520`/`524` is not retried" is withdrawn everywhere it was ma
 pi's pattern has grown since this ADR's pin: `server_busy`, `servers are currently busy`,
 `currently experiencing high demand`, `model is at capacity`, `exceeded request buffer
 limit while retrying upstream`, `getaddrinfo`, `ENOTFOUND`, `EAI_AGAIN`, `socket connection
-was closed`, `stream ended before a terminal response event`, `pending stream has been
+was closed`, `stream ended before a terminal response event` (retried since #597, amendment
+2026-10-28), `pending stream has been
 canceled`, the retry-guidance texts (`you can retry your request`, …), `ResourceExhausted`
 and `subscription_sharing_usage_unavailable` / `_user_unavailable`; and it tests a
 non-retryable pattern first (quota and billing: `insufficient_quota`, `quota exceeded`,
@@ -863,3 +864,58 @@ and the Codex adapter (1 attempt; a refused connection still 4). The relaxation
 rule's nine cases run on synthetic codes. On `73a2efa4` the file does not import.
 On a throwaway worktree each fix piece reverted, and eight plausible wrong forms,
 each went red (`.omc/probes/b4-a-live/551/sabotage/`).
+
+## Amendment (2026-10-28, #597) — a Responses stream that ends before its terminal event is retried
+
+Contributed by mikemikimike (PR #614); the maintainer's follow-up commit applied the review below.
+Pi reference: `earendil-works/pi@84576c70c` (`main`, 2026-10-28): `RETRYABLE_PROVIDER_ERROR_PATTERN`
+in `packages/ai/src/utils/retry.ts` lists `stream ended before a terminal response event` among
+its premature stream endings, and `parseSSE` in `packages/ai/src/api/openai-codex-responses.ts`
+frames on `\n\n` only.
+
+### What changed
+
+- `_RETRYABLE_ERROR_PATTERN` takes pi's `stream ended before a terminal response event`. That is
+  the end of the text `_openai_responses_shared.py` raises when a stream closes with no
+  `response.completed`, `response.incomplete` or `response.failed`. Every Responses adapter can
+  raise it: openai, github-copilot, opencode, cloudflare-ai-gateway and openai-codex. Such a turn
+  now retries on the existing budget (3 attempts, 2, 4 and 8 s), and abort ends the wait at once.
+  It used to fail at once. This removes one entry from "Not changed (follow-up)" above.
+- `openai_codex_responses._iter_codex_events` normalizes CRLF to LF before it frames on `\n\n`.
+  It used to read a valid CRLF stream as no events at all, which ended in the same error. Only
+  the incoming chunk is normalized, and a CR that ends a chunk waits for the next one. The PR
+  normalized the whole retained buffer at every chunk, which doubled an already quadratic cost
+  (a 4 MiB frame in 4 KiB chunks: 0.46 s on main, 0.88 s with the PR, 0.48 s now). pi's
+  `parseSSE` throws `Invalid Codex SSE JSON` on CRLF (run under node v26). Aelix diverges
+  knowingly (ADR-0235).
+
+### What was measured
+
+- **The tests.** With the two production lines reverted, the new tests fail 5 of 115:
+  - CRLF at every 2-way split;
+  - `response.failed` and `response.incomplete` over CRLF;
+  - the text classified;
+  - a completed tool not re-run across the retry.
+
+  Two reviews' probes ran every 2-way and 3-way split of a CRLF stream, mixed LF/CRLF streams and
+  the trailing-block flush, and all parse. The follow-up gives the same results for every probe.
+- **Live** (the owner's openai-codex OAuth, `gpt-6.1-sol`, the real stream cut in-process before
+  its terminal event):
+  - `main` `cb59f142` ended the turn with the error and no retry.
+  - With the change, the turn retried once (`auto_retry_start` 1/3 after 2 s) and the second
+    attempt completed.
+  - After text had streamed, the agent's state kept no errored partial, and `-p` printed the
+    final text once.
+- **The real Codex backend sent LF only:** 45 chunks, 65,004 bytes, no CRLF. The CRLF fix
+  covers a proxy that rewrites line endings, not a direct connection.
+
+### Not changed
+
+- **A bare-CR stream still parses to nothing.** It now costs the three retries, about 14 s,
+  before it fails. pi fails at once with a protocol error.
+- **The text is matched anywhere in the error, as every entry here is and as pi matches it.** So
+  a 401 whose body quoted this text would retry (cross-review), as a 401 whose body says
+  `timeout` already does. No server sends aelix's own wording.
+- **The failed attempt stays in the context the harness builds.** The adapters' message
+  transform drops an error assistant before the request, so it is never sent. pi removes it
+  from the context instead, a divergence that predates #597.

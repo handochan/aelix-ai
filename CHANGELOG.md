@@ -771,6 +771,15 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A model stream that ends before its last event is retried, and the ChatGPT
+  (Codex) stream reads CRLF (#597, PR #614 by mikemikimike, ADR-0128
+  amendment 2026-10-28).** A stream from OpenAI, Copilot, opencode, Cloudflare
+  AI Gateway or ChatGPT that ended without its terminal event failed the turn
+  with `OpenAI Responses stream ended before a terminal response event`. It is
+  now retried like a dropped connection: up to 3 times, after 2, 4 and 8 s.
+  The Codex adapter also read a stream whose lines end in CRLF, which is valid
+  SSE and which a proxy may send, as no events at all. That ended in the same
+  error, and the stream is now read.
 - **The update notice's install command now installs the release it names
   (#386, ADR-0230 amendment 2026-10-27).** For an `install.sh` install the
   notice printed `AELIX_VERSION=<tag> curl … | sh`. That pin goes to `curl`

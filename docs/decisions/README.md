@@ -251,7 +251,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   range, ADR-0254 §2.3/§3 and ADR-0128's "not covered" (dated notes).
 
 - [0128 — Auto-retry with exponential backoff](0128-sprint-6h20-auto-retry.md)
-  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551). The retry reads `settings.json` `retry.enabled` /
+  (amended 2026-10-14; #408, #414; amended 2026-10-21, #409; amended 2026-10-22, #551; amended 2026-10-28, #597). The retry reads `settings.json` `retry.enabled` /
   `maxRetries` / `baseDelayMs` / `maxAgentDelayMs` at each decision (pi's cap
   included); rpc `set_auto_retry` writes `retry.enabled` globally as pi does;
   module constants remain the fallback. ADR-0251 §12.3's follow-up note amended.
@@ -276,6 +276,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (`ClassifiedErrorText.repeats_on_retry`) and the harness reads the mark. One prompt
   to an untrusted server: 12 handshakes, 20 s and the TUI's remedy 5 times before, 3
   handshakes (the SDKs' own retries, a follow-up), 2 s and once after.
+  #597 (PR #614, mikemikimike): a Responses stream that ends before its terminal event is
+  retried, as pi retries it, on every Responses adapter; the Codex adapter normalizes CRLF
+  before framing (pi frames LF only), one chunk at a time.
 
 - [0263 — Configured request auth before new prompt records](0263-configured-request-auth-before-new-prompt-records.md)
   (Accepted, 2026-10-12; #416). Request-supported headers/token/Vertex source

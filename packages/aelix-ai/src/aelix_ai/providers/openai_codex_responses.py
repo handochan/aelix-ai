@@ -346,13 +346,26 @@ def map_codex_events(event: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _iter_codex_events(response: Any) -> AsyncIterator[dict[str, Any]]:
-    """Byte-stream → normalized event dicts, framed on the SSE ``\\n\\n`` boundary."""
+    """Byte-stream → normalized event dicts, framed on the SSE ``\\n\\n`` boundary.
+
+    CRLF line endings are normalized to LF first (#597), so a CRLF stream frames
+    as an LF one does. Only the incoming chunk is normalized: a CR that ends a
+    chunk waits for the next one, which may start with its LF. pi's ``parseSSE``
+    frames on ``\\n\\n`` only; this diverges knowingly (ADR-0128, 2026-10-28). A
+    bare-CR stream still parses to nothing.
+    """
 
     buffer = b""
+    pending_cr = False
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
-        buffer = (buffer + chunk).replace(b"\r\n", b"\n")
+        if pending_cr:
+            chunk = b"\r" + chunk
+        pending_cr = chunk.endswith(b"\r")
+        if pending_cr:
+            chunk = chunk[:-1]
+        buffer += chunk.replace(b"\r\n", b"\n")
         if len(buffer) > _MAX_SSE_BUFFER_BYTES:
             raise RuntimeError(
                 "OpenAI Codex SSE stream exceeded the maximum frame buffer "
@@ -365,6 +378,8 @@ async def _iter_codex_events(response: Any) -> AsyncIterator[dict[str, Any]]:
             if event is not None:
                 yield map_codex_events(event)
     # Flush a trailing block that arrived without a final blank-line separator.
+    if pending_cr:
+        buffer += b"\r"
     tail = parse_sse_block(buffer)
     if tail is not None:
         yield map_codex_events(tail)
