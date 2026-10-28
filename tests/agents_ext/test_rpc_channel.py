@@ -431,27 +431,30 @@ async def test_a_child_that_dies_mid_turn_becomes_an_envelope(tmp_path: Path) ->
     channel = _channel(dying)
     row = RunningChild(id="sub-test", profile="scout")
     started = time.monotonic()
-    result = await channel.run(
-        _plan(tmp_path, timeout_ms=30_000), child=row
-    )
+    result = await channel.run(_plan(tmp_path), child=row)
     elapsed = time.monotonic() - started
 
     assert result.ok is False
     assert result.status == "error"
     assert result.exit_code == 4
     assert row.state == "error"
-    # ``error``, not ``timeout``, is what says the 30 s budget did not fire; the
-    # bound left here is anti-hang and says so (#330).
+    # The child's death is what ended the turn (there is no budget since #604
+    # to end it otherwise); the bound left here is anti-hang and says so (#330).
     check_anti_hang(elapsed, bound=10.0, what="the envelope of a child that died mid-turn")
     # The stderr rung: an rpc child that dies writes its diagnosis there and
     # nothing to stdout.
     assert result.details is not None and "child exploded" in result.details
 
 
-async def test_a_turn_that_never_terminates_times_out_and_keeps_the_partial(
+async def test_a_turn_that_never_terminates_is_stopped_and_keeps_the_partial(
     tmp_path: Path,
 ) -> None:
-    """§(j)'s promise: a timed-out delegation still reports what it got."""
+    """§(j)'s promise: a stopped delegation still reports what it got.
+
+    It was the 1.5 s deadline that ended this turn until #604; a delegation has
+    no time limit now, so the turn that never terminates is ended the way a
+    human or a teardown ends one — a ``stop`` — once its partial has reduced.
+    """
 
     hang = _rpc_stub(
         textwrap.dedent(
@@ -465,12 +468,63 @@ async def test_a_turn_that_never_terminates_times_out_and_keeps_the_partial(
     )
     channel = _channel(hang, grace=0.3)
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(_plan(tmp_path, timeout_ms=1500), child=row)
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
+    await wait_until(lambda: row.stream.summary == "partial answer", what="the partial to reduce")
+    await abort_child(row, grace=0.3)
+    result = await asyncio.wait_for(run, 30)
 
-    assert result.status == "timeout"
+    assert result.status == "aborted"
     assert result.ok is False
     assert result.summary == "partial answer"
     assert row.proc is not None and row.proc.returncode is not None
+
+
+async def test_the_turn_has_no_limit_and_only_the_command_answer_keeps_a_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#604 (ADR-0276 D4) — the turn wait is unbounded; a command's answer is not.
+
+    ``prompt_and_wait`` turns a ``None`` or ``0`` budget into pi's 60 s, so a
+    channel that merely stopped passing one would cut every delegation off at a
+    minute. The idle default is shrunk to 50 ms here and the child's turn takes a
+    second: the turn still completes ``ok``, because the channel asks for
+    ``unbounded=True``. And the client is built with ``send_timeout_ms ==
+    RPC_COMMAND_TIMEOUT_MS`` — the bound on a command's own answer, which used
+    to be the whole delegation budget and which a cold real child needs ~25 s of.
+    """
+
+    from aelix_agents import rpc_channel as rpc_channel_module
+    from aelix_coding_agent.rpc.rpc_client import RpcClientOptions
+
+    monkeypatch.setattr(RpcClient, "DEFAULT_WAIT_FOR_IDLE_MS", 50)
+    built: list[RpcClientOptions] = []
+
+    class _Recording(RpcClient):
+        def __init__(self, options: RpcClientOptions, *args: Any, **kwargs: Any) -> None:
+            built.append(options)
+            super().__init__(options, *args, **kwargs)
+
+    monkeypatch.setattr(rpc_channel_module, "RpcClient", _Recording)
+    slow = _rpc_stub(
+        textwrap.dedent(
+            """
+            def script(task):
+                start()
+                time.sleep(1.0)
+                say("worth the wait", input=1, output=1, total_tokens=2)
+                done()
+            """
+        )
+    )
+    channel = _channel(slow, grace=0.5)
+    result = await asyncio.wait_for(
+        channel.run(_plan(tmp_path), child=RunningChild(id="sub-test", profile="scout")), 60
+    )
+
+    assert (result.ok, result.status) == (True, "ok"), result
+    assert result.summary == "worth the wait"
+    assert [o.send_timeout_ms for o in built] == [rpc_channel_module.RPC_COMMAND_TIMEOUT_MS]
+    assert rpc_channel_module.RPC_COMMAND_TIMEOUT_MS == 180_000
 
 
 async def test_a_spawn_that_cannot_exec_becomes_an_envelope(tmp_path: Path) -> None:
@@ -509,7 +563,7 @@ async def test_a_server_that_refuses_the_prompt_becomes_an_envelope(
     )
     channel = _channel(refusing)
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(_plan(tmp_path, timeout_ms=20_000), child=row)
+    result = await channel.run(_plan(tmp_path), child=row)
 
     assert result.ok is False
     assert result.status == "error"
@@ -557,7 +611,7 @@ async def test_a_stop_mid_turn_yields_aborted(tmp_path: Path) -> None:
         await abort_child(row, grace=0.3)
 
     stopper = asyncio.ensure_future(_stop_soon())
-    result = await channel.run(_plan(tmp_path, timeout_ms=30_000), child=row)
+    result = await channel.run(_plan(tmp_path), child=row)
     await stopper
 
     assert result.status == "aborted"
@@ -578,9 +632,7 @@ async def test_cancellation_kills_the_child_and_propagates(tmp_path: Path) -> No
     )
     channel = _channel(hang, grace=0.3)
     row = RunningChild(id="sub-test", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     await wait_until(lambda: row.proc is not None, what="the channel to publish the child")
     # A YIELD, NOT A VERDICT (#330 classified it): a cancel landing at any point
     # after the process is published must kill it and propagate, which is all
@@ -614,9 +666,7 @@ async def test_an_oversize_line_is_dropped_counted_and_the_turn_survives(
         )
     )
     channel = _channel(noisy)
-    result = await channel.run(
-        _plan(tmp_path, timeout_ms=30_000), child=RunningChild(id="s", profile="p")
-    )
+    result = await channel.run(_plan(tmp_path), child=RunningChild(id="s", profile="p"))
 
     assert result.summary == "survived", "the reader did not resync after the drop"
     assert result.dropped_lines == 1
@@ -646,10 +696,20 @@ _LATE_REPORT = _rpc_stub(
                   "tool_call_id": "c1", "args": {"path": "/etc/hosts"}})
             emit({"type": "tool_execution_end", "tool_call_id": "c1",
                   "is_error": False})
+
+        def serve(script):
+            # The ``prompt`` is NEVER answered (#604): the turn's events go out,
+            # and the parent gives up on the COMMAND — the one wait on this path
+            # that still has a bound — while this child is alive to see its
+            # stdin close and report late.
+            for line in sys.stdin:
+                cmd = json.loads(line) if line.strip() else {}
+                if cmd.get("type") == "prompt":
+                    script(cmd.get("message", ""))
         """
     ),
-    # No ``done()`` inside the turn, so the parent times out waiting for a
-    # terminator that only comes after it has stopped waiting.
+    # No ``done()`` inside the turn, so the parent gives up waiting before the
+    # terminator, which only comes after its stdin has been closed.
     tail=(
         "serve(script)\n"
         'emit({"type": "message_end", "message": {'
@@ -663,8 +723,8 @@ _LATE_REPORT = _rpc_stub(
 )
 
 
-async def test_a_timed_out_delegation_reports_what_arrived_during_the_drain(
-    tmp_path: Path,
+async def test_a_delegation_given_up_on_reports_what_arrived_during_the_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The intervention path IS the kill path, so the drain is the payload.
 
@@ -675,23 +735,35 @@ async def test_a_timed_out_delegation_reports_what_arrived_during_the_drain(
     a delegation that HAD a partial answer, a stop reason and a full usage block
     came back as ``(no output)`` with zero tokens.
 
-    ``status`` deliberately stays ``timeout``: ``build_result`` gives the
-    caller's outcome precedence over the stream's ``stop_reason``, so this
-    recovers the ANSWER, not a different verdict.
+    ``status`` deliberately stays the caller's ``error``: ``build_result``
+    gives the caller's outcome precedence over the stream's ``stop_reason``, so
+    this recovers the ANSWER, not a different verdict.
+
+    HOW THE PARENT GIVES UP, since #604. It was the delegation's 2.5 s deadline,
+    and no delegation has one now; ``stop`` and a cancel kill the child, which
+    then has nothing left to write. The one bounded wait left on this path is the
+    COMMAND's answer (:data:`~aelix_agents.rpc_channel.RPC_COMMAND_TIMEOUT_MS`),
+    so this child never answers ``prompt`` and the bound is shortened here — it
+    is read when the client is built. That it fires at all pins the channel to
+    that constant rather than to any other number.
     """
 
+    from aelix_agents import rpc_channel as rpc_channel_module
+
+    monkeypatch.setattr(rpc_channel_module, "RPC_COMMAND_TIMEOUT_MS", 1_500)
     channel = _channel(_LATE_REPORT, grace=0.5)
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(_plan(tmp_path, timeout_ms=2_500), child=row)
+    result = await asyncio.wait_for(channel.run(_plan(tmp_path), child=row), 60)
 
-    assert result.status == "timeout"
+    assert result.status == "error"
+    assert "Timeout waiting for" in (result.error or ""), result.error
     assert result.summary == "half the answer"
     assert result.stop_reason == "aborted"
     assert result.usage.input == 111
     assert result.usage.output == 22
     assert result.usage.tokens == 133
     assert result.usage.turns == 1
-    # The tool events landed BEFORE the deadline, so the trail is the control:
+    # The tool events landed BEFORE the parent gave up, so the trail is the control:
     # it is green either way, and it is what proves the drain added a turn
     # rather than the whole stream having been replayed.
     assert result.tool_trail == "read(/etc/hosts) ok"
@@ -786,9 +858,7 @@ async def test_output_after_the_terminator_cannot_fail_a_finished_turn(
 
     channel = _channel(_ONE_LATE_LINE, grace=0.5)
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(
-        _plan(tmp_path, timeout_ms=30_000), child=row, on_stream=lambda _s: None
-    )
+    result = await channel.run(_plan(tmp_path), child=row, on_stream=lambda _s: None)
 
     assert result.ok is True
     assert result.status == "ok"
@@ -819,9 +889,7 @@ async def test_a_flood_after_the_terminator_cannot_fail_a_finished_turn(
 
     channel = _channel(_FLOOD_AFTER_THE_TERMINATOR, grace=0.5)
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(
-        _plan(tmp_path, timeout_ms=60_000), child=row, on_stream=lambda _s: None
-    )
+    result = await channel.run(_plan(tmp_path), child=row, on_stream=lambda _s: None)
 
     assert result.ok is True
     assert result.status == "ok"
@@ -878,7 +946,7 @@ async def test_a_long_turn_is_not_buffered_for_a_caller_that_discards_it(
     try:
         tracemalloc.reset_peak()
         result = await channel.run(
-            _plan(tmp_path, timeout_ms=90_000),
+            _plan(tmp_path),
             child=RunningChild(id="sub-test", profile="scout"),
         )
         _retained, peak = tracemalloc.get_traced_memory()
@@ -949,10 +1017,11 @@ async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
     indistinguishable on the one path where the child's own words are the only
     diagnosis there will ever be.
 
-    The summary shift is a PROMOTION, not a substitution. ``_select_summary``
-    gates its stderr rung on ``not ok`` and this path is always ``ok=False``, so
-    a traceback can only be displaced by the child's own ``error_message`` — and
-    the traceback still travels in ``details``, asserted below.
+    The summary shift is a PROMOTION, not a substitution. Since #604 (ADR-0276
+    D9) a failed run's summary is the child's own partial text first — what it
+    wrote before it died — and only then its final error or stderr; the
+    traceback still travels in ``details`` and in ``error``, and the child's
+    final error message in ``details``, all asserted below.
 
     ``STARTUP_GRACE_MS`` is widened rather than left at pi's 100 ms because the
     child must provably die INSIDE the window; at 100 ms a loaded box lets it
@@ -983,20 +1052,23 @@ async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
         grace=0.5, argv_builder=lambda *a, **k: [sys.executable, "-c", _BOOT_AND_DIE]
     )
     row = RunningChild(id="sub-test", profile="scout")
-    result = await channel.run(_plan(tmp_path, timeout_ms=10_000), child=row)
+    result = await channel.run(_plan(tmp_path), child=row)
 
     assert result.status == "error"
     assert row.state == "error"
     assert result.exit_code == 9
-    assert result.summary == "rate limited"
+    assert result.summary == "partial child text"
     assert result.usage.input == 11
     assert result.usage.output == 22
     assert result.usage.tokens == 33
     # The drop happened inside the grace AND the events behind it still arrived:
     # the reader resynced at the next newline instead of losing the turn.
     assert result.dropped_lines == 1
-    # Nothing was traded away for it: the process-layer diagnosis is still here.
+    # Nothing was traded away for it: the process-layer diagnosis is still here,
+    # and so is the child's own final error, which the caller's ``error`` (the
+    # dead server) outranks in the resolved chain (D17).
     assert result.details is not None and "boot traceback" in result.details
+    assert "rate limited" in result.details
     assert "boot traceback" in (result.error or "")
 
 
@@ -1485,9 +1557,7 @@ async def test_the_rpc_row_carries_the_clients_tree(
     clients, _ = _spy_the_clients_tree(monkeypatch)
     channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
     row = RunningChild(id="sub-test", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=30_000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     try:
         tree = await _wait_for(lambda: row.tree, "row.tree")
         client = clients[0]
@@ -1578,9 +1648,7 @@ async def test_a_pre_created_reaper_task_still_kills_through_the_tree(
     _clients, spies = _spy_the_clients_tree(monkeypatch, call_through=False)
     channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
     row = RunningChild(id="sub-test", profile="scout")
-    run_task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
-    )
+    run_task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     tree: ProcessTree | None = None
     abort_task: asyncio.Task[None] | None = None
     reap_task: asyncio.Task[int] | None = None
@@ -1714,9 +1782,7 @@ async def test_a_cancelled_delegation_kills_through_the_tree(
     _clients, spies = _spy_the_clients_tree(monkeypatch)
     channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
     row = RunningChild(id="sub-test", profile="scout")
-    task = asyncio.ensure_future(
-        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
-    )
+    task = asyncio.ensure_future(channel.run(_plan(tmp_path), child=row))
     spy: _TreeSpy = await _wait_for(lambda: spies[0] if spies else None, "the tree")
     # The turn in flight, observed (#330 — this was ``sleep(0.3)``): the stub's
     # partial carries ``total_tokens=4``.

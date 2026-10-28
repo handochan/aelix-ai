@@ -12,6 +12,8 @@ import io
 import pytest
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
+    LINGERED_NOTE,
+    LINGERED_REASON,
     NO_OUTPUT,
     STREAM_ENDED_EARLY,
     build_result,
@@ -64,12 +66,18 @@ def test_exit_zero_with_error_stop_reason_is_failure() -> None:
     "error"``. Such a child exits 1 since (ADR-0268), but one from an older
     release does not, and reading only the exit code reports it as a success
     with an empty summary.
+
+    ``final_error`` is set as the reducer sets it for a last message that ended
+    in an error (#604, ADR-0276 D17): it, and not the last-non-empty
+    ``error_message``, is what the summary and the error read.
     """
 
     result = build_result(
         id="s1",
         profile="scout",
-        state=_state(stop_reason="error", error_message="model not found"),
+        state=_state(
+            stop_reason="error", error_message="model not found", final_error="model not found"
+        ),
         outcome="ok",
         exit_code=0,
     )
@@ -77,6 +85,7 @@ def test_exit_zero_with_error_stop_reason_is_failure() -> None:
     assert result.status == "error"
     assert result.summary == "model not found"
     assert result.error == "model not found"
+    assert result.reason == "model not found"
 
 
 def test_nonzero_exit_is_a_failure_even_with_a_clean_stream() -> None:
@@ -137,7 +146,7 @@ def test_aborted_stop_reason_reports_aborted_not_error() -> None:
 def test_recovered_provider_error_does_not_become_the_answer() -> None:
     """QUADRANT: error + RECOVERED. The defect this fix exists for.
 
-    ``_reduce_message_end`` (``stream.py:609-617``) is last-NON-EMPTY-wins per
+    ``_reduce_message_end`` (``stream.py:835-843``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
     auto-retry (``harness/core.py:537-538``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
@@ -149,7 +158,7 @@ def test_recovered_provider_error_does_not_become_the_answer() -> None:
     ``ok=True status='ok'`` with ``summary="Error code: 429 …"`` and the real
     answer stranded in ``details``. ``render_subagent_result`` renders only
     ``summary``, so the PARENT MODEL received the error string as the child's
-    work — and because ``ok`` was True, ``_run_chain`` (``batch.py:399``) did not
+    work — and because ``ok`` was True, ``_run_chain`` (``batch.py:364``) did not
     break and propagated it to the next step as ``{previous}``.
     """
 
@@ -186,6 +195,7 @@ def test_unrecovered_provider_error_is_still_the_summary() -> None:
         state=_state(
             stop_reason="error",
             error_message="Error code: 429 - rate_limit_exceeded",
+            final_error="Error code: 429 - rate_limit_exceeded",
             saw_agent_end=True,
         ),
         outcome="ok",
@@ -199,7 +209,7 @@ def test_unrecovered_provider_error_is_still_the_summary() -> None:
 def test_child_that_died_mid_turn_is_not_a_success() -> None:
     """QUADRANT: mid-turn death with exit 0.
 
-    ``agent_end`` is the child's own terminator (``stream.py:262-266``). A
+    ``agent_end`` is the child's own terminator (``stream.py:276-280``). A
     JSON-mode child whose harness was torn down emits a good ``message_end`` and
     exits **0** without one; before this fix that returned
     ``ok=True status='ok'`` for a run that never finished.
@@ -226,7 +236,7 @@ def test_missing_terminator_is_not_evidence_once_a_line_was_dropped() -> None:
     """QUADRANT: the TRAP — a SUCCESSFUL child whose terminator was too big.
 
     ``agent_end`` carries the entire message array on ONE line
-    (``stream.py:595-601``), so a child that read a multi-megabyte file emits a
+    (``stream.py:821-827``), so a child that read a multi-megabyte file emits a
     terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a run
     that finished perfectly. Measured with a real child: ``saw_agent_end=False,
     dropped_lines=1, exit 0``.
@@ -249,7 +259,12 @@ def test_missing_terminator_is_not_evidence_once_a_line_was_dropped() -> None:
 
 @pytest.mark.parametrize("outcome", ["timeout", "aborted", "error"])
 def test_caller_outcome_is_never_loosened(outcome: str) -> None:
-    """The process layer's verdict is a floor: a clean stream cannot undo it."""
+    """The process layer's verdict is a floor: a clean stream cannot undo it.
+
+    ``timeout`` stays in the matrix although no bundled channel proposes it
+    since #604 (ADR-0276 D7): the literal is kept, and a third-party channel may
+    still propose it, so ``build_result`` must still treat it as a floor.
+    """
 
     result = build_result(
         id="s1",
@@ -264,7 +279,13 @@ def test_caller_outcome_is_never_loosened(outcome: str) -> None:
 
 
 def test_timeout_carries_the_partial_summary_and_usage() -> None:
-    """A timeout returns what the child managed, never an exception (§9.4)."""
+    """A timeout returns what the child managed, never an exception (§9.4).
+
+    No bundled channel produces ``timeout`` any more (#604, ADR-0276 D7) — a
+    delegation has no time limit. The outcome stays readable because the
+    literal is kept for old settle records and a third-party channel may still
+    propose it; what this pins is that such an envelope keeps the partial.
+    """
 
     result = build_result(
         id="s1",
@@ -280,50 +301,195 @@ def test_timeout_carries_the_partial_summary_and_usage() -> None:
     assert result.elapsed_ms == 1500
 
 
+# --- a child that closed its output and did not exit (#604, ADR-0276 D4) ----
+
+
+def test_a_finished_stream_reaped_after_the_post_eof_bound_stays_ok_with_a_note() -> None:
+    """``lingered=True`` with the terminator and a clean stop reason is a FINISHED run.
+
+    The exit code is the reaper's (``-15`` here), not the child's verdict: the
+    child closed both pipes after ``agent_end`` and then failed to exit, so it
+    was stopped. Failing the run on that code would put "error" over a whole
+    answer and invite the parent to redo it; the fact goes in ``note`` instead,
+    never in ``error`` (every renderer prints ``error`` as a failure).
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(summary="the complete answer", stop_reason="end_turn", saw_agent_end=True),
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+    )
+    assert (result.ok, result.status) == (True, "ok")
+    assert result.summary == "the complete answer"
+    assert result.note == LINGERED_NOTE
+    assert result.error is None
+    assert result.exit_code == -15
+
+
+@pytest.mark.parametrize(
+    ("saw_agent_end", "stop_reason", "dropped_lines", "final_error", "expected_error"),
+    [
+        # EOF before the terminator: the stream says the turn was cut.
+        (False, "end_turn", 0, None, STREAM_ENDED_EARLY),
+        # The terminator may have been the dropped line: no evidence either way.
+        (False, "end_turn", 1, None, None),
+        (True, "error", 0, "the provider failed", "the provider failed"),
+        (True, "aborted", 0, None, None),
+    ],
+)
+def test_a_lingering_child_that_had_not_finished_is_an_error_with_the_lingering_reason(
+    saw_agent_end: bool,
+    stop_reason: str,
+    dropped_lines: int,
+    final_error: str | None,
+    expected_error: str | None,
+) -> None:
+    """Anything less than a clean terminator is ``error``, its REASON :data:`LINGERED_REASON`.
+
+    ``error`` even over the child's own ``aborted`` stop reason: what the parent
+    observed is a child that would not exit. And a terminator that may have been
+    dropped as an oversize line proves nothing, so it does not count either.
+
+    Since D10 the sentence is the ``reason``, not the ``error`` (#604, ADR-0276):
+    ``error`` holds what the run itself left (D17) — never the exit code, which
+    is the REAPER's ``-15`` and no diagnosis of the child.
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(
+            summary="half of it",
+            stop_reason=stop_reason,
+            saw_agent_end=saw_agent_end,
+            dropped_lines=dropped_lines,
+            final_error=final_error,
+        ),
+        outcome="ok",
+        exit_code=-15,
+        lingered=True,
+    )
+    assert (result.ok, result.status) == (False, "error")
+    assert result.reason == LINGERED_REASON
+    assert result.error == expected_error
+    assert result.note is None
+
+
+def test_a_stop_during_the_post_eof_wait_stays_aborted() -> None:
+    """``lingered`` is read only beside ``outcome="ok"``: the caller's stop wins."""
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(summary="done", stop_reason="end_turn", saw_agent_end=True),
+        outcome="aborted",
+        exit_code=-15,
+        lingered=True,
+    )
+    assert (result.ok, result.status) == (False, "aborted")
+    assert result.note is None
+
+
+def test_without_lingered_a_signal_exit_still_fails_a_finished_stream() -> None:
+    """The exemption is the channel's statement, never inferred from the stream.
+
+    The same finished stream with the same ``-15`` and no ``lingered`` is a
+    child something else killed, and stays a failure.
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(summary="the complete answer", stop_reason="end_turn", saw_agent_end=True),
+        outcome="ok",
+        exit_code=-15,
+    )
+    assert (result.ok, result.status) == (False, "error")
+    assert result.note is None
+
+
+def test_the_lingered_texts_name_the_channels_own_bound() -> None:
+    """``envelope`` cannot import the channel that owns the bound, so the two are held here."""
+
+    from aelix_agents.print_channel import POST_EOF_EXIT_BOUND_SECONDS
+
+    spelled = f"within {POST_EOF_EXIT_BOUND_SECONDS:g} s"
+    assert spelled in LINGERED_NOTE
+    assert spelled in LINGERED_REASON
+
+
 # --- the fallback chain -----------------------------------------------------
 
 
 def test_fallback_chain_order() -> None:
-    """``error_message`` → sanitized stderr → extracted summary → sentinel.
+    """On a failure: partial answer → final error → sentinel; stderr is the error.
 
-    Each rung is exercised with everything below it also present, so a
-    reordering cannot pass.
+    ADR-0276 D9 (#604) reversed the first half of this chain. It used to be
+    ``error_message`` → stderr → summary, so a child's partial answer lost to
+    any diagnosis — including the "Request aborted" a real child prints when the
+    parent stops it. Each rung is exercised with everything below it also
+    present, so a reordering cannot pass; and every rung the summary passes
+    over still reaches the model through ``error`` (D17), which is pinned beside
+    each one. The stderr is no summary rung of a failure at all (#604 review):
+    as one, a child with no API key read "Partial result: No API key found…"
+    over "Error: exited with code 1" — the diagnosis presented as its work.
     """
 
-    both = build_result(
+    everything = build_result(
         id="s",
         profile="p",
-        state=_state(summary="stream text", error_message="the real reason"),
+        state=_state(summary="stream text", final_error="the real reason"),
         outcome="error",
         exit_code=1,
         stderr_tail="stderr says something else",
     )
-    assert both.summary == "the real reason"
+    assert everything.summary == "stream text"
+    assert everything.error == "the real reason"
 
-    no_error_message = build_result(
+    no_partial = build_result(
         id="s",
         profile="p",
-        state=_state(summary="stream text"),
+        state=_state(final_error="the real reason"),
         outcome="error",
         exit_code=1,
         stderr_tail="stderr says something else",
     )
-    assert no_error_message.summary == "stderr says something else"
+    assert no_partial.summary == "the real reason"
 
-    no_stderr = build_result(
+    no_final_error = build_result(
         id="s",
         profile="p",
-        state=_state(summary="stream text"),
+        state=_state(),
         outcome="error",
         exit_code=1,
-        stderr_tail="",
+        stderr_tail="stderr says something else",
     )
-    assert no_stderr.summary == "stream text"
+    # The child wrote nothing: the stderr is its diagnosis, not its text.
+    assert no_final_error.summary == NO_OUTPUT
+    assert no_final_error.error == "stderr says something else"
+    assert no_final_error.reason == "stderr says something else"
 
     nothing = build_result(
         id="s", profile="p", state=_state(), outcome="error", exit_code=1
     )
     assert nothing.summary == NO_OUTPUT
+    assert nothing.error == "exited with code 1"
+
+    # A STALE error — one the stream carried but the last message did not end
+    # in — is no rung at all: not the summary, not the error, only details.
+    stale = build_result(
+        id="s",
+        profile="p",
+        state=_state(summary="stream text", error_message="Error code: 429"),
+        outcome="error",
+        exit_code=1,
+    )
+    assert stale.summary == "stream text"
+    assert stale.error == "exited with code 1"
+    assert stale.details is not None and "Error code: 429" in stale.details
 
 
 def test_empty_stream_uses_stderr() -> None:
@@ -331,7 +497,9 @@ def test_empty_stream_uses_stderr() -> None:
 
     A child launched with no API key exits 1 having written **zero** stdout
     bytes — not even the session header — so the reduced state is completely
-    empty and stderr is the only thing that can explain the failure.
+    empty and stderr is the only thing that can explain the failure. It
+    explains it as the run's ``error`` and ``reason`` (#604 review), which every
+    renderer prints; the summary says the child wrote nothing.
     """
 
     result = build_result(
@@ -343,7 +511,9 @@ def test_empty_stream_uses_stderr() -> None:
         stderr_tail="Error: no API key configured for provider 'anthropic'\n",
     )
     assert result.ok is False
-    assert "no API key" in result.summary
+    assert result.summary == NO_OUTPUT
+    assert result.error is not None and "no API key" in result.error
+    assert result.reason == "Error: no API key configured for provider 'anthropic'"
 
 
 def test_successful_run_keeps_its_summary_despite_stderr_noise() -> None:
@@ -468,7 +638,9 @@ def test_real_errors_are_not_stripped_on_a_crash() -> None:
     result = build_result(
         id="s", profile="p", state=_state(), outcome="error", exit_code=1, stderr_tail=crash
     )
-    assert "ValueError: bad" in result.summary
+    assert result.error == crash
+    # The reason is the exception line, never the traceback's header (#604 review).
+    assert result.reason == "ValueError: bad"
 
 
 def test_sanitize_stderr_is_a_no_op_off_the_kill_paths() -> None:
@@ -993,7 +1165,7 @@ def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
 #   [agent explorer · 型型型型型型型型型型型型型型型型型型型型型型型型型型型型 …
 #
 # ``result.model`` is read verbatim off the child's own ``message_end``
-# (``stream.py:621-623`` accepts ANY non-empty ``str``), so the child chooses that
+# (``stream.py:855-857`` accepts ANY non-empty ``str``), so the child chooses that
 # string — which means a compromised child could hide its own ``error`` status and
 # the ``yolo`` posture it ran under, from its own result card.
 

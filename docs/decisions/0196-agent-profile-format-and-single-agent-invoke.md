@@ -2,6 +2,9 @@
 
 Status: Accepted (2026-07-19) — owner-ratified architecture. Design record that
 lands with the P1 implementation (same pattern as ADR-0186/0187/0188/0189).
+Amended 2026-10-28 (ADR-0276, #604): `timeout_ms` is parsed only to warn that it is
+ignored — a delegation has no time limit — and a bad value no longer drops the
+profile; the field stays (deprecated) for RPC `agents/show`.
 Amended 2026-10-14 (#412): `/agents use` where no `model:`/`provider:` of the profile
 applies (or `--none`) keeps the live model (§D8; `## Amendment (2026-10-14, #412)` at
 the end).
@@ -129,6 +132,10 @@ Field semantics that close a measured defect:
   are parsed and validated in P1 but consumed by nobody**, so the format never
   changes shape between phases. This is explicitly NOT the same as shipping a
   field that is *plumbed but inert at runtime* — see §D6.3.
+  *Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)):
+  `timeout_ms` is no longer validated as a positive integer: any value is one
+  `unknown_field` warning and the profile loads; the parsed integer is kept on the
+  field and read by nothing but the spawn-time warning (ADR-0276 D2).*
 
 ### D2. Discovery, scope, and effective-scope-by-containment
 
@@ -506,6 +513,7 @@ Two honest limitations, surfaced to the user rather than hidden:
   cross-channel parity test (spec §9 bullet 4).
 - **`role`, `output_cap`, `timeout_ms`, `approval_mode` are validated but
   unconsumed** until P2/P3, and `/agents show` must not imply otherwise.
+  (*`timeout_ms` is unconsumed again since ADR-0276, #604 — on purpose.*)
 - **Spec corrections applied in this change** (so the wrong citation is not
   propagated into P2): §1 line 35 claimed the skill parser/validator "already
   lives in product-core (`harness/skills.py:59-77`, wired from `entry.py:1426`)"
@@ -544,7 +552,8 @@ the sections above:
   diagnostic at all (`cli/args.py:504`/`:510`/`:513`).
 - **"`role`, `output_cap`, `timeout_ms`, `approval_mode` are validated but
   unconsumed"** — `output_cap`, `timeout_ms` and `approval_mode` are consumed in
-  P2 (§(k), §(k), §(e) respectively). **`role` is not.** It is wired into the
+  P2 (§(k), §(k), §(e) respectively; `timeout_ms` is no longer consumed since
+  ADR-0276, #604 — a delegation has no time limit). **`role` is not.** It is wired into the
   child's `AELIX_SUBAGENT_DEPTH` but is **arithmetically inert** at the shipped
   `MAX_SUBAGENT_DEPTH = 1`, where both `leaf` and `orchestrator` yield `1` — and
   `profile.py:208` defaults every profile to `leaf` regardless. `/agents show`

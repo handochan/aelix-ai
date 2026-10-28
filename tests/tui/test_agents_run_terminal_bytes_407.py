@@ -193,7 +193,7 @@ async def test_run_exception_text_cannot_steer_the_terminal(failure: str) -> Non
                 raise ValueError(hostile)
             return object()
 
-        async def spawn(self, resolved: object, task: str) -> SubagentResult:
+        async def spawn(self, resolved: object, task: str, **_: Any) -> SubagentResult:
             raise ValueError(hostile)
 
     async def select(*args: Any, **kwargs: Any) -> str:

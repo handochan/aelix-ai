@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1162``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1163``,
 # ``rpc/rpc_mode.py:1630``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -188,17 +188,18 @@ _SEAM_CONSTANTS = frozenset(
     }
 )
 
-# The nine caps P3 introduces, every one of which belongs to ``aelix_agents``.
-# (a) above catches a NEW cap invented in product-core; this catches one of OURS
-# being moved there — the likelier accident, because ADR-0199 tells the reader
-# these numbers exist and ``subagent_contract.py`` looks like where constants go.
-# All nine were verified absent from product-core before this gate was written.
+# The caps P3 introduces that still exist, every one of which belongs to
+# ``aelix_agents``. (a) above catches a NEW cap invented in product-core; this
+# catches one of OURS being moved there — the likelier accident, because ADR-0199
+# tells the reader these numbers exist and ``subagent_contract.py`` looks like
+# where constants go. All nine P3 caps were verified absent from product-core
+# before this gate was written; #604 (ADR-0276) then deleted two of them,
+# ``MAX_BATCH_WALL_MS`` and ``MAX_TIMEOUT_MS``, with every other delegation time
+# limit, so seven remain.
 _P3_CAP_NAMES = frozenset(
     {
         "MAX_CONCURRENCY",
         "MAX_PARALLEL_TASKS",
-        "MAX_BATCH_WALL_MS",
-        "MAX_TIMEOUT_MS",
         "MAX_TASK_BYTES",
         "MAX_DELEGATIONS_PER_PROMPT",
         "MAX_LIVE_CHILDREN",
@@ -1092,7 +1093,7 @@ def test_the_p3_cap_names_never_appear_in_product_core() -> None:
                 hits.append(f"{rel}:{node.lineno}: {bound}")
 
     assert hits == [], (
-        "a P3 delegation cap has moved into product-core. These nine numbers "
+        "a P3 delegation cap has moved into product-core. These seven numbers "
         "are aelix_agents' policy (ADR-0199); product-core carries the "
         f"CONTRACT and no bounds of its own (ADR-0197 §1.2): {hits}"
     )

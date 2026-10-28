@@ -3,6 +3,11 @@
 Status: Accepted (2026-07-31) — owner-ratified protocol fork (D2), owner-ratified
 band reading (D1), owner-ratified kernel scope (D3/D4). Design record that lands
 **after** the implementation, deliberately: see *Why this record was written last*.
+**Amended 2026-10-28 (ADR-0276, #604): a delegation has no budget. Row 5 of the
+turn contract no longer happens on the delegation channel, `send_timeout_ms` is
+`RPC_COMMAND_TIMEOUT_MS = 180_000` rather than the delegation budget, and the
+turn is awaited with no limit (`prompt_and_wait(unbounded=True)`) — see the
+dated notes under the contract table and the seam table.**
 **Amended 2026-09-19 (ADR-0243, #199): the channel's own session flag is
 `--session <path>` when the parent allocated a child file — see the note under
 *Two argv/env decisions that are not obvious*.**
@@ -155,6 +160,12 @@ sixth is the one it did not, and it is the one that costs the most.**
 | 5 | The caller's budget expired | nothing; the parent's own deadline fires |
 | 6 | **The child process died** | **nothing at all, until the fix below** |
 
+*Amended 2026-10-28 by [ADR-0276](0276-delegation-has-no-time-limit.md) ([#604](https://github.com/handochan/aelix-ai/issues/604)): the
+delegation channel has no budget, so row 5 no longer happens there: the turn is
+awaited through `prompt_and_wait(unbounded=True)` and ends on rows 1-4, on row 6's
+death leg, or on the caller's cancellation. `RpcClient`'s own default (pi's 60 s
+for `None`/`0`) is unchanged for every other caller (ADR-0276 D4).*
+
 *Amended 2026-10-21 by [ADR-0268](0268-json-mode-exits-1-when-the-last-answer-failed.md)
 ([#410](https://github.com/handochan/aelix-ai/issues/410)): row 2's **exit code 0**
 holds for an rpc child (its exit code is its server's end, not the turn's) and for a
@@ -198,7 +209,8 @@ grace aelix already ported. MEASURED without the fix: a child exiting at 400 ms
 left `prompt_and_wait(timeout_ms=5000)` blocked for **5.02 s** and then raised a
 bare `TimeoutError()` with empty args, while `proc.returncode == 7` had been
 readable the entire time. At the idle default that is 60 s; at a delegation budget
-it is ten minutes. Every reason a real child dies — a bad `--tools` name (measured:
+it was ten minutes — and with no budget since ADR-0276 (#604), the death leg is
+what ends a delegation's turn wait on a dead child at all. Every reason a real child dies — a bad `--tools` name (measured:
 an uncaught traceback in rpc mode, so the child dies *before the transport
 exists*), no API key, an import error, an OOM kill — lands outside the 100 ms
 window.
@@ -560,7 +572,7 @@ real cost and this record does not hide it.
 | `RpcClientOptions.env_base` | a complete environment, because `env` can only add or overwrite — a DELETION was inexpressible, which made the mandatory `AELIX_MCP_CONFIG` pop impossible and every child would fan out its own copy of every configured MCP server |
 | `RpcClientOptions.preexec_fn` | the parent-death signal, whose implementation lives in band 3 and which product-core may not import |
 | `RpcClientOptions.raise_on_command_error` | row 4 above |
-| `RpcClientOptions.send_timeout_ms` | a cold real child is ~25 s to its read loop, ~18.6 s of it import time; pi's 30 s default made that a coin flip |
+| `RpcClientOptions.send_timeout_ms` | a cold real child is ~25 s to its read loop, ~18.6 s of it import time; pi's 30 s default made that a coin flip. *Amended 2026-10-28 (ADR-0276, #604): the channel sets `RPC_COMMAND_TIMEOUT_MS = 180_000`, a bound on a command's answer, not the delegation budget it used to be; a command that times out is an `error`* |
 | `RpcClient.process` | the reaper, the descendant walk and the registry row all take a `Process`, and none can be built from the public surface otherwise |
 
 `start_new_session=True` is **not** a seam — it is unconditional, because without

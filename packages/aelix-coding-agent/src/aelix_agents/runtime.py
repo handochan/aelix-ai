@@ -43,9 +43,11 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.agents.discovery import ProfileError
@@ -61,6 +63,7 @@ from aelix_coding_agent.subagent_contract import (
     SubagentResult,
     SubagentStatus,
 )
+from aelix_coding_agent.tools._path_utils import resolve_to_cwd
 
 from aelix_agents.child_session import (
     TASK_PREVIEW_CHARS,
@@ -68,7 +71,12 @@ from aelix_agents.child_session import (
     append_records,
 )
 from aelix_agents.consent import SpawnGrant, request_spawn_consent
-from aelix_agents.envelope import declined_result
+from aelix_agents.envelope import (
+    DEFAULT_OUTPUT_CAP,
+    REASON_CANCELLED,
+    build_result,
+    declined_result,
+)
 from aelix_agents.posture import posture_rank
 from aelix_agents.print_channel import (
     PrintChannel,
@@ -77,9 +85,11 @@ from aelix_agents.print_channel import (
     SubagentChannel,
     abort_child,
     apply_cost_fallback,
+    narrow_tools,
     resolve_child_cwd,
 )
 from aelix_agents.prompt_file import remove_prompt_dir
+from aelix_agents.stream import path_for_display, written_paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -125,7 +135,7 @@ _SESSION_DRAINING = (
 
 WITHOUT IT, ``stop_all`` CANNOT STOP A BATCH — it makes it bigger. Every abort
 ``stop_all`` performs RELEASES a member parked on the batch semaphore
-(``batch.py:467-470``), and every ``await`` in ``stop_all`` is a chance for that
+(``batch.py:435-438``), and every ``await`` in ``stop_all`` is a chance for that
 member to reach ``create_subprocess_exec``. Draining alone is not enough and a
 flag held only FOR THE DURATION of the drain is not enough either: MEASURED with
 real processes, a wave-1 member's ``PrintChannel.run`` routinely returns — and
@@ -140,7 +150,7 @@ SESSION IS ALIVE AGAIN — the next user prompt
 (:meth:`~_SubagentRuntimeImpl.reset_delegation_budget`, called from
 ``AgentsExtension._on_before_agent_start``) or a human typing ``/agents run``
 (:meth:`~_SubagentRuntimeImpl.spawn`). Both matter, because the SAME runtime
-instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:188-190``) and
+instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:193-195``) and
 every one of those emits ``session_shutdown`` first.
 
 The check is not an ``await``, so it does not disturb ``_run``'s critical
@@ -166,9 +176,10 @@ MAX_LIVE_CHILDREN = 4
 """Live delegations one session may hold at once (P2 review, MEDIUM #2).
 
 A RESOURCE bound, applied to BOTH doors. Every row in :attr:`_children` is a
-real ``-m aelix_coding_agent`` process holding the parent's API keys, its own
-provider connections and up to :data:`~aelix_agents.print_channel.DEFAULT_TIMEOUT_MS`
-(10 minutes) of wall clock.
+real ``-m aelix_coding_agent`` process holding the parent's API keys and its own
+provider connections — and, since #604 (ADR-0276), no wall-clock limit of its
+own: it used to be released after at most 10 minutes, and now holds its slot
+until the child finishes or a human stops it.
 
 FOUR, AND IT IS THE NUMBER THE BATCH SEMAPHORE IS CALIBRATED AGAINST. P2
 justified four on the grounds that "P2's shape already serialises the common
@@ -410,6 +421,116 @@ class SpawnRecordMeta:
     """0-based position in the call (``batch._member``'s index); 0 in single
     mode. ``None`` on the template ``run_batch`` receives, before a member is
     bound to one."""
+    envelopes: CallEnvelopes | None = field(default=None, compare=False, repr=False)
+    """Where ``_run`` leaves every envelope of the call, keyed by :attr:`index`
+    (#604, ADR-0276 D14). The fourth thing only the caller knows: what the call
+    will need if it is CANCELLED.
+
+    A cancelled ``agent`` call returns no ``ToolResult`` — the cancel propagates
+    through the tool, the turn ends, and the next turn's provider transform
+    answers the orphaned tool call with "No result provided". So the extension
+    passes a :class:`CallEnvelopes` here, ``_run`` fills it — the channel's
+    envelope when one came back, one built from the live stream when the spawn
+    was cancelled, and a way to build that one while the member is still
+    running — and the extension's ``except asyncio.CancelledError`` reports
+    what it holds on the next turn. One collector per call: ``batch._member``
+    copies the record with ``dataclasses.replace``, which shares it, so every
+    member lands in the same one under its own index.
+
+    ``None`` — ``/agents run`` and RPC ``agents/run``, which pass no record, and
+    every caller before #604 — collects nothing. Excluded from equality: it is a
+    mailbox, not a fact about the spawn."""
+
+
+class CallEnvelopes:
+    """One ``agent`` call's envelopes, for the report its cancel leaves (ADR-0276 D14).
+
+    Two kinds of entry, both keyed by member index:
+
+    * a FINAL envelope (:meth:`leave`) — the channel's when the member came back,
+      or the one ``_run`` built from the live stream on its way out of a cancel;
+    * a BUILDER (:meth:`watch`) — registered by ``_run`` as soon as it holds the
+      member's :class:`~aelix_agents.print_channel.RunningChild`, and replaced by
+      the final envelope when ``_run`` leaves one (or dropped, :meth:`forget`,
+      when it leaves none).
+
+    THE BUILDERS ARE WHY A BATCH REPORT IS WHOLE (#604 review). A parallel batch
+    awaits ``asyncio.gather(..., return_exceptions=False)``, and CPython's
+    ``gather`` sets its outer future's exception from its ``_done_callback`` as
+    soon as the FIRST child finishes cancelled — it does not wait for the
+    others. So the extension's ``except asyncio.CancelledError`` runs, and reads
+    this collector, while a member whose cancellation cleanup is slower (a reap,
+    a pipe-holding helper, a shielded settle append) has not reached ``_run``'s
+    ``finally`` yet. Without a builder that member had no envelope at that
+    moment and was reported as "had no agent running" — its partial answer,
+    trail and session lost. :meth:`snapshot` builds its envelope from the live
+    stream instead, synchronously. The report is built when the cancel reaches
+    the extension — in a batch once ``gather``'s outer future completes, which
+    is after the FASTEST member's own cancellation has finished; in single mode
+    after its one member's — and nothing on that path waits for the slower
+    members (D14's no-``await`` rule, the #351 family).
+
+    A third fact is kept for the members that end with NEITHER (:meth:`lost`):
+    a member that had a process and whose run then ended on an exception rather
+    than the cancel leaves no envelope, and the report must not say it "had no
+    agent running" (#604 review round 2).
+    """
+
+    __slots__ = ("_final", "_live", "_lost")
+
+    def __init__(self) -> None:
+        self._final: dict[int, SubagentResult] = {}
+        self._live: dict[int, Callable[[], SubagentResult | None]] = {}
+        self._lost: set[int] = set()
+
+    def watch(self, index: int, build: Callable[[], SubagentResult | None]) -> None:
+        """Member ``index`` is running: ``build`` makes its cancelled envelope now,
+        or returns ``None`` while it has no process. A final envelope, when there
+        is one, always wins (:meth:`snapshot`)."""
+
+        self._live[index] = build
+
+    def leave(self, index: int, result: SubagentResult) -> None:
+        """Member ``index``'s final envelope; it replaces any builder."""
+
+        self._final[index] = result
+        self._live.pop(index, None)
+
+    def forget(self, index: int, *, had_process: bool = False) -> None:
+        """Member ``index``'s run is over: drop its builder. When it left no
+        envelope and ``had_process``, it is :meth:`lost`."""
+
+        self._live.pop(index, None)
+        if had_process and index not in self._final:
+            self._lost.add(index)
+
+    def lost(self) -> frozenset[int]:
+        """The members that had a process and ended without an envelope — their
+        run raised something other than the cancel. Their work cannot be
+        reported, but they did run."""
+
+        return frozenset(self._lost)
+
+    def snapshot(self) -> dict[int, SubagentResult]:
+        """Every member's envelope as of NOW. Synchronous and total.
+
+        A final envelope where one was left; otherwise the builder's, for a member
+        still on its way out — skipped when the builder has no process to report
+        or cannot build one.
+        """
+
+        envelopes = dict(self._final)
+        for index, build in list(self._live.items()):
+            if index in envelopes:
+                continue
+            try:
+                result = build()
+            except Exception:  # noqa: BLE001 — a report never costs the cancel
+                logger.debug("could not build member %s's envelope", index, exc_info=True)
+                continue
+            if result is not None:
+                envelopes[index] = result
+        return envelopes
 
 
 @dataclass
@@ -428,7 +549,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:742``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:745``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -439,7 +560,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:360``/``tool.py:763`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:559``/``tool.py:749`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -490,7 +611,7 @@ class _SubagentRuntimeImpl:
         user prompt is the evidence that the session ``stop_all`` tore down is
         alive again — and it has to be somebody's job, because the same runtime
         instance survives ``/new`` / ``/fork`` / ``/resume``
-        (``extension.py:188-190``) and each of those emits ``session_shutdown``
+        (``extension.py:193-195``) and each of those emits ``session_shutdown``
         first, so a permanently-shut door would silently kill delegation for the
         rest of the process.
         """
@@ -611,16 +732,21 @@ class _SubagentRuntimeImpl:
         """The USER-TYPED door (``/agents run``) — takes its own consent.
 
         A declined dialog yields ``SubagentResult(status="declined", ok=False)``
-        — never an exception, never a silent spawn. The consent wait is OUTSIDE
-        the child's timeout budget by construction: no process exists while the
-        modal is open, so a human thinking at it cannot burn the child's clock.
+        — never an exception, never a silent spawn.
+
+        ``timeout_ms`` is ACCEPTED AND NEVER READ (#604, ADR-0276 D6). The
+        Protocol keeps it so an existing caller does not break, and nothing
+        forwards it: a delegation has no time limit. ``/agents run`` ends one
+        by cancelling this coroutine (the TUI's interrupt), which kills the
+        child exactly as a cancelled ``agent`` call does.
         """
 
+        del timeout_ms  # deprecated on the Protocol; see the docstring
         _reject_unsupported(mode, background=background)
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
         # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
         # emit ``session_shutdown`` on a runtime instance that SURVIVES them
-        # (``extension.py:188-190``), and the user's next act may well be this
+        # (``extension.py:193-195``), and the user's next act may well be this
         # command rather than a prompt — refusing it would be a bug the user
         # cannot diagnose. It is not a bypass: :meth:`_reopen` declines while a
         # ``stop_all`` is still executing.
@@ -678,7 +804,6 @@ class _SubagentRuntimeImpl:
                 resolved,
                 task,
                 child_cwd=child_cwd,
-                timeout_ms=timeout_ms,
                 on_event=on_event,
                 # THE USER-TYPED DOOR IS UNBUDGETED. A human typing
                 # ``/agents run`` is already the gate, and rate-limiting them
@@ -700,7 +825,6 @@ class _SubagentRuntimeImpl:
         *,
         cwd: str | None = None,
         mode: SubagentMode = "single",
-        timeout_ms: int | None = None,
         background: bool = False,
         permission_floor: PermissionMode | None = None,
         on_event: Callable[[SubagentProgress], None] | None = None,
@@ -759,7 +883,6 @@ class _SubagentRuntimeImpl:
             resolved,
             task,
             child_cwd=child_cwd,
-            timeout_ms=timeout_ms,
             permission_floor=permission_floor,
             on_event=on_event,
             charge_budget=True,
@@ -810,7 +933,7 @@ class _SubagentRuntimeImpl:
         been aborted there was nothing left that could start another, and a
         single pass followed by ``self._children.clear()`` was correct. Under P3
         a batch's later waves are parked on the batch semaphore and are released
-        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:467-470``): killing
+        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:435-438``): killing
         wave 1 frees four permits, wave 2 reaches ``create_subprocess_exec``
         during this method's own ``await``\\ s, and the unconditional ``clear()``
         then dropped the only handle on them. Measured, with real processes:
@@ -877,7 +1000,6 @@ class _SubagentRuntimeImpl:
         task: str,
         *,
         child_cwd: str,
-        timeout_ms: int | None,
         on_event: Callable[[SubagentProgress], None] | None,
         permission_floor: PermissionMode | None = None,
         charge_budget: bool,
@@ -930,6 +1052,11 @@ class _SubagentRuntimeImpl:
         and a default would let a future third door pick one silently.
         """
 
+        # BOTH DOORS PASS HERE, so this is the one place a profile's ignored
+        # ``timeout_ms`` can be named at spawn time (ADR-0276 D2). Above the
+        # admission block on purpose: it is not part of that critical section,
+        # and it must not sit between the registry insert and the ``try``.
+        _warn_ignored_timeout(resolved)
         # THE DRAIN GATE, ABOVE EVERY OTHER ADMISSION (see
         # :data:`_SESSION_DRAINING`). A batch member released by ``stop_all``'s
         # own aborts arrives HERE, and if it gets a process the teardown it was
@@ -994,7 +1121,6 @@ class _SubagentRuntimeImpl:
             # evidence" and costs the child only its inheritance (no
             # ``--thinking``, the pre-#354 argv), never its spawn.
             parent_thinking=self._parent_thinking(),
-            timeout_ms=timeout_ms,
         )
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)
         # THE RECEIPT (#199). Built here, with no ``await``, so it exists on every
@@ -1015,6 +1141,15 @@ class _SubagentRuntimeImpl:
         settled = False
         failure: BaseException | None = None
         try:
+            # THE CALL CAN REPORT THIS CHILD BEFORE THIS FRAME ENDS (D14, #604
+            # review): a batch's cancel reaches the extension as soon as its
+            # FIRST member ends cancelled, while this one may still be reaping.
+            # Late-bound on purpose — ``plan`` is replaced below once the
+            # receipt has a session, and the builder must see that one.
+            _watch_envelope(
+                record,
+                lambda: self._cancelled_envelope(child=child, receipt=receipt, plan=plan),
+            )
             await receipt.open(self._parent_session(), cwd=child_cwd)
             if receipt.child is not None:
                 plan = dataclasses.replace(plan, session_path=receipt.child.path)
@@ -1031,6 +1166,13 @@ class _SubagentRuntimeImpl:
                     "__post_init__ built the default"
                 )
             result = await channel.run(plan, child=child, on_stream=_emit)
+            # What only THIS frame knows (ADR-0276 D8): whether a process
+            # existed, the receipt's session, and the written paths resolved
+            # against the child's directory. Synchronous and total.
+            result = self._with_run_facts(result, child=child, receipt=receipt, plan=plan)
+            # Left for the call BEFORE the append: a cancel that lands inside
+            # the append still has this envelope to report (D14).
+            _leave_envelope(record, result)
             # Built BEFORE the append, so a cancel that lands inside a yielding
             # append still settles with what the envelope said — not with a
             # ``cancelled`` guess about a delegation that had already finished.
@@ -1049,13 +1191,27 @@ class _SubagentRuntimeImpl:
                         if closing is not None
                         else self._unsettled_records(receipt, child, failure)
                     )
+                    if closing is None and isinstance(failure, asyncio.CancelledError):
+                        # THE CANCELLED SPAWN'S ENVELOPE (ADR-0276 D14), built
+                        # from the live stream — priced one line up — with NO
+                        # ``await``, and before the shielded append: a second
+                        # Ctrl+C releases that wait, and nothing after it in
+                        # this ``try`` is certain to run.
+                        self._leave_cancelled_envelope(
+                            record, child=child, receipt=receipt, plan=plan
+                        )
                     await _shielded_append(receipt.session, records, self._settling)
             finally:
+                # A run that left no envelope (no process, or an exception out
+                # of the channel) must not be built later from a dead row — and
+                # one that had a process is remembered as having run (#604
+                # review round 2), so the report does not call it never started.
+                _forget_envelope(record, had_process=child.proc is not None)
                 self._children.pop(spawn_id, None)
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:203``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:207``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
                 # own ``try`` (``print_channel.py:1113-1114``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
@@ -1151,6 +1307,142 @@ class _SubagentRuntimeImpl:
             logger.debug("could not build the settle for %s", receipt.key, exc_info=True)
             return receipt.bare_records(child.stream, status=status)
 
+    def _with_run_facts(
+        self,
+        result: SubagentResult,
+        *,
+        child: RunningChild,
+        receipt: SpawnReceipt,
+        plan: SpawnPlan,
+    ) -> SubagentResult:
+        """``result`` plus what only ``_run`` knows (ADR-0276 D8). NEVER RAISES.
+
+        * ``started`` — whether a process existed, read off the registry row the
+          channel fills (``child.proc``): a stop that landed before the spawn and
+          a spawn that failed both come back as a channel envelope with no
+          process behind them, and telling the model such a child "already did
+          the work" would be false (D18). A channel may also say so itself.
+        * ``session_id`` / ``session_path`` — the receipt's file, one site for
+          both channels and both doors.
+        * the written paths — the reducer's, resolved against the child's own
+          directory and shown relative to the parent's (:func:`_written_files`).
+
+        The envelope already exists here, so a fact that cannot be computed
+        costs that fact and nothing else: a third-party channel's result that
+        ``dataclasses.replace`` cannot copy is returned as it came. And when
+        there is nothing to add — no process, no session, no files — the
+        envelope is returned as the SAME object, so "recording never changes the
+        result" stays true to the letter.
+        """
+
+        try:
+            session = receipt.child
+            changed, unconfirmed = _written_files(
+                child.stream, child_cwd=plan.cwd, parent_cwd=plan.parent_cwd
+            )
+            facts: dict[str, Any] = {
+                "started": bool(getattr(result, "started", False)) or child.proc is not None,
+                "session_id": session.session_id if session is not None else None,
+                "session_path": session.path if session is not None else None,
+                "changed_files": changed,
+                "unconfirmed_files": unconfirmed,
+                "files_overflow": child.stream.files_overflow,
+            }
+            if all(getattr(result, name, None) == value for name, value in facts.items()):
+                return result
+            return dataclasses.replace(result, **facts)
+        except Exception:  # noqa: BLE001 — the result is already the delegation's
+            logger.debug("could not add the run facts to %s", child.id, exc_info=True)
+            return result
+
+    def _leave_cancelled_envelope(
+        self,
+        record: SpawnRecordMeta | None,
+        *,
+        child: RunningChild,
+        receipt: SpawnReceipt,
+        plan: SpawnPlan,
+    ) -> None:
+        """Build the envelope a CANCELLED spawn never got, for the call's report.
+
+        ADR-0276 D14. A cancel propagates out of the channel with no envelope at
+        all, so the parent's model learned nothing about a child it had paid
+        for — not its partial answer, its tool calls, its files or its session.
+        This builds one from the live stream the channel was folding into, as
+        ``aborted`` with the cancel's own reason, and leaves it where the caller
+        asked (:attr:`SpawnRecordMeta.envelopes`).
+
+        SYNCHRONOUS AND TOTAL. It runs inside ``_run``'s ``finally`` on the way
+        out of a cancelled task, where an ``await`` invites the second cancel to
+        land in it (the #351 family) and a raise would replace the cancel.
+
+        NOTHING IS LEFT FOR A SPAWN WITH NO PROCESS: a cancel that landed while
+        the receipt was being opened, or before the channel spawned, cancelled a
+        child that never existed, and a report about it would describe work that
+        was never done.
+
+        What the channel would have added and this frame cannot see is missing:
+        its stderr ring (so ``error`` can only be the stream's own final error),
+        the dropped-line count the line assembler holds, and the exit code — the
+        kill is still in flight.
+        """
+
+        if record is None or record.envelopes is None:
+            return
+        result = self._cancelled_envelope(child=child, receipt=receipt, plan=plan)
+        if result is not None:
+            _leave_envelope(record, result)
+
+    def _cancelled_envelope(
+        self,
+        *,
+        child: RunningChild,
+        receipt: SpawnReceipt,
+        plan: SpawnPlan,
+    ) -> SubagentResult | None:
+        """The envelope of a cancelled spawn, from its LIVE stream (D14). ``None``
+        while there is no process. Synchronous and total.
+
+        Two callers: :meth:`_leave_cancelled_envelope` in ``_run``'s ``finally``,
+        and the builder ``_run`` registers with the call's
+        :class:`CallEnvelopes`, which the extension runs when it reports a
+        cancel before this member's own ``finally`` has run. The spend is priced
+        on a COPY of the stream when nothing priced it yet: the ``finally``
+        prices the live stream itself (``_unsettled_records``) and must still
+        find it unpriced when the builder ran first, or the settle would carry
+        the earlier, smaller figure.
+        """
+
+        if child.proc is None:
+            return None
+        try:
+            state = child.stream
+            if not state.cost:
+                state = dataclasses.replace(state)
+                registry: Any | None = None
+                with contextlib.suppress(Exception):
+                    registry = self.host.model_registry()
+                apply_cost_fallback(state, registry)
+            profile = plan.resolved.profile
+            cap = plan.output_cap if plan.output_cap is not None else profile.output_cap
+            result = build_result(
+                id=child.id,
+                profile=plan.resolved.name,
+                state=state,
+                outcome="aborted",
+                exit_code=None,
+                elapsed_ms=int((_now() - child.started_at) * 1000),
+                output_cap=cap if cap is not None else DEFAULT_OUTPUT_CAP,
+                permission_mode=plan.permission_mode.value,
+                dropped_tools=narrow_tools(profile, plan.parent_tools).dropped,
+                session_recorded=plan.session_path is not None,
+                reason=REASON_CANCELLED,
+            )
+            return self._with_run_facts(result, child=child, receipt=receipt, plan=plan)
+        except Exception:  # noqa: BLE001 — a report never costs the cancel its exit
+            logger.debug("could not build the cancelled envelope for %s", child.id, exc_info=True)
+            return None
+
     def _spawn_model(self, resolved: ResolvedProfile) -> str | None:
         """The model id THIS SPAWN ASKS FOR, read off the emission table itself.
 
@@ -1218,13 +1510,13 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:529-530``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:1048-1049``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:621-623``) — authoritative, because it
+            # ``message_end`` (``stream.py:855-857``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -1315,6 +1607,45 @@ def _reject_unsupported(mode: SubagentMode, *, background: bool) -> None:
         raise ValueError(_BACKGROUND_REJECTED)
 
 
+_IGNORED_TIMEOUT_WARNED: set[str] = set()
+"""Profile files whose ignored ``timeout_ms`` has been logged (ADR-0276 D2).
+
+Module level, so "once" means once per PROCESS and per file, not once per
+runtime: ``/new``, ``/fork`` and ``/resume`` keep the runtime, ``/reload``
+rebuilds it, and the key is no more ignored on the second runtime than on the
+first. Keyed by the profile's path rather than its name, because two files can
+carry one name and only the path tells the user which file to edit."""
+
+
+def _warn_ignored_timeout(resolved: ResolvedProfile) -> None:
+    """Log, once per profile file, that its ``timeout_ms`` no longer bounds anything.
+
+    The parse-time diagnostic (``agents/profile.py``) reaches ``/agents list``
+    and RPC ``agents/list`` only, so a user who delegates without ever listing
+    would believe the frontmatter key still caps the child. This is the
+    spawn-time half of the same message (#604).
+
+    ``getattr`` because a third-party ``ResolvedProfile.profile`` need not be an
+    :class:`AgentProfile`, and NEVER RAISES: it runs at the top of ``_run``,
+    where a raise would turn a spawn into an exception for a log line.
+    """
+
+    try:
+        value = getattr(resolved.profile, "timeout_ms", None)
+        path = str(resolved.source_path)
+        if value is None or path in _IGNORED_TIMEOUT_WARNED:
+            return
+        _IGNORED_TIMEOUT_WARNED.add(path)
+        logger.warning(
+            "agent profile %s sets timeout_ms: %s, which is ignored: delegated "
+            "agents run without a time limit (#604)",
+            path,
+            value,
+        )
+    except Exception:  # noqa: BLE001 — a log line must not cost the spawn
+        return
+
+
 def _frozen_tools(tools: list[str] | None) -> tuple[str, ...] | None:
     return None if tools is None else tuple(tools)
 
@@ -1329,6 +1660,125 @@ def _status_of(child: RunningChild) -> SubagentStatus:
         tokens=child.stream.tokens,
         cost=child.stream.cost,
     )
+
+
+def _leave_envelope(record: SpawnRecordMeta | None, result: SubagentResult) -> None:
+    """Put ``result`` where the caller asked for the call's envelopes (D14).
+
+    Keyed by the member's index (0 for a single call); it replaces the member's
+    builder (:meth:`CallEnvelopes.leave`). Never raises: it is on the path that
+    returns the result, and on the path that is being cancelled.
+    """
+
+    if record is None or record.envelopes is None:
+        return
+    with contextlib.suppress(Exception):
+        record.envelopes.leave(record.index or 0, result)
+
+
+def _watch_envelope(
+    record: SpawnRecordMeta | None, build: Callable[[], SubagentResult | None]
+) -> None:
+    """Register a running member's envelope builder (:meth:`CallEnvelopes.watch`).
+    Never raises."""
+
+    if record is None or record.envelopes is None:
+        return
+    with contextlib.suppress(Exception):
+        record.envelopes.watch(record.index or 0, build)
+
+
+def _forget_envelope(record: SpawnRecordMeta | None, *, had_process: bool = False) -> None:
+    """Drop a member's builder once its run is over (:meth:`CallEnvelopes.forget`).
+    Never raises."""
+
+    if record is None or record.envelopes is None:
+        return
+    with contextlib.suppress(Exception):
+        record.envelopes.forget(record.index or 0, had_process=had_process)
+
+
+def _written_files(
+    state: _StreamState, *, child_cwd: str, parent_cwd: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The child's written paths as the PARENT should read them (ADR-0276 D8).
+
+    The reducer keeps each path as the child wrote it, which is relative to the
+    CHILD's directory — and a child can run elsewhere (``agent(..., cwd=
+    "packages/api")``), where ``src/app.py`` is ``packages/api/src/app.py`` to
+    the parent. Each path is resolved the way the child's own ``write`` /
+    ``edit`` resolved it (:func:`resolve_to_cwd`: ``~`` and a leading ``@``
+    expanded, a relative path joined to the child's directory), then:
+
+    * inside the parent's directory — relative to it, ``/``-separated, so it
+      reads the same on every platform;
+    * outside it — as the child wrote it when that was absolute (or ``~``), so
+      no home directory is spelled out that the child did not spell; a relative
+      path that climbed out is shown relative to the parent (``../x``).
+
+    Two spellings of one file (``a.py``, ``./a.py``) become one entry, and
+    changed still beats unconfirmed after the merge. They merge on the FILE —
+    the raw path resolved against the child's directory — never on how it is
+    shown: two files whose names display alike (``a\\nb.txt``, ``a b.txt``)
+    stay two entries, each with its own status (#604 review). Each shown path
+    is cleaned last, by :func:`~aelix_agents.stream.path_for_display`.
+
+    THE PARENT'S DIRECTORY IS RESOLVED FIRST, the way :func:`resolve_child_cwd`
+    resolved the child's: the child's directory is a resolved path, while the
+    host's cwd is whatever spelling the user started in. Under a symlinked
+    checkout (``/var`` → ``/private/var`` on macOS, any linked home directory)
+    comparing the two raw would turn ``a.py`` into ``../../../private/…/a.py``.
+    """
+
+    changed_raw, unconfirmed_raw = written_paths(state)
+    if not changed_raw and not unconfirmed_raw:
+        return (), ()
+    try:
+        base = str(Path(parent_cwd).resolve())
+    except (OSError, RuntimeError):
+        base = parent_cwd
+    changed: dict[str, str] = {}
+    for raw in changed_raw:
+        changed.setdefault(
+            _path_identity(raw, child_cwd=child_cwd),
+            path_for_display(_display_path(raw, child_cwd=child_cwd, parent_cwd=base)),
+        )
+    unconfirmed: dict[str, str] = {}
+    for raw in unconfirmed_raw:
+        identity = _path_identity(raw, child_cwd=child_cwd)
+        if identity not in changed:
+            unconfirmed.setdefault(
+                identity,
+                path_for_display(_display_path(raw, child_cwd=child_cwd, parent_cwd=base)),
+            )
+    return tuple(changed.values()), tuple(unconfirmed.values())
+
+
+def _path_identity(raw: str, *, child_cwd: str) -> str:
+    """The FILE a written path names, for merging spellings of it: the raw path
+    resolved the way the child's tool resolved it, normalised. The raw path
+    itself when it cannot be resolved."""
+
+    try:
+        return os.path.normpath(resolve_to_cwd(raw, child_cwd))
+    except (ValueError, OSError):
+        return raw
+
+
+def _display_path(raw: str, *, child_cwd: str, parent_cwd: str) -> str:
+    """One written path, resolved and shown from the parent. See :func:`_written_files`."""
+
+    try:
+        resolved = resolve_to_cwd(raw, child_cwd)
+        relative = os.path.relpath(resolved, parent_cwd)
+    except (ValueError, OSError):
+        # A different drive on Windows has no relative spelling at all.
+        return raw
+    if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+        return relative.replace(os.sep, "/")
+    if os.path.isabs(raw) or raw.startswith("~"):
+        return raw
+    return relative.replace(os.sep, "/")
 
 
 def _error_result(resolved: ResolvedProfile, message: str) -> SubagentResult:
@@ -1356,6 +1806,7 @@ __all__ = [
     "MAX_DELEGATIONS_PER_PROMPT",
     "MAX_LIVE_CHILDREN",
     "SETTLE_JOIN_SECONDS",
+    "CallEnvelopes",
     "ProjectScopeProfileError",
     "SpawnRecordMeta",
     "SubagentHost",

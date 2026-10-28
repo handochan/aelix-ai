@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import textwrap
+from typing import Any
 
 import pytest
 from aelix_coding_agent.rpc.rpc_client import (
@@ -211,6 +212,40 @@ async def test_prompt_and_wait_collects_events() -> None:
         assert "agent_end" in types
     finally:
         await client.stop()
+
+
+async def test_prompt_and_wait_unbounded_waits_for_the_turn_with_no_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#604 (ADR-0276 D4) — ``unbounded=True`` is the only way to say "no limit".
+
+    pi turns ``None`` and ``0`` into its 60 s default, and that parity is kept
+    for every existing caller, so the delegation channel needed a spelling of its
+    own. Pinned at the seam the wait goes through: the TURN's wait is armed with
+    no timeout at all, while the ``prompt`` command's own answer keeps the send
+    bound, and the default call is unchanged.
+    """
+
+    armed: list[tuple[str, float | None]] = []
+    real = RpcClient._await_terminator
+
+    async def _recording(self: RpcClient, done: Any, timeout_s: float | None, what: str) -> None:
+        armed.append((what, timeout_s))
+        await real(self, done, timeout_s, what)
+
+    monkeypatch.setattr(RpcClient, "_await_terminator", _recording)
+    client = _stub_client()
+    await client.start()
+    try:
+        await client.prompt_and_wait("hi", unbounded=True, collect=False)
+        await client.prompt_and_wait("hi", timeout_ms=2_000, collect=False)
+    finally:
+        await client.stop()
+
+    turn_waits = [timeout for what, timeout in armed if what == "agent to become idle"]
+    assert turn_waits == [None, 2.0], armed
+    command_waits = [timeout for what, timeout in armed if what == "response to 'prompt'"]
+    assert command_waits == [client.DEFAULT_SEND_TIMEOUT_MS / 1000] * 2, armed
 
 
 async def test_on_event_receives_emitted_events() -> None:

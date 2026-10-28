@@ -135,7 +135,7 @@ def grants_write_authority(mode: PermissionMode) -> bool:
 #             without the declaration the §(i) early-out would suppress the very
 #             dialog ``ask`` exists to open, making it indistinguishable from
 #             ``inherit`` and re-opening the "validated, not read" deferral at
-#             ``agents/profile.py:239-243`` that finding OC-8 closed.
+#             ``agents/profile.py:244-248`` that finding OC-8 closed.
 #   "inherit" DOES NOT. It asks for no more authority than the parent already
 #             has. When the parent IS loose the clamp itself grants write
 #             authority and the dialog fires through

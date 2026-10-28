@@ -284,7 +284,9 @@ keygen | sign | trust add`, 그리고 `install --require-signature`는 fail-clos
 허용됩니다), 자동 컴팩션은 실재하는 안전장치지만 그중 어느 것도 비용을 묶지 않습니다
 ([#14](https://github.com/handochan/aelix-ai/issues/14),
 [#6](https://github.com/handochan/aelix-ai/issues/6),
-[#52](https://github.com/handochan/aelix-ai/issues/52)).
+[#52](https://github.com/handochan/aelix-ai/issues/52)). 위임된 에이전트에도 시간
+제한이 없습니다. 끝나거나 멈출 때까지 돌며, 턴 중에도 `/agents run` 중에도 `Esc`나
+`Ctrl+C`로 멈춥니다 ([#604](https://github.com/handochan/aelix-ai/issues/604)).
 
 **헤드리스 모드는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`,
 `--mode rpc`에는 승인 대화상자를 그릴 터미널이 없어서 `write`·`edit`·`bash`와 MCP
