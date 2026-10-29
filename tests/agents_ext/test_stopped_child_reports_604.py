@@ -544,11 +544,16 @@ def _unfinished(**kwargs: Any) -> SubagentResult:
 
 
 def test_the_unfinished_template_in_full() -> None:
+    """#610 D4: the line under the heading names the resume call, filled in."""
+
     text = _rendered(_unfinished(error="Error code: 500"))
 
     assert text == (
         f"The delegated agent did not finish: {REASON_STOPPED}\n"
-        f"{DO_NOT_REDELEGATE}\n"
+        "Do not delegate the same task again from scratch — it already did the work "
+        "below. Check the changed files and its tool calls; if it should go on, "
+        'continue it with agent(action="resume", profile="scout", '
+        'id="0b8a2a8e-0000-4000-8000-000000000001", task=…).\n'
         "\n"
         "Partial result:\n"
         "partial work done\n"
@@ -610,10 +615,16 @@ def test_the_retry_guidance_needs_work_to_point_at() -> None:
     )
     text = _rendered(idle)
 
-    assert DO_NOT_REDELEGATE not in text
+    assert "Do not delegate" not in text
     assert "Files changed" not in text
     assert text.startswith("The delegated agent did not finish: exited with code 1\n\n")
-    assert DO_NOT_REDELEGATE in _rendered(_unfinished())
+    # #610 D4: a child with a session is pointed at resuming it; one with none
+    # (no session file to continue) keeps the phase-0 sentence.
+    assert 'agent(action="resume", profile="scout"' in _rendered(_unfinished())
+    assert DO_NOT_REDELEGATE not in _rendered(_unfinished())
+    no_session = _rendered(_unfinished(session_id=None, session_path=None))
+    assert DO_NOT_REDELEGATE in no_session
+    assert "action=" not in no_session
 
 
 def test_the_single_mode_error_note_is_capped_at_four_kib() -> None:
@@ -730,9 +741,14 @@ async def test_a_child_stopped_by_stop_all_tells_the_parent_what_it_did(tmp_path
 # === D18 / test 9 / test 10 — everything else renders exactly as before ========
 
 
-def test_a_success_carrying_every_new_field_renders_byte_for_byte_as_before() -> None:
+def test_a_success_carrying_every_new_field_renders_as_before_but_for_its_session() -> None:
     """Critique 15: the old success pin had no session, trail or files, so it
-    could not catch them leaking into a SUCCESS's text."""
+    could not catch them leaking into a SUCCESS's text.
+
+    #610 D2 lets exactly one of them in — the session id, on its own block above
+    the footer, because that is what ``agent(action="resume")`` takes — and
+    nothing else: no trail, no files, no path. Without a session the text is
+    still the pre-#604 renderer's, byte for byte."""
 
     result = SubagentResult(
         id="sub-1",
@@ -751,16 +767,23 @@ def test_a_success_carrying_every_new_field_renders_byte_for_byte_as_before() ->
         usage=SubagentUsage(input=10, output=2, turns=1),
     )
 
-    assert _rendered(result) == _pre_604_render(result)
+    assert _rendered(result) == (
+        "the answer\n\n"
+        "Session: 0b8a2a8e-0000-4000-8000-000000000001\n\n"
+        "[agent scout · ok · plan · 1 turns · 10 in / 2 out · 0.0s]"
+    )
+    no_session = dataclasses.replace(result, session_id=None, session_path=None)
+    assert _rendered(no_session) == _pre_604_render(no_session)
     assert (
-        _rendered(result)
+        _rendered(no_session)
         == "the answer\n\n[agent scout · ok · plan · 1 turns · 10 in / 2 out · 0.0s]"
     )
 
 
 async def test_a_success_through_the_runtime_renders_as_before(tmp_path: Path) -> None:
     """The same pin one layer up: ``_run`` fills the new fields from a stream
-    that wrote a file and a session that exists, and the text does not move."""
+    that wrote a file and a session that exists, and the text moves by the
+    session line alone (#610 D2)."""
 
     session, _repo, _path = await _parent(tmp_path)
 
@@ -791,7 +814,9 @@ async def test_a_success_through_the_runtime_renders_as_before(tmp_path: Path) -
 
     assert (result.started, result.changed_files) == (True, ("a.py",))
     assert result.session_id is not None
-    assert _rendered(result) == "the answer\n\n[agent scout · ok · plan · 0.0s]"
+    assert _rendered(result) == (
+        f"the answer\n\nSession: {result.session_id}\n\n[agent scout · ok · plan · 0.0s]"
+    )
 
 
 async def test_refusals_and_declines_render_exactly_as_before(tmp_path: Path) -> None:
@@ -1094,6 +1119,9 @@ async def test_esc_during_a_delegation_queues_its_report_for_the_next_prompt(
     assert "write(look.md) ok\nedit(shared.py) (no result)" in report
     assert "Files changed:\n  look.md\nUnconfirmed (stopped mid-write):\n  shared.py" in report
     assert "Session: " in report and str(tmp_path) not in report
+    # #610 D4: the single-mode report is the single-mode template, so it names
+    # the resume call too.
+    assert 'if it should go on, continue it with agent(action="resume", profile="scout", id="' in report
 
     await harness.prompt("what happened?")
 
@@ -1121,7 +1149,9 @@ async def test_esc_during_a_batch_reports_each_member_that_had_a_child(tmp_path:
     assert report.startswith(
         f"{CANCEL_REPORT_HEAD}\n\n{CANCEL_REPORT_FENCE_OPEN}\nagent scout · parallel · 2 tasks"
     )
-    assert "[1/2 ok] finished before the cancel" in report
+    # #610 D2: the member that finished names its session on a line of its own,
+    # never on the heading its own text continues.
+    assert "[1/2 ok] finished before the cancel\nSession: " in report
     assert f"[2/2 aborted] did not finish: {REASON_CANCELLED} · session " in report
     assert "Partial result: park: halfway" in report
     assert "had no agent running" not in report

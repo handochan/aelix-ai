@@ -82,7 +82,13 @@ from aelix_ai.utils._process_tree import (
     _retained_handle,
     containment_spawn_kwargs,
 )
-from aelix_coding_agent.agents.resolver import inherits_parent_model, profile_to_argv
+from aelix_coding_agent.agents.resolver import (
+    ModelPin,
+    child_model_pin,
+    inherits_parent_model,
+    profile_to_argv,
+)
+from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
     MAX_SUBAGENT_DEPTH,
@@ -91,8 +97,10 @@ from aelix_coding_agent.subagent_contract import (
 )
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 
+from aelix_agents.child_session import RESUME_CWD_GONE, ChildLimits, ResumeRefused
 from aelix_agents.consent import contains_control_chars
 from aelix_agents.envelope import DEFAULT_OUTPUT_CAP, build_result
+from aelix_agents.posture import resume_clamp
 from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
@@ -109,7 +117,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from aelix_coding_agent.agents.profile import AgentProfile
-    from aelix_coding_agent.builtin.permission_mode import PermissionMode
     from aelix_coding_agent.subagent_contract import (
         ResolvedProfile,
         SubagentOutcome,
@@ -190,6 +197,15 @@ _PROC_DIR = Path("/proc")
 walks ``PPid`` to find a live child's descendants, :func:`pipe_holder_pids`
 walks ``fd`` to find whoever holds a DEAD child's stdio."""
 
+_RESUME_NEEDS_LIMITS = (
+    "a resume plan carries no recorded limits, and a resumed agent is never "
+    "launched with limits recomputed from the live parent (#610)"
+)
+"""The print channel's own belt (#610 D8). ``runtime._run`` always puts the
+intersected limits on a resume plan; one that names a child to resume and
+carries none would otherwise be launched with what a NEW delegation would get
+now, which the first run does not bound at all."""
+
 
 @dataclass
 class RunningChild:
@@ -236,6 +252,12 @@ class RunningChild:
     """Set by ``stop`` / ``stop_all``. It is what turns the resulting envelope
     from ``error`` into ``aborted``: the process died because we killed it."""
     stream: _StreamState = field(default_factory=_StreamState)
+    session_id: str | None = None
+    """The child SESSION this row's process runs in, once there is one (#610
+    D12): set at the registry insert for a resume, and as soon as the file is
+    allocated for a new delegation. ``runtime.resume_refusal`` refuses to resume
+    a session a live row already runs — the one in-process double-resume guard;
+    the child's own writer lock is the cross-process one."""
 
 
 @dataclass(frozen=True)
@@ -293,7 +315,27 @@ class SpawnPlan:
     — after the plan was built and published, because allocation is a write and
     the admission block before it must stay await-free. Both channels turn it
     into the child's session flag, and hand it to the envelope builder so a
-    truncation marker only ever claims the rest is recorded when it is."""
+    truncation marker only ever claims the rest is recorded when it is.
+
+    For a resume (#610) it is the existing file the child is resumed on."""
+    limits: ChildLimits | None = None
+    """What bounds this child, decided ONCE before the spawn was admitted (#610
+    D8): :func:`fresh_limits` for a new delegation, :func:`resume_limits` for a
+    resume. :class:`PrintChannel` builds the argv's tools, context files,
+    thinking and model flags from this and from nothing else, so the receipt
+    that records it and the argv cannot disagree — the window between them, a
+    ``/model`` landing after the receipt and before the argv, is closed.
+
+    ``None`` — a plan built by hand, as the channel tests build them — makes the
+    channel compute it with :func:`fresh_limits`, the same function."""
+    dropped_tools: tuple[str, ...] = ()
+    """The tools the child asked for and did not get, reported on the envelope —
+    :func:`fresh_limits`' ``dropped``, or for a resume the recorded tools the
+    intersection took away. Read only with :attr:`limits`."""
+    resumes: str | None = None
+    """The first run's spawn key when this plan RESUMES that child (#610), else
+    ``None``. A channel that cannot honour recorded limits refuses such a plan
+    (``rpc_channel``)."""
 
 
 @dataclass(frozen=True)
@@ -331,6 +373,16 @@ class SubagentChannel(Protocol):
     * **``child.proc`` must hold a real process** if the channel wants ``stop``,
       ``stop_all`` and session teardown to reach its child, because all three
       bypass the channel entirely and hand ``child.proc`` to the reaper.
+
+    ONE OPTIONAL ATTRIBUTE BESIDE ``run`` (#610 F8): ``resumes_agents``. A
+    channel that launches a resume plan from the plan's recorded ``limits``
+    says so with a true class attribute (:class:`PrintChannel`); the runtime
+    reads it with ``getattr(..., False)`` before a resume is admitted
+    (``runtime.resume_refusal``), so a channel that says nothing — a stand-in,
+    :class:`~aelix_agents.rpc_channel.RpcChannel` (which says ``False``) — is
+    refused a resume before the budget is charged or a record written. Not a
+    Protocol member: a fresh delegation does not read it, and every channel
+    that only runs those stays as it was.
     """
 
     async def run(
@@ -441,7 +493,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:411-412``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:556-557``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -588,6 +640,178 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     return str(resolved)
 
 
+@dataclass(frozen=True)
+class ComputedLimits:
+    """One run's :class:`~aelix_agents.child_session.ChildLimits`, and what they cost."""
+
+    limits: ChildLimits
+    dropped: tuple[str, ...]
+    """The tools the child asked for and does not get — the envelope's note."""
+
+
+def profile_identity(source_path: object) -> str | None:
+    """A profile's identity as a resume compares it: its file, as an absolute path.
+
+    #610 D9 / F15. ``fresh_limits`` records it and ``runtime._same_identity``
+    computes it again for the profile re-resolved at resume time, so both sides
+    are spelled by this one function. Lexical (``os.path.abspath``), never
+    symlink-resolved: discovery keeps a scanned profile's path as listed, and a
+    resolved spelling would make every symlinked agents directory a different
+    file. ``None`` for a profile with no file.
+    """
+
+    return os.path.abspath(str(source_path)) if source_path is not None else None
+
+
+def fresh_limits(
+    resolved: ResolvedProfile,
+    *,
+    granted_mode: PermissionMode,
+    cwd: str,
+    parent_tools: Iterable[str] | None,
+    parent_context_files: bool,
+    parent_thinking: str | None,
+    parent_model: Any | None,
+    model_registry: Any | None,
+) -> ComputedLimits:
+    """THE ONE COMPUTATION of what bounds a NEW delegation's child (#610 D8).
+
+    The four decisions the channel used to make on its own, in the same
+    order and by the same functions: :func:`narrow_tools`,
+    :func:`narrow_context_files`, :func:`inherit_thinking`, and the model
+    flags (``resolver.child_model_pin`` — :func:`~aelix_coding_agent.agents
+    .resolver.child_model_flags`, read back as values). ``runtime._run`` calls
+    it once per run, BEFORE the run is admitted, and hands the result to both
+    the receipt and the plan; a plan built without it gets it from
+    :meth:`PrintChannel.run`, through this same function.
+
+    BEFORE ADMISSION, AND THAT IS EXCEPTION SAFETY (critique M4): the model
+    pin reads the parent's live registry (``_pin_route``, ``resolve_route``),
+    which can raise, and a raise between ``_run``'s registry insert and its
+    ``try`` would leak the registry row — four of those and ``MAX_LIVE_CHILDREN``
+    refuses every delegation for the rest of the session.
+
+    ``granted_mode`` is recorded, not applied: the posture the child runs at is
+    the plan's ``permission_mode``. Pure apart from what ``parent_model`` and
+    ``model_registry`` do when read.
+    """
+
+    profile = resolved.profile
+    narrowing = narrow_tools(profile, parent_tools)
+    child_profile = inherit_thinking(
+        narrow_context_files(narrowing.profile, parent_context_files),
+        parent_thinking,
+    )
+    return ComputedLimits(
+        limits=ChildLimits(
+            granted_mode=PermissionMode(granted_mode),
+            # Always a tuple here: ``narrow_tools`` never leaves ``None``.
+            tools=tuple(child_profile.tools or ()),
+            context_files=child_profile.context_files,
+            thinking=child_profile.thinking,
+            model=child_model_pin(profile, parent_model, model_registry),
+            cwd=cwd,
+            # ``str`` whatever a host's ``ResolvedProfile`` carries: the record
+            # is JSON, and an append that cannot serialise is swallowed — the
+            # run would lose its start record, not its spawn. ABSOLUTE, as the
+            # reader requires (#610 F15): a relative ``AELIX_CODING_AGENT_DIR``
+            # gives a relative ``source_path``, and ``runtime._same_identity``
+            # compares the same spelling (``profile_identity``).
+            profile_source=profile_identity(resolved.source_path),
+            profile_scope=str(resolved.scope),
+        ),
+        dropped=narrowing.dropped,
+    )
+
+
+def resume_cwd(recorded: str, parent_cwd: str) -> str:
+    """The directory a resumed child runs in, or :class:`ResumeRefused`.
+
+    #610 D9, F5. The recorded one, re-contained in the parent's directory now by
+    :func:`resolve_child_cwd`'s rules — outside it, or gone, is refused — and
+    still THAT directory. The recorded path is canonical: every door hands
+    ``_run`` what :func:`resolve_child_cwd` returned, which is ``Path.resolve()``'s
+    answer. So a path that now resolves to anything else (the directory renamed
+    and a symlink to a sibling left under its old name) is refused rather than
+    followed: containment alone is not identity, and the sibling is inside the
+    parent too. One function for the hook's check (``runtime.resume_refusal``)
+    and the launch (:func:`resume_limits`), so the two cannot disagree.
+    """
+
+    try:
+        cwd = resolve_child_cwd(recorded, parent_cwd)
+    except ValueError:
+        raise ResumeRefused(RESUME_CWD_GONE) from None
+    if cwd != recorded:
+        raise ResumeRefused(RESUME_CWD_GONE)
+    return cwd
+
+
+def resume_limits(
+    stored: ChildLimits, fresh: ChildLimits, *, parent_cwd: str
+) -> ComputedLimits:
+    """What bounds a RESUMED child: its first run's limits ∩ a new delegation's now.
+
+    #610 D9. ``stored`` is the FIRST run's recorded limits — the ceiling, never
+    the last resume's (a resume narrowed because the parent was briefly in
+    ``plan`` must not narrow the agent for good). ``fresh`` is
+    :func:`fresh_limits` for the parent as it is now, with the profile
+    re-resolved by its recorded name. Field by field:
+
+    * posture — :func:`~aelix_agents.posture.resume_clamp` of the recorded
+      grant and the one given now;
+    * tools — the recorded list, in its order, without the ones a new
+      delegation would not get now; none left is ``--no-tools``;
+    * context files — on only if both say on;
+    * thinking and the model — the recorded ones, PINNED rather than
+      intersected: neither is an authority, and re-deriving the model from a
+      parent whose ``/model`` moved would switch the resumed child's model
+      (Codex #26718 / #36433);
+    * cwd — :func:`resume_cwd`: the recorded directory, still that directory
+      and still inside the parent's. Otherwise refused.
+
+    ``dropped`` is the recorded tools the intersection took away (D9) — what
+    the resumed child had and has no more, not what its profile asks for.
+    Raises :class:`~aelix_agents.child_session.ResumeRefused` with
+    ``RESUME_CWD_GONE`` and nothing else.
+    """
+
+    cwd = resume_cwd(stored.cwd, parent_cwd)
+    allowed = set(fresh.tools)
+    return ComputedLimits(
+        limits=ChildLimits(
+            granted_mode=resume_clamp(stored.granted_mode, fresh.granted_mode),
+            tools=tuple(tool for tool in stored.tools if tool in allowed),
+            context_files=stored.context_files and fresh.context_files,
+            thinking=stored.thinking,
+            model=stored.model,
+            cwd=cwd,
+            profile_source=stored.profile_source,
+            profile_scope=stored.profile_scope,
+        ),
+        dropped=tuple(tool for tool in stored.tools if tool not in allowed),
+    )
+
+
+def limited_profile(profile: AgentProfile, limits: ChildLimits) -> AgentProfile:
+    """``profile`` carrying ``limits``' tools, context files and thinking level.
+
+    What :func:`build_child_argv` renders. ``resolver.profile_to_flags`` stays
+    the one place a profile becomes ``--tools`` / ``--no-context-files`` /
+    ``--thinking``; the model flags come from ``limits.model`` alone, so the
+    profile's own ``model`` / ``provider`` are not read. Everything else — the
+    system prompt, skills, extensions, the output cap — is the profile's own,
+    as it is now (#610 D9: a profile file's identity is its path).
+    """
+
+    return dataclasses.replace(
+        profile,
+        tools=limits.tools,
+        context_files=limits.context_files,
+        thinking=limits.thinking,
+    )
+
+
 def build_child_argv(
     child_profile: AgentProfile,
     *,
@@ -599,6 +823,7 @@ def build_child_argv(
     parent_model: Any | None = None,
     session_path: str | None = None,
     model_registry: Any | None = None,
+    model_pin: ModelPin | None = None,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -646,6 +871,12 @@ def build_child_argv(
     <provider>`` (the child loads no extensions by default); one a credential
     decided is not — the child inherits it and the .env record (ADR-0250).
     Left to its own cascade it re-derived an extension route through OpenRouter.
+
+    ``model_pin`` (#610 D8) is that decision ALREADY MADE — the run's
+    ``ChildLimits.model`` — and when it is given it is the model flags, and
+    ``parent_model`` / ``model_registry`` are not read. :class:`PrintChannel`
+    always passes it; the two live inputs remain for callers that build an argv
+    from a profile alone.
     """
 
     return [
@@ -660,6 +891,7 @@ def build_child_argv(
             parent_model=parent_model,
             session_path=session_path,
             model_registry=model_registry,
+            model_pin=model_pin,
         ),
         "--permission-mode",
         permission_mode.value,
@@ -1023,6 +1255,10 @@ class PrintChannel:
         made to produce on demand.
     """
 
+    resumes_agents = True
+    """It launches a resume plan from the plan's recorded ``limits`` and nothing
+    else (#610 D8) — the attribute :class:`SubagentChannel` describes."""
+
     def __init__(
         self,
         *,
@@ -1060,16 +1296,29 @@ class PrintChannel:
             id=plan.id, profile=plan.resolved.name
         )
         profile = plan.resolved.profile
-        narrowing = narrow_tools(profile, plan.parent_tools)
-        # Both narrowings, then the argv. ``narrow_tools`` owns ``dropped``
-        # (the envelope reports it); this one has nothing to report because a
-        # parent's ``-nc`` is not a request the child made and lost. Then the
-        # parent's thinking level, for a child on the parent's model whose
-        # profile states none (#354).
-        child_profile = inherit_thinking(
-            narrow_context_files(narrowing.profile, plan.parent_context_files),
-            plan.parent_thinking,
-        )
+        # THE ARGV IS BUILT FROM ``plan.limits`` AND NOTHING ELSE (#610 D8):
+        # the tools, the context files, the thinking level and the model flags
+        # ``_run`` decided — and recorded — before the run was admitted. A plan
+        # without them (the channel tests build plans by hand) gets them from
+        # the same function, from the plan's frozen parent state and this
+        # channel's live getters, which is what this method used to do inline.
+        if plan.limits is not None:
+            limits, dropped = plan.limits, plan.dropped_tools
+        else:
+            computed = fresh_limits(
+                plan.resolved,
+                granted_mode=plan.permission_mode,
+                cwd=plan.cwd,
+                parent_tools=plan.parent_tools,
+                parent_context_files=plan.parent_context_files,
+                parent_thinking=plan.parent_thinking,
+                parent_model=self._parent_model() if self._parent_model else None,
+                # #344 — the route a user-defined provider needs, see
+                # ``build_child_argv``. Read LIVE: ``/reload`` rebinds it.
+                model_registry=(self._model_registry() if self._model_registry else None),
+            )
+            limits, dropped = computed.limits, computed.dropped
+        child_profile = limited_profile(profile, limits)
         state = row.stream
         assembler = LineAssembler()
         ring = StderrRing()
@@ -1101,12 +1350,17 @@ class PrintChannel:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 output_cap=output_cap if output_cap is not None else DEFAULT_OUTPUT_CAP,
                 permission_mode=plan.permission_mode.value,
-                dropped_tools=narrowing.dropped,
+                dropped_tools=dropped,
                 error=error,
                 session_recorded=plan.session_path is not None,
                 lingered=lingered,
             )
 
+        if plan.resumes is not None and plan.limits is None:
+            # A resume launched from limits computed just above would run at
+            # what a new delegation gets NOW, unbounded by its first run.
+            row.state = "error"
+            return _envelope(outcome="error", exit_code=None, error=_RESUME_NEEDS_LIMITS)
         # Written BEFORE the process starts and recorded on the row in the same
         # breath, so ``stop`` / ``stop_all`` / the extension teardown can remove
         # it even if this task never reaches its own ``finally`` (§(h)).
@@ -1126,14 +1380,10 @@ class PrintChannel:
                 permission_mode=plan.permission_mode,
                 child_cwd=plan.cwd,
                 parent_cwd=plan.parent_cwd,
-                parent_model=(
-                    self._parent_model() if self._parent_model else None
-                ),
+                # The model flags as ``limits`` holds them — the parent's model
+                # and registry are not read again at launch (#610 D8).
+                model_pin=limits.model,
                 session_path=plan.session_path,
-                # #344 — the route a user-defined provider needs, see
-                # ``build_child_argv``. Read LIVE for the same reason as the
-                # cost fallback: ``/reload`` rebinds the registry.
-                model_registry=(self._model_registry() if self._model_registry else None),
             )
             env = self._env_builder(profile)
             try:
@@ -1564,6 +1814,7 @@ __all__ = [
     "READ_CHUNK_BYTES",
     "STDERR_RING_BYTES",
     "STREAM_LIMIT_BYTES",
+    "ComputedLimits",
     "PrintChannel",
     "RunningChild",
     "SpawnPlan",
@@ -1574,8 +1825,13 @@ __all__ = [
     "apply_cost_fallback",
     "build_child_argv",
     "build_child_env",
+    "fresh_limits",
+    "limited_profile",
     "narrow_context_files",
     "narrow_tools",
     "pipe_holder_pids",
+    "profile_identity",
     "resolve_child_cwd",
+    "resume_cwd",
+    "resume_limits",
 ]

@@ -74,15 +74,17 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.aggregate import render_batch_result, render_cancel_report
 from aelix_agents.batch import run_batch
+from aelix_agents.child_session import RESUME_PROFILE_CHANGED
 from aelix_agents.consent import (
     SpawnGrant,
     build_disclosure_line,
     consent_is_required,
     disclosure_is_required,
+    request_resume_consent,
     request_spawn_consent_batch,
 )
 from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
-from aelix_agents.posture import child_permission_mode
+from aelix_agents.posture import child_permission_mode, resume_clamp
 from aelix_agents.print_channel import (
     AGENT_TOOL_NAME,
     SubagentChannel,
@@ -102,6 +104,7 @@ from aelix_agents.tool import (
     PendingSpawn,
     build_description,
     build_roster,
+    call_literal,
     create_agent_tool,
     format_partial,
     parse_agent_call,
@@ -121,6 +124,9 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
     from aelix_coding_agent.subagent_contract import SubagentMode, SubagentProgress
+
+    from aelix_agents.child_session import ResumeTarget
+    from aelix_agents.tool import AgentCall
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +192,25 @@ _UNAVAILABLE = (
     "Delegation is unavailable in this session. Report the work you would have "
     "delegated instead."
 )
+
+
+def _not_its_profile(recorded: str) -> str:
+    """A resume whose ``profile`` is not the one the agent ran as (#610 D1, D9).
+
+    The recorded name is ECHOED, because it is the fix: the model passes it and
+    the call goes through. It is the first run's record — data from the
+    parent's session file, so it goes through
+    :func:`~aelix_agents.tool.call_literal` (one line, quoted), as every record
+    value a model is shown does. The name the call carried is not repeated: the
+    model has it.
+    """
+
+    name = call_literal(recorded)
+    return (
+        f"Resume refused: that agent ran as profile {name}, and it is resumed "
+        f"under that profile only. Pass profile={name} with its id, or delegate "
+        "the task anew."
+    )
 
 
 @dataclass
@@ -910,6 +935,12 @@ class AgentsExtension:
         except AgentCallError as exc:
             return ToolCallResult(block=True, reason=str(exc))
 
+        if call.action == "resume":
+            # #610: a resume is checked and consented on its own path — its
+            # profile, directory and ceiling come from the agent's record, not
+            # from the call — and leaves the same ``PendingSpawn`` behind.
+            return await self._approve_resume(event, ctx, runtime, call)
+
         try:
             # ALWAYS ``allow_project=False`` (finding B5), and there is no code
             # path that may pass True here. The MODEL chose this string, so repo
@@ -932,7 +963,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1071-1079``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1377-1385``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -958,7 +989,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:269-271``), so the single and batch doors are
+        # always non-empty (``tool.py:345-347``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -966,7 +997,7 @@ class AgentsExtension:
         )
         if not grant.consented:
             # ``reason`` is set by exactly ONE branch — a batch whose dialog would
-            # not fit the terminal (``consent.py:220-224``, ``:277-286``) — where no
+            # not fit the terminal (``consent.py:224-228``, ``:281-290``) — where no
             # human was asked at all and the model CAN act on the refusal by
             # splitting the call. ``_DECLINED``'s "do not retry it" is only true
             # of a human answer, so it must not be pasted over a refusal no human
@@ -980,6 +1011,85 @@ class AgentsExtension:
         )
         return None
 
+    async def _approve_resume(
+        self,
+        event: ToolCallHookEvent,
+        ctx: Any,
+        runtime: _SubagentRuntimeImpl,
+        call: AgentCall,
+    ) -> ToolCallResult | None:
+        """The hook for ``action="resume"`` (#610 D5-D11, ADR-0277).
+
+        EVERY REFUSAL THAT CAN BE KNOWN HERE IS TAKEN HERE — before a dialog,
+        before the budget is charged, before a record is written or a process
+        exists (D11). In order:
+
+        1. the target (``runtime.find_resume_target``): the id names an agent
+           THIS conversation's model delegated, on its current branch, whose
+           file is where the parent's location says it is and is that agent's.
+           A missing or unknown id is answered with the agents it could resume
+           (D7) — the refusal string already carries that list;
+        2. the call names the profile the agent ran as. Compared, never
+           obeyed: the agent is not rebuilt from the call (D1);
+        3. that name, re-resolved now on the model door (``allow_project=False``,
+           finding B5) — a profile that is gone, renamed or shadowed is the
+           same refusal whatever the discovery error said;
+        4. ``runtime.resume_refusal``: this session's channel can resume
+           (F8), still the first run's file and scope, not running here, its
+           directory still that directory and inside this one (F5), its model
+           route unmoved, its session not held by another process (D9, D12);
+        5. the per-prompt budget, as a ``run`` takes it (one child);
+        6. the grant, with the first run's posture as its CEILING
+           (:meth:`_grant_for`, critique B1).
+
+        Then the approval is filed exactly as a ``run``'s is, with the target
+        on it, so ``execute()`` resumes the agent that was checked and shown.
+        ``runtime.resume_granted`` checks the conversation is still this one,
+        runs 1 — the same lookup — again and requires the same target, and
+        repeats 4, all before ``_run`` (the TOCTOU belt, #610 F3; a dialog can
+        stand open for minutes) — never after admission, where a refusal would
+        already have cost the budget and written a run (critique M5).
+
+        The runtime methods are called unguarded, as
+        ``remaining_delegation_budget`` is in :meth:`_on_tool_call` and for its
+        reason: ``_still_holds_the_seam()`` has just established that the
+        runtime is the one this extension built.
+        """
+
+        target = await runtime.find_resume_target(call.id)
+        if isinstance(target, str):
+            return ToolCallResult(block=True, reason=target)
+        if call.profile != target.profile:
+            return ToolCallResult(block=True, reason=_not_its_profile(target.profile))
+        try:
+            resolved = runtime.resolve_profile(target.profile, allow_project=False)
+        except Exception:  # noqa: BLE001 — an identity that cannot be re-found is a refusal
+            return ToolCallResult(block=True, reason=RESUME_PROFILE_CHANGED)
+        refusal = runtime.resume_refusal(target, resolved=resolved)
+        if refusal is not None:
+            return ToolCallResult(block=True, reason=refusal)
+        remaining = runtime.remaining_delegation_budget()
+        if remaining < 1:
+            return ToolCallResult(block=True, reason=_over_budget(1, remaining))
+        grant = await self._grant_for(
+            ctx,
+            resolved,
+            call.tasks,
+            cwd=target.limits.cwd,
+            mode="single",
+            resume=target,
+        )
+        if not grant.consented:
+            return ToolCallResult(block=True, reason=grant.reason or _DECLINED)
+        self._pending[event.tool_call_id] = PendingSpawn(
+            grant=grant,
+            resolved=resolved,
+            call=call,
+            cwd=target.limits.cwd,
+            resume=target,
+        )
+        return None
+
     async def _grant_for(
         self,
         ctx: Any,
@@ -988,6 +1098,7 @@ class AgentsExtension:
         *,
         cwd: str,
         mode: SubagentMode,
+        resume: ResumeTarget | None = None,
     ) -> SpawnGrant:
         """The MODEL door's pre-filter — prompting only when there is something to ask.
 
@@ -995,7 +1106,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1333-1339``). The
+        EVERY member or refuses the call outright (``consent.py:1450-1456``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -1052,6 +1163,20 @@ class AgentsExtension:
         (OC-7). The duplication is deliberate: this call decides only WHETHER
         there is a question to ask, and the authority decision stays in one
         place, in ``consent.py``.
+
+        A RESUME (``resume``, #610 D10) HAS A CEILING: the posture its first
+        run was granted. It is applied to ``want`` HERE, before anything reads
+        it, because this branch RETURNS without consulting ``consent.py``
+        whenever nobody needs asking — every ``yolo`` parent, and every
+        read-only spawn — and a ceiling left to the dialog never met those
+        (critique B1, probed: a ``plan`` agent resumed under a ``yolo`` parent
+        got a ``yolo`` grant). The disclosure is composed from the capped mode,
+        so the row a ``yolo`` user reads names the posture the agent will run
+        at; the predicate gets the ceiling too (``_may_widen`` constraint 7);
+        and a resume that does need a human goes to
+        :func:`~aelix_agents.consent.request_resume_consent`, which takes the
+        same ceiling before its own no-UI return. The runtime floors the grant
+        with it once more (``resume_granted``).
         """
 
         parent = self._host_posture()
@@ -1062,7 +1187,10 @@ class AgentsExtension:
             resolved.scope,
             has_ui=has_ui,
         )
-        if not consent_is_required(resolved, want, parent, has_ui=has_ui):
+        ceiling = resume.limits.granted_mode if resume is not None else None
+        if ceiling is not None:
+            want = resume_clamp(ceiling, want)
+        if not consent_is_required(resolved, want, parent, has_ui=has_ui, ceiling=ceiling):
             # THE DISCLOSURE IS COMPOSED HERE TOO, and that is not duplication
             # of a decision — it is the same predicate, asked once per grant,
             # by whichever branch produced the grant. This pre-filter RETURNS
@@ -1078,7 +1206,11 @@ class AgentsExtension:
                 widened=False,
                 consented=True,
                 disclosure=(
-                    build_disclosure_line(resolved, want, task_count=len(tasks))
+                    # A resume says it is one (#610 F10): "resuming <name>",
+                    # not "delegating to <name> — 1 task".
+                    build_disclosure_line(
+                        resolved, want, task_count=len(tasks), resume=resume is not None
+                    )
                     if has_ui and disclosure_is_required(parent, want)
                     else ""
                 ),
@@ -1089,7 +1221,18 @@ class AgentsExtension:
         # chose the profile, the tasks and the directory. A batch is ONE dialog
         # for tasks that are all inside the one call this hook has already
         # validated, which is a different thing from a memo that would outlive it
-        # (``consent.py:254-261``): ``_pending.clear()`` still runs per prompt.
+        # (``consent.py:258-265``): ``_pending.clear()`` still runs per prompt.
+        if resume is not None:
+            # The recorded pin is what the child is launched with (D9), so it
+            # is what the dialog names — not the parent's model now.
+            return await request_resume_consent(
+                ctx,
+                resolved,
+                resume,
+                tasks[0],
+                parent,
+                model=resume.limits.model.model,
+            )
         return await request_spawn_consent_batch(
             ctx,
             resolved,
@@ -1107,7 +1250,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1125-1134``).
+        seam is released on teardown, ``extension.py:1268-1277``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1243,7 +1386,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:301-318``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:388-405``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1254,6 +1397,12 @@ class AgentsExtension:
         before the first spawn — ADR-0199 names the residual it does not close: a
         swap DURING a long batch is not re-detected, which is the window P2
         already had rather than a new one.
+
+        A RESUME (#610) takes the same re-check — its call names the profile the
+        agent ran as, which the hook has compared with the record — and then
+        ``runtime.resume_granted``, which re-checks what the hook found about the
+        AGENT: the conversation is still the one it was found in, and
+        ``resume_refusal`` still passes.
         """
 
         pending = self._pending.pop(ctx.tool_call_id, None)
@@ -1308,7 +1457,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:1080``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1386``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1340,7 +1489,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1533-1537``) with no ``await`` between them, so THIS
+            # (``runtime.py:1867-1871``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a
@@ -1402,6 +1551,26 @@ class AgentsExtension:
         # when the turn is cancelled.
         envelopes = CallEnvelopes()
         try:
+            if pending.resume is not None:
+                # A RESUME IS A SINGLE RUN in everything the parent sees (#610
+                # D12): the same record, the same renderer, the same Esc report
+                # below. ``resume_granted`` checks again that the conversation
+                # and the target are still the ones the hook approved, then
+                # runs ONE child on the agent's own session file.
+                result = await runtime.resume_granted(
+                    pending.grant,
+                    pending.resolved,
+                    pending.resume,
+                    pending.call.task,
+                    on_event=lambda progress: _on_event(0, progress),
+                    record=SpawnRecordMeta(
+                        tool_call_id=key,
+                        mode=pending.call.mode,
+                        index=0,
+                        envelopes=envelopes,
+                    ),
+                )
+                return render_subagent_result(result)
             if pending.call.mode == "single":
                 # UNCHANGED FROM P2, deliberately: one child, ``spawn_granted``
                 # directly, ``render_subagent_result``. Routing a single task

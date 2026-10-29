@@ -290,16 +290,19 @@ is shown as written.
 
 Each delegated child gets a session file of its own, next to yours: a session
 saved as `<name>.jsonl` keeps its children in a directory beside it,
-`<name>/sub-<id>.jsonl`, one per delegation. The child's whole transcript is
-there. Your own session keeps only a receipt for each child — the profile, the
+`<name>/sub-<id>.jsonl`, one per delegation (a resumed agent goes on in the
+same file). The child's whole transcript is there. Your own session keeps only
+a receipt for each run of a child — the profile, the limits it ran under, the
 model that ran, how it ended, what it spent — and the summary it handed back;
 the child's intermediate steps never enter your context.
 
 - `--continue`, `/resume` and the session pickers never offer a child file.
 - To read one, export it: `aelix --export <child file>` writes an HTML page and
-  runs nothing. Opening it with `--session` prints a warning, because the file
+  runs nothing. Opening it with `--session` prints a warning: the child file
   does not carry what bounded the child — its permission clamp, its narrowed
-  tools — and would run as an ordinary session at your own posture.
+  tools — so opened by hand it runs as an ordinary session at your own
+  posture. Those limits are in your session's receipt, and only a resume from
+  the session that delegated it (below) runs the agent inside them again.
 - What the children spent is part of your session's totals in `/cost` and
   `/stats`, broken out on a line of its own. While one is still running, the
   cost reads as a floor (`≥ $…`).
@@ -309,6 +312,90 @@ the child's intermediate steps never enter your context.
   files, as before. So does a delegation whose child file could not be created
   — a disk error, or a path too long.
 - Nothing deletes child files. They stay until you remove them, as sessions do.
+
+### Resuming an agent
+
+When a delegated agent has a session file, its result names it. A single
+agent's result has a `Session: <id>` line whether the agent finished or was
+stopped or failed after it started. In a parallel or chain call, a member that
+finished has that line in its block, and a member that did not finish has the
+id in its heading instead (`… did not finish: <reason> · session <id>`). The
+model can hand that id back: `agent(action="resume", id=…, profile=…, task=…)`
+continues the same agent in its own session file, with `task` as its next
+instruction, instead of starting the work again. When a single agent stopped
+or failed after doing some work, its result tells the model not to start that
+work again from scratch: to check the files it changed and its tool calls,
+and, if it should go on, to resume it — the call is spelled out with the
+agent's profile and id. A member of a parallel or chain call gets no such
+line. When you stop a delegation with Esc, the report the model gets with your
+next prompt says the stop was intended, and tells it to resume or repeat that
+work only if you ask. A resumed agent is told that it is being resumed, that it
+should not redo work it already finished, and that a tool call showing no
+result may or may not have run. Resuming is the model's call, through its
+`agent` tool; no command does it (`/agents run` cannot).
+
+**A resumed agent runs inside the limits it was first delegated with, and they
+never widen.** Each delegation records them in your session: the permission
+posture it was granted, its tools, whether it loads context files, its thinking
+level, its model and provider, and its directory. A resume takes the narrower of
+those and what a new delegation would get from your session now, item by item:
+if you have since moved to `yolo` or allowed more tools, the agent does not get
+them; if you have narrowed, it narrows too. It keeps the model it ran with, even
+after a `/model`. It keeps its thinking level too when its first run was given
+one — the profile's `thinking:`, or your level when the agent runs on your
+model (above). A profile that names its own `model` or `provider` and no
+`thinking:` is given none, so each of its runs, a resume included, starts at
+the `defaultThinkingLevel` in your global `settings.json` as it is then, as a
+new delegation does. Its prompt, skills and extensions are the profile file as
+it is now.
+
+**You are asked again, as for a new delegation.** The same rules decide whether
+a dialog opens — in `yolo` you are told, not asked (for an agent that may
+write, the status line reads `resuming <name> at <posture>, from <file>`), and
+`-p` never asks — and the dialog reads `Resume agent '<name>'?`, with the
+agent's session id, its profile and the file it came from, its directory, the
+posture it will run at (with its first run's, when that was wider:
+`Permission: plan (first run: auto-accept-edits)`), its model, the task it was
+first given and its next instruction. It can be widened to file edits, as a new
+delegation can, only if its first run was allowed them.
+
+**The posture is the lower of the two.** A resume runs at the lower of the
+posture its first run was granted and the one a new delegation would get from
+your session now. A `-p` run started without `--permission-mode` gives a new
+delegation `plan`, so it resumes the agent read-only even if the agent first
+ran under `yolo`. Start the second `-p` run with the same `--permission-mode`
+as the first to resume the agent as it ran then.
+
+A resume is refused before anything runs, and the model is told why, when:
+
+- the id is not one this conversation's model delegated — the refusal then
+  lists up to ten agents it can resume, newest first, with how each last ended;
+- you started the agent yourself with `/agents run`, or an RPC client did;
+- it was delegated before aelix recorded an agent's limits
+  ([#610](https://github.com/handochan/aelix-ai/issues/610)) — delegate the
+  task again;
+- this conversation was forked (`/fork`, `--fork`) from the one that delegated
+  it: the agent stays with the original conversation, and is resumed there;
+- your session is not saved in a sessions directory (`--no-session`, or a file
+  opened from elsewhere);
+- its session file is gone, damaged or under a second name (a hard link), it
+  or the `<name>/` directory that holds it is a link (a link higher up, such
+  as a sessions directory on another volume, is not refused), or the agent
+  never received its task;
+- its profile is gone, renamed, now resolves to a different file, or is a
+  project profile;
+- the directory it ran in is gone, was moved or replaced, or is no longer
+  inside yours;
+- the provider registration its model was pinned to has changed;
+- it is already running — in this session, in another process, or because its
+  file is open in `aelix --session`.
+
+All of this is checked when the call is approved and again right before the
+agent starts, so a change made while the dialog was open is refused too.
+
+Each resume is a run of its own in `/cost` and `/stats`, added to your
+session's totals with the rest of that agent's spend. The rules in full are in
+[ADR-0277](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md).
 
 ## A second example
 

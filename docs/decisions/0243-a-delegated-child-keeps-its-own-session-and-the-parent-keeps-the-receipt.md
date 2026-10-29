@@ -14,6 +14,14 @@ the parent's context**.
 Issue: #199. Follow-up: #296 (a TUI viewer for child sessions), #304 (the same
 late-binding rule, applied to the four host getters A.3a and §9 left behind —
 recorded in §9).
+**Amended 2026-10-30 (ADR-0277, #610): a child file is now resumable by the
+parent session that delegated it, through its receipts — every start and settle
+records what bounded the child (`limits`) and which first run a run resumes
+(`resumes`), and a resume runs inside the first run's limits, never wider.
+Opened by hand with `--session`, a child file still runs without them, and §8's
+warning stands. The resume reader takes neither `rel` nor `path` as the child's
+location, nor a first run's last line for what that run was — see the dated
+notes under the record table and in §8.**
 **Amended 2026-10-28 (ADR-0276, #604): a delegation has no time limit, so the
 settle status `timeout` and the deadline in the `cost_known` paragraph now
 describe old records only; §5's no-path rule is kept, and the child session
@@ -139,7 +147,7 @@ unique on the Google adapter across restarts).
 
 | Record | `data` |
 | --- | --- |
-| `aelix.child_session` start | `{v, key, phase: "start", tool_call_id, index, mode, profile, task_preview, child, requested_model, permission_mode, aelix_version, error}` — `child` is `{session_id, path, rel}` or `null`, and `error` says why it is `null` when the parent does have a file |
+| `aelix.child_session` start | `{v, key, phase: "start", tool_call_id, index, mode, profile, task_preview, child, requested_model, permission_mode, aelix_version, limits, resumes, error}` — `child` is `{session_id, path, rel}` or `null`, and `error` says why it is `null` when the parent does have a file; `limits` and `resumes` since ADR-0277 (note below) |
 | `aelix.usage` pending | `{v, key, state: "pending"}` — written right after the start, **before the child can spend** |
 | `aelix.child_session` settle | every start field except `error`, then `status` (`ok` / `error` / `timeout` / `aborted` / `cancelled`), `model` and `provider` (what actually ran, from the envelope), `usage: {input, output, cache_read, cache_write, cost}`, `cost_known`, `context_tokens` (a level, never summed), `turns`, `elapsed_ms`, `exit_code`, `stop_reason`, `truncated`, `summary_bytes`, `details_bytes`, `error` (the run's own, at most 300 characters) |
 | `aelix.usage` final | `{v, key, state: "final", usage, cost_known}` — the same two values the settle carries |
@@ -151,6 +159,30 @@ the vocabulary because records on disk carry it, and every reader keeps
 handling it. The settle's fields are unchanged: the envelope's new `reason`,
 session and file fields are not recorded here, the receipt already names the
 child file.*
+
+*Amended 2026-10-30 by [ADR-0277](0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md) ([#610](https://github.com/handochan/aelix-ai/issues/610)): every
+start — and so every settle, which carries every start field but `error` — now
+also carries `limits` and `resumes`; `v` stays 1, and a reader that predates
+them ignores them (ADR-0242 rule 1.6). `limits` is what bounded THIS run, as
+typed values (`child_session.ChildLimits`): `{granted_mode, tools,
+context_files, thinking, model, cwd, profile_source, profile_scope}`, `model`
+being `{model, provider, route}` or `null`. `granted_mode` is the posture the
+grant gave, before a batch member's live floor; what actually ran stays the
+top-level `permission_mode`. `resumes` is `null` on a delegation's first run
+and that run's `key` on every resume of it. A resume writes its own four
+records under a key of its own (the fold below is last-line-wins per key), on
+the same `child`, with its instruction as `task_preview`. The resume reader
+takes neither `rel` nor `path` as the child's location, unlike the reader the
+next paragraph describes: it derives the file as §1's allocation placed it —
+from the parent's file as its session names it now, and the first run's key —
+and only compares `rel` with that (ADR-0277 D6). Nor does it take a first
+run's last line for what that run was: how a run ended is still its key's last
+line, by the next paragraph's fold, but what the first run was — its profile,
+task, child, `resumes` and `limits`, the ceiling of every resume — is read off
+its start, and a line of that key whose `limits` differ from the start's makes
+the record damaged, so a line appended later cannot raise the ceiling
+(ADR-0277 D5). A record written before #610 has neither key, and its child
+cannot be resumed.*
 
 `tool_call_id`, `index` and `mode` are the call's: `(id, 0, "single")` for a
 single delegation, `(id, member index, "parallel" | "chain")` for a batch, and
@@ -408,6 +440,19 @@ without running it. A warning, not a refusal: reopening one is legitimate. It
 is silent inside a delegation, where the child opens its own file with
 `--session` and a stderr line would join the tail a failed delegation is
 diagnosed from.
+
+*Amended 2026-10-30 by [ADR-0277](0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md) ([#610](https://github.com/handochan/aelix-ai/issues/610)): the
+file is still no identity on its own — nothing that bounded the child is in it
+— but the PARENT's receipt now records those bounds (`limits`, §3), so a child
+file is resumable by the parent session that delegated it: the model's
+`agent(action="resume")` relaunches the child on its own file, inside the
+recorded limits intersected with what a new delegation would get now, never
+wider (ADR-0277 D8–D10). Only that session can — the child's origin names it,
+so a fork's copy of the receipts is refused — and only for a delegation its
+model made. Opened by hand with `--session` (or `--fork`), a child file still
+runs as an ordinary top-level session at the user's own posture, without those
+limits, and the warning above is printed as before, its wording unchanged. A
+resumed child opens its file inside a delegation, where the warning is silent.*
 
 ### 9. Found on the way: `/agents run` failed right after `/new`
 

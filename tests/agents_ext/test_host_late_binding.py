@@ -213,6 +213,10 @@ async def _agents_run(ext: AgentsExtension, tmp_path: Path) -> list[str]:
     happens where it happens in production. Only ``argv_builder`` is replaced,
     and it still returns a real command the channel really spawns — the pump,
     the reaper and the envelope all run.
+
+    Since #610 (D8) the runtime reads the parent's model once per run, into the
+    run's limits, and the channel hands the argv builder that decision as
+    ``model_pin`` — the spy reads the ``--model`` it will carry from there.
     """
 
     impl = ext.runtime
@@ -220,10 +224,8 @@ async def _agents_run(ext: AgentsExtension, tmp_path: Path) -> list[str]:
     seen: list[list[str]] = []
 
     def _spy(*_args: Any, **kwargs: Any) -> list[str]:
-        model = kwargs["parent_model"]
-        seen.append(
-            ["--model", getattr(model, "id", None) or "<no --model on the argv>"]
-        )
+        model = kwargs["model_pin"].model
+        seen.append(["--model", model or "<no --model on the argv>"])
         return [sys.executable, "-c", ""]
 
     impl.channel = PrintChannel(parent_model=impl.host.model, argv_builder=_spy)
@@ -371,7 +373,7 @@ async def test_an_empty_live_grant_hands_the_child_no_tools_not_every_tool(
     the obvious tidy-up reverses the fix. ``return list(...) or None``, or any
     ``if not tools: return None``, reads as harmless and is not: ``None`` on
     :attr:`SubagentHost.active_tools` means "the parent holds every built-in"
-    (``print_channel.py:260-262``), so it would hand a parent running
+    (``print_channel.py:282-284``), so it would hand a parent running
     ``--no-tools`` a child running EVERY tool. That is the fail-open hole #304
     closed, re-opened from the other end.
 

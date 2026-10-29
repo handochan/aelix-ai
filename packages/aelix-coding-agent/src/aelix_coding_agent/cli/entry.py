@@ -4737,18 +4737,23 @@ equal."""
 async def _warn_if_delegated_child(session: Session, path: str) -> Session:
     """One stderr line when a HUMAN opens a delegated child's session file (#199).
 
-    A child file is a RECORD, not a resumable identity. Everything that bounded
-    the child — its ``--permission-mode`` clamp, its narrowed tools,
-    ``--no-agents``, the depth guard — was argv and environment, none of it is
-    in the file, so ``--session <child file>`` runs it as an ordinary top-level
-    session with the user's full posture. A warning rather than a refusal:
-    reopening one is legitimate, it just must not look like resuming the child.
-    ``aelix --export`` is named because it reads the file and writes nothing.
+    A child file is a RECORD, not an identity a human can resume. Everything
+    that bounded the child — its ``--permission-mode`` clamp, its narrowed
+    tools, ``--no-agents``, the depth guard — was argv and environment, none of
+    it is in the file, so ``--session <child file>`` runs it as an ordinary
+    top-level session with the user's full posture. Since #610 those bounds are
+    recorded in the PARENT's receipt, and only the parent's
+    ``agent(action="resume")`` relaunches the child inside them (ADR-0277); a
+    human opening the file by hand gets none of them, so the warning stands. A
+    warning rather than a refusal: reopening one is legitimate, it just must not
+    look like resuming the child. ``aelix --export`` is named because it reads
+    the file and writes nothing.
 
     Silent inside a delegation: the child itself is launched with
-    ``--session <its own file>``, and a line on its stderr would become part of
-    the tail a failed delegation is diagnosed from. Returns ``session``, so
-    ``_build_session``'s two call sites stay one line each.
+    ``--session <its own file>`` — a resumed child too — and a line on its
+    stderr would become part of the tail a failed delegation is diagnosed from.
+    Returns ``session``, so ``_build_session``'s two call sites stay one line
+    each.
     """
 
     if subagent_depth() > 0:

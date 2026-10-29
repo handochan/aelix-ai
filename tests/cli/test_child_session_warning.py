@@ -1,11 +1,13 @@
 """#199 A.11 and A.3a on the product-core side of the band.
 
-* A child session file is a RECORD, not a resumable identity: everything that
-  bounded the child (its ``--permission-mode`` clamp, its narrowed tools,
-  ``--no-agents``, the depth guard) was argv and environment, none of it in the
-  file. ``_build_session`` therefore warns — one stderr line naming
-  ``aelix --export`` — when a human opens one, and stays silent inside a
-  delegation, where the child opens its own file exactly this way.
+* A child session file is a RECORD, not an identity a human can resume:
+  everything that bounded the child (its ``--permission-mode`` clamp, its
+  narrowed tools, ``--no-agents``, the depth guard) was argv and environment,
+  none of it in the file — since #610 it is in the PARENT's receipt, which only
+  the parent's resume reads (ADR-0277). ``_build_session`` therefore warns —
+  one stderr line naming ``aelix --export`` — when a human opens one, and stays
+  silent inside a delegation, where the child (a resumed one too) opens its own
+  file exactly this way.
 * ``cli/entry.py`` hands the delegation extension the runtime host's CURRENT
   session through a late-bound getter; the extension reads it once per spawn.
 """

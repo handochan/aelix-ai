@@ -797,7 +797,7 @@ async def test_a_batch_refused_for_height_reads_as_split_it_not_as_declined(
     """``SpawnGrant.reason`` must survive the hook, and it must WIN over ``_DECLINED``.
 
     ``_DECLINED`` says "do not retry it", which is true of a human answer and
-    false of a dialog that was never shown (``consent.py:277-286``). A model told
+    false of a dialog that was never shown (``consent.py:281-290``). A model told
     "the user declined" when the user was never asked stops delegating for the
     rest of the prompt; a model told the terminal is too short splits the call
     and gets its work done.

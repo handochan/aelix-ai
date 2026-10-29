@@ -23,6 +23,72 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **A delegated agent can be resumed on its own session, inside the limits it
+  ran with (#610, ADR-0277).** A delegated agent used to be over once its result
+  came back: a stopped one's result (#604) named its session and told the model
+  not to start the work again, but the only way on was a new delegation that
+  started from nothing. Now the model can continue the same agent — finished,
+  stopped or failed after it started — in its own session file, with its whole
+  conversation, and never with more authority than its first run was granted,
+  nor more than a new delegation would get now.
+  - The `agent` tool takes `action` (`run`, the default, or `resume`) and
+    `id`. A resume passes the id the agent's result shows — on its `Session:`
+    line, or in the heading of a parallel or chain member that did not finish
+    — the profile it ran as, and its next instruction as `task`, which may be
+    up to 64 512 bytes; the agent reads a short note in front of it saying it
+    is being resumed and that a tool call showing no result may or may not have
+    run. A resume refuses a non-empty `tasks`, a `mode` other than `single`,
+    any `cwd` and `background: true`; a `run` refuses an `id`; and an unknown
+    `action` and an id that looks like a file path are refused too — an
+    unknown key used to be ignored, so a model that asked to resume got a new
+    delegation.
+  - Every delegation now records in your session what bounded its agent: the
+    posture granted, its tools, whether it loads context files, its thinking
+    level, its model and provider, and its directory — as values, never as
+    command-line text, checked field by field when they are read back, from
+    the record written when the agent was first delegated: a record that does
+    not hold valid limits, or whose later lines disagree with it, is refused,
+    not run. A resume runs on the narrower of those and what a new delegation
+    would get now, item by item. Its model stays the recorded one, even after a
+    `/model`, and so does its thinking level when its first run was given one;
+    a profile that names its own model or provider and no `thinking:` starts
+    each run, a resume included, at your global `defaultThinkingLevel`.
+  - Consent is taken as for a new delegation, with the posture its first run
+    was granted as a ceiling, also where nobody is asked (`yolo`, `-p`). So a
+    `-p` run started without `--permission-mode` resumes the agent read-only;
+    give the second `-p` run the same `--permission-mode` as the first to
+    resume the agent as it ran then. The dialog reads
+    `Resume agent '<name>'?` and shows the agent's session id, directory, the
+    posture it will run at — and its first run's, when that was wider
+    (`Permission: plan (first run: auto-accept-edits)`) — its model, the task
+    it was first given and the new instruction; it offers file edits only if
+    the first run was allowed them. In `yolo`, where nobody is asked, a
+    resumed agent that may write is announced on the status line as
+    `resuming <name> at <posture>, from <file>`.
+  - A resume that cannot run is refused before anything is spent, with the
+    reason: an id this conversation's model did not delegate (the refusal lists
+    up to ten agents it can resume, newest first, with how each last ended), an
+    agent started with `/agents run`, one delegated before this change, a
+    forked conversation, a missing, damaged or replaced session file, a changed
+    profile, directory or provider registration, or an agent still running —
+    here, in another process, or open in `aelix --session`. What was checked
+    when the call was approved is checked again right before the agent starts.
+  - A resume is a run of its own, counted with the original delegation in the
+    footer, `/cost`, `/stats` and History.
+  - A successful delegation's result now ends with `Session: <id>` above its
+    footer, and an ok member of a parallel or chain call shows it on a line of
+    its own; without a session nothing changes. A stopped or failed single
+    agent's result, which told the model not to delegate the same task again
+    from scratch and to check what it changed, now also says how to continue it
+    if it should go on — `agent(action="resume", …)` with its profile and id
+    filled in — when it has a session. After Esc, the report the model gets
+    with your next prompt says the stop was intended, and tells it to resume or
+    repeat that work only if you ask.
+  - Only the model's `agent` tool resumes, and only agents the model
+    delegated: `/agents run`, RPC `agents/run` and ACP do not (#612).
+    `SubagentResult` and the `SubagentRuntime` Protocol are unchanged; the RPC
+    delegation channel, which no product path uses yet (#123), cannot resume,
+    and a resume on it is refused before anything is spent.
 - **The published model catalog can be checked only when you ask** (#609).
   `/settings` → **Check model catalogs** off (the global setting
   `checkModelCatalog: false`) stops the automatic checks at start-up, in the

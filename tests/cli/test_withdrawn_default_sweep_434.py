@@ -43,6 +43,11 @@ _RESOLVERS = {"resolve_route", "resolve_model", "late_registered_route", "hold_f
 #: (file under ``src/``, enclosing function, callee) -> (kind, how many such calls).
 _EXPECTED: dict[tuple[str, str, str], tuple[str, int]] = {
     ("aelix_coding_agent/agents/resolver.py", "_pin_route", "resolve_route"): ("typed", 1),
+    # #610: the parent asks what a resumed child's recorded pin resolves to. The
+    # child gets those strings as ``--model``/``--provider`` and resolves them as
+    # typed, and only a ROUTE pin is asked — a registered model, which is never
+    # a removed id, so no seed can skip it (driven below).
+    ("aelix_coding_agent/agents/resolver.py", "model_pin_route_moved", "resolve_route"): ("typed", 1),
     ("aelix_coding_agent/agents/service.py", "AgentProfileService.use", "hold_for"): ("seed", 2),
     ("aelix_coding_agent/agents/service.py", "AgentProfileService.use", "resolve_route"): ("seed", 1),
     ("aelix_coding_agent/cli/entry.py", "_build_harness_options", "resolve_route"): ("seed", 1),
@@ -238,3 +243,36 @@ async def test_a_typed_key_with_no_other_credential_falls_back_on_its_provider(
     typed = rb.resolve_route("acme/withdrawn-1", "openrouter", registry, typed_key=True)
 
     assert (typed.model.provider, typed.model.id) == ("openrouter", "openai/gpt-5.4")
+
+
+async def test_a_resumed_childs_pin_resolves_as_typed_even_under_the_seed(
+    registry: ModelRegistry,
+) -> None:
+    """#610 — ``model_pin_route_moved``'s ``typed`` above, driven.
+
+    A resume's recorded pin reaches the child as ``--model``/``--provider``,
+    which the child resolves as typed: a launch that names a model records no
+    active settings seed. The parent's pre-check resolves the same strings only
+    for a pin that carries a ROUTE, and a route is pinned only for an explicitly
+    registered provider's model — which ``is_removed`` never calls removed (the
+    route rows have it). So even a parent whose own active settings seed is
+    exactly that pair, with a hold that took the id out, lands where the child
+    will: on the pinned model, not on a withdrawn default's fallback.
+    """
+
+    from aelix_ai.streaming import Model
+    from aelix_coding_agent.agents.resolver import ModelPin, model_pin_route_moved
+    from aelix_coding_agent.model_registry import ProviderConfigInput, registration_route_digest
+
+    row = Model(id="m1", provider="own", api="openai-completions", base_url="http://127.0.0.1:9/v1")
+    registry.register_provider("own", ProviderConfigInput(api_key="x", models={"m1": row}))
+    registry._removed = {**registry._removed, "own": frozenset({"m1"})}  # a hold took it out
+    assert rb.removed_selection(registry, "own", "m1") is None, "registered, so not removed"
+
+    child = rb.resolve_route("m1", "own", registry, runtime_overrides=False)  # no seed, as the child
+    pin = ModelPin(model="m1", provider="own", route=registration_route_digest(child.model))
+
+    rb.record_settings_seed("m1", "own")  # the worst case: the parent's own default is this pair
+    parent = rb.resolve_route("m1", "own", registry, runtime_overrides=False)
+    assert (parent.model.provider, parent.model.id, parent.withdrawn) == ("own", "m1", None)
+    assert model_pin_route_moved(pin, registry) is False

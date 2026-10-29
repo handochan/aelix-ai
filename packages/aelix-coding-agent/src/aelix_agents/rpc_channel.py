@@ -125,7 +125,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:164``) and
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:181``) and
 ``progress._TERMINAL_STATES`` (``progress.py:97``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
@@ -155,6 +155,13 @@ default, which ADR-0201 rejected: a cold real child spends ~25 s reaching its
 read loop, so the first answer would be a coin flip. 180 s is the value the
 real-child pins already use (``tests/agents/test_rpc_sprint_pins.py``).
 """
+
+_RESUME_REFUSED = (
+    "the rpc channel cannot resume a delegated agent: it rebuilds a child's "
+    "limits from the live parent and cannot honour the ones recorded when the "
+    "agent was delegated (#610)"
+)
+"""Why :meth:`RpcChannel.run` refuses a resume plan (#610 D8, critique M4)."""
 
 
 @dataclass(frozen=True)
@@ -274,6 +281,12 @@ class RpcChannel:
     :param env_builder: renders a profile into an environment.
     """
 
+    resumes_agents = False
+    """It cannot launch a resume within the recorded limits (see
+    :data:`_RESUME_REFUSED`), so the runtime refuses a resume on it before
+    admission (#610 F8; ``print_channel.SubagentChannel``). :meth:`run`'s own
+    refusal stays as the belt under that."""
+
     def __init__(
         self,
         *,
@@ -347,6 +360,15 @@ class RpcChannel:
                 session_recorded=plan.session_path is not None,
             )
 
+        if plan.resumes is not None:
+            # This channel recomputes a child's limits from the plan's parent
+            # state above and never reads ``plan.limits``, so a resume launched
+            # here would run with what a NEW delegation gets now, unbounded by
+            # the agent's first run. It has no product caller (#123): a resume
+            # is refused, before any process, rather than degraded.
+            row.state = "error"
+            return _envelope(outcome="error", error=_RESUME_REFUSED)
+
         def _listener(payload: dict[str, Any]) -> None:
             # ONE SUBSCRIPTION, TWO CONSUMERS WITH DIFFERENT LIFETIMES, so each
             # is gated on its own condition. Moving the single ``unsubscribe()``
@@ -416,7 +438,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1372-1379``); this channel
+            # ``_eager_abort`` (``print_channel.py:1622-1629``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

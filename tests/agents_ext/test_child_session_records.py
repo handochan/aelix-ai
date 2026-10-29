@@ -102,6 +102,9 @@ _IDENTITY_KEYS = [
     "requested_model",
     "permission_mode",
     "aelix_version",
+    # #610 D8 / critique m8: on EVERY start and settle, first run or resume.
+    "limits",
+    "resumes",
 ]
 _START_KEYS = [*_IDENTITY_KEYS, "error"]
 _SETTLE_KEYS = [
@@ -191,6 +194,10 @@ async def _parent(
 
 class _Channel:
     """A channel stand-in: records plans, optionally spends, parks or raises."""
+
+    # It takes resume plans too (#610 F8): the runtime refuses a resume on a
+    # channel that does not say it can launch one.
+    resumes_agents = True
 
     def __init__(
         self,
