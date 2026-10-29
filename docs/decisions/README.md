@@ -209,8 +209,12 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   global switch, `checkModelCatalog`, leaves `aelix update --models` as the only check; amended
   2026-10-28, §10: #172's repository and first publication as measured - Pages' headers and its
   304, a rollback with a slot queued behind it, a queued slot's build reading the hold at its
-  dispatch commit (#616), the floor policy left open (#617);
-  #172, #434, #450, #507, #397, #609). A
+  dispatch commit (#616), the floor policy left open (#617); amended 2026-10-30, §10: #617 - on
+  the owner's choice (c), a thinking level an older client lacks raises no floor and adds no
+  entry: that client drops a new id whose map names it and keeps its shipped map for a known id,
+  missing `main`'s map for that row until it upgrades, and the publish summary's release check
+  lists only the drops;
+  #172, #434, #450, #507, #397, #609, #617). A
   scheduled job in its own repository, `handochan/aelix-catalog`, with no stored secret, runs
   aelix's own generator (ADR-0232) on the newest `main` commit whose `ci.yml` push run passed, and
   publishes content-addressed revisions to that repository's Pages only when their content changes.

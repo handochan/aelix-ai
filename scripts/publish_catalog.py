@@ -72,7 +72,9 @@ MINIMUM_AELIX_VERSION = "0.1.0b2"
 """The index entry's floor (ADR-0264 §4.2): every checkout reports ``0.1.0b2`` until R's
 release commit, and the released ``0.1.0b2`` wheel has no client, so this admits only
 builds that carry one. Raise it, as pi raises ``minimumPiVersion``, only when published
-values need client behaviour older clients lack."""
+values need client behaviour older clients lack. A thinking level an older client does not
+know does not raise it (§10 2026-10-30, #617): that client drops a new id whose map names
+the level and keeps its shipped map for a known id. ``release_report`` never lists a kept map."""
 
 DEFAULT_MAX_ADDITIONS = 100
 """At most this many ids new since the previous published revision (or ``main``'s catalog
