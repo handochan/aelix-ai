@@ -8,12 +8,13 @@ owner's decision (§2), revised after its reviews (r5-r11) and on the owner's de
 the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fold-back, run once,
 and what its review had to correct by hand; #434's client as built: the store, the source, the
 triggers, and what its live checks changed; #609's opt-in manual mode) and 2026-10-28 (§10:
-#172's catalog repository, its first publication and §8's last checks, as measured).
+#172's catalog repository, its first publication and §8's last checks, as measured) and 2026-10-30
+(§10: #617, the owner's floor policy: a thinking level an older client lacks raises no floor).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
 overlay, the triggers), #450 (OpenRouter's key-scoped narrowing), #507 (a shipped row's `off`, §10),
-#397 (the floor under it, §10)
+#397 (the floor under it, §10), #617 (the index floor and a level an older client lacks, §10)
 Relates: ADR-0065 and ADR-0140 (the registry and `models.json`), ADR-0189 and ADR-0192 (Ed25519
 sidecars; the marketplace's progressive signature rule), ADR-0203 (what a cwd `.env` may carry),
 ADR-0232 (transport is inherited, never invented; the generator and its ladder), ADR-0235 (pi is a
@@ -533,6 +534,9 @@ calls it.
   builds claim a version PyPI lacks, which the update check (#386) compares against.
 - The floor rises, as pi's does, only when published values need client behaviour that older clients
   lack. A floor-raising entry stays within the oldest admitted client's caps (§4.3).
+- A thinking level an older client does not know raises no floor and adds no entry (§10 2026-10-30,
+  #617). That client's parser drops a new id whose map names the level. For a known id it keeps
+  the shipped map, so `main`'s map for that row reaches the client only after an upgrade (§4.3).
 
 **Integrity.**
 
@@ -734,7 +738,8 @@ upstream addition stop the slots; clients keep the last revision until the owner
     compared as text, as the generator compares it.
 - **A known id** (the shipped catalog has it) takes the hosted row as `main`'s complete facts for
   it, and keeps its shipped transport, so corrections and curated maps committed to `main` reach
-  every client between releases.
+  every client between releases. One exception is a map that names a level the client lacks
+  (§10 2026-10-30).
   - Every required field (`name`, `reasoning`, `input`, `cost`, `contextWindow`, `maxTokens`)
     replaces the shipped value. A field that is present but fails validation, or a required field
     that is missing, keeps the shipped value for that field, and is counted.
@@ -2049,7 +2054,7 @@ rollback check. These are §8's last #172 items. Evidence: `.omc/probes/172/firs
     the published revision with v0.1.0-beta.2's catalog and levels.
     - The published revision keeps those rows. Beta.2 has no catalog client, so nothing is lost.
     - §4.2 says only when the floor rises. What the publisher does once a client in the wild lacks
-      a level is undecided: #617.
+      a level is undecided: #617 (the owner decided it on 2026-10-30, below).
 - **Not measured.**
   - The weekday schedule had not fired by the time of writing; its first slot is 2026-10-28 10:17
     KST.
@@ -2058,3 +2063,77 @@ rollback check. These are §8's last #172 items. Evidence: `.omc/probes/172/firs
     dispatched while one build runs, which takes about 18 s.
 
 With this, §8's #172 list is done, except that `queue: max` itself was not exercised (above).
+
+### 2026-10-30: #617 - a thinking level an older client lacks raises no floor
+
+The owner's choice of 2026-10-30 was #617's option (c). When a published map names a thinking level
+that an older client's parser does not know, the publisher does nothing different:
+
+- It does not raise `MINIMUM_AELIX_VERSION` (option a).
+- It does not publish an entry per floor (option b).
+
+The client's own parser decides row by row, as §4.3 says it does. Evidence: `.omc/probes/617/`.
+
+- **What such a client does** (READ: `hosted_catalog.py`, `_apply_known` and `_add_new`).
+  - **A known id**, one the client ships, takes the published row's other facts. It keeps its
+    shipped `thinkingLevelMap`, or none if it ships none, and this is noted in `kept`. A shipped
+    map is not lost, so the row is no regression, and the bound of 25 can never refuse a revision
+    for this.
+    - What the client misses is `main`'s map for that row. Until it upgrades, no curated correction
+      to that map reaches it, and neither does a #507 or #397 fill.
+    - So §4.3's "corrections and curated maps committed to `main` reach every client" does not hold
+      for such a map.
+  - **A new id** whose map names the level is dropped and noted. That client offers the model only
+    after an upgrade.
+  - A map that names the level only as `null`, to hide it, is rejected the same way.
+  - `_add_new` is the only place that drops a row for its map. So the 128 rows that the summary
+    check dropped for v0.1.0-beta.2 on `sha256-1e01c1c0…` (§10 2026-10-28) were all ids new to
+    beta.2.
+- **MEASURED** (`without_max_r2.py`, `without_max_r2.out`).
+  - This checkout's parser at `f3e76fbb` read the published revision `sha256-ee8eaf4c…` three times,
+    each time with `max` taken out of its levels.
+  - The revision has 1,885 rows. 261 of them name `max`, 36 of those only as `null`, and 8 ids are
+    new to this checkout.
+
+  | Catalog it read against | Known rows naming `max`: map kept | New rows naming `max`: dropped | New ids added | Regressions |
+  | --- | --- | --- | --- | --- |
+  | this checkout's | 259 of 259 | 2 of 2 | 6 | 0 |
+  | this checkout's, with `max` taken out of its maps | 259 of 259 | 2 of 2 | 6 | 0 |
+  | v0.1.0-beta.2's | 132 of 132 (71 of them ship no map, so they keep none) | 129 of 129 | 227 | 0 |
+
+  - **`name`, one of the other facts, applies.** In the first reading, every known row naming `max`
+    got a marked `name`, and every one of them took it. A marked value is needed because, at this
+    source commit, the published facts equal the shipped ones. That the other facts apply too rests
+    on reading `_apply_known`'s loop.
+  - **The revision would install.** The lineage admits this checkout's catalog and beta.2's
+    (`lineage_admits`), so the revision would install over either. The second catalog is made up,
+    and no lineage holds its digest.
+  - **None of these is a real older build with a client.** No such build exists.
+- **Why (c).**
+  - No client in use lacks a level the maps name. v0.1.0-beta.2 has no catalog client, and every
+    build with one has #433's levels.
+  - Option (a) would freeze an older client at the last revision published under its floor. The next
+    index keeps the other floors' entries (`publish_catalog.py`, `next_index`), so every correction
+    and every new id after that revision stops reaching the client, not only the rows that name the
+    level.
+  - Option (b) would have the publisher build and check one revision per floor in every slot, with
+    tests of its own, for no client that needs it today.
+- **What stays.** The floor still rises when published values need client behaviour that older
+  clients lack (§4.2).
+- **What the summary does not show.**
+  - The publish summary's release check (`release_report`, `publish_catalog.py`) prints the rows it
+    would drop. It never prints the fields it would keep.
+  - For beta.2 on this revision it printed "rows it would drop: 129", and nothing for the 132 known
+    rows that kept their shipped map, or none.
+  - The summary's list of the fields every client keeps parses with `main`'s levels, so it does not
+    show them either.
+  - A level that only known rows name therefore never reaches the release check. New ids that name
+    it reach the check only as drops. So the summary is no reliable signal for when to look again.
+  - Printing the kept maps there would be a code change, and it is not made here.
+- **When to look again.** Look again in either of two cases:
+  - when `EXTENDED_THINKING_LEVELS` (`aelix_ai/models.py`) gains a level after a release that ships
+    the client. The commit that adds the level is the moment: a new row's map is derived at
+    publication, so the next slot can already publish a map that names it.
+  - when the new ids such a release drops matter to its users.
+- No behaviour changes. `MINIMUM_AELIX_VERSION`'s docstring in `scripts/publish_catalog.py` now says
+  this beside the constant.

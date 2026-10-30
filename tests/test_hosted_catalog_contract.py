@@ -738,7 +738,12 @@ def test_the_regression_bound_refuses_more_than_25_rows_losing_maps_or_half_thei
 
 
 def test_a_map_naming_a_level_this_build_lacks_is_a_failed_field() -> None:
-    """An older build's parser rejects ``max`` (the publish summary reports it per release)."""
+    """An older build's parser rejects ``max`` on a known row: a failed field, kept.
+
+    The publish summary's release check (``release_report``) lists only the rows
+    it drops, and its list of kept fields parses with ``main``'s levels, so this
+    case never reaches the summary (ADR-0264 §10 2026-10-30).
+    """
 
     pre_433 = [level for level in EXTENDED_THINKING_LEVELS if level != "max"]
     parsed = hc.parse_revision(
