@@ -16,6 +16,11 @@ forged-record paths; `RESUME_NOT_YOURS` gives a next step). A last check
 (review round 3) found no blocker or major; the listing's order and status
 word are now held to the latest run by a test, and limits 17 and 18 record
 the rest.
+**Amended 2026-10-31 (#634): the `agent` schema declares `action` and `id` right
+after `profile`, before `mode`, `task`, `tasks` and `cwd`, so an upstream that
+writes tool arguments only in the declared order no longer drops a resume's
+`task`; a resume that arrives without `task` is told so, and to send it once
+more and then delegate afresh. See `## Amendment (2026-10-31, #634)`.**
 Date: 2026-10-30
 Issue: #610 (phase 1 of the #604 delegation track). Design:
 `.omc/specs/610-design-2026-10-30.md` (rev 2), with its critique
@@ -1589,3 +1594,107 @@ lead's verdict both times was to leave it.
 
 Not checked live: Windows and Linux, and anything after fix round 2. Still to
 run at the commit that merges: the full suite and the CI legs.
+
+## Amendment (2026-10-31, #634): `action` and `id` are declared before what a call carries
+
+In the owner's live test of 2026-10-30 (#132 branch `d80d3c69`, OpenRouter
+`deepseek/deepseek-v4.1-flash-1017`, thinking high), the model stopped a
+delegation with Esc, was told to go on, and called `agent(action="resume")` ten
+times. The session recorded every call as `{profile, action, id}`, with no
+`task`, and D1's parser refused each one (`action='resume' needs 'task'`). The
+model's reasoning held the instruction each time. It gave up and delegated anew.
+
+**Measured** (raw SSE from OpenRouter with this ADR's schema and a reduced
+system prompt and conversation; the counts and the method are in
+`.omc/specs/634-progress-2026-10-31.md`, the raw probes kept locally in
+`.omc/specs/resume-task-dropped-2026-10-30/`, not in the repo):
+
+- Ionstream, D1's declared order `profile, mode, task, tasks, cwd, action, id`:
+  0 of 38 resume calls (21 requests) carried `task`. The JSON was valid. The
+  instruction's language and line breaks, the conversation history, `id`
+  renamed to `agent_id` and `strict: false` made no difference. New
+  delegations kept `task` and `tasks` (4 requests).
+- Parasail, DeepInfra and Together, the same order: 12 of 12. Unconstrained, a
+  resume is written `action, id, profile, task` (Parasail, 6 of 6).
+- Ionstream, the order `profile, action, id, mode, task, tasks, cwd`: 10 of 10
+  (5 requests).
+
+Inferred, not documented: Ionstream emits keys only in the declared order
+(grammar-constrained decoding). Once it has written `action` it can no longer
+write `task`, declared before it, and the object closes.
+
+**Decision.**
+
+1. `AGENT_TOOL_PARAMETERS` declares `profile, action, id, mode, task, tasks,
+   cwd`. Every property's content is unchanged, byte for byte, and `required`
+   stays `["profile"]`. The order is part of the contract, and a comment on the
+   schema states the rule: `profile`, the one required key, first; then the
+   keys that say which call this is; then what a run or a resume carries, in
+   the order a run has always been written. A new key goes after every key a
+   model writes before it. `test_agent_schema_order_634.py` pins the order and
+   runs each measured call shape through an in-order decoder. Considered and
+   not taken: `action` first (`action, id, profile, …`), the unconstrained order
+   itself. It was not measured on Ionstream, and a decoder that honours
+   `required` writes `profile` first anyway, as Ionstream did under both orders.
+2. A resume refused for a missing `task` now says the call arrived without one
+   and bounds the retries: `action='resume' needs 'task': the next instruction
+   for that agent, and this call arrived without one. It keeps its own
+   conversation, so say what to do next rather than the whole job again. Send
+   the call again once, with 'task'. If this refusal comes back, do not send it
+   a third time: start a fresh agent() run for the work instead.` A blank or
+   non-string `task` gets the same sentence. It names no provider, because the
+   model cannot choose one. The count is measured (below): an uncounted "send
+   it again; if that arrives without it too, start a fresh agent() run" still
+   drew 6 or 7 refusals per run.
+3. No other built-in tool changes. Each declares its required key first and
+   its optional modifiers after it. `agent` was the only schema whose late key
+   decides what the call is. Read from the schemas, not measured:
+
+   | Tool | Declared order (required) | A key a model writes before an earlier-declared optional key? |
+   |---|---|---|
+   | `read` | `path`, `offset`, `limit` (`path`) | No. |
+   | `bash` | `command`, `timeout` (`command`) | No. |
+   | `edit` | `path`, `edits[oldText, newText]` (all) | No: every key is required. |
+   | `write` | `path`, `content` (both) | No: every key is required. |
+   | `grep` | `pattern`, `path`, `glob`, `ignoreCase`, `literal`, `context`, `limit` (`pattern`) | Only if a model wrote a modifier such as `glob` before `path`. `path` would be lost and the search would run in the working directory. Not seen; the order is pi's and Claude Code's. |
+   | `find` | `pattern`, `path`, `limit` (`pattern`) | No. |
+   | `ls` | `path`, `limit` (none) | No. |
+   | `aelix_status` | none | No. |
+   | `agent`, before | `profile`, `mode`, `task`, `tasks`, `cwd`, `action`, `id` (`profile`) | Yes: a resume writes `action`, `id`, then `task`. |
+   | `agent`, now | `profile`, `action`, `id`, `mode`, `task`, `tasks`, `cwd` (`profile`) | No, for every measured shape. |
+
+   An MCP server's tool reaches the model in the server's own order.
+
+**Live check through aelix.** A scratch agent dir and HOME, with `models.json`
+`providers.openrouter.modelOverrides["deepseek/deepseek-v4.1-flash-1017"].compat
+.openRouterRouting = {"order": ["Ionstream"], "allow_fallbacks": false}`; a
+scratch profile and cwd; one `-p` prompt (`--agents`, thinking high) that
+delegates `Answer with exactly: ALPHA` and then resumes the same agent with
+`Now answer with exactly: BETA`. A read-only tap on the parent's stream
+recorded the routing sent, the schema's declared order, each chunk's
+`provider` and each tool call's raw arguments; the counts below are from the
+parent's session file and agree with the tap. Every request was served by
+Ionstream.
+
+| Tree | Runs | Resume calls | With `task` | Resumed | Then |
+|---|---|---|---|---|---|
+| `e19ab55e` | 5 | 47 (11, 12, 9, 9, 6) | 0 | 0 | a new delegation, in every run |
+| `e19ab55e` + this order and the first message | 5 | 5 | 5 | 5 | both answers, `ALPHA` and `BETA`, from one session |
+| `e19ab55e` + this order and the counted message (this change's `tool.py`) | 2 | 2 | 2 | 2 | the same |
+| `e19ab55e` + the first message only | 3 | 21 (7, 7, 7) | 1 | 1 | a new delegation twice; once the model wrote `task` before `action` and the resume ran |
+| `e19ab55e` + the counted message only | 3 | 7 (3, 2, 2) | 0 | 0 | a new delegation, in every run |
+
+The first message is item 2's uncounted one. The order's runs met no refusal,
+so they did not exercise either message. The method and the counts are in
+`.omc/specs/634-progress-2026-10-31.md`; the drivers and raw outputs are kept
+locally in `.omc/specs/634-627-live/live/`, not in the repo.
+
+**Limits.** Which upstream served a live turn is still not recorded (#635), so
+the owner's session is matched to Ionstream by its shape, not by a record. Only
+Ionstream was seen to enforce the order. Other OpenRouter upstreams and other
+providers were not swept, and the other tools' rows above are read, not
+measured. Under the new order Ionstream was run with a single delegation and a
+resume only; parallel, chain and `cwd` calls were not run there, and rest on
+the in-order decoder model above. After the counted refusals the model starts the work afresh, without
+the agent's conversation, even where a call with `task` written before `action`
+would have gone through, as it once did in the uncounted runs.

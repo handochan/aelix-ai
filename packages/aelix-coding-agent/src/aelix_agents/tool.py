@@ -159,12 +159,43 @@ refusal (critique m7)."""
 
 AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     "type": "object",
+    # THE DECLARED ORDER IS PART OF THE CONTRACT (#634). An upstream that decodes
+    # tool arguments against the schema can emit keys only in the order they are
+    # declared: once it has written a key, every key declared BEFORE it is out
+    # of reach and the object closes without it. A model writes ``task`` after
+    # ``action`` and ``id`` (unconstrained: ``action, id, profile, task``, 6 of
+    # 6), so with ``task`` declared before ``action`` — the order until #634 —
+    # OpenRouter's Ionstream upstream delivered 0 of 38 resume calls with their
+    # ``task``, and 10 of 10 once ``action`` and ``id`` came first. Hence:
+    # ``profile`` (the one required key), then the two keys that say WHICH call
+    # this is, then what a run or a resume carries, in the order a run has
+    # always been written. A new key goes after every key a model writes
+    # before it.
     "properties": {
         "profile": {
             "type": "string",
             "description": (
                 "Agent profile name (see the roster below). ONE profile per "
                 "call — every task in this call runs under it."
+            ),
+        },
+        "action": {
+            "type": "string",
+            "enum": list(_ACTIONS),
+            "default": "run",
+            "description": (
+                "run (default): delegate new work, as 'mode' describes. "
+                "resume: continue ONE agent you delegated earlier, in its own "
+                "conversation — pass its 'id', the 'profile' it ran as, and its "
+                "next instruction in 'task'; no 'mode', 'tasks' or 'cwd'."
+            ),
+        },
+        "id": {
+            "type": "string",
+            "description": (
+                "action=resume only: which agent to continue — the id its "
+                'result shows, on its "Session:" line or after "session" in a '
+                'batch member\'s "did not finish" heading. Not a file path.'
             ),
         },
         "mode": {
@@ -204,25 +235,6 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
             "description": (
                 "Optional working directory for every task in this call; must "
                 "be inside the parent's working directory."
-            ),
-        },
-        "action": {
-            "type": "string",
-            "enum": list(_ACTIONS),
-            "default": "run",
-            "description": (
-                "run (default): delegate new work, as 'mode' describes. "
-                "resume: continue ONE agent you delegated earlier, in its own "
-                "conversation — pass its 'id', the 'profile' it ran as, and its "
-                "next instruction in 'task'; no 'mode', 'tasks' or 'cwd'."
-            ),
-        },
-        "id": {
-            "type": "string",
-            "description": (
-                "action=resume only: which agent to continue — the id its "
-                'result shows, on its "Session:" line or after "session" in a '
-                'batch member\'s "did not finish" heading. Not a file path.'
             ),
         },
         # NO ``timeout_ms`` (#604, ADR-0276). A delegated agent has no time
@@ -478,10 +490,20 @@ _RESUME_NEEDS_PROFILE = (
     "line of its result names it ([agent <profile> · …])."
 )
 _RESUME_NEEDS_TASK = (
-    "action='resume' needs 'task': the next instruction for that agent. It keeps "
-    "its own conversation, so say what to do next rather than the whole job "
-    "again."
+    "action='resume' needs 'task': the next instruction for that agent, and this "
+    "call arrived without one. It keeps its own conversation, so say what to do "
+    "next rather than the whole job again. Send the call again once, with 'task'. "
+    "If this refusal comes back, do not send it a third time: start a fresh "
+    "agent() run for the work instead."
 )
+"""#634: says the call ARRIVED without the instruction, and bounds the retries.
+The model that met the bare "needs 'task'" in a live run had written the
+instruction in its reasoning every time and sent the same call ten times; an
+upstream that emits keys only in declared order drops ``task`` exactly so (the
+schema's order note above). A count, because "send it again; if that fails
+too, start afresh" still drew 6 or 7 refusals per run from the same model, and
+"once … not a third time" drew 2 or 3 (ADR-0277's #634 amendment). No provider
+is named: the model cannot choose one."""
 _RESUME_TASK_NOT_TEXT = (
     "'task' holds half of a character (a lone surrogate), which cannot be sent to "
     "the agent. Resend the instruction as plain text."

@@ -877,7 +877,7 @@
    "tag = _DID_NOT_START_TAG if not member.started else member.result.status",
    "summary = member.result.summary or NO_OUTPUT",
    "error = member.result.error",
-   "# The note set mirrors ``render_subagent_result`` (``tool.py:1370-1380``) so a",
+   "# The note set mirrors ``render_subagent_result`` (``tool.py:1392-1402``) so a",
    "# batch member never says less about itself than the same child would say on",
    "# the single-mode path. Asked of the UNCAPPED summary: an error that the",
    "# budget cut out of the body is part of the summary still, and re-adding it",
@@ -966,7 +966,7 @@
    "# the rung above. A memo let a LATER tool call skip the dialog — its tasks and",
    "# its cwd were chosen after the human had answered and were never on screen. A",
    "# batch is ONE tool call, already validated by the hook and frozen into",
-   "# ``PendingSpawn`` (``tool.py:388-412``), whose every task and whose one cwd are",
+   "# ``PendingSpawn`` (``tool.py:400-424``), whose every task and whose one cwd are",
    "# rendered before the human answers — and if they cannot all be rendered, the",
    "# call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing",
    "# is memoised and the grant is still spent by exactly this one call."
@@ -1484,10 +1484,10 @@
    "that reached EOF is how a mid-flight death is distinguished from a clean",
    "finish that merely produced no text.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1016-1016": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1038-1038": [
    "if usage.cost:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1323-1332": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1345-1354": [
    "if result.dropped_tools:",
    "notes.append(",
    "\"Tools not granted to this agent: \"",
@@ -1497,7 +1497,7 @@
    "if result.dropped_lines:",
    "notes.append("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1336-1369": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1358-1391": [
    "def render_subagent_result(result: SubagentResult) -> ToolResult:",
    "\"\"\"Fold the envelope into what the parent's model reads.",
    "",
@@ -1507,7 +1507,7 @@
    "which is what the truncation marker points at when there is one (#199).",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1370-1380": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1392-1402": [
    "body = result.summary or \"(no output)\"",
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
@@ -1517,29 +1517,29 @@
    "notes.append(f\"Error: {note}\")",
    "if result.note:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1371-1373": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1393-1395": [
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
    "body, result.error, truncated=result.truncated"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1372-1372": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1394-1394": [
    "if result.error and not error_repeats_summary("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1387-1387": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1409-1409": [
    "text = \"\\n\\n\".join([body, *notes, _usage_line(result)])"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1390-1390": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1412-1412": [
    "details=result.details,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:345-345": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:357-357": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:345-347": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:357-359": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``",
    "into a 1-tuple at parse time so the single and batch paths downstream are one",
    "code path rather than two that must be kept in agreement.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:388-405": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:400-417": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1549,7 +1549,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:388-412": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:400-424": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1559,7 +1559,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:650-656": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:672-678": [
    "if len(raw) > MAX_PARALLEL_TASKS:",
    "raise AgentCallError(",
    "f\"{len(raw)} tasks is more than one call may carry — the limit is \"",
@@ -1568,7 +1568,7 @@
    "\"bigger task.\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:835-844": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:857-866": [
    "``execution_mode=\"sequential\"`` IS A SECURITY SETTING, not a performance",
    "one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The",
    "kernel's ``_execute_tool_calls``",
@@ -1578,10 +1578,10 @@
    "product-core cost. It is belt-and-braces with the hook location and with",
    "``consent.py``'s process-wide lock — and because the description is"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:859-859": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:881-881": [
    "execution_mode=\"sequential\","
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:965-1050": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:987-1072": [
    "def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:",
    "\"\"\"The ``[agent … ]`` footer both renderers print.",
    "",

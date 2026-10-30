@@ -76,7 +76,11 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   counted with its delegation in `/cost` and `/stats`. A success with a session now shows
   `Session: <id>`, a stopped single result says how to resume it, and a cancelled call's report
   says the stop was intended. The model's tool is the only door (`/agents run`, RPC and ACP are
-  #612). Amends ADR-0243 and ADR-0276.
+  #612). Amends ADR-0243 and ADR-0276. Amended 2026-10-31 (#634): the schema declares `action`
+  and `id` right after `profile`, before `mode`, `task`, `tasks` and `cwd` — OpenRouter's
+  Ionstream upstream writes keys only in declared order and delivered 0 of 38 resumes with their
+  `task` under the old order, 10 of 10 under the new — and a resume that arrives without `task`
+  is told so, and to send it once more and then delegate afresh.
 - [0276 — A delegation has no time limit, and a stopped child reports what it did](0276-delegation-has-no-time-limit.md)
   (Accepted 2026-10-28; #604 phase 0). There is no delegation time limit: the `agent` tool's
   `timeout_ms` is gone (a call that still sends it runs and the value is ignored), a profile's
