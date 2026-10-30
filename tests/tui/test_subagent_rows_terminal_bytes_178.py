@@ -156,7 +156,10 @@ async def test_a_profile_name_cannot_clear_the_screen_from_the_status_row() -> N
 async def test_a_batch_panel_row_cannot_carry_a_bidi_override() -> None:
     """The widget already flattened C0/DEL/C1; #178 moved it onto the shared
     helper, which is what deletes U+202E. Measured on ``8f7d98aa``: it was in
-    the panel row."""
+    the panel row. Since ADR-0278 the row shows the child's open CALL, so the
+    override rides in on ``activity``."""
+
+    from aelix_coding_agent.subagent_contract import SubagentToolActivity
 
     members = [
         SubagentProgress(
@@ -165,17 +168,18 @@ async def test_a_batch_panel_row_cannot_carry_a_bidi_override() -> None:
             state="running",
             current_tool="read‮evil",
             elapsed_ms=1_000,
+            activity=(SubagentToolActivity(name="read‮evil", status="running"),),
         )
         for i in range(2)
     ]
 
     def drive(bridge: SubagentProgressBridge) -> None:
-        bridge.begin_group("tc-1", expected=2)
+        bridge.begin_group("tc-1", expected=2, tasks=("alpha", "bravo"))
         for index, member in enumerate(members):
             bridge.adopt(member.id, "tc-1", index=index)
             bridge(member)
 
     raw, screen = await _paint(drive)
 
-    _cells_of(screen, "[1/2] running · readevil")
+    _cells_of(screen, "▶ readevil")
     assert "‮" not in raw

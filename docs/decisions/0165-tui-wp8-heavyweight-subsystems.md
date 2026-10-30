@@ -137,3 +137,15 @@ worth building — P2 ships single-mode delegation only, so at most one child
 exists at a time.
 
 Rows D2–D8 are untouched by P2.
+
+## Note (2026-10-30) — D1's single segment is superseded by the delegation panel
+
+*Amended 2026-10-30 by [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md)
+([#132](https://github.com/handochan/aelix-ai/issues/132), which absorbs #26).*
+The per-subagent statusline segment above (`subagent:{id}`) is no longer what a
+child of the model's `agent` call shows: measured on `9d1517a8`, it was joined
+after the yolo disclosure row on the one-row status line and never visible at
+80 or 120 columns. Every `agent` call now draws the delegation panel — the
+`set_widget` block this note deferred to P4, built at the extension layer from
+the same child stream — and a grouped child writes no statusline segment.
+`/agents run` keeps the segment, unchanged.

@@ -188,7 +188,7 @@ keeps it much longer. Past whichever threshold applies the card ends in
 `… (+N more lines · /expand N)`, and `/expand N` prints the footer with the rest
 of the body. Nothing else changes; the child is still
 clamped to your posture, still hard-blocked by the guardrail, still bounded by
-the delegation caps, and still shown in the status line while it runs. Every
+the delegation caps, and still shown in the delegation panel while it runs. Every
 other posture — including `auto-accept-edits` and `auto` — still asks.
 
 ## How the child reaches its model
@@ -249,38 +249,84 @@ run `/login` as well.
 
 ## What you see while a child runs
 
-The status line shows one row per running child: `agent <profile> · <model> ·
-<tool> · 12s · …`. A batch of two or more gets one row for the whole batch and
-a panel above the input instead. The model and the tool name on those rows are
+Every delegation the model makes — one child, a batch, a chain or a resume —
+draws one panel above the input
+([#132](https://github.com/handochan/aelix-ai/issues/132), ADR-0278):
+
+```
+│ ● agent worker · s-1 · running                     idle 7s · 1m12s · 1.5k tok
+│   ✓ read notes.txt
+│   ✗ $ pytest -q tests/test_retry.py
+│   ▶ $ sleep 12 · idle 7s
+│   “Read the notes; one test fails, re-running the slow step.”
+```
+
+One child is five rows: its state, model and numbers; its last three tool calls,
+each marked done (`✓`), failed (`✗`), cut off (`■`) or running (`▶`); and its
+last reply. Two to four children are a header with the counts and two rows
+each — the task, then the calls and what it is doing now — and five or more,
+or a terminal too short for that, one row each. The panel keeps its height for
+the whole call, is as wide as the transcript, and its clock moves once a second
+while a child is quiet (`idle 7s` after five seconds). When the terminal is too
+narrow for a whole header, it keeps the elapsed time to the last and, beside
+it, whatever fits of the profile, the model, the tokens, the idle time and the
+cost, in that order — so a long model id that does not fit leaves the tokens
+on the row — and for the first ten minutes what it shows does not change as the
+clock ticks; a batch's counts are always shown. A task label that fits beside
+its numbers is shown whole, and for the first ten minutes the clock alone cuts
+it at most once, except on a narrow terminal, where telling the tasks apart
+comes first. A label can still be cut again when the numbers beside it change
+width for another reason: a child's first token count, a count that falls
+after a compaction, the children coming to agree on a model, or the tokens
+passing 100k. A call
+still running keeps its row however many calls finish after it. Children the model
+started add no status-line rows; a child you start with `/agents run` still
+shows one row in the status line, `agent <profile> · <model> · <tool> · 12s ·
+…`. If you press `Esc`, the panel's last frame stays until your next prompt:
+each child marked stopped, the call it was cut off in, the files it changed,
+and — when the child has a session — that you can ask the model to continue it
+(a `--no-session` parent's children have none, and the frame says they cannot
+be resumed). On a narrow terminal these phrases are left out whole rather than
+cut mid-word. It refits within a second if you resize the terminal.
+
+The model, the tool names and arguments, and the last reply on the panel are
 what the child reports about itself — a tool name is whatever the child's model
-asked for, real tool or not — so aelix treats them as untrusted. The profile
-name is the profile's `name` field, which aelix has already checked (lowercase
-letters, digits and hyphens, at most 64), so there is nothing in it to clean;
-it goes through the same cleaning anyway, because an extension that supplies its
-own subagent runtime can report any profile name it likes. The progress card an
-`agent` call streams to extensions and to `--mode json`/`rpc` consumers, and the
-`[agent … ]` footer of its result, carry the same names and are cleaned the same
-way ([#178](https://github.com/handochan/aelix-ai/issues/178)):
+asked for, real tool or not — so aelix treats them as untrusted, and the task
+text the model wrote too. The profile name is the profile's `name` field, which
+aelix has already checked (lowercase letters, digits and hyphens, at most 64),
+so there is nothing in it to clean; it goes through the same cleaning anyway,
+because an extension that supplies its own subagent runtime can report any
+profile name it likes. The progress card an `agent` call streams to extensions
+and to `--mode json`/`rpc` consumers, and the `[agent … ]` footer of its
+result, carry the same names and are cleaned the same way
+([#178](https://github.com/handochan/aelix-ai/issues/178)):
 
 - Control characters and BiDi overrides are removed. That defangs an escape
   sequence rather than removing it: its ESC character goes and the rest of the
   sequence stays on the row as plain text, so a tool name carrying `\x1b[31m`
   shows `[31m` instead of turning the row red.
+- A lone UTF-16 surrogate, which no UTF-8 output can write, becomes `�`
+  (U+FFFD), so an RPC client is never sent a panel it cannot encode.
 - Every line break, tab, run of spaces and non-ASCII space (a no-break space,
   the ideographic space U+3000 and the like) becomes one ordinary space, and
   leading and trailing spaces go, including any a removed character leaves
   behind. A tool called `read\u00a0file` (with a no-break space) shows as
   `read file`, so a tool name that relies on a no-break space or U+3000 to read
   right loses it.
-- A name too wide for where it is shown is cut with `…`. On a child's own
-  status row and in the progress card that is 78 columns for the profile and
-  the tool name, and 40 for the model on the status row. A batch's status row
-  and its panel header cut the profile at 16 columns, and the header's model
-  gets at most 32 and only what the row has left. A panel row stops at 78
-  columns as a whole, and the result footer gives the profile and the model at
-  most 40 each. A name that is narrow but made of more than four characters per
-  column of that limit — a letter carrying hundreds of combining accents — is
-  cut too.
+- A name too wide for where it is shown is cut with `…`. On a `/agents run`
+  child's status row and in the progress card that is 78 columns for the
+  profile and the tool name, and 40 for the model on the status row; a name of
+  emoji that has to be cut is cut to fit as the terminal draws it, so it can
+  come out a little shorter than 78 or 40. On the
+  panel the profile and the model get at most 32 columns each, an agreeing
+  batch's model is named in the header only when it fits beside the counts,
+  and a row stops at the terminal's width as a whole — measured the way the
+  terminal draws it, so a row of flags, skin tones or joined emoji is cut
+  with `…` rather than run off the edge — and a task label that must be cut
+  is cut in the middle, so the end that tells two tasks apart stays.
+  The result footer gives the profile and the model at most 40 each. A name
+  that is narrow but made of more than four characters per column of that
+  limit — a letter carrying hundreds of combining accents — is cut too.
 
 A name in any script with no control character or BiDi override, no spaces
 other than single ordinary ones between words, and that fits where it is shown,

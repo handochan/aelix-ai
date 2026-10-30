@@ -83,7 +83,7 @@ from aelix_agents.consent import (
     request_resume_consent,
     request_spawn_consent_batch,
 )
-from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
+from aelix_agents.panel import PartialThrottle
 from aelix_agents.posture import child_permission_mode, resume_clamp
 from aelix_agents.print_channel import (
     AGENT_TOOL_NAME,
@@ -855,7 +855,8 @@ class AgentsExtension:
     async def _on_before_agent_start(
         self, event: BeforeAgentStartHookEvent, ctx: ExtensionContext
     ) -> None:
-        """Refresh the roster, reset the delegation budget, drop stale grants.
+        """Refresh the roster, reset the delegation budget, drop stale grants,
+        and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
         ``before_agent_start`` (``harness/core.py:1522``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
@@ -878,6 +879,13 @@ class AgentsExtension:
 
         self._ctx = ctx
         self._pending.clear()
+        bridge = self._progress
+        if bridge is not None:
+            # THE NEXT PROMPT TAKES DOWN WHAT AN ESC LEFT (ADR-0278 D7): a
+            # cancelled call's panel stays on screen until the user's next
+            # prompt, which is now.
+            with contextlib.suppress(Exception):
+                bridge.dismiss()
         runtime = self._runtime
         if runtime is not None:
             # ``suppress`` because the seam is structural: a P4 host that swapped
@@ -1250,7 +1258,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1268-1277``).
+        seam is released on teardown, ``extension.py:1276-1285``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1297,12 +1305,14 @@ class AgentsExtension:
         cleanup stops ITS OWN children rather than whichever runtime happens to
         be current — see the closure in :meth:`__call__`.
 
-        ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
-        rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:542-555``),
-        which is the only ordering that also blanks the widget panel. A teardown
-        that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
-        row on a statusline whose delegation no longer exists.
+        ANY OPEN GROUP GOES WITH IT, and it goes through ``bridge.clear()``
+        rather than a second ``end_group`` loop here: ``clear`` ends every open
+        group — a lingering Esc frame and every scheduled redraw included —
+        before dropping the remaining rows, which is the only ordering that also
+        blanks the widget panel. It is also why a turn this teardown cancels
+        leaves no frame behind: ``session_shutdown`` runs before the harness
+        aborts the turn, so the ``linger`` in ``_execute`` finds its group
+        already gone and draws nothing on the next session's screen.
         """
 
         self._pending.clear()
@@ -1316,7 +1326,12 @@ class AgentsExtension:
 
     # ── the tool body ─────────────────────────────────────────────
 
-    def _report_cancelled(self, pending: PendingSpawn, envelopes: CallEnvelopes) -> None:
+    def _report_cancelled(
+        self,
+        pending: PendingSpawn,
+        envelopes: CallEnvelopes,
+        snapshot: dict[int, Any] | None = None,
+    ) -> None:
         """Queue what a cancelled call's children had done for the next turn (D14).
 
         THE NEXT-TURN QUEUE, because it is the one place a message survives the
@@ -1338,6 +1353,10 @@ class AgentsExtension:
         error (:meth:`CallEnvelopes.lost`) are named apart from those that never
         had one.
 
+        ``snapshot`` is that snapshot when the caller already took it — the Esc
+        frame (ADR-0278 D7) is drawn from the same one, so the panel and the
+        report cannot disagree about what a member did.
+
         Nothing is queued when no child had started (``render_cancel_report``
         returns ``None``). NEVER RAISES: the cancel must leave this frame as
         the cancel, and a report is never worth replacing it. A session switched
@@ -1357,7 +1376,7 @@ class AgentsExtension:
                 pending.resolved.name,
                 pending.call.mode,
                 len(pending.call.tasks),
-                envelopes.snapshot(),
+                envelopes.snapshot() if snapshot is None else snapshot,
                 lost=envelopes.lost(),
             )
             api = self._api
@@ -1454,9 +1473,10 @@ class AgentsExtension:
         # substitution the check exists to detect. Every member of the batch gets
         # that same one object, so the single re-check covers all N (S3).
 
-        # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
-        # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
-        # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
+        # THE PER-CALL CLOSURE IS WHAT GROUPS A CALL'S CHILDREN INTO ONE PANEL,
+        # and it is what makes ADR-0199 §3.6's "no batch id on
+        # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
+        # INSIDE ``runtime._run``
         # (``runtime.py:1386``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
@@ -1469,34 +1489,24 @@ class AgentsExtension:
         # a card that silently shows 2 of 4 rows reads as "two tasks were dropped".
         throttle = PartialThrottle(total)
         bridge = self._progress
-        # NO GROUP BELOW :data:`PANEL_MIN_CHILDREN`, and the threshold is READ
-        # from ``panel`` rather than spelled ``> 1`` here so there is exactly one
-        # place that decides when the batch surfaces exist at all
-        # (``progress._Group.active`` reads the same constant).
-        #
-        # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:429-433``), i.e. it
-        # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
-        # was never written. S10's floor is that a SINGLE delegation keeps P2's
-        # surfaces byte-identical, and a UI write P2 never made is not
-        # byte-identical — ``test_events_and_statusline.py``'s shipped
-        # ``test_statusline_row_set_and_cleared`` counts exactly that. Not opening
-        # one is the only spelling of "identical" available from this side of the
-        # band; the alternative is a one-line change in ``progress.end_group``,
-        # which this work package does not own.
-        grouped = bridge is not None and total >= PANEL_MIN_CHILDREN
+        # A GROUP FOR EVERY CALL, one child included (ADR-0278 D1): a single
+        # delegation and a resume get the same panel a batch does, and no member
+        # of a group writes a statusline row (D2). Until #132 a call of one
+        # opened no group so that its per-child row stayed P2's — and measured
+        # on ``9d1517a8`` that row was never on screen at 80 or 120 columns
+        # under a yolo parent, because the disclosure row takes the line.
 
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1867-1871``) with no ``await`` between them, so THIS
+            # (``runtime.py:1874-1878``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
-            # group by the time it has to decide between an aggregate row and a
-            # per-child one. ``adopt`` is idempotent and ignores an unknown key,
+            # group by the time it has to decide between the panel and a
+            # per-child row. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:398-417``).
-            if grouped and bridge is not None:
+            # (``progress.py:504-523``).
+            if bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)
             # The parent's own tool card (surface 2). The event bus and the
@@ -1531,19 +1541,25 @@ class AgentsExtension:
             self._publish_disclosure(key, pending.grant.disclosure)
 
         # OPENED BEFORE THE FIRST CHILD, CLOSED IN A ``finally``, exactly once
-        # each. The ``finally`` is load-bearing on the failure path: ``run_batch``
-        # re-raises ``CancelledError`` (§3.5.1) — the one exception a member does
-        # not turn into an envelope — and an aggregate row or a widget panel left
-        # behind by a cancelled turn is a lie the user cannot dismiss and that
-        # ``set_status`` has no "clear all" verb to remove.
-        if grouped and bridge is not None:
+        # each — unless the turn was CANCELLED, when the ``except`` below hands
+        # the group its children's envelopes and it stays on screen until the
+        # next prompt (ADR-0278 D7: the user sees what the children did, not
+        # only ``Operation aborted``). On every other path the ``finally``
+        # closes it, so a panel never outlives a call that returned.
+        if bridge is not None:
             # ``tasks`` is index-aligned with the members the executor
             # creates, which is the same index ``_on_event`` adopts with —
-            # so the panel can name what each row is DOING without a new
-            # ``SubagentProgress`` field (ADR-0199 §3.6 forbids one).
+            # so each row is labelled with its own task. A resume's one task is
+            # its next instruction.
             bridge.begin_group(
-                key, expected=total, tasks=tuple(pending.call.tasks)
+                key,
+                expected=total,
+                tasks=tuple(pending.call.tasks),
+                mode=pending.call.mode,
+                resumed=pending.resume is not None,
+                profile=pending.resolved.name,
             )
+        lingering = False
         # THE CALL'S ENVELOPES, for the one path that returns none (#604,
         # ADR-0276 D14). ``_run`` leaves each child's here — the channel's when
         # it came back, one built from the live stream when it was cancelled,
@@ -1641,10 +1657,20 @@ class AgentsExtension:
             # scratch, the outcome #604 exists to prevent. What the children
             # had done is queued for that next turn instead, then the cancel
             # goes on exactly as before.
-            self._report_cancelled(pending, envelopes)
+            #
+            # ONE snapshot of the envelopes for both: the report the model gets
+            # and the frame the user sees (ADR-0278 D7) cannot disagree about
+            # what a member did. ``snapshot`` is synchronous and total, and
+            # nothing on this path awaits (D14's rule).
+            built: dict[int, Any] | None = None
+            with contextlib.suppress(Exception):
+                built = envelopes.snapshot()
+            self._report_cancelled(pending, envelopes, built)
+            if bridge is not None and built is not None:
+                lingering = bridge.linger(key, built)
             raise
         finally:
-            if grouped and bridge is not None:
+            if bridge is not None and not lingering:
                 bridge.end_group(key)
             # GUARDED ON THE SAME CONDITION AS THE WRITE, and it has to be:
             # ``_clear_row`` pops its own bookkeeping and then calls

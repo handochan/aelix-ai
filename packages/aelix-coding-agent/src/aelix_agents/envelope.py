@@ -920,7 +920,7 @@ def build_result(
     129, ``SIGKILL`` -9.)
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:276-280``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:286-290``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -929,7 +929,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:821-827``), so a child that read a large file emits a
+    # line (``stream.py:1014-1020``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare

@@ -176,7 +176,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
     ``SubagentUsage.tokens`` is documented as a context LEVEL, "last message
     wins" (``subagent_contract.py:98-99``), not a running total. Summing four
     children's context levels reports a number several times the real one — the
-    same mistake ``stream.py:259-262`` already warns about — and it is the number
+    same mistake ``stream.py:269-272`` already warns about — and it is the number
     the statusline and any future cost display read. ``max`` is the honest
     aggregate: the largest context any single child reached.
 
@@ -207,7 +207,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
 def _format_count(value: int) -> str:
     """Compact token counts for the ``[total]`` line only.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:178-181``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:242-245``) rather than
     importing it: that helper appends its own ``" tok"`` unit, which this line
     does not want (it reads ``… in / … out``). The threshold and the one decimal
     place are kept identical so a batch total and a statusline row never disagree

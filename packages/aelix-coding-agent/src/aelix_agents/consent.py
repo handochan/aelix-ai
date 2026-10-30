@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1201-1213``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1209-1221``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""

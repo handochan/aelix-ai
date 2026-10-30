@@ -1,6 +1,7 @@
 # 0227. Five legibility asks, and the four defects that were already shipped
 
-Status: Accepted (2026-08-16); amended 2026-10-12 (#179, caller text before owned picker styling).
+Status: Accepted (2026-08-16); amended 2026-10-12 (#179, caller text before owned picker styling);
+amended 2026-10-30 (ADR-0278, #132: the batch panel's layout described here is superseded).
 Date: 2026-08-16
 Relates: ADR-0153 (the first user echo), ADR-0159 (the statusline badge invariant),
 ADR-0163 (the picker frame), ADR-0194 (the synchronized-update bracket),
@@ -15,6 +16,20 @@ and may postdate the pin.
 The owner reported five things about the TUI that were hard to read. Four of the five
 were what they looked like. The fifth was not, and neither were three of my own
 premises about how to fix them.
+
+*Amended 2026-10-30 by [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md)
+([#132](https://github.com/handochan/aelix-ai/issues/132)): the batch panel this record
+reworks — the `▌` gutter, the job-label column, the batch model appended to the
+aggregate's head through `extra_head`, the rows taking the model back when the header
+dropped it — is replaced by the delegation panel's layout A (ADR-0278 D4). What this
+record measured still holds and is kept in the new panel: every child-authored field is
+flattened on its own and bounded in cells (`panel._flatten`, `_cut_to_cells`), a row is
+never wider than the terminal it is drawn into — by rich's measure AND prompt_toolkit's,
+the larger of the two, since ADR-0278's review round 1 found emoji rows that fitted the
+first and were clipped by the second — and the height is bounded. The task
+labels survive the change: a fan-out's labels are cut in the middle so the word that
+differs stays. The rows no longer take an agreeing model back; ADR-0278's Limits say
+what that costs.*
 
 ## What was asked, and what each turned out to be
 

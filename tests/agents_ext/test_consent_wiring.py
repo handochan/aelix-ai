@@ -720,6 +720,17 @@ def _record_ui(bench: _Bench) -> tuple[
     return writes, widgets
 
 
+def _draw_at_once(bench: _Bench) -> None:
+    """Make the bridge draw on the publish instead of on the loop (ADR-0278 D6):
+    these channels never yield, so a redraw scheduled on the loop would be
+    cancelled by the call's own end before it ran. WHICH frames the wiring
+    causes is the question here; when the loop draws them is not."""
+
+    bridge = bench.ext._progress
+    assert bridge is not None
+    bridge._call_later = lambda delay, callback: None  # noqa: SLF001
+
+
 # === one call, one grant ======================================================
 
 
@@ -1077,25 +1088,26 @@ async def test_a_batch_that_exactly_fits_the_remaining_budget_is_allowed(
 # === §3.6 the group: one open, one close, per call ============================
 
 
-async def test_a_batch_writes_one_grouped_status_row_and_no_per_child_rows(
+async def test_a_batch_writes_no_statusline_row_at_all(
     tmp_path: Path,
 ) -> None:
-    """THE END-TO-END PROOF ``test_batch_surfaces.py`` says it cannot give (§S10).
+    """THE END-TO-END PROOF ``test_batch_surfaces.py`` says it cannot give.
 
     That file drives ``begin_group`` / ``adopt`` / ``__call__`` by hand over
     synthetic snapshots. If the extension's per-call closure never called
     ``adopt`` — the one thing only this layer can get wrong — the bridge would
-    write four ``subagent:<id>`` rows, ``chrome._render_status`` would
-    ``"  ".join`` them into a height-1 row, and every assertion in that file
-    would still pass.
+    write four ``subagent:<id>`` rows, and every assertion in that file would
+    still pass.
 
-    So: four real members, through the real runtime, and the only key the UI is
-    ever asked to write is the group's.
+    So: four real members, through the real runtime, and the UI is asked to
+    write NO statusline key — not a per-child one, and since ADR-0278 D2 not
+    the group's aggregate either. The panel is the one widget key.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path, has_ui=True)
     writes, widgets = _record_ui(bench)
+    _draw_at_once(bench)
 
     result = await _call(
         bench,
@@ -1104,10 +1116,10 @@ async def test_a_batch_writes_one_grouped_status_row_and_no_per_child_rows(
     )
 
     assert result.is_error is False
-    keys = {key for key, _ in writes}
-    assert keys == {group_status_key("tc-group")}
+    assert writes == []
+    assert group_status_key("tc-group") not in {key for key, _ in writes}
     for plan in bench.channel.plans:
-        assert status_key(plan.id) not in keys
+        assert status_key(plan.id) not in {key for key, _ in writes}
     assert {key for key, _ in widgets} == {PANEL_WIDGET_KEY}
 
 
@@ -1116,16 +1128,16 @@ async def test_the_group_is_opened_once_and_closed_once_per_call(
 ) -> None:
     """Symmetry, asserted on the bridge's own table rather than on a row.
 
-    An aggregate row or a widget panel that outlives its delegation is a lie the
-    user cannot dismiss, and ``set_status`` has no "clear all" verb — so the
-    close has to happen on the call's own path. The final write for the group key
-    is ``None`` (the row cleared) and the final widget write is ``None`` (the
-    panel blanked).
+    A widget panel that outlives its delegation is a lie the user cannot
+    dismiss, so the close has to happen on the call's own path: the final
+    widget write is ``None`` (the panel blanked), and nothing was ever written
+    to the statusline (ADR-0278 D2).
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path, has_ui=True)
     writes, widgets = _record_ui(bench)
+    _draw_at_once(bench)
 
     await _call(
         bench,
@@ -1137,23 +1149,26 @@ async def test_the_group_is_opened_once_and_closed_once_per_call(
     assert bridge is not None
     assert bridge._groups == {}
     assert bridge._members == {}
-    assert writes[-1] == (group_status_key("tc-close"), None)
+    assert writes == []
     assert widgets[-1] == (PANEL_WIDGET_KEY, None)
 
 
-async def test_a_cancelled_batch_still_closes_its_group(tmp_path: Path) -> None:
-    """THE FAILURE PATH, which is the one a ``finally`` exists for.
+async def test_a_cancelled_batch_leaves_its_frame_until_the_next_prompt(tmp_path: Path) -> None:
+    """THE FAILURE PATH, which is the one the ``finally`` used to close.
 
-    ``run_batch`` re-raises ``CancelledError`` (§3.5.1) — it is the one exception
-    a member does not turn into an envelope — so a turn aborted mid-batch unwinds
-    straight through ``_execute``. Without the ``finally`` the group would stay
-    open, its row would stay on the statusline, and the next batch under the same
-    ``tool_call_id`` would be the only thing that could ever clear it.
+    ``run_batch`` re-raises ``CancelledError`` (§3.5.1). Until #132 the
+    ``finally`` blanked the panel on it, and the user was left with
+    ``Operation aborted`` and nothing of what the children did. ADR-0278 D7
+    keeps the group's last frame on screen instead — never a statusline row —
+    and the next prompt's ``before_agent_start`` takes it down.
     """
+
+    from aelix_agent_core.harness.hooks import BeforeAgentStartHookEvent
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path, has_ui=True, channel=_CancellingChannel())
-    writes, _ = _record_ui(bench)
+    writes, widgets = _record_ui(bench)
+    _draw_at_once(bench)
 
     await _hook(
         bench,
@@ -1170,35 +1185,38 @@ async def test_a_cancelled_batch_still_closes_its_group(tmp_path: Path) -> None:
 
     bridge = bench.ext._progress
     assert bridge is not None
+    assert list(bridge._groups) == ["tc-cancel"]
+    assert writes == []
+    key, frame = widgets[-1]
+    assert key == PANEL_WIDGET_KEY and frame is not None
+    assert "the turn was cancelled" in "".join(frame)
+
+    handler = bench.extension.handlers["before_agent_start"][0]
+    await handler(BeforeAgentStartHookEvent(prompt="next"), bench.ctx)
     assert bridge._groups == {}
-    assert writes[-1] == (group_status_key("tc-cancel"), None)
+    assert widgets[-1] == (PANEL_WIDGET_KEY, None)
 
 
-async def test_a_single_delegation_keeps_its_own_per_child_row(
+async def test_a_single_delegation_gets_the_panel_and_no_per_child_row(
     tmp_path: Path,
 ) -> None:
-    """S10's floor: at N == 1 every surface stays byte-identical to P2.
-
-    NO GROUP IS OPENED AT ALL below ``PANEL_MIN_CHILDREN``, and that is stricter
-    than "the group is inactive". An inactive group renders nothing, but
-    ``end_group`` clears the aggregate row unconditionally
-    (``progress.py:422-433``) — one ``set_status(subagent:group:<id>, None)`` for a
-    row that was never written, which is a UI write P2 never made. The shipped
-    ``test_events_and_statusline.py::test_statusline_row_set_and_cleared``
-    counts the keys the UI is asked for and would go red on it.
-
-    So: exactly one key, the child's own, and no widget.
+    """ADR-0278 D1/D2, superseding S10's floor "at N == 1 every surface stays
+    byte-identical to P2". A call of one opens a group like any other: the
+    child is drawn as the panel's five-row block, writes no statusline row, and
+    the group is closed when the call returns.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path, has_ui=True)
     writes, widgets = _record_ui(bench)
+    _draw_at_once(bench)
 
     await _call(bench, {"profile": "scout", "task": "go"}, tool_call_id="tc-solo")
 
-    plan = bench.channel.plans[0]
-    assert {key for key, _ in writes} == {status_key(plan.id)}
-    assert widgets == []
+    assert writes == []
+    frames = [lines for key, lines in widgets if key == PANEL_WIDGET_KEY and lines]
+    assert frames and all(len(frame) == 5 for frame in frames), frames
+    assert widgets[-1] == (PANEL_WIDGET_KEY, None)
     bridge = bench.ext._progress
     assert bridge is not None
     assert bridge._groups == {}

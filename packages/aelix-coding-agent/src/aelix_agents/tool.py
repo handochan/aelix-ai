@@ -116,7 +116,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:931-934``), and NO process is
+into a blocked call the model reads (``extension.py:939-942``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -238,7 +238,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:931-934``) with no process created.
+    # (``extension.py:939-942``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -680,7 +680,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:931-934``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:939-942``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:534-547``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -927,7 +927,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:855-857`` → ``envelope.py:1048``), which makes it attacker-supplied
+(``stream.py:1048-1050`` → ``envelope.py:1048``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""

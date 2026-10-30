@@ -356,7 +356,7 @@ async def test_the_model_row_is_omitted_when_the_child_named_no_model(
 
 def test_a_hostile_child_model_cannot_drive_the_result_grids_terminal() -> None:
     """FINDING 1 (HIGH). ``model``/``provider`` are read off the child's own
-    ``message_end`` verbatim (``stream.py:852-857`` → ``envelope.py:1048-1049``), so
+    ``message_end`` verbatim (``stream.py:1045-1050`` → ``envelope.py:1048-1049``), so
     they are attacker-controlled. Rich ``Text`` blocks MARKUP but writes raw
     content ESC / C1 to the terminal, so a ``\\x1b[2J`` in the model would clear
     the parent's screen and a one-byte ``\\x9b`` would drive its cursor.

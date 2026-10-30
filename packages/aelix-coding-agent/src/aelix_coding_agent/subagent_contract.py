@@ -271,6 +271,31 @@ class SubagentResult:
     ``CONTRACT_VERSION``."""
 
 
+SubagentToolStatus = Literal["running", "ok", "failed", "no_result"]
+"""What became of one tool call a child started (#132, ADR-0278 D3).
+
+``running`` — the call is in the child's current turn, its run is open and the
+child is live; ``ok`` / ``failed`` — its end event arrived, without or with an
+error; ``no_result`` — no end event came and none can come any more (a later
+turn began, the run closed, or the child ended — what a stopped child leaves)."""
+
+
+@dataclass(frozen=True)
+class SubagentToolActivity:
+    """One of a child's most recent tool calls, as :attr:`SubagentProgress.activity`
+    carries it (#132, ADR-0278 D3).
+
+    ``name`` is the tool name the child's model asked for and ``args`` the call's
+    primary argument as the parent's trail renders it (a path, a command, a
+    pattern; control characters stripped, one line, at most 120 characters).
+    Both are CHILD-AUTHORED: a renderer flattens and bounds them exactly as it
+    treats :attr:`SubagentProgress.current_tool` (``panel._flatten``)."""
+
+    name: str
+    args: str = ""
+    status: SubagentToolStatus = "running"
+
+
 @dataclass(frozen=True)
 class SubagentProgress:
     id: str
@@ -300,6 +325,34 @@ class SubagentProgress:
     same way it treats ``current_tool`` (``panel._flatten``). Additive +
     defaulted: does NOT bump :data:`CONTRACT_VERSION` (same precedent as
     :attr:`SubagentResult.model`/``.provider``)."""
+
+    activity: tuple[SubagentToolActivity, ...] = ()
+    """The child's most recent tool calls, OLDEST FIRST — at most four
+    (``stream.ACTIVITY_MAX``) — each with what became of it (#132, ADR-0278 D3).
+
+    What the delegation panel shows a child DOING: ``current_tool`` alone names
+    one tool and only until the next ``turn_start``, so a finished call kept
+    reading as current while the model thought, and a fast one (``read``,
+    ``write``) was never on screen at all. Kept by the reducer in a bounded
+    window that every ``tool_execution_start`` feeds — apart from the trail,
+    which stops at 200 calls — and projected by the sole producer
+    ``runtime._publish``, which is the one place that knows whether the child is
+    still live (:data:`SubagentToolStatus`).
+
+    CHILD-AUTHORED, therefore untrusted (``name`` and ``args``; see
+    :class:`SubagentToolActivity`). Additive + defaulted: does NOT bump
+    :data:`CONTRACT_VERSION`. The RPC host forwards a fixed field list
+    (``rpc/control.py``), so the RPC wire does not carry it."""
+
+    last_text: str | None = None
+    """The child's latest text-bearing assistant message on one line —
+    whitespace collapsed, at most 512 characters — or :data:`None` before it has
+    sent one (#132, ADR-0278 D3).
+
+    The same message ``SubagentResult.summary`` is built from, read when the
+    message ENDS (``message_end``); text still streaming is not here. CHILD-
+    AUTHORED, therefore untrusted: a renderer flattens and bounds it. Additive +
+    defaulted: does NOT bump :data:`CONTRACT_VERSION`; not on the RPC wire."""
 
 
 @dataclass(frozen=True)
@@ -464,6 +517,8 @@ __all__ = [
     "SubagentRuntime",
     "SubagentState",
     "SubagentStatus",
+    "SubagentToolActivity",
+    "SubagentToolStatus",
     "SubagentUsage",
     "subagent_depth",
 ]

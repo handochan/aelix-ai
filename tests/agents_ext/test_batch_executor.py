@@ -1095,7 +1095,7 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
     ``_host_posture()`` is a live getter (``extension.py:500-506``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:1182``), and baked into
+    once per call, inside ``_grant_for`` (``extension.py:1190``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
     self.is_modal_open())`` (``chrome.py:967-970``). Under P2 the resulting window
@@ -1277,7 +1277,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1921-1932``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1928-1939``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """

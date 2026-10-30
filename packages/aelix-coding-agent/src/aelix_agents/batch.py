@@ -426,7 +426,7 @@ async def _member(batch: _Batch, index: int, task: str) -> MemberOutcome:
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1870-1871``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:1877-1878``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -486,7 +486,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     The problem this closes. ``_host_posture()`` is a live getter
     (``extension.py:500-506``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:1182``), and baked into ``grant.mode``, which
+    ``_grant_for`` (``extension.py:1190``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
     (``runtime.py:1421``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
@@ -542,7 +542,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:1921-1932``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:1928-1939``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 

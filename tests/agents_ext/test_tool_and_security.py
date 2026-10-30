@@ -1091,7 +1091,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:931-934``) rendered by the kernel
+# the model as a blocked call (``extension.py:939-942``) rendered by the kernel
 # as an immediate error result (``loop.py:534-547``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
