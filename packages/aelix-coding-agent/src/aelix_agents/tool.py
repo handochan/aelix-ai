@@ -36,8 +36,10 @@ invert the dependency and drag the roster machinery into the spawn path.
 from __future__ import annotations
 
 import dataclasses
+import json
+import unicodedata
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
@@ -45,7 +47,7 @@ from aelix_ai.tools import ToolResult
 from aelix_coding_agent.tools.provenance import builtin_provenance, mark_builtin
 from rich.cells import cell_len, set_cell_size
 
-from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
+from aelix_agents.chain import MAX_TASK_BYTES, TaskTooLarge, check_task_size, uses_previous
 from aelix_agents.envelope import (
     MAX_ERROR_NOTE_BYTES,
     NO_OUTPUT,
@@ -62,6 +64,10 @@ from aelix_agents.envelope import (
 from aelix_agents.panel import _flatten
 from aelix_agents.print_channel import AGENT_TOOL_NAME
 
+# The resume preamble's reserve, from the module that writes the preamble. An
+# acyclic edge: ``runtime``'s own imports never reach this module (#610 lane A).
+from aelix_agents.runtime import RESUME_PREAMBLE_RESERVE
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
@@ -72,6 +78,7 @@ if TYPE_CHECKING:
         SubagentResult,
     )
 
+    from aelix_agents.child_session import ResumeTarget
     from aelix_agents.consent import SpawnGrant
 
 MAX_ROSTER = 24
@@ -109,7 +116,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:906-909``), and NO process is
+into a blocked call the model reads (``extension.py:931-934``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -120,6 +127,35 @@ advertising a mode the parser refuses. Mirrors ``SubagentMode``
 (``subagent_contract.py:74``), which is imported for TYPE CHECKING only —
 evaluating it at runtime would pull a product-core symbol into this module's
 import graph to save one tuple."""
+
+AgentAction = Literal["run", "resume"]
+"""What one ``agent`` call does (#610 D1, ADR-0277).
+
+``run`` is everything this tool did before #610 — delegate new work, in one of
+:data:`_MODES`. ``resume`` continues ONE agent this conversation delegated
+earlier, on its own session file, inside the limits it ran with."""
+
+_ACTIONS: tuple[AgentAction, ...] = ("run", "resume")
+"""The one spelling of the action set — :data:`_MODES`' rule, for :data:`_MODES`'
+reason: the schema's ``enum`` and :func:`parse_agent_call` read this tuple, so the
+schema cannot advertise an action the parser refuses. A value outside it is
+REFUSED, never run as ``run``: before #610 the kernel validator delivered an
+unknown ``action`` untouched and the parser ignored it, so a model that asked to
+resume got a fresh delegation and believed it had resumed (#610 design D1) — and
+#611's background actions, sent to a build that does not know them, must not
+start the foreground run they were not."""
+
+RESUME_TASK_MAX_BYTES = MAX_TASK_BYTES - RESUME_PREAMBLE_RESERVE
+"""The most a resume's instruction may carry, in UTF-8 bytes (#610 D1).
+
+Smaller than :data:`~aelix_agents.chain.MAX_TASK_BYTES` by exactly
+:data:`~aelix_agents.runtime.RESUME_PREAMBLE_RESERVE`, because the child's task is
+the preamble that says it is being resumed, then this instruction
+(``runtime.resume_task``): an instruction at this limit still makes a task inside
+the argv bound ``MAX_TASK_BYTES`` defends. Refused HERE, with this number in the
+message, rather than at the full task limit — a model told "64 KiB" for an
+instruction the hook then refused at the preamble's expense could not act on the
+refusal (critique m7)."""
 
 AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     "type": "object",
@@ -148,7 +184,8 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
                 "mode=single only. The complete task. The child has NO "
                 "conversation history and cannot ask you anything: state the "
                 "goal, the relevant paths and the definition of done in this "
-                "one string."
+                "one string. With action=resume it is instead the NEXT "
+                "instruction for that agent, which keeps its own conversation."
             ),
         },
         "tasks": {
@@ -169,6 +206,25 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
                 "be inside the parent's working directory."
             ),
         },
+        "action": {
+            "type": "string",
+            "enum": list(_ACTIONS),
+            "default": "run",
+            "description": (
+                "run (default): delegate new work, as 'mode' describes. "
+                "resume: continue ONE agent you delegated earlier, in its own "
+                "conversation — pass its 'id', the 'profile' it ran as, and its "
+                "next instruction in 'task'; no 'mode', 'tasks' or 'cwd'."
+            ),
+        },
+        "id": {
+            "type": "string",
+            "description": (
+                "action=resume only: which agent to continue — the id its "
+                'result shows, on its "Session:" line or after "session" in a '
+                'batch member\'s "did not finish" heading. Not a file path.'
+            ),
+        },
         # NO ``timeout_ms`` (#604, ADR-0276). A delegated agent has no time
         # limit: the 10-minute default and the 30-minute caps cut off children
         # that were still doing the work, and the human — Esc, a signal,
@@ -182,11 +238,17 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:906-909``) with no process created.
+    # (``extension.py:931-934``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
     # normalizes ``task`` into a 1-tuple.
+    #
+    # ``action="resume"`` (#610 D1) kept it too: a resume names its profile as
+    # well, and the hook only COMPARES it with the one the agent ran as. The
+    # agent is never rebuilt from the caller's value — OpenHands rebuilt a
+    # resumed agent from the caller's ``subagent_type`` — and a wrong id meets a
+    # profile that does not match before it meets a dialog.
     "required": ["profile"],
 }
 
@@ -195,9 +257,9 @@ _DESCRIPTION_HEAD = (
     "running under its own agent profile, its own system prompt and its own "
     "context window.\n"
     "\n"
-    "Each one runs to completion and returns ONE summary. There is no "
-    "conversation: a child cannot ask you a question and you cannot steer it "
-    "mid-run, so every task must be complete on its own. A delegated agent is "
+    "Each one runs to completion and returns ONE summary. A child cannot ask you "
+    "a question and you cannot steer it mid-run, so every task must be complete "
+    "on its own. A delegated agent is "
     "READ-ONLY unless the user's own permission posture already grants more, or "
     "they approve more at a prompt, and it can never hold a tool you do not "
     "hold, delegate further, or run outside your working directory.\n"
@@ -212,8 +274,22 @@ _DESCRIPTION_HEAD = (
     "chain stops at the first failure and returns what did run.\n"
     "\n"
     "Asking for more tasks than the limit is REFUSED and nothing runs — the call "
-    "is never trimmed to fit. Delegate read-heavy work first."
+    "is never trimmed to fit. Delegate read-heavy work first.\n"
+    "\n"
+    'All of that is action="run", the default. action="resume" continues ONE '
+    "agent that finished or was stopped: pass the 'id' its result shows (on its "
+    '"Session:" line, or after "session" in a batch member\'s "did not finish" '
+    "heading), the 'profile' it ran as, and its next instruction as 'task'. "
+    "It goes on in its own conversation, on the same profile and model, and its "
+    "limits never widen. Resume it rather than delegating the same work again "
+    "from scratch."
 )
+"""The fixed contract text the roster is appended to.
+
+#610 D3 took "There is no conversation:" out of its second paragraph — false
+once an agent can be resumed into the one it had — and added the last paragraph,
+which names both actions the way the list above names every mode
+(``test_the_contract_text_stays_inside_its_own_budget`` pins both sets)."""
 
 def _no_profiles_message() -> str:
     """The "nothing to delegate to" refusal, naming the COMPUTED directory.
@@ -257,10 +333,10 @@ class AgentCall:
     task — are P4 ``aelix-team`` work, and the reason is not conservatism: with
     one profile every member shares the same clamp
     (``posture.child_permission_mode``), the same ``consent_is_required``
-    (``consent.py:558-598``) and the same ``_may_widen``
-    (``consent.py:474-555``), which is what makes ONE consent decision for the
+    (``consent.py:591-682``) and the same ``_may_widen``
+    (``consent.py:493-588``), which is what makes ONE consent decision for the
     whole batch coherent. :class:`~aelix_agents.consent.SpawnGrant` is singular
-    by construction (``consent.py:264-271``: one ``profile``, one
+    by construction (``consent.py:268-275``: one ``profile``, one
     ``source_path``, one ``mode``).
     """
 
@@ -271,6 +347,17 @@ class AgentCall:
     code path rather than two that must be kept in agreement."""
     mode: SubagentMode = "single"
     cwd: str | None = None
+    action: AgentAction = "run"
+    """``"resume"`` continues the agent :attr:`id` names (#610 D1). A resume is
+    ONE task — its next instruction — with ``mode="single"`` and no ``cwd``, by
+    construction of :func:`parse_agent_call`, so every reader of the single
+    shape reads a resume correctly; only the hook and ``execute()`` branch on it."""
+    id: str | None = None
+    """``action="resume"`` only: the child SESSION id the model passed — the id
+    on a result's ``Session:`` line, never a path (the parser refuses a
+    path-shaped one). ``None`` when it named none: the hook answers that with
+    the list of agents it could resume (#610 D7), which a parser refusal could
+    not carry."""
 
     @property
     def task(self) -> str:
@@ -323,6 +410,12 @@ class PendingSpawn:
     cwd: str
     """The CONTAINED child working directory, already resolved against the
     parent's (``print_channel.resolve_child_cwd``) and shown in the dialog."""
+    resume: ResumeTarget | None = None
+    """The agent an ``action="resume"`` call continues (#610 D12), as the hook
+    found and checked it — so ``execute()`` resumes the child the human was
+    shown, with the limits that were on screen, and never looks the id up
+    again. ``None`` for every ``run``; trailing and defaulted so no ``run``
+    constructor changes."""
 
 
 def _parse_mode(raw: object) -> SubagentMode:
@@ -343,6 +436,172 @@ def _parse_mode(raw: object) -> SubagentMode:
     return raw  # type: ignore[return-value]  # narrowed by the _MODES membership test
 
 
+def _parse_action(raw: object) -> AgentAction:
+    """#610 D1. Absent (or an explicit ``null``) means ``"run"``.
+
+    :func:`_parse_mode`'s rule exactly, ``null`` clause included: a provider that
+    materialises every declared property sends ``action: null`` on every plain
+    delegation. ``""`` is REFUSED, as ``mode=""`` is — an empty string names no
+    action, and reading it as ``run`` would substitute a default for a value the
+    model chose. So is every value outside :data:`_ACTIONS`; see there for why
+    an unknown action must never run as ``run``.
+    """
+
+    if raw is None:
+        return "run"
+    if raw not in _ACTIONS:
+        raise AgentCallError(
+            f"action={raw!r} is not an action. Use one of: {', '.join(_ACTIONS)}."
+        )
+    return raw  # type: ignore[return-value]  # narrowed by the _ACTIONS membership test
+
+
+_ID_IS_FOR_RESUME = (
+    "'id' is only for action='resume'. Pass action='resume' to continue that "
+    "agent, or leave 'id' out to delegate new work."
+)
+"""A ``run`` that carries an ``id`` (#610 D1). Before #610 the key was ignored
+and the call delegated anew; a model that believed it had continued an agent
+would then reason about a conversation the new child never had. Both fixes are
+named, because which one the model meant is not knowable from here."""
+
+_BACKGROUND_REFUSED = (
+    "Background delegation is not available: a background child has no "
+    "owner to reap it and no channel to report through. Call agent() "
+    "and wait for the result."
+)
+"""``background`` is refused for either action: it names something that would
+NOT happen (see the ``timeout_ms`` note in :func:`parse_agent_call`)."""
+
+_RESUME_NEEDS_PROFILE = (
+    "action='resume' needs 'profile': the profile that agent ran as — the last "
+    "line of its result names it ([agent <profile> · …])."
+)
+_RESUME_NEEDS_TASK = (
+    "action='resume' needs 'task': the next instruction for that agent. It keeps "
+    "its own conversation, so say what to do next rather than the whole job "
+    "again."
+)
+_RESUME_TASK_NOT_TEXT = (
+    "'task' holds half of a character (a lone surrogate), which cannot be sent to "
+    "the agent. Resend the instruction as plain text."
+)
+_RESUME_TASK_HAS_NUL = (
+    "'task' holds a NUL character (U+0000), which cannot be sent to the agent. "
+    "Resend the instruction without it."
+)
+_RESUME_ID_NOT_A_STRING = "'id' must be the agent's Session id, as a string."
+_RESUME_ID_IS_A_PATH = (
+    "'id' is the agent's Session id — the id its result shows, on its "
+    '"Session:" line or after "session" in a batch member\'s "did not finish" '
+    "heading — not a file path."
+)
+
+
+def _parse_resume_id(raw: object) -> str | None:
+    """The id a resume names, or ``None`` when it names none (#610 D1).
+
+    A MISSING id is not refused here, and that is the point: the hook answers
+    it with the agents this conversation could resume (D7), which a parser
+    refusal has no way to carry. A blank one is the same omission.
+
+    A PATH-SHAPED id is refused: a separator of either platform, or a
+    ``.jsonl`` name. The id is a session id and nothing else (ADR-0243 §5: no
+    model text carries a session path); a model that guessed a path learns the
+    rule rather than "unknown id". An absolute path always carries a separator,
+    so the separator test is the absolute-path test too.
+    """
+
+    if _absent(raw):
+        return None
+    if not isinstance(raw, str):
+        raise AgentCallError(_RESUME_ID_NOT_A_STRING)
+    child_id = raw.strip()
+    if not child_id:
+        return None
+    if "/" in child_id or "\\" in child_id or child_id.lower().endswith(".jsonl"):
+        raise AgentCallError(_RESUME_ID_IS_A_PATH)
+    return child_id
+
+
+def _parse_resume(args: Mapping[str, Any]) -> AgentCall:
+    """``action="resume"`` — ONE agent, its next instruction, nothing else (#610 D1).
+
+    A resume continues an agent where and as it ran: the directory it ran in,
+    one child, in the foreground. So every key that would choose otherwise is
+    REFUSED rather than ignored — ``tasks``, a ``mode`` other than ``single``,
+    ``cwd``, ``background`` — for the reason this module refuses
+    ``background``: an ignored key is a model believing something happened that
+    did not. Exclusions are checked before the ``task`` requirement, as
+    :func:`parse_agent_call` does for ``task``/``tasks``: a model that wrote
+    ``tasks`` is told about ``tasks``, not that ``task`` is missing.
+
+    Absence follows :func:`_absent` for ``tasks`` (the presence question, as in
+    a ``run``), while ``mode`` and ``cwd`` keep the run path's rule that their
+    empty string is a value: ``mode=""`` is refused there too, and ``cwd`` has
+    no value a resume could use.
+
+    The instruction is held to :data:`RESUME_TASK_MAX_BYTES`, not
+    ``MAX_TASK_BYTES``, and the refusal states that number. ``profile`` is
+    required as it is for a ``run``; the hook compares it with the profile the
+    agent ran as and never builds the agent from it.
+    """
+
+    profile = args.get("profile")
+    if not isinstance(profile, str) or not profile.strip():
+        raise AgentCallError(_RESUME_NEEDS_PROFILE)
+    child_id = _parse_resume_id(args.get("id"))
+    if not _absent(args.get("tasks")):
+        raise AgentCallError(
+            "action='resume' takes no 'tasks': it gives ONE agent its next "
+            "instruction, in 'task'."
+        )
+    mode = args.get("mode")
+    if mode is not None and mode != "single":
+        raise AgentCallError(
+            f"action='resume' takes no mode={mode!r}: it continues ONE agent, so "
+            "leave 'mode' out."
+        )
+    if args.get("cwd") is not None:
+        raise AgentCallError(
+            "action='resume' takes no 'cwd': the agent goes on in the directory "
+            "it ran in."
+        )
+    if args.get("background"):
+        raise AgentCallError(_BACKGROUND_REFUSED)
+    task = args.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise AgentCallError(_RESUME_NEEDS_TASK)
+    # A LONE SURROGATE IS REFUSED HERE, where a refusal costs nothing. It is a
+    # legal ``str`` that a call's JSON can carry (``"\ud83d"``, half an emoji),
+    # and it cannot be encoded into the child's argv: let through, it would fail
+    # the spawn after the budget was charged and the run recorded.
+    try:
+        size = len(task.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise AgentCallError(_RESUME_TASK_NOT_TEXT) from exc
+    # NUL, for the same reason (#610 F7): UTF-8 encodes it, but no argv can
+    # carry it — ``create_subprocess_exec`` raises "embedded null byte" after
+    # the budget was charged and four records written (Codex review 9).
+    if "\x00" in task:
+        raise AgentCallError(_RESUME_TASK_HAS_NUL)
+    if size > RESUME_TASK_MAX_BYTES:
+        raise AgentCallError(
+            f"'task': the instruction is {size} bytes; a resume instruction may "
+            f"be at most {RESUME_TASK_MAX_BYTES} bytes — {MAX_TASK_BYTES} for any "
+            f"task, less {RESUME_PREAMBLE_RESERVE} for the note aelix puts in "
+            "front of it. Shorten it."
+        )
+    return AgentCall(
+        profile=profile.strip(),
+        tasks=(task,),
+        mode="single",
+        cwd=None,
+        action="resume",
+        id=child_id,
+    )
+
+
 def _absent(value: object) -> bool:
     """Is this argument ABSENT — including the empty shapes a provider invents?
 
@@ -352,12 +611,14 @@ def _absent(value: object) -> bool:
     common spelling. An omitted string comes back as ``""`` and an omitted array
     as ``[]`` from providers that fill in type-appropriate zero values.
 
-    Used ONLY for the ``task``/``tasks`` presence pair that drives the two
-    mutual-exclusion refusals. That is the case where a materialised empty is
-    read as the model ASSERTING the key, producing a refusal it cannot act on —
-    ``{"mode": "parallel", "tasks": [...], "task": ""}`` is answered with
-    "mode='parallel' takes 'tasks', not 'task'" about a ``task`` the model never
-    wrote, so it re-issues the identical call.
+    Used ONLY for presence questions: the ``task``/``tasks`` pair that drives the
+    two mutual-exclusion refusals, and — #610 D1 — the ``id`` a ``run`` must not
+    carry and the ``tasks`` a ``resume`` must not. That is the case where a
+    materialised empty is read as the model ASSERTING the key, producing a
+    refusal it cannot act on — ``{"mode": "parallel", "tasks": [...], "task":
+    ""}`` is answered with "mode='parallel' takes 'tasks', not 'task'" about a
+    ``task`` the model never wrote, so it re-issues the identical call; and every
+    plain delegation from such a provider carries ``id: ""``.
 
     DELIBERATELY NOT used for ``cwd`` or ``mode``. There an empty string is the
     OPERATIVE argument rather than evidence about presence: ``cwd=""`` names no
@@ -419,11 +680,21 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:906-909``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:931-934``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:534-547``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
+
+    ``action`` IS READ FIRST (#610 D1): a ``resume`` takes its own, narrower
+    parse (:func:`_parse_resume`), and a ``run`` takes the parse below, which
+    answers every call without an ``id`` exactly as it did before #610.
     """
+
+    action = _parse_action(args.get("action"))
+    if action == "resume":
+        return _parse_resume(args)
+    if not _absent(args.get("id")):
+        raise AgentCallError(_ID_IS_FOR_RESUME)
 
     profile = args.get("profile")
     if not isinstance(profile, str) or not profile.strip():
@@ -501,11 +772,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     # limit left for the value to set. ``background`` is the opposite case: it
     # names something that would NOT happen, so it is refused below.
     if args.get("background"):
-        raise AgentCallError(
-            "Background delegation is not available: a background child has no "
-            "owner to reap it and no channel to report through. Call agent() "
-            "and wait for the result."
-        )
+        raise AgentCallError(_BACKGROUND_REFUSED)
 
     return AgentCall(
         profile=profile.strip(),
@@ -699,7 +966,7 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     """The ``[agent … ]`` footer both renderers print.
 
     ``status`` overrides ``result.status`` and exists for exactly one caller:
-    ``aggregate._member_block`` (``aggregate.py:244-305``) rendering a member
+    ``aggregate._member_block`` (``aggregate.py:249-310``) rendering a member
     that NEVER STARTED. Its envelope carries ``status="error"`` like every other
     refusal, so without the override the footer says ``error`` one line under a
     heading that says ``did not start``. Keyword-only with a ``None`` default so
@@ -839,12 +1106,62 @@ DO_NOT_REDELEGATE = (
     "Do not delegate the same task again from scratch — it already did the work "
     "below. Check the changed files and its tool calls first."
 )
-"""The phase-0 retry guidance (ADR-0276 D11); #610's resume replaces it.
+"""The phase-0 retry guidance (ADR-0276 D11), kept for a child with no session.
 
 Printed ONLY when there is work to point at — a tool call or a written file. A
 child that failed on its first request (no API key, a bad model id) did nothing,
 and "it already did the work" would be as false of it as it is of a refusal
-(D18, design critique 5): the right move there is to fix the cause and retry."""
+(D18, design critique 5): the right move there is to fix the cause and retry.
+
+#610 D4 replaced it with :data:`RESUME_GUIDANCE` wherever there is something to
+resume. This sentence is left for the child that has nothing to resume — a
+parent with no session file, or a child file that could not be allocated — where
+"continue it" would name a call that can only be refused."""
+
+RESUME_GUIDANCE = (
+    "Do not delegate the same task again from scratch — it already did the work "
+    "below. Check the changed files and its tool calls; if it should go on, "
+    'continue it with agent(action="resume", profile={profile}, id={id}, task=…).'
+)
+"""What #610 D4 put where :data:`DO_NOT_REDELEGATE` was, for a child WITH a session.
+
+The call is spelled out, with the profile and the id filled in, because the
+model's next useful move is that call and the values are on this result; the
+instruction is the one thing left to the model. Printed under exactly the
+condition :data:`DO_NOT_REDELEGATE` was. A batch member's block gets neither —
+``aggregate._unfinished_member_block`` keeps to the facts, by design — and its
+``session`` and the tool description carry the rest."""
+
+
+def call_literal(value: object) -> str:
+    """``value`` as the model would write it in a call: a JSON string on one line.
+
+    For the values this module and the hook put INTO a call the model is asked
+    to make (#610 D4). The profile is a filename stem, which may hold a newline
+    or a quote, and the id comes back off a record: each is folded onto one line
+    (:func:`~aelix_agents.envelope.child_line`), stripped of lone surrogates —
+    a stem that is not valid UTF-8 decodes to them, and they cannot be encoded
+    into a request — and quoted, so what the model copies is exactly one
+    argument. Not bounded: a name cut short is a name that no longer matches.
+    """
+
+    text = child_line(value) if isinstance(value, str) else ""
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cs")
+    return json.dumps(text, ensure_ascii=False)
+
+
+def retry_guidance(result: SubagentResult) -> str:
+    """The line under a started child's "did not finish" heading (#610 D4).
+
+    :data:`RESUME_GUIDANCE` when the child has a session to resume, naming its
+    profile and its id; :data:`DO_NOT_REDELEGATE` when it has none.
+    """
+
+    if not result.session_id:
+        return DO_NOT_REDELEGATE
+    return RESUME_GUIDANCE.format(
+        profile=call_literal(result.profile), id=call_literal(result.session_id)
+    )
 
 NO_TEXT_YET = "(it wrote no text before it stopped — see its tool calls)"
 """What stands for the partial answer of a child that wrote none of its own."""
@@ -950,7 +1267,9 @@ def _render_unfinished(result: SubagentResult) -> str:
     reason = result.reason or REASON_UNSPECIFIED
     worked = did_work(result)
     head = UNFINISHED_HEAD.format(reason=child_line(reason))
-    blocks = [f"{head}\n{DO_NOT_REDELEGATE}" if worked else head]
+    # #610 D4 — "continue it with agent(action="resume", …)" when it has a
+    # session, the phase-0 sentence when it has none; same condition either way.
+    blocks = [f"{head}\n{retry_guidance(result)}" if worked else head]
     error = result.error
     if (
         summary == NO_OUTPUT
@@ -1030,9 +1349,13 @@ def render_subagent_result(result: SubagentResult) -> ToolResult:
     TWO TEMPLATES (ADR-0276 D11, D18). A child that STARTED and did not finish
     gets :func:`_render_unfinished` — reason, partial answer, error, tool calls,
     files and session. Every other result — a success, a refusal, a decline, a
-    child that never got a process — renders exactly as it always did, byte for
-    byte: a success needs none of that, and "it did the work below" is false of
-    a child that never ran.
+    child that never got a process — renders as it always did: a success needs
+    none of that, and "it did the work below" is false of a child that never
+    ran. ONE line changed that (#610 D2, amending D18): a success with a session
+    names it, ``Session: <id>`` above the footer, because that id is what
+    ``agent(action="resume")`` takes and a finished agent is one a model may
+    want to continue. Nothing else of the run's evidence joins it, and a result
+    with no session — every refusal and decline — is byte for byte as before.
 
     The ``Error:`` note is left out when it would only repeat the summary —
     including when the summary is that error cut at ``output_cap``
@@ -1056,6 +1379,11 @@ def render_subagent_result(result: SubagentResult) -> ToolResult:
             # and never ``Error:``, so a finished answer is not read as a failure.
             notes.append(f"Note: {result.note}.")
         notes.extend(_tail_notes(result))
+        if result.ok and result.session_id:
+            # #610 D2 — after the summary and its notes, above the footer: the
+            # id a resume takes. Only a success: a failure that started has the
+            # template above, and one that never started has nothing to resume.
+            notes.append(f"Session: {child_line(result.session_id)}")
         text = "\n\n".join([body, *notes, _usage_line(result)])
     return ToolResult(
         content=[TextContent(text=text)],
@@ -1077,13 +1405,16 @@ __all__ = [
     "DESCRIPTION_HEAD_MAX_BYTES",
     "MAX_PARALLEL_TASKS",
     "MAX_ROSTER",
+    "RESUME_TASK_MAX_BYTES",
     "ROSTER_DESCRIPTION_CHARS",
     "ROSTER_MAX_BYTES",
+    "AgentAction",
     "AgentCall",
     "AgentCallError",
     "PendingSpawn",
     "build_description",
     "build_roster",
+    "call_literal",
     "create_agent_tool",
     "format_partial",
     "parse_agent_call",

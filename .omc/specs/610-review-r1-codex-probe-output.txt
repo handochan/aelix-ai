@@ -1,0 +1,33 @@
+POSTURE approved=yolo parent_now=plan fresh_now=plan resume=yolo is_error=False real_child_wrote=True
+.CWD first=/private/tmp/610-codex/final-probes/test_original_cwd_symlink_to_s0/project/work resume=/private/tmp/610-codex/final-probes/test_original_cwd_symlink_to_s0/project/other is_error=False
+.HEADER target=ResumeTarget budget=11->10 records_added=4 exit_code=1 status=error
+HEADER_RESULT The delegated agent did not finish: Error: Invalid JSONL session file /private/tmp/610-codex/final-probes/test_bad_header_passes_preflig0/s/--private-tmp-610-codex-final-probes-test_bad_header_passes_preflig0-project--/p/sub-348697826fa9.jsonl: unsupported session version
+
+Partial result:
+(it wrote no text before it stopped)
+
+Session: e22dd437-428e-48d8-80d9-72c7126edeb9
+
+[agent scout · error · plan · 0.5s]
+.NUL budget=11->10 records_added=4 exit_code=None error=embedded null byte
+.ROUTE stored={'model': 'm1', 'provider': 'reviewprov', 'route': None} first=http://127.0.0.1:1/v1 resume=http://127.0.0.1:2/v2
+.THINKING stored=None first=None resume=high
+.DIRECTORY_SYMLINK is_symlink=True result_error=False outside_bytes=1558->2506
+.FOREIGN_FILE error=False foreign_secret_replayed=True reported_id_matches_actual=False
+.FINAL_SYMLINK is_symlink=True error=False outside_bytes=1558->2506
+.HARDLINK links=2 target=ResumeTarget other_writer_held=True result_error=False outside_bytes=1558->2507
+.FORGED original=plan unchanged_permission_mode=plan forged_limits=yolo resume=yolo result_error=False
+.CONCURRENT admitted=1 first_error=False second_error=True budget_spent=1 second='Resume refused: that agent is already running. Wait for its result.\n\n[agent scout · error · 0.0s]'
+.RPC_CHANNEL error=True budget_spent=1 records_added=4 result="(no output)\n\nError: the rpc channel cannot resume a delegated agent: it rebuilds a child's limits from the live parent and cannot honour the ones recorded when the agent was delegated (#610)\n\n[agent scout · error · plan · 0.0s]"
+.ORPHAN adapter=anthropic-messages synthetic_error=True wire_result=[{'type': 'tool_result', 'tool_use_id': 'call_1', 'content': [{'type': 'text', 'text': 'No result provided'}], 'is_error': True}]
+.ORPHAN adapter=openai-completions synthetic_error=True wire_result=[{'role': 'tool', 'content': 'No result provided', 'tool_call_id': 'call_1'}]
+.ORPHAN adapter=openai-responses synthetic_error=True wire_result=[{'type': 'function_call_output', 'call_id': 'call_1', 'output': 'No result provided'}]
+.ORPHAN adapter=openai-codex-responses synthetic_error=True wire_result=[{'type': 'function_call_output', 'call_id': 'call_1', 'output': 'No result provided'}]
+.ORPHAN adapter=google-generative-ai synthetic_error=True wire_result=[{'name': 'bash', 'response': {'error': 'No result provided'}}]
+.ORPHAN adapter=google-vertex synthetic_error=True wire_result=[{'name': 'bash', 'response': {'error': 'No result provided'}}]
+.FRESH_ARGV compared=972 byte_identical=True
+.STATS runs=2 input=20 output=4 pending=0 keys_distinct=True
+.BRANCH first_receipt_present=False error=False next_lookup="Resume refused: the delegation that started that agent is not in this conversation's record, so the limits it ran with are unknown here. Delegate the task anew."
+.HUGE file_bytes=33554432 scanned_bytes=2097152 complete=False
+.
+23 passed in 13.18s

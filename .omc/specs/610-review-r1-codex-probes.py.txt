@@ -1,0 +1,488 @@
+"""Issue 610 adversarial review probes; product code is untouched.
+
+Assertions pin the behavior observed on 54cd7f61, including counterexamples.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+from pathlib import Path
+
+import pytest
+
+from aelix_agent_core.harness.hooks import ToolCallHookEvent
+from aelix_agents.child_session import ResumeTarget, CHILD_SESSION_TYPE
+from aelix_agents.posture import child_permission_mode
+from aelix_agents.print_channel import PrintChannel, build_child_env
+from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_ai.tools import ToolExecutionContext
+
+from tests.agents_ext.test_agent_resume_tool_610 import _delegated, _resume, _resume_args, _Scene
+from tests.agents_ext.test_tool_and_security import _text, _bench, _call, _write_profile
+from tests.agents_ext.test_child_session_records import _records, _parent
+from tests.env_sandbox import child_env
+
+pytest_plugins = ["tests.conftest"]
+
+
+def _channel(scene, root: Path) -> PrintChannel:
+    home = root / "child-home"
+    (home / ".config").mkdir(parents=True, exist_ok=True)
+    agent_dir = home / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return PrintChannel(env_builder=lambda profile: build_child_env(
+        profile,
+        base=child_env(home, XDG_CONFIG_HOME=str(home / ".config"),
+                      AELIX_CODING_AGENT_DIR=str(agent_dir),
+                      REVIEW_KEY="dummy-no-network",
+                      PI_OFFLINE="1", PYTHONDONTWRITEBYTECODE="1"),
+    ))
+
+
+async def _hook_only(scene, task="keep going", key="tc-resume"):
+    args = _resume_args(scene, task)
+    result = await scene.bench.hook(ToolCallHookEvent(
+        tool_call_id=key, tool_name="agent", args=args,
+    ))
+    assert result is None, result
+    return args
+
+
+async def _execute(scene, args, key="tc-resume"):
+    return await scene.bench.tool.execute(args, ToolExecutionContext(tool_call_id=key))
+
+
+async def test_current_parent_tightened_after_hook(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    args = await _hook_only(scene, task="PERMISSION_WRITE_PROBE")
+    approved = scene.bench.ext._pending["tc-resume"].grant.mode
+    scene.bench.ext.posture.mode = PermissionMode.PLAN
+    result = await asyncio.wait_for(_execute(scene, args), 20)
+    actual = scene.plans[-1].permission_mode
+    fresh = child_permission_mode("inherit", PermissionMode.PLAN, "user", has_ui=False)
+    written = (tmp_path / "project" / "forbidden-write.txt").exists()
+    print(f"POSTURE approved={approved.value} parent_now=plan fresh_now={fresh.value} resume={actual.value} is_error={result.is_error} real_child_wrote={written}")
+    assert actual == PermissionMode.YOLO and fresh == PermissionMode.PLAN
+    assert written
+
+
+async def test_original_cwd_symlink_to_sibling(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1", cwd="work")
+    original = scene.bench.cwd / "work"
+    other = scene.bench.cwd / "other"
+    other.mkdir()
+    original.rename(scene.bench.cwd / "original-work")
+    original.symlink_to(other, target_is_directory=True)
+    result = await _resume(scene)
+    actual = Path(scene.plans[-1].cwd)
+    print(f"CWD first={scene.plans[0].cwd} resume={actual} is_error={result.is_error}")
+    assert not result.is_error and actual == other.resolve()
+    wire = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert wire[0]["cwd"] != wire[-1]["cwd"] == str(other.resolve())
+
+
+async def test_bad_header_passes_preflight_then_charges_and_spawns(tmp_path):
+    scene = await _delegated(tmp_path)
+    lines = scene.child_path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["version"] = 999
+    lines[0] = json.dumps(header)
+    scene.child_path.write_text("\n".join(lines) + "\n")
+    runtime = scene.bench.ext.runtime
+    target = await runtime.find_resume_target(scene.child_id)
+    before_budget = runtime.remaining_delegation_budget()
+    before_records = len(await _records(scene.session))
+    scene.bench.ext.runtime.channel = _channel(scene, tmp_path)
+    result = await _resume(scene)
+    records = await _records(scene.session)
+    settle = [v for k, v in records if k == CHILD_SESSION_TYPE][-1]
+    print(f"HEADER target={type(target).__name__} budget={before_budget}->{runtime.remaining_delegation_budget()} records_added={len(records)-before_records} exit_code={settle.get('exit_code')} status={settle.get('status')}")
+    print("HEADER_RESULT", _text(result))
+    assert isinstance(target, ResumeTarget)
+    assert runtime.remaining_delegation_budget() == before_budget - 1
+    assert len(records) == before_records + 4
+    assert settle["exit_code"] == 1
+
+
+async def test_nul_instruction_spends_budget_and_records_before_exec_fails(tmp_path):
+    scene = await _delegated(tmp_path)
+    runtime = scene.bench.ext.runtime
+    scene.bench.ext.runtime.channel = _channel(scene, tmp_path)
+    before_budget = runtime.remaining_delegation_budget()
+    before_records = len(await _records(scene.session))
+    result = await _resume(scene, "keep\x00going")
+    records = await _records(scene.session)
+    settle = [v for k, v in records if k == CHILD_SESSION_TYPE][-1]
+    print(f"NUL budget={before_budget}->{runtime.remaining_delegation_budget()} records_added={len(records)-before_records} exit_code={settle.get('exit_code')} error={settle.get('error')}")
+    assert runtime.remaining_delegation_budget() == before_budget - 1
+    assert len(records) == before_records + 4
+    assert "embedded null" in _text(result)
+
+
+class _RealChannel:
+    def __init__(self, channel):
+        self.plans = []
+        self.channel = channel
+
+    async def run(self, plan, **kwargs):
+        self.plans.append(plan)
+        return await self.channel.run(plan, **kwargs)
+
+
+_STUB = '''
+import json
+import os
+from pathlib import Path
+from aelix_ai.messages import AssistantMessage, TextContent, ToolCallContent
+from aelix_ai.streaming import AssistantEndEvent, AssistantStartEvent, Model
+from aelix_coding_agent.model_registry import ProviderConfigInput
+
+def setup(api):
+    async def stream(model, context, options):
+        with Path(CAPTURE).open("a") as output:
+            output.write(json.dumps({"model": model.id, "provider": model.provider,
+                "api": model.api, "base_url": model.base_url,
+                "reasoning": options.reasoning, "cwd": os.getcwd(),
+                "users": [str(m.content) for m in context.messages if m.role == "user"]}) + "\\n")
+        yield AssistantStartEvent(partial=AssistantMessage(content=[]))
+        if context.messages[-1].role == "user" and "PERMISSION_WRITE_PROBE" in str(context.messages[-1].content):
+            target = str(Path(CAPTURE).parent / "project" / "forbidden-write.txt")
+            yield AssistantEndEvent(message=AssistantMessage(
+                content=[ToolCallContent(tool_call_id="write-probe", tool_name="write",
+                    input={"path": target, "content": "written despite current parent plan"})],
+                stop_reason="tool_use", provider=model.provider, model=model.id,
+                api=model.api, usage={"input": 10, "output": 2}))
+            return
+        yield AssistantEndEvent(message=AssistantMessage(
+            content=[TextContent(text="review-stub-done")],
+            stop_reason="end_turn", provider=model.provider, model=model.id,
+            api=model.api, usage={"input": 10, "output": 2}))
+    api.register_api_adapter("review-api", stream)
+    api.register_provider("reviewprov", ProviderConfigInput(name="Review",
+        api_key="REVIEW_KEY", models={name: Model(id=name, provider="reviewprov",
+            api="review-api", base_url="http://127.0.0.1:1/v1", reasoning=True,
+            context_window=100000, max_tokens=4096) for name in ("m1", "m2")}))
+'''
+
+
+async def _real_scene(root, *, model=None, settings=None, cwd=None):
+    extension = root / "stub_ext.py"
+    extension.parent.mkdir(parents=True, exist_ok=True)
+    capture = root / "capture.jsonl"
+    extension.write_text(f"CAPTURE = {str(capture)!r}\n" + _STUB)
+    extra = f"provider: reviewprov\nextensions: [{str(extension)}]"
+    if model is not None:
+        extra += f"\nmodel: {model}"
+    _write_profile(root / "agent" / "agents" / "scout.md", "scout", extra=extra)
+    bench = _bench(root, posture=PermissionMode.YOLO)
+    channel = _RealChannel(_channel(None, root))
+    settings_path = root / "child-home" / "agent" / "settings.json"
+    settings_path.write_text(json.dumps(settings or {
+        "defaultProvider": "reviewprov", "defaultModel": "m1", "defaultThinkingLevel": "off"}))
+    bench.ext.runtime.channel = channel
+    bench.channel = channel
+    session, _, _ = await _parent(root, cwd=bench.cwd)
+    bench.ext.session = lambda: session
+    args = {"profile": "scout", "task": "first instruction"}
+    if cwd is not None:
+        (bench.cwd / cwd).mkdir(parents=True, exist_ok=True)
+        args["cwd"] = cwd
+    first = await asyncio.wait_for(_call(bench, args, tool_call_id="tc-1"), 20)
+    assert not first.is_error, _text(first)
+    child_id = re.search(r"^Session: (\S+)$", _text(first), re.M).group(1)
+    scene = _Scene(bench=bench, session=session, child_id=child_id,
+        child_path=Path(channel.plans[0].session_path), first_key=channel.plans[0].id, tmp_path=root)
+    return scene, capture, settings_path
+
+
+async def test_unpinned_route_changes_effective_endpoint_on_resume(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    extension = tmp_path / "stub_ext.py"
+    extension.write_text(extension.read_text().replace("127.0.0.1:1/v1", "127.0.0.1:2/v2"))
+    result = await asyncio.wait_for(_resume(scene), 20)
+    assert not result.is_error, _text(result)
+    wire = [json.loads(line) for line in capture.read_text().splitlines()]
+    print(f"ROUTE stored={scene.plans[0].limits.to_record()['model']} first={wire[0]['base_url']} resume={wire[-1]['base_url']}")
+    assert [request["base_url"] for request in wire] == ["http://127.0.0.1:1/v1", "http://127.0.0.1:2/v2"]
+
+
+async def test_absent_thinking_flag_changes_effective_level_on_resume(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    settings.write_text(json.dumps({"defaultProvider": "reviewprov", "defaultModel": "m1", "defaultThinkingLevel": "high"}))
+    result = await asyncio.wait_for(_resume(scene), 20)
+    assert not result.is_error, _text(result)
+    wire = [json.loads(line) for line in capture.read_text().splitlines()]
+    print(f"THINKING stored={scene.plans[0].limits.thinking} first={wire[0]['reasoning']} resume={wire[-1]['reasoning']}")
+    assert wire[0]["reasoning"] is None
+    assert wire[-1]["reasoning"] == "high"
+
+
+async def test_child_directory_symlink_after_hook_writes_outside_bucket(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    args = await _hook_only(scene)
+    directory = scene.child_path.parent
+    moved = tmp_path / "outside-bucket"
+    directory.rename(moved)
+    directory.symlink_to(moved, target_is_directory=True)
+    outside = moved / scene.child_path.name
+    before = outside.stat().st_size
+    result = await asyncio.wait_for(_execute(scene, args), 20)
+    after = outside.stat().st_size
+    print(f"DIRECTORY_SYMLINK is_symlink={directory.is_symlink()} result_error={result.is_error} outside_bytes={before}->{after}")
+    assert not result.is_error, _text(result)
+    assert after > before
+
+
+async def test_replaced_regular_child_after_hook_uses_foreign_transcript(tmp_path):
+    from aelix_agent_core.session import JsonlSessionStorage, LocalFileSystem, Session
+    from aelix_ai.messages import UserMessage, TextContent
+    import uuid
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    args = await _hook_only(scene)
+    foreign_id = str(uuid.uuid4())
+    foreign_parent = str(uuid.uuid4())
+    lines = scene.child_path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["id"] = foreign_id
+    lines[0] = json.dumps(header)
+    origin = json.loads(lines[1])
+    origin["data"]["parent"]["session_id"] = foreign_parent
+    lines[1] = json.dumps(origin)
+    scene.child_path.write_text("\n".join(lines) + "\n")
+    storage = await JsonlSessionStorage.open(LocalFileSystem(), str(scene.child_path))
+    await Session(storage).append_message(UserMessage(content=[TextContent(text="FOREIGN_PARENT_SECRET")]))
+    result = await asyncio.wait_for(_execute(scene, args), 20)
+    wire = [json.loads(line) for line in capture.read_text().splitlines()]
+    leaked = "FOREIGN_PARENT_SECRET" in str(wire[-1]["users"])
+    shown_id = re.search(r"^Session: (\S+)$", _text(result), re.M).group(1)
+    print(f"FOREIGN_FILE error={result.is_error} foreign_secret_replayed={leaked} reported_id_matches_actual={shown_id == foreign_id}")
+    assert not result.is_error and leaked
+    assert shown_id == scene.child_id and shown_id != foreign_id
+
+
+async def test_direct_file_symlink_between_receipt_and_child_open(tmp_path, monkeypatch):
+    from aelix_agents.child_session import SpawnReceipt
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    outside = tmp_path / "outside-after-final-check.jsonl"
+    original_attach = SpawnReceipt.attach
+
+    async def interleaved_attach(self, session, *, child):
+        # Deterministically schedule a replacement at the receipt's existing
+        # pre-subprocess suspension boundary, after the final lstat check.
+        await original_attach(self, session, child=child)
+        scene.child_path.rename(outside)
+        scene.child_path.symlink_to(outside)
+
+    monkeypatch.setattr(SpawnReceipt, "attach", interleaved_attach)
+    before = scene.child_path.stat().st_size
+    result = await asyncio.wait_for(_resume(scene), 20)
+    print(f"FINAL_SYMLINK is_symlink={scene.child_path.is_symlink()} error={result.is_error} outside_bytes={before}->{outside.stat().st_size}")
+    assert not result.is_error, _text(result)
+    assert outside.stat().st_size > before
+
+
+async def test_hard_link_alias_evades_writer_lock_and_writes_outside_bucket(tmp_path):
+    from aelix_agent_core.session.session_lock import SessionWriterLock
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    outside = tmp_path / "outside-child.jsonl"
+    scene.child_path.rename(outside)
+    os.link(outside, scene.child_path)
+    other_writer = SessionWriterLock(str(outside), timeout=0)
+    assert other_writer.try_acquire()
+    try:
+        before = outside.stat().st_size
+        target = await scene.bench.ext.runtime.find_resume_target(scene.child_id)
+        result = await asyncio.wait_for(_resume(scene), 20)
+        print(f"HARDLINK links={outside.stat().st_nlink} target={type(target).__name__} other_writer_held={other_writer.held} result_error={result.is_error} outside_bytes={before}->{outside.stat().st_size}")
+        assert isinstance(target, ResumeTarget)
+        assert not result.is_error, _text(result)
+        assert outside.stat().st_size > before
+    finally:
+        other_writer.release()
+
+
+async def test_appended_forged_receipt_widens_first_ceiling(tmp_path):
+    scene = await _delegated(tmp_path, posture=PermissionMode.DEFAULT)
+    records = await _records(scene.session)
+    receipt = json.loads(json.dumps([v for k, v in records if k == CHILD_SESSION_TYPE][-1]))
+    assert receipt["limits"]["granted_mode"] == "plan"
+    receipt["limits"]["granted_mode"] = "yolo"
+    await scene.session.append_custom_entry(CHILD_SESSION_TYPE, receipt)
+    scene.bench.ext.posture.mode = PermissionMode.YOLO
+    result = await _resume(scene)
+    print(f"FORGED original=plan unchanged_permission_mode={receipt['permission_mode']} forged_limits={receipt['limits']['granted_mode']} resume={scene.plans[-1].permission_mode.value} result_error={result.is_error}")
+    assert not result.is_error
+    assert scene.plans[-1].permission_mode == PermissionMode.YOLO
+
+
+async def test_two_approved_resumes_admit_only_one(tmp_path):
+    from tests.agents_ext.test_child_session_records import _Channel
+    scene = await _delegated(tmp_path)
+    args_a = await _hook_only(scene, key="tc-a")
+    args_b = await _hook_only(scene, key="tc-b")
+    parked = _Channel(park=True)
+    runtime = scene.bench.ext.runtime
+    runtime.channel = parked
+    before = runtime.remaining_delegation_budget()
+    first = asyncio.create_task(_execute(scene, args_a, key="tc-a"))
+    await asyncio.wait_for(parked.arrived.wait(), 5)
+    second = await _execute(scene, args_b, key="tc-b")
+    parked.release.set()
+    first_result = await first
+    print(f"CONCURRENT admitted={len(parked.plans)} first_error={first_result.is_error} second_error={second.is_error} budget_spent={before-runtime.remaining_delegation_budget()} second={_text(second)!r}")
+    assert not first_result.is_error
+    assert second.is_error
+    assert len(parked.plans) == 1
+    assert before-runtime.remaining_delegation_budget() == 1
+
+
+async def test_rpc_channel_runtime_refusal_still_charges_and_records(tmp_path):
+    from aelix_agents.rpc_channel import RpcChannel
+    scene = await _delegated(tmp_path)
+    runtime = scene.bench.ext.runtime
+    runtime.channel = RpcChannel()
+    before_budget = runtime.remaining_delegation_budget()
+    before_records = len(await _records(scene.session))
+    result = await _resume(scene)
+    print(f"RPC_CHANNEL error={result.is_error} budget_spent={before_budget-runtime.remaining_delegation_budget()} records_added={len(await _records(scene.session))-before_records} result={_text(result)!r}")
+    assert result.is_error and "cannot resume" in _text(result)
+    assert before_budget-runtime.remaining_delegation_budget() == 1
+    assert len(await _records(scene.session))-before_records == 4
+
+
+@pytest.mark.parametrize("adapter", [
+    "anthropic-messages", "openai-completions", "openai-responses",
+    "openai-codex-responses", "google-generative-ai", "google-vertex",
+])
+def test_builtin_wire_converters_keep_dangling_call_as_error(adapter):
+    from aelix_ai.messages import AssistantMessage, UserMessage, TextContent, ToolCallContent
+    from aelix_ai.streaming import Context, Model
+    from aelix_ai.providers._transform_messages import transform_messages
+    from aelix_ai.providers._anthropic_transforms import transform_messages as anthropic
+    from aelix_ai.providers._google_shared import convert_messages as google
+    from aelix_ai.providers._openai_responses_shared import convert_responses_messages
+    from aelix_ai.providers._openai_compat import get_compat
+    from aelix_ai.providers.openai_completions import convert_messages as completions
+    model = Model(id="m", provider="review", api=adapter, input=["text"])
+    messages = [UserMessage(content=[TextContent(text="first task")]),
+        AssistantMessage(content=[ToolCallContent(tool_call_id="call_1", tool_name="bash", input={"command": "sleep 3"})],
+            stop_reason="tool_use", provider=model.provider, model=model.id, api=adapter),
+        UserMessage(content=[TextContent(text="Task: continue")])]
+    normalized = transform_messages(messages, model)
+    synthetic = [m for m in normalized if m.role == "toolResult"]
+    assert len(synthetic) == 1 and synthetic[0].is_error
+    context = Context(messages=messages)
+    if adapter == "anthropic-messages":
+        wire = anthropic(messages, model)
+        results = [b for m in wire for b in m.get("content", []) if isinstance(b, dict) and b.get("type") == "tool_result"]
+        assert results[0]["is_error"] is True
+    elif adapter in ("google-generative-ai", "google-vertex"):
+        wire = google(model, context)
+        results = [b["functionResponse"] for m in wire for b in m.get("parts", []) if "functionResponse" in b]
+        assert "error" in results[0]["response"]
+    elif adapter in ("openai-responses", "openai-codex-responses"):
+        wire = convert_responses_messages(model, context)
+        results = [m for m in wire if m.get("type") == "function_call_output"]
+        assert len(results) == 1 and "No result provided" in str(results[0])
+    else:
+        wire = completions(model, context, get_compat(model))
+        results = [m for m in wire if m.get("role") == "tool"]
+        assert len(results) == 1 and "No result provided" in str(results[0])
+    print(f"ORPHAN adapter={adapter} synthetic_error={synthetic[0].is_error} wire_result={results}")
+
+
+async def test_fresh_argv_matches_base_matrix(tmp_path):
+    import importlib.util
+    import itertools
+    import subprocess
+    import sys
+    from aelix_ai.streaming import Model
+    from aelix_coding_agent.agents.profile import AgentProfile
+    from aelix_coding_agent.subagent_contract import ResolvedProfile
+    from aelix_agents.print_channel import fresh_limits, limited_profile, build_child_argv
+    from tests.model_registry.test_provider_ownership_365 import registry, row
+    from aelix_coding_agent.model_registry import ProviderConfigInput
+
+    def old_module(name, path):
+        source = subprocess.check_output(["git", "show", "f3e76fbb:" + path], text=True)
+        target = tmp_path / (name.rsplit(".", 1)[-1] + ".py")
+        target.write_text(source)
+        spec = importlib.util.spec_from_file_location(name, target)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    resolver = old_module("aelix_coding_agent.agents.review_610_old_resolver", "packages/aelix-coding-agent/src/aelix_coding_agent/agents/resolver.py")
+    channel = old_module("aelix_agents.review_610_old_channel", "packages/aelix-coding-agent/src/aelix_agents/print_channel.py")
+    channel.profile_to_argv = resolver.profile_to_argv
+    r = await registry(tmp_path)
+    r.register_provider("own", ProviderConfigInput(models={"m1": row("own")}))
+    compared = 0
+    parent_cwd = str(tmp_path.resolve())
+    # Real emitter functions from f3e76fbb versus the new fresh-limits path.
+    for tools, parent_tools, contexts, thinking, identity, mode, source in itertools.product(
+        [None, (), ("read", "write", "bash")],
+        [None, (), ("read", "write")],
+        [(True, True), (True, False), (False, True)],
+        [(None, None), (None, "high"), ("low", "high")],
+        [(None, None), ("m1", "own"), ("own/m1", None)],
+        [PermissionMode.PLAN, PermissionMode.YOLO],
+        ["append", "replace"],
+    ):
+        profile = AgentProfile(name="p", description="p", body="p", file_path=str(tmp_path / "p.md"),
+            scope="user", tools=tools, context_files=contexts[0], thinking=thinking[0],
+            model=identity[0], provider=identity[1], system_prompt=source)
+        parent_model = Model(id="gpt-4o-mini", provider="openai")
+        old_profile = channel.inherit_thinking(channel.narrow_context_files(
+            channel.narrow_tools(profile, parent_tools).profile, contexts[1]), thinking[1])
+        common = dict(prompt_path=str(tmp_path / "prompt.md"), task="--literal task", permission_mode=mode,
+            child_cwd=parent_cwd, parent_cwd=parent_cwd, session_path=str(tmp_path / "c.jsonl"))
+        before = channel.build_child_argv(old_profile, **common, parent_model=parent_model, model_registry=r)
+        resolved = ResolvedProfile(name="p", profile=profile, source_path=profile.file_path, scope="user")
+        limits = fresh_limits(resolved, granted_mode=mode, cwd=parent_cwd, parent_tools=parent_tools,
+            parent_context_files=contexts[1], parent_thinking=thinking[1], parent_model=parent_model, model_registry=r).limits
+        after = build_child_argv(limited_profile(profile, limits), **common, model_pin=limits.model)
+        assert before == after, (before, after)
+        compared += 1
+    print(f"FRESH_ARGV compared={compared} byte_identical=True")
+
+
+async def test_real_resume_usage_is_not_double_counted(tmp_path):
+    from aelix_agent_core.harness._session_stats import fold_usage_records
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    result = await _resume(scene)
+    assert not result.is_error, _text(result)
+    records = await _records(scene.session)
+    usage = fold_usage_records([data for kind, data in records if kind == "aelix.usage"])
+    print(f"STATS runs={usage.runs} input={usage.tokens.input} output={usage.tokens.output} pending={usage.pending} keys_distinct={scene.plans[0].id != scene.plans[1].id}")
+    assert usage.runs == 2 and usage.tokens.input == 20 and usage.tokens.output == 4
+    assert usage.pending == 0
+
+
+async def test_branch_changed_after_hook_resumes_without_first_receipt(tmp_path):
+    scene, capture, settings = await _real_scene(tmp_path, model="m1")
+    args = await _hook_only(scene)
+    await scene.session.move_to(None)
+    branch = await scene.session.get_branch()
+    first_present = any(getattr(e, "data", {}).get("key") == scene.first_key for e in branch)
+    result = await asyncio.wait_for(_execute(scene, args), 20)
+    next_lookup = await scene.bench.ext.runtime.find_resume_target(scene.child_id)
+    print(f"BRANCH first_receipt_present={first_present} error={result.is_error} next_lookup={next_lookup!r}")
+    assert not first_present and not result.is_error
+    from aelix_agents.child_session import RESUME_FIRST_RUN_MISSING
+    assert next_lookup == RESUME_FIRST_RUN_MISSING
+
+
+def test_preflight_huge_file_read_is_bounded(tmp_path):
+    from aelix_agents.child_session import CHILD_SCAN_BYTES, _read_head
+    large = tmp_path / "huge.jsonl"
+    with large.open("wb") as output:
+        output.write(b"prefix\n")
+        output.truncate(32 * 1024 * 1024)
+    head, complete = _read_head(str(large))
+    print(f"HUGE file_bytes={large.stat().st_size} scanned_bytes={len(head)} complete={complete}")
+    assert len(head) == CHILD_SCAN_BYTES and not complete

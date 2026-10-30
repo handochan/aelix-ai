@@ -5,7 +5,7 @@ outcome classification both arrive as arguments, so the whole batch layout, the
 ``is_error`` rule and the usage roll-up are pinned without spawning anything.
 
 ONE ``ToolResult`` PER ``agent`` CALL, ALWAYS. ``mode="single"`` never reaches
-this module — it stays on ``render_subagent_result`` (``tool.py:1017-1050``)
+this module — it stays on ``render_subagent_result`` (``tool.py:1336-1369``)
 byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:661-666``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:735-740``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -48,7 +48,7 @@ from aelix_agents.envelope import (
     summary_is_the_error,
 )
 
-# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:698-783``
+# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:965-1050``
 # already owns that format and ``render_subagent_result`` prints it for the
 # single-mode path; a second spelling here would drift the moment either is
 # edited, and a batch whose member lines disagree with a single call's line is
@@ -226,7 +226,7 @@ def _member_block(
 
     Single newlines inside a member, blank lines BETWEEN members. That differs
     from ``render_subagent_result``, which joins with blank lines
-    (``tool.py:1059``) — there it has the whole tool result to itself, whereas
+    (``tool.py:1387``) — there it has the whole tool result to itself, whereas
     here a blank line is the only thing separating one child's answer from the
     next one's, and reusing it would make the two levels indistinguishable.
 
@@ -235,8 +235,13 @@ def _member_block(
 
     A member whose child STARTED and did not finish takes
     :func:`_unfinished_member_block` instead (ADR-0276 D12). Every other member
-    — a success, a refusal, a member that never got a process — renders exactly
-    as it always did (D18).
+    — a success, a refusal, a member that never got a process — renders as it
+    always did (D18), with one line more for a success that has a session
+    (#610 D2): ``Session: <id>`` on a line of its own above the usage line, the
+    id ``agent(action="resume")`` takes. Its own line and not the heading's, as
+    a failed member's ``· session`` is: a success's heading continues straight
+    into the child's own text, and an id appended there would read as part of
+    it. Aelix's line, so — like the usage line — outside the member's share.
     """
 
     if member.started and member.result.started and not member.result.ok:
@@ -244,7 +249,7 @@ def _member_block(
     tag = _DID_NOT_START_TAG if not member.started else member.result.status
     summary = member.result.summary or NO_OUTPUT
     error = member.result.error
-    # The note set mirrors ``render_subagent_result`` (``tool.py:1047-1057``) so a
+    # The note set mirrors ``render_subagent_result`` (``tool.py:1370-1380``) so a
     # batch member never says less about itself than the same child would say on
     # the single-mode path. Asked of the UNCAPPED summary: an error that the
     # budget cut out of the body is part of the summary still, and re-adding it
@@ -287,16 +292,18 @@ def _member_block(
         )
     if member.result.dropped_lines:
         lines.append(f"{member.result.dropped_lines} oversize output line(s) were dropped.")
+    if member.result.ok and member.result.session_id:
+        lines.append(f"Session: {child_line(member.result.session_id)}")
     # THE USAGE LINE MUST NOT CONTRADICT THE HEADING ONE LINE ABOVE IT. Every
     # never-started envelope carries ``status="error"`` — ``_refusal_envelope``
-    # (``batch.py:621-636``) and ``runtime._error_result`` both mint one that way
+    # (``batch.py:622-637``) and ``runtime._error_result`` both mint one that way
     # — so printing ``result.status`` verbatim renders
     # ``[2/2 did not start] …`` immediately above ``[agent scout · error · 0.0s]``.
     # That is the exact conflation this module exists to prevent (see the
     # "FAILED AND NEVER STARTED" paragraph in the module docstring): the reader
     # is told twice, in two words, and the second one is wrong. The override is
     # passed rather than the status re-spelled here so ``tool._usage_line``
-    # stays the single owner of the format (``tool.py:698-783``).
+    # stays the single owner of the format (``tool.py:965-1050``).
     lines.append(
         _usage_line(
             member.result, status=None if member.started else _DID_NOT_START_TAG
@@ -395,7 +402,9 @@ def _unfinished_member_block(index: int, total: int, member: MemberOutcome, *, b
 
     No "do not delegate again" line here, unlike single mode: a batch member
     sits beside its siblings' results, and the design keeps this block to the
-    facts.
+    facts. #610 D4 kept it that way when single mode's line became "continue
+    it with agent(action="resume", …)": the heading's ``· session`` is the id,
+    and the tool's description says what a session id is for.
 
     Cleaned like the single-mode template (#604 review): the heading onto one
     line, the answer, the error, the note and the calls through
@@ -575,7 +584,7 @@ def _join_details(profile: str, total: int, members: Sequence[MemberOutcome]) ->
     member's full output is its child session file (#199). Empty ones are
     omitted rather than rendered as an empty section, and an all-empty batch
     yields ``None`` — which is what ``render_subagent_result`` passes when a
-    single child had nothing (``tool.py:1062``).
+    single child had nothing (``tool.py:1390``).
     """
 
     chunks = [
@@ -659,7 +668,8 @@ def render_batch_result(
 
 CANCEL_REPORT_HEAD = (
     "[aelix system report — not user input] The `agent` call you made was "
-    "stopped when the turn was cancelled. What it had done:"
+    "stopped when the turn was cancelled. The stop was intended: resume or "
+    "repeat that work only if the user asks you to. What it had done:"
 )
 """The first line of the report a cancelled ``agent`` call leaves for the next
 turn (ADR-0276 D14).
@@ -671,7 +681,14 @@ tool output under the user's name as something the user typed.
 
 Only aelix's own lines stand outside the fence — this head, and the trailing
 list of positions that had no child; everything the children produced follows
-between :data:`CANCEL_REPORT_FENCE_OPEN` and :data:`CANCEL_REPORT_FENCE_CLOSE`."""
+between :data:`CANCEL_REPORT_FENCE_OPEN` and :data:`CANCEL_REPORT_FENCE_CLOSE`.
+
+"The stop was intended" (#610 F9): a cancel is the user's own decision, and the
+single-mode text fenced below it names the resume call that would undo it. A
+real model handed that call (after a kill, the #610 live check) resumed the
+agent on its own; this sentence says whose call that is after a cancel. Worded
+for both a single call's report and a batch's — "that work" is whatever the
+call was doing."""
 
 CANCEL_REPORT_FENCE_OPEN = "<cancelled-delegation-report>"
 CANCEL_REPORT_FENCE_CLOSE = "</cancelled-delegation-report>"

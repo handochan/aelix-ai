@@ -80,6 +80,7 @@ from aelix_ai.utils._process_tree import (
     _retained_handle,
 )
 from aelix_coding_agent.agents.profile import AgentProfile
+from aelix_coding_agent.agents.resolver import ModelPin
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
@@ -1937,7 +1938,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
-    which, since ``agents/resolver.py:470-471`` makes the whole task the initial
+    which, since ``agents/resolver.py:617-618`` makes the whole task the initial
     prompt, is the only thing a subagent ever does.
 
     Driven through a HELPER parent so the test process is not the one killed.
@@ -2175,7 +2176,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:998-1002``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1230-1234``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2227,11 +2228,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1113``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1367``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:207``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:223``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2443,8 +2444,8 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:749`` and
-    ``aggregate.py:559`` both gate on ``if usage.cost:``, so a structurally-zero
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1016`` and
+    ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
     ``build_child_argv`` is patched BEFORE the runtime is constructed because
@@ -3146,7 +3147,9 @@ async def test_the_default_channel_forwards_the_parents_live_model(
     the host getter connected to nothing at all.
 
     The getter is called PER SPAWN rather than captured, which is what makes a
-    mid-session ``/model`` reach the next delegation.
+    mid-session ``/model`` reach the next delegation. Since #610 (D8) it is read
+    once per run, into the run's limits, and the argv builder receives that
+    decision as ``model_pin``.
     """
 
     seen: list[Any] = []
@@ -3155,8 +3158,8 @@ async def test_the_default_channel_forwards_the_parents_live_model(
         Model(id="claude-opus-5", provider="anthropic"),
     ]
 
-    def _capture(*_args: Any, parent_model: Any = None, **_kwargs: Any) -> list[str]:
-        seen.append(parent_model)
+    def _capture(*_args: Any, model_pin: Any = None, **_kwargs: Any) -> list[str]:
+        seen.append(model_pin)
         return [sys.executable, "-c", _HAPPY]
 
     runtime = _SubagentRuntimeImpl(
@@ -3168,7 +3171,7 @@ async def test_the_default_channel_forwards_the_parents_live_model(
     await runtime.spawn(_resolved(), "go")
     await runtime.spawn(_resolved(), "again")
 
-    assert [m.id for m in seen] == ["claude-haiku-4-5", "claude-opus-5"]
+    assert [pin.model for pin in seen] == ["claude-haiku-4-5", "claude-opus-5"]
 
 
 async def test_an_unwired_host_forwards_nothing(tmp_path: Path) -> None:
@@ -3177,8 +3180,8 @@ async def test_an_unwired_host_forwards_nothing(tmp_path: Path) -> None:
 
     seen: list[Any] = []
 
-    def _capture(*_args: Any, parent_model: Any = None, **_kwargs: Any) -> list[str]:
-        seen.append(parent_model)
+    def _capture(*_args: Any, model_pin: Any = None, **_kwargs: Any) -> list[str]:
+        seen.append(model_pin)
         return [sys.executable, "-c", _HAPPY]
 
     runtime = _SubagentRuntimeImpl(host=SubagentHost(cwd=lambda: str(tmp_path)))
@@ -3186,7 +3189,8 @@ async def test_an_unwired_host_forwards_nothing(tmp_path: Path) -> None:
     runtime.channel._argv_builder = _capture  # pyright: ignore[reportAttributeAccessIssue]
 
     await runtime.spawn(_resolved(), "go")
-    assert seen == [None]
+    # ``ModelPin()`` — no model flag at all on the argv (#610 D8).
+    assert seen == [ModelPin()]
 
 
 # === #220 — the spawn attaches a ProcessTree, and every kill leg reaches it ====

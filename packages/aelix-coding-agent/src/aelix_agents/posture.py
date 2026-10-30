@@ -231,9 +231,34 @@ def child_permission_mode(
     return PermissionMode.PLAN if clamped is PermissionMode.DEFAULT else clamped
 
 
+def resume_clamp(ceiling: PermissionMode, live: PermissionMode) -> PermissionMode:
+    """The posture a RESUMED child may run at — #610 D10.
+
+    ``ceiling`` is the posture the agent's FIRST run was consented at (the
+    recorded ``limits.granted_mode``: the grant, before any batch live floor),
+    and ``live`` is what the same question gets now — :func:`child_permission_mode`
+    for the parent as it is today, or a human's answer at the resume dialog. A
+    resume runs at the tighter of the two, by authority rank, so a parent that
+    loosened after the delegation (shift+tab to ``yolo``, a relaunch with
+    ``--permission-mode``) cannot hand an old child more than it was granted,
+    and one that tightened gets the tighter posture.
+
+    ONE FUNCTION, THREE CALLERS (critique B1): the model door's pre-filter, the
+    consent dialog's own clamp, and the runtime's ``permission_floor`` belt. A
+    ceiling applied in only one of them let a ``yolo`` parent's resume run
+    wider than its first run, because the pre-filter never asks anyone under
+    ``yolo``.
+
+    Ranked by :data:`_RANK`, never ``CYCLE_ORDER``, for the reason given there.
+    """
+
+    return min(live, ceiling, key=posture_rank)
+
+
 __all__ = [
     "child_permission_mode",
     "declares_write_authority",
     "grants_write_authority",
     "posture_rank",
+    "resume_clamp",
 ]

@@ -167,6 +167,80 @@ class ProfileApplication:
     notices: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ModelPin:
+    """The model flags one delegated child is launched with, as VALUES (#610 D8).
+
+    :func:`child_model_flags` decides them from the profile, the parent's live
+    model and its live registry; this holds what it decided, so the decision
+    can be made ONCE per spawn, recorded in the parent's receipt, and replayed
+    on a resume without asking a parent whose ``/model`` may have moved since
+    (the bug class the issue cites from Codex #26718 / #36433).
+
+    VALUES, NEVER ARGV. A recorded argv fragment replayed verbatim is arbitrary
+    child argv for whoever can write the parent's file (#610 critique B2: a
+    second ``--session``, ``-e /tmp/evil.py``, ``--api-key``). A pin can only
+    become the three flags :func:`model_pin_flags` emits.
+
+    ``ModelPin()`` — every field ``None`` — is a child with no model flag at all,
+    left to its own cascade. ``route`` is the ``--require-registration-route``
+    digest (:func:`_pin_route`), and is only ever set together with ``model``
+    and ``provider``.
+    """
+
+    model: str | None = None
+    provider: str | None = None
+    route: str | None = None
+
+
+_PIN_FIELDS = {
+    "--model": "model",
+    "--provider": "provider",
+    "--require-registration-route": "route",
+}
+"""The only flags a :class:`ModelPin` holds, and the only ones it emits, in the
+order :func:`child_model_flags` puts them on the argv."""
+
+
+def model_pin_flags(pin: ModelPin) -> list[str]:
+    """THE ONE PLACE a model pin becomes argv (#610 D8).
+
+    It can emit ``--model``, ``--provider`` and ``--require-registration-route``
+    and nothing else, in the order :func:`child_model_flags` uses, so a pin
+    taken from a fresh spawn's flags gives the child the same argv it always
+    got. A value cannot smuggle a flag of its own either: all three are in
+    ``cli.args.REQUIRED_VALUE_FLAGS``, so ``parse_args`` takes the next token
+    as the value whatever it starts with. A recorded pin is also validated
+    before it gets here (``aelix_agents.child_session.ChildLimits.from_record``).
+    """
+
+    flags: list[str] = []
+    for flag, attribute in _PIN_FIELDS.items():
+        value = getattr(pin, attribute)
+        if value is not None:
+            flags += [flag, value]
+    return flags
+
+
+def _pin_of(flags: list[str]) -> ModelPin:
+    """:func:`child_model_flags`' output as a :class:`ModelPin`.
+
+    Strict: a flag a pin cannot hold, or one given twice, is a programming
+    error in this module and raises rather than being dropped, because a pin
+    that silently lost a flag would launch the child on another route.
+    """
+
+    values: dict[str, str] = {}
+    if len(flags) % 2:
+        raise ValueError(f"model flags are not flag/value pairs: {flags!r}")
+    for at in range(0, len(flags), 2):
+        attribute = _PIN_FIELDS.get(flags[at])
+        if attribute is None or attribute in values:
+            raise ValueError(f"a model pin cannot hold {flags[at]!r}")
+        values[attribute] = flags[at + 1]
+    return ModelPin(**values)
+
+
 def parent_model_flags(parent_model: Model | None) -> list[str]:
     """The parent's run-scope model as child flags, or ``[]`` if it has none.
 
@@ -368,12 +442,72 @@ def child_model_id(
     return flags[flags.index("--model") + 1] if "--model" in flags else None
 
 
+def child_model_pin(
+    profile: AgentProfile,
+    parent_model: Model | None = None,
+    model_registry: object | None = None,
+) -> ModelPin:
+    """:func:`child_model_flags`' decision as a :class:`ModelPin` (#610 D8).
+
+    The decision itself is not restated: the flags are computed exactly as
+    before and read back, so :func:`model_pin_flags` of the result is the argv
+    the child always got for these inputs.
+    """
+
+    return _pin_of(child_model_flags(profile, parent_model, model_registry))
+
+
+def model_pin_route_moved(pin: ModelPin, model_registry: object | None) -> bool:
+    """Would a child launched with ``pin`` MISS the registration route it was pinned to?
+
+    #610 D9 (critique m6). A pin that carries ``route`` makes the child refuse
+    its first turn unless its own registry resolves the same registration and
+    route (``model_registry.require_registration_route``, checked in
+    ``_owned_request_model``: "requires its original explicit provider
+    registration and route"). After a ``models.json`` or extension change the
+    child would say so only after a resume's consent and budget were spent, so
+    the parent asks its own live registry the same question first: the route a
+    child with these flags resolves (``resolve_route`` without runtime
+    overrides — a child never receives ``--api-key``), whether that provider
+    still has an explicit registration, and whether the digest matches.
+
+    ``False`` when the route would be reached, when the pin names none, and
+    when the question cannot be answered here (no registry, or one that
+    raised). ``False`` is safe in the last case: the digest stays on the
+    child's argv and the child enforces it itself, so this is an early refusal
+    and never the guard. Nothing here installs a requirement on the parent's
+    registry, as ``require_registration_route`` would — for good.
+    """
+
+    if pin.route is None or model_registry is None:
+        return False
+    try:
+        from aelix_coding_agent.cli.runtime_bootstrap import (
+            _registration_models,
+            resolve_route,
+        )
+        from aelix_coding_agent.model_registry import registration_route_digest
+
+        route = resolve_route(
+            pin.model, pin.provider, model_registry, runtime_overrides=False
+        )
+        if route.error is not None:
+            return True
+        landed = route.model
+        if _registration_models(model_registry, landed.provider) is None:
+            return True
+        return registration_route_digest(landed) != pin.route
+    except Exception:  # noqa: BLE001 — unanswerable here; the child still checks
+        return False
+
+
 def profile_to_flags(
     profile: AgentProfile,
     *,
     prompt_path: str,
     parent_model: Model | None = None,
     model_registry: object | None = None,
+    model_pin: ModelPin | None = None,
 ) -> list[str]:
     """Render the profile as CLI flags (the emission table, top to bottom).
 
@@ -385,9 +519,20 @@ def profile_to_flags(
     strips a leading frontmatter block, so the flag yields the same body the
     overlay uses. Without that the rendered command — which the panel shell-quotes
     for copy-paste — would inject the profile's raw YAML into the system prompt.
+
+    ``model_pin`` (#610 D8) is the model decision a delegation already made and
+    recorded: given, it is the model flags and ``parent_model`` /
+    ``model_registry`` are not read. Without it the decision is made here from
+    those two, as it always was. Either way the flags leave through
+    :func:`model_pin_flags`, the one emission site.
     """
 
-    flags: list[str] = child_model_flags(profile, parent_model, model_registry)
+    pin = (
+        model_pin
+        if model_pin is not None
+        else child_model_pin(profile, parent_model, model_registry)
+    )
+    flags: list[str] = model_pin_flags(pin)
 
     if profile.tools is not None:
         if not profile.tools:
@@ -430,6 +575,7 @@ def profile_to_argv(
     parent_model: Model | None = None,
     session_path: str | None = None,
     model_registry: object | None = None,
+    model_pin: ModelPin | None = None,
 ) -> list[str]:
     """Full argv for a profile-driven aelix invocation.
 
@@ -448,7 +594,7 @@ def profile_to_argv(
     ``aelix_agents.rpc_channel.build_rpc_child_argv``). ``/agents show`` renders
     :func:`profile_to_flags` alone: the session flag, like ``--permission-mode``,
     the trust flags and ``--no-agents``, is spawn-time state that no dry run can
-    know.
+    know. ``model_pin`` is passed through to :func:`profile_to_flags`.
     """
 
     if oneshot:
@@ -465,6 +611,7 @@ def profile_to_argv(
             prompt_path=prompt_path,
             parent_model=parent_model,
             model_registry=model_registry,
+            model_pin=model_pin,
         ),
     ]
     if oneshot and task:
@@ -597,11 +744,15 @@ def apply_profile_to_args(
 
 __all__ = [
     "PROFILE_OVERLAY_FIELDS",
+    "ModelPin",
     "ProfileApplication",
     "apply_profile_to_args",
     "child_model_flags",
     "child_model_id",
+    "child_model_pin",
     "inherits_parent_model",
+    "model_pin_flags",
+    "model_pin_route_moved",
     "parent_model_flags",
     "profile_to_argv",
     "profile_to_flags",

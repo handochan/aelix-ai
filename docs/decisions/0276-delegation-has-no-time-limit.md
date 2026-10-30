@@ -29,6 +29,12 @@ and extended to the session id this record hands back). Each carries a dated
 `Amended 2026-10-28 (ADR-0276, #604)` note.
 Relates: ADR-0275 (RPC `agents/run` and its mutation lock), ADR-0235 (pi is the
 reference: pi has no delegation time limit).
+**Amended 2026-10-30 (ADR-0277, #610): the result of a started single child
+that did not finish and has a session now tells the model how to resume it, in
+place of D11's retry sentence; D14's report head now says the stop was intended
+and to resume or repeat the work only if the user asks; and a success with a
+session carries one `Session:` line, so D18's "every success byte for byte"
+holds only for one without — see the dated notes under D11, D14 and D18.**
 
 ## Context
 
@@ -434,6 +440,19 @@ Session: <session id>
   a result that never started are not cleaned: D18 keeps them byte for byte.
 - The retry sentence is phase 0's; #610 replaces it with resume guidance.
 
+  *Amended 2026-10-30 by [ADR-0277](0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md) ([#610](https://github.com/handochan/aelix-ai/issues/610)):
+  it did, for a child that has a session. The line under the heading now reads
+  `Do not delegate the same task again from scratch — it already did the work
+  below. Check the changed files and its tool calls; if it should go on,
+  continue it with agent(action="resume", profile="<profile>", id="<id>",
+  task=…).` (`tool.RESUME_GUIDANCE`, both values on one line and JSON-quoted by
+  `tool.call_literal`; "if it should go on" since ADR-0277's review round 1,
+  which found a real model resuming on its own after a kill). A child with no
+  session — a parent with no session file, a child file that could not be
+  allocated — keeps the sentence above (`DO_NOT_REDELEGATE`), and the condition
+  for printing either, work to point at, is unchanged. D14's single-mode report
+  carries the same line; a batch member's block still has none (D12).*
+
 The whole stays bounded: the summary at `output_cap`, the note at 4 KiB, the
 trail at 4 KiB, the files at 2 KiB, plus the fixed lines.
 
@@ -500,6 +519,17 @@ turn the provider transform answers the orphaned call with "No result provided"
    invalidates the extension's runtime before `dispose()` aborts the turn, so
    `send_message` raises `ExtensionError`.
 3. Nothing is queued when no child had a process.
+
+*Amended 2026-10-30 by [ADR-0277](0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md) ([#610](https://github.com/handochan/aelix-ai/issues/610)): the
+head (`aggregate.CANCEL_REPORT_HEAD`) gains one sentence and now reads
+``[aelix system report — not user input] The `agent` call you made was stopped
+when the turn was cancelled. The stop was intended: resume or repeat that work
+only if the user asks you to. What it had done:``. A single call's report fenced
+under it carries D11's line, which since ADR-0277 names the call that resumes
+the agent; under `-p` a real model given that call after a kill resumed the
+agent unasked (ADR-0277 D4). A cancel is the user's decision, and the head says
+so before anything it fences, in words that fit a batch's report too. Nothing
+else in the report changes.*
 
 Refined in review round 2 — **a member that ran and then failed is not "never
 started".** A member whose run had a process and then ended on an exception
@@ -626,6 +656,15 @@ per-prompt budget), a decline, a stop before the spawn, a spawn that failed, a
 batch member that never got a process — renders byte for byte as before, pinned
 against a copy of the previous renderer. So does every success, including one
 whose session, trail and files are all filled (critique 15).
+
+*Amended 2026-10-30 by [ADR-0277](0277-a-delegated-agent-can-be-resumed-inside-the-limits-it-ran-with.md) ([#610](https://github.com/handochan/aelix-ai/issues/610)): a
+success with a session no longer renders byte for byte as before. It gains one
+line, `Session: <id>` — the id `agent(action="resume")` takes — after the
+summary and its notes and above the footer in single mode, and on a line of its
+own above its usage line for an ok member of a parallel or chain call, outside
+the member's share (ADR-0277 D2). Its trail, its files and its path still stay
+out. A success with no session, and every result that never started, still
+render byte for byte as before.*
 
 ---
 

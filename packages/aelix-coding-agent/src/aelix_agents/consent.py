@@ -96,15 +96,19 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 
+from aelix_agents.child_session import TASK_PREVIEW_CHARS as RECORDED_TASK_CHARS
 from aelix_agents.posture import (
     child_permission_mode,
     declares_write_authority,
     grants_write_authority,
     posture_rank,
+    resume_clamp,
 )
 
 if TYPE_CHECKING:
     from aelix_coding_agent.subagent_contract import ResolvedProfile, SubagentMode
+
+    from aelix_agents.child_session import ResumeTarget
 
 # ONE prompt at a time, process-wide. The kernel already serialises the
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
@@ -255,7 +259,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:301-325``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:388-412``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -287,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1064-1071``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1201-1213``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -381,7 +385,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:538-588``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:590-640``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
@@ -492,6 +496,7 @@ def _may_widen(
     *,
     has_ui: bool,
     mode: str = "single",
+    ceiling: PermissionMode | None = None,
 ) -> bool:
     """The constraints on bounded widening (finding OC-3, owner amendment).
 
@@ -557,6 +562,17 @@ def _may_widen(
        write-capable — that authority came from the human's own posture, and
        ``grants_write_authority`` (not this function) is what put it on screen.
        Cost in the common case is zero, because the common case is zero dialogs.
+    7. ``ceiling`` — a RESUME's, and only a resume passes one (#610 D10) —
+       admits ``AUTO_ACCEPT``. ``ceiling`` is what the agent's FIRST run was
+       granted, and a resume may be widened back up to it and never past it:
+       an agent a human let edit may be let edit again; one that first ran at
+       ``plan`` may not. It sits HERE, in the one predicate, because three
+       callers ask it — :func:`consent_is_required` (whether to ask at all),
+       the model door's pre-filter through it, and the dialog's options — and a
+       ceiling the options honoured but the first did not would open a dialog
+       whose only answers are "Run read-only (plan)" and "Cancel" (critique M1:
+       the shape the 2026-07-27 amendment abolished). ``None`` — every fresh
+       spawn — is no ceiling.
     """
 
     if mode not in _WIDENABLE_MODES:
@@ -567,6 +583,8 @@ def _may_widen(
         return False
     if not has_ui:
         return False
+    if ceiling is not None and posture_rank(PermissionMode.AUTO_ACCEPT) > posture_rank(ceiling):
+        return False
     return posture_rank(PermissionMode.AUTO_ACCEPT) > posture_rank(clamped)
 
 
@@ -576,6 +594,7 @@ def consent_is_required(
     parent: PermissionMode,
     *,
     has_ui: bool,
+    ceiling: PermissionMode | None = None,
 ) -> bool:
     """Is there anything to ask a human about this spawn? THE SINGLE SOURCE OF TRUTH.
 
@@ -645,12 +664,21 @@ def consent_is_required(
     for a single read-only spawn, which is what the two-option early-out at
     :func:`request_spawn_consent` exists to suppress. So the chain dialog fires,
     and it offers exactly ["Run read-only (plan)", "Cancel"].
+
+    ``ceiling`` IS A RESUME'S (#610 D10), and it reaches only :func:`_may_widen`
+    (constraint 7). ``clamped`` already arrives capped by it
+    (``posture.resume_clamp``), so the write-authority half needs nothing more;
+    the widening half does, or a resumed agent that first ran at ``plan`` would
+    be asked about with a dialog whose one real answer is "yes" (critique M1).
+    A resume is one agent and one instruction — a single spawn's shape, not a
+    chain's — so, like a single spawn, it gets no dialog when it has no write
+    authority and nothing to widen.
     """
 
     if parent is PermissionMode.YOLO:
         return False
     return grants_write_authority(clamped) or _may_widen(
-        resolved, clamped, has_ui=has_ui
+        resolved, clamped, has_ui=has_ui, ceiling=ceiling
     )
 
 
@@ -676,7 +704,11 @@ def disclosure_is_required(parent: PermissionMode, clamped: PermissionMode) -> b
 
 
 def build_disclosure_line(
-    resolved: ResolvedProfile, clamped: PermissionMode, *, task_count: int
+    resolved: ResolvedProfile,
+    clamped: PermissionMode,
+    *,
+    task_count: int,
+    resume: bool = False,
 ) -> str:
     """The one line that replaces the dialog. Never blocks, never asks.
 
@@ -691,14 +723,18 @@ def build_disclosure_line(
     is a one-line disclosure that pushes the rest of the turn off screen. The
     COUNT is what a human needs to reconcile this line against what happens
     next.
+
+    ``resume`` (#610 F10) says the run CONTINUES an agent rather than starting
+    one: "resuming <name> at <mode>, from <source>". No count — a resume is one
+    agent and one instruction, and "1 task" read as a new delegation.
     """
 
+    name = _sanitize_field(resolved.name)
+    source = _sanitize_field(resolved.source_path)
+    if resume:
+        return f"resuming {name} at {clamped.value}, from {source}"
     plural = "" if task_count == 1 else "s"
-    return (
-        f"delegating to {_sanitize_field(resolved.name)} at {clamped.value} "
-        f"— {task_count} task{plural}, from "
-        f"{_sanitize_field(resolved.source_path)}"
-    )
+    return f"delegating to {name} at {clamped.value} — {task_count} task{plural}, from {source}"
 
 
 def build_consent_title(
@@ -796,6 +832,87 @@ def _model_row(model: object) -> str | None:
     return f"Model:      {flat}" if flat else None
 
 
+RESUME_EARLIER_TASK_LABEL = "Earlier task (written by the model):"
+RESUME_INSTRUCTION_LABEL = "Next instruction (written by the model, not by you):"
+
+
+def build_resume_consent_title(
+    resolved: ResolvedProfile,
+    target: ResumeTarget,
+    instruction: str,
+    clamped: PermissionMode,
+    *,
+    model: str | None = None,
+) -> str:
+    """The dialog body for RESUMING an agent (#610 D10) — :func:`build_consent_title`'s
+    shape, for an agent that already has a conversation.
+
+    A SEPARATE BUILDER rather than a flag on that one: the fresh-spawn body is
+    nine rows for every input (``test_the_p2_dialog_body_is_nine_rows_for_every_input``),
+    and a resume needs rows a fresh spawn has no value for. Row by row:
+
+    * the heading says RESUME, and ``Session:`` is the agent's id — the one on
+      its result's ``Session:`` line, which the model passed;
+    * ``Profile:`` and ``Source:`` are the profile as re-resolved now, which the
+      hook has checked is the FILE the first run used (D9) — ``Source:`` still
+      the one line the model cannot influence;
+    * ``Directory:`` is where the agent ran, recorded and re-contained; a resume
+      cannot choose another;
+    * ``Permission:`` is the intersection the child will run at: the first
+      run's grant capped by the clamp now (``posture.resume_clamp``). When the
+      first run was granted MORE, the same row says so —
+      ``Permission: plan (first run: auto-accept-edits)`` (#610 F11) — or the
+      only sign of it is that a widening option is offered; the row count is
+      unchanged;
+    * ``Model:`` is the recorded pin the child is launched with (D9), not the
+      parent's model now;
+    * two blocks the model wrote, each labelled so: the EARLIER task — the
+      first run's, as far as its record kept it, ``…`` when the record cut it —
+      so the human can tell WHICH agent this is; then the NEXT instruction,
+      whole (#399).
+
+    EVERY INTERPOLATED VALUE IS SANITISED, exactly as in
+    :func:`build_consent_title` and for its reason, plus one: the earlier task
+    and the id come off the parent's session file, which anyone who can write
+    that file can forge (#610 critique B2), so they are attacker-reachable like
+    the directory and the profile's filename. "Written by the model" is true of
+    the earlier task because only a delegation the MODEL made can be resumed
+    (D5): a human's ``/agents run`` task never reaches this screen.
+    """
+
+    earlier = _truncate_task(target.task_preview)
+    if not earlier:
+        earlier = "(not recorded)"
+    elif len(target.task_preview) >= RECORDED_TASK_CHARS:
+        earlier += "…"
+    permission = _sanitize_field(clamped.value)
+    first_grant = target.limits.granted_mode
+    if posture_rank(first_grant) > posture_rank(clamped):
+        permission += f" (first run: {_sanitize_field(first_grant.value)})"
+    rows = [
+        f"Resume agent '{_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)}'?",
+        "",
+        f"Session:    {_sanitize_field(target.session_id)}",
+        f"Profile:    {_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)} "
+        f"({_sanitize_field(resolved.scope, limit=_SCOPE_FIELD_CHARS)} scope)",
+        f"Source:     {_sanitize_path(resolved.source_path)}",
+        f"Directory:  {_sanitize_field(target.limits.cwd, limit=None)}",
+        f"Permission: {permission}",
+    ]
+    model_row = _model_row(model)
+    if model_row is not None:
+        rows.append(model_row)
+    rows += [
+        "",
+        RESUME_EARLIER_TASK_LABEL,
+        earlier,
+        "",
+        RESUME_INSTRUCTION_LABEL,
+        _truncate_task(instruction),
+    ]
+    return "\n".join(rows)
+
+
 def _reject_str_batch(tasks: object) -> None:
     """``str`` IS a ``Sequence[str]`` — the annotation is not the guard.
 
@@ -804,7 +921,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:759-762``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:833-836``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The
@@ -1460,7 +1577,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:269``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:345``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1468,7 +1585,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:269)."
+            "AgentCall guarantees at least one task (tool.py:345)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter
@@ -1585,6 +1702,87 @@ async def request_spawn_consent_batch(
     return _grant(granted, widened=widened, consented=consented)
 
 
+async def request_resume_consent(
+    ctx: Any,
+    resolved: ResolvedProfile,
+    target: ResumeTarget,
+    instruction: str,
+    parent: PermissionMode,
+    *,
+    model: str | None = None,
+) -> SpawnGrant:
+    """Take one human decision about one RESUME (#610 D10). Never raises, never spawns.
+
+    :func:`request_spawn_consent`'s flow, step for step, with ONE addition: the
+    first run's grant (``target.limits.granted_mode``) is a CEILING, applied the
+    moment the clamp is taken (``posture.resume_clamp``) — above the no-UI
+    return, which is the step a ceiling applied any later would miss. ``-p``
+    never reaches a dialog and neither does a ``yolo`` parent, and a ceiling
+    that lived only in the dialog let both resume a ``plan`` agent at ``yolo``
+    (critique B1). The same ceiling bounds the widening rung (:func:`_may_widen`
+    constraint 7), so a resumed agent may be widened back to its first grant and
+    never past it, and an agent with nothing to widen gets no dialog (M1).
+
+    Everything else is the single-spawn door's: a live ``has_ui`` read, the
+    headless downgrade, :func:`consent_is_required` as the only "is there
+    anything to ask", :func:`build_options` for the answers, the process-wide
+    lock, and :func:`_decide` as the gate. The body is
+    :func:`build_resume_consent_title`'s, which shows the recorded directory and
+    model and both model-written texts. ``model`` is display-only, as it is
+    there: the recorded pin the child will be launched with.
+
+    A SIBLING, NOT A PARAMETER OF :func:`request_spawn_consent`. That function's
+    parameter set is pinned (``test_request_spawn_consent_takes_no_memo_parameter``,
+    the guard against a keyword only one door passes), its body is the
+    fresh-spawn dialog, and the resume dialog has its own. Nothing here is on the
+    ``SubagentRuntime`` Protocol: the ceiling is the model door's alone (D16).
+    """
+
+    # LIVE read (OC-7), exactly as the single-task door does it.
+    has_ui = bool(getattr(ctx, "has_ui", False))
+    ceiling = target.limits.granted_mode
+    clamped = resume_clamp(
+        ceiling,
+        child_permission_mode(
+            resolved.profile.approval_mode, parent, resolved.scope, has_ui=has_ui
+        ),
+    )
+
+    def _grant(
+        mode: PermissionMode, *, widened: bool, consented: bool
+    ) -> SpawnGrant:
+        return SpawnGrant(
+            profile=resolved.name,
+            source_path=resolved.source_path,
+            scope=resolved.scope,
+            mode=mode,
+            widened=widened,
+            consented=consented,
+            # Composed from the mode the child WILL run at — the intersection —
+            # so a yolo parent is told the posture of the agent it is resuming,
+            # never its own; and in the resume's words (F10).
+            disclosure=(
+                build_disclosure_line(resolved, mode, task_count=1, resume=True)
+                if consented and has_ui and disclosure_is_required(parent, mode)
+                else ""
+            ),
+        )
+
+    if not has_ui:
+        return _grant(clamped, widened=False, consented=True)
+    if not consent_is_required(resolved, clamped, parent, has_ui=has_ui, ceiling=ceiling):
+        return _grant(clamped, widened=False, consented=True)
+    may_widen = _may_widen(resolved, clamped, has_ui=has_ui, ceiling=ceiling)
+    options = build_options(clamped, may_widen=may_widen)
+    title = build_resume_consent_title(resolved, target, instruction, clamped, model=model)
+
+    async with _consent_lock():
+        answer = await _ask(ctx.ui, title, options)
+
+    mode, widened, consented = _decide(answer, options, clamped, may_widen=may_widen)
+    return _grant(mode, widened=widened, consented=consented)
+
+
 __all__ = [
     "BATCH_HEADER_ROWS",
     "BATCH_TASK_PREVIEW_CHARS",
@@ -1593,16 +1791,20 @@ __all__ = [
     "DIALOG_FIELD_CHARS",
     "DIALOG_ROW_CHARS",
     "MIN_TERMINAL_ROWS",
+    "RESUME_EARLIER_TASK_LABEL",
+    "RESUME_INSTRUCTION_LABEL",
     "SpawnGrant",
     "TASK_PREVIEW_CHARS",
     "batch_dialog_fits",
     "build_batch_consent_title",
     "build_consent_title",
     "build_options",
+    "build_resume_consent_title",
     "consent_is_required",
     "disclosure_is_required",
     "build_disclosure_line",
     "contains_control_chars",
+    "request_resume_consent",
     "request_spawn_consent",
     "request_spawn_consent_batch",
 ]
