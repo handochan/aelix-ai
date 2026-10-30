@@ -1027,7 +1027,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:345``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:357``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.

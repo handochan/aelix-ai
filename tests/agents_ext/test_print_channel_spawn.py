@@ -2444,7 +2444,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1016`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1038`` and
     ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 

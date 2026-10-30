@@ -979,6 +979,19 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A resumed agent gets its instruction on an upstream that writes tool
+  arguments in the schema's order (#634, ADR-0277 amendment 2026-10-31).** On
+  OpenRouter, the Ionstream upstream of `deepseek/deepseek-v4.1-flash-1017`
+  writes a call's keys only in the order the tool declares them. The `agent`
+  tool declared `task` before `action` and `id`, and a resume is written
+  `action`, `id`, then `task`, so every `agent(action="resume")` arrived
+  without its instruction and was refused with `needs 'task'`, while the model
+  was sure it had written one. In five runs through aelix pinned to Ionstream,
+  47 resume calls were refused that way and each run gave up and delegated
+  anew. The tool now declares `action` and `id` right after `profile`, and in
+  five more runs every resume carried its instruction and continued the agent.
+  A resume that does arrive without `task` is now told so, and to send the call
+  once more and then start a fresh delegation instead.
 - **A model stream that ends before its last event is retried, and the ChatGPT
   (Codex) stream reads CRLF (#597, PR #614 by mikemikimike, ADR-0128
   amendment 2026-10-28).** A stream from OpenAI, Copilot, opencode, Cloudflare

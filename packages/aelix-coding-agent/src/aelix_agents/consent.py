@@ -259,7 +259,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:388-412``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:400-424``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -1577,7 +1577,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:345``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:357``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1585,7 +1585,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:345)."
+            "AgentCall guarantees at least one task (tool.py:357)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter

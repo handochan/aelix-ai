@@ -105,7 +105,7 @@ def create_status_tool(execute: Any) -> AgentTool:
     """Build the ``aelix_status`` tool.
 
     NO ``execution_mode="sequential"``. The ``agent`` tool sets it as a security
-    control (``aelix_agents/tool.py:835-844``: it downgrades the whole batch so a
+    control (``aelix_agents/tool.py:857-866``: it downgrades the whole batch so a
     modal consent dialog cannot race), and this tool has no dialog, no process
     and no mutation to protect. Declaring it here would silently serialise every
     batch that happens to contain a status call — a real cost for a fabricated
