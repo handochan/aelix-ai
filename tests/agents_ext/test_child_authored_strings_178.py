@@ -21,6 +21,7 @@ obeyed the escape.
 from __future__ import annotations
 
 import io
+import re
 from typing import Any
 
 import pytest
@@ -45,6 +46,10 @@ from rich.console import Console
 from rich.text import Text
 
 from tests.agents_ext.test_events_and_statusline import _Api, _Ui
+
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+"""The panel's own styling — ADR-0278 colours its glyphs — taken out before a
+row is searched for what a CHILD put there."""
 
 # === the reference: what P2 printed, restated ================================
 
@@ -396,23 +401,42 @@ def test_a_field_is_bounded_at_the_widgets_own_per_field_width() -> None:
 
 def test_the_card_and_the_widget_give_the_same_field_the_same_answer() -> None:
     """One child, three surfaces, ONE spelling of its tool name — the defect
-    was that the widget flattened what the card printed raw."""
+    was that the widget flattened what the card printed raw. Since ADR-0278 the
+    widget shows the call off ``activity`` (the open call of the same snapshot),
+    through the same ``_flatten``."""
+
+    from aelix_coding_agent.subagent_contract import SubagentToolActivity
 
     tool = "read\x1b[31mFAKE‮evil\x9b2J"
-    snapshot = _snap(current_tool=tool)
+    snapshot = _snap(
+        current_tool=tool, activity=(SubagentToolActivity(name=tool, status="running"),)
+    )
     flat = panel_module._flatten(tool, limit=PANEL_ROW_MAX_CHARS)
 
     assert f"· {flat} ·" in format_card([snapshot])
     assert f"· {flat} ·" in format_status_row(snapshot)
-    assert any(f"· {flat} ·" in row for row in format_panel([snapshot, snapshot]))
+    shown = [_SGR.sub("", row) for row in format_panel([snapshot, snapshot], tasks=("a", "b"))]
+    assert any(f"▶ {flat}" in row for row in shown), shown
 
 
 def test_the_widget_now_strips_bidi_overrides_too() -> None:
     """The widget's old C0/DEL/C1 table let U+202E through — measured on
-    ``8f7d98aa`` — because it was a copy, not the shared helper."""
+    ``8f7d98aa`` — because it was a copy, not the shared helper. Every field the
+    ADR-0278 panel reads carries one here; once the panel's own SGR is taken
+    out, nothing steering is left."""
 
-    rows = format_panel([_snap(current_tool="read‮evil"), _snap(1)])
-    assert not any(_steers(row.replace("\x1b[2m", "").replace("\x1b[0m", "")) for row in rows)
+    from aelix_coding_agent.subagent_contract import SubagentToolActivity
+
+    bidi = "read‮evil"
+    hostile = _snap(
+        current_tool=bidi,
+        model=bidi,
+        last_text=bidi,
+        activity=(SubagentToolActivity(name=bidi, args=bidi, status="running"),),
+    )
+    for snapshots in ([hostile], [hostile, _snap(1)]):
+        rows = format_panel(snapshots, tasks=(bidi, bidi), profile=bidi)
+        assert not any(_steers(_SGR.sub("", row)) for row in rows), rows
 
 
 def test_the_result_footer_strips_bidi_overrides_too() -> None:

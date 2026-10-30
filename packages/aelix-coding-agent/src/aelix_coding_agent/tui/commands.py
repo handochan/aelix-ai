@@ -1041,7 +1041,7 @@ def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
     ``model``/``provider`` are read off the child's own ``message_end`` verbatim
-    (``stream.py:853-857`` → ``envelope.py:1048-1049``), so they are attacker
+    (``stream.py:1046-1050`` → ``envelope.py:1048-1049``), so they are attacker
     controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
     parsing but writes raw content ESC / C1 straight to the terminal — a
     ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its

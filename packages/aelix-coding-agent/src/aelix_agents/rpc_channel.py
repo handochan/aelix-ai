@@ -126,7 +126,7 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 which this channel must publish no further progress snapshot.
 
 A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:181``) and
-``progress._TERMINAL_STATES`` (``progress.py:97``), for the reason runtime's own
+``progress._TERMINAL_STATES`` (``progress.py:145``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
 renderer nor this channel may become a dependency of the module that owns it.

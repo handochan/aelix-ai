@@ -198,38 +198,56 @@ async def test_headless_never_calls_set_status(tmp_path: Path) -> None:
 
 
 async def test_statusline_row_set_and_cleared(tmp_path: Path) -> None:
-    """One key per child, and it is CLEARED when the child finishes.
+    """One key per UNGROUPED child, and it is CLEARED when the child finishes —
+    and a child of the model's ``agent`` call writes none (ADR-0278 D2).
 
     A segment outliving the delegation that owns it is a lie the user cannot
-    dismiss, and ``set_status`` has no "clear all" verb.
+    dismiss, and ``set_status`` has no "clear all" verb. The ``/agents run``
+    door is the one that still writes a per-child row; the model's door draws
+    the delegation panel instead (``test_delegation_panel_wiring_132.py``).
     """
 
     bench = _bench(
         tmp_path, has_ui=True, channel=_EmittingChannel()  # type: ignore[arg-type]
     )
     await _delegate(bench, tmp_path)
+    assert bench.ui.status == {}, "a grouped child wrote a statusline row"
+
+    runtime = bench.ext.runtime
+    assert runtime is not None
+    await _hook_once(bench)
+    resolved = runtime.resolve_profile("scout", allow_project=False)
+    await runtime.spawn(resolved, "go")
 
     keys = list(bench.ui.status)
     assert len(keys) == 1
     assert keys[0].startswith(STATUS_KEY_PREFIX)
     assert bench.ui.status[keys[0]] is None
+    assert any(text for text in bench.ui.writes[keys[0]]), "the row was never written"
 
 
 async def test_the_ui_binding_is_read_live_not_cached(tmp_path: Path) -> None:
-    """FINDING OC-7 on the statusline half.
+    """FINDING OC-7 on the UI half.
 
     The extension is constructed while the UI is still headless — which is the
     real order of events, because ``harness.bootstrap()`` runs before
     ``tui/shell.py`` binds anything. A bridge that resolved ``ui`` once at
-    construction would write into the headless singleton forever.
+    construction would write into the headless singleton forever. Read off the
+    panel (the model door's surface since ADR-0278), drawn on the publish.
     """
 
     bench = _bench(tmp_path, channel=_EmittingChannel())  # type: ignore[arg-type]
-    assert bench.ui.status == {}
+    widgets: list[tuple[str, Any]] = []
+    bench.ui.set_widget = (  # type: ignore[attr-defined]
+        lambda key, content, options=None: widgets.append((key, content))
+    )
+    bridge = bench.ext._progress
+    assert bridge is not None
+    bridge._call_later = lambda delay, callback: None  # noqa: SLF001 — draw at once
 
     bench.runtime.bind_ui(bench.ui)  # type: ignore[arg-type]
     await _delegate(bench, tmp_path)
-    assert bench.ui.status
+    assert [content for _, content in widgets if content], "nothing reached the live UI"
 
 
 async def test_a_raising_statusline_does_not_fail_the_delegation(
@@ -390,7 +408,7 @@ def test_a_hostile_model_string_cannot_break_the_status_row() -> None:
 # THE MEASURED GAP (live QA, main @ 9ed0dde). ``format_status_row`` renders the
 # model when ``SubagentProgress.model`` is set and omits it when it is not — both
 # correct — but that field was fed ONLY from ``_StreamState.model``, which
-# ``stream.py:855-857`` assigns from the child's first ``message_end``. A short
+# ``stream.py:1048-1050`` assigns from the child's first ``message_end``. A short
 # delegation returns before one arrives, so the field was ``None`` for the whole
 # VISIBLE LIFE of the row and the live statusline read ``agent explorer · 1s``
 # with no model at all — the feature shipped and was invisible in practice.

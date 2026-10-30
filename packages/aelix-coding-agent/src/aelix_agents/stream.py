@@ -45,11 +45,13 @@ from __future__ import annotations
 
 import json
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_coding_agent.builtin.guardrail import _WRITE_TOOLS
+from aelix_coding_agent.subagent_contract import SubagentToolActivity, SubagentToolStatus
 
 # Per-line budget. A line longer than this is DISCARDED and counted, never
 # raised on and never buffered — an unbounded line is the one shape in which a
@@ -217,6 +219,14 @@ class _StreamState:
     """Text of the LAST text-bearing assistant message. Overwritten, not
     appended: a later assistant turn supersedes an earlier one."""
 
+    last_text: str | None = None
+    """:attr:`summary` on one line, bounded — what the delegation panel shows
+    as the child's last reply (#132, ADR-0278 D3). Computed ONCE, where
+    ``summary`` is set (:func:`_reduce_message_end`), rather than on every
+    publish: the runtime publishes after every reduced stdout line and
+    ``summary`` can be megabytes. ``None`` until the first text-bearing
+    assistant message."""
+
     stop_reason: str | None = None
     error_message: str | None = None
 
@@ -286,6 +296,37 @@ class _StreamState:
     ``agent_end`` → ``agent_start``), and a stream cut during it must still
     read as unfinished. Consumed by ``child_session.usage_is_complete``; the
     two latched flags keep their existing meanings for the channels."""
+
+    turn_starts: int = 0
+    """``turn_start`` events seen. Each :class:`ToolCall` records the value at
+    the moment it opened, so a call with no end event can be told apart: in
+    the current turn it may still be running, in an earlier one its end will
+    never come (#132, ADR-0278 D3, :func:`activity_of`)."""
+
+    recent: deque[ToolCall] = field(default_factory=deque)
+    """The child's latest calls, oldest first — the source of
+    ``SubagentProgress.activity`` (#132, ADR-0278 D3).
+
+    APART FROM :attr:`tool_trail`, because the trail stops recording at
+    :data:`MAX_TRAIL_ENTRIES` and a "recent" read off it would freeze at call
+    200. EVERY ``tool_execution_start`` appends here. While the trail has room
+    the two share the same :class:`ToolCall` object, and
+    :func:`_close_trail_entry` closes the match in both, so the outcome is
+    written once and read in two places.
+
+    The latest :data:`ACTIVITY_MAX` calls that are no longer open, by start
+    order — PLUS every call still open in the current turn (:func:`_trim_recent`).
+    It was a ``deque(maxlen=4)``, and a call that was
+    still executing fell out of it as soon as four later calls had started:
+    MEASURED (#132 review round 1) with a real ``AgentHarness`` running a slow
+    ``grep`` and four ``read`` calls in parallel, the reads finished, the
+    window held only them, and the panel said ``thinking`` while the child was
+    executing. An open call now leaves the window only when it closes, its turn
+    ends or its run ends — and the window is still bounded:
+    :data:`_RECENT_MAX` entries in all, which is room for every call a model
+    asks for at once in practice (#132 review round 2: at 32 the 33rd parallel
+    call was turned away and never appeared, and the panel said ``thinking``
+    while it ran)."""
 
     dropped_lines: int = 0
     """Folded in from :attr:`LineAssembler.dropped_lines` by the pump, so the
@@ -462,6 +503,141 @@ class ToolCall:
     args: str = ""
     failed: bool | None = None
     call_id: str = ""
+    turn: int = 0
+    """:attr:`_StreamState.turn_starts` when the call opened (#132, D3)."""
+
+
+ACTIVITY_MAX = 4
+"""How many of a child's latest calls ``SubagentProgress.activity`` carries
+(#132, ADR-0278 D3). Four because that is what the panel draws at most: a
+two-row member shows up to three outcome marks plus the call open now, and a
+single delegation lists its last three calls."""
+
+_RECENT_MAX = 256
+"""Hard bound on :attr:`_StreamState.recent`: :data:`ACTIVITY_MAX` finished
+calls plus the calls still open, which can outnumber them — a model may ask for
+any number of parallel calls in one message, and every one is open until its
+end event. With the window this full a newer start is not added to it (it
+still reaches the trail while the trail has room): the older open
+calls keep their places, because "a call that is still running stays on the
+panel" is the rule the window exists to keep, and a child's stdout must not
+buy unbounded memory here.
+
+256, NOT 32 (#132 review round 2). A call turned away is never added later,
+so once the open calls the window holds have ended, one it turned away runs
+unseen: MEASURED with 33 parallel calls whose last one was slow, the window
+ended as the four reads before it and the panel said ``thinking`` while it
+ran. No bounded record can avoid that for every stream — naming an open call
+needs its id, and a child can open more calls than any bound and end the ones
+kept first — so the bound is set where a model's parallel batch does not reach
+it: 252 calls open at once. An entry is a name and an argument of at most
+:data:`MAX_TRAIL_ARG_CHARS` each and its call id, and the first
+:data:`MAX_TRAIL_ENTRIES` are the trail's own objects."""
+
+LAST_TEXT_MAX_CHARS = 512
+"""Bound on :attr:`_StreamState.last_text` — far wider than any panel row, so
+the cut a reader sees is always the renderer's, at the terminal's width."""
+
+_LAST_TEXT_WORK_CHARS = LAST_TEXT_MAX_CHARS * 8
+"""How much of a reply the one-line collapse looks at. A work bound, like
+``panel._MAX_INPUT_CHARS``: a message_end carrying a whole file must not buy a
+full-length ``split`` to produce 512 characters."""
+
+
+def _one_line(text: str) -> str:
+    """``text`` with every whitespace run as one space, bounded at
+    :data:`LAST_TEXT_MAX_CHARS` with ``…``. Stripped BEFORE the work slice, so
+    leading blank lines cannot consume the window (the ``panel._flatten``
+    lesson).
+
+    A CUT BY THE WORK BOUND IS MARKED TOO. The slice runs before the collapse,
+    so a long run of whitespace can push the rest of the reply past the window:
+    MEASURED (#132 review round 1), ``"A" + " " * 5000 + "B"`` collapses to
+    ``"A B"`` but came back as ``"A"`` — text lost with nothing to say so. The
+    slice still bounds the work; when it dropped anything the line ends in
+    ``…``, as a cut by the width bound does.
+    """
+
+    stripped = text.strip()
+    sliced = len(stripped) > _LAST_TEXT_WORK_CHARS
+    flat = " ".join(stripped[:_LAST_TEXT_WORK_CHARS].split())
+    if sliced or len(flat) > LAST_TEXT_MAX_CHARS:
+        return flat[: LAST_TEXT_MAX_CHARS - 1].rstrip() + "…"
+    return flat
+
+
+def _open_now(state: _StreamState, call: ToolCall) -> bool:
+    """Could ``call`` still be executing, as far as the stream can tell? No end
+    event yet, opened in the current turn, the run still open. The one fact
+    the stream lacks — is the child process live — is :func:`activity_of`'s."""
+
+    return call.failed is None and state.run_open and call.turn == state.turn_starts
+
+
+def _trim_recent(state: _StreamState) -> None:
+    """Keep :attr:`_StreamState.recent` to every call still open plus the
+    latest :data:`ACTIVITY_MAX` of the others, by start order (#132 review
+    round 1): the oldest call that is finished — or open with an end that will
+    never come — goes first, and a call still open keeps its place however many
+    calls started after it. Counting the finished ones, rather than the whole
+    window, is what keeps the LATEST of them: trimming the window to four as
+    each one ended dropped whichever read finished first while the slow call
+    held its place, and a later call vanished while earlier ones stayed."""
+
+    recent = state.recent
+    done = [call for call in recent if not _open_now(state, call)]
+    if len(done) <= ACTIVITY_MAX:
+        return
+    # By identity: two calls can be equal field for field (``ToolCall`` is a
+    # dataclass), and ``deque.remove`` would take the first equal one.
+    drop = {id(call) for call in done[: len(done) - ACTIVITY_MAX]}
+    kept = [call for call in recent if id(call) not in drop]
+    recent.clear()
+    recent.extend(kept)
+
+
+def activity_of(state: _StreamState, *, live: bool) -> tuple[SubagentToolActivity, ...]:
+    """Project :attr:`_StreamState.recent` onto the contract (#132, ADR-0278 D3).
+
+    PURE and total. ``live`` is the one fact the stream cannot know — whether
+    the CHILD is still running (``RunningChild.state`` not terminal) — so the
+    sole producer, ``runtime._publish``, passes it. An open call (no end event
+    yet) is ``running`` only while all three hold: it opened in the child's
+    current turn, the run is open, and the child is live. Otherwise its end
+    event will never come — a later turn began, the run ended, the child was
+    stopped — and it is ``no_result``, which is what a stopped child leaves.
+    """
+
+    calls: list[tuple[ToolCall, SubagentToolStatus]] = []
+    for call in state.recent:
+        status: SubagentToolStatus
+        if call.failed is True:
+            status = "failed"
+        elif call.failed is False:
+            status = "ok"
+        elif live and _open_now(state, call):
+            status = "running"
+        else:
+            status = "no_result"
+        calls.append((call, status))
+    if len(calls) > ACTIVITY_MAX:
+        # AT MOST ACTIVITY_MAX, IN START ORDER, AND EVERY RUNNING CALL FIRST.
+        # ``recent`` holds more than four while any of its calls is open
+        # (:func:`_trim_recent`); a call that is running must not be the one
+        # left out, or the panel says ``thinking`` while the child executes
+        # it. The rest of the room goes to the latest of the others.
+        running = [k for k, (_, status) in enumerate(calls) if status == "running"]
+        if len(running) >= ACTIVITY_MAX:
+            keep = set(running[:ACTIVITY_MAX])
+        else:
+            others = [k for k, (_, status) in enumerate(calls) if status != "running"]
+            spare = ACTIVITY_MAX - len(running)
+            keep = set(running) | set(others[len(others) - spare :])
+        calls = [item for k, item in enumerate(calls) if k in keep]
+    return tuple(
+        SubagentToolActivity(name=call.name, args=call.args, status=status)
+        for call, status in calls
+    )
 
 
 def _strip_control(text: str) -> str:
@@ -517,23 +693,31 @@ def _open_trail_entry(state: _StreamState, tool_name: str, event: dict[str, Any]
     """Record a call the child just started. NEVER raises.
 
     Over-budget calls are COUNTED, not silently forgotten: the entry is dropped
-    but :attr:`_StreamState.trail_overflow` grows, so the renderer can say how
-    many it is not showing. A trail that simply stopped would read as "the child
-    did this much", which is the failure mode every truncation in this codebase
-    is written to avoid.
+    from the trail but :attr:`_StreamState.trail_overflow` grows, so the
+    renderer can say how many it is not showing. A trail that simply stopped
+    would read as "the child did this much", which is the failure mode every
+    truncation in this codebase is written to avoid.
+
+    The entry is built either way and goes into :attr:`_StreamState.recent`
+    (#132): the live panel must keep moving past call 200. Only a window
+    already holding :data:`_RECENT_MAX` calls — all but at most four of them
+    still open — turns a newer one away, and that one is not added later.
     """
 
+    call_id = event.get("tool_call_id")
+    entry = ToolCall(
+        name=_strip_control(tool_name)[:MAX_TRAIL_ARG_CHARS],
+        args=_render_args(event.get("args")),
+        call_id=call_id if isinstance(call_id, str) else "",
+        turn=state.turn_starts,
+    )
+    if len(state.recent) < _RECENT_MAX:
+        state.recent.append(entry)
+        _trim_recent(state)
     if len(state.tool_trail) >= MAX_TRAIL_ENTRIES:
         state.trail_overflow += 1
         return
-    call_id = event.get("tool_call_id")
-    state.tool_trail.append(
-        ToolCall(
-            name=_strip_control(tool_name)[:MAX_TRAIL_ARG_CHARS],
-            args=_render_args(event.get("args")),
-            call_id=call_id if isinstance(call_id, str) else "",
-        )
-    )
+    state.tool_trail.append(entry)
 
 
 def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
@@ -544,12 +728,21 @@ def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
     executor. An unmatched end event is ignored rather than guessed at: a wrong
     pairing would report one tool's failure against another tool's name, which
     is worse than reporting nothing.
+
+    Both records are searched (#132): :attr:`_StreamState.recent` shares the
+    trail's objects while the trail has room, and holds the only copy past
+    :data:`MAX_TRAIL_ENTRIES`.
     """
 
     call_id = event.get("tool_call_id")
     if not isinstance(call_id, str) or not call_id:
         return
     failed = bool(event.get("is_error"))
+    for entry in reversed(state.recent):
+        if entry.call_id == call_id:
+            entry.failed = failed
+            _trim_recent(state)
+            break
     for entry in reversed(state.tool_trail):
         if entry.call_id == call_id:
             entry.failed = failed
@@ -859,6 +1052,15 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
     text = _extract_text(message.get("content"))
     if text:
         state.summary = text
+        # Once per message, here, and never per publish (#132, D3). A message
+        # whose text is only whitespace — a ``"\n\n"`` block before a tool
+        # call, which ``_extract_text`` keeps — leaves the last reply as it
+        # was: MEASURED (#132 review round 1), it set ``last_text`` back to
+        # ``None`` and a child that had already replied read "waiting for the
+        # first reply" again.
+        line = _one_line(text)
+        if line:
+            state.last_text = line
 
     # ``usage`` is ``null`` on an errored message (``messages.py:127`` is
     # Optional and the adapters return ``None`` when every counter is zero —
@@ -958,9 +1160,14 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
     elif kind == _TURN_START:
         # A new turn begins with nothing executing. Clearing here means a
         # statusline row can never be left showing a tool that finished during
-        # the previous turn (``tool_execution_end`` is deliberately not
-        # consumed — see the module docstring).
+        # the previous turn. ``current_tool`` keeps its old meaning — a
+        # finished call still reads as current until this event — and the
+        # panel reads ``recent``'s outcomes instead (#132).
         state.current_tool = None
+        state.turn_starts += 1
+        # The previous turn's open calls will never end now: they may leave
+        # the window.
+        _trim_recent(state)
     elif kind == _MESSAGE_END:
         _reduce_message_end(state, event.get("message"))
     elif kind == _TOOL_EXECUTION_START:
@@ -982,10 +1189,13 @@ def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
         state.saw_agent_end = True
         state.run_open = False
         state.current_tool = None
+        _trim_recent(state)
     return state
 
 
 __all__ = [
+    "ACTIVITY_MAX",
+    "LAST_TEXT_MAX_CHARS",
     "MAX_FILE_PATHS",
     "MAX_FILE_PATH_CHARS",
     "MAX_FILE_PATH_KEY_CHARS",
@@ -997,6 +1207,7 @@ __all__ = [
     "MAX_TRAIL_ENTRIES",
     "ToolCall",
     "_StreamState",
+    "activity_of",
     "path_for_display",
     "reduce_event",
     "reduce_line",

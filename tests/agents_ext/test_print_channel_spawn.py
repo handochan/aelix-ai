@@ -849,7 +849,7 @@ _OVERSIZE_TERMINATOR = _stub(
     start()
     say("the complete answer", input=7, output=3, total_tokens=10)
     # ``agent_end`` carries the whole message array on ONE line
-    # (``stream.py:821-827``), so a child that read a multi-megabyte file emits a
+    # (``stream.py:1014-1020``), so a child that read a multi-megabyte file emits a
     # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
     emit({"type": "agent_end", "messages": [{"role": "assistant",
           "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
@@ -2239,7 +2239,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     Published non-terminal, that last snapshot makes
     ``SubagentProgressBridge.__call__`` take its LIVE branch — it WRITES a
     per-child row nothing will ever clear and leaks the id in ``_tools``
-    (``progress.py:349-353``). The registry row is already gone by then, so
+    (``progress.py:443-447``). The registry row is already gone by then, so
     ``stop`` / ``status`` cannot clear it either.
 
     The real ``write_prompt_file`` is what is patched, rather than a fake channel

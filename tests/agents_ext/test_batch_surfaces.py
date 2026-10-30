@@ -1,4 +1,13 @@
-"""The three S10 surfaces, the H10 throttle, and the batch group — ADR-0199.
+"""The three S10 surfaces, the H10 throttle, and the batch group — ADR-0199,
+as ADR-0278 (#132) left them.
+
+#132 REPLACED THE PANEL'S LAYOUT AND RETIRED THE AGGREGATE ROW, and the tests
+below that pinned either were updated in place rather than deleted: each one
+that still guards a property (a bound, a count, a dedup, an ownership check)
+now guards it on the new panel, and each one whose rule was superseded says so
+in its docstring and pins the rule that replaced it. ``format_aggregate_status``
+(surface 1), the card (surface 2) and the throttle are unchanged and so are
+their tests. The new panel's own tests are ``test_delegation_panel_132.py``.
 
 Pure unit level. Every layout here is a function of a hand-built list of
 snapshots, and the throttle runs on an injected clock rather than a ``sleep``,
@@ -30,10 +39,10 @@ from aelix_agents.panel import (
     PARTIAL_MIN_INTERVAL_MS,
     PartialThrottle,
     _flatten,
-    _panel_row,
     format_aggregate_status,
     format_card,
     format_panel,
+    panel_height,
 )
 from aelix_agents.progress import (
     SubagentProgressBridge,
@@ -156,7 +165,7 @@ def test_every_member_is_counted_exactly_once() -> None:
 def test_the_aggregate_token_count_is_the_max_and_the_cost_is_the_sum() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:98-99``), so summing it across members would report
-    a number several times the real one — the mistake ``stream.py:259-262``
+    a number several times the real one — the mistake ``stream.py:269-272``
     already warns about, and the rule ``aggregate.roll_up_usage`` follows. Cost
     IS a flow and IS summed."""
 
@@ -234,18 +243,22 @@ def test_a_queued_member_is_named_on_the_card_not_omitted() -> None:
 # === surface 3: the widget panel ==============================================
 
 
-def test_no_panel_below_two_children() -> None:
-    """S10: a single delegation keeps P2's behaviour EXACTLY, and P2 had no
-    panel."""
+def test_one_child_gets_the_panel_too_and_no_child_gets_none() -> None:
+    """S10 kept a single delegation off the panel ("P2 had no panel"). ADR-0278
+    D1 reversed that — measured on ``9d1517a8``, one child's per-child status
+    row was never on screen at 80 or 120 columns under a yolo parent — so one
+    child gets the five-row block, and only an empty group draws nothing."""
 
-    assert PANEL_MIN_CHILDREN == 2
-    assert format_panel([_member(0)]) == []
+    assert PANEL_MIN_CHILDREN == 1
+    assert len(format_panel([_member(0)])) == 5
     assert format_panel([]) == []
 
 
-def test_the_panel_is_the_aggregate_header_plus_one_row_per_child() -> None:
-    """The header IS :func:`format_aggregate_status`, not a second spelling of
-    the same facts — the panel and the statusline can then never disagree."""
+def test_the_panel_header_states_the_counts_the_aggregate_states() -> None:
+    """The header used to BE :func:`format_aggregate_status`. Since ADR-0278 it is
+    the panel's own (``3 agents · scout · …``) and the aggregate row is no longer
+    drawn (D2) — but the counts are the same function's (``_state_counts``), so
+    the two cannot state a different fact about the batch."""
 
     snapshots: list[SubagentProgress | None] = [
         _reading(0, elapsed_ms=1_000, tokens=1_500),
@@ -253,74 +266,60 @@ def test_the_panel_is_the_aggregate_header_plus_one_row_per_child() -> None:
         None,
     ]
 
-    lines = format_panel(snapshots)
-    assert lines[0] == format_aggregate_status(snapshots)
-    assert lines[1:] == [
-        "[1/3] running · read · 1s · 1.5k tok",
-        "[2/3] done · 2s · $0.0031",
-        "[3/3] queued",
-    ]
+    header = _visible(format_panel(snapshots)[0])
+    counts = "1 running · 1 done · 1 queued"
+    assert counts in format_aggregate_status(snapshots)
+    assert counts in header, header
+    assert header.startswith("│ 3 agents · scout"), header
 
 
-def test_the_panel_rows_lead_with_the_childs_model_when_present() -> None:
-    """S10 Option A: the model leads each per-child row, so the ``· state`` that
-    follows lines up across a one-profile batch (all members share one model —
-    the "light alignment"). A queued member has no snapshot and so no model.
-
-    THE NO-TASKS PATH, which is where this ordering still holds. With a job-label
-    column ahead of it the same ordering costs the state word instead (see
-    :func:`test_the_model_stays_on_the_rows_when_members_disagree`); here the whole
-    row budget belongs to this string, so leading with the model costs nothing and
-    the shipped alignment is kept.
-    """
+def test_an_agreeing_batch_names_its_model_once_in_the_header() -> None:
+    """S10 Option A led every row with the model; the rows now carry the task and
+    the header carries the batch's one model (ADR-0278 D4). A queued member has
+    no snapshot and so no model either way."""
 
     snapshots: list[SubagentProgress | None] = [
         _reading(0, model="claude-opus-4-8", elapsed_ms=1_000, tokens=1_500),
-        _member(
-            1, model="claude-opus-4-8", state="done", elapsed_ms=2_000, cost=0.0031
-        ),
+        _member(1, model="claude-opus-4-8", state="done", elapsed_ms=2_000),
         None,
     ]
 
-    lines = format_panel(snapshots)
-    assert lines[1:] == [
-        "[1/3] claude-opus-4-8 · running · read · 1s · 1.5k tok",
-        "[2/3] claude-opus-4-8 · done · 2s · $0.0031",
-        "[3/3] queued",
-    ]
+    lines = _panel(snapshots, tasks=("a", "b", "c"))
+    assert " · claude-opus-4-8 · " in lines[0], lines[0]
+    assert not any("claude-opus-4-8" in row for row in lines[1:]), lines
 
 
-def test_a_model_less_panel_row_omits_the_model_term() -> None:
+def test_a_model_less_panel_omits_the_model_term() -> None:
     """``model`` is ``None`` until the child's first ``message_end`` resolves the
-    run model. The term is OMITTED then — never ``None``, never a dangling
-    separator — so the row is byte-identical to what P3 shipped before the model
-    was carried."""
+    run model — and for every snapshot a runtime with no spawn model publishes.
+    The term is OMITTED then: never ``None``, never a dangling separator."""
 
-    row = _panel_row(
-        _member(0, state="running", current_tool="read", elapsed_ms=1_000)
-    )
-    assert row == "running · read · 1s"
-    assert "None" not in row
+    for snapshots in (
+        [_member(0, state="running", current_tool="read", elapsed_ms=1_000)],
+        [_member(0, state="running"), _member(1, state="running")],
+    ):
+        for line in _panel(snapshots, tasks=("a", "b")):
+            assert "None" not in line, line
+            assert "·  ·" not in line and " ·  " not in line, line
 
 
 def test_a_hostile_model_cannot_break_a_panel_row() -> None:
     """``model`` is child-authored, exactly like ``current_tool``, so it goes
     through the same :func:`_flatten`: no newline to add a chrome row, no ESC to
-    smuggle an SGR, and bounded width — measured on the row builder AND through
-    :func:`format_panel`, the two layers finding F2 pins separately."""
+    smuggle an SGR, and bounded width — in the one-child header and in a batch
+    whose members disagree (where every row carries its own)."""
 
     hostile = "gpt\n" + "\n".join(f"\x1b[31m ROW {i}" for i in range(40)) + "x" * 5000
-    row = _panel_row(_member(0, state="running", model=hostile))
-    assert "\n" not in row
-    assert "\x1b" not in row
-    assert "\x9b" not in row  # C1: the one-byte CSI
-
-    lines = format_panel(
-        [_member(0, state="running", model=hostile), _member(1, state="running")]
-    )
-    assert not any("\n" in line for line in lines)
-    for line in lines:
-        assert len(line) <= max(PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS), line
+    for snapshots in (
+        [_member(0, state="running", model=hostile)],
+        [_member(0, state="running", model=hostile), _member(1, state="running", model="b")],
+    ):
+        lines = format_panel(snapshots, tasks=("a", "b"))
+        assert not any("\n" in line for line in lines)
+        for line in lines:
+            plain = _visible(line)
+            assert "\x1b" not in plain and "\x9b" not in plain, plain
+            assert cell_len(plain) <= 80, line
 
 
 # === the H10 throttle =========================================================
@@ -408,7 +407,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:574-576``)."""
+    statusline half already does (``progress.py:858-860``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -435,17 +434,36 @@ def test_a_member_index_beyond_expected_grows_the_table() -> None:
 
 
 def _bridge(ui: Any) -> tuple[SubagentProgressBridge, Any]:
+    """A bridge with no loop (it draws on the publish) and a STOPPED clock, so
+    every idle time is zero and a frame is a pure function of its snapshots."""
+
     api = _Api(ui)
-    return SubagentProgressBridge(api), api
+    return SubagentProgressBridge(api, clock=lambda: 0.0), api
 
 
-def test_a_four_member_group_writes_exactly_one_status_key() -> None:
-    """R11, arriving through the seam surface 1 exists to prevent.
+def _drawn(
+    snapshots: list[SubagentProgress | None], *, tasks: tuple[str, ...] = (), **kw: Any
+) -> list[str]:
+    """What the bridge draws for ``snapshots`` on a UI with no chrome."""
+
+    return format_panel(
+        snapshots,
+        tasks=tasks,
+        width=80,
+        height=panel_height(len(snapshots)),
+        idle_ms=[0 if s is not None else None for s in snapshots],
+        profile=kw.pop("profile", ""),
+        **kw,
+    )
+
+
+def test_a_four_member_group_writes_no_status_key_and_one_panel() -> None:
+    """R11, arriving through the seam the panel exists to prevent — now with no
+    statusline row at all (ADR-0278 D2).
 
     A bridge whose adoption never matched would write four ``status_key(id)``
-    rows and ``_render_status`` would join them into a height-1 row; every
-    synthetic-snapshot assertion above would still pass. So: exactly ONE key,
-    and it is the group's.
+    rows; one whose grouping wrote the retired aggregate would write one. The
+    statusline is left to the disclosure row, and the panel is ONE widget key.
     """
 
     ui = _Ui()
@@ -455,12 +473,9 @@ def test_a_four_member_group_writes_exactly_one_status_key() -> None:
         bridge.adopt(f"sub-{index}", _GROUP, index=index)
         bridge(_reading(index, elapsed_ms=1_000))
 
-    assert {key for key, _ in ui.writes} == {group_status_key(_GROUP)}
-    # The panel is re-rendered as each member appears — one KEY, N contents.
+    assert ui.writes == []
     assert {key for key, _ in ui.widgets} == {PANEL_WIDGET_KEY}
-    assert ui.widgets[-1][1] == format_panel(
-        [_reading(index, elapsed_ms=1_000) for index in range(4)]
-    )
+    assert ui.widgets[-1][1] == _drawn([_reading(index, elapsed_ms=1_000) for index in range(4)])
 
 
 def test_the_bridge_measures_the_terminal_rather_than_assuming_the_constant() -> None:
@@ -474,9 +489,9 @@ def test_the_bridge_measures_the_terminal_rather_than_assuming_the_constant() ->
     ``__call__`` sequence with a UI whose chrome reports 40 columns, and reads what
     reached ``set_widget``.
 
-    The assertion is that the panel is bounded by the TERMINAL, not by
-    :data:`PANEL_ROW_MAX_CHARS`: at 40 columns a 78-cell row is the defect, and
-    ``40 <= 78`` would hold for either.
+    The bound is the TERMINAL's: at 40 columns a wider row is the defect. Since
+    ADR-0278 D4 the positive control is the other end too — at 200 columns the
+    panel is the transcript's 120, not the 78-cell ribbon it used to be.
     """
 
     class _Sized:
@@ -501,8 +516,6 @@ def test_the_bridge_measures_the_terminal_rather_than_assuming_the_constant() ->
     assert written is not None
     for row in written:
         assert cell_len(_visible(row)) <= 40, (cell_len(_visible(row)), row)
-    # Positive control: the same batch at a wide terminal is NOT clipped to 40, so
-    # the bound above is the terminal's doing and not something else's.
     ui_wide = _Ui()
     ui_wide.chrome = _Sized(200)  # type: ignore[attr-defined]
     wide, _ = _bridge(ui_wide)
@@ -511,7 +524,7 @@ def test_the_bridge_measures_the_terminal_rather_than_assuming_the_constant() ->
         wide.adopt(f"sub-{index}", _GROUP, index=index)
         wide(_reading(index, model="github-copilot/gpt-5.6-codex", elapsed_ms=1_000))
     widest = max(cell_len(_visible(row)) for row in ui_wide.widgets[-1][1] or [])
-    assert 40 < widest <= PANEL_ROW_MAX_CHARS, widest
+    assert widest == 120, widest
 
 
 # === GitHub #48 ask 3 — the panel says what each member is DOING =============
@@ -552,11 +565,16 @@ def test_the_panel_names_the_job_each_member_is_running() -> None:
     ``model``, whose own comment gave "the column is naturally uniform-width" as
     the reason to put it first. The submitted task was the only differing fact
     and it stopped at ``extension.py``.
+
+    A label that does not fit is cut in the MIDDLE since ADR-0278 D4, so what a
+    row must show is the job's first words and its last one, not a prefix.
     """
 
     rows = _panel(_four(), tasks=_JOBS)[1:]
     for index, job in enumerate(_JOBS):
-        assert job[:20] in rows[index], (index, rows[index])
+        words = job.split()
+        assert " ".join(words[:2]) in rows[index], (index, rows[index])
+        assert words[-1] in rows[index], (index, rows[index])
 
 
 def test_the_job_label_is_index_aligned_with_the_member() -> None:
@@ -568,12 +586,13 @@ def test_the_job_label_is_index_aligned_with_the_member() -> None:
     """
 
     rows = _panel(_four(), tasks=("alpha", "bravo", "charlie", "delta"))[1:]
-    # ``▌ `` is the panel's own gutter; ``_visible`` strips the SGR around it,
-    # not the glyph.
-    assert rows[0].startswith("▌ [1/4] alpha")
-    assert rows[1].startswith("▌ [2/4] bravo")
-    assert rows[2].startswith("▌ [3/4] charlie")
-    assert rows[3].startswith("▌ [4/4] delta")
+    # ``│ `` is the panel's own gutter (ADR-0278 D4); ``_visible`` strips the
+    # SGR around it, not the glyph. Four members on the default 24-row budget
+    # are one row each.
+    assert rows[0].startswith("│ ● 1 alpha")
+    assert rows[1].startswith("│ ● 2 bravo")
+    assert rows[2].startswith("│ ✓ 3 charlie")
+    assert rows[3].startswith("│ ○ 4 delta")
 
 
 def test_the_model_moves_to_the_header_when_every_member_agrees() -> None:
@@ -591,13 +610,10 @@ def test_the_model_stays_on_the_rows_when_members_disagree() -> None:
     alias resolution. A header claiming one model for a batch running two is
     worse than a repeated column, so the rows take it back.
 
-    AND WHEN THE ROW CANNOT HOLD BOTH, THE STATE WINS. That is the second half of
-    this invariant and the reason the terms were reordered. The numbers half gets
-    only what the job-label column leaves, so a wide label plus a provider-scoped
-    id does not fit — and with the model first, the state was what fell off:
-    MEASURED with members disagreeing and 35-cell labels, 2 of 4 rows showed their
-    state at 78, 80, 100 AND 120 columns alike, flat, because the budget is fixed
-    and a wider terminal cannot help. State-first is 4 of 4 at all of them.
+    AND WHEN THE ROW CANNOT HOLD BOTH, THE STATE WINS. It used to be the order of
+    two words in a numbers column; since ADR-0278 D4 the state is the row's
+    leading GLYPH, which nothing cuts, and the model is a right-hand term that
+    goes before the elapsed time does.
     """
 
     mixed: list[SubagentProgress | None] = [
@@ -606,20 +622,15 @@ def test_the_model_stays_on_the_rows_when_members_disagree() -> None:
         None,
     ]
 
-    # Short labels: there is room for both, and the rows carry the model in full.
     roomy = _panel(mixed, tasks=("alpha", "beta", "gamma"))
     assert "gpt-5-codex" not in roomy[0] and "claude-opus-5" not in roomy[0]
     assert "gpt-5-codex" in roomy[1]
-    assert "claude-opus-5" in roomy[2]
+    assert "claude-opus-5" in roomy[3]
 
-    # Wide labels: there is not, and what survives is the state on EVERY row.
-    tight = _panel(mixed, tasks=_JOBS[:3])
-    assert "gpt-5-codex" not in tight[0] and "claude-opus-5" not in tight[0]
-    for row in tight[1:]:
-        assert "running" in row or "queued" in row, row
-    # The model is still attempted — truncated, not dropped — so the row says
-    # which fact it ran out of room for rather than silently omitting it.
-    assert "gpt-5-co" in tight[1], tight[1]
+    for width in (30, 40, 60):
+        tight = _panel(mixed, tasks=_JOBS[:3], width=width)
+        assert tight[1].startswith("│ ● 1") and tight[3].startswith("│ ● 2"), tight
+        assert tight[5].startswith("│ ○ 3"), tight
 
 
 def test_the_shared_statusline_row_is_untouched_by_all_of_this() -> None:
@@ -640,32 +651,30 @@ def test_the_shared_statusline_row_is_untouched_by_all_of_this() -> None:
     assert "gpt-5-codex" not in format_aggregate_status(snapshots)
 
 
-def test_a_panel_without_tasks_is_byte_identical_to_before() -> None:
-    """Every existing caller, and the N == 1 path, pass no tasks.
-
-    This is why the whole suite stayed green through this change — which makes it
-    a fact worth pinning rather than a coincidence to rely on.
-    """
+def test_a_panel_without_tasks_still_draws_a_row_per_member() -> None:
+    """Every production caller passes the tasks now — the extension opens a group
+    for every call with its tasks (ADR-0278 D1). A caller that passes none gets
+    the same shape with no label: the old no-tasks byte identity belonged to a
+    layout that is gone."""
 
     snapshots: list[SubagentProgress | None] = [
         _reading(0, model="claude-opus-4-8", elapsed_ms=1_000, tokens=1_500),
         _member(1, model="claude-opus-4-8", state="done", elapsed_ms=2_000, cost=0.0031),
         None,
     ]
-    assert format_panel(snapshots)[1:] == [
-        "[1/3] claude-opus-4-8 · running · read · 1s · 1.5k tok",
-        "[2/3] claude-opus-4-8 · done · 2s · $0.0031",
-        "[3/3] queued",
-    ]
+    rows = _panel(snapshots)
+    assert len(rows) == 7
+    assert [row[:5] for row in rows[1::2]] == ["│ ● 1", "│ ✓ 2", "│ ○ 3"]
 
 
 def test_job_labels_do_not_change_the_row_count() -> None:
     """Row COUNT is the measured flicker path (``chrome.py:676-688`` records an
     attempt reverted for making it worse), and the panel shares its window with
-    the live thinking stream. The label goes INSIDE the existing row."""
+    the live thinking stream. The label goes INSIDE the existing row, and the
+    count is the one fixed when the group opened (ADR-0278 D5)."""
 
     for tasks in ((), _JOBS):
-        assert len(format_panel(_four(), tasks=tasks)) == 5
+        assert len(format_panel(_four(), tasks=tasks)) == panel_height(4)
 
 
 def test_a_hostile_job_label_cannot_break_the_panel() -> None:
@@ -679,30 +688,30 @@ def test_a_hostile_job_label_cannot_break_the_panel() -> None:
     evil = "보안\n" + "\n".join(f"\x1b[31mROW {i}" for i in range(40)) + "한" * 500
     lines = format_panel(_four(), tasks=(evil, *_JOBS[1:]))
 
-    assert len(lines) == 5
+    assert len(lines) == panel_height(4)
     joined = "".join(lines)
     assert "\n" not in joined
-    assert "\x1b[31m" not in joined
+    assert "\x1b[31mROW" not in joined
     assert "\x9b" not in joined
     for line in lines:
-        assert cell_len(_visible(line)) <= PANEL_ROW_MAX_CHARS, cell_len(_visible(line))
+        assert cell_len(_visible(line)) <= 80, cell_len(_visible(line))
 
 
 def test_the_gutter_is_an_escape_the_chrome_will_parse() -> None:
     """``chrome._render_widget_lines`` ANSI-parses the joined lines, so raw SGR is
     this module's own vocabulary here — but only if it SURVIVES ``_flatten``,
     which deletes C0 and would strip an ESC handed to it. Applied after, never
-    before."""
+    before. The gutter is the transcript card's ``│ `` since ADR-0278 D4."""
 
     lines = format_panel(_four(), tasks=_JOBS)
     for line in lines:
-        assert line.startswith("\x1b[2m▌ \x1b[0m"), line
+        assert line.startswith("\x1b[2m│ \x1b[0m"), line
 
 
 def test_a_four_member_group_carries_its_tasks_through_the_real_bridge() -> None:
-    """The seam, not the layout: ``begin_group`` stores them and ``_render_group``
-    passes them on. Every assertion above builds the panel directly and would
-    pass with the bridge dropping ``tasks`` on the floor."""
+    """The seam, not the layout: ``begin_group`` stores them and the bridge's
+    redraw passes them on. Every assertion above builds the panel directly and
+    would pass with the bridge dropping ``tasks`` on the floor."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -712,11 +721,9 @@ def test_a_four_member_group_carries_its_tasks_through_the_real_bridge() -> None
         bridge(_reading(index, elapsed_ms=1_000))
 
     written = ui.widgets[-1][1]
-    assert written == format_panel(
-        [_reading(index, elapsed_ms=1_000) for index in range(4)], tasks=_JOBS
-    )
+    assert written == _drawn([_reading(index, elapsed_ms=1_000) for index in range(4)], tasks=_JOBS)
     for index, job in enumerate(_JOBS):
-        assert job[:20] in _visible(written[index + 1])
+        assert job[:12] in _visible(written[index + 1])
 
 
 # === review findings: bounds that were not bounds, and a row that was all 78 ===
@@ -753,14 +760,19 @@ def test_a_zero_width_flood_is_still_bounded() -> None:
     assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
     rows = format_panel(
-        [_member(k, state="running", current_tool=flood) for k in range(8)],
+        [
+            _member(k, state="running", current_tool=flood, last_text=flood, model=flood)
+            for k in range(8)
+        ],
         tasks=tuple(flood for _ in range(8)),
     )
     assert len(rows) <= PANEL_MAX_ROWS
     for row in rows:
         plain = _visible(row)
-        assert len(plain) <= 939, len(plain)  # at most three flattened parts
-        assert cell_len(plain) <= PANEL_ROW_MAX_CHARS
+        # At most three flattened child fields share a row (the label, the call,
+        # the reply), each at most four codepoints per cell of an 80-cell row.
+        assert len(plain) <= 3 * 4 * 80 + 80, len(plain)
+        assert cell_len(plain) <= 80
 
 
 def test_the_ellipsis_is_inside_the_budget_not_added_to_it() -> None:
@@ -879,44 +891,33 @@ def test_flatten_does_not_do_unbounded_work_per_frame(
     assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
 
-def test_rows_are_content_length_not_padded_to_the_ceiling() -> None:
-    """The widget window CLIPS rather than wraps, so a row padded to the ceiling
-    loses its right-hand half on a narrower terminal.
+def test_no_row_is_wider_than_the_terminal_it_is_drawn_into() -> None:
+    """The widget window CLIPS rather than wraps, so a row wider than the terminal
+    loses its right-hand end.
 
-    MEASURED on the first version: over 20 000 composed rows the observed width
-    set was literally ``[78]``, and through the real chrome at 72 columns a queued
-    member rendered as ``▌ [4/4] write the ADR`` with the word ``queued`` gone,
-    while main's left-packed rows read ``[4/4] queued`` intact down to 30 columns.
-    ``tui/width.py`` deliberately has no minimum-width floor, so a sub-78-column
-    terminal is a supported configuration.
+    MEASURED on the first job-label version: rows padded to the 78-cell ceiling
+    lost the word ``queued`` at 72 columns. ADR-0278 D4 measures the row against
+    the LIVE terminal instead, so right-aligning the numbers is safe: a row ends
+    at the terminal's edge, never past it, and the queued member's words survive
+    at every width ``tui/width.py`` supports (it has no floor).
     """
 
-    rows = [
-        _visible(line)
-        for line in format_panel(_four(), tasks=("a", "bb", "ccc", "write the ADR"))[1:]
-    ]
-    widths = {cell_len(r) for r in rows}
-    assert widths != {PANEL_ROW_MAX_CHARS}, "every row is the full ceiling again"
-    # the queued row is the short one, and it is the one clipping used to eat
-    assert cell_len(rows[-1]) < PANEL_ROW_MAX_CHARS - 10, rows[-1]
-    assert rows[-1].rstrip().endswith("queued")
+    for width in (30, 40, 60, 72, 80):
+        rows = _panel(_four(), tasks=("a", "bb", "ccc", "write the ADR"), width=width)
+        assert all(cell_len(row) <= width for row in rows), (width, rows)
+        label = "write the ADR" if width >= 40 else "write"
+        assert rows[-1].startswith(f"│ ○ 4 {label}"), (width, rows[-1])
+        assert "waiting" in rows[-1], (width, rows[-1])
 
 
-def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
-    """Labels are fixed for the life of a group; the numbers change every frame.
+def test_labels_that_share_a_prefix_stay_distinct_idle_or_busy() -> None:
+    """Four tasks over one verb must stay four rows a user can tell apart.
 
-    Sizing the column from the numbers made the label budget shrink as a child got
-    busier, so four distinct tasks converged to a common prefix at exactly the
-    moment work started — and it made every other row's label jump whenever one
-    member's elapsed time gained a digit.
-
-    LABELS LONGER THAN THE BUDGET UNDER TEST, which the first version got wrong.
-    It used 14-16 cell labels against a numbers-derived budget of 23 and a
-    label-derived column of 24 — both wider than every label, so nothing was ever
-    truncated and the numbers-first arm passed unchanged. These share a 26-cell
-    prefix and run to 32, so the two arms produce different strings: sized from
-    the numbers all four read ``port the retry backoff…``, sized from the labels
-    they keep the word that tells them apart.
+    The old label COLUMN was sized from the numbers until a review measured it
+    collapsing four such labels to one common prefix once the children got busy.
+    ADR-0278 D4 has no shared column — each label is cut only by its own row's
+    numbers — and the property that mattered is pinned on the new layout: at 80
+    columns, idle or busy, two rows each or one, the four labels differ.
     """
 
     jobs = (
@@ -925,20 +926,19 @@ def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
         "port the retry backoff to azure",
         "port the retry backoff to vertex",
     )
-    idle = _panel([_member(k, state="starting") for k in range(4)], tasks=jobs)[1:]
-    busy = _panel(
-        [
-            _member(k, state="running", current_tool="read", elapsed_ms=999_000,
-                    tokens=987_654, cost=99.9999)
-            for k in range(4)
-        ],
-        tasks=jobs,
-    )[1:]
-    for idle_row, busy_row in zip(idle, busy, strict=True):
-        idle_label = idle_row.split("] ", 1)[1].rstrip()
-        busy_label = busy_row.split("] ", 1)[1]
-        assert busy_label.startswith(idle_label.split("  ")[0]), (idle_row, busy_row)
-    assert len({r.split("] ", 1)[1].split("  ")[0] for r in busy}) == 4
+    idle = [_member(k, state="starting") for k in range(4)]
+    busy = [
+        _member(k, state="running", current_tool="read", elapsed_ms=999_000,
+                tokens=987_654, cost=99.9999)
+        for k in range(4)
+    ]
+    for snapshots in (idle, busy):
+        for height in (5, 9):
+            rows = _panel(snapshots, tasks=jobs, height=height)
+            labelled = rows[1::2] if height == 9 else rows[1:]
+            tails = {name for name in ("google", "openai", "azure", "vertex")
+                     for row in labelled if name in row}
+            assert len(tails) == 4, (height, labelled)
 
 
 def _numbers_half(row: str) -> str:
@@ -1048,50 +1048,44 @@ def test_the_counts_survive_the_model_but_not_a_head_wider_than_the_cap() -> Non
 
 
 def test_a_model_that_does_not_fit_whole_is_TRUNCATED_not_dropped() -> None:
-    """The central rule of the header fix, and it had exactly one gate.
+    """The central rule of the AGGREGATE's model term, and it had exactly one gate.
 
     Reverting :func:`_model_term` to the rule it replaced — show the whole term or
     nothing — left every unit test in this file GREEN; only the pyte-glass test
     noticed. The rule that matters is the middle branch: between "it fits" and
     "there is no room worth spending", the model is CUT to what is left.
 
-    Asserted on the rendered header rather than on ``_model_term`` directly, so a
-    change that computes the right term and then fails to use it is still caught.
+    Asserted on ``format_aggregate_status(extra_head=…)`` itself since ADR-0278:
+    the panel builds its own header now (which names a model whole or not at
+    all, see the next test), and this function is the one that keeps the rule.
     """
 
     model = "github-copilot/gpt-5.6-codex"  # 28 cells
-    lines = _panel(_agreeing(model), tasks=_JOBS)
-    header = lines[0]
+    header = format_aggregate_status(_agreeing(model), extra_head=model, cap=76)
 
     shown = _named_model(header, model)
     assert shown, header
-    # The premise: it does NOT fit whole here, so this is the truncating branch
-    # and not the fits-whole one.
     assert model not in header, header
     assert cell_len(shown) >= 12 - cell_len(_ELLIPSIS), (shown, header)
     assert _ELLIPSIS in header, header
-    # And the counts it was sized against all survived beside it.
     for count in ("1 done", "1 failed", "1 stopped", "1 queued"):
         assert count in header, (count, header)
 
-    # Control at the other end: a model that DOES fit is not truncated.
-    short = _panel(_agreeing("gpt-5"), tasks=_JOBS)[0]
+    short = format_aggregate_status(_agreeing("gpt-5"), extra_head="gpt-5", cap=76)
     assert "gpt-5" in short and "gpt-5…" not in short, short
 
 
-def test_when_the_counts_leave_no_room_the_rows_take_the_model_back() -> None:
-    """The drop branch, which is the one arm nothing else in this file reaches.
+def test_when_the_header_cannot_afford_the_model_no_row_repeats_it() -> None:
+    """The panel header names an agreeing batch's model when it fits beside the
+    counts and the elapsed time, and drops it otherwise (ADR-0278 D4).
 
-    At five non-zero count classes the head and the counts are 69 of the panel's
-    76 cells, so there is no term left worth spending. The model is then omitted
-    from the header — NOT shown as a stub, and NOT pushed onto the rows either.
-    An earlier version of this test asserted the rows picked it up, which is the
-    behaviour that made a row read ``running · g…`` instead of naming its tool.
-
-    The counts are what the space goes to, and that is the point: the model is one
-    fact about the whole batch, while ``1 queued`` is the one thing the panel
-    cannot say any other way once ``PANEL_MAX_ROWS`` drops the queued member's
-    row.
+    SUPERSEDED, and said so rather than deleted: the old panel handed a dropped
+    model to the ROWS (an owner choice on the job-label layout, where it read
+    ``running · github-copilot/gpt-5.…``). D4's rows carry a model only when the
+    members DISAGREE; an agreeing batch's model is one fact about the whole
+    call, so when the counts take its room it is not named at that width. The
+    counts are what the space goes to, and that is the point: ``1 queued`` is a
+    fact the panel cannot state any other way.
     """
 
     model = "github-copilot/gpt-5.6-codex"
@@ -1106,67 +1100,47 @@ def test_when_the_counts_leave_no_room_the_rows_take_the_model_back() -> None:
         None,
     ]
     jobs = tuple(f"job number {index}" for index in range(9))
-    lines = _panel(wide, tasks=jobs)
+    lines = _panel(wide, tasks=jobs, width=80, height=PANEL_MAX_ROWS + 1)
     header, rows = lines[0], lines[1:]
 
     assert "1 queued" in header, header
     assert not _named_model(header, model), header
-    # Positive control: the rows really are the task path.
     assert "job number 0" in rows[0], rows[0]
-    # AND THE ROWS TAKE IT BACK. These labels are 13 cells, so the numbers half is
-    # wide enough to say it properly — which is the half of this behaviour that
-    # reads well, and the reason the header's drop is not the end of the question.
-    assert _named_model(_numbers_half(rows[0]), model), rows[0]
+    assert not any(_named_model(row, model) for row in rows), rows
+    # Positive control: where there is room, the header names it whole.
+    roomy = _panel(wide, tasks=jobs, width=160, height=PANEL_MAX_ROWS + 1)
+    assert model in roomy[0], roomy[0]
 
 
 def test_a_disagreeing_batch_still_states_every_member_s_state() -> None:
-    """The rows put the state FIRST, so the model is what the row's budget cuts.
-
-    ``_batch_model`` returns ``""`` when two children report different strings —
-    a provider fallback, or an alias resolved mid-batch — and the rows carry their
-    own model again. Ordered model-then-state, a 28-cell provider-scoped id ate
-    the whole numbers half: MEASURED at 80, 120 and 200 columns, 1 of 4 rows
-    showed a state word — the QUEUED one, which has no model to push it out and
-    says ``queued`` under either ordering. The three published rows read
-    ``github-copilot/gpt…`` / ``gpt-5.6-codex · ru…`` / ``gpt-5.6-codex · do…``.
-
-    ``state_first`` is what fixed it and nothing pinned it, which is how this gate
-    came to be written after the fact rather than with the fix.
-    """
+    """Every row leads with its state's GLYPH (ADR-0278 D4), so no model, label
+    or number can push the state off the row — the failure this test was written
+    for, when a 28-cell provider-scoped id ate a numbers column and 1 of 4 rows
+    showed a state word."""
 
     mixed: list[SubagentProgress | None] = [
-        # What ``runtime._publish`` produces mid-fan-out: the first member has a
-        # resolved ``state.model`` and the rest still carry ``spawn_model``.
         _member(0, model="github-copilot/gpt-5.6-codex", state="starting"),
         _member(1, model="gpt-5.6-codex", state="running", current_tool="grep"),
         _member(2, model="gpt-5.6-codex", state="done"),
         None,
     ]
-    for width in (80, 120, 200):
+    for width in (40, 80, 120, 200):
         lines = [_visible(line) for line in format_panel(mixed, tasks=_JOBS, width=width)]
         rows = lines[1:]
         assert len(rows) == 4, (width, lines)
-        for row, word in zip(rows, ("starting", "running", "done", "queued"), strict=True):
-            assert word in row, (width, word, row)
-        # Positive control on the premise: the members really do disagree, so the
-        # header names no model and the rows are the only surface that can.
+        for row, glyph in zip(rows, ("●", "●", "✓", "○"), strict=True):
+            assert row.startswith(f"│ {glyph} "), (width, glyph, row)
         assert not _named_model(lines[0], "gpt-5.6-codex"), lines[0]
 
 
 def test_the_panel_keeps_every_state_count_at_every_id_length() -> None:
     """The counts are the substance and the model is what gets cut, not them.
 
-    Three rules have been tried at this seam. Appending the model only when the
-    WHOLE term fits dropped it outright at any provider-scoped id, and the panel's
-    fallback put a 31-cell string identical down the whole column onto every row.
-    Appending it UNCONDITIONALLY was supposed to be protected by position — the
-    term sits before the counts and everything that shortens the row takes from
-    the right — but the closing truncation reaches the counts anyway: MEASURED
-    with ``github-copilot/gpt-5.6-codex`` and three count classes, the header read
-    ``… · 2 running · 1 done · 1 queu…``.
-
-    The rule now is that the model is sized against what the counts leave. So the
-    gate is the counts, at every id length, spelled in full.
+    Three rules were tried at this seam on the aggregate-based header; ADR-0278's
+    header keeps the result: the model is admitted only beside the counts and
+    the elapsed time, at most 32 cells, and the counts are never cut to make
+    room for numbers. So the gate is the counts, at every id length, spelled in
+    full, and — when the model is shown — after the profile and before them.
     """
 
     for model in _MODEL_IDS:
@@ -1177,25 +1151,13 @@ def test_the_panel_keeps_every_state_count_at_every_id_length() -> None:
             None,
         ]
         header = _visible(format_panel(snapshots, tasks=_JOBS)[0])
-        assert cell_len(header) <= AGGREGATE_MAX_CHARS, (model, cell_len(header))
+        assert cell_len(header) <= 80, (model, cell_len(header))
         for count in ("1 done", "1 failed", "1 stopped", "1 queued"):
             assert count in header, (model, count, header)
-        # AND IN THAT ORDER — profile, model, counts. Position used to be what
-        # protected the counts, so the ordering was gated by everything else here;
-        # sizing the model against them protects them instead, and moving the term
-        # to the end now passes every other assertion in this file. It is still a
-        # deliberate choice — the header reads "who is running" before "how many" —
-        # so it gets an assertion of its own rather than inheriting one.
         shown = _named_model(header, model)
-        # ``str.index("")`` is 0, so this assertion passes on a header that names
-        # no model at all — it has to be told that a dropped model is not an
-        # ordering it can check.
-        assert shown, (model, header)
-        assert header.index(shown) < header.index("1 done"), (model, header)
+        if shown:
+            assert header.index("scout") < header.index(shown) < header.index("1 done"), header
 
-    # AND AT FIVE COUNT CLASSES, where the header ran out first and
-    # ``PANEL_MAX_ROWS`` dropped the queued member's own row, so the word appeared
-    # NOWHERE in the panel — the misreading ``_queued_line`` exists to prevent.
     wide: list[SubagentProgress | None] = [
         _member(index, model="gpt-5", state="running") for index in range(5)
     ]
@@ -1207,8 +1169,6 @@ def test_the_panel_keeps_every_state_count_at_every_id_length() -> None:
     ]
     lines = [_visible(line) for line in format_panel(wide, tasks=_JOBS)]
     assert "1 queued" in lines[0], lines[0]
-    # Positive control: the row that would otherwise say it really is off the end.
-    assert not any("queued" in row for row in lines[1:]), lines
 
 
 # === second review round: the fixes' own holes ================================
@@ -1225,96 +1185,46 @@ def _agreeing(model: str) -> list[SubagentProgress | None]:
     ]
 
 
-def test_exactly_one_surface_names_the_model_at_every_width() -> None:
-    """AT EVERY WIDTH, not only at the 78 the default hands out.
-
-    Three rules have stood here. Keying "the rows may drop it" on "a batch model
-    exists" let the header drop the model while the rows suppressed it, so nothing
-    named it. Reading the answer back OUT of the rendered header fixed that at 78
-    and opened a narrower hole: a model shown TRUNCATED is absent to a substring
-    test, so both surfaces spend the width. Deciding it from ``_model_term`` — the
-    same call the header made — is the rule, and it is asserted across seven
-    widths because production passes ``tui.width.terminal_columns`` and the gate
-    that missed all of this never varied ``width``.
-
-    NEVER BOTH is the invariant. "Never nobody" is NOT, and asserting it was the
-    third wrong rule at this seam: MEASURED with this file's 49-cell labels, no
-    surface names the model at any width below 76, because once the header cannot
-    afford the term the rows have already spent their width on the label column.
-    How good the row fallback is depends on the LABELS, not on the terminal —
-    :func:`test_the_rows_take_the_model_back_when_the_header_cannot_afford_it`
-    holds both ends of that.
-    """
+def test_never_more_than_one_surface_names_an_agreeing_model() -> None:
+    """NEVER BOTH is the invariant, at every width production can pass
+    (``tui.width.terminal_columns``): an agreeing batch's model is in the header
+    or nowhere, never repeated down the rows (ADR-0278 D4)."""
 
     for model in _MODEL_IDS:
         for width in (30, 40, 50, 60, 70, 78, 120):
             lines = _panel(_agreeing(model), tasks=_JOBS, width=width)
-            in_header = _named_model(lines[0], model)
-            in_rows = [r for r in lines[1:] if _named_model(_numbers_half(r), model)]
-            assert not (in_header and in_rows), (model, width, lines)
+            in_rows = [r for r in lines[1:] if _named_model(r, model)]
+            assert not in_rows, (model, width, lines)
 
-    # Positive control on that loop: at the widest width the header is what names
-    # it, so the loop is not being satisfied by the rows every time.
+    # Positive control: at the widest width the header names it — whole, or at
+    # the header's own 32-cell field bound for an id past it.
     for model in _MODEL_IDS:
         header = _panel(_agreeing(model), tasks=_JOBS, width=120)[0]
         shown = _named_model(header, model)
         assert shown, (model, header)
-        # WORTH READING. ``_MODEL_MIN_CELLS`` counts the ELLIPSIS, so a term at the
-        # floor shows one cell less than the floor — asserting the floor itself
-        # failed on ``github-copi…``, which is legitimate output.
-        assert cell_len(shown) >= min(cell_len(model), 12 - cell_len(_ELLIPSIS)), (
-            model,
-            shown,
-            header,
-        )
+        assert cell_len(shown) >= min(cell_len(model), 32 - cell_len(_ELLIPSIS)), (model, shown)
 
 
-def test_the_rows_take_the_model_back_when_the_header_cannot_afford_it() -> None:
-    """The owner's decision, pinned — and what it costs, in the same test.
+def test_the_model_s_cost_at_narrow_widths_is_stated_not_hidden() -> None:
+    """What dropping the model costs, in the same test as the rule.
 
-    When the state counts leave the header under :data:`_MODEL_MIN_CELLS` the rows
-    carry the model again. How much of it arrives depends on the LABEL column, not
-    on the terminal, so both ends are asserted: at five count classes on an
-    80-column screen the row shows the model nearly whole, and at three classes on
-    a 50-column one it shows a handful of characters and the tool name is gone.
-
-    The narrow end is the cost. It is here rather than in a docstring because a
-    cost nothing exercises is a cost nobody re-measures.
+    The old panel's rows took a dropped model back (owner choice, ADR-0227);
+    ADR-0278 D4 supersedes that layout. At 50 columns a three-class batch with a
+    28-cell id keeps its counts and its elapsed time and loses the model; at
+    120 the header names it.
     """
 
     model = "github-copilot/gpt-5.6-codex"
-
-    # WIDE ROWS: five count classes drop the model from the header even at 80
-    # columns, and the rows have room to say it properly.
-    wide: list[SubagentProgress | None] = [
-        _member(i, model=model, state="running", current_tool="read_file")
-        for i in range(5)
-    ]
-    wide += [
-        _member(5, model=model, state="done", current_tool="read_file"),
-        _member(6, model=model, state="error", current_tool="read_file"),
-        _member(7, model=model, state="stopped", current_tool="read_file"),
-        None,
-    ]
-    jobs = tuple(f"port the retry backoff to provider {i}" for i in range(9))
-    lines = _panel(wide, tasks=jobs, width=80)
-    assert not _named_model(lines[0], model), lines[0]
-    shown = _named_model(_numbers_half(lines[1]), model)
-    assert cell_len(shown) >= 20, (shown, lines[1])
-
-    # NARROW ROWS: the same drop, but the label column has taken the width. The
-    # model arrives as a few characters and ``read_file`` is what it displaced.
-    narrow_snaps: list[SubagentProgress | None] = [
+    snaps: list[SubagentProgress | None] = [
         _member(0, model=model, state="running", current_tool="read_file"),
         _member(1, model=model, state="running", current_tool="read_file"),
         _member(2, model=model, state="done", current_tool="read_file"),
         None,
     ]
-    row = _panel(narrow_snaps, tasks=_JOBS, width=50)[1]
-    numbers = _numbers_half(row)
-    assert _named_model(numbers, model) == "", numbers  # too short even to identify
-    assert numbers.startswith("running · g"), numbers
-    assert "read_file" not in row, row
+    narrow = _panel(snaps, tasks=_JOBS, width=50)
+    assert not _named_model(narrow[0], model), narrow[0]
+    assert "2 running · 1 done · 1 queued" in narrow[0], narrow[0]
+    assert model in _panel(snaps, tasks=_JOBS, width=120)[0]
 
 
 def test_leading_whitespace_cannot_delete_a_field() -> None:
@@ -1365,9 +1275,10 @@ def test_the_input_bound_still_bounds_the_work() -> None:
     )
 
 
-def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:
-    """S10: at N == 1 every surface is byte-identical to P2. The group is still
-    opened and closed so the extension's ``try``/``finally`` is symmetric."""
+def test_a_group_of_one_draws_the_panel_and_writes_no_per_child_row() -> None:
+    """ADR-0278 D1 + D2, superseding S10's "at N == 1 every surface is
+    byte-identical to P2": a single delegation's group is ACTIVE, it draws the
+    five-row block, and its member writes no statusline row."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -1376,32 +1287,31 @@ def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:
     snapshot = _reading(0, elapsed_ms=1_000)
     bridge(snapshot)
 
-    assert ui.writes == [(status_key("sub-0"), format_status_row(snapshot))]
-    assert ui.widgets == []
+    assert ui.writes == []
+    assert ui.widgets == [(PANEL_WIDGET_KEY, _drawn([snapshot]))]
 
 
 def test_an_unadopted_child_keeps_its_own_row_while_a_group_is_open() -> None:
     """§3.6's second residual: the bridge learns membership only from ``adopt``,
     so a concurrent ``/agents run`` child correctly falls back to its own
-    per-child row rather than being counted into someone else's batch."""
+    per-child row — byte-identical — rather than being counted into someone
+    else's call. The group's own member writes none (ADR-0278 D2)."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
     bridge.begin_group(_GROUP, expected=2)
     bridge.adopt("sub-0", _GROUP, index=0)
     bridge(_reading(0))
-    bridge(_progress(id="sub-loner", current_tool="grep"))
+    loner = _progress(id="sub-loner", current_tool="grep")
+    bridge(loner)
 
-    assert {key for key, _ in ui.writes} == {
-        group_status_key(_GROUP),
-        status_key("sub-loner"),
-    }
+    assert ui.writes == [(status_key("sub-loner"), format_status_row(loner))]
 
 
-def test_a_terminal_member_stays_on_the_aggregate_as_done() -> None:
+def test_a_terminal_member_stays_on_the_panel_as_done() -> None:
     """The un-grouped path CLEARS the row on a terminal state. A grouped member
-    must not: "1 done · 1 running" is the fact the aggregate exists to carry, and
-    the row belongs to the group, not to the child."""
+    must not leave the panel: "1 done · 1 running" is the fact the header
+    exists to carry, and the row belongs to the group, not to the child."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -1411,11 +1321,12 @@ def test_a_terminal_member_stays_on_the_aggregate_as_done() -> None:
         bridge(_reading(index))
     bridge(_member(0, state="done", elapsed_ms=4_000))
 
-    key, text = ui.writes[-1]
-    assert key == group_status_key(_GROUP)
-    assert text is not None
-    assert "1 done" in text
-    assert "1 running" in text
+    key, lines = ui.widgets[-1]
+    assert key == PANEL_WIDGET_KEY
+    assert lines is not None
+    header = _visible(lines[0])
+    assert "1 running · 1 done" in header, header
+    assert ui.writes == []
 
 
 def test_the_bus_half_is_untouched_by_grouping() -> None:
@@ -1436,9 +1347,9 @@ def test_the_bus_half_is_untouched_by_grouping() -> None:
     assert channels.count(SUBAGENT_END) == 2
 
 
-def test_end_group_clears_both_the_aggregate_row_and_the_panel() -> None:
-    """A statusline segment — or a panel — outliving the delegation that owns it
-    is a lie the user cannot dismiss."""
+def test_end_group_blanks_the_panel_and_writes_no_row() -> None:
+    """A panel outliving the delegation that owns it is a lie the user cannot
+    dismiss. There is no aggregate row to clear any more (ADR-0278 D2)."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -1448,7 +1359,7 @@ def test_end_group_clears_both_the_aggregate_row_and_the_panel() -> None:
         bridge(_member(index, state="running"))
 
     bridge.end_group(_GROUP)
-    assert ui.writes[-1] == (group_status_key(_GROUP), None)
+    assert ui.writes == []
     assert ui.widgets[-1] == (PANEL_WIDGET_KEY, None)
 
 
@@ -1470,41 +1381,28 @@ def test_end_group_cannot_blank_a_panel_it_does_not_own() -> None:
     assert ui.widgets == []
 
 
-def test_ending_a_group_of_one_is_byte_identical_to_opening_no_group() -> None:
-    """S10's floor, measured rather than asserted in prose.
-
-    ``_clear_row`` issues its ``ui.set_status(key, None)`` UNCONDITIONALLY — the
-    ``_rows`` pop is a dedup-cache eviction, not a guard — so ``end_group`` used
-    to emit a clear for the aggregate key of a group that never wrote a row. At
-    ``expected=1`` the group is inactive and renders nothing, which made that
-    stray write the ONLY difference between "one delegation inside a group" and
-    "one delegation, P2". The comparison is against a second bridge driven with
-    no group at all, because "byte-identical to P2" is the actual claim and a
-    hand-written expected list would only restate this bridge's opinion of it.
-    """
+def test_ending_a_group_of_one_blanks_its_panel_and_never_touches_the_statusline() -> None:
+    """S10's floor was that a group of one wrote exactly what no group wrote.
+    ADR-0278 D1 replaced the floor with the panel; what this keeps is the part
+    that still matters — the statusline is not touched at all, not even with a
+    clear for a key it never held, and the panel goes when the call ends."""
 
     snapshots = [
         _reading(0, elapsed_ms=1_000),
         _member(0, state="done", elapsed_ms=2_000),
     ]
 
-    grouped_ui = _Ui()
-    grouped, _ = _bridge(grouped_ui)
-    grouped.begin_group(_GROUP, expected=1)
-    grouped.adopt("sub-0", _GROUP, index=0)
+    ui = _Ui()
+    bridge, _ = _bridge(ui)
+    bridge.begin_group(_GROUP, expected=1)
+    bridge.adopt("sub-0", _GROUP, index=0)
     for snapshot in snapshots:
-        grouped(snapshot)
-    grouped.end_group(_GROUP)
+        bridge(snapshot)
+    bridge.end_group(_GROUP)
 
-    p2_ui = _Ui()
-    p2, _ = _bridge(p2_ui)
-    for snapshot in snapshots:
-        p2(snapshot)
-
-    assert grouped_ui.writes == p2_ui.writes
-    assert grouped_ui.widgets == p2_ui.widgets == []
-    # And, explicitly: no key of the group's shape was ever touched.
-    assert group_status_key(_GROUP) not in {key for key, _ in grouped_ui.writes}
+    assert ui.writes == []
+    assert [content is None for _, content in ui.widgets] == [False, False, True]
+    assert group_status_key(_GROUP) not in {key for key, _ in ui.writes}
 
 
 def test_end_group_writes_nothing_for_an_active_group_that_never_rendered() -> None:
@@ -1526,47 +1424,41 @@ def test_end_group_writes_nothing_for_an_active_group_that_never_rendered() -> N
     assert ui.widgets == []
 
 
-def test_end_group_still_clears_an_aggregate_row_it_did_write() -> None:
-    """The guard must be "was it written", not "is the group active".
-
-    The whole point of the aggregate row is that it is cleared when the batch
-    ends; a guard that over-fired here would trade a cosmetic stray write for an
-    orphaned segment the user cannot dismiss. Driven one member at a time so the
-    row exists but the group is still mid-flight when it is closed — the
-    cancelled-turn shape, where ``end_group`` runs from the extension's
-    ``finally`` rather than after a clean batch.
-    """
+def test_end_group_mid_flight_still_blanks_the_panel_it_drew() -> None:
+    """The guard is "did this group draw", not "is the group active" — a group
+    closed mid-flight (the extension's ``finally`` after a failure) must not
+    leave its panel behind."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
     bridge.begin_group(_GROUP, expected=4)
     bridge.adopt("sub-0", _GROUP, index=0)
     bridge(_reading(0, elapsed_ms=1_000))
-    assert [key for key, _ in ui.writes] == [group_status_key(_GROUP)]
+    assert [key for key, _ in ui.widgets] == [PANEL_WIDGET_KEY]
 
     bridge.end_group(_GROUP)
-    assert ui.writes[-1] == (group_status_key(_GROUP), None)
     assert ui.widgets[-1] == (PANEL_WIDGET_KEY, None)
+    assert ui.writes == []
 
 
-def test_reopening_a_leaked_group_key_still_clears_the_stale_row() -> None:
-    """``begin_group`` on a live key ends the old group first, and that path
-    goes through the same guard. A stale aggregate row surviving the re-open
-    would be a lie about the PREVIOUS batch shown over the new one."""
+def test_reopening_a_leaked_group_key_still_blanks_the_stale_panel() -> None:
+    """``begin_group`` on a live key ends the old group first. A stale panel
+    surviving the re-open would be a lie about the PREVIOUS call shown over the
+    new one."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
     bridge.begin_group(_GROUP, expected=2)
     bridge.adopt("sub-0", _GROUP, index=0)
     bridge(_reading(0, elapsed_ms=1_000))
-    written = len(ui.writes)
+    written = len(ui.widgets)
 
     bridge.begin_group(_GROUP, expected=2)
-    assert ui.writes[written:] == [(group_status_key(_GROUP), None)]
+    assert ui.widgets[written:] == [(PANEL_WIDGET_KEY, None)]
 
 
 def test_clear_ends_every_open_group() -> None:
-    """The ``session_shutdown`` / teardown half, now including the panel."""
+    """The ``session_shutdown`` / teardown half, including the panel."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -1577,15 +1469,15 @@ def test_clear_ends_every_open_group() -> None:
     ui.widgets.clear()
 
     bridge.clear()
-    assert ui.writes == [(group_status_key(_GROUP), None)]
+    assert ui.writes == []
     assert ui.widgets == [(PANEL_WIDGET_KEY, None)]
 
 
-def test_an_unchanged_group_row_is_not_rewritten() -> None:
+def test_an_unchanged_panel_is_not_rewritten() -> None:
     """Hundreds of publishes per turn must not become hundreds of UI writes —
     and ``chrome.set_widget`` calls ``invalidate()`` unconditionally
     (``chrome.py:1457-1463``), so an unchanged panel would be a full repaint per
-    reduced stdout line."""
+    redraw."""
 
     ui = _Ui()
     bridge, _ = _bridge(ui)
@@ -1594,7 +1486,7 @@ def test_an_unchanged_group_row_is_not_rewritten() -> None:
     for _ in range(5):
         bridge(_reading(0, elapsed_ms=1_000))
 
-    assert len(ui.writes) == 1
+    assert ui.writes == []
     assert len(ui.widgets) == 1
 
 
@@ -1612,9 +1504,10 @@ def test_headless_never_raises_on_a_group() -> None:
     bridge.clear()
 
 
-def test_a_raising_set_widget_still_leaves_the_aggregate_row_on_screen() -> None:
+def test_a_raising_set_widget_costs_the_panel_and_never_the_delegation() -> None:
     """The binding can flip between the guard and the call. When it does, the
-    panel is what is lost — not the statusline row, and never the delegation."""
+    panel is what is lost — never the delegation, and no statusline row appears
+    in its place (ADR-0278 D2)."""
 
     ui = _Ui()
 
@@ -1626,8 +1519,9 @@ def test_a_raising_set_widget_still_leaves_the_aggregate_row_on_screen() -> None
     bridge.begin_group(_GROUP, expected=2)
     bridge.adopt("sub-0", _GROUP, index=0)
     bridge(_member(0, state="running"))
+    bridge.end_group(_GROUP)
 
-    assert [key for key, _ in ui.writes] == [group_status_key(_GROUP)]
+    assert ui.writes == []
 
 
 # --- F2: the widget panel renders CHILD-AUTHORED text -------------------------
@@ -1635,7 +1529,7 @@ def test_a_raising_set_widget_still_leaves_the_aggregate_row_on_screen() -> None
 # THE HIGH FINDING, AND THE SURFACE IS NEW IN P3 (P2 shipped no widget at all).
 # ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
 # JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-# (``stream.py:968-970``) — and the kernel emits that event with the raw
+# (``stream.py:1175-1177``) — and the kernel emits that event with the raw
 # model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
 # (``loop.py:739-749``), so it is not constrained to a real tool name. A child is
 # exactly the process this phase's threat model assumes has read attacker
@@ -1663,96 +1557,75 @@ def _hostile(index: int, **kwargs: Any) -> SubagentProgress:
 def test_a_child_cannot_add_rows_to_the_panel() -> None:
     """The list length IS the screen height — ``chrome`` joins it with ``\\n``.
 
-    So "returned 3 entries" is not the property that matters; "the rendered
-    string is 3 rows" is. Asserted on the join, which is what ``chrome.py:1167``
-    actually does.
+    So "returned N entries" is not the property that matters; "the rendered
+    string is N rows" is. Asserted on the join, which is what ``chrome.py:1167``
+    actually does — at the height fixed for two members (ADR-0278 D5).
     """
 
     lines = format_panel([_hostile(0), _member(1, state="running")])
 
-    assert len(lines) == 3  # header + two members
-    assert "\n".join(lines).count("\n") == 2
+    assert len(lines) == panel_height(2)
+    assert "\n".join(lines).count("\n") == panel_height(2) - 1
     assert not any("\n" in line for line in lines)
 
 
 def test_a_child_cannot_emit_escape_sequences_into_the_parents_chrome() -> None:
-    """No ESC means no SGR — including ``\\x1b[8m``, which hides what follows.
-
-    That is the same primitive the F1 consent forgery used, and here it would be
-    aimed at the parent's own chrome rather than at a modal.
+    """No ESC from the child means no SGR from the child — including ``\\x1b[8m``,
+    which hides what follows. The panel writes its own SGR (ADR-0278 D4), so the
+    assertion is on what is left once that vocabulary is taken out.
     """
 
     rendered = "\n".join(format_panel([_hostile(0), _hostile(1)]))
+    plain = _visible(rendered)
 
-    assert "\x1b" not in rendered
-    assert "\x9b" not in rendered  # C1: the one-byte CSI
-    assert "\r" not in rendered  # overwriting a row in place
+    assert "\x1b" not in plain
+    assert "\x9b" not in plain  # C1: the one-byte CSI
+    assert "\r" not in plain  # overwriting a row in place
 
 
 def test_every_panel_row_is_bounded_the_way_the_aggregate_already_was() -> None:
     """``format_aggregate_status`` capped at :data:`AGGREGATE_MAX_CHARS`; the
-    panel capped nothing. Same input, same class of bound, measured on both.
+    panel's rows are capped at the width they are drawn into. Same input, same
+    class of bound, measured on both — in CELLS, on what is visible."""
 
-    Measured in CELLS. This used to count characters, and counting characters is
-    how the wide-character breach below survived: the rows really were inside the
-    ceiling by that measure while being nearly twice it on screen. A ceiling
-    asserted in the wrong unit is not a weaker ceiling — it is an absent one that
-    reports as present.
-    """
-
-    huge = _member(0, state="running", current_tool="x" * 5000)
+    huge = _member(0, state="running", current_tool="x" * 5000, last_text="y" * 5000)
 
     assert cell_len(format_aggregate_status([huge, huge])) <= AGGREGATE_MAX_CHARS
     for row in format_panel([huge, huge]):
-        assert cell_len(row) <= max(PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS), row
+        assert cell_len(_visible(row)) <= 80, row
 
 
 def test_a_wide_character_row_is_bounded_in_CELLS_not_characters() -> None:
-    """``current_tool`` is child-authored, and a child picks its own alphabet.
-
-    A Hangul syllable and an emoji each occupy two terminal columns and one
-    character, so a codepoint budget lets through twice what it promises.
-
-    SWEPT rather than sampled, and that is the point of this test rather than a
-    flourish. The first version asserted on ``"한" * 60`` alone and stayed GREEN
-    under the sabotage: at that length the row is long enough in CHARACTERS to
-    trip the outer truncation, which is cell-accurate and quietly repaired the
-    breach. The observable band is narrower — MEASURED against the sabotaged
-    build, the worst row is at 37 syllables and comes out at 115 cells against a
-    ceiling of 78. A sweep cannot miss a band a single sample can.
-    """
+    """A child picks its own alphabet, and a Hangul syllable or an emoji is two
+    columns and one character. SWEPT rather than sampled: a single sample once
+    stayed green under the sabotage because the outer cut repaired it."""
 
     for alphabet in ("한", "🔥"):
         for n in range(2, 60):
+            text = alphabet * n
             rows = format_panel(
-                [_member(k, state="running", current_tool=alphabet * n)
-                 for k in range(8)]
+                [_member(k, state="running", last_text=text, current_tool=text)
+                 for k in range(8)],
+                tasks=tuple(text for _ in range(8)),
             )
             for row in rows:
-                assert cell_len(row) <= max(
-                    PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS
-                ), (alphabet, n, cell_len(row), row)
+                assert cell_len(_visible(row)) <= 80, (alphabet, n, row)
 
 
 def test_a_wide_character_panel_cannot_breach_the_height_ceiling() -> None:
-    """The consequence rather than the measure, which is the property that matters.
-
-    :data:`PANEL_MAX_ROWS` is not layout: the docstring beside it explains the
-    widget is the one surface with NO downstream bound, so an over-long list
-    pushes the transcript and the input line off screen. Rows wider than the
-    terminal wrap, and a wrapped row is two screen rows. MEASURED before the fix,
-    at the worst length: nine list entries became SEVENTEEN screen rows at 80
-    columns.
-    """
+    """The consequence rather than the measure: a row wider than the terminal
+    wraps into two screen rows. MEASURED before the cell fix: nine entries became
+    SEVENTEEN screen rows at 80 columns."""
 
     for alphabet in ("한", "🔥"):
         for n in (19, 28, 37, 46):
+            text = alphabet * n
             lines = format_panel(
-                [_member(k, state="running", current_tool=alphabet * n)
-                 for k in range(8)]
+                [_member(k, state="running", last_text=text) for k in range(8)],
+                tasks=tuple(text for _ in range(8)),
             )
             assert len(lines) == PANEL_MAX_ROWS
-            screen_rows = sum(max(1, -(-cell_len(line) // 80)) for line in lines)
+            screen_rows = sum(max(1, -(-cell_len(_visible(line)) // 80)) for line in lines)
             assert screen_rows == PANEL_MAX_ROWS, (alphabet, n, screen_rows)
 
 
@@ -1810,38 +1683,32 @@ def test_the_aggregate_drops_whole_segments_rather_than_cutting_a_number() -> No
     assert text.endswith("1 queued"), text
 
 
-def test_an_ascii_batch_is_unchanged_under_the_cell_measure() -> None:
-    """``cell_len`` and ``len`` agree on ASCII, so nothing a normal batch renders
-    may move. Without this, widening the measure could be paid for by quietly
-    reformatting every row anyone has ever seen."""
+def test_an_ascii_batch_measures_the_same_in_cells_and_characters() -> None:
+    """``cell_len`` and ``len`` agree on ASCII, so the cell measure costs an
+    ordinary batch nothing: every visible row is as many cells as characters,
+    the panel's own one-cell glyphs included."""
 
     snapshots: list[SubagentProgress | None] = [
         _reading(0, elapsed_ms=1_000, tokens=1_500),
         _member(1, state="done", elapsed_ms=2_000, cost=0.0031),
         None,
     ]
-
-    assert format_panel(snapshots)[1:] == [
-        "[1/3] running · read · 1s · 1.5k tok",
-        "[2/3] done · 2s · $0.0031",
-        "[3/3] queued",
-    ]
+    for row in _panel(snapshots, tasks=("alpha", "bravo", "charlie")):
+        assert cell_len(row) == len(row), row
 
 
 def test_a_hostile_profile_name_cannot_grow_the_panel_header() -> None:
-    """The header is :func:`format_aggregate_status`, and the panel does NOT get
-    the newline stripping ``chrome._render_status`` gives the statusline.
-
-    A profile name comes from a filename, so it may contain ``\\n`` — and a
-    16-character one passes the length cap while still adding rows.
+    """The panel does NOT get the newline stripping ``chrome._render_status``
+    gives the statusline. A profile name comes from a filename, so it may contain
+    ``\\n`` — and a 16-character one passes a length cap while still adding rows.
     """
 
     evil = _member(0, state="running", profile="a\nb\nc\nd\x1b[8m")
-    lines = format_panel([evil, _member(1, state="running")])
-
-    assert len(lines) == 3
-    assert "\n" not in "".join(lines)
-    assert "\x1b" not in "".join(lines)
+    for snapshots in ([evil], [evil, _member(1, state="running")]):
+        lines = format_panel(snapshots, profile="a\nb\x1b[8m")
+        assert len(lines) == 5
+        assert "\n" not in "".join(lines)
+        assert "\x1b" not in _visible("".join(lines))
 
 
 def test_the_panel_is_bounded_in_HEIGHT_and_says_what_it_dropped() -> None:
@@ -1852,48 +1719,41 @@ def test_the_panel_is_bounded_in_HEIGHT_and_says_what_it_dropped() -> None:
     lines = format_panel([_member(k, state="running") for k in range(40)])
 
     assert len(lines) == PANEL_MAX_ROWS
-    assert lines[-1].startswith("…")
-    assert "more" in lines[-1]
+    last = _visible(lines[-1])
+    assert last.startswith("│ …"), last
+    assert "more" in last
 
 
 def test_a_legal_eight_member_batch_is_never_truncated() -> None:
     """The height cap must not fire on anything a model can actually get past
-    the door — ``MAX_PARALLEL_TASKS`` is 8, and 1 header + 8 rows is the cap."""
+    the door — ``MAX_PARALLEL_TASKS`` is 8, and 1 header + 8 one-row members is
+    the cap (ADR-0278 D4's compact layout)."""
 
-    lines = format_panel([_member(k, state="running") for k in range(8)])
+    lines = [_visible(line) for line in format_panel([_member(k, state="running") for k in range(8)])]
 
     assert len(lines) == 9
-    assert not lines[-1].startswith("…")
+    assert "more" not in lines[-1]
     for index in range(8):
-        assert any(line.startswith(f"[{index + 1}/8] ") for line in lines)
+        assert any(line.startswith(f"│ ● {index + 1} ") for line in lines), lines
 
 
-def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
+def test_the_call_renderer_is_safe_on_its_own_not_only_via_format_panel() -> None:
     """BOTH layers, pinned separately — because one masks the other.
 
-    :func:`format_panel` flattens the composed row, so removing the bound inside
-    ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
-    mutation survives every test above. It is still worth having and still worth
-    pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:881-895``, the site the finding names), and the next consumer of a
-    per-child row — a card variant, a future surface — will call it rather than
-    re-deriving it, and must inherit the bound rather than have to remember it.
-
-    THIS CITATION WAS WRONG FROM THE DAY IT WAS WRITTEN, in the way a mechanical
-    repair cannot see. It named lines 530 to 552 of this module, which on ``main``
-    are the tail of ``format_card`` and the head of ``_batch_model`` — a different
-    function from the one the sentence names. The drift checker offered to
-    relocate it by the text it had cited, which would have moved it to another
-    slice of ``format_card``: still wrong, and locked as correct. Re-derived from
-    the function instead.
+    :func:`format_panel` cuts every row as a whole (``_Line.render``), so
+    removing the bound inside the function that touches a child's call bytes
+    changes nothing it can observe. That function is ``panel._call_text`` since
+    ADR-0278 (it replaced ``_panel_row``, which an older citation here named),
+    and the next consumer of a rendered call will call it rather than re-derive
+    it — so it must carry the bound itself.
     """
 
-    row = _panel_row(_hostile(0))
+    from aelix_coding_agent.subagent_contract import SubagentToolActivity
 
-    assert "\n" not in row
-    assert "\x1b" not in row
-    # The tool name alone is bounded, before anything downstream composes it
-    # with the elapsed / token / cost suffixes.
-    assert len(_panel_row(_member(0, current_tool="x" * 5000))) <= (
-        PANEL_ROW_MAX_CHARS + 40
-    )
+    for limit in (1, 12, 40, 80):
+        text = panel_module._call_text(
+            SubagentToolActivity(name=_HOSTILE_TOOL, args=_HOSTILE_TOOL), limit
+        )
+        assert "\n" not in text and "\x1b" not in text, text
+        assert cell_len(text) <= limit, (limit, text)
+    assert panel_module._call_text(SubagentToolActivity(name="bash", args="ls -la"), 80) == "$ ls -la"

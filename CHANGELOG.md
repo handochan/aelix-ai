@@ -378,6 +378,71 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **Every delegation now shows what its agents are doing, in one panel above
+  the input (#132, ADR-0278).** A single delegation used to show nothing you
+  could see: its status-line segment sat after the yolo disclosure row and was
+  cut off at 80 and 120 columns. A batch had a 78-column panel whose rows ended
+  in `running · b…`, numbers that stood still while a child waited, and nothing
+  left on screen after `Esc`.
+  - Every call of the model's `agent` tool — one agent, a batch, a chain or a
+    resume — draws the panel. One agent is five rows: its state, model, idle
+    time, elapsed time and tokens; its last three tool calls, each marked done
+    (`✓`), failed (`✗`), cut off (`■`) or running (`▶`), with `bash` shown as
+    `$ <command>`; and its last reply. Two to four agents are a header with
+    the counts and two rows each: the task, then the calls and what it is doing
+    now. Five or more — or a terminal too short for two rows each — are one row
+    each. A chain says `chain of N`, shows `{previous}` as `‹previous›`, and a
+    step not yet reached says which step it waits for.
+  - The panel is as wide as the transcript (up to 120 columns), keeps its
+    height for the whole call, and is redrawn at most four times a second and
+    once a second while an agent is working, so its clock moves while a command
+    is silent. `idle Ns` appears after five quiet seconds. On a narrow terminal
+    a header keeps the elapsed time to the last and, beside it, whatever fits
+    of the profile, the model, the tokens, the idle time and the cost, in that
+    order — a long model id that does not fit no longer takes the tokens with
+    it — and in the first ten minutes nothing on it comes and goes as the
+    clock ticks or an agent goes quiet; a batch's counts are never dropped. A
+    task label that fits beside its numbers is shown whole, and in the first
+    ten minutes the clock alone cuts it at most once — except on a narrow
+    terminal, where telling the tasks apart comes first. A label can still
+    be cut again when an agent's first token count appears, a token count
+    falls, the agents come to agree on a model, or the tokens pass 100k. A
+    call that is still running keeps its row however many calls finish after
+    it — with up to 252 calls running at once — and when agents disagree on
+    the model each row names its own, in the one-row layout too.
+  - Rows are measured the way the terminal draws them — emoji such as flags,
+    skin tones and joined families included — so a row is cut with `…`
+    instead of running off the right edge. A panel of eight very long tasks
+    full of emoji takes a few milliseconds to draw; it took 0.4 s, every
+    second.
+  - `/agents run`'s status row and the `agent` tool's progress card share the
+    panel's cleaning: a lone UTF-16 surrogate in a name now prints as `�`,
+    and a name full of emoji that is cut for width is cut a little shorter,
+    so it is never wider than its limit as either rich or prompt_toolkit
+    measures it. Every other name prints as before.
+  - Agents started by the model no longer add status-line rows (one per agent,
+    or one for the batch); the panel header says what they said. The yolo
+    disclosure row is unchanged, and `/agents run` keeps its own row.
+  - `Esc` leaves the panel's last frame up until your next prompt: each agent
+    marked stopped, the call it was cut off in, the files it changed, and a
+    reminder that you can ask the model to continue it — or, when the agent
+    has no session to resume (a `--no-session` parent), that it cannot be
+    resumed. On a narrow terminal those phrases are left out whole rather
+    than cut mid-word. The frame refits within a second when you resize the
+    terminal.
+  - `SubagentProgress` gains `activity` (the agent's last four tool calls and
+    what became of each, `SubagentToolActivity`) and `last_text` (its last
+    reply on one line). Both are defaulted, so the contract version stays 1;
+    the RPC `aelix_subagent` event's fields are unchanged and do not carry
+    them.
+  - RPC: a client that enabled UI requests (`ui/enable`) and runs a command
+    that waits on a model delegation — the only way one runs inside an RPC
+    command — now receives `setWidget` requests with the panel's rows (ANSI
+    colour codes included, at most four a second and about one a second
+    while an agent is quiet, then a clearing `null`) instead of one
+    `setStatus` row per agent. An ordinary RPC `prompt` sends no UI requests, as before, and
+    `/agents run` keeps its `setStatus` rows.
+
 - **A delegated agent is no longer cut off by a time limit (#604, ADR-0276).**
   A child that was still working used to be killed at its deadline: the
   `agent` tool's `timeout_ms` (1 000 – 1 800 000 ms), the profile key of the

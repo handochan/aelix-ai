@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 
 from _pyte import render_chrome_to_screen  # sibling helper (pytest prepend import mode)
-from aelix_agents.panel import PANEL_WIDGET_KEY, format_panel
+from aelix_agents.panel import PANEL_WIDGET_KEY, format_panel, panel_height
 from aelix_coding_agent.subagent_contract import SubagentProgress, SubagentState
 from aelix_coding_agent.tui.chrome import AelixChrome
 
@@ -69,38 +69,27 @@ async def _panel_on_screen(cols: int) -> tuple[list[str], list[str]]:
 
     def build_state(chrome: AelixChrome) -> None:
         chrome.set_widget(
-            PANEL_WIDGET_KEY, format_panel(_snapshots(), tasks=_JOBS, width=cols)
+            PANEL_WIDGET_KEY,
+            format_panel(_snapshots(), tasks=_JOBS, width=cols, height=panel_height(4)),
         )
 
     display = await render_chrome_to_screen(rows=24, cols=cols, build_state=build_state)
-    # The gutter is the panel's own left edge and nothing else on the chrome draws
-    # it, so it identifies the rows without matching the startup banner's box.
-    return display, [row for row in display if "▌" in row]
+    # ``│ `` at column 0 is the panel's gutter (ADR-0278 D4); nothing else this
+    # harness paints starts a row with it.
+    return display, [row for row in display if row.startswith("│ ")]
 
 
 async def test_the_panel_rows_stay_distinct_on_the_glass() -> None:
-    """The whole point of the job column: four rows a user can tell apart.
+    """The whole point of the job labels: four rows a user can tell apart.
 
-    A constant 24-cell cap on the column returned four labels truncated to the
-    same 24-cell prefix — measured, ONE distinct label for this batch. The cap is
-    gone; the column is sized from the labels and reserves room for the numbers
-    instead.
-
-    THE CAP WAS NOT BUYING EMPTY SPACE, and an earlier draft of this docstring
-    said it was ("the row was 47 cells on an 80-column terminal, so the elision
-    bought nothing"). MEASURED on this fixture at 80 columns, the capped build's
-    rows were 78/78/78/40 cells — full width. What the elision bought was the
-    numbers: those rows carried the COST — ``done · read_file · 33s · 12.3k tok ·
-    $0.0372`` whole, and ``running · read_file · 33s · 12.3k tok · $0.…`` on the
-    two rows whose state word is three cells longer — where these carry
-    ``running · read_file · 33s · 12.3k t…`` and no cost at all. Four
-    distinct labels are worth the tail of the numbers; a row that cannot be told
-    from the row above it is not.
+    A constant 24-cell cap on the old label column returned four labels
+    truncated to the same prefix — measured, ONE distinct label for this batch.
+    ADR-0278's labels share one column and, when they must be cut, are cut in
+    the MIDDLE, so a fan-out over one verb keeps the word that differs.
     """
 
     display, panel_rows = await _panel_on_screen(80)
 
-    # Positive control FIRST: an empty match set would satisfy every loop below.
     assert len(panel_rows) == 5, (
         f"expected a header and four member rows, saw {len(panel_rows)}:\n"
         + "\n".join(f"{i:>2} {row!r}" for i, row in enumerate(display))
@@ -109,39 +98,29 @@ async def test_the_panel_rows_stay_distinct_on_the_glass() -> None:
     header, members = panel_rows[0], panel_rows[1:]
     for tail, row in zip(_TAILS, members, strict=True):
         assert tail in row, (tail, row)
-    assert len({row.split("] ", 1)[1].split("  ")[0] for row in members}) == 4, members
 
-    # The state survives beside the labels, because the batch model left the rows.
-    for row in members:
-        assert any(word in row for word in _STATE_WORDS), row
+    # Every member leads with its state's glyph, which nothing on the row can
+    # push off it.
+    for row, glyph in zip(members, ("●", "●", "✓", "○"), strict=True):
+        assert row.startswith(f"│ {glyph} "), row
 
-    # THE HEADER NAMES THE MODEL, POSSIBLY TRUNCATED. It is sized against what the
-    # state counts leave, so a 28-cell provider-scoped id lands here as
-    # ``github-copilot/gpt-5.6-cod…`` — asserting the whole id would fail on a
-    # header that is doing exactly what it promises. The prefix has to be long
-    # enough to identify the model, and the counts have to survive whole.
-    shown = next(
-        (_MODEL[:size] for size in range(len(_MODEL), 0, -1) if _MODEL[:size] in header),
-        "",
-    )
-    assert len(shown) >= 12, (shown, header)
+    # The counts are the header's substance and they survive whole; the
+    # 28-cell model does not fit beside them at 80 columns and is dropped, not
+    # cut, and no member row repeats it (it is one fact about the batch).
     for count in ("2 running", "1 done", "1 queued"):
         assert count in header, (count, header)
-    for row in members:
-        # 8 characters, not one: ``g`` is a prefix of this id and of half the
-        # English on the screen, so a shorter floor would report the model on rows
-        # that never mention it.
-        assert not any(
-            _MODEL[:size] in row for size in range(len(_MODEL), 7, -1)
-        ), row
+    for row in panel_rows:
+        assert not any(_MODEL[:size] in row for size in range(len(_MODEL), 7, -1)), row
 
 
-async def test_a_narrow_terminal_loses_the_numbers_and_keeps_the_jobs() -> None:
+async def test_a_narrow_terminal_keeps_the_jobs_apart() -> None:
     """The documented degradation, on the glass rather than in a docstring.
 
-    The widget window clips instead of wrapping, so at 60 columns an 78-cell row
-    loses its right-hand end. Left-packing decides WHICH end that is: the numbers
-    go and the job labels — the thing the panel was extended to show — stay.
+    The widget window clips instead of wrapping, so a row is never drawn wider
+    than the terminal (ADR-0278 D4 measures it against the terminal's width).
+    At 60 columns the labels no longer fit whole; cut in the middle, each still
+    ends in the word that tells it apart, and the queued member still says it is
+    waiting.
     """
 
     display, panel_rows = await _panel_on_screen(60)
@@ -150,38 +129,19 @@ async def test_a_narrow_terminal_loses_the_numbers_and_keeps_the_jobs() -> None:
     members = panel_rows[1:]
     for tail, row in zip(_TAILS, members, strict=True):
         assert tail in row, (tail, row)
-
-    # THE QUEUED ROW IS THE ONE THAT PROVES THE PACKING. Right-aligning the
-    # numbers against the 78-cell ceiling made every row exactly 78 cells, so the
-    # shortest content — a member that has published nothing but ``queued`` —
-    # ended up against the right edge and a 60-column clip took it. Left-packed,
-    # it sits directly after its label and survives. A row-length assertion cannot
-    # see this: a pyte row is ALWAYS exactly ``cols`` wide.
-    assert "queued" in members[-1], members[-1]
-    assert members[-1].index("queued") < 50, members[-1]
+    assert "waiting" in members[-1], members[-1]
 
 
 async def test_the_panel_keeps_the_state_on_a_narrow_terminal() -> None:
-    """The column was sized against a constant while the window paints into a
-    terminal, and at 30-60 columns a long label took cells that did not exist.
-
-    MEASURED against ``main`` on this same harness, member rows still showing a
-    state word with 35-cell labels: main 1/4 1/4 4/4 4/4 at 30/40/50/60 columns,
-    against 0/4 0/4 2/4 4/4 before the width was plumbed through — a regression
-    this branch introduced and that no constant could fix, because the right
-    number is the terminal's. With it, every row keeps its state at all four.
-
-    The labels are what give way instead, and that is the intended order: the
-    state is the fact the header cannot restate, while the job label is elided
-    rather than lost. At 30 columns with 60-cell labels there is room for neither
-    in full, which is a property of 30 columns and not of this layout.
-    """
+    """The state is the row's leading glyph (ADR-0278 D4), so it survives at
+    every width down to 30 columns — where the old numbers column showed it on
+    0 of 4 rows before the width was plumbed through."""
 
     for cols in (30, 40, 50, 60, 72, 80):
         _display, panel_rows = await _panel_on_screen(cols)
         assert len(panel_rows) == 5, (cols, panel_rows)
-        for row in panel_rows[1:]:
-            assert any(word in row for word in _STATE_WORDS), (cols, row)
+        for row, glyph in zip(panel_rows[1:], ("●", "●", "✓", "○"), strict=True):
+            assert row.startswith(f"│ {glyph} "), (cols, row)
 
 
 async def test_the_merged_footer_row_clips_the_path_not_the_live_signals() -> None:
@@ -297,11 +257,20 @@ def test_the_panel_emits_no_escape_the_chrome_will_not_parse() -> None:
 
     ``_render_widget_lines`` ANSI-parses the joined lines; anything outside the
     plain SGR set is an escape this module invented for a parser it does not own.
+    ADR-0278 adds the glyph colours and the reply's dim italic to dim and reset.
     """
 
     lines = format_panel(_snapshots(), tasks=_JOBS)
     escapes = {seq for line in lines for seq in re.findall(r"\x1b\[[0-9;]*[A-Za-z]", line)}
-    assert escapes == {"\x1b[2m", "\x1b[0m"}, escapes
+    assert escapes <= {
+        "\x1b[0m",
+        "\x1b[2m",
+        "\x1b[2;3m",
+        "\x1b[31m",
+        "\x1b[32m",
+        "\x1b[33m",
+        "\x1b[36m",
+    }, escapes
     for line in lines:
         assert "\x9b" not in line
         assert "\n" not in line

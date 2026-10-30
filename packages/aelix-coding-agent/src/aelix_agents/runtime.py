@@ -106,7 +106,7 @@ from aelix_agents.print_channel import (
     resume_limits,
 )
 from aelix_agents.prompt_file import remove_prompt_dir
-from aelix_agents.stream import path_for_display, written_paths
+from aelix_agents.stream import activity_of, path_for_display, written_paths
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -184,7 +184,7 @@ END a delegation (``subagent_contract.py:66``, and see the "terminal" note at
 ``:239``).
 
 DELIBERATELY A SECOND COPY of ``progress._TERMINAL_STATES``
-(``progress.py:97``) rather than an import of another module's private name: the
+(``progress.py:145``) rather than an import of another module's private name: the
 row lifecycle is owned HERE and the renderer must not be this module's
 dependency. ``test_print_channel_spawn`` asserts the two sets are equal, so the
 copy cannot drift."""
@@ -1535,7 +1535,7 @@ class _SubagentRuntimeImpl:
                 # Published non-terminal, that snapshot makes
                 # ``SubagentProgressBridge`` take its live branch and WRITE a
                 # statusline row nothing will ever clear, and leak the id in
-                # ``_tools`` (``progress.py:349-353``) — "a statusline segment
+                # ``_tools`` (``progress.py:443-447``) — "a statusline segment
                 # outliving the delegation that owns it is a lie the user cannot
                 # dismiss", in that module's own words.
                 #
@@ -1850,7 +1850,7 @@ class _SubagentRuntimeImpl:
             #
             # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
             # POPULATED AT ALL. ``state.model`` is assigned from the child's first
-            # ``message_end`` (``stream.py:855-857``) — authoritative, because it
+            # ``message_end`` (``stream.py:1048-1050``) — authoritative, because it
             # is what the child ACTUALLY ran, and a silent substitution is the
             # thing this term exists to expose. But a delegation that finishes
             # before its first assistant message never produces one, and measured
@@ -1863,6 +1863,13 @@ class _SubagentRuntimeImpl:
             # exists; renderers omit the term rather than guess.
             model=state.model or spawn_model,
             provider=state.provider,
+            # What the delegation panel shows the child DOING (#132, ADR-0278
+            # D3). Projected HERE because this is the one place that knows
+            # whether the child is still live: an open call is ``running`` only
+            # while it is, and ``no_result`` once it is not. ``last_text`` was
+            # collapsed once by the reducer, when its message ended.
+            activity=activity_of(state, live=child.state not in _TERMINAL_STATES),
+            last_text=state.last_text,
         )
         for tap in (on_event, self.host.on_progress):
             if tap is None:

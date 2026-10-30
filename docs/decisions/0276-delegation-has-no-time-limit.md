@@ -733,7 +733,11 @@ render byte for byte as before.*
   and #610's resume reads those. `-p` has no next turn, so it gets no report.
   Once delivered it is part of the conversation: a reopened session shows it as
   a user message. The TUI does not draw the report when it is queued; a copy the
-  user sees is #132's (the delegation panel).
+  user sees is #132's (the delegation panel). *Amended 2026-10-30 by
+  [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md) (D7): that copy is
+  the panel's Esc frame — drawn from the same `CallEnvelopes.snapshot()` the
+  report is built from, so each member's cut call and changed files agree with
+  it — and it stays on screen until the next prompt.*
 - **The RPC channel has gaps of its own**, found in review, all pre-existing or
   RpcChannel-only. No product door selects `RpcChannel` (the bundled runtime
   uses `PrintChannel` everywhere); #123, which puts it into production, owns

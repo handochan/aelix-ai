@@ -4,6 +4,13 @@ Status: Accepted (2026-07-28) — owner-ratified scope (S1), owner-ratified
 topology (S3), owner-ratified UI surfaces (S10) and owner-ratified stop story
 (S11). Design record that lands with the P3 implementation (same pattern as
 ADR-0196/0197/0198).
+**Amended 2026-10-30 (ADR-0278, #132): S10's surfaces as DRAWN are replaced —
+every `agent` call, a single delegation included, gets the delegation panel
+(a five-row block for one child, two rows per child for two to four, one row
+each beyond), a grouped child writes no statusline row and a group no
+aggregate row, and an Esc leaves the panel's last frame up until the next
+prompt. "A single delegation keeps P2's surfaces exactly" no longer holds for
+the live UI; the tool card (surface 2) is unchanged. See the notes in §(l).**
 **Amended 2026-10-28 (ADR-0276, #604): `MAX_TIMEOUT_MS`, `MAX_BATCH_WALL_MS`,
 `KILL_LEG_RESERVE_MS` and the member clocks derived from them are gone — a batch
 runs until its members finish or a human ends it; the "read-only for 30
@@ -940,6 +947,13 @@ no UI handle, no process, and the only clock is an injected one).
    78 and not 80 because the row's segments are joined with two spaces. `tokens`
    is a **max** here too, for the same reason as §(i); `cost` is a flow and is
    summed. Lifetime: the turn.
+
+   > *Amended 2026-10-30 by [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md)
+   > ([#132](https://github.com/handochan/aelix-ai/issues/132)), D2: this row is
+   > no longer written. Measured on `9d1517a8`, it was joined after the yolo
+   > disclosure row on the one-row status line and cut off at 60, 80 and 120
+   > columns; the panel header now states the same counts.
+   > `format_aggregate_status` stays public and unchanged, and nothing draws it.*
 2. **Tool card — N lines, one per child**, through `ctx.on_partial`
    (`panel.py:252-273`). ~~This is the **permanent** record: it stays in the
    transcript after the turn ends.~~
@@ -1092,6 +1106,18 @@ no UI handle, no process, and the only clock is an injected one).
    does not admit a UI write P2 never made. Lifetime: the batch, cleared in a
    `finally` (`extension.py:909-911`) so a cancelled turn cannot leave a panel
    behind that `set_status` has no "clear all" verb to remove.
+
+   > *Amended 2026-10-30 by [ADR-0278](0278-one-delegation-panel-for-every-agent-call.md)
+   > ([#132](https://github.com/handochan/aelix-ai/issues/132)): superseded for
+   > the live UI. Every `agent` call opens a group — one child included
+   > (`PANEL_MIN_CHILDREN` is 1, D1) — and draws the panel in layout A (D4) at a
+   > height fixed for the call (D5), redrawn on a 250 ms throttle and a 1 s tick
+   > (D6). A grouped child writes no per-child row (D2), so the byte identity
+   > with P2 that kept a single delegation off the panel is gone by decision:
+   > measured on `9d1517a8`, that per-child row was never visible at 80 or 120
+   > columns under a yolo parent. A cancelled call's panel is no longer blanked
+   > by the `finally`: its last frame, with each member's cut call and changed
+   > files, stays until the next prompt (D7); every other path still closes it.*
 
 **`progress.py`'s "multi-row panels are `set_widget`, which is P4" sentence was
 CORRECTED, not deleted** (`progress.py:9-14`). It was about the subagent

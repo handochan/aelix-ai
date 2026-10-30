@@ -1,4 +1,5 @@
-"""Delegation progress — the event bus and the guarded statusline row (§(k)).
+"""Delegation progress — the event bus, the delegation panel and the guarded
+statusline row (§(k); ADR-0278).
 
 One object, :class:`SubagentProgressBridge`, sits on
 :attr:`~aelix_agents.runtime.SubagentHost.on_progress` and fans every snapshot
@@ -8,11 +9,20 @@ the child stream produces out to two places:
   ``subagent_tool`` / ``subagent_end``, payload
   :class:`~aelix_coding_agent.subagent_contract.SubagentProgress`. This is the
   channel a P4 dashboard, a Web UI or a third-party extension subscribes to.
-* the TUI statusline — ONE height-1 row per live child
-  (``tui/chrome.py:1097-1108`` renders ``set_status`` into a single line), or,
-  while a BATCH group is open, ONE aggregate row for the whole batch plus a
-  ``set_widget`` panel (ADR-0199 decision S10; the layouts live in
-  :mod:`aelix_agents.panel`).
+* the TUI — for a child the model's ``agent`` tool started, the delegation
+  panel (a ``set_widget`` block above the input, one per call, for one child or
+  eight; ADR-0278, layouts in :mod:`aelix_agents.panel`) and NO statusline row
+  (D2); for a child nobody grouped — a ``/agents run`` child — ONE height-1
+  statusline row (``tui/chrome.py:1097-1108`` renders ``set_status`` into a
+  single line), exactly as before.
+
+THE PANEL IS NOT DRAWN FROM THE PUBLISH PATH (ADR-0278 D6). Every snapshot is
+recorded and stamped with its arrival time, then ONE redraw is scheduled no
+sooner than :data:`RENDER_MIN_INTERVAL_S` after the previous one — N chatty
+children cost at most four panel writes a second — and a :data:`TICK_INTERVAL_S`
+tick redraws while any member is live, so elapsed and idle times move while a
+child is silent. The scheduler and the clock are injectable; with no running
+loop (a test, a synchronous caller) the bridge draws at once, as it always did.
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
 is minted inside ``runtime._run`` (``runtime.py:1386``) — after ``spawn_granted``
@@ -22,14 +32,14 @@ Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:1867-1871``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:1874-1878``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
 per-child row, which is what a concurrent ``/agents run`` child is.
 
 THE EVENT-BUS HALF IS UNCHANGED BY GROUPING. ``SubagentProgress``
-(``subagent_contract.py:274-302``) gains no ``batch_id`` field in P3 (§3.6:
+(``subagent_contract.py:299-327``) gains no ``batch_id`` field in P3 (§3.6:
 the product-core delta is zero), so a subscriber sees N interleaved starts with
 no grouping. That residual is named in ADR-0199; it is not something this file
 papers over with an ``aelix_agents``-private channel.
@@ -60,8 +70,11 @@ THREE MEASURED CAVEATS, all of which shape this file.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-from collections.abc import Sequence
+import logging
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -77,22 +90,57 @@ from aelix_agents.panel import (
     PANEL_ROW_MAX_CHARS,
     PANEL_WIDGET_KEY,
     _flatten,
-    format_aggregate_status,
     format_panel,
+    panel_height,
 )
 
 if TYPE_CHECKING:
-    from aelix_coding_agent.subagent_contract import SubagentProgress
+    from aelix_coding_agent.subagent_contract import SubagentProgress, SubagentResult
+
+logger = logging.getLogger(__name__)
+
+RENDER_MIN_INTERVAL_S = 0.25
+"""The panel is redrawn at most this often (ADR-0278 D6): however many members
+publish, four panel writes a second. 0.25 s is two and a half of the chrome's
+own 0.1 s refresh ticks, so every frame written is a frame shown."""
+
+TICK_INTERVAL_S = 1.0
+"""While any member is live the panel is redrawn this often with no snapshot
+behind it, so ``elapsed`` and ``idle`` advance while a child is silent — the
+baseline showed a ``2s`` that stood still for nine seconds (D6)."""
+
+_FALLBACK_WIDTH = 80
+"""Columns when there is no chrome to measure — headless writes nothing anyway,
+so this only shapes a UI that cannot report its size."""
+
+Scheduler = Callable[[float, Callable[[], None]], Any]
+"""``(delay_s, callback) -> handle`` — ``loop.call_later``'s shape. ``None`` back
+means "no loop to schedule on": the bridge then draws at once."""
+
+
+def _loop_call_later(delay: float, callback: Callable[[], None]) -> Any:
+    """The default :data:`Scheduler`: the running loop's ``call_later``, or
+    ``None`` outside one (a synchronous caller, a unit test)."""
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    return loop.call_later(delay, callback)
 
 STATUS_KEY_PREFIX = "subagent:"
 """One key per child, so two concurrent delegations own two rows rather than
 overwriting each other. ``stop`` / teardown clear by the same key."""
 
 GROUP_KEY_INFIX = "group:"
-"""The aggregate row's key is ``subagent:group:<call id>`` — under
-:data:`STATUS_KEY_PREFIX` on purpose, so every key this bridge can ever write
-is recognisable as ours by one prefix test, and so :meth:`clear` needs no second
-bookkeeping path."""
+"""The aggregate row's key was ``subagent:group:<call id>``. ADR-0278 D2 retired
+the row — the bridge writes nothing under this key any more — and the name stays
+public so a caller (and a test) can still say which key that was."""
+
+_RETIRED_MAX = 64
+"""How many spawn ids of ended groups the bridge remembers (eight full
+batches), so a member's snapshot that arrives after its group ended writes
+nothing; the oldest is forgotten first."""
 
 _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """``SubagentState`` values after which no further snapshot arrives. The
@@ -104,9 +152,10 @@ def status_key(spawn_id: str) -> str:
     return f"{STATUS_KEY_PREFIX}{spawn_id}"
 
 
-#: The disclosure row's infix. Distinct from the group's so a batch under a YOLO
-#: parent writes a disclosure row AND an aggregate row rather than one clobbering
-#: the other, and so ``clear()``'s prefix sweep still reaches both.
+#: The disclosure row's infix. Distinct from the retired aggregate row's
+#: (:data:`GROUP_KEY_INFIX`) so the two keys could never collide; since ADR-0278
+#: D2 the disclosure row is the only row a model delegation writes, and
+#: ``clear()`` withdraws it with every other row this bridge wrote.
 DISCLOSURE_KEY_INFIX = "disclose:"
 
 
@@ -123,36 +172,27 @@ def disclosure_status_key(key: str) -> str:
 
 
 def group_status_key(group_key: str) -> str:
-    """The aggregate row's key for one ``agent`` call's group.
-
-    Namespaced by the caller's key (the parent tool call id) rather than a bare
-    constant, so a host that somehow drives two calls at once writes two rows
-    instead of two calls fighting over one.
-    """
+    """The key the retired aggregate row of one ``agent`` call's group used
+    (ADR-0278 D2: nothing is written under it any more)."""
 
     return f"{STATUS_KEY_PREFIX}{GROUP_KEY_INFIX}{group_key}"
 
 
 @dataclass(slots=True)
 class _Group:
-    """One open batch: its key, its member table and whether it renders.
+    """One ``agent`` call's panel: its key, its member table and its frame state.
 
     ``snapshots`` is indexed by SUBMITTED position and starts all-``None``; a
-    ``None`` entry is a member still parked on the batch semaphore, which is what
-    :data:`~aelix_agents.panel.format_aggregate_status` renders as ``queued``.
+    ``None`` entry is a member still parked on the batch semaphore or a chain
+    step not reached yet, which the panel draws as ``○`` waiting.
 
-    ``active`` is ``False`` for a group of one. S10 is explicit that a single
-    delegation keeps P2's behaviour EXACTLY — its own per-child row, no
-    aggregate, no panel — and an inactive group still exists so that
-    :meth:`SubagentProgressBridge.end_group` is symmetric for every call the
-    extension opens, batch or not.
+    ``active`` is ``False`` only for a group of none
+    (:data:`~aelix_agents.panel.PANEL_MIN_CHILDREN` is 1 since ADR-0278 D1).
 
-    ``tasks`` is index-aligned with ``snapshots`` and is what the panel shows a
-    member DOING. It has to be carried here rather than read off a snapshot
-    because it is the one distinguishing fact a snapshot does not have: one
-    ``agent()`` call is one profile and one model across N tasks (S3), so every
-    other per-member field is identical, and ADR-0199 §3.6 rules out adding a
-    field to ``SubagentProgress``. The submitted INDEX is bound at member
+    ``tasks`` is index-aligned with ``snapshots`` and is each member's label.
+    It has to be carried here rather than read off a snapshot because a
+    snapshot does not carry its task: one ``agent()`` call is one profile and
+    one model across N tasks (S3), and the submitted INDEX is bound at member
     creation, which is exactly what makes an index-aligned tuple sufficient.
     """
 
@@ -160,6 +200,30 @@ class _Group:
     snapshots: list[SubagentProgress | None] = field(default_factory=list)
     active: bool = False
     tasks: tuple[str, ...] = ()
+    mode: str = "parallel"
+    """``single`` / ``parallel`` / ``chain`` — the header says ``chain of N``
+    and a chain's waiting step says which step it waits for."""
+    resumed: bool = False
+    """A resume (#610): the one-child header says ``(resumed)``."""
+    profile: str = ""
+    """The profile the call runs, known before any member publishes."""
+    height: int = 0
+    """Rows every frame of this group has, fixed at :meth:`begin_group` (D5)."""
+    arrived: list[float | None] = field(default_factory=list)
+    """When each member's latest snapshot arrived (the injected clock), so the
+    panel can say ``idle 7s`` — the runtime publishes after every stdout line,
+    so the time since the last snapshot IS the time since the child wrote."""
+    last_render: float | None = None
+    render_handle: Any = None
+    tick_handle: Any = None
+    cancelled: bool = False
+    """Set by :meth:`SubagentProgressBridge.linger`: the call was cancelled and
+    this group's last frame stays on screen until the next prompt (D7)."""
+    results: dict[int, Any] = field(default_factory=dict)
+    """The envelopes the Esc frame reads changed files from, by member index."""
+    width: int | None = None
+    """The width the last frame was drawn at, so a lingering Esc frame is
+    redrawn when — and only when — the terminal's width changes."""
 
 
 _STATUS_MODEL_MAX_CHARS = 40
@@ -278,48 +342,66 @@ class SubagentProgressBridge:
     :param api: the :class:`~aelix_coding_agent.extensions.api.ExtensionAPI`
         handed to the extension factory. Only ``api.events`` and ``api.runtime``
         are used, and ``api.runtime.ui`` is re-read on every call (caveat 2).
+    :param clock: monotonic seconds — arrival stamps and the redraw throttle.
+    :param call_later: the :data:`Scheduler` redraws are put on. Both are
+        injectable so the throttle and the tick are pinned against a fake clock
+        and a fake loop rather than a ``sleep``.
     """
 
     __slots__ = (
         "_api",
+        "_call_later",
         "_groups",
         "_members",
+        "_now",
+        "_retired",
         "_rows",
         "_tools",
         "_widget_lines",
         "_widget_owner",
     )
 
-    def __init__(self, api: Any) -> None:
+    def __init__(
+        self,
+        api: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        call_later: Scheduler = _loop_call_later,
+    ) -> None:
         self._api = api
+        self._now = clock
+        self._call_later = call_later
         self._rows: dict[str, str] = {}
         """statusline KEY → the text currently on screen, so an unchanged row is
-        not re-written hundreds of times per turn. Keyed by the rendered key
-        rather than by spawn id because there are now two kinds of row — a
-        per-child one and a group aggregate — and one dedup table must cover
-        both."""
+        not re-written hundreds of times per turn. Keyed by the rendered key,
+        so a per-child row and the disclosure row share one dedup table."""
         self._tools: dict[str, str | None] = {}
         """id → last ``current_tool``, the ``subagent_tool`` edge detector."""
         self._groups: dict[str, _Group] = {}
-        """group key → its open :class:`_Group`."""
+        """group key → its open (or lingering) :class:`_Group`."""
         self._members: dict[str, tuple[str, int]] = {}
         """spawn id → (group key, submitted index), filled by :meth:`adopt`."""
+        self._retired: dict[str, None] = {}
+        """Spawn ids of members whose group has ended, oldest first, at most
+        :data:`_RETIRED_MAX`. A snapshot from one of them — a child still on its
+        way out after ``dismiss`` or ``end_group`` — writes NOTHING (#132 review
+        round 1): it used to fall through to the ungrouped path and put a
+        ``subagent:<id>`` statusline row on screen for a call that was over."""
         self._widget_owner: str | None = None
         """Which group key last wrote :data:`~aelix_agents.panel.PANEL_WIDGET_KEY`.
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
         ``invalidate()`` unconditionally (``chrome.py:1457-1463``), so an
-        unchanged panel re-written on every reduced stdout line would be a
-        full repaint per line."""
+        unchanged panel re-written on every redraw would be a full repaint for
+        nothing."""
 
     def __call__(self, progress: SubagentProgress) -> None:
         """Publish one snapshot. NEVER raises — a delegation must not fail here.
 
         The caller (``runtime._publish``) already wraps this in
         ``contextlib.suppress(Exception)``; the containment is repeated here so
-        that a failure in the bus half cannot skip the statusline half, and vice
-        versa.
+        that a failure in the bus half cannot skip the UI half, and vice versa.
         """
 
         first = progress.id not in self._tools
@@ -335,71 +417,95 @@ class SubagentProgressBridge:
         member = self._member_of(progress.id)
         if member is not None:
             group, index = member
-            # The GROUPED path. The member's snapshot is recorded even when it is
-            # terminal — "3 done" is exactly what the aggregate has to be able to
-            # say — and no per-child row is ever written, which is the whole
-            # point of surface 1 (S10: four 45-char segments do not fit an
-            # 80-column height-1 row).
+            # The GROUPED path (ADR-0278 D2): the snapshot is recorded — a
+            # terminal one too, "done" is what the panel has to be able to say
+            # — and NO statusline row is written, per child or for the group.
+            # Never drawn from here (D6): a redraw is scheduled instead.
             group.snapshots[index] = progress
             if progress.state in _TERMINAL_STATES:
                 self._tools.pop(progress.id, None)
-            self._render_group(group)
+            if group.cancelled:
+                # The Esc frame is a record of the moment of the cancel (D7); a
+                # member still on its way out does not redraw it.
+                return
+            with contextlib.suppress(Exception):
+                group.arrived[index] = self._now()
+            self._schedule(group)
             return
 
+        if progress.id in self._retired:
+            # A member of a group that has ended: no panel to record it in, and
+            # no statusline row either (D2 holds after the group too).
+            if progress.state in _TERMINAL_STATES:
+                self._retired.pop(progress.id, None)
+                self._tools.pop(progress.id, None)
+            return
         if progress.state in _TERMINAL_STATES:
             self._clear_row(status_key(progress.id))
             self._tools.pop(progress.id, None)
             return
         self._set_row(status_key(progress.id), format_status_row(progress))
 
-    # ── the batch group (S10) ─────────────────────────────────────
+    # ── the call's group: one panel per ``agent`` call (ADR-0278) ──
 
     def begin_group(
-        self, key: str, *, expected: int, tasks: Sequence[str] = ()
+        self,
+        key: str,
+        *,
+        expected: int,
+        tasks: Sequence[str] = (),
+        mode: str = "parallel",
+        resumed: bool = False,
+        profile: str = "",
     ) -> None:
         """Open a group of ``expected`` members under ``key``.
 
         A COUNT, not ids — §3.6, restated in this module's docstring: the ids do
         not exist yet and for the members still queued behind the batch
         semaphore they will not exist for minutes. The count is what lets the
-        aggregate say ``5 queued`` instead of pretending the batch is a
+        panel say ``2 queued`` instead of pretending the batch is a
         three-member one that keeps growing.
 
-        ``tasks`` is the submitted task text, index-aligned with the members, and
-        it is the only per-member fact that differs across a batch — the profile
-        and the model are one apiece by construction. Defaulted to empty so every
-        existing caller and test is unaffected; the panel falls back to what it
-        rendered before when a group has none.
+        EVERY ``agent`` CALL OPENS ONE, one child included (ADR-0278 D1), and
+        the panel's height is fixed here for the life of the group (D5): from
+        the member count and the terminal's rows NOW. A child's first tool,
+        first reply or end then never moves the input and status rows; a
+        resize changes the width only.
 
-        A LABEL, NOT A PROMPT, in ``chain`` mode: ``chain`` substitutes
-        ``{previous}`` per step at RUN time (``chain.py``), so ``tasks[k]`` is
-        the un-substituted template. That is the right thing to show — it is what
-        the model wrote and what the index means — but it is not what the child
-        received, and the panel must not imply otherwise.
+        ``tasks`` is the submitted task text, index-aligned with the members —
+        each member's label. A LABEL, NOT A PROMPT, in ``chain`` mode: ``chain``
+        substitutes ``{previous}`` per step at RUN time (``chain.py``), so
+        ``tasks[k]`` is the un-substituted template, and the panel shows the
+        placeholder as ``‹previous›`` rather than imply the child saw it.
+        ``mode``, ``resumed`` and ``profile`` shape the header.
 
-        Re-opening a live key ends the old group first. That can only happen if
-        a caller leaked one (the extension opens and closes in the same
-        ``try``/``finally``), and leaving the stale row on screen would be the
-        worse failure — it is a lie the user cannot dismiss.
+        A frame left on screen by a cancelled call (:meth:`linger`) goes first:
+        a new group is a new call. Re-opening a live key ends the old group too —
+        that can only happen if a caller leaked one, and a stale panel is a lie
+        the user cannot dismiss. Nothing is drawn until a member publishes.
         """
 
+        self.dismiss()
         if key in self._groups:
             self.end_group(key)
+        count = max(expected, 0)
         self._groups[key] = _Group(
             key=key,
-            snapshots=[None] * max(expected, 0),
-            # S10: the panel and the aggregate exist only at N >= 2. At N == 1
-            # every surface stays byte-identical to P2 for a clean snapshot
-            # (#178 — see ``panel._child_line``).
-            active=expected >= PANEL_MIN_CHILDREN,
+            snapshots=[None] * count,
+            active=count >= PANEL_MIN_CHILDREN,
             tasks=tuple(tasks),
+            mode=mode,
+            resumed=resumed,
+            profile=profile,
+            height=panel_height(count, terminal_rows=self._terminal_rows()),
+            arrived=[None] * count,
         )
 
     def adopt(self, spawn_id: str, key: str, *, index: int) -> None:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:1867-1871``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:1874-1878``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.
@@ -417,55 +523,102 @@ class SubagentProgressBridge:
         self._members[spawn_id] = (key, index)
 
     def end_group(self, key: str) -> None:
-        """Close a group: drop its members, its aggregate row and its panel.
+        """Close a group: cancel its redraws, drop its members, blank its panel.
 
-        SAFE FOR A GROUP THAT NEVER RENDERED. The aggregate row is cleared only
-        if this bridge actually wrote one, because ``_clear_row`` issues its
-        ``ui.set_status(key, None)`` UNCONDITIONALLY — the ``_rows`` pop is a
-        dedup-cache eviction, not a guard. Without this test, closing a group
-        that never wrote a row emits a clear for a key the UI has never seen.
-        Three shapes reach here that way, and the first is the one that matters:
-
-        * an INACTIVE group (``expected < PANEL_MIN_CHILDREN`` — a group of
-          one), whose whole contract under S10 is that every surface stays
-          BYTE-IDENTICAL to P2. P2 opened no group and therefore made no such
-          write, so the stray clear broke exactly the invariant the inactive
-          group exists to preserve;
-        * an active group closed before any member published — a batch that
-          died on the consent gate or on a cancelled turn;
-        * an active group whose aggregate text never came out non-empty
-          (``_render_group`` skips the write in that case).
-
-        The guard is deliberately confined to this method rather than pushed
-        into ``_clear_row``: the un-grouped terminal path in :meth:`__call__`
-        clears a born-terminal child's row that was likewise never written, and
-        THAT write is pinned by ``test_a_child_born_terminal_still_reports_a_start``
-        as the P2-shipped behaviour. One symmetric-looking change there would be
-        a behaviour change; this one is not.
+        Every scheduled redraw and tick of the group is cancelled HERE, so
+        nothing the loop runs later can draw a panel for a call that is over.
+        The panel is blanked only if this group owns it, so a group closing
+        late cannot blank another call's. Writes nothing for a group that never
+        drew — a call refused before its first child, or cancelled before one
+        published.
         """
 
         group = self._groups.pop(key, None)
         if group is None:
             return
+        self._cancel_handles(group)
         for spawn_id in [
             spawn_id
             for spawn_id, (member_key, _) in self._members.items()
             if member_key == key
         ]:
             del self._members[spawn_id]
-        row_key = group_status_key(key)
-        if row_key in self._rows:
-            self._clear_row(row_key)
+            self._retire(spawn_id)
         if self._widget_owner == key:
             self._set_widget(key, None)
+
+    def _retire(self, spawn_id: str) -> None:
+        """Remember an ended group's member, so its late snapshots write
+        nothing; bounded at :data:`_RETIRED_MAX`, oldest forgotten first."""
+
+        self._retired.pop(spawn_id, None)
+        self._retired[spawn_id] = None
+        while len(self._retired) > _RETIRED_MAX:
+            del self._retired[next(iter(self._retired))]
+
+    def linger(self, key: str, results: Mapping[int, SubagentResult]) -> bool:
+        """Leave a cancelled call's record on screen (ADR-0278 D7).
+
+        Called from the extension's ``except CancelledError`` with each started
+        member's envelope — the same ``CallEnvelopes.snapshot()`` the model's
+        report is built from — and draws the Esc frame AT ONCE (the cancel path
+        is not the publish path, and nothing after it is certain to run): every
+        member still live reads as stopped, its cut call as ``no result``, its
+        changed files beside it. The frame keeps the group's height (D5) and
+        stays until the next prompt (:meth:`dismiss`), a new group, or
+        :meth:`clear`.
+
+        Returns whether the frame stays. ``False`` — the group was ended
+        instead — when there is nothing to keep: no such group (a session
+        teardown's :meth:`clear` already took it), no member that ever
+        published, or THE ESC FRAME ITSELF COULD NOT BE WRITTEN (#132 review
+        round 1). The last is not "the group owns the widget": MEASURED with the
+        real ``RpcCommandUI``, a frame that failed to encode was suppressed, the
+        group still owned the PREVIOUS frame, and ``linger`` said True while
+        the client showed ``running``. Ending the group blanks that stale frame.
+        NEVER raises.
+
+        While the frame stays, a watch redraws it when the terminal's width
+        changes (:meth:`_watch`) — never its height (D5).
+        """
+
+        try:
+            group = self._groups.get(key)
+            if group is None or not group.active or all(
+                snapshot is None for snapshot in group.snapshots
+            ):
+                self.end_group(key)
+                return False
+            self._cancel_handles(group)
+            group.cancelled = True
+            group.results = dict(results)
+            if not self._render(group):
+                self.end_group(key)
+                return False
+            self._arm_watch(group)
+            return True
+        except Exception:  # noqa: BLE001 — a frame is never worth the cancel
+            logger.debug("could not leave the cancelled call's panel", exc_info=True)
+            with contextlib.suppress(Exception):
+                self.end_group(key)
+            return False
+
+    def dismiss(self) -> None:
+        """Take down a frame :meth:`linger` left — the next prompt has started
+        (``before_agent_start``) or a new call opened its own group (D7)."""
+
+        for key, group in list(self._groups.items()):
+            if group.cancelled:
+                self.end_group(key)
 
     def _member_of(self, spawn_id: str) -> tuple[_Group, int] | None:
         """The open, ACTIVE group this id belongs to and its index, or ``None``.
 
-        ``None`` covers three real cases and they all want the same handling:
-        an un-adopted id (a concurrent ``/agents run`` child — §3.6's second
-        residual), a group of one, and a snapshot arriving after ``end_group``.
-        Each falls back to today's per-child row, byte-identical.
+        ``None`` covers an un-adopted id (a concurrent ``/agents run`` child —
+        §3.6's second residual), which falls back to the per-child row,
+        byte-identical to what it always was, and a snapshot arriving after
+        ``end_group`` — which :meth:`__call__` drops instead, by the id
+        :meth:`end_group` retired (#132 review round 1).
         """
 
         member = self._members.get(spawn_id)
@@ -476,42 +629,172 @@ class SubagentProgressBridge:
             return None
         return group, member[1]
 
-    def _render_group(self, group: _Group) -> None:
-        text = format_aggregate_status(group.snapshots)
-        if text:
-            # An empty aggregate means "nothing publishable yet"; writing it
-            # would still cost the two-space join at ``chrome.py:1108``.
-            self._set_row(group_status_key(group.key), text)
-        self._set_widget(
-            group.key,
-            format_panel(group.snapshots, tasks=group.tasks, width=self._panel_width()),
-        )
+    # ── redraws: throttled, ticking, never from the publish path (D6) ──
+
+    def _later(self, delay: float, callback: Callable[[], None]) -> Any:
+        try:
+            return self._call_later(delay, callback)
+        except Exception:  # noqa: BLE001 — no loop to schedule on: draw now
+            return None
+
+    def _schedule(self, group: _Group) -> None:
+        """Ask for ONE redraw of ``group``, no sooner than
+        :data:`RENDER_MIN_INTERVAL_S` after its last one. A redraw already
+        pending absorbs this request — it will read the newest snapshots."""
+
+        if group.render_handle is not None:
+            return
+        if self._ui() is None:
+            # Nothing to draw into — ``-p``, ``--mode json``, an RPC prompt. No
+            # frame is formatted and no tick armed (#132 review round 1: the
+            # bridge formatted a panel on every throttle and tick and wrote it
+            # nowhere). A UI that binds later is drawn on the next snapshot.
+            return
+        delay = 0.0
+        if group.last_render is not None:
+            with contextlib.suppress(Exception):
+                delay = max(0.0, group.last_render + RENDER_MIN_INTERVAL_S - self._now())
+        key = group.key
+        handle = self._later(delay, lambda: self._scheduled_render(key))
+        if handle is None:
+            self._render(group)
+        else:
+            group.render_handle = handle
+
+    def _scheduled_render(self, key: str) -> None:
+        group = self._groups.get(key)
+        if group is None:
+            return
+        group.render_handle = None
+        self._render(group)
+
+    def _tick(self, key: str) -> None:
+        group = self._groups.get(key)
+        if group is None:
+            return
+        group.tick_handle = None
+        self._schedule(group)
+
+    def _arm_tick(self, group: _Group) -> None:
+        """While a member is live, redraw every :data:`TICK_INTERVAL_S` even
+        with no snapshot, so a silent child's clock still moves (D6)."""
+
+        if group.cancelled or group.tick_handle is not None:
+            return
+        if not any(
+            snapshot is not None and snapshot.state not in _TERMINAL_STATES
+            for snapshot in group.snapshots
+        ):
+            return
+        key = group.key
+        group.tick_handle = self._later(TICK_INTERVAL_S, lambda: self._tick(key))
+
+    def _arm_watch(self, group: _Group) -> None:
+        """While an Esc frame lingers, look at the terminal's width every
+        :data:`TICK_INTERVAL_S` (#132 review round 1). The frame was drawn at
+        one width and stays for as long as the user takes to type the next
+        prompt; after a resize the chrome clipped it with no ``…``. Its handle
+        is the group's tick handle, so ``dismiss``, ``end_group`` and ``clear``
+        cancel it like any other."""
+
+        if not group.cancelled or group.tick_handle is not None:
+            return
+        key = group.key
+        group.tick_handle = self._later(TICK_INTERVAL_S, lambda: self._watch(key))
+
+    def _watch(self, key: str) -> None:
+        """Redraw a lingering frame at the new width — and only when the width
+        changed, so an unchanged frame is not formatted again. Same height."""
+
+        group = self._groups.get(key)
+        if group is None or not group.cancelled:
+            return
+        group.tick_handle = None
+        with contextlib.suppress(Exception):
+            if self._panel_width() != group.width:
+                self._render(group)
+        self._arm_watch(group)
+
+    @staticmethod
+    def _cancel_handles(group: _Group) -> None:
+        for handle in (group.render_handle, group.tick_handle):
+            if handle is not None:
+                with contextlib.suppress(Exception):
+                    handle.cancel()
+        group.render_handle = None
+        group.tick_handle = None
+
+    def _render(self, group: _Group) -> bool:
+        """Draw ``group``'s panel now; whether that frame is on screen. NEVER
+        raises: it runs as a loop callback, where an exception would be printed
+        over the TUI, and in the cancel path, where it must not replace the
+        cancel. With no UI to write to it formats nothing (#132 review round 1)."""
+
+        if self._ui() is None:
+            return False
+        try:
+            now = self._now()
+            idle = [
+                None if arrived is None else int(max(0.0, now - arrived) * 1000)
+                for arrived in group.arrived
+            ]
+            width = self._panel_width()
+            lines = format_panel(
+                group.snapshots,
+                tasks=group.tasks,
+                width=width,
+                height=group.height,
+                mode=group.mode,
+                resumed=group.resumed,
+                profile=group.profile,
+                idle_ms=idle,
+                cancelled=group.cancelled,
+                results=group.results,
+            )
+            group.last_render = now
+            group.width = width
+            shown = self._set_widget(group.key, lines)
+            self._arm_tick(group)
+            return shown
+        except Exception:  # noqa: BLE001 — a frame is never worth a delegation
+            logger.debug("could not draw the delegation panel", exc_info=True)
+            return False
 
     def _panel_width(self) -> int:
-        """The columns the panel is actually painting into.
+        """The columns the panel is painting into, re-read on every frame.
 
         ``panel.py`` is pure and cannot see a terminal — it is the module whose
-        docstring promises no UI handle — so the width is measured HERE, at the one
-        place that already holds a live UI binding, and passed in. It only ever
-        narrows: ``format_panel`` caps whatever arrives at ``PANEL_ROW_MAX_CHARS``,
-        so a wide screen is unchanged and a narrow one stops being told it has 78
-        columns.
+        docstring promises no UI handle — so the width is measured HERE, at the
+        one place that already holds a live UI binding, and passed in. It is the
+        transcript's own measure (``tui.width.terminal_columns``, capped at 120),
+        so the panel and the tool cards above it are the same width.
 
-        DEGRADES TO THE OLD CONSTANT, never raises and never returns nothing. A
-        headless run, a UI without a chrome, a chrome whose output cannot be sized
-        before it runs — each yields the 78 the panel used before this existed,
-        which is the behaviour ADR-0199 shipped.
+        DEGRADES, never raises: a headless run, a UI without a chrome, a chrome
+        whose output cannot be sized yet — each yields 80 columns.
         """
 
         from aelix_coding_agent.tui.width import terminal_columns
 
         chrome = getattr(self._ui(), "chrome", None)
         if chrome is None:
-            return PANEL_ROW_MAX_CHARS
+            return _FALLBACK_WIDTH
         try:
-            return terminal_columns(chrome, max_width=PANEL_ROW_MAX_CHARS)
+            return terminal_columns(chrome)
         except Exception:  # noqa: BLE001 — an unsizeable output is not a render error
-            return PANEL_ROW_MAX_CHARS
+            return _FALLBACK_WIDTH
+
+    def _terminal_rows(self) -> int | None:
+        """The terminal's rows when a group opens (D5), or ``None`` when they
+        cannot be read — the panel then assumes 24."""
+
+        try:
+            chrome = getattr(self._ui(), "chrome", None)
+            if chrome is None:
+                return None
+            rows = int(chrome.app.output.get_size().rows)
+        except Exception:  # noqa: BLE001 — no size is "assume the default"
+            return None
+        return rows if rows > 0 else None
 
     def announce(self, key: str, text: str | None) -> None:
         """Write (``text``) or withdraw (``None``) one call's disclosure row.
@@ -545,7 +828,8 @@ class SubagentProgressBridge:
 
         A statusline segment outliving the delegation that owns it is a lie the
         user cannot dismiss, and ``set_status`` has no "clear all" verb. Groups
-        are ended first so the widget goes with them.
+        are ended first — a lingering Esc frame (D7) and every scheduled redraw
+        and tick with them — so the widget goes too.
         """
 
         for key in list(self._groups):
@@ -589,8 +873,8 @@ class SubagentProgressBridge:
         with contextlib.suppress(Exception):
             ui.set_status(key, None)
 
-    def _set_widget(self, group_key: str, lines: list[str] | None) -> None:
-        """Write (or blank) the batch panel, through the SAME ``_ui()`` guard.
+    def _set_widget(self, group_key: str, lines: list[str] | None) -> bool:
+        """Write (or blank) the delegation panel, through the SAME ``_ui()`` guard.
 
         Mandatory, not tidy: ``headless_ui.set_widget`` raises
         ``NotImplementedError`` (``headless_ui.py:126-145``) like every other
@@ -600,21 +884,29 @@ class SubagentProgressBridge:
 
         ``set_widget(key, content)`` with no options places the widget
         ``above_editor`` (``tui/context.py:1775-1790`` → ``chrome.set_widget(...,
-        above=True)``), which is the placement S10 asked for; passing
+        above=True)``), which is the placement S10 asked for and ADR-0278 keeps; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.
+
+        Returns whether ``lines`` is what the widget now shows — written now,
+        or already there (the dedup) — so :meth:`linger` can tell a frame that
+        reached the screen from one a UI refused (#132 review round 1).
         """
 
         payload = None if not lines else tuple(lines)
         if payload == self._widget_lines:
-            return
+            return True
         ui = self._ui()
         if ui is None:
-            return
-        with contextlib.suppress(Exception):
+            return False
+        try:
             ui.set_widget(PANEL_WIDGET_KEY, None if payload is None else list(payload))
-            self._widget_lines = payload
-            self._widget_owner = None if payload is None else group_key
+        except Exception:  # noqa: BLE001 — a panel write never fails a delegation
+            logger.debug("could not write the delegation panel", exc_info=True)
+            return False
+        self._widget_lines = payload
+        self._widget_owner = None if payload is None else group_key
+        return True
 
 
 __all__ = [
