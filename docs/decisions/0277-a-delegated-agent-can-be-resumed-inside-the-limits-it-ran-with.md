@@ -21,6 +21,13 @@ after `profile`, before `mode`, `task`, `tasks` and `cwd`, so an upstream that
 writes tool arguments only in the declared order no longer drops a resume's
 `task`; a resume that arrives without `task` is told so, and to send it once
 more and then delegate afresh. See `## Amendment (2026-10-31, #634)`.**
+**Amended 2026-10-31 (#627): D1's refusal of a lone surrogate or a NUL now
+covers every string the model sends `agent` — `profile`, `task`, each of
+`tasks`, `cwd` and `id`, on a `run` as on a `resume` — `/agents run` and RPC
+`agents/run` refuse such a task before they look the profile up, a profile file
+holding either does not parse, and the runtime's own doors refuse such a task,
+instruction, `cwd` or built profile too; a chain's `{previous}` carrying either
+is made sendable (U+FFFD) instead. See `## Amendment (2026-10-31, #627)`.**
 Date: 2026-10-30
 Issue: #610 (phase 1 of the #604 delegation track). Design:
 `.omc/specs/610-design-2026-10-30.md` (rev 2), with its critique
@@ -934,6 +941,7 @@ Not checked, or found on the way and left as it is:
   fails at `create_subprocess_exec` (`embedded null byte`) after the budget and
   the records. Both predate #610 (they are in `f3e76fbb`) and are left to a
   separate issue; a resume instruction is refused cleanly for both (D1).
+  Closed 2026-10-31 by #627: see `## Amendment (2026-10-31, #627)`.
 
 ## Verification
 
@@ -1698,3 +1706,202 @@ resume only; parallel, chain and `cwd` calls were not run there, and rest on
 the in-order decoder model above. After the counted refusals the model starts the work afresh, without
 the agent's conversation, even where a call with `task` written before `action`
 would have gone through, as it once did in the uncounted runs.
+
+## Amendment (2026-10-31, #627): no string the model sends `agent` may hold a lone surrogate or a NUL
+
+D1 refused both in a resume's instruction, and the limit above left the `run`
+path to #627. Both are legal in a `str` and in a call's JSON (`"\ud83d"`, half an
+emoji; `"\u0000"`), and neither can reach a child: no UTF-8 encoder writes a lone
+surrogate, and no argv element carries a NUL.
+
+**Measured on `e19ab55e`.** Two instruments: the real hook and `execute()` on
+`test_tool_and_security`'s bench over a real parent session, with a channel
+that does to the task and directory what `create_subprocess_exec` does
+(`os.fsencode`, the NUL check); and the real `aelix --agents --provider
+scripted --model s-1 --permission-mode yolo -p` with a scripted
+OpenAI-compatible SSE server as every model.
+
+- A lone surrogate in `task`, or in any `tasks[i]` of a parallel or chain call,
+  raised `UnicodeEncodeError` out of the `tool_call` hook. The kernel ended the
+  turn: `-p` exited 1 after one request, and the model never read a result.
+- A NUL there passed every check. It cost one delegation of budget and wrote
+  four records and a child file per member it reached, and the model read
+  `Error: embedded null byte`.
+- A NUL or a lone surrogate in `cwd` was refused, as `Delegation refused: lstat:
+  embedded null character in path` and as a `UnicodeEncodeError` message.
+  `profile` was refused as an unknown profile, and a resume's `id` as an
+  unknown id. `mode` and `action` were refused by their own value checks, the
+  bad value quoted escaped.
+- A chain whose step 1 summary held a NUL started step 2. Step 2 cost its budget,
+  its records and its file, then failed `embedded null byte`. A lone surrogate
+  there raised out of `execute()`, so the model read `Tool 'agent' raised: …`
+  instead of step 1's result.
+- `runtime.spawn`, which `/agents run`, RPC `agents/run` and the
+  `SubagentRuntime` Protocol use, wrote the four records and the file before
+  the spawn failed headless, and opened its dialog first with a UI.
+
+**Decision.**
+
+1. `aelix_coding_agent.agents.sendable.unsendable_refusal(text, where=,
+   resend=)` is the one spelling of the refusal, in product core so that
+   `/agents run`, RPC and the profile parser, which may not import the
+   extension (ADR-0197), use it too: `<where> holds half of a character (a lone surrogate), which cannot
+   be sent to the agent. Resend <what> as plain text.`, or `… holds a NUL
+   character (U+0000), … Resend <what> without it.`. The lone surrogate is
+   named first, as D1's parse did. With `'task'` and `the instruction`, the
+   result is D1's two sentences byte for byte. The text never contains the
+   character it refuses.
+2. `parse_agent_call` asks it of every string the model sends, before anything
+   reads the string: `profile` (`the profile name`) on both actions, a run's
+   `task` (`the task`), each `tasks[i]` (`tasks[i]`), `cwd` (`the directory`), a
+   resume's `id` (`the id`) and its instruction (D1's sentence). So the refusal
+   comes before the profile lookup, the directory, the budget, the dialog, the
+   records and the file, and the kernel renders it as an ordinary error result:
+   the turn goes on. `mode` and `action` keep their value checks, which already
+   refuse first and name the allowed values. `_RESUME_TASK_NOT_TEXT` and
+   `_RESUME_TASK_HAS_NUL` are gone; the same text now comes from 1.
+3. **A chain's `{previous}` is made sendable, not refused.** `sendable`
+   replaces both characters with U+FFFD in the previous step's summary and its
+   tool trail, before the fence (`render_step`). A child wrote that text,
+   mid-call. The model that made the call cannot send it again and no human
+   approved it, so a refusal would end the chain on a defect no one in the loop
+   can fix. U+FFFD shows the next child where a character was, as the
+   delegation panel shows a lone surrogate (ADR-0278). The model's own steps are
+   refused by 2, so `render_step` never rewrites them.
+4. **The runtime's doors refuse a task the same way**, with `The task` and `the
+   task`: `runtime.spawn` before its dialog and its records, and
+   `spawn_granted`, the model door's runtime half, before the budget as a belt.
+   The parser and 3 leave nothing for `spawn_granted` to catch. Refined in
+   review round 1: `resume_granted` has the same belt (`The instruction`),
+   before it looks the target up or probes its lock; and `resolve_child_cwd`
+   refuses a `cwd` holding either with the parser's `'cwd'` sentence, so an
+   extension's `spawn(cwd=…)` no longer gets the codec's or the OS's message.
+   Refined in review round 2: `resolve_child_cwd` holds a `cwd` to the OS's
+   rule, not the text rule (`sendable.unencodable_character`: a NUL, or what
+   `os.fsencode` refuses). `resume_cwd` brings a resume's RECORDED cwd back
+   through it, and on Linux a directory whose name is not UTF-8 decodes to
+   U+DC80–U+DCFF (surrogateescape), which encodes back to its own bytes: round
+   1's text rule refused every resume under such a directory, as "no longer
+   exists", and an extension's spawn there. On POSIX `"\ud83d"` still fails
+   `os.fsencode` and gets the sentence. On Windows `os.fsencode` uses
+   surrogatepass and takes every lone surrogate, so a `cwd` holding one meets
+   the directory check there instead (`is not a directory` unless NTFS has
+   such a name). The model's own `cwd` has met the text rule in the parser
+   either way.
+5. **`/agents run` and RPC `agents/run` refuse such a task first** (review round
+   1). Each asks 1 right after its own parameter checks, before it resolves the
+   profile: a project profile's per-identity confirmation used to open, and be
+   answered, for a task `runtime.spawn` then refused. `/agents run` prints
+   `✖ agents run failed: The task holds …`; RPC raises it as an invalid
+   parameter, as its other parameter checks do.
+6. **A profile holding either does not parse, and a profile built in code is
+   refused before it launches** (review round 1). `parse_profile` gives an
+   `invalid_metadata` error for every known frontmatter key whose value, as
+   written, holds either character (YAML's `"\0"` and `"\ud83d"` escapes put
+   them there) and for a body holding either: `model holds a NUL character
+   (U+0000), which no delegated agent can be handed and no model request should
+   carry; remove it`. A `model:` holding one used to parse, and the delegation
+   was approved, charged and recorded, and its file created, before the launch
+   failed. A profile that does not parse is not found by name, so the model
+   reads `unknown agent profile` (discovery's rule for every broken profile) and
+   `/agents list` shows the reason. A profile an extension builds and hands
+   `SubagentRuntime.spawn` is never parsed: `profile.unlaunchable_profile`
+   refuses what would break its launch. The runtime asks it with the task, at
+   the same three doors, before the dialog, the budget, the records and the
+   prompt file. Refined in review round 2, which launched a profile whose name
+   held a NUL and saw it run:
+   - the fields the launch puts on the command line — model, provider,
+     thinking, tools, skills, extensions — are held to the OS's rule (a NUL,
+     or what `os.fsencode` refuses; so a `skills:` path under a directory
+     whose name is not UTF-8 still works, and on Windows a lone surrogate
+     there is passed on);
+   - the body is refused for a lone surrogate only: the prompt file is written
+     as UTF-8, which raises on one, while a NUL is written as it is;
+   - the name and the description are not refused: neither reaches a command
+     line, the prompt file's name is made safe from the name (`_safe_stem`),
+     the records escape the name, and the description reaches no record at
+     all. `_launch_refusal`'s check of the resolved name is gone for the same
+     reason.
+   A profile FILE still refuses either character in every known value and in
+   its body. Refined in review round 2 too: PyYAML does not join an escaped
+   surrogate pair, so `description: "smile \ud83d\ude42"` — what `json.dumps`
+   writes — read as two lone halves and was refused; `parse_profile` now joins
+   high-then-low pairs (`sendable.join_surrogate_pairs`) right after the YAML
+   load, so only a half that really is alone is refused. Before #627 that
+   profile raised `UnicodeEncodeError` in the roster.
+
+| Entry point | Before (`e19ab55e`) | After | Test |
+|---|---|---|---|
+| `task` (run) | lone surrogate: hook raised, turn ended; NUL: budget, 4 records, a child file, `embedded null byte` | refused at the parser, nothing spent | `test_every_string_the_model_sends_is_refused_by_the_parser`, `test_the_hook_refuses_before_anything_is_spent` |
+| `tasks[i]`, parallel and chain | the same, per member reached | the same | the same |
+| `profile` | refused as unknown | refused as unsendable, before the lookup | the same |
+| `cwd` | refused with the OS's message | refused as unsendable, before resolution | the same |
+| `id` (resume) | refused as an unknown id | refused as unsendable | `test_every_string_the_model_sends_is_refused_by_the_parser` |
+| `task` (resume) | refused (D1) | the same sentence, from 1 | the same, and the #610 tests |
+| `mode`, `action` | refused by the value check | unchanged | `test_mode_and_action_are_refused_by_their_own_value_check` |
+| `{previous}` (a child's summary and trail) | NUL: step 2's budget, records, file, `embedded null byte`; lone surrogate: `execute()` raised, step 1's result lost | U+FFFD; the chain runs | `test_a_childs_previous_is_made_sendable_and_the_chain_runs`, `test_render_step_makes_previous_and_trail_sendable_before_the_fence` |
+| `/agents run` and RPC `agents/run` handlers | the profile resolved and, for a project profile, its confirmation answered; then the runtime's refusal | refused before the profile is looked up; no dialog | `tests/tui/test_agents_run_unsendable_627.py`, `tests/rpc/test_agents_run_unsendable_627.py` |
+| `runtime.spawn` (the Protocol; an extension's door) | records and a file, or the dialog first, then a failed spawn | an error result before the dialog and the records | `test_agents_run_and_rpc_are_refused_before_the_dialog_and_the_records` |
+| `spawn_granted` | reached only through the parser and the chain | a belt before the budget | `test_the_model_door_refuses_a_task_that_skipped_the_parser` |
+| `resume_granted` | reached only through the parser | a belt before the target lookup | `test_a_resume_that_skipped_the_parser_is_refused_before_its_target_is_read` |
+| `cwd` on `spawn`/`spawn_granted`, and a resume's recorded cwd | the codec's or the OS's message, nothing spent; a recorded cwd under a non-UTF-8 directory resumed | the parser's `'cwd'` sentence for a NUL or what `os.fsencode` refuses; a non-UTF-8 directory still resumes | `test_an_extensions_cwd_gets_the_same_sentence`, `test_a_directory_whose_name_the_text_rule_refuses_is_still_a_cwd` |
+| a profile file's values and body | `model:` holding either: budget, 4 records, a child file, then a failed launch; an escaped pair: the roster raised | does not parse; the delegation is refused as an unknown profile, nothing spent; an escaped pair is one character | `test_a_profile_field_holding_either_does_not_parse`, `test_a_profile_file_holding_either_is_refused_before_anything_is_spent`, `test_a_surrogate_pair_a_profile_file_spells_is_one_character` |
+| a profile an extension built | the same, at launch | what breaks the launch is refused at `spawn`, `spawn_granted` and `resume_granted`; a name, a description or a NUL in the body launches | `test_a_profile_an_extension_built_is_refused_at_both_doors`, `test_what_does_not_break_a_launch_is_not_refused`, `test_a_path_is_held_to_what_the_launch_does_with_it` |
+
+Normal text passes everywhere as before: CJK, emoji (a skin tone, a ZWJ
+sequence, a flag), combining marks and a right-to-left script
+(`test_normal_unicode_still_passes_everywhere`). A surrogate pair escaped as
+JSON spells it is one character in what the model sends, because JSON's
+decoder joins it, and in a profile file since review round 2, because
+`parse_profile` joins it after the YAML load.
+
+**Live check** (the scripted `-p` above, on `e19ab55e` and on this change; the
+method and the runs are in `.omc/specs/627-progress-2026-10-31.md`, the drivers
+and raw outputs kept locally in `.omc/specs/634-627-live/scripted/`, not in the
+repo):
+
+| Call | `e19ab55e` | This change |
+|---|---|---|
+| `task` with a lone surrogate | exit 1, one parent request, the turn ended | exit 0, two requests, the model read the refusal, nothing spent |
+| `task` with a NUL | exit 0; 4 records, a child file; `Error: embedded null byte` | exit 0, two requests, the model read the refusal, nothing spent |
+| parallel, `tasks[2]` with a NUL | member 1 ran; member 2 spent 4 records and a file and failed | refused whole; no child |
+| chain, `tasks[2]` with a lone surrogate | exit 1, the turn ended | refused whole; no child |
+| `cwd` with a NUL | `Delegation refused: lstat: embedded null character in path` | `'cwd' holds a NUL character (U+0000), …` |
+| step 1's reply with a NUL, step 2 using `{previous}` | step 2 failed `embedded null byte` after 4 records and a file | both steps ran; step 2's task held U+FFFD, no NUL |
+| step 1's reply with a lone surrogate, step 2 using `{previous}` | `Tool 'agent' raised: 'utf-8' codec can't encode …`; step 2 never started | both steps ran; step 2's task held U+FFFD |
+| CJK, emoji and a combining mark | ran | ran |
+
+**Limits.** Out of scope, as the issue set it: a hook exception still ends the
+whole turn (the kernel's behaviour for every extension's hook); `parse_streaming_json`
+and the response id are #635. The parent model still reads a child's summary as
+the child wrote it, NUL and lone surrogate included, in the aggregate it is
+handed; that is the output side (#437). A profile that does not parse is
+reported to the model as unknown, not with its reason. The scripted live check
+ran before review round 1. Of round 1's additions, `/agents run` in the TUI
+(a NUL task on a project profile: refused, no dialog) and RPC `agents/run` on
+the wire (`aelix --mode rpc --agents`: the refusal as an invalid-parameter
+response) were run live by the round-1 delta check (recorded in
+`.omc/specs/627-progress-2026-10-31.md`; its probes and outputs are kept
+locally in `.omc/specs/634-627-verify-r1-probes/`, not in the repo); the rest,
+and round 2's, are tested, not run live. A non-UTF-8 directory name is
+simulated (APFS refuses one); the round-1 and round-2 checks measured the
+premise on Linux. Windows, where `os.fsencode` takes a lone surrogate, is
+reasoned from its documentation, not run. Only macOS was run.
+
+Left by the round-2 delta check (none must-fix; base `e19ab55e` behaved the
+same in each):
+
+- **R1 (Low). A profile an extension builds is held to the OS's rule in all
+  six command-line fields, not only in its two paths.** So on POSIX a `model`,
+  `provider`, `thinking` or `tools` value holding U+DC80–U+DCFF launches, and
+  on Windows one holding any lone surrogate does. The child then fails on it
+  (`Error: Model "x\udc80y" not found.`), after one delegation of budget, four
+  records and a child file. The fix, left for later: the text rule for those
+  four fields, the OS's rule for `skills` and `extensions` only. A profile
+  FILE is not affected: `parse_profile` holds every value to the text rule.
+- **R3 (Info). A lone surrogate in the name of a profile an extension builds
+  reaches the consent dialog's title as it is** (a NUL there is stripped). The
+  TUI shows it as `?`. Over RPC the dialog request cannot be encoded, and the
+  dialog's deny-on-error answers it as a silent decline; that child's
+  `aelix_subagent` events are dropped by `EventBus.emit` for the same reason.
+  Nothing crashes, and the RPC decline spends nothing.

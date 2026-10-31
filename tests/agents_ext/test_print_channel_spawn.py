@@ -2176,7 +2176,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1230-1234``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1242-1246``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2228,11 +2228,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1367``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1379``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:223``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:224``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -2444,7 +2444,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1038`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:1051`` and
     ``aggregate.py:568`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
@@ -2764,7 +2764,7 @@ def test_orchestrator_and_leaf_produce_different_depth(
 ) -> None:
     """Closes finding I3 — ``role`` is arithmetically INERT at MAX == 1.
 
-    Both branches yield 1 there, and ``agents/profile.py:220`` defaults ``role``
+    Both branches yield 1 there, and ``agents/profile.py:225`` defaults ``role``
     to ``"leaf"``, so the shipped test would pass vacuously. Raising the cap is
     what makes the two branches distinguishable, and it is exactly what P3 does.
     """
@@ -2972,7 +2972,7 @@ async def test_nested_project_extension_not_executed_in_relocated_child(
     """§(g) clause 2, against a REAL child.
 
     ``inherit_extensions: true`` on purpose: with the shipped default
-    (``False``, ``agents/profile.py:199``) ``profile_to_flags`` already
+    (``False``, ``agents/profile.py:204``) ``profile_to_flags`` already
     emits ``--no-extensions`` and NO project extension is discovered at all, so
     the trust flag would be untestable. This is the one profile shape where
     clause 2 is the thing standing between the child and the vendored code —

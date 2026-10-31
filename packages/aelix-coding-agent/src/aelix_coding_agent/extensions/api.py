@@ -652,7 +652,7 @@ class _ExtensionRuntime:
            This is the fork-bomb invariant living in the seam rather than in
            one extension's constructor — ``extensions/loader.py:862-865`` drops
            tier-4 entry points under ``--no-extensions`` and
-           ``agents/profile.py:374-379`` bans ``extensions:`` at project
+           ``agents/profile.py:401-406`` bans ``extensions:`` at project
            scope, but a user-scope tier-1 extension still loads in a child
            with ``inherit_extensions: true``. It does NOT gate ``None``:
            releasing a slot must keep working inside a child.

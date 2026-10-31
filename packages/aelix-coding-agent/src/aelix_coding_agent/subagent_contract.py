@@ -70,7 +70,7 @@ SubagentState = Literal["starting", "running", "done", "error", "stopped"]
 SubagentOutcome = Literal["ok", "error", "timeout", "aborted", "declined"]
 # Only "single" is live in P2 — ``spawn`` raises ``ValueError`` on the other
 # two. The literal ships whole so the on-the-wire vocabulary never changes
-# shape between phases (same reasoning as ``agents/profile.py:220``'s ``role``).
+# shape between phases (same reasoning as ``agents/profile.py:225``'s ``role``).
 SubagentMode = Literal["single", "parallel", "chain"]
 
 

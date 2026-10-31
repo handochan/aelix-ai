@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
+from aelix_coding_agent.agents.sendable import unsendable_refusal
 from aelix_coding_agent.tools.provenance import builtin_provenance, mark_builtin
 from rich.cells import cell_len, set_cell_size
 
@@ -504,20 +505,29 @@ schema's order note above). A count, because "send it again; if that fails
 too, start afresh" still drew 6 or 7 refusals per run from the same model, and
 "once … not a third time" drew 2 or 3 (ADR-0277's #634 amendment). No provider
 is named: the model cannot choose one."""
-_RESUME_TASK_NOT_TEXT = (
-    "'task' holds half of a character (a lone surrogate), which cannot be sent to "
-    "the agent. Resend the instruction as plain text."
-)
-_RESUME_TASK_HAS_NUL = (
-    "'task' holds a NUL character (U+0000), which cannot be sent to the agent. "
-    "Resend the instruction without it."
-)
 _RESUME_ID_NOT_A_STRING = "'id' must be the agent's Session id, as a string."
 _RESUME_ID_IS_A_PATH = (
     "'id' is the agent's Session id — the id its result shows, on its "
     '"Session:" line or after "session" in a batch member\'s "did not finish" '
     "heading — not a file path."
 )
+
+
+def _refuse_unsendable(text: str, *, where: str, resend: str) -> None:
+    """Refuse ``text`` if it holds a lone surrogate or a NUL (#627).
+
+    Asked of EVERY string the model sends ``agent`` — ``profile``, ``task``,
+    each of ``tasks``, ``cwd`` and ``id`` — before anything reads it: a
+    profile lookup, a directory resolution, the size check, the dialog. Each
+    is a legal ``str`` a call's JSON can carry and none can reach a child
+    (:mod:`aelix_coding_agent.agents.sendable` says why). ``mode`` and
+    ``action`` are not asked: their own check refuses every value outside
+    their set first, and quotes the bad one escaped.
+    """
+
+    refusal = unsendable_refusal(text, where=where, resend=resend)
+    if refusal is not None:
+        raise AgentCallError(refusal)
 
 
 def _parse_resume_id(raw: object) -> str | None:
@@ -538,6 +548,7 @@ def _parse_resume_id(raw: object) -> str | None:
         return None
     if not isinstance(raw, str):
         raise AgentCallError(_RESUME_ID_NOT_A_STRING)
+    _refuse_unsendable(raw, where="'id'", resend="the id")
     child_id = raw.strip()
     if not child_id:
         return None
@@ -572,6 +583,7 @@ def _parse_resume(args: Mapping[str, Any]) -> AgentCall:
     profile = args.get("profile")
     if not isinstance(profile, str) or not profile.strip():
         raise AgentCallError(_RESUME_NEEDS_PROFILE)
+    _refuse_unsendable(profile, where="'profile'", resend="the profile name")
     child_id = _parse_resume_id(args.get("id"))
     if not _absent(args.get("tasks")):
         raise AgentCallError(
@@ -594,19 +606,11 @@ def _parse_resume(args: Mapping[str, Any]) -> AgentCall:
     task = args.get("task")
     if not isinstance(task, str) or not task.strip():
         raise AgentCallError(_RESUME_NEEDS_TASK)
-    # A LONE SURROGATE IS REFUSED HERE, where a refusal costs nothing. It is a
-    # legal ``str`` that a call's JSON can carry (``"\ud83d"``, half an emoji),
-    # and it cannot be encoded into the child's argv: let through, it would fail
-    # the spawn after the budget was charged and the run recorded.
-    try:
-        size = len(task.encode("utf-8"))
-    except UnicodeEncodeError as exc:
-        raise AgentCallError(_RESUME_TASK_NOT_TEXT) from exc
-    # NUL, for the same reason (#610 F7): UTF-8 encodes it, but no argv can
-    # carry it — ``create_subprocess_exec`` raises "embedded null byte" after
-    # the budget was charged and four records written (Codex review 9).
-    if "\x00" in task:
-        raise AgentCallError(_RESUME_TASK_HAS_NUL)
+    # A LONE SURROGATE AND A NUL ARE REFUSED HERE, where a refusal costs
+    # nothing (#610 D1 and F7; the ``run`` path since #627). Let through, the
+    # spawn failed after the budget was charged and the run recorded.
+    _refuse_unsendable(task, where="'task'", resend="the instruction")
+    size = len(task.encode("utf-8"))
     if size > RESUME_TASK_MAX_BYTES:
         raise AgentCallError(
             f"'task': the instruction is {size} bytes; a resume instruction may "
@@ -721,6 +725,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     profile = args.get("profile")
     if not isinstance(profile, str) or not profile.strip():
         raise AgentCallError("'profile' is required and must be a profile name.")
+    _refuse_unsendable(profile, where="'profile'", resend="the profile name")
 
     mode = _parse_mode(args.get("mode"))
     # :func:`_absent` and not ``in args``: an explicit ``null`` — and the ``""``
@@ -763,11 +768,17 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     # unexplained spawn failure — a P2 latent defect this closes for free. The
     # executor re-applies it to each RENDERED chain step, which is the case a
     # parse-time check alone cannot catch (``chain.check_task_size``).
+    #
+    # A lone surrogate or a NUL is refused FIRST (#627): ``check_task_size``
+    # encodes strictly, so a lone surrogate raised ``UnicodeEncodeError`` out of
+    # the hook and the kernel ended the turn; a NUL passed and failed the spawn
+    # after the budget, the records and the child's file.
     for index, task in enumerate(tasks, start=1):
+        where = "'task'" if mode == "single" else f"tasks[{index}]"
+        _refuse_unsendable(task, where=where, resend="the task" if mode == "single" else where)
         try:
             check_task_size(task)
         except TaskTooLarge as exc:
-            where = "'task'" if mode == "single" else f"tasks[{index}]"
             raise AgentCallError(f"{where}: {exc}") from exc
 
     # Rule 6. Step 1 has no previous output, so an empty substitution would
@@ -784,6 +795,8 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     cwd = args.get("cwd")
     if cwd is not None and (not isinstance(cwd, str) or not cwd.strip()):
         raise AgentCallError("'cwd' must be a directory path inside your own.")
+    if cwd is not None:
+        _refuse_unsendable(cwd, where="'cwd'", resend="the directory")
 
     # ``timeout_ms`` IS NEVER READ, AND A CALL CARRYING IT STILL RUNS (#604,
     # ADR-0276). The schema no longer offers it, but a model that learned it

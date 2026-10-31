@@ -737,7 +737,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:1385``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:1409``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1482,7 +1482,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so the note's repeat check could be dropped from
-    ``tool.py:1394`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:1407`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the

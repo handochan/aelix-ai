@@ -617,7 +617,7 @@ def test_an_unrecognised_approval_mode_declares_nothing(value: str) -> None:
 def test_explicit_scope_is_not_treated_as_project() -> None:
     """``--agent-file`` (scope ``"explicit"``) is a path the HUMAN typed.
 
-    ``ProfileScope`` (``agents/profile.py:52``) has four values, not two. Only
+    ``ProfileScope`` (``agents/profile.py:57``) has four values, not two. Only
     the literal ``"project"`` triggers the widening ban — treating ``explicit``
     as project would silently downgrade a user pointing at their own file.
     """

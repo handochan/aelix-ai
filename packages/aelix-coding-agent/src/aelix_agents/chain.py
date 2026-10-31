@@ -19,7 +19,7 @@ Truncation therefore stays visible by construction: ``cap_summary``
 literally reads "[Output truncated: … bytes omitted…]". Nothing here strips it.
 
 THE SUBSTITUTION HAPPENS INSIDE THE TASK STRING; IT NEVER TOUCHES ARGV.
-``build_child_argv`` (``print_channel.py:815-882``) documents that the ``"Task: "``
+``build_child_argv`` (``print_channel.py:827-894``) documents that the ``"Task: "``
 prefix ``profile_to_argv`` prepends is load-bearing — ``args.py`` swallows an
 unrecognised ``--`` token into ``parsed.unknown_flags`` with NO diagnostic — so a
 previous summary that begins with ``--`` stays safe only because that prefix is
@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import re
 
+from aelix_coding_agent.agents.sendable import sendable
+
 MAX_TASK_BYTES = 65536
 """Ceiling on a single task string, measured in UTF-8 BYTES.
 
@@ -56,7 +58,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:836-841``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:848-853``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:32``), so a chain step that
 forwards a whole uncapped previous summary still fits.
@@ -284,7 +286,11 @@ def render_step(
 def _render(task: str, previous: str | None, trail: str | None) -> str:
     fragments = task.split(PREVIOUS_ESCAPE)
     if previous is not None:
-        value = _fence(previous if trail is None else _with_trail(previous, trail))
+        # CHILD-AUTHORED, so made sendable rather than refused (#627,
+        # ``agents.sendable.sendable``) — before the fence, whose escape then
+        # sees the text exactly as the next child will.
+        body = previous if trail is None else _with_trail(previous, trail)
+        value = _fence(sendable(body))
         # ALL occurrences are replaced — str.replace's default, and the honest
         # reading of "insert the previous task's summary wherever I wrote it".
         fragments = [fragment.replace(PREVIOUS_TOKEN, value) for fragment in fragments]

@@ -25,14 +25,14 @@ child is silent. The scheduler and the clock are injectable; with no running
 loop (a test, a synchronous caller) the bridge draws at once, as it always did.
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
-is minted inside ``runtime._run`` (``runtime.py:1386``) — after ``spawn_granted``
+is minted inside ``runtime._run`` (``runtime.py:1410``) — after ``spawn_granted``
 has already been entered, and for members 5-8 of an 8-task batch not until
 wave 2 — so nothing can hand this object a list of ids when the batch starts.
 Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:1874-1878``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:1898-1902``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
@@ -505,7 +505,7 @@ class SubagentProgressBridge:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:1874-1878``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:1898-1902``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.

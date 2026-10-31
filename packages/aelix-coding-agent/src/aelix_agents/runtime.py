@@ -53,7 +53,9 @@ from typing import TYPE_CHECKING, Any
 from aelix_agent_core.session.session_lock import SessionWriterLock
 from aelix_coding_agent.agents.discovery import ProfileError
 from aelix_coding_agent.agents.discovery import resolve_profile as discover_profile
+from aelix_coding_agent.agents.profile import unlaunchable_profile
 from aelix_coding_agent.agents.resolver import child_model_id, model_pin_route_moved
+from aelix_coding_agent.agents.sendable import unsendable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.cli.args import VALID_THINKING_LEVELS
 from aelix_coding_agent.subagent_contract import (
@@ -623,7 +625,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:977``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:989``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -634,7 +636,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:568``/``tool.py:1038`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:568``/``tool.py:1051`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -817,6 +819,14 @@ class _SubagentRuntimeImpl:
 
         del timeout_ms  # deprecated on the Protocol; see the docstring
         _reject_unsupported(mode, background=background)
+        # #627: a task no argv can carry — a lone surrogate, a NUL, both of which
+        # an RPC client's JSON can send — or a profile an extension built with
+        # one is refused BEFORE the dialog, the records and the child's file,
+        # with the reason in the result. ``/agents run`` and RPC ``agents/run``
+        # refuse the task earlier still, before the profile is looked up.
+        refusal = _launch_refusal(resolved, task)
+        if refusal is not None:
+            return _error_result(resolved, refusal)
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
         # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
         # emit ``session_shutdown`` on a runtime instance that SURVIVES them
@@ -944,6 +954,14 @@ class _SubagentRuntimeImpl:
             return declined_result(
                 id=_new_id(), profile=resolved.name, reason=_NOT_CONSENTED
             )
+        # #627, THE BELT. The ``agent`` parser refuses such a task from the
+        # model, a chain step's ``{previous}`` is made sendable and a profile
+        # file holding one does not parse, so only a caller that skipped all
+        # three gets here — refused before the budget, the records, the child's
+        # file and the prompt file.
+        refusal = _launch_refusal(resolved, task)
+        if refusal is not None:
+            return _error_result(resolved, refusal)
         try:
             child_cwd = resolve_child_cwd(cwd, self.host.cwd())
         except ValueError as exc:
@@ -1105,6 +1123,12 @@ class _SubagentRuntimeImpl:
             return declined_result(
                 id=_new_id(), profile=resolved.name, reason=_NOT_CONSENTED
             )
+        # #627, the belt ``spawn_granted`` has, before the target is looked up
+        # or its lock probed: the parser refuses such an instruction, so only a
+        # caller that skipped it gets here.
+        refusal = _launch_refusal(resolved, instruction, what="instruction")
+        if refusal is not None:
+            return _error_result(resolved, refusal)
         # THE ``await``S HERE COME FIRST: nothing below them yields until
         # ``_run``'s registry insert, so the running check in ``resume_refusal``
         # and the insert are one step. Records written into any session but the
@@ -1526,9 +1550,9 @@ class _SubagentRuntimeImpl:
                 # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
                 # is gone from the registry by this line, so the delegation is over
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
-                # (``print_channel.py:223``) and ``PrintChannel.run`` can raise
+                # (``print_channel.py:224``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1367-1368``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1379-1380``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.
@@ -2184,6 +2208,24 @@ def _display_path(raw: str, *, child_cwd: str, parent_cwd: str) -> str:
     if os.path.isabs(raw) or raw.startswith("~"):
         return raw
     return relative.replace(os.sep, "/")
+
+
+def _launch_refusal(
+    resolved: ResolvedProfile, text: str, *, what: str = "task"
+) -> str | None:
+    """Why this text, under this profile, cannot be launched (#627) — else ``None``.
+
+    The text first — the task, or a resume's instruction — then the profile it
+    would run under: what of it the launch passes on and would break on
+    (``profile.unlaunchable_profile``). Its NAME is not asked: the records
+    escape it and the prompt file's name is made safe from it, so a name
+    holding either character launches (review round 2).
+    """
+
+    refusal = unsendable_refusal(text, where=f"The {what}", resend=f"the {what}")
+    if refusal is not None:
+        return refusal
+    return unlaunchable_profile(resolved.profile)
 
 
 def _error_result(resolved: ResolvedProfile, message: str) -> SubagentResult:

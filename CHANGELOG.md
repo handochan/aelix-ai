@@ -979,6 +979,27 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A delegation whose text holds half of a character or a NUL is refused
+  before it costs anything, and the turn goes on (#627, ADR-0277 amendment
+  2026-10-31).** A tool call's JSON can carry half of an emoji (`"\ud83d"`) or
+  a NUL (`"\u0000"`), and no child can be handed either. Half a character in
+  an `agent` task used to end the whole turn: `-p` exited 1 and the model
+  never read a result. A NUL was approved and admitted, cost a delegation of
+  the prompt's budget, wrote the run's records and a child session file, and
+  then told the model only `Error: embedded null byte`. Now the parser refuses
+  either one in `profile`, `task`, every task of a parallel or chain call,
+  `cwd` and a resume's `id`, before any dialog, budget, record or file. The
+  model reads which argument held what and what to send instead, and the turn
+  continues. `/agents run` and an RPC client's `agents/run` refuse such a task
+  the same way, before they look the profile up, so a project profile's
+  confirmation is no longer asked first. An agent profile whose values or body
+  hold either one no longer loads (`/agents list` says which key): a `model:`
+  holding a NUL used to be approved, charged and recorded before the launch
+  failed. A pair a profile escapes as JSON does (`"\ud83d\ude42"`) is read as
+  the one character it spells. In a chain, a previous step's summary that
+  holds either one is passed on with U+FFFD, the replacement character, in its
+  place, so the chain still runs. CJK, emoji and combining marks pass as
+  before.
 - **A resumed agent gets its instruction on an upstream that writes tool
   arguments in the schema's order (#634, ADR-0277 amendment 2026-10-31).** On
   OpenRouter, the Ionstream upstream of `deepseek/deepseek-v4.1-flash-1017`

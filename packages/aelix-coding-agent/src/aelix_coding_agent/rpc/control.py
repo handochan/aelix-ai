@@ -761,6 +761,7 @@ class RpcControlPlane:
         raise ValueError("Unsupported agent profile action")
 
     async def run_agent(self, params: dict[str, Any]) -> dict[str, Any]:
+        from aelix_coding_agent.agents.sendable import unsendable_refusal
         from aelix_coding_agent.subagent_contract import ProjectScopeRefused
 
         if "allowProject" in params:
@@ -774,6 +775,12 @@ class RpcControlPlane:
         task = params.get("task")
         if not isinstance(task, str) or not task or len(task) > 100_000:
             raise ValueError("Agent task must be a non-empty bounded string")
+        # #627: a NUL or half of a character is refused here, before the profile
+        # is resolved — a project profile's confirmation dialog would otherwise
+        # be answered for a task that cannot run.
+        refusal = unsendable_refusal(task, where="The task", resend="the task")
+        if refusal is not None:
+            raise ValueError(refusal)
         runtime = self.harness.runtime.subagents
         if runtime is None:
             raise ValueError("Subagents are disabled; explicitly enable agent delegation")

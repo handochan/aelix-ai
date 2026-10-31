@@ -676,7 +676,7 @@ def test_cap_on_utf8_bytes_not_chars() -> None:
 
 
 def test_cap_uses_profile_output_cap() -> None:
-    """``AgentProfile.output_cap`` (``agents/profile.py:229``) is the budget."""
+    """``AgentProfile.output_cap`` (``agents/profile.py:234``) is the budget."""
 
     assert DEFAULT_OUTPUT_CAP == 51200
     big = "a" * 300

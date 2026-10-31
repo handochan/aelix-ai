@@ -8,7 +8,7 @@ Finding OC-4 settled this as CONDITIONAL rather than always-on. Both halves are
 pinned here:
 
 * clause 1 is the regression guard for the ``inherit_skills: true`` DEFAULT
-  (``agents/profile.py:187``) — an always-on ``--no-approve`` would silently
+  (``agents/profile.py:192``) — an always-on ``--no-approve`` would silently
   stop a skills-only repo's skills from loading, for zero security gain, and
   the child's Notice goes to stderr where a successful run never surfaces it;
 * clause 2 is the escalation the flag exists for — a MODEL-CHOSEN cwd
