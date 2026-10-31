@@ -143,8 +143,9 @@ ALIASES: dict[str, str] = {
 #: GUIDE. It does not follow that the install has no answer, and the first
 #: revision of this text implied it did — #101's L10 review. The packaged
 #: `writing-skills` skill ships in the same wheel and is exactly the answer: the
-#: SKILL.md format, the frontmatter rules the loader enforces, the three load
-#: tiers and the trust gate. Telling a user "no guide covers this" while the
+#: SKILL.md format, the frontmatter rules the loader enforces, the load
+#: tiers and the trust gate. (#511's `skills-and-prompts` guide is about turning
+#: skills on and off, not writing one, so the near miss stays.) Telling a user "no guide covers this" while the
 #: file sits inside their install is a worse failure than having no answer,
 #: because they have no way to find out otherwise.
 #:
@@ -155,10 +156,11 @@ NEAR_MISSES: dict[str, str] = {
     "skills": (
         "no guide covers writing a skill, but the packaged `writing-skills` "
         "skill does — the SKILL.md format, the frontmatter the loader "
-        "enforces, the three directories skills load from, and the trust gate. "
-        "The guides cover the neighbouring parts: `agent-profiles` (the "
-        "`skills:` frontmatter key, which takes paths) and `project-trust` "
-        "(why a project-local .aelix/skills/ is gated)."
+        "enforces, the directories skills load from, and the trust gate. "
+        "The guides cover the neighbouring parts: `skills-and-prompts` "
+        "(turning skills on and off: `/skill` and the `skills` settings list), "
+        "`agent-profiles` (the `skills:` frontmatter key, which takes paths) and "
+        "`project-trust` (why a project-local .aelix/skills/ is gated)."
     ),
     "mcp": (
         "no guide covers MCP servers on their own. `extension-authoring` "

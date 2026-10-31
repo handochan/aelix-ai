@@ -45,6 +45,18 @@ Two structural details that decide whether you are asked at all:
   (`project_trust.py:883-884`). There is nothing to gate, so there is no
   question to ask.
 
+**Saving a project choice creates the gate.** `/skill`'s "This project" target
+(#511, ADR-0279 D3) writes `<cwd>/.aelix/settings.json`. In a folder that had
+no such file, that write is what puts the folder under this gate: from the next
+launch the folder is decided like any other with a gated resource — an
+extension's `project_trust` answer, then a saved decision, then
+`defaultProjectTrust`, then the question (`project_trust.py`'s order; `-p`
+denies, so needs `--approve`, where nothing earlier decides) — so the panel says this and waits
+for a second Enter before creating it. In an untrusted folder the
+target cannot be chosen at all, and the project's skills appear in `/skill` as
+one locked row whose count comes from listing `.aelix/skills/`: no `SKILL.md`
+in it is opened. See [skills-and-prompts](skills-and-prompts.md).
+
 `.aelix/teams/` is reserved and deliberately **not** checked — that clause lands
 with the loader that reads team descriptors, not before it
 (`project_trust.py:240-242`).
@@ -192,7 +204,7 @@ between words at your terminal's width, as pi's does (#380).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1752`, registered at `:2302`)
+selector from inside a session (`tui/commands.py:1775`, registered at `:2325`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every
@@ -237,7 +249,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:922-924`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3425-3430`, the text at `:953-958`), because a silent drop looks identical to a
+(`cli/entry.py:3542-3547`, the text at `:962-967`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

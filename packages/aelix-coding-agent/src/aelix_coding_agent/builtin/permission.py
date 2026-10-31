@@ -865,7 +865,7 @@ class PermissionExtension:
             # custom shell through: ``create_bash_tool`` reads
             # ``opts["shell_path"]`` (``tools/bash.py:1149-1151``) but no caller sets
             # it, and ``SettingsManager.get_shell_path()``
-            # (``settings_manager.py:1430``) is referenced only by its own
+            # (``settings_manager.py:1682``) is referenced only by its own
             # test. Treat that as a coincidence, not an invariant — if
             # ``shell_path`` is ever wired to the tool, this gate MUST thread
             # the same value, or it will reason about one shell while another

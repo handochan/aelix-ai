@@ -1,0 +1,1239 @@
+{
+ "generator": "minimatch 10.2.6 (pi coding-agent's lockfile), minimatch(value, pattern) with no options",
+ "corpora": [
+  {
+   "values": [
+    "skill1",
+    "skill2",
+    "skill3",
+    "skill4",
+    "skill10",
+    "skill01",
+    "foo",
+    "bar",
+    "baz",
+    "foobar",
+    "foo.md",
+    "bar.md",
+    ".env",
+    ".hidden/x",
+    "a/b/c.ts",
+    "c.ts",
+    "a/.b/c.ts",
+    "skills/pdf-tools/SKILL.md",
+    "skills/pdf-tools",
+    "pdf-tools",
+    "deploy-check",
+    "release-notes",
+    "x1",
+    "xa",
+    "x",
+    "abc",
+    "aXc",
+    "a-c",
+    "file.MD",
+    "README.md",
+    "notes/today.md",
+    "a/b",
+    "a",
+    "b",
+    "-x",
+    "[x]",
+    "a{b}c",
+    "ab",
+    "abab",
+    "aab",
+    "b1",
+    "c2",
+    "z9",
+    "a.b.c",
+    "foo/bar/baz",
+    "q"
+   ],
+   "matches": {
+    "skill{1..3}": [
+     "skill1",
+     "skill2",
+     "skill3"
+    ],
+    "skill{01..03}": [
+     "skill01"
+    ],
+    "skill{1..10..3}": [
+     "skill1",
+     "skill4",
+     "skill10"
+    ],
+    "skill{3..1}": [
+     "skill1",
+     "skill2",
+     "skill3"
+    ],
+    "{a..c}": [
+     "a",
+     "b"
+    ],
+    "x{a..c}": [
+     "xa"
+    ],
+    "@(foo|bar)": [
+     "foo",
+     "bar"
+    ],
+    "?(foo|bar)": [
+     "foo",
+     "bar"
+    ],
+    "*(foo|bar)": [
+     "foo",
+     "bar",
+     "foobar"
+    ],
+    "+(ab)": [
+     "ab",
+     "abab"
+    ],
+    "!(foo)": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     ".env",
+     ".hidden/x",
+     "a/b/c.ts",
+     "c.ts",
+     "a/.b/c.ts",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "notes/today.md",
+     "a/b",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "foo/bar/baz",
+     "q"
+    ],
+    "!(foo|bar)": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     ".env",
+     ".hidden/x",
+     "a/b/c.ts",
+     "c.ts",
+     "a/.b/c.ts",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "notes/today.md",
+     "a/b",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "foo/bar/baz",
+     "q"
+    ],
+    "!(*.md)": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     ".env",
+     ".hidden/x",
+     "a/b/c.ts",
+     "c.ts",
+     "a/.b/c.ts",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "notes/today.md",
+     "a/b",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "foo/bar/baz",
+     "q"
+    ],
+    "foo!(bar)": [
+     "foo",
+     "foo.md"
+    ],
+    "*.@(md|ts)": [
+     "foo.md",
+     "bar.md",
+     "c.ts",
+     "README.md"
+    ],
+    "@(foo|bar).md": [
+     "foo.md",
+     "bar.md"
+    ],
+    "+(a|b)": [
+     "a",
+     "b",
+     "ab",
+     "abab",
+     "aab"
+    ],
+    "*(a)b": [
+     "b",
+     "ab",
+     "aab"
+    ],
+    "[[:alpha:]]*": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     "c.ts",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "a",
+     "b",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "q"
+    ],
+    "[[:digit:]]": [],
+    "x[0-9]": [
+     "x1"
+    ],
+    "x[!0-9]": [
+     "xa"
+    ],
+    "x[^0-9]": [
+     "xa"
+    ],
+    "[]x]": [
+     "x"
+    ],
+    "[!a-c]*": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "foobar",
+     "foo.md",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "file.MD",
+     "README.md",
+     "-x",
+     "[x]",
+     "z9",
+     "q"
+    ],
+    "a\\*c": [],
+    "a[-]c": [
+     "a-c"
+    ],
+    "**/*.ts": [
+     "a/b/c.ts",
+     "c.ts"
+    ],
+    "**/c.ts": [
+     "a/b/c.ts",
+     "c.ts"
+    ],
+    "*.ts": [
+     "c.ts"
+    ],
+    "*": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     "c.ts",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "q"
+    ],
+    "?": [
+     "x",
+     "a",
+     "b",
+     "q"
+    ],
+    "??": [
+     "x1",
+     "xa",
+     "-x",
+     "ab",
+     "b1",
+     "c2",
+     "z9"
+    ],
+    "*/b": [
+     "a/b"
+    ],
+    "**": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     "a/b/c.ts",
+     "c.ts",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "notes/today.md",
+     "a/b",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "foo/bar/baz",
+     "q"
+    ],
+    "**/pdf-tools": [
+     "skills/pdf-tools",
+     "pdf-tools"
+    ],
+    "skills/**": [
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools"
+    ],
+    "{foo,bar}": [
+     "foo",
+     "bar"
+    ],
+    "{foo,{bar,baz}}": [
+     "foo",
+     "bar",
+     "baz"
+    ],
+    "a{b}c": [
+     "a{b}c"
+    ],
+    "{}": [],
+    "#foo": [],
+    "\\#foo": [],
+    "a?c": [
+     "abc",
+     "aXc",
+     "a-c"
+    ],
+    "*foo*": [
+     "foo",
+     "foobar",
+     "foo.md"
+    ],
+    "foo*": [
+     "foo",
+     "foobar",
+     "foo.md"
+    ],
+    "*bar": [
+     "bar",
+     "foobar"
+    ],
+    "!(foo)*": [
+     "skill1",
+     "skill2",
+     "skill3",
+     "skill4",
+     "skill10",
+     "skill01",
+     "foo",
+     "bar",
+     "baz",
+     "foobar",
+     "foo.md",
+     "bar.md",
+     ".env",
+     ".hidden/x",
+     "a/b/c.ts",
+     "c.ts",
+     "a/.b/c.ts",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "pdf-tools",
+     "deploy-check",
+     "release-notes",
+     "x1",
+     "xa",
+     "x",
+     "abc",
+     "aXc",
+     "a-c",
+     "file.MD",
+     "README.md",
+     "notes/today.md",
+     "a/b",
+     "a",
+     "b",
+     "-x",
+     "[x]",
+     "a{b}c",
+     "ab",
+     "abab",
+     "aab",
+     "b1",
+     "c2",
+     "z9",
+     "a.b.c",
+     "foo/bar/baz",
+     "q"
+    ],
+    "@(a|b)/@(b|c)": [
+     "a/b"
+    ],
+    "*(a|b)+(c)": [
+     "abc"
+    ],
+    "README.*": [
+     "README.md"
+    ],
+    "*.MD": [
+     "file.MD"
+    ],
+    "[a-z][0-9]": [
+     "x1",
+     "b1",
+     "c2",
+     "z9"
+    ],
+    "{a,b}{1,2}": [
+     "b1"
+    ],
+    "{1..2}{a..b}": [],
+    "pdf-*": [
+     "pdf-tools"
+    ],
+    "{deploy,release}-*": [
+     "deploy-check",
+     "release-notes"
+    ],
+    "*-@(check|notes)": [
+     "deploy-check",
+     "release-notes"
+    ]
+   }
+  },
+  {
+   "values": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "ab",
+    "ac",
+    "a1",
+    "a2",
+    "a3",
+    "a-1",
+    "a01",
+    "a02",
+    "a10",
+    ".env",
+    "env",
+    ".x/y",
+    "x/.y",
+    "x/y",
+    "x/y/z",
+    "abc",
+    "aBc",
+    "ABC",
+    "b.md",
+    ".md",
+    "a.b",
+    "{a,b}",
+    "a,b",
+    "(a)",
+    "a|b",
+    "foo",
+    "foobar",
+    "fooo",
+    "fo",
+    "f",
+    "bbb",
+    "abbb",
+    "a.",
+    "SKILL.md",
+    "skills/x/SKILL.md",
+    "skills/.x/SKILL.md",
+    "1",
+    "2",
+    "10",
+    "-1",
+    "-2",
+    "00"
+   ],
+   "matches": {
+    "{a..e..2}": [
+     "a",
+     "c",
+     "e"
+    ],
+    "a{-1..2}": [
+     "a1",
+     "a2",
+     "a-1"
+    ],
+    "a{01..10}": [
+     "a01",
+     "a02",
+     "a10"
+    ],
+    "a{1..3}": [
+     "a1",
+     "a2",
+     "a3"
+    ],
+    "{-2..1}": [
+     "1",
+     "-1",
+     "-2"
+    ],
+    "{00..02}": [
+     "00"
+    ],
+    "@(a|*(b))": [
+     "a",
+     "b",
+     "bbb"
+    ],
+    "?(.env)": [
+     ".env"
+    ],
+    "*(.)env": [
+     ".env",
+     "env"
+    ],
+    "[[:upper:]]*": [
+     "ABC",
+     "SKILL.md"
+    ],
+    "\\{a,b\\}": [
+     "{a,b}"
+    ],
+    "{a,}": [
+     "a"
+    ],
+    "{,a}": [
+     "a"
+    ],
+    "{a,b}*": [
+     "a",
+     "b",
+     "ab",
+     "ac",
+     "a1",
+     "a2",
+     "a3",
+     "a-1",
+     "a01",
+     "a02",
+     "a10",
+     "abc",
+     "aBc",
+     "b.md",
+     "a.b",
+     "a,b",
+     "a|b",
+     "bbb",
+     "abbb",
+     "a."
+    ],
+    "**/.y": [
+     "x/.y"
+    ],
+    "x/**": [
+     "x/y",
+     "x/y/z"
+    ],
+    "x/**/z": [
+     "x/y/z"
+    ],
+    "**/SKILL.md": [
+     "SKILL.md",
+     "skills/x/SKILL.md"
+    ],
+    "skills/*/SKILL.md": [
+     "skills/x/SKILL.md"
+    ],
+    "*/SKILL.md": [],
+    "*.md": [
+     "b.md",
+     "SKILL.md"
+    ],
+    "@(*.md|*.b)": [
+     "b.md",
+     "a.b",
+     "SKILL.md"
+    ],
+    "+([a-c])": [
+     "a",
+     "b",
+     "c",
+     "ab",
+     "ac",
+     "abc",
+     "bbb",
+     "abbb"
+    ],
+    "a!(b)c": [
+     "ac",
+     "aBc"
+    ],
+    "!(a)": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "ab",
+     "ac",
+     "a1",
+     "a2",
+     "a3",
+     "a-1",
+     "a01",
+     "a02",
+     "a10",
+     ".env",
+     "env",
+     ".x/y",
+     "x/.y",
+     "x/y",
+     "x/y/z",
+     "abc",
+     "aBc",
+     "ABC",
+     "b.md",
+     ".md",
+     "a.b",
+     "{a,b}",
+     "a,b",
+     "a|b",
+     "foo",
+     "foobar",
+     "fooo",
+     "fo",
+     "f",
+     "bbb",
+     "abbb",
+     "a.",
+     "SKILL.md",
+     "skills/x/SKILL.md",
+     "skills/.x/SKILL.md",
+     "1",
+     "2",
+     "10",
+     "-1",
+     "-2",
+     "00"
+    ],
+    "!!a": [
+     "a"
+    ],
+    "!!(a)": [
+     "(a)"
+    ],
+    "*(@(a|b))": [
+     "a",
+     "b",
+     "ab",
+     "bbb",
+     "abbb"
+    ],
+    "a[.]b": [
+     "a.b"
+    ],
+    "[!.]*": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "ab",
+     "ac",
+     "a1",
+     "a2",
+     "a3",
+     "a-1",
+     "a01",
+     "a02",
+     "a10",
+     "env",
+     "abc",
+     "aBc",
+     "ABC",
+     "b.md",
+     "a.b",
+     "{a,b}",
+     "a,b",
+     "(a)",
+     "a|b",
+     "foo",
+     "foobar",
+     "fooo",
+     "fo",
+     "f",
+     "bbb",
+     "abbb",
+     "a.",
+     "SKILL.md",
+     "1",
+     "2",
+     "10",
+     "-1",
+     "-2",
+     "00"
+    ],
+    "x/*": [
+     "x/y"
+    ],
+    "?(a|b)c": [
+     "c",
+     "ac"
+    ],
+    "a?(b|c)": [
+     "a",
+     "ab",
+     "ac"
+    ],
+    "{a,b}{,c}": [
+     "a",
+     "b",
+     "ac"
+    ],
+    "{x,{y,{z}}}": [],
+    "a{,b}{,c}": [
+     "a",
+     "ab",
+     "ac",
+     "abc"
+    ],
+    "[a-c]": [
+     "a",
+     "b",
+     "c"
+    ],
+    "[a-]": [
+     "a"
+    ],
+    "[-a]": [
+     "a"
+    ],
+    "[\\]]": [],
+    "[\\-a]": [
+     "a"
+    ],
+    "a\\?": [],
+    "\\a": [
+     "a"
+    ],
+    "f*o": [
+     "foo",
+     "fooo",
+     "fo"
+    ],
+    "f+(o)": [
+     "foo",
+     "fooo",
+     "fo"
+    ],
+    "f*(o)": [
+     "foo",
+     "fooo",
+     "fo",
+     "f"
+    ],
+    "fo?(o)": [
+     "foo",
+     "fo"
+    ]
+   }
+  },
+  {
+   "values": [
+    ".env",
+    "env",
+    ".x",
+    "x",
+    ".env.md",
+    ".a"
+   ],
+   "matches": {
+    "@(*)": [
+     "env",
+     "x"
+    ],
+    "?(*)": [
+     "env",
+     "x"
+    ],
+    "+(*)": [
+     "env",
+     "x"
+    ],
+    "*(*)": [
+     "env",
+     "x"
+    ],
+    "@(.*|x)": [
+     ".env",
+     ".x",
+     "x",
+     ".env.md",
+     ".a"
+    ],
+    "@(*|.env)": [
+     ".env",
+     "env",
+     "x"
+    ],
+    "?(.env)": [
+     ".env"
+    ],
+    "*(.)env": [
+     ".env",
+     "env"
+    ],
+    "@(.env)": [
+     ".env"
+    ],
+    "+(.a)": [
+     ".a"
+    ],
+    "!(x)": [
+     ".env",
+     "env",
+     ".x",
+     "x",
+     ".env.md",
+     ".a"
+    ],
+    "@(?)env": [],
+    "@(.)*": [
+     ".env",
+     ".x",
+     ".env.md",
+     ".a"
+    ]
+   }
+  },
+  {
+   "values": [
+    "pdf-tools",
+    "pdf-tools/SKILL.md",
+    "pdf-tools/a/b",
+    "a",
+    "a/b",
+    "a/b/c",
+    "x/a",
+    "x/a/b",
+    "x/y/a",
+    "x/y/a/b",
+    "skills/notes.md",
+    "skills/pdf-tools/SKILL.md",
+    "skills/pdf-tools",
+    "skills/.x/SKILL.md",
+    "skills/.x",
+    ".a",
+    "a/.b",
+    "a/.b/c",
+    "x",
+    "b",
+    "/b",
+    "/a/b",
+    "a/x",
+    "ab",
+    "c",
+    "ca",
+    "cab",
+    "ca/b",
+    "-",
+    "_/x",
+    "b/c"
+   ],
+   "matches": {
+    "pdf-tools/**": [
+     "pdf-tools/SKILL.md",
+     "pdf-tools/a/b"
+    ],
+    "a/**": [
+     "a/b",
+     "a/b/c",
+     "a/x"
+    ],
+    "**/a/**": [
+     "pdf-tools/a/b",
+     "a/b",
+     "a/b/c",
+     "x/a/b",
+     "x/y/a/b",
+     "/a/b",
+     "a/x"
+    ],
+    "**/a": [
+     "a",
+     "x/a",
+     "x/y/a"
+    ],
+    "**": [
+     "pdf-tools",
+     "pdf-tools/SKILL.md",
+     "pdf-tools/a/b",
+     "a",
+     "a/b",
+     "a/b/c",
+     "x/a",
+     "x/a/b",
+     "x/y/a",
+     "x/y/a/b",
+     "skills/notes.md",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "x",
+     "b",
+     "/b",
+     "/a/b",
+     "a/x",
+     "ab",
+     "c",
+     "ca",
+     "cab",
+     "ca/b",
+     "-",
+     "_/x",
+     "b/c"
+    ],
+    "a/**/b": [
+     "a/b"
+    ],
+    "a/**/**": [
+     "a/b",
+     "a/b/c",
+     "a/x"
+    ],
+    "**/**": [
+     "pdf-tools",
+     "pdf-tools/SKILL.md",
+     "pdf-tools/a/b",
+     "a",
+     "a/b",
+     "a/b/c",
+     "x/a",
+     "x/a/b",
+     "x/y/a",
+     "x/y/a/b",
+     "skills/notes.md",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "x",
+     "b",
+     "/b",
+     "/a/b",
+     "a/x",
+     "ab",
+     "c",
+     "ca",
+     "cab",
+     "ca/b",
+     "-",
+     "_/x",
+     "b/c"
+    ],
+    "skills/!(pdf-tools)/**": [],
+    "skills/**": [
+     "skills/notes.md",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools"
+    ],
+    "skills/*/**": [
+     "skills/pdf-tools/SKILL.md"
+    ],
+    "@(|x)": [
+     "x"
+    ],
+    "@(|a)b": [
+     "b",
+     "ab"
+    ],
+    "?(|a)": [
+     "a"
+    ],
+    "*(|a)": [
+     "a"
+    ],
+    "{a,}/b": [
+     "a/b",
+     "/b"
+    ],
+    "{a,}x": [
+     "x"
+    ],
+    "a/../b": [
+     "b"
+    ],
+    "x/../a": [
+     "a"
+    ],
+    "a/./b": [],
+    "c*/**": [
+     "ca/b"
+    ],
+    "?/**": [
+     "a/b",
+     "a/b/c",
+     "x/a",
+     "x/a/b",
+     "x/y/a",
+     "x/y/a/b",
+     "a/x",
+     "_/x",
+     "b/c"
+    ],
+    "b/**": [
+     "b/c"
+    ],
+    "**/b/**": [
+     "a/b/c",
+     "b/c"
+    ],
+    "**/?/**": [
+     "pdf-tools/a/b",
+     "a/b",
+     "a/b/c",
+     "x/a",
+     "x/a/b",
+     "x/y/a",
+     "x/y/a/b",
+     "/a/b",
+     "a/x",
+     "_/x",
+     "b/c"
+    ],
+    "!(|a)": [
+     "pdf-tools",
+     "pdf-tools/SKILL.md",
+     "pdf-tools/a/b",
+     "a",
+     "a/b",
+     "a/b/c",
+     "x/a",
+     "x/a/b",
+     "x/y/a",
+     "x/y/a/b",
+     "skills/notes.md",
+     "skills/pdf-tools/SKILL.md",
+     "skills/pdf-tools",
+     "skills/.x/SKILL.md",
+     "skills/.x",
+     ".a",
+     "a/.b",
+     "a/.b/c",
+     "x",
+     "b",
+     "/b",
+     "/a/b",
+     "a/x",
+     "ab",
+     "c",
+     "ca",
+     "cab",
+     "ca/b",
+     "-",
+     "_/x",
+     "b/c"
+    ],
+    "+(|a)b": [
+     "b",
+     "ab"
+    ],
+    "{,a}": [
+     "a"
+    ],
+    "a/**/": [],
+    "/**": [
+     "/b",
+     "/a/b"
+    ],
+    "/a/**": [
+     "/a/b"
+    ],
+    "**/a/**/b": [
+     "pdf-tools/a/b",
+     "a/b",
+     "x/a/b",
+     "x/y/a/b",
+     "/a/b"
+    ],
+    "a/**/b/**": [
+     "a/b/c"
+    ]
+   }
+  }
+ ]
+}

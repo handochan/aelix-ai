@@ -410,7 +410,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:1454-1495``) resolves
+    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1463-1506``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -426,7 +426,7 @@ class Args:
 
     Pi's flag takes a template *name*, which presupposes a template package
     manager aelix does not have; ``--skill`` above takes a path for exactly the
-    same reason. Read by ``entry._resolve_prompt_template_dirs``. Until #115 it
+    same reason. Read by ``entry._resolve_prompt_template_sources``. Until #115 it
     was read by NOTHING while ``--help`` advertised it as working, which is the
     same defect that got ``--no-prompt-templates`` deleted into
     :data:`REMOVED_FLAGS`.

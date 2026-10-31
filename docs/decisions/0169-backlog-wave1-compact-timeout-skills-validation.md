@@ -114,3 +114,14 @@ that auto-fetched remote `$ref` = an SSRF vector):
 - `jsonschema` is now a first-class dependency of `aelix-ai`.
 - Protected-core touch was confined to #13's necessary edits (`aelix-ai/tools.py`,
   `aelix-agent-core/loop.py`); #10/#11/#12 are pure coding-agent changes.
+
+
+## Note (2026-10-31) — `/skills` is now `/skill`, and same-name skills are deduplicated
+
+*Amended 2026-10-31 by [ADR-0279](0279-resources-are-turned-on-and-off-through-one-settings-contract.md)
+([#511](https://github.com/handochan/aelix-ai/issues/511)).* #12's read-only
+`/skills` list became the `/skill` on/off panel (`/skills` is its alias; the
+list remains where no panel is wired). The scan order is now precedence order —
+`--skill`, project, global, bundled — and a same-name skill loads once, from the
+first tier that has it (ADR-0279 D9); before, every copy loaded and the bundled
+one won `/skill:<name>`.

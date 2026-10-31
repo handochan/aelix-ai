@@ -23,6 +23,62 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **`/skill` turns skills on and off, and the `skills` / `prompts` settings
+  lists work (#511, ADR-0279; absorbs #595).** The lists pi documents were in
+  every settings file and read by nothing: `"skills": ["-pdf-tools"]` did
+  nothing, with no warning, and the only way to stop the model seeing a skill
+  was to delete it.
+  - `/skill` (and `/skills`) opens a checklist of every skill found, on or off,
+    grouped by where it came from, with each one's path, description and state.
+    Space turns one on or off, ← → chooses whether Enter saves to your global
+    settings or this project's, typing searches, Enter saves and applies, Esc
+    discards. The panel keeps its height while open and closes in one frame,
+    leaving a summary of what changed in the transcript. A skill forced on by
+    `--skill`, a same-name duplicate and an untrusted project's skills are
+    locked and say why. A save that fails keeps the panel open and names the
+    file; it is never reported as saved.
+  - A change reaches the model from the next message, never inside a running
+    turn; skill text already in the conversation stays. A skill that is off is
+    left out of `<available_skills>`, RPC `get_commands` and `/skill:<name>`,
+    which answers `<name> is off — /skill to turn it on`.
+  - The lists use pi's grammar: a path adds a directory (`"~/.claude/skills"`),
+    `!glob` turns matches off (minimatch's globs, ranges like `{1..3}` and
+    `@(a|b)` groups included), `-name` / `+name` turn one off or on. The project
+    file's entry wins over the global file's; a global name or glob also reaches
+    project skills. The panel edits the list on disk at the moment it saves, so
+    hand edits and another session's saves are kept, and a hand-written glob
+    survives. A nested extglob no longer hangs the launch: it finishes instead
+    of backtracking forever, everyday globs match in milliseconds, and a glob
+    whose braces expand to more than 256 alternatives is not used and is
+    reported instead.
+  - Prompt templates are filtered by the `prompts` list the same way, at launch
+    and on `/reload`; there is no panel for them.
+  - Saving to "This project" in a folder with no `.aelix/settings.json` creates
+    it, which puts the folder under project trust from the next launch (it asks
+    unless a decision is saved or `defaultProjectTrust` decides); the panel says
+    so and asks for a second Enter.
+  - Settings saves hold across sessions: the panel, the setters and RPC
+    `settings/set` take one lock file per settings file before reading it, so
+    two sessions saving at once keep both changes; a file that exists but cannot
+    be read, or was broken by hand since launch, is never overwritten as if it
+    were empty (a queued setting change fails instead); a save that another
+    session keeps waiting gives up after 30 seconds without freezing the TUI; a
+    symlinked settings file stays a symlink; the temporary file a save writes
+    through has a fresh name each time; and a settings file saved with a UTF-8
+    BOM (Notepad) loads, as in pi, instead of failing to.
+  - RPC `settings/set` of `skill_paths` / `prompt_template_paths` edits the
+    global list on disk and fails when the file cannot be written; any RPC
+    `settings/set` now fails when the global settings file did not load, instead
+    of reporting a write that was skipped. `settings/get` no longer turns a
+    string value into a list of characters.
+  - `--prompt-template <file>.md` loads that one template, not every template in
+    its folder.
+  - An entry that matches nothing, a path that is not a directory and a value
+    that is not a list of strings are reported once on stderr at launch, and so
+    is a non-empty `themes`, `packages` or `extensions` key, which nothing reads
+    yet (the extension filter comes with `/extension`'s panel, #25).
+  - New guide: `aelix docs skills-and-prompts`.
+
 - **A delegated agent can be resumed on its own session, inside the limits it
   ran with (#610, ADR-0277).** A delegated agent used to be over once its result
   came back: a stopped one's result (#604) named its session and told the model
@@ -378,6 +434,14 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **When two skills share a name, `--skill` beats the project, which beats your
+  global skills, which beat the bundled ones (#511, ADR-0279 D9).** Before, all
+  of them loaded with no warning, and `/skill:<name>` expanded the bundled copy
+  over your own because the bundled directory was scanned first. The losers are
+  now listed in `/skill` as locked "shadowed" rows naming the winner.
+- **`/reload` rescans the skill and prompt-template directories (#511).** An
+  edited `SKILL.md` or a new skill directory used to need a restart, although
+  the code's own comment said `/reload` was enough.
 - **Every delegation now shows what its agents are doing, in one panel above
   the input (#132, ADR-0278).** A single delegation used to show nothing you
   could see: its status-line segment sat after the yolo disclosure row and was

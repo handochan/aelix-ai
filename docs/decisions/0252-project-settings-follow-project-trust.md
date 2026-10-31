@@ -393,3 +393,16 @@ Review round 2: the width `_render` reads was pinned by no row, so a fixed 78 or
 process terminal's width (`shutil.get_terminal_size`) in its place passed them all; the
 120-then-50 row is red on both (`.omc/probes/b4-b-live/r2/`).
 After the change in a pty at 120, 80 and 80x16: `.omc/probes/b4-b-live/380/after/`.
+
+
+## 11. Note (2026-10-31, #511): a panel can create the project file
+
+*Amended 2026-10-31 by [ADR-0279](0279-resources-are-turned-on-and-off-through-one-settings-contract.md) D3.*
+`/skill`'s "This project" target writes `<cwd>/.aelix/settings.json` through
+`SettingsManager.edit_list`, which refuses an untrusted project exactly as the
+setters do (§A). In a trusted folder that had no such file, the write CREATES
+it — and by §B its existence puts the folder under project trust from the next
+launch (an extension's answer, a saved decision or `defaultProjectTrust` still
+decide before any prompt, and `-p` needs `--approve` only where none does). The panel names that consequence and saves only
+on a second Enter. An untrusted project's skills are shown as one locked row
+counted from a directory listing; no file in it is opened.

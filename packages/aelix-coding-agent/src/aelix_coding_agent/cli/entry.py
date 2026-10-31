@@ -43,8 +43,6 @@ from aelix_agent_core.harness.core import (
     AgentHarnessError,
     AgentHarnessOptions,
 )
-from aelix_agent_core.harness.prompt_templates import load_prompt_templates
-from aelix_agent_core.harness.skills import load_skills
 from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
     create_agent_session_runtime,
@@ -88,10 +86,21 @@ from aelix_coding_agent.cli.session_labels import (
     session_choice_label,
     short_field,
 )
+from aelix_coding_agent.core.prompt_selection import PromptCatalog, load_prompt_catalog
+from aelix_coding_agent.core.resource_selection import ResourceSelection, settings_lists
 from aelix_coding_agent.core.runnable_models import (
     is_runnable,
     turn_refusal,
     unsupported_message,
+)
+from aelix_coding_agent.core.skill_selection import (
+    ApplyGate,
+    SkillCatalog,
+    SkillControl,
+    SkillKind,
+    SkillSource,
+    effective_skills,
+    load_skill_catalog,
 )
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
@@ -1451,65 +1460,175 @@ Hyphenated to match the ``/<name>`` command surface users type and the
 """
 
 
-def _resolve_skill_dirs(
+def _resolve_skill_tiers(
     parsed: Args, cwd: str, project_trusted: bool
-) -> list[str | Path]:
-    """Compose the skill directories to scan (issue #12).
+) -> list[SkillSource]:
+    """Compose the skill directories to scan, each tagged with its tier (issue #12, #511).
 
     - Explicit ``--skill <path>`` entries are always included (resolved against
       ``cwd`` when relative). Aelix has no skill package-manager, so ``--skill``
       is a path to a skill directory (or a ``SKILL.md`` whose parent is
-      scanned) rather than an installable name.
-    - Unless ``--no-skills`` is set: the PACKAGED skills dir that ships inside
-      the wheel, then the global agent skills dir
-      (``~/.aelix/agent/skills``), plus the project-local
-      ``<cwd>/.aelix/skills`` ONLY when the project is trusted — a malicious
-      project ``SKILL.md`` is a prompt-injection vector once skills reach the
-      model (which, since #115, it does), so it is gated like project-local
-      extensions/MCP. Since #115 the trust GATE knows about ``skills/`` too:
-      before that, ``has_trust_requiring_project_resources`` did not count it,
-      so ``project_trusted`` here was always ``True`` for a skills-only repo
-      and this guard decided nothing.
+      scanned) rather than an installable name. An agent profile's ``skills:``
+      land here too (ADR-0196).
+    - Unless ``--no-skills`` is set: the project-local ``<cwd>/.aelix/skills``
+      ONLY when the project is trusted — a malicious project ``SKILL.md`` is a
+      prompt-injection vector once skills reach the model (which, since #115,
+      it does), so it is gated like project-local extensions/MCP. Since #115
+      the trust GATE knows about ``skills/`` too: before that,
+      ``has_trust_requiring_project_resources`` did not count it, so
+      ``project_trusted`` here was always ``True`` for a skills-only repo and
+      this guard decided nothing. Then the global agent skills dir
+      (``~/.aelix/agent/skills``) and the PACKAGED skills dir that ships inside
+      the wheel.
 
-    Ordering is precedence, lowest first: the packaged tier is the fallback a
-    user's own skill of the same name should beat, and ``load_skills`` keeps
-    the first ``SKILL.md`` it finds per directory. It is listed FIRST so an
-    explicit ``--skill`` or a user/project skill wins.
+    The order is precedence (ADR-0279 D9): a same-name skill is taken from the
+    first tier that has it — ``--skill`` > project > global > bundled — and
+    the others are listed as shadowed. Before #511 nothing deduplicated, the
+    bundled directory was scanned FIRST, and ``/skill:<name>`` expanded the
+    bundled copy over the user's own while this docstring claimed the reverse.
 
-    Missing directories are silently skipped by :func:`load_skills`.
+    Missing directories are silently skipped by ``load_skills``.
     """
 
-    dirs: list[str | Path] = []
+    sources: list[SkillSource] = []
     for entry in parsed.skills:
         path = Path(entry)
         if not path.is_absolute():
             path = Path(cwd) / path
         if path.name == "SKILL.md":
             path = path.parent
-        dirs.append(str(path))
+        sources.append(SkillSource("cli", str(path)))
     if not parsed.no_skills:
-        dirs.append(str(packaged_skills_dir()))
-        dirs.append(str(Path(get_agent_dir()) / "skills"))
         if project_trusted:
-            dirs.append(str(Path(cwd) / CONFIG_DIR_NAME / "skills"))
-    return dirs
+            sources.append(SkillSource("project", str(Path(cwd) / CONFIG_DIR_NAME / "skills")))
+        sources.append(SkillSource("global", str(Path(get_agent_dir()) / "skills")))
+        sources.append(SkillSource("bundled", str(packaged_skills_dir())))
+    return sources
 
 
-def _resolve_prompt_template_dirs(
+def _resolve_skill_dirs(
     parsed: Args, cwd: str, project_trusted: bool
 ) -> list[str | Path]:
-    """Compose the prompt-template directories to scan (#115).
+    """The directories of :func:`_resolve_skill_tiers`, in precedence order."""
 
-    The exact shape of :func:`_resolve_skill_dirs`, for the same reasons:
+    return [source.directory for source in _resolve_skill_tiers(parsed, cwd, project_trusted)]
+
+
+def _settings_bases(
+    settings_manager: SettingsManager | None, cwd: str
+) -> tuple[str, str]:
+    """``(global, project)`` directories a settings path entry resolves against (ADR-0279 D1).
+
+    The global file's own directory — ``~/.aelix/agent/`` unless
+    ``AELIX_SETTINGS_PATH`` moved it — and ``<cwd>/.aelix/``.
+    """
+
+    global_path = settings_manager.scope_path("global") if settings_manager is not None else None
+    global_base = str(global_path.parent) if global_path is not None else get_agent_dir()
+    return global_base, str(Path(cwd) / CONFIG_DIR_NAME)
+
+
+def _load_skill_catalog(
+    parsed: Args,
+    cwd: str,
+    project_trusted: bool,
+    settings_manager: SettingsManager | None,
+) -> SkillCatalog:
+    """Scan, deduplicate and filter the skills for this run (#511, ADR-0279).
+
+    The single loader behind launch, ``/reload`` and ``/agents use``: the
+    tiers above, the plain path entries of both ``skills`` lists as extra
+    sources (not under ``--no-skills``), then the lists' ``!`` / ``+`` / ``-``
+    entries. The result's ``skills`` are the enabled ones; read them through
+    :func:`effective_skills`.
+    """
+
+    global_base, project_base = _settings_bases(settings_manager, cwd)
+    lists = settings_lists(
+        settings_manager,
+        "skills",
+        global_base=global_base,
+        project_base=project_base,
+        project_trusted=project_trusted,
+    )
+    return load_skill_catalog(
+        _resolve_skill_tiers(parsed, cwd, project_trusted),
+        lists,
+        settings_sources=not parsed.no_skills,
+        check_entries=not parsed.no_skills,
+    )
+
+
+def _load_prompt_catalog(
+    parsed: Args,
+    cwd: str,
+    project_trusted: bool,
+    settings_manager: SettingsManager | None,
+) -> PromptCatalog:
+    """The prompt templates for this run, filtered by both ``prompts`` lists (#511).
+
+    ``--prompt-template`` paths are forced on — a file there is that one
+    template, a directory its templates; the global and the trusted project
+    directory, and the lists' plain path entries, are filtered. Loaded at
+    launch and again on ``/reload`` (ADR-0279 D10).
+    """
+
+    global_base, project_base = _settings_bases(settings_manager, cwd)
+    lists = settings_lists(
+        settings_manager,
+        "prompts",
+        global_base=global_base,
+        project_base=project_base,
+        project_trusted=project_trusted,
+    )
+    return load_prompt_catalog(
+        _resolve_prompt_template_sources(parsed, cwd, project_trusted), lists
+    )
+
+
+def _unsupported_settings_warnings(settings_manager: SettingsManager | None) -> list[str]:
+    """Keys with no consumer yet are said, not silently accepted (#511, ADR-0279 D8, #84).
+
+    ``themes`` and ``packages`` have none; ``extensions`` gets its filter with
+    ``/extension``'s panel (#25) — until then ``-e`` adds an extension path.
+    """
+
+    if settings_manager is None:
+        return []
+    out: list[str] = []
+    for scope in ("global", "project"):
+        settings = (
+            settings_manager.get_global_settings()
+            if scope == "global"
+            else settings_manager.get_project_settings()
+        )
+        path = settings_manager.scope_path(scope) or f"the {scope} settings"
+        for key in ("themes", "packages", "extensions"):
+            value = getattr(settings, key, None)
+            if value:
+                out.append(
+                    f'{path}: "{key}" is not supported yet; its entries are ignored'
+                )
+    return out
+
+
+def _resolve_prompt_template_sources(
+    parsed: Args, cwd: str, project_trusted: bool
+) -> list[tuple[str, str]]:
+    """The prompt-template paths to load, each with its scope (#115, #511).
+
+    The shape of :func:`_resolve_skill_tiers`, for the same reasons:
 
     - ``--prompt-template <path>`` entries are always included (resolved
-      against ``cwd`` when relative). Pi's flag takes a template *name*, which
-      presupposes a template package manager aelix does not have — the same
-      reason ``--skill`` takes a path. Before #115 this flag was parsed into
-      ``Args`` and read by NOTHING, while ``--help`` advertised it as working;
-      its negative twin ``--no-prompt-templates`` had already been deleted into
-      ``args.REMOVED_FLAGS`` for exactly that. Redefining the surviving
-      spelling to a path is what makes the help text true.
+      against ``cwd`` when relative), scope ``cli``: forced on. Pi's flag takes
+      a template *name*, which presupposes a template package manager aelix
+      does not have — the same reason ``--skill`` takes a path. Before #115
+      this flag was parsed into ``Args`` and read by NOTHING, while ``--help``
+      advertised it as working; its negative twin ``--no-prompt-templates`` had
+      already been deleted into ``args.REMOVED_FLAGS`` for exactly that.
+      Redefining the surviving spelling to a path is what makes the help text
+      true. A ``.md`` FILE is that one template (#511, C17): until #511 it was
+      widened to its directory, which loaded — and forced on — every sibling.
     - The global agent dir, then the project-local ``<cwd>/.aelix/prompt-
       templates`` ONLY when trusted. A template body becomes a USER TURN
       verbatim on ``/<name>``, so a cloned repo dropping one in is the same
@@ -1522,21 +1641,19 @@ def _resolve_prompt_template_dirs(
     simply has no template directories, and reviving a flag that never worked
     is not needed to make this one honest.
 
-    Missing directories are silently skipped by ``load_prompt_templates``.
+    Missing paths are silently skipped.
     """
 
-    dirs: list[str | Path] = []
+    sources: list[tuple[str, str]] = []
     for entry in parsed.prompt_templates:
         path = Path(entry)
         if not path.is_absolute():
             path = Path(cwd) / path
-        if path.suffix == ".md":
-            path = path.parent
-        dirs.append(str(path))
-    dirs.append(str(Path(get_agent_dir()) / _PROMPT_TEMPLATES_DIRNAME))
+        sources.append(("cli", str(path)))
+    sources.append(("global", str(Path(get_agent_dir()) / _PROMPT_TEMPLATES_DIRNAME)))
     if project_trusted:
-        dirs.append(str(Path(cwd) / CONFIG_DIR_NAME / _PROMPT_TEMPLATES_DIRNAME))
-    return dirs
+        sources.append(("project", str(Path(cwd) / CONFIG_DIR_NAME / _PROMPT_TEMPLATES_DIRNAME)))
+    return sources
 
 
 async def apply_post_registration_tool_policy(
@@ -3447,8 +3564,17 @@ async def _async_main(argv: list[str]) -> int:
     # reloads and REPLACES ``skills_holder["result"]`` in place. The factory below
     # reads the holder on every (re)build, so the new set survives /new, /fork,
     # /resume and reload — which a captured local provably would not.
-    skill_dirs = _resolve_skill_dirs(parsed, cwd, project_trusted)
-    skills_holder: dict[str, Any] = {"result": load_skills(skill_dirs)}
+    #
+    # #511 (ADR-0279) — the holder's result is a ``SkillCatalog``: every skill
+    # found (deduplicated by name) plus the subset the settings leave ON in
+    # ``.skills``. Everything that hands skills to the harness or the prompt
+    # reads ``effective_skills(skills_holder)``; ``/reload`` rescans in the
+    # factory, and the ``/skill`` panel replaces the result when it applies.
+    skills_holder: dict[str, Any] = {
+        "result": _load_skill_catalog(parsed, cwd, project_trusted, settings_manager)
+    }
+    # #511 (Codex X2) — held by the harness factory for each build; see there.
+    skill_apply_gate = ApplyGate()
     for diag in skills_holder["result"].diagnostics:
         print(
             f"Warning: skill load: {diag.message} ({diag.path})",
@@ -3456,18 +3582,24 @@ async def _async_main(argv: list[str]) -> int:
         )
 
     # #115 — prompt templates, the second resource carrier that loaded nowhere.
-    # A plain local, not a holder: unlike ``skills:``, an agent profile has no
-    # ``prompt_templates:`` field, so nothing can swap the set mid-session and
-    # there is no rebuild for a holder to survive. If a profile ever gains one,
-    # this becomes a holder for the same reason ADR-0196 made skills one.
-    prompt_template_result = load_prompt_templates(
-        _resolve_prompt_template_dirs(parsed, cwd, project_trusted)
-    )
-    for diag in prompt_template_result.diagnostics:
+    # #511 — a holder now, like skills: ``/reload`` re-reads the directories and
+    # the ``prompts`` lists (ADR-0279 D10).
+    prompt_holder: dict[str, PromptCatalog] = {
+        "result": _load_prompt_catalog(parsed, cwd, project_trusted, settings_manager)
+    }
+    for diag in prompt_holder["result"].diagnostics:
         print(
             f"Warning: prompt template load: {diag.message} ({diag.path})",
             file=sys.stderr,
         )
+    # One warning per launch for a settings entry that is malformed, names
+    # nothing, or belongs to a key nothing reads yet (ADR-0279 D8).
+    for problem in (
+        *skills_holder["result"].problems,
+        *prompt_holder["result"].problems,
+        *_unsupported_settings_warnings(settings_manager),
+    ):
+        print(f"Warning: settings: {problem}", file=sys.stderr)
 
     # #367 — the late-provider rule (``runtime_bootstrap.LateRoute``): a provider
     # in the registry now that was not there when the launch route was chosen is
@@ -3541,7 +3673,7 @@ async def _async_main(argv: list[str]) -> int:
             profile.model is not None or profile.provider is not None
         )
 
-    async def _harness_factory(
+    async def _build_harness(
         new_session: Session, *, reload_seed: ReloadSeed | None = None
     ) -> AgentHarness:
         # #376 — the session's own model, when it has history and the user named
@@ -3560,6 +3692,19 @@ async def _async_main(argv: list[str]) -> int:
             entries = await new_session.get_branch()
             if build_session_context(entries).messages:
                 restore_selection = resolve_resumed_model(entries)
+        if reload_seed is not None:
+            # #511 (ADR-0279 D10) — ``/reload`` rescans the skill and prompt
+            # directories as pi does; the runtime reloaded the settings files
+            # just before this build. Before #511 an edited SKILL.md or a new
+            # skill directory needed a restart, while ``resource_commands``
+            # said ``/reload`` was enough. Load warnings are not reprinted: this
+            # runs under the TUI, and they were said once at launch.
+            skills_holder["result"] = _load_skill_catalog(
+                parsed, cwd, project_trusted, settings_manager
+            )
+            prompt_holder["result"] = _load_prompt_catalog(
+                parsed, cwd, project_trusted, settings_manager
+            )
         restore_report: dict[str, Any] = {}
         opts = await _build_harness_options(
             parsed,
@@ -3596,13 +3741,13 @@ async def _async_main(argv: list[str]) -> int:
             # replace the loaded set in place, and the catalog has to follow it
             # onto every later /new, /fork, /resume and /reload. This is the
             # same reason ``set_skills`` below reads the holder too.
-            skills=skills_holder["result"].skills,
+            skills=effective_skills(skills_holder),
             # Issue #120 — the same holder, read LATE. ``skills=`` above is a
             # value snapshot for the init-time chunks; this is the live read the
             # post-registration and runtime rebuilds go through, so a tool
             # change after ``/agents use`` re-emits the CURRENT catalog and not
             # the one this build started with.
-            skills_provider=lambda: skills_holder["result"].skills,
+            skills_provider=lambda: effective_skills(skills_holder),
             # Issue #24-FU — the reload path (AgentSessionRuntime.reload) hands a
             # ReloadSeed carrying the user's prior flag values; pre-seed them into
             # the rebuilt extension runtime BEFORE ``setup()`` re-runs. ``None`` on
@@ -3760,14 +3905,15 @@ async def _async_main(argv: list[str]) -> int:
         if callable(_bind_adapters):
             _bind_adapters()
         # Re-apply the loaded skills on every (re)build (issue #12). Read through
-        # the holder (ADR-0196) so a ``/agents use`` skill swap reaches rebuilds.
-        harness.set_skills(skills_holder["result"].skills)
+        # the holder (ADR-0196) so a ``/agents use`` skill swap reaches rebuilds,
+        # and through ``effective_skills`` so only the enabled ones do (#511).
+        harness.set_skills(effective_skills(skills_holder))
         # #115 — the same re-apply for prompt templates. ``set_prompt_templates``
         # has existed since Sprint 6h₁ with no caller; this is it. The RPC
         # ``get_commands`` reader (``rpc/rpc_mode.py``) already advertised
         # ``harness.prompt_templates`` and was therefore always advertising an
         # empty list.
-        harness.set_prompt_templates(prompt_template_result.templates)
+        harness.set_prompt_templates(prompt_holder["result"].templates)
         if held is not None:
             # #367 verify round 4, B1 — the TURN GATE. The placeholder above
             # only covers turns on the held model: a handler in this
@@ -3800,6 +3946,22 @@ async def _async_main(argv: list[str]) -> int:
         # what that handler registered (``LateRoute``).
         late_rule.before_session_start()
         return harness
+
+    async def _harness_factory(
+        new_session: Session, *, reload_seed: ReloadSeed | None = None
+    ) -> AgentHarness:
+        """Every harness build — launch, /new, /fork, /resume, /import, /reload, RPC.
+
+        #511 (Codex X2): held under ``skill_apply_gate`` for the WHOLE build. The
+        build reads the skills holder, installs skills on the candidate and then
+        awaits; a deferred ``/skill`` apply landing in between would leave the
+        holder, the outgoing harness and the candidate disagreeing. While the
+        gate is held the apply waits, and the runtime installs the candidate
+        right after this returns, so the apply then lands on it.
+        """
+
+        with skill_apply_gate:
+            return await _build_harness(new_session, reload_seed=reload_seed)
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
     # harness so it shares the SAME ``parsed`` object the factory closes over: a
@@ -4322,9 +4484,32 @@ async def _async_main(argv: list[str]) -> int:
             await _record_tui_default_level(
                 runtime.harness, default_thinking_level, restored=thinking_level_restored
             )
+            # #511 (ADR-0279) — /skill's panel: the shared selection service over
+            # the held SettingsManager, and the skills kind over the holder the
+            # factory reads, reaching whichever harness is live.
+            global_base, project_base = _settings_bases(settings_manager, cwd)
+            skill_control = SkillControl(
+                selection=ResourceSelection(
+                    settings_manager,
+                    global_base=global_base,
+                    project_base=project_base,
+                    project_trusted=project_trusted,
+                ),
+                kind=SkillKind(
+                    holder=skills_holder,
+                    harness=lambda: runtime.harness,
+                    cwd=cwd,
+                    project_trusted=project_trusted,
+                    project_skills_dir=str(Path(cwd) / CONFIG_DIR_NAME / "skills"),
+                    no_skills=lambda: bool(parsed.no_skills),
+                    skill_commands_enabled=settings_manager.get_enable_skill_commands,
+                    gate=skill_apply_gate,
+                ),
+            )
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
+                skill_control=skill_control,
                 prompt_file_paths=lambda: [
                     path
                     for path in (

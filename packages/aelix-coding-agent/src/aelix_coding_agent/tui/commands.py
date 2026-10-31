@@ -193,6 +193,11 @@ class CommandContext:
     permission_mode: Callable[[], str | None] | None = None
     """``run_tui`` wires this to read the current posture badge/name so
     ``/permissions`` (no-arg) can surface it. ``None`` in headless tests."""
+    skill_panel: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to the ``/skill`` on/off panel (#511, ADR-0279):
+    ``selection_panel.run_selection_panel`` over the session's ``SkillKind``.
+    ``None`` in headless tests and in a host with no settings, where ``/skill``
+    falls back to the read-only list."""
     statusline_action: Callable[[], Awaitable[None]] | None = None
     """``run_tui`` wires this to its ``_open_statusline`` flow (a multi-checkbox
     picker over the footer-segment registry that persists the enabled-id set to
@@ -501,7 +506,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5227-5233`` intersects ``_state.tools`` with
+    (``harness/core.py:5248-5254`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -584,6 +589,24 @@ async def _skills_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(Panel(table, title="Skills", box=ROUNDED, border_style="cyan"))
 
 
+async def _skill_handler(ctx: CommandContext, args: str) -> None:
+    """``/skill`` (alias ``/skills``) — turn skills on or off (#511, ADR-0279).
+
+    Opens the shared selection panel: Space toggles, ←/→ picks the settings
+    file, Enter saves and applies from the next model request, Esc discards.
+    Where no panel is wired (headless, no settings) it lists the skills in use,
+    as ``/skills`` did before.
+    """
+
+    if ctx.skill_panel is None:
+        await _skills_handler(ctx, args)
+        return
+    try:
+        await ctx.skill_panel()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ /skill failed: {exc}", style="bold red"))
+
+
 # === /agents (ADR-0196) =====================================================
 # Kept beside /skills: an agent profile is the same shape of resource (a
 # markdown file with YAML frontmatter, discovered from a user tier plus a
@@ -624,7 +647,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1109-1131``).
+    made ``--tools ''`` enable everything (``entry.py:1118-1140``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -824,7 +847,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3874-3891`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3902-3919`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -919,7 +942,7 @@ def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
 
     Shown in the confirmation dialog because the PATH is the part a human can go
     and read; a bare name is exactly what a name collision weaponises (a project
-    profile WINS against the user's own of the same name — ``agents/service.py:108-109``).
+    profile WINS against the user's own of the same name — ``agents/service.py:109-110``).
     Resolved through the same listing ``/agents show`` uses, and ``None`` when no
     listing is wired, in which case the dialog says so rather than inventing one.
     """
@@ -955,7 +978,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3045`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3072`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -2044,11 +2067,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1760-1763``
+    # The double count was the same text twice over: ``cli/entry.py:1877-1880``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:677-683``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1760``.
+    # level up, at ``cli/entry.py:1877``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module
@@ -2309,7 +2332,10 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("name", "Show or set the session name", _name_handler, aliases=("rename",)),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
-    BuiltinCommand("skills", "List loaded skills", _skills_handler),
+    BuiltinCommand(
+        "skill", "Turn skills on or off (Space toggles, Enter saves)", _skill_handler,
+        aliases=("skills",),
+    ),
     BuiltinCommand(
         "agents",
         "List, show, switch, or delegate to agent profiles",

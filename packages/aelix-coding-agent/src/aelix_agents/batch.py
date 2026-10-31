@@ -31,7 +31,7 @@ or a human ends it, and cancellation (below) is how a human does.
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:5427-5433``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:5448-5454``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:107``) and is threaded unchanged into
 ``ToolExecutionContext(signal=signal)`` (``loop.py:638-640``). Abort is
 ``turn_task.cancel()`` (``core.py:1843-1845``). So ``CancelledError`` is the ONLY

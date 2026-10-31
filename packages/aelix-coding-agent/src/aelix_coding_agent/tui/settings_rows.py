@@ -425,7 +425,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             #
             # 73 cells against ``_PICK_MAX_WIDTH`` (78) — the detail panel does
             # not wrap, and the live clause is the part a longer help loses.
-            help="Live — off hides /skill:<name>; skills still load and /skills lists them.",
+            help="Live — off hides /skill:<name>; skills still load and /skill lists them.",
             live=True,
         ),
         SettingsRow(

@@ -620,7 +620,7 @@ async def test_failed_use_leaves_args_and_harness_untouched(bench: _Bench) -> No
 
     Regression for the review's proven half-commit. Refusing early is not enough:
     ``harness.set_active_tools`` validates every name against ``state.tools`` and
-    raises (``core.py:4441-4449``) for a typo, an MCP tool whose server never
+    raises (``core.py:4468-4476``) for a typo, an MCP tool whose server never
     connected, or an extension tool under ``inherit_extensions: false`` — none of
     which profile PARSING can catch. Without the rollback the raise left
     ``parsed.tools`` carrying the rejected names and the prompt already swapped,
@@ -642,6 +642,7 @@ async def test_failed_use_leaves_args_and_harness_untouched(bench: _Bench) -> No
     before_prompt = bench.harness.state.system_prompt
     before_tools = bench.harness.state.active_tool_names
     before_skills = bench.skills_holder["result"]
+    before_applied = list(bench.harness.skills)
 
     out = await bench.run("/agents use typo")
     assert "reed" in out  # the kernel's own message reached the user
@@ -652,6 +653,9 @@ async def test_failed_use_leaves_args_and_harness_untouched(bench: _Bench) -> No
     assert bench.harness.state.system_prompt == before_prompt
     assert bench.harness.state.active_tool_names == before_tools
     assert bench.skills_holder["result"] is before_skills
+    # #511 (C7): the rollback restores the APPLIED snapshot it replaced — not a
+    # fresh resolve of the settings — through the same choke point.
+    assert list(bench.harness.skills) == before_applied
 
     # The consequence the rollback exists for: a rebuild from ``parsed`` works.
     AgentHarness(

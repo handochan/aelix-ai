@@ -36,6 +36,26 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0279 — Skills, prompts and (later) tools and extensions are turned on and off through one settings contract](0279-resources-are-turned-on-and-off-through-one-settings-contract.md)
+  (Accepted 2026-10-31; #511, absorbs #595). The `skills`, `prompts` and (with #25) `extensions`
+  lists of both settings files use pi's grammar plus identity: a plain path adds a directory,
+  `!glob` excludes, `+X` / `-X` match an exact path or a name. The project file's opinion wins
+  over the global file's, which wins over on; a global name or glob reaches project items too.
+  `SettingsManager.edit_list` edits the list on disk under the lock and RAISES instead of
+  skipping (untrusted project, unloadable file, malformed value, I/O). Five states — unsaved,
+  saved, applied, pending, locked. Skills apply at the next model request, never inside a turn
+  (a busy session defers to idle; the newest save wins), through one choke point,
+  `effective_skills(holder)`, guarded by an AST gate; the apply emits `resources_update`.
+  Same-name skills: `--skill` > project > global > bundled, the rest shadowed (reverses the
+  bundled-first scan). `/reload` rescans skills and prompts. `/skill` (alias `/skills`) is the
+  layout-A panel: fixed height, live width under the 120-cell ceiling, one-frame close;
+  `/skill:<off>` is refused by name. Bad entries and unread keys (`themes`, `packages`,
+  `extensions` until #25) are warned once per launch. The Codex review (C1–C22) is triaged in it:
+  saves go through a sidecar-locked, strict cross-process transaction (48/48 concurrent edits
+  kept), trust is an input to every read (an untrusted project file is never opened or stat'ed),
+  an apply prepares the prompt before committing, one save writes one file; the extension filter
+  (C5, C16) is #25's, the tool policy (C7 tools, C11, C13) #510's, C6 a separate issue. Amends
+  ADR-0165 D5, ADR-0169 #12, ADR-0196 and ADR-0252.
 - [0278 — One delegation panel for every `agent` call, two rows per child](0278-one-delegation-panel-for-every-agent-call.md)
   (Accepted 2026-10-30; #132, absorbs #26). Every call of the model's `agent` tool — a single
   delegation and a resume included — draws one `set_widget` panel above the input (layout A,

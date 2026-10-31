@@ -3252,7 +3252,7 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
     (``hooks.py:1423``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:5538-5539`` swallows it in
+    instead of being swallowed at DEBUG the way ``core.py:5559-5560`` swallows it in
     production.
     """
 
@@ -4031,7 +4031,7 @@ async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
     skipping the stats walk, and on a provider that stopped reporting usage the
     meter would freeze on the last figure it ever saw. ``agent_end`` is the
     right boundary because it is emitted on EVERY exit — including the abort
-    (``core.py:5478``) and hook-failure (``core.py:5478``) close-outs, neither
+    (``core.py:5499``) and hook-failure (``core.py:5499``) close-outs, neither
     of which reaches ``settled`` at all.
 
     Asserted on the PAINTS rather than on ``get_session_stats`` calls: the

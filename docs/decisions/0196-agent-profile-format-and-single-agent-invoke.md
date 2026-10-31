@@ -874,3 +874,14 @@ own `model: openrouter/auto` with no `--model` typed, the `models.json` twin —
 entry, the guide, decision 1 and the first two Known corners above (new) state where
 `/new` still moves. The slash row now has its prefixed twin listed, and one spelling
 row was added (above).
+
+
+## Note (2026-10-31, #511) — the skills holder holds a filtered catalog
+
+*Amended 2026-10-31 by [ADR-0279](0279-resources-are-turned-on-and-off-through-one-settings-contract.md).*
+`skills_holder["result"]` is now a `SkillCatalog`: a `LoadSkillsResult` whose
+`skills` are the ENABLED ones under the `skills` settings lists, with every
+skill found beside them. `/agents use` rescans through the same loader as launch
+and `/reload` (`_load_skill_catalog`) and hands the harness
+`effective_skills(holder)`, as does its rollback; a profile's `skills:` paths
+are forced on (a lock in `/skill`).
