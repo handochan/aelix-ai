@@ -101,8 +101,11 @@ def test_the_same_file_reached_twice_loads_once(tmp_path: Path) -> None:
 
 
 def test_the_resolver_scans_in_precedence_order(tmp_path: Path) -> None:
-    dirs = [str(d) for d in _resolve_skill_dirs(Args(skills=["/abs/x"]), str(tmp_path), True)]
-    assert dirs[0] == str(Path("/abs/x"))
+    # An absolute path on every platform: on Windows "/abs/x" has no drive, is
+    # not absolute, and joins the cwd's drive (CI: 'C:\\abs\\x').
+    absolute = tmp_path / "elsewhere" / "x"
+    dirs = [str(d) for d in _resolve_skill_dirs(Args(skills=[str(absolute)]), str(tmp_path), True)]
+    assert dirs[0] == str(absolute)
     assert dirs[1] == str(tmp_path / ".aelix" / "skills")
     assert dirs[-1].endswith("skills") and "aelix_coding_agent" in dirs[-1]  # bundled last
 
