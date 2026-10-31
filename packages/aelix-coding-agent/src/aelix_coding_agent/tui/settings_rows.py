@@ -486,7 +486,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             kind="bool",
             read=lambda s: _on_off(s.get_clear_on_shrink()),
             help=(
-                "Clear scrollback when the terminal shrinks. "
+                "pi's clearOnShrink. "
                 "Saved but not yet wired — no effect in this build."
             ),
         ),

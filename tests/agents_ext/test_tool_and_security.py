@@ -1842,7 +1842,7 @@ def test_execution_mode_survives_dataclasses_replace() -> None:
     The kernel downgrades the WHOLE BATCH to sequential when any tool in it
     declares ``execution_mode="sequential"`` (``types.py:47-56``,
     ``loop.py:711-721``), which is what stops two ``agent`` calls in one
-    assistant message racing two modals onto ``tui/chrome.py:524``'s single
+    assistant message racing two modals onto ``tui/chrome.py:601``'s single
     ``_modal`` slot. Because the description is re-stamped with
     :func:`dataclasses.replace` on every ``before_agent_start``, losing the
     field there would silently reopen the hazard.

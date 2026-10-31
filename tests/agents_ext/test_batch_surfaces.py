@@ -15,7 +15,7 @@ so this file has no processes, no event loop timing and nothing to flake on.
 
 WHAT THIS FILE CANNOT SEE, AND WHO SEES IT. A bridge whose adoption never
 matched would write four ``status_key(id)`` rows, ``chrome._render_status`` would
-``"  ".join`` them into a height-1 row (``tui/chrome.py:1097-1108``), and every
+``"  ".join`` them into a height-1 row (``tui/chrome.py:1216-1227``), and every
 assertion below over synthetic snapshots would still pass. That is why
 :func:`test_a_four_member_group_writes_exactly_one_status_key` drives the real
 bridge through the real ``begin_group`` / ``adopt`` / ``__call__`` sequence, and
@@ -181,7 +181,7 @@ def test_the_aggregate_token_count_is_the_max_and_the_cost_is_the_sum() -> None:
 
 def test_an_aggregate_with_nothing_published_is_empty_not_blank() -> None:
     """``""`` means "write no row". An empty segment would still cost the
-    two-space join at ``chrome.py:1108``, and a row that cannot name the agent
+    two-space join at ``chrome.py:1227``, and a row that cannot name the agent
     is noise on a row shared with everything else."""
 
     assert format_aggregate_status([None, None]) == ""
@@ -668,7 +668,7 @@ def test_a_panel_without_tasks_still_draws_a_row_per_member() -> None:
 
 
 def test_job_labels_do_not_change_the_row_count() -> None:
-    """Row COUNT is the measured flicker path (``chrome.py:676-688`` records an
+    """Row COUNT is the measured flicker path (``chrome.py:781-793`` records an
     attempt reverted for making it worse), and the panel shares its window with
     the live thinking stream. The label goes INSIDE the existing row, and the
     count is the one fixed when the group opened (ADR-0278 D5)."""
@@ -1476,7 +1476,7 @@ def test_clear_ends_every_open_group() -> None:
 def test_an_unchanged_panel_is_not_rewritten() -> None:
     """Hundreds of publishes per turn must not become hundreds of UI writes —
     and ``chrome.set_widget`` calls ``invalidate()`` unconditionally
-    (``chrome.py:1457-1463``), so an unchanged panel would be a full repaint per
+    (``chrome.py:1597-1603``), so an unchanged panel would be a full repaint per
     redraw."""
 
     ui = _Ui()
@@ -1536,11 +1536,11 @@ def test_a_raising_set_widget_costs_the_panel_and_never_the_delegation() -> None
 # controlled content (``consent._may_widen`` constraint 6).
 #
 # The far end applies no bound of its own: ``chrome._render_widget_lines``
-# returns ``ANSI("\n".join(lines))`` (``chrome.py:1167``) into a
-# ``Window(…, dont_extend_height=True)`` (``chrome.py:693``) — multi-row,
+# returns ``ANSI("\n".join(lines))`` (``chrome.py:1286``) into a
+# ``Window(…, dont_extend_height=True)`` (``chrome.py:800-802``) — multi-row,
 # ANSI-parsed, no height cap. Contrast the SIBLING surface, which is defended at
 # the far end: ``chrome._render_status`` strips newlines because "this is a fixed
-# height=1 chrome row" (``chrome.py:1097-1099``).
+# height=1 chrome row" (``chrome.py:1216-1218``).
 #
 # Measured before the fix: 40 newlines in ``current_tool`` turned a 3-entry panel
 # into 43 screen rows with raw ESC intact, pushing the transcript and the input
@@ -1558,7 +1558,7 @@ def test_a_child_cannot_add_rows_to_the_panel() -> None:
     """The list length IS the screen height — ``chrome`` joins it with ``\\n``.
 
     So "returned N entries" is not the property that matters; "the rendered
-    string is N rows" is. Asserted on the join, which is what ``chrome.py:1167``
+    string is N rows" is. Asserted on the join, which is what ``chrome.py:1286``
     actually does — at the height fixed for two members (ADR-0278 D5).
     """
 
