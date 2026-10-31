@@ -256,8 +256,12 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the owner's choice (c), a thinking level an older client lacks raises no floor and adds no
   entry: that client drops a new id whose map names it and keeps its shipped map for a known id,
   missing `main`'s map for that row until it upgrades, and the publish summary's release check
-  lists only the drops;
-  #172, #434, #450, #507, #397, #609, #617). A
+  lists only the drops; amended 2026-10-30, §10: #616 - a run queued behind a rollback stops at
+  the build's hold check (measured live, `queue: max` keeping two pending runs), a failed fetch is
+  a failed check that names the URL and the error, the release check lists the fields the release
+  does not take beside its drops, each list capped at 200 lines, the publish job's own code has
+  stdlib tests, and three of cross round 1's mutants are pinned by tests;
+  #172, #434, #450, #507, #397, #609, #617, #616). A
   scheduled job in its own repository, `handochan/aelix-catalog`, with no stored secret, runs
   aelix's own generator (ADR-0232) on the newest `main` commit whose `ci.yml` push run passed, and
   publishes content-addressed revisions to that repository's Pages only when their content changes.

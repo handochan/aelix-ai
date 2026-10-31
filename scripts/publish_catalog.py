@@ -39,9 +39,11 @@ catalog repository is held (``result.json``'s ``state`` says ``publish``,
 ``unchanged`` or ``held``), 1 when a check failed (``state`` is ``failed`` and
 the summary lists why; nothing else is written), 2 on bad usage (argparse's
 own, and a ``build`` with neither ``--fetch`` nor both upstream files), which
-writes nothing, ``result.json`` included. An exception no check expected (a
-fetch that fails) ends in Python's traceback and exit status 1 with no
-``result.json``; nothing is published either way.
+writes nothing, ``result.json`` included. A fetch that fails (no answer, an
+HTTP error status, a body that is not JSON) is a failed check like the others
+(#616): ``state`` is ``failed`` and the summary names the URL and the error.
+Any other exception no check expected ends in Python's traceback and exit
+status 1 with no ``result.json``; nothing is published either way.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ import argparse
 import ast
 import datetime as _dt
 import hashlib
+import http.client
 import json
 import subprocess
 import sys
@@ -74,7 +77,7 @@ release commit, and the released ``0.1.0b2`` wheel has no client, so this admits
 builds that carry one. Raise it, as pi raises ``minimumPiVersion``, only when published
 values need client behaviour older clients lack. A thinking level an older client does not
 know does not raise it (§10 2026-10-30, #617): that client drops a new id whose map names
-the level and keeps its shipped map for a known id. ``release_report`` never lists a kept map."""
+the level and keeps its shipped map for a known id. ``release_report`` lists both (#616)."""
 
 DEFAULT_MAX_ADDITIONS = 100
 """At most this many ids new since the previous published revision (or ``main``'s catalog
@@ -193,6 +196,19 @@ def _now() -> str:
 _UPSTREAM_USAGE = "build needs --fetch, or both --models-dev and --openrouter"
 
 
+def _fetch(url: str) -> tuple[bytes, Any]:
+    """``rc.fetch_json``, with a failure raised as a failed check, so ``result.json``
+    and the summary say why (#616). The error's text is cut to 300 characters.
+
+    ``RecursionError`` is a body nested too deep for ``json.loads``: a body that is no
+    catalog, as a ``JSONDecodeError`` is."""
+
+    try:
+        return rc.fetch_json(url)
+    except (OSError, ValueError, RecursionError, http.client.HTTPException) as exc:
+        raise BuildFailed([f"fetch: {url}: {type(exc).__name__}: {str(exc)[:300]}"]) from exc
+
+
 def load_upstream(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
@@ -200,8 +216,8 @@ def load_upstream(
 
     if args.fetch:
         fetched_at = _now()
-        dev_raw, dev = rc.fetch_json(rc.UPSTREAM_URL)
-        or_raw, listing = rc.fetch_json(rc.OPENROUTER_URL)
+        dev_raw, dev = _fetch(rc.UPSTREAM_URL)
+        or_raw, listing = _fetch(rc.OPENROUTER_URL)
     else:
         if not (args.models_dev and args.openrouter):
             # main() refuses this as bad usage (exit 2) before a build starts.
@@ -514,13 +530,20 @@ def release_report(
     lines.append(
         f"- rows it would add: {parsed.added_count}; rows it would drop: {len(parsed.dropped)}"
     )
-    for note in parsed.no_transport:
-        lines.append(f"  - no transport: {note.provider}/{note.model_id} ({note.reason})")
-    for note in parsed.dropped:
-        if note.field != "transport":
-            lines.append(
-                f"  - dropped: {note.provider}/{note.model_id} ({note.field}: {note.reason})"
-            )
+    lines += _capped(
+        [f"  - no transport: {n.provider}/{n.model_id} ({n.reason})" for n in parsed.no_transport]
+        + [
+            f"  - dropped: {n.provider}/{n.model_id} ({n.field}: {n.reason})"
+            for n in parsed.dropped
+            if n.field != "transport"
+        ]
+    )
+    # A known row does not take a field it rejects and keeps its own value, or none: a map
+    # naming a level that release lacks misses main's map and is no drop (§10 2026-10-30).
+    lines.append(f"- fields it would not take, keeping its own value or none: {len(parsed.kept)}")
+    lines += _capped(
+        [f"  - kept: {n.provider}/{n.model_id} ({n.field}: {n.reason})" for n in parsed.kept]
+    )
     differ = []
     for provider, rows in committed.items():
         for model_id, row in rows.items():
@@ -532,8 +555,20 @@ def release_report(
     lines.append(
         f"- rows main committed after it whose inherited transport differs from main's: {len(differ)}"
     )
-    lines += [f"  - {name}" for name in differ]
+    lines += _capped([f"  - {name}" for name in differ])
     return lines
+
+
+RELEASE_LISTED = 200
+"""At most this many lines per list in the release check; the count above each list is
+whole. GitHub refuses a step summary over 1 MiB (its documentation), and an id may be 256
+characters long (#616)."""
+
+
+def _capped(lines: list[str]) -> list[str]:
+    if len(lines) <= RELEASE_LISTED:
+        return lines
+    return [*lines[:RELEASE_LISTED], f"  - and {len(lines) - RELEASE_LISTED} more"]
 
 
 def build_publication(

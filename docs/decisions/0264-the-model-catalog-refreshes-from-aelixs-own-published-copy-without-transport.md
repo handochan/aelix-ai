@@ -9,12 +9,15 @@ the levels under a hidden `off` a model refuses) and 2026-10-27 (§10: #172's fo
 and what its review had to correct by hand; #434's client as built: the store, the source, the
 triggers, and what its live checks changed; #609's opt-in manual mode) and 2026-10-28 (§10:
 #172's catalog repository, its first publication and §8's last checks, as measured) and 2026-10-30
-(§10: #617, the owner's floor policy: a thinking level an older client lacks raises no floor).
+(§10: #617, the owner's floor policy: a thinking level an older client lacks raises no floor;
+#616, the publishing pipeline's gaps: a run queued behind a rollback stops on its hold, a failed
+fetch says why, the release check lists the fields it keeps, and the publish job has tests).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
 overlay, the triggers), #450 (OpenRouter's key-scoped narrowing), #507 (a shipped row's `off`, §10),
-#397 (the floor under it, §10), #617 (the index floor and a level an older client lacks, §10)
+#397 (the floor under it, §10), #617 (the index floor and a level an older client lacks, §10),
+#616 (the publishing pipeline's gaps, §10)
 Relates: ADR-0065 and ADR-0140 (the registry and `models.json`), ADR-0189 and ADR-0192 (Ed25519
 sidecars; the marketplace's progressive signature rule), ADR-0203 (what a cwd `.env` may carry),
 ADR-0232 (transport is inherited, never invented; the generator and its ladder), ADR-0235 (pi is a
@@ -374,7 +377,8 @@ the catalog repository (INFERRED from GitHub's documentation, `r6/fetch/gh-docs-
   pending run cancels the pending one, so a slot could replace a rollback waiting behind a long run
   and publish from `main`. `queue: max` keeps up to 100 pending runs, in an order GitHub does not
   guarantee; either order ends in the rollback's state (a slot after it meets the hold, one before
-  it is overridden).
+  it is overridden). With `queue: max`, a rollback and a publish pending at once were both kept
+  (measured on 2026-10-31 with two, §10 2026-10-30, #616).
 - A rollback or withdrawal counts as done only when its run succeeded and its summary shows the new
   index and the hold. A cancelled one is dispatched again.
 
@@ -395,7 +399,8 @@ the catalog repository (INFERRED from GitHub's documentation, `r6/fetch/gh-docs-
 
 1. `build`, with `permissions: contents: read`:
    - checks out aelix-ai at the chosen sha (`fetch-depth: 0`, for the lineage) and the catalog
-     repository, both with `persist-credentials: false`;
+     repository at its default branch's head, not the run's own commit (#616, §10 2026-10-30),
+     both with `persist-credentials: false`;
    - runs steps 1-4 below;
    - uploads the revision, the next index and the summary as an artifact.
 2. `publish`, with `needs: build`, `permissions: contents: write, pages: write, id-token: write` and
@@ -457,6 +462,9 @@ calls it.
      another catalogued provider, and an id another provider also lists;
    - against the latest release's catalog (read at its tag):
      - the new rows it could not inherit transport for;
+     - the rows it would drop, and the fields it would not take, keeping its own value or none (a
+       map that names a level it lacks among them), each list at most 200 lines (#616, §10
+       2026-10-30);
      - the rows it lacks that `main` has committed but whose inherited transport differs from
        `main`'s. These are hand-fixed rows reaching older clients with the ladder's quirks.
      - whether the client's whole-revision bounds (§4.3) would refuse this revision for that
@@ -469,7 +477,8 @@ calls it.
   carries `hold` (Format) so that clients know its removals are a hold's (§4.4). The owner can also
   add the file by hand in the GitHub UI.
 - While the hold exists, every scheduled run and every `action=publish` dispatch stops before
-  building, puts the hold in its summary, and publishes nothing.
+  building, puts the hold in its summary, and publishes nothing. The build job reads the hold at the
+  default branch's head, so a run that waited behind the rollback that wrote it stops too (#616).
 - Only `action=release-hold` removes it, so a rollback or a withdrawal stays in force until the
   owner lifts it, whatever `main` and upstream do meanwhile. The next slot then publishes from
   `main`.
@@ -2062,7 +2071,8 @@ rollback check. These are §8's last #172 items. Evidence: `.omc/probes/172/firs
   - Two runs pending at once, the case `queue: max` exists for. It needs a rollback and a slot both
     dispatched while one build runs, which takes about 18 s.
 
-With this, §8's #172 list is done, except that `queue: max` itself was not exercised (above).
+With this, §8's #172 list is done, except that `queue: max` itself was not exercised (above; it
+was on 2026-10-31, #616 below).
 
 ### 2026-10-30: #617 - a thinking level an older client lacks raises no floor
 
@@ -2120,16 +2130,16 @@ The client's own parser decides row by row, as §4.3 says it does. Evidence: `.o
     tests of its own, for no client that needs it today.
 - **What stays.** The floor still rises when published values need client behaviour that older
   clients lack (§4.2).
-- **What the summary does not show.**
-  - The publish summary's release check (`release_report`, `publish_catalog.py`) prints the rows it
-    would drop. It never prints the fields it would keep.
+- **What the summary did not show** (until #616 the same day, below).
+  - The publish summary's release check (`release_report`, `publish_catalog.py`) printed the rows it
+    would drop. It never printed the fields it would keep.
   - For beta.2 on this revision it printed "rows it would drop: 129", and nothing for the 132 known
     rows that kept their shipped map, or none.
   - The summary's list of the fields every client keeps parses with `main`'s levels, so it does not
     show them either.
-  - A level that only known rows name therefore never reaches the release check. New ids that name
-    it reach the check only as drops. So the summary is no reliable signal for when to look again.
-  - Printing the kept maps there would be a code change, and it is not made here.
+  - A level that only known rows name therefore never reached the release check. New ids that name
+    it reached the check only as drops. So the summary was no reliable signal for when to look again.
+  - Printing the kept maps there was a code change, not made in #617.
 - **When to look again.** Look again in either of two cases:
   - when `EXTENDED_THINKING_LEVELS` (`aelix_ai/models.py`) gains a level after a release that ships
     the client. The commit that adds the level is the moment: a new row's map is derived at
@@ -2137,3 +2147,143 @@ The client's own parser decides row by row, as §4.3 says it does. Evidence: `.o
   - when the new ids such a release drops matter to its users.
 - No behaviour changes. `MINIMUM_AELIX_VERSION`'s docstring in `scripts/publish_catalog.py` now says
   this beside the constant.
+
+### 2026-10-30: #616 - the publishing pipeline: a queued run stops at its hold check, a failed fetch says why, the release check lists the fields it does not take
+
+#616 listed five gaps §10 2026-10-28's checks found. On 2026-10-30 the owner added a sixth, the
+release check's missing kept fields that #617's review found (above), and asked for all six. None
+had published anything wrong. The work spans two repositories: the catalog repository's `20b0464`
+(handochan/aelix-catalog#1, fast-forwarded onto its `main` on 2026-10-31), and this commit.
+Evidence: `.omc/probes/616/`. The review was two independent passes, Codex and a fresh-context
+Claude (`codex/`, `claude-r1/`); their findings are fixed or recorded below.
+
+- **A run queued behind a rollback stops at its hold check** (item 1, the catalog repository).
+  - `build` now checks the catalog repository out at `${{ github.event.repository.default_branch }}`,
+    as `publish` already did. So its "Stop while a hold exists", the step after that checkout, reads
+    the hold that the rollback it waited behind wrote. Before, it read the hold at the run's own
+    commit, as run B did on 2026-10-27 (§10 2026-10-28).
+  - `build` also reads the current index and `tools/publish_job.py` there now, as `publish` does.
+  - MEASURED on 2026-10-31 (`item1/`), on the catalog repository's `main` at `20b0464`, in the
+    same sequence as §10 2026-10-28's, on a weekend with no slot:
+
+    | run | action | dispatched | result |
+    | --- | --- | --- | --- |
+    | A 41149657245 | publish | first | commit `3e6e225`, `sha256-993702e2…` (1,887 rows, from `e19ab55e`) |
+    | R 41149693586 | rollback to `sha256-97bc9107…` | while A ran | waited for A; commit `e78dfab`, the index with `hold` |
+    | B1 41149729986 | publish | while R waited | queued at `3e6e225`; ran after R, stopped at the build's hold check |
+    | B2 41149771903 | publish | while B1 ran | queued at `e78dfab`; stopped at the build's hold check |
+    | D 41149876080 | release-hold | after B2 | commit `81db75b`, `control/hold.json` gone, nothing deployed |
+    | E 41149928208 | publish | after D | commit `0c77095`, `sha256-993702e2…` again, the index without `hold` |
+
+    - B1 is the case #616 names. Its own commit, `3e6e225`, has no `control/hold.json`; R's
+      `e78dfab` added it before B1's `build` began. That `build` checked out the branch head, and
+      its hold check stopped it: every later `build` step and `publish` were skipped, and it
+      committed nothing. At its own commit the step would have seen no hold and built, as B did on
+      2026-10-27 (INFERRED: the file is absent at `3e6e225`).
+    - **`queue: max` was exercised.** R and B1 were both pending from 00:21:33Z, when B1 was
+      created, to 00:21:40Z, when A ended and R's jobs began. Neither was cancelled, where GitHub's
+      documented default cancels R (§4.2). That is two pending runs, not the hundred `queue: max`
+      allows, and the window is read from the runs' own timestamps (`item1/runs.json`), not from
+      one read that showed both pending.
+    - A published a new id, so R was a real rollback: from about 00:22Z to 00:24Z the served index
+      named `sha256-97bc9107…`, one row fewer, with the hold. E published `sha256-993702e2…` again.
+    - The results are read from the runs' step conclusions and the catalog repository's commits.
+      The step summaries are not in the API: each build job's check-run output came back empty.
+- **The publish job's own code has tests** (items 2 and 3, the catalog repository).
+  - `tests/test_publish_job.py`: 17 tests in stdlib `unittest`, run with the runner's `python3`,
+    which is what the job runs `tools/publish_job.py` with. They cover:
+    - nine kinds of artifact the job refuses, and a symbolic link. Each changes nothing;
+    - a rollback, which takes its entry from the index history, leaves another floor's entry where
+      it is and holds. A good artifact is then not published, and `release-hold` lifts the hold;
+    - a rollback to a revision two indexes named, which takes the newer entry;
+    - a rollback to a revision no index named, or one that is not deployed, refused;
+    - a withdrawal;
+    - the pruning, which keeps every named revision and the newest 30;
+    - a hold file that is not JSON, not an object, or `{}`, which still holds, and whose summary
+      says so;
+    - a hold added by hand while a build ran, which wins over its artifact;
+    - `stage-site`, which copies `v1/` only;
+    - both jobs checking this repository out at the default branch, read from the settings rather
+      than the comments, and every later `build` step running only without a hold.
+  - `.github/workflows/test.yml` runs them on a push to `main` or a pull request that changes
+    `tools/`, `tests/` or a workflow. A publication's own push starts no workflow.
+  - `_commit` named `control` to `git add` whether or not it existed. A checkout without `control/`
+    therefore failed every commit with `pathspec 'control' did not match any files`. It now names
+    only the paths that exist on disk or in the index, so a tracked directory gone from disk is
+    committed as a removal.
+  - `check-hold` printed "No hold." for a hold file of `{}` while it stopped the build, because an
+    empty object is falsy. It now prints the hold.
+  - MEASURED (`catalog-mutants/out-r1.txt`). With no mutant, all 17 pass on Python 3.12, and the
+    round-2 review ran all 17 on 3.11 to 3.14. Each of 16 mutants of `publish_job.py` and `publish.yml`
+    fails at least one of them. Among the 16 are the old `_commit`, `build` at the run's own commit,
+    and that `ref:` commented out.
+- **A failed fetch is a failed check** (item 4, `publish_catalog.py`'s `_fetch`).
+  - Either fetch can fail in several ways. Any of the following now raises `BuildFailed`:
+    - an `OSError`: no answer, a timeout, an HTTP error status;
+    - an `http.client.HTTPException`: a body cut short;
+    - a `ValueError`: not UTF-8, not JSON;
+    - a `RecursionError`: JSON nested too deep for `json.loads`.
+  - The failure reads `fetch: <url>: <type>: <text>`, with the text cut to 300 characters. So
+    `result.json` says `failed` with that reason, and the summary lists it.
+  - Any other exception no check expected still ends in a traceback with no `result.json`. So do the
+    paths outside `--fetch`: an upstream file on disk, or an index or revision in `--catalog-repo`,
+    that is not JSON.
+  - MEASURED (`fetch-fail/`, `fetch-fail-before/`). `build --fetch` ran through a proxy that refuses
+    connections.
+    - At this tree it exited 1. `result.json` was `{"state": "failed", "failures": ["fetch:
+      https://models.dev/api.json: URLError: <urlopen error [Errno 61] Connection refused>"]}`, and
+      `summary.md` listed the same line.
+    - At `c2390412` it exited 1 with a traceback and left `out/` empty.
+    - The Claude review reproduced it through a proxy that answers `CONNECT` with 503, and no
+      request reached models.dev (`claude-r1/fetch-503/`).
+- **The release check lists the fields the release does not take** (item 6, `release_report`).
+  - After the drops it prints "fields it would not take, keeping its own value or none: N", then
+    one `kept:` line per field. A known row that ships no map keeps none, and a ladder input that
+    fails validation is ignored, so "its own value" is not always a value.
+  - Each list in the release check now shows at most 200 lines (`RELEASE_LISTED`), then "and N more".
+    The count above each list stays whole. GitHub's documentation caps a step summary at 1 MiB, and
+    Codex built an accepted revision whose kept lines alone came to 1.3 MB (not measured on GitHub).
+    The summary's other sections are not capped.
+  - MEASURED (`release-kept/`). A dry `build --fetch` at the first draft of this change, against the
+    catalog repository at `7e9986f`, ended `unchanged` (`sha256-97bc9107…`, 1,886 rows). For
+    v0.1.0-beta.2 it printed:
+    - "rows it would drop: 129";
+    - a kept count of 133. 132 of these are `thinkingLevelMap` for `max`, #617's 132 known rows (the
+      Claude review checked set equality). The other is `openrouter/auto`'s cost, the one field
+      every client keeps (§10 2026-10-21), which the list of fields every client keeps also names.
+  - MEASURED again at this tree on 2026-10-31 (`release-kept-r1/`). Upstream had one more id, so the
+    build ended `publish` (`sha256-7bf9ae44…`, 1,887 rows, written to the probe directory only). The
+    release check printed the new label, "rows it would drop: 129" and a kept count of 133, and no
+    list reached the cap. The summary was 29,619 bytes.
+  - So a level that only known rows name now reaches the release check. #617's "When to look again"
+    stands. The kept lines are one more place to see the case it names.
+- **Cross round 1's three mutants are pinned** (item 5). No code under `packages/` changes: the
+  three behaviours were right, and no test held them.
+  - The three mutants are in `.omc/probes/b4-d-live/cross/scripts/`:
+    - mD: the ladder reads a published `family` and `releaseDate` unvalidated. Tests now pin that a
+      shipped row's `family` that fails the rule steers no new id. They also pin that a
+      `releaseDate` that fails it does not make that row the newest sibling. The review found the
+      second half unpinned.
+    - mH: a hold's `at` is unchecked. A test now pins that an index hold whose `at` is not a string,
+      or is missing, is invalid.
+    - mO: the published `releaseDate` lacks the generator's `last_updated` fallback. A test now pins
+      that `ladder_inputs_for` takes `last_updated` when `release_date` is missing, empty or null,
+      as `catalog_inherit.released` does.
+  - MEASURED (`mutants/out-r2.txt`). With no mutant, the three catalog test files pass on a copy:
+    239 passed, 1 skipped (the skip is the history test, which needs a clone). Each of the following
+    fails at least one test written for it:
+    - the three mutants;
+    - undoing item 4 or item 6;
+    - the twelve the reviews added:
+      - mD's `releaseDate` half alone, and `get`'s default for mO;
+      - a kept count that is the drop count, or that counts rows;
+      - kept lines for maps only;
+      - no 300-character cut, `OSError` alone, no `RecursionError`;
+      - no cap, an uncapped kept list, an uncapped transport list, and "and 0 more" at the cap;
+    - a cap that miscounts its "more" line, the author's own.
+  - The round-2 review also ran mD's `family` half alone, and it fails.
+- **The schedule fired.** §10 2026-10-28 said the weekday schedule had not fired by the time of
+  writing. On 2026-10-28, 10-29 and 10-30 all nine slots ran and succeeded, each created between 4
+  and 8 minutes after its `:17`. Five of them published.
+- **Not changed.** `queue: max` stays. Node 20's deprecation notices on the pinned Pages and
+  artifact actions are notices only.

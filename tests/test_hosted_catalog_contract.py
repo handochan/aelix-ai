@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import http.client
 import importlib.util
 import json
 import re
 import subprocess
+import urllib.error
+from email.message import Message
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -434,6 +437,9 @@ def test_an_index_picks_the_highest_floor_not_above_the_build_and_reads_its_hold
         {"schema": hc.INDEX_SCHEMA, "catalogs": [{**entries[0], "revision": "sha256-xyz"}]},
         {"schema": hc.INDEX_SCHEMA, "catalogs": [{**entries[0], "sourceCommit": "main"}]},
         {"schema": hc.INDEX_SCHEMA, "catalogs": [], "hold": {"action": "pause", "at": "t"}},
+        # Cross round 1's mH (#616): a hold's `at` that is no string, or none, passed.
+        {"schema": hc.INDEX_SCHEMA, "catalogs": [], "hold": {"action": "rollback", "at": 5}},
+        {"schema": hc.INDEX_SCHEMA, "catalogs": [], "hold": {"action": "withdraw"}},
     ):
         with pytest.raises(hc.IndexInvalid):
             hc.parse_index(broken)
@@ -669,6 +675,43 @@ def test_a_new_id_inherits_only_from_its_own_providers_shipped_rows() -> None:
     assert {n.model_id for n in parsed.no_transport} == {"orbit/gamma-1", "orbit/gamma-2"}
 
 
+def test_a_shipped_rows_ladder_input_that_fails_validation_steers_no_new_id() -> None:
+    """Cross round 1's mD (#616): the ladder read a row's ``family`` as published, and no
+    test noticed. ``Zeta`` fails the family rule, so ``orbit/alpha-1`` has no family to
+    share, and ``orbit/zeta-2`` (``zeta``) has no sibling on a provider with two wires."""
+
+    alpha = hc.revision_row(SAMPLE_SHIPPED["orbit"]["orbit/alpha-1"])
+    alpha["family"] = "Zeta"
+    beta = hc.revision_row(SAMPLE_SHIPPED["orbit"]["orbit/beta-1"])
+    new = {**beta, "id": "orbit/zeta-2", "name": "Zeta 2", "family": "zeta"}
+    parsed = hc.parse_revision(
+        {
+            "schema": hc.REVISION_SCHEMA,
+            "lineage": [_SAMPLE_DIGEST],
+            "providers": {"orbit": [alpha, beta, new]},
+        },
+        SAMPLE_SHIPPED,
+    )
+    assert [(n.model_id, n.field) for n in parsed.kept] == [("orbit/alpha-1", "family")]
+    assert parsed.added == {}
+    assert [n.model_id for n in parsed.no_transport] == ["orbit/zeta-2"]
+
+
+def test_a_shipped_rows_release_date_that_fails_validation_orders_no_sibling() -> None:
+    """mD's other half (#616 review round 1): ``releaseDate`` taken as published passed every
+    test. ``acme-think-3`` (no family) matches both shipped rows by its id's stem, and
+    ``settle`` takes the newest sibling's transport. ``2027-01-01T00:00`` fails the date rule,
+    so ``acme-chat-1`` has no date, and ``acme-think-2``'s compat wins, not chat's none."""
+
+    chat = hc.revision_row(SAMPLE_SHIPPED["acme"]["acme-chat-1"])
+    chat["releaseDate"] = "2027-01-01T00:00"
+    think = hc.revision_row(SAMPLE_SHIPPED["acme"]["acme-think-2"], {"releaseDate": "2026-10-01"})
+    new = {**think, "id": "acme-think-3", "name": "Acme Think 3", "releaseDate": "2026-10-20"}
+    parsed = _one([chat, think, new])
+    assert [(n.model_id, n.field) for n in parsed.kept] == [("acme-chat-1", "releaseDate")]
+    assert parsed.added["acme"]["acme-think-3"]["compat"] == {"supportsReasoningEffort": True}
+
+
 @pytest.mark.parametrize(
     "document",
     [
@@ -740,9 +783,9 @@ def test_the_regression_bound_refuses_more_than_25_rows_losing_maps_or_half_thei
 def test_a_map_naming_a_level_this_build_lacks_is_a_failed_field() -> None:
     """An older build's parser rejects ``max`` on a known row: a failed field, kept.
 
-    The publish summary's release check (``release_report``) lists only the rows
-    it drops, and its list of kept fields parses with ``main``'s levels, so this
-    case never reaches the summary (ADR-0264 §10 2026-10-30).
+    The publish summary's release check (``release_report``) lists it since #616
+    (the next test); before, it listed only the rows it drops (ADR-0264 §10
+    2026-10-30).
     """
 
     pre_433 = [level for level in EXTENDED_THINKING_LEVELS if level != "max"]
@@ -757,6 +800,87 @@ def test_a_map_naming_a_level_this_build_lacks_is_a_failed_field() -> None:
     )
     assert [(n.field) for n in parsed.kept] == ["thinkingLevelMap"]
     assert parsed.kept[0].reason == "level 'max' is not one of this build's"
+
+
+def test_the_release_check_lists_the_fields_the_release_keeps_beside_its_drops() -> None:
+    """#616: the release check printed drops only, so a known row that keeps its shipped
+    map for a level the release lacks, and so misses ``main``'s map, never showed."""
+
+    raw = json.dumps(
+        {
+            "schema": hc.REVISION_SCHEMA,
+            "lineage": [_SAMPLE_DIGEST],
+            "providers": {
+                "acme": [
+                    # One known row, two fields it does not take: the map, and a window.
+                    _known(thinkingLevelMap={"max": "max"}, contextWindow=1023),
+                    _known(id="acme-think-9", thinkingLevelMap={"max": "max"}),
+                ]
+            },
+        }
+    ).encode("utf-8")
+    reason = "level 'max' is not one of this build's"
+    pre_433 = [level for level in EXTENDED_THINKING_LEVELS if level != "max"]
+    lines = pc.release_report(raw, SAMPLE_SHIPPED, SAMPLE_SHIPPED, pre_433)
+    assert "- rows it would add: 0; rows it would drop: 1" in lines
+    assert f"  - dropped: acme/acme-think-9 (thinkingLevelMap: {reason})" in lines
+    assert "- fields it would not take, keeping its own value or none: 2" in lines
+    kept = [line for line in lines if line.startswith("  - kept:")]
+    assert kept == [
+        "  - kept: acme/acme-think-2 (contextWindow: outside 1024..100000000)",
+        f"  - kept: acme/acme-think-2 (thinkingLevelMap: {reason})",
+    ]
+    current = pc.release_report(raw, SAMPLE_SHIPPED, SAMPLE_SHIPPED, None)
+    assert "- fields it would not take, keeping its own value or none: 1" in current
+    assert [line for line in current if line.startswith("  - kept:")] == kept[:1]
+
+
+def test_each_list_in_the_release_check_is_capped_and_its_count_is_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#616 review round 1: the kept list had no bound, and GitHub refuses a step summary
+    over 1 MiB; a release check over a large catalog could lose the whole summary. Round 2:
+    every list is over the cap here, not only the drops, and one list is exactly at it."""
+
+    # main committed three rows the release lacks, on a base URL the release's ladder
+    # cannot inherit, so all three differ.
+    committed = copy.deepcopy(SAMPLE_SHIPPED)
+    later = [f"acme-think-{n}" for n in (5, 6, 7)]
+    for model_id in later:
+        row = copy.deepcopy(SAMPLE_SHIPPED["acme"]["acme-think-2"])
+        row.update({"id": model_id, "name": model_id, "baseUrl": "https://elsewhere.example/v1"})
+        committed["acme"][model_id] = row
+    rows = [
+        # One known row, three fields the release does not take.
+        _known(thinkingLevelMap={"max": "max"}, contextWindow=1023, name="x" * 201),
+        *(_known(id=f"acme-think-{n}", thinkingLevelMap={"max": "max"}) for n in (10, 11, 12)),
+        *(_known(id=model_id, name=model_id) for model_id in later),
+    ]
+    raw = json.dumps(
+        {"schema": hc.REVISION_SCHEMA, "lineage": [_SAMPLE_DIGEST], "providers": {"acme": rows}}
+    ).encode("utf-8")
+    pre_433 = [level for level in EXTENDED_THINKING_LEVELS if level != "max"]
+    monkeypatch.setattr(pc, "RELEASE_LISTED", 2)
+    lines = pc.release_report(raw, committed, SAMPLE_SHIPPED, pre_433)
+
+    def listed(header: str, prefix: str) -> list[str]:
+        at = lines.index(header) + 1
+        out = []
+        while at < len(lines) and lines[at].startswith("  - "):
+            out.append(lines[at])
+            at += 1
+        assert all(line.startswith(prefix) for line in out[:-1]), out
+        return out
+
+    dropped = listed("- rows it would add: 3; rows it would drop: 3", "  - dropped:")
+    assert dropped[2:] == ["  - and 1 more"] and len(dropped) == 3
+    kept = listed("- fields it would not take, keeping its own value or none: 3", "  - kept:")
+    assert kept[2:] == ["  - and 1 more"] and len(kept) == 3
+    header = "- rows main committed after it whose inherited transport differs from main's: 3"
+    differ = listed(header, "  - acme/")
+    assert differ[2:] == ["  - and 1 more"] and len(differ) == 3
+    # A list exactly at the cap is shown whole, with no "more" line.
+    assert pc._capped(["  - a", "  - b"]) == ["  - a", "  - b"]
 
 
 def test_a_note_quotes_a_published_map_key_cut_to_32_characters() -> None:
@@ -1085,6 +1209,24 @@ def test_the_publisher_lowercases_family_where_it_reads_it_and_where_it_writes_i
     assert built["state"] == "publish"
     published = {row["id"]: row for row in json.loads(built["raw"])["providers"]["acme"]}
     assert published["acme-think-7"]["family"] == "acme-think"
+
+
+def test_the_published_release_date_falls_back_to_last_updated_as_the_ladders_does() -> None:
+    """Cross round 1's mO (#616): ``releaseDate`` taken from ``release_date`` alone passed
+    every test, though the generator's ladder orders by ``last_updated`` when that is
+    missing (``catalog_inherit.released``), so the client would order without it."""
+
+    for missing in ("absent", "", None):
+        upstream = _models_dev("acme-chat-1", "acme-think-2")
+        listed = upstream["acme"]["models"]["acme-chat-1"]
+        if missing == "absent":
+            del listed["release_date"]
+        else:
+            listed["release_date"] = missing
+        listed["last_updated"] = "2026-09-30"
+        inputs = pc.ladder_inputs_for(SAMPLE_SHIPPED, upstream)
+        assert inputs["acme"]["acme-chat-1"]["releaseDate"] == "2026-09-30", missing
+        assert inputs["acme"]["acme-think-2"]["releaseDate"] == "2026-10-01", missing
 
 
 def test_the_pinned_tests_failing_on_the_applied_checkout_fail_the_build(tmp_path: Path) -> None:
@@ -1452,6 +1594,60 @@ def test_a_held_catalog_repository_builds_nothing(tmp_path: Path) -> None:
     assert json.loads((out / "result.json").read_text(encoding="utf-8"))["state"] == "held"
     assert "bad revision" in (out / "summary.md").read_text(encoding="utf-8")
     assert not (out / "v1").exists()
+
+
+@pytest.mark.parametrize("failing", ["models.dev", "OpenRouter"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("nodename nor servname provided"),
+        urllib.error.HTTPError(
+            "https://example.invalid", 503, "Service Unavailable", Message(), None
+        ),
+        TimeoutError("The read operation timed out"),
+        http.client.IncompleteRead(b"{"),
+        json.JSONDecodeError("Expecting value", "<html>", 0),
+        RecursionError("maximum recursion depth exceeded while decoding a JSON array"),
+    ],
+    ids=["no-answer", "http-503", "timeout", "cut-short", "not-json", "nested-too-deep"],
+)
+def test_a_fetch_that_fails_is_a_failed_check_that_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str, error: Exception
+) -> None:
+    """#616: a failed fetch ended in a traceback with no ``result.json``, so the job's summary
+    said nothing; it is a failed check now, and the summary names the URL and the error."""
+
+    url = pc.rc.UPSTREAM_URL if failing == "models.dev" else pc.rc.OPENROUTER_URL
+
+    def fetch_json(requested: str) -> tuple[bytes, Any]:
+        if requested == url:
+            raise error
+        body = _models_dev("acme-think-7") if requested == pc.rc.UPSTREAM_URL else {"data": []}
+        return json.dumps(body).encode("utf-8"), body
+
+    monkeypatch.setattr(pc.rc, "fetch_json", fetch_json)
+    repo = _cli_repo(tmp_path)
+    before = (repo / pc.CATALOG_REL).read_bytes()
+    out = tmp_path / "out"
+    assert pc.main(["build", "--fetch", "--repo", str(repo), "--out", str(out), "--no-tests"]) == 1
+    result = json.loads((out / "result.json").read_text(encoding="utf-8"))
+    assert result["state"] == "failed"
+    assert result["failures"] == [f"fetch: {url}: {type(error).__name__}: {error}"]
+    assert f"- {result['failures'][0]}" in (out / "summary.md").read_text(encoding="utf-8")
+    assert not (out / "v1").exists()
+    assert (repo / pc.CATALOG_REL).read_bytes() == before
+
+
+def test_a_fetch_errors_text_is_cut_to_300_characters(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fetch_json(url: str) -> tuple[bytes, Any]:
+        raise OSError("X" * 1000)
+
+    monkeypatch.setattr(pc.rc, "fetch_json", fetch_json)
+    with pytest.raises(pc.BuildFailed) as failed:
+        pc._fetch("https://example.invalid/api.json")
+    assert failed.value.failures == [
+        "fetch: https://example.invalid/api.json: OSError: " + "X" * 300
+    ]
 
 
 def test_a_failed_check_writes_no_revision_and_restores_the_checkout(tmp_path: Path) -> None:
