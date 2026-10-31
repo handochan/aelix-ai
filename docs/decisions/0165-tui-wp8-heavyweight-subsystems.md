@@ -149,3 +149,15 @@ after the yolo disclosure row on the one-row status line and never visible at
 `set_widget` block this note deferred to P4, built at the extension layer from
 the same child stream — and a grouped child writes no statusline segment.
 `/agents run` keeps the segment, unchanged.
+
+
+## Note (2026-10-31) — D5's runtime enable/disable is ADR-0279's contract
+
+*Amended 2026-10-31 by [ADR-0279](0279-resources-are-turned-on-and-off-through-one-settings-contract.md)
+([#511](https://github.com/handochan/aelix-ai/issues/511)).* The "runtime
+enable/disable API" D5 waited for is now the shared selection contract — the
+`extensions` settings list in pi's grammar, `SettingsManager.edit_list`,
+`ResourceSelection` and the `selection_panel` list — shipped with `/skill`.
+Wiring Space on the Installed tab, the filter inside `_discover_entries` and
+the always-on locks is #25's (ADR-0279 D16); until then the tab stays read-only
+and a non-empty `extensions` key is warned about at launch.

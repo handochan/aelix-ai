@@ -325,14 +325,16 @@ def test_the_block_prose_stays_within_its_measured_budget() -> None:
 
     Measured at authoring: 632 chars emitted, 555 of them prose, taking the
     prompt from 3362 to 3994. The budget is not style policing — it is there so
-    that growing this block into a chapter has to be a decision.
+    that growing this block into a chapter has to be a decision. #511 made one:
+    its ``skills-and-prompts`` guide is listed like every bundled guide, 623 ->
+    643 chars of prose, and the budget moved from 640 to 660 with it.
     """
 
     block = _agent_context._docs_signpost(_ALL_TOOL_NAMES_SET)
     docs_dir = str(bundled_docs_dir())
     assert docs_dir in block
     prose = len(block) - len(docs_dir)
-    assert prose < 640, prose
+    assert prose < 660, prose
 
 
 def test_the_names_line_carries_no_path_the_model_must_assemble_twice() -> None:

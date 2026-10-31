@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: How to write, place and invoke an Aelix skill (SKILL.md format, frontmatter fields, the three directories skills load from, the project-trust gate, and why the description field is the part that matters). Read this when asked to create, edit, debug or explain a skill.
+description: How to write, place and invoke an Aelix skill (SKILL.md format, frontmatter fields, the directories skills load from and which one wins, the project-trust gate, and why the description field is the part that matters). Read this when asked to create, edit, debug or explain a skill.
 ---
 
 # Writing an Aelix skill
@@ -32,21 +32,28 @@ Rules the loader actually enforces:
 
 ## Where to put it
 
-Aelix scans three tiers, lowest precedence first. The first `SKILL.md` found in
-a directory wins and that directory is not descended further.
+Aelix scans these tiers. When two skills share a name, the first tier in this
+list wins and the others are not loaded (`/skill` shows them as "shadowed").
+Within a directory, the first `SKILL.md` found wins and that directory is not
+descended further.
 
-1. **Packaged** — ships inside Aelix. This file is one of them. Not writable.
-2. **User** — `~/.aelix/agent/skills/<name>/SKILL.md`. Available in every
-   project. This is where a skill you want to keep should go.
-3. **Project** — `<project>/.aelix/skills/<name>/SKILL.md`. Shared with whoever
+1. **`--skill <path>`** (and an agent profile's `skills:`) — added explicitly
+   and never gated: an explicit flag is your choice, not something a clone
+   decided for you. Always on for that run.
+2. **Project** — `<project>/.aelix/skills/<name>/SKILL.md`. Shared with whoever
    clones the repo, and **gated**: because a skill's description goes into the
    system prompt, a project that carries skills is a project that can write
    instructions into the agent. Aelix asks once before trusting the directory
    and skips it if you decline.
+3. **User** — `~/.aelix/agent/skills/<name>/SKILL.md`. Available in every
+   project. This is where a skill you want to keep should go.
+4. **Packaged** — ships inside Aelix. This file is one of them. Not writable;
+   a user or project skill of the same name replaces it.
 
-`--skill <path>` adds a directory explicitly and is never gated — an explicit
-flag is your choice, not something a clone decided for you. `--no-skills` turns
-tiers 1-3 off.
+`--no-skills` turns tiers 2-4 off. A path in the `skills` list of a
+`settings.json` adds another directory (for example `~/.claude/skills`), and
+`!glob`, `-name` and `+name` entries in that list turn skills off and on — which
+is what the `/skill` panel writes (`aelix docs skills-and-prompts`).
 
 `.gitignore`, `.ignore` and `.fdignore` are honoured during the scan, and
 hidden entries and `node_modules` are skipped.
@@ -69,12 +76,15 @@ that are too situational to advertise on every turn.
 
 ## Checking your work
 
-- `/skills` lists what loaded, with each skill's source path.
-- The startup panel shows a `[Skills]` count.
-- If a skill is missing from `/skills`, the cause is almost always the
+- `/skill` (or `/skills`) lists every skill found, on or off, with its source
+  path, and turns them on and off.
+- The startup panel shows a `[Skills]` count of the skills in use.
+- `/reload` rescans the directories, so an edited `SKILL.md` needs no restart.
+- If a skill is missing from `/skill`, the cause is almost always the
   `name`-vs-directory rule, an empty `description`, or an untrusted project
-  directory. Aelix prints a `Warning: skill load:` line to stderr for parse and
-  read failures.
+  directory. If it is listed but off, a `skills` settings entry turned it off.
+  Aelix prints a `Warning: skill load:` line to stderr for parse and read
+  failures, and a `Warning: settings:` line for an entry that matches nothing.
 
 ## Related
 

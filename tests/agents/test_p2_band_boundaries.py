@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1163``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1169``,
 # ``rpc/rpc_mode.py:1630``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -142,6 +142,16 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "MAX_REMOVED",  # hosted_catalog_source.py — ids a hold's bookkeeping keeps
         "TRIGGER_TIMEOUT",  # model_refresh.py — how long a refresh trigger waits
         "LOCK_TIMEOUT",  # models_store.py — the store's sidecar lock retry bound
+        # #511 round 2 (ADR-0279 D1): the bounds of the settings-list glob
+        # matcher — how far one ``!glob`` entry's braces may expand, how many of
+        # those may still be globs, how long it may be and how deep its groups
+        # nest — so that no entry in a settings file can stall a launch. Read
+        # bounds on ONE settings value, the posture of the catalog and feed
+        # bounds above; nothing in ``aelix_agents`` can act on them.
+        "BRACE_LIMIT",  # core/resource_filter.py
+        "GLOB_ALTERNATIVE_LIMIT",  # core/resource_filter.py
+        "PATTERN_LIMIT",  # core/resource_filter.py
+        "NESTING_LIMIT",  # core/resource_filter.py
     }
 )
 

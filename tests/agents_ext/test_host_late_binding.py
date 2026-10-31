@@ -466,7 +466,7 @@ async def test_has_ui_is_true_when_the_live_context_has_a_ui_bound(
     singleton, so any concrete binding is the real signal and a stand-in is a
     faithful one. ``tui/shell.py`` installs the real ``AelixTUIContext`` at
     run-start and re-binds it onto the new runtime after every ``/new``,
-    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2937-2939``) — which is
+    ``/resume``, ``/fork`` and ``/reload`` (``shell.py:2964-2966``) — which is
     why this is time-varying and why it is a getter.
     """
 

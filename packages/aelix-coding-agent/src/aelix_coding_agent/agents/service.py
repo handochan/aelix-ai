@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3460-3621``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3676-3948``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -15,7 +15,7 @@ The three rejected alternatives and why they fail:
   provider/stream bindings and silently reverts an in-session ``/model`` or
   ``/thinking`` choice the user made deliberately.
 * **B — mutate the private ``_state`` only**: ``_current_system_prompt``
-  (``core.py:4426-4431``) already reads ``_state`` as its fallback, but a
+  (``core.py:4453-4458``) already reads ``_state`` as its fallback, but a
   rebuild (``/new``, ``/fork``, ``/resume``) re-derives everything from
   ``parsed`` — so the swap would evaporate on the next session action.
 * **C — a kernel ``set_system_prompt``**: the kernel is read-only for P1
@@ -40,7 +40,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from aelix_agent_core.harness.skills import load_skills
 from aelix_ai.models import get_supported_thinking_levels
 
 from aelix_coding_agent.cli.args import Args
@@ -57,6 +56,7 @@ from aelix_coding_agent.core.runnable_models import (
     turn_refusal,
     unsupported_message,
 )
+from aelix_coding_agent.core.skill_selection import effective_skills
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 
 from .discovery import (
@@ -82,15 +82,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:3460-3464``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:3950-3952``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2598``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:2715``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
-    :param skills_holder: the ``{"result": LoadSkillsResult}`` box the factory
-        reads on every (re)build (``cli/entry.py:3439`` / ``:3752``).
+    :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
+        ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
+        reads on every (re)build (``cli/entry.py:3556`` / ``:3897``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -261,7 +262,7 @@ class AgentProfileService:
         1b. **Snapshot, and roll back on ANY failure.** Refusing first is not
            sufficient, because step 4 talks to the kernel and the kernel can say
            no: ``harness.set_active_tools`` validates every name against
-           ``state.tools`` and raises (``core.py:4441-4449``) for a typo, for an
+           ``state.tools`` and raises (``core.py:4468-4476``) for a typo, for an
            MCP tool whose server never connected, or for an extension tool under
            ``inherit_extensions: false`` — none of which profile PARSING can
            check. Without the rollback that raise left ``parsed.tools`` poisoned
@@ -328,15 +329,15 @@ class AgentProfileService:
         """
 
         # Function-level import: ``cli/entry.py`` imports this package at module
-        # scope (``entry.py:71-76``), so importing it back here at module scope
+        # scope (``entry.py:69-74``), so importing it back here at module scope
         # would close an import cycle. Reusing ITS helpers (rather than
         # re-deriving the same values) is the point — a live identity computed
         # from different inputs than a rebuilt one would silently diverge on the
         # first /new.
         from aelix_coding_agent.cli.entry import (
+            _load_skill_catalog,
             _resolve_active_tools,
             _resolve_append_chunks,
-            _resolve_skill_dirs,
             _resolve_system_prompt,
             _visible_tools,
         )
@@ -455,10 +456,15 @@ class AgentProfileService:
             # first would install a catalog describing the PREVIOUS profile's
             # skills. Both halves of the write are required: the holder for later
             # rebuilds, ``set_skills`` for this session.
-            self.skills_holder["result"] = load_skills(
-                _resolve_skill_dirs(self.parsed, self.cwd, self.project_trusted)
+            # #511 — the same scan, dedupe and settings filter as launch and
+            # ``/reload``; only the enabled skills reach the harness.
+            self.skills_holder["result"] = _load_skill_catalog(
+                self.parsed,
+                self.cwd,
+                self.project_trusted,
+                getattr(harness, "settings_manager", None),
             )
-            harness.set_skills(self.skills_holder["result"].skills)
+            harness.set_skills(effective_skills(self.skills_holder))
 
             # Tools: the same three-way ``_resolve_active_tools`` result the
             # factory would compute, plus the same post-registration
@@ -466,7 +472,7 @@ class AgentProfileService:
             # pre-build and one post-build; the emission rules are identical.
             #
             # THIS is the call that raises on a profile naming a tool the running
-            # process does not have (``core.py:4441-4449``), which is why
+            # process does not have (``core.py:4468-4476``), which is why
             # everything from step 2 down sits inside the try.
             names = _resolve_active_tools(self.parsed)
             if self.parsed.no_builtin_tools and not self.parsed.no_tools:
@@ -523,7 +529,7 @@ class AgentProfileService:
                 _resolve_append_chunks(
                     self.parsed,
                     self.cwd,
-                    skills=self.skills_holder["result"].skills,
+                    skills=effective_skills(self.skills_holder),
                     project_trusted=self.project_trusted,
                 ),
             )
@@ -740,7 +746,7 @@ class AgentProfileService:
             if self.late_route is not None:
                 self.late_route.explicit = live_explicit
             with contextlib.suppress(Exception):
-                harness.set_skills(previous_skills.skills)
+                harness.set_skills(effective_skills(self.skills_holder))
             raise
 
         # Review round 3 (#412) — ``--none`` restores the baseline's prompt,

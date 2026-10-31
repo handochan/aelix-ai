@@ -305,7 +305,7 @@ class Settings:
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
     # containing ``enableInstallTelemetry`` still loads unchanged: unknown JSON
-    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:108)
+    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:110)
     # and left untouched on disk by the merge-based persist path
     # (``_persist_scoped_settings``).
     packages: list[PackageSource] | None = None
@@ -437,7 +437,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "suppressed_default_catalogs": "suppressedDefaultCatalogs",
     # Aelix-original (ADR-0197): already a single lowercase word, so the
     # camelCase boundary is an identity mapping — it still MUST be listed here,
-    # because ``_json_dict_to_settings`` (settings_manager.py:108) drops any JSON
+    # because ``_json_dict_to_settings`` (settings_manager.py:110) drops any JSON
     # key absent from this table SILENTLY.
     "features": "features",
 }

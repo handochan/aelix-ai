@@ -598,7 +598,7 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
     (``loop.py:905``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
-    (``agents/service.py:108-109``) — the exact B5 shape, arriving one step later.
+    (``agents/service.py:109-110``) — the exact B5 shape, arriving one step later.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")

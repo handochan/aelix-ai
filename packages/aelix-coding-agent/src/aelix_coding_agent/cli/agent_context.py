@@ -414,15 +414,16 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     both are closed by that one function, which is the point — fixing one site
     is how the two rules diverged in the first place.
 
-    BYTE COST. 623 chars of prose (twelve guides, compaction.md) plus the install
-    path — 699 emitted on this checkout, where that path is 76 — which is why the test
-    budgets the PROSE and not the block. The percentage was quoted here as if it
+    BYTE COST. 643 chars of prose (thirteen guides; #511's skills-and-prompts.md
+    added 20 to compaction.md's 623) plus the install path — 699 emitted on the
+    checkout the figures below were measured on, where that path is 76 — which is
+    why the test budgets the PROSE and not the block. The percentage was quoted here as if it
     were a property of the block; it is not. ``tools`` has been REQUIRED since
     #120, so what this is a percentage *of* depends on the active set. With the
     seven built-ins and ``cwd = /some/project`` it takes the prompt from 4052 to
     4751 on this checkout, +17.3%. Both endpoints move with the install path
-    (:func:`_extension_signpost` emits two more absolute paths), so 623 is the
-    only environment-independent number here. It is paid on EVERY turn, which is why
+    (:func:`_extension_signpost` emits two more absolute paths), so the prose
+    count is the only environment-independent number here. It is paid on EVERY turn, which is why
     the scope clause is the first thing in it: unconditional "here is the
     documentation" biases the model toward reading docs when the user asked for
     ordinary work. pi scopes its block for the same reason.
@@ -542,14 +543,14 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:1941`` passes
+    exists to kill. ``cli/entry.py:2058`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:791-793``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:1948``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:2065``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
@@ -819,12 +820,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3823``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3851``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
-    # (0/false/no/off, ``shell.py:140-156``) /reload routes to
+    # (0/false/no/off, ``shell.py:141-157``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:3852-3859``) and never re-scans the extension dirs.
+    # (``harness/core.py:3879-3886``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

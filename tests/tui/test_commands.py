@@ -275,7 +275,8 @@ def test_sprint_a_registry_set() -> None:
     # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
     # /permissions; WP-2 (ADR-0160) /statusline; ImplConsumers (ADR-0161)
     # /scoped-models; WP-8 /login + /logout (after model), /stats (after cost),
-    # /extension (after mcp); issue #12 /skills (after tools); ADR-0196 /agents
+    # /extension (after mcp); issue #12 /skills (after tools; #511 renamed it
+    # /skill, the on/off panel, with /skills its alias); ADR-0196 /agents
     # (after skills — the same shape of markdown resource, carrying identity
     # rather than a capability); #112 /trust (after login — both answer a
     # "who do I let act here" question, and pi groups them the same way).
@@ -295,7 +296,7 @@ def test_sprint_a_registry_set() -> None:
         "name",
         "thinking",
         "tools",
-        "skills",
+        "skill",
         "agents",
         "hooks",
         "mcp",
@@ -710,7 +711,7 @@ def test_tools_degrades_when_empty() -> None:
 #
 # ``--no-tools`` leaves every tool REGISTERED (``_state.tools``) but sets the
 # active filter to ``[]``, and the turn sends only the active set to the model
-# (``harness/core.py:5227-5233``). Reporting the registered list therefore claimed
+# (``harness/core.py:5248-5254``). Reporting the registered list therefore claimed
 # tools the model provably did not have. Both readouts report the ACTIVE set.
 
 

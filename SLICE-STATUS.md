@@ -147,7 +147,7 @@ moved. Anyone extending this slice should follow the pattern.
    walk to — and `tools/_process_tree.py` is deleted.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
-   (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:306`),
+   (`aelix_ai/settings/storage.py:369`, `aelix_ai/oauth/auth_storage.py:306`),
    so they do **not** crash on Windows. They silently `return None` — no lock
    is taken and the cross-process write-safety guarantee is quietly lost. The
    fix is `msvcrt.locking` on the win32 arm; the risk is corruption under
@@ -172,7 +172,7 @@ moved. Anyone extending this slice should follow the pattern.
    already on UTF-8 is untouched, which is what keeps the helper inert on every
    platform that was already correct; input streams are never re-encoded at all
    (`read_all_text` picks a decoder from the bytes instead).
-8. **Ctrl+G external editor.** `tui/shell.py:3269` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:3296` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
    (Until this pass the line was duplicated five times, citing `:2567`,
    `:2583`, `:2588`, `:2607` and `:2791` — one per branch that ran

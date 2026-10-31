@@ -2937,6 +2937,33 @@ class AgentHarness:
 
         self._action_set_active_tools(tool_names)
 
+    def _prompt_tools(self) -> list[AgentTool]:
+        """The active tools, in registry order — what a rebuilt prompt describes."""
+
+        active = self._state.active_tool_names
+        if active is None:
+            return list(self._state.tools)
+        allowed = set(active)
+        return [t for t in self._state.tools if t.name in allowed]
+
+    def prepare_system_prompt(self) -> str | None:
+        """The prompt a rebuild would install now — computed, NOT installed (#511).
+
+        Aelix-additive. :meth:`rebuild_system_prompt` swallows a failing
+        ``system_prompt_rebuilder`` and keeps the old prompt, which is right for
+        a tool registration and wrong for a caller that must not report a
+        change as applied when the prompt still describes the old state
+        (ADR-0279 D7). This RAISES what the rebuilder raises and changes
+        nothing; the caller commits the result to ``state.system_prompt`` along
+        with whatever the rebuilder read. ``None`` when no rebuilder was
+        supplied.
+        """
+
+        rebuilder = self._system_prompt_rebuilder
+        if rebuilder is None:
+            return None
+        return rebuilder(self._prompt_tools())
+
     def rebuild_system_prompt(self) -> None:
         """Re-derive ``state.system_prompt`` from the active tools (issue #120).
 
@@ -4490,14 +4517,8 @@ class AgentHarness:
         rebuilder = self._system_prompt_rebuilder
         if rebuilder is None:
             return
-        active = self._state.active_tool_names
-        if active is None:
-            tools = list(self._state.tools)
-        else:
-            allowed = set(active)
-            tools = [t for t in self._state.tools if t.name in allowed]
         try:
-            self._state.system_prompt = rebuilder(tools)
+            self._state.system_prompt = rebuilder(self._prompt_tools())
         except Exception:  # noqa: BLE001 — see the docstring
             _log.debug(
                 "system_prompt_rebuilder raised; keeping the previous prompt",

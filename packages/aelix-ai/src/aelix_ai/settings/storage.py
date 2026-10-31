@@ -34,9 +34,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
-from collections.abc import Callable
+import tempfile
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -52,6 +55,24 @@ try:
     import fcntl as _fcntl  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover — Windows / non-POSIX
     _fcntl = None  # type: ignore[assignment]
+# #511 (ADR-0279 D4): the sidecar lock's Windows half. The same checker note as
+# ``_fcntl`` applies the other way round: on POSIX pyright sees no
+# ``msvcrt.locking``.
+try:
+    import msvcrt as _msvcrt  # type: ignore[import-not-found]
+except ImportError:  # POSIX
+    _msvcrt = None  # type: ignore[assignment]
+
+#: How long :meth:`FileSettingsStorage.transact` waits for another process's
+#: lock before it gives up and raises, on POSIX and Windows alike.
+_LOCK_TIMEOUT_S = 30.0
+
+#: #511 round 2 (R5) — Windows: a reader that has the target open without
+#: ``FILE_SHARE_DELETE`` (Python's own ``open`` does not pass it) makes
+#: ``os.replace`` fail with ``PermissionError`` until it closes. Reads are
+#: lock-free since #511, so the write retries, briefly, instead of failing.
+_REPLACE_RETRY = os.name == "nt"
+_REPLACE_RETRY_S = 2.0
 
 _LOG = logging.getLogger(__name__)
 
@@ -169,30 +190,174 @@ class FileSettingsStorage:
             )
             return None
 
+    def _read_text_strict(self, path: Path) -> str | None:
+        """``None`` only when *path* does not exist; any other failure RAISES (#511).
+
+        :meth:`_read_text` turns a read error into ``None``, which a writer then
+        cannot tell from a missing file — and would overwrite. The strict
+        transaction never does.
+        """
+
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
     def _write_text_atomic(self, path: Path, payload: str) -> None:
-        """Atomic write via tmp file + fsync + ``os.replace``.
+        """Atomic write via an exclusively created temp file + fsync + ``os.replace``.
 
         Mirrors :meth:`aelix_ai.oauth.auth_storage.AuthStorage._write_raw`
         but uses ``0o644`` (non-secret config).
+
+        #511 (ADR-0279 D4): the temp file is created by :func:`tempfile.mkstemp`
+        in the target directory — ``O_CREAT | O_EXCL`` under a random name — so
+        a planted ``settings.json.tmp`` (a symlink, say) is never opened, and
+        the payload is written in a loop until every byte is down, since
+        ``os.write`` may write fewer bytes than it was given. A failure removes
+        the temp file and leaves the target untouched.
         """
 
         self._ensure_parent_dir(path)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        fd = os.open(
-            tmp_path,
-            os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
-            0o644,
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
         )
+        tmp_path = Path(tmp_name)
         try:
-            os.write(fd, payload.encode("utf-8"))
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        with contextlib.suppress(OSError):
-            os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, path)
+            try:
+                data = memoryview(payload.encode("utf-8"))
+                while data:
+                    written = os.write(fd, data)
+                    data = data[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                os.chmod(tmp_path, 0o644)
+            _replace(tmp_path, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+            raise
         with contextlib.suppress(OSError):
             os.chmod(path, 0o644)
+
+    def _sidecar_path(self, path: Path) -> Path:
+        """The stable lock file for *path*: ``<global dir>/locks/settings-<hash>.lock``.
+
+        Beside the GLOBAL file for both scopes, so taking the project scope's
+        lock never creates anything inside the project. Keyed by the real path,
+        so two spellings of one project share it. Never replaced or removed —
+        replacing it is exactly the inode race the settings file has.
+        """
+
+        digest = hashlib.sha256(os.path.realpath(path).encode("utf-8")).hexdigest()[:16]
+        return self._global_path.parent / "locks" / f"settings-{digest}.lock"
+
+    @staticmethod
+    def _lock_fd(fd: int, what: Path) -> None:
+        """Lock *fd* exclusively, giving up after :data:`_LOCK_TIMEOUT_S` (#511, V6).
+
+        Non-blocking attempts in a loop on both platforms, so a session that
+        another one keeps waiting fails with a sentence naming the file rather
+        than hanging; callers run this off the event loop
+        (``SettingsManager.edit_list`` / the setters' write task).
+        """
+
+        deadline = time.monotonic() + _LOCK_TIMEOUT_S
+        while True:
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)  # pyright: ignore[reportAttributeAccessIssue]
+                elif _msvcrt is not None:  # pragma: no cover — Windows
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)  # pyright: ignore[reportAttributeAccessIssue]
+                return
+            except OSError as exc:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"another session has held the lock on {what} for "
+                        f"{_LOCK_TIMEOUT_S:.0f} s; nothing was written"
+                    ) from exc
+                time.sleep(0.05)
+
+    @staticmethod
+    def _unlock_fd(fd: int) -> None:
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)  # pyright: ignore[reportAttributeAccessIssue]
+        elif _msvcrt is not None:  # pragma: no cover — Windows
+            os.lseek(fd, 0, os.SEEK_SET)
+            with contextlib.suppress(OSError):
+                _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)  # pyright: ignore[reportAttributeAccessIssue]
+
+    @contextlib.contextmanager
+    def _sidecar_lock(self, path: Path) -> Iterator[None]:
+        lock_path = self._sidecar_path(path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            self._lock_fd(fd, path)
+            try:
+                yield
+            finally:
+                self._unlock_fd(fd)
+        finally:
+            os.close(fd)
+
+    def target(self, scope: SettingsScope) -> Path:
+        """The file a transaction reads and writes: through a symlink, to what it names (X4).
+
+        Replacing the link itself would turn it into a regular file, and the
+        sidecar — keyed by the real path — would change identity after the
+        first save, so writers before and after it would not exclude each
+        other. Resolving once keeps both the link and the lock stable.
+        """
+
+        return Path(os.path.realpath(self._path_for(scope)))
+
+    def read(self, scope: SettingsScope) -> str | None:
+        """The file's text now, strictly, without a lock (#511, V6).
+
+        Writes replace the file atomically, so a reader sees one whole version;
+        only a read-modify-write needs :meth:`transact`'s lock.
+        """
+
+        return self._read_text_strict(self.target(scope))
+
+    def transact(self, scope: SettingsScope, fn: SettingsWithLockFn) -> None:
+        """A read-modify-write that holds across processes (#511, ADR-0279 D4).
+
+        :meth:`with_lock` locks the settings file's INODE, and only when it
+        exists: a waiter can hold the old inode while a writer locks the file
+        that replaced it, and for a missing file ``fn`` runs before any lock.
+        Here a stable sidecar lock (:meth:`_sidecar_path`; ``fcntl`` on POSIX,
+        ``msvcrt`` on Windows, both with a deadline — :meth:`_lock_fd`) is
+        taken FIRST — before the read, before ``fn``, whether or not the file
+        exists — on the symlink-resolved :meth:`target`. The inode lock is
+        still taken inside it, so a process that only knows the old protocol
+        still serialises with this one. The read is strict
+        (:meth:`_read_text_strict`): an unreadable file raises instead of
+        reading as absent.
+        """
+
+        path = self.target(scope)
+        with self._sidecar_lock(path):
+            fd: int | None = None
+            try:
+                if path.exists() and _fcntl is not None:
+                    fd = os.open(path, os.O_RDWR)
+                    try:
+                        self._lock_fd(fd, path)
+                    except BaseException:
+                        os.close(fd)
+                        fd = None
+                        raise
+                current = self._read_text_strict(path)
+                new_payload = fn(current)
+                if new_payload is not None:
+                    self._ensure_parent_dir(path)
+                    self._write_text_atomic(path, new_payload)
+            finally:
+                self._release_flock(fd)
 
     def _acquire_flock(self, path: Path) -> int | None:
         """Open + flock the settings file for cross-process locking.
@@ -255,6 +420,27 @@ class FileSettingsStorage:
             self._release_flock(fd)
 
 
+def _replace(src: Path, dst: Path) -> None:
+    """``os.replace``, retried on Windows while a reader holds *dst* open (R5).
+
+    Backs off from 5 ms to 100 ms for at most :data:`_REPLACE_RETRY_S` — well
+    inside the 30 s any other writer waits for the lock this one holds — and
+    then raises the last ``PermissionError``. Elsewhere it is one call.
+    """
+
+    deadline = time.monotonic() + _REPLACE_RETRY_S
+    delay = 0.005
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not _REPLACE_RETRY or time.monotonic() + delay > deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+
+
 class InMemorySettingsStorage:
     """Pi parity: ``settings-manager.ts:224-239`` ``InMemorySettingsStorage``.
 
@@ -283,6 +469,14 @@ class InMemorySettingsStorage:
                 self._global = new_payload
             else:
                 self._project = new_payload
+
+    def transact(self, scope: SettingsScope, fn: SettingsWithLockFn) -> None:
+        """:meth:`FileSettingsStorage.transact` for memory: one process, nothing to lock."""
+
+        self.with_lock(scope, fn)
+
+    def read(self, scope: SettingsScope) -> str | None:
+        return self._global if scope == "global" else self._project
 
 
 # === Async lock registry (Aelix-additive: in-process serialization) ===

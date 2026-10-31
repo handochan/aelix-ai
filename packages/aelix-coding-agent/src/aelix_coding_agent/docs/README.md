@@ -22,6 +22,9 @@ prints one. That is why every cross-directory link here is an absolute URL —
   variables, `--api-key`, a `models.json` `apiKey`, and `/login`.
 - [models-json.md](models-json.md) — `~/.aelix/agent/models.json`: add custom
   providers/models, headers, Bearer auth, and built-in overrides.
+- [skills-and-prompts.md](skills-and-prompts.md) — turning skills and prompt
+  templates on and off: the `/skill` panel, the `skills` / `prompts` settings
+  lists, which same-name skill wins, and when a change takes effect.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
   (tools, slash commands, hooks, flags).

@@ -52,7 +52,9 @@ _EXPECTED: dict[tuple[str, str, str], tuple[str, int]] = {
     ("aelix_coding_agent/agents/service.py", "AgentProfileService.use", "resolve_route"): ("seed", 1),
     ("aelix_coding_agent/cli/entry.py", "_build_harness_options", "resolve_route"): ("seed", 1),
     ("aelix_coding_agent/cli/entry.py", "_async_main", "resolve_route"): ("seed", 4),
-    ("aelix_coding_agent/cli/entry.py", "_async_main._harness_factory", "hold_for"): ("seed", 1),
+    # #511: the factory's body is ``_build_harness``; ``_harness_factory`` wraps it in
+    # the skills apply gate.
+    ("aelix_coding_agent/cli/entry.py", "_async_main._build_harness", "hold_for"): ("seed", 1),
     ("aelix_coding_agent/cli/entry.py", "_async_main", "hold_for"): ("seed", 1),
     ("aelix_coding_agent/cli/entry.py", "_async_main._settle_late_route", "hold_for"): ("seed", 1),
     ("aelix_coding_agent/cli/model_switch.py", "switch_model_argument", "resolve_route"): ("typed", 1),

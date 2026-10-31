@@ -45,6 +45,8 @@ import json
 import logging
 import math
 import os
+import threading
+from collections.abc import Callable
 from dataclasses import fields as dataclass_fields
 from dataclasses import is_dataclass
 from pathlib import Path
@@ -299,6 +301,31 @@ def deep_merge_settings(base: Settings, overrides: Settings) -> Settings:
 _PROJECT_NOT_TRUSTED_WRITE = "Project is not trusted; refusing to write project settings"
 
 
+def _string_list(value: object) -> list[str]:
+    """A defensive copy of a path list, or ``[]`` when the file held something else (#511).
+
+    ``list(value or [])`` turned ``"skills": "pdf"`` into ``["p", "d", "f"]``
+    for every reader of these getters (RPC ``settings/get`` among them); a
+    member that is not a string is dropped rather than passed on.
+    """
+
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str)]
+
+
+class _EditAbandoned(Exception):
+    """The ``edit_list`` that started a transaction was cancelled before its builder ran."""
+
+
+class SettingsFileError(Exception):
+    """A settings file :meth:`SettingsManager.edit_list` will not write (#511, ADR-0279 D4).
+
+    Raised for a file that did not load, does not parse, or holds a value of
+    the wrong shape under the key being edited. The message names the file.
+    """
+
+
 class SettingsManager:
     """Pi parity: ``settings-manager.ts:241-1067`` ``SettingsManager``.
 
@@ -494,7 +521,8 @@ class SettingsManager:
         content = content_holder[0]
         if not content:
             return Settings()
-        raw = json.loads(content)
+        # pi ``JSON.parse(stripBom(content))``: a UTF-8 BOM (Notepad) is not an error.
+        raw = json.loads(content.removeprefix("\ufeff"))
         migrated = SettingsManager.migrate_settings(raw)
         return _json_dict_to_settings(migrated)
 
@@ -783,6 +811,219 @@ class SettingsManager:
             for t in pending:
                 self._pending_writes.discard(t)
 
+    # === #511 (ADR-0279 D4) — the list edit the resource panels write through ===
+
+    def load_error(self, scope: SettingsScope) -> BaseException | None:
+        """Why *scope*'s file did not load, or ``None``.
+
+        A scope with a load error is never written by the setters (pi skips
+        the write so the broken file is not overwritten by an empty in-memory
+        copy, ``_enqueue_write``); :meth:`edit_list` refuses it up front, and
+        the panels name this error instead of reporting a save.
+        """
+
+        return self._global_load_error if scope == "global" else self._project_load_error
+
+    def scope_path(self, scope: SettingsScope) -> Path | None:
+        """The file behind *scope*, or ``None`` for a storage with no files (tests)."""
+
+        path = getattr(self._storage, "global_path" if scope == "global" else "project_path", None)
+        return path if isinstance(path, Path) else None
+
+    def _scope_label(self, scope: SettingsScope) -> str:
+        path = self.scope_path(scope)
+        return str(path) if path is not None else f"the {scope} settings"
+
+    def _parse_scope_text(self, scope: SettingsScope, current: str | None) -> dict[str, Any]:
+        """The file's JSON object AS WRITTEN — no migration, so unrelated keys stay as they are."""
+
+        if not current:
+            return {}
+        try:
+            parsed = json.loads(current.removeprefix("\ufeff"))  # pi ``stripBom``
+        except ValueError as exc:
+            raise SettingsFileError(f"{self._scope_label(scope)} is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise SettingsFileError(f"{self._scope_label(scope)} does not hold a JSON object")
+        return parsed
+
+    def _list_under(self, scope: SettingsScope, data: dict[str, Any], key: str) -> object:
+        """The value of *key* as the loader would read it.
+
+        Only ``skills`` has a legacy shape — pi's ``{"customDirectories": [...],
+        "enableSkillCommands": ...}`` object, which :meth:`migrate_settings`
+        turns into the array. A WELL-FORMED one reads as its directories. A
+        malformed one (``customDirectories`` not a list of strings) is one the
+        migration would delete without a word, so it is refused here instead.
+        """
+
+        raw = data.get(key)
+        if key == "skills" and isinstance(raw, dict):
+            directories = raw.get("customDirectories")
+            if directories is None:
+                return None
+            if isinstance(directories, list) and all(isinstance(d, str) for d in directories):
+                return list(directories)
+            raise SettingsFileError(
+                f'"skills" in {self._scope_label(scope)} is the old object form with a '
+                "malformed customDirectories; fix it by hand before saving here"
+            )
+        return raw
+
+    def _transact(self, scope: SettingsScope, fn: Callable[[str | None], str | None]) -> None:
+        """The storage's cross-process transaction when it has one, else ``with_lock``."""
+
+        transact = getattr(self._storage, "transact", None)
+        if callable(transact):
+            transact(scope, fn)
+        else:
+            self._storage.with_lock(scope, fn)
+
+    def read_list(self, scope: SettingsScope, key: str) -> object:
+        """The raw value of the JSON *key* in *scope*'s file, read from disk now.
+
+        ``None`` when the key or the file is absent, and for an untrusted
+        project — whose file is never opened, locked or stat'ed (ADR-0252 §A,
+        ADR-0279 D3). A file that cannot be read or does not parse raises
+        (:class:`SettingsFileError` for the latter); a value of the wrong shape
+        is returned as it is, for the caller to warn about.
+        """
+
+        if scope == "project" and not self._project_trusted:
+            return None
+        holder: list[object] = [None]
+
+        def _read(current: str | None) -> str | None:
+            holder[0] = self._list_under(scope, self._parse_scope_text(scope, current), key)
+            return None
+
+        reader = getattr(self._storage, "read", None)
+        if callable(reader):
+            # Lock-free and strict: writes replace the file atomically, so a
+            # reader sees one whole version, and a panel's snapshot never waits
+            # on another session's lock (V6).
+            text = reader(scope)
+            _read(text if isinstance(text, str) else None)
+        else:
+            self._storage.with_lock(scope, _read)
+        return holder[0]
+
+    async def edit_list(
+        self,
+        scope: SettingsScope,
+        key: str,
+        fn: Callable[[list[str]], list[str]],
+    ) -> list[str]:
+        """Apply *fn* to the list under JSON *key* as it is ON DISK now, and write the result.
+
+        Unlike the setters this never writes an in-memory snapshot: *fn* sees
+        the file's current list inside the storage's cross-process transaction
+        (``FileSettingsStorage.transact``: a stable sidecar lock taken before
+        the read, a strict read, an exclusively created temp file), so a hand
+        edit or another session's save made after this one loaded is kept. It
+        JOINS the scope's write queue: setter writes already queued land first,
+        and it holds the same in-process lock their tasks take. And unlike the
+        setters it never records-and-skips: an untrusted project (checked
+        again after the queue drains, so a revocation meanwhile is honoured), a
+        scope whose file did not load, a file that cannot be read or does not
+        parse now, a value under *key* that is not a list of strings, and an
+        I/O error all RAISE, so a caller cannot report a save that did not
+        happen.
+
+        An unchanged list writes nothing, so the file stays byte-identical. An
+        empty result removes the key. Every other key is written back exactly
+        as it was read — not migrated — and the text is ``indent=2`` like every
+        other settings write. On success the in-memory scope takes exactly the
+        list written and forgets a pending setter change to the same key, so a
+        later setter snapshot cannot overwrite it. Returns the list now on disk.
+
+        The trust check runs again INSIDE the transaction, after its lock is
+        taken. A call cancelled while it waits for the lock writes nothing; one
+        cancelled after its list was built cannot stop that write, and the
+        in-memory scope takes the list when the write ends (round 2, R3).
+        """
+
+        if scope == "project":
+            self._assert_project_trusted_for_write()
+        error = self.load_error(scope)
+        if error is not None:
+            raise SettingsFileError(f"{self._scope_label(scope)} did not load: {error}")
+        # A setter's write already queued lands first, so this edit builds on it
+        # instead of being overwritten by its older snapshot afterwards.
+        await self.flush()
+        written: list[list[str]] = []
+        abandoned = threading.Event()
+
+        def _builder(current: str | None) -> str | None:
+            # Both run in the worker, AFTER the lock — which may have waited on
+            # another session for up to its deadline (round 2, R3).
+            if abandoned.is_set():
+                raise _EditAbandoned  # the caller was cancelled: write nothing
+            if scope == "project":
+                self._assert_project_trusted_for_write()
+            data = self._parse_scope_text(scope, current)
+            raw = self._list_under(scope, data, key)
+            if raw is None:
+                old: list[str] = []
+            elif isinstance(raw, list) and all(isinstance(e, str) for e in raw):
+                old = list(raw)
+            else:
+                raise SettingsFileError(
+                    f'"{key}" in {self._scope_label(scope)} is not a list of strings; '
+                    "fix it by hand before saving here"
+                )
+            new = list(fn(list(old)))
+            written.append(new)
+            if new == old:
+                # Unchanged — also over a legacy ``skills`` object, which is left
+                # as it is rather than migrated by a save that changed nothing (V3).
+                return None
+            if isinstance(data.get(key), dict):
+                # The legacy skills object: keep its enableSkillCommands at the
+                # top level, as the migration does, before the array replaces it.
+                enable = data[key].get("enableSkillCommands")
+                if enable is not None and data.get("enableSkillCommands") is None:
+                    data["enableSkillCommands"] = enable
+            if new:
+                data[key] = new
+            else:
+                data.pop(key, None)
+            return json.dumps(data, indent=2, ensure_ascii=False)
+
+        def _commit() -> list[str]:
+            new = written[-1] if written else []
+            py_field = SETTINGS_JSON_TO_PY.get(key, key)
+            target = self._global_settings if scope == "global" else self._project_settings
+            if hasattr(target, py_field):
+                setattr(target, py_field, list(new) if new else None)
+            modified = (
+                self._modified_fields if scope == "global" else self._modified_project_fields
+            )
+            modified.discard(py_field)
+            self._settings = deep_merge_settings(self._global_settings, self._project_settings)
+            return list(new)
+
+        def _late(work: asyncio.Future[None]) -> None:
+            if not work.cancelled() and work.exception() is None and written:
+                _commit()
+
+        async with self._async_locks.for_scope(scope):
+            if scope == "project":
+                self._assert_project_trusted_for_write()
+            # Off the event loop (V6): the lock may wait on another session.
+            work = asyncio.ensure_future(asyncio.to_thread(self._transact, scope, _builder))
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Round 2 (R3): a thread cannot be stopped. A builder that has not
+                # run yet writes nothing; one that already ran has written, and
+                # the memory takes that list when the thread ends, so the two
+                # agree either way.
+                abandoned.set()
+                work.add_done_callback(_late)
+                raise
+        return _commit()
+
     # === Write enqueue helpers ===
 
     def _enqueue_write(self, scope: SettingsScope) -> None:
@@ -851,13 +1092,21 @@ class SettingsManager:
                     # task too: a write queued while trusted and run after
                     # ``set_project_trusted(False)`` is refused, recorded.
                     self._assert_project_trusted_for_write()
-                self._persist_scoped_settings(
+                # #511 (V6): off the event loop — the transaction's lock may
+                # wait (up to its deadline) on another session.
+                await asyncio.to_thread(
+                    self._persist_scoped_settings,
                     scope,
                     snapshot_settings,
                     modified_fields,
                     modified_nested_fields,
                 )
                 self._clear_modified_scope(scope)
+            except asyncio.CancelledError:
+                # Round 2 (R3): since V6 this awaits a thread, so it can be
+                # cancelled mid-write; that is not a settings error. The fields
+                # stay marked modified, so the next write carries them again.
+                raise
             except BaseException as exc:  # noqa: BLE001 — Pi parity
                 self._record_error(scope, exc)
 
@@ -876,14 +1125,14 @@ class SettingsManager:
         """
 
         def _builder(current: str | None) -> str | None:
-            if current:
-                try:
-                    parsed = json.loads(current)
-                    current_dict = SettingsManager.migrate_settings(parsed)
-                except (json.JSONDecodeError, ValueError):
-                    current_dict = {}
-            else:
-                current_dict = {}
+            # #511 (Codex X1): parse STRICTLY. This used to read a malformed file
+            # as ``{}`` and write the snapshot over it — dropping every key the
+            # snapshot did not carry — and the write ``edit_list`` drains ahead
+            # of its own strict transaction is this one. Raising here leaves the
+            # file untouched and records the error (``_write_task``).
+            current_dict = SettingsManager.migrate_settings(
+                self._parse_scope_text(scope, current)
+            )
 
             merged: dict[str, Any] = dict(current_dict)
             for py_field in modified_fields:
@@ -947,7 +1196,10 @@ class SettingsManager:
 
             return json.dumps(merged, indent=2, ensure_ascii=False)
 
-        self._storage.with_lock(scope, _builder)
+        # #511 (ADR-0279 D4): the cross-process transaction, not the inode lock —
+        # a setter's write and a panel's edit then serialise between sessions,
+        # and an unreadable file raises (recorded) instead of reading as empty.
+        self._transact(scope, _builder)
 
     def _save(self) -> None:
         """Pi parity: ``settings-manager.ts:524-538`` ``save``.
@@ -1592,7 +1844,7 @@ class SettingsManager:
     def get_extension_paths(self) -> list[str]:
         """Pi parity: ``settings-manager.ts::getExtensionPaths`` (line 824-826). Returns defensive copy."""
 
-        return list(self._settings.extensions or [])
+        return _string_list(self._settings.extensions)
 
     def set_extension_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setExtensionPaths`` (line 828-832)."""
@@ -1614,7 +1866,7 @@ class SettingsManager:
     def get_skill_paths(self) -> list[str]:
         """Pi parity: ``settings-manager.ts::getSkillPaths`` (line 841-843). Returns defensive copy."""
 
-        return list(self._settings.skills or [])
+        return _string_list(self._settings.skills)
 
     def set_skill_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setSkillPaths`` (line 845-849)."""
@@ -1636,7 +1888,7 @@ class SettingsManager:
     def get_prompt_template_paths(self) -> list[str]:
         """Pi parity: ``settings-manager.ts::getPromptTemplatePaths`` (line 858-860). Returns defensive copy."""
 
-        return list(self._settings.prompts or [])
+        return _string_list(self._settings.prompts)
 
     def set_prompt_template_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setPromptTemplatePaths`` (line 862-866)."""
@@ -1658,7 +1910,7 @@ class SettingsManager:
     def get_theme_paths(self) -> list[str]:
         """Pi parity: ``settings-manager.ts::getThemePaths`` (line 875-877). Returns defensive copy."""
 
-        return list(self._settings.themes or [])
+        return _string_list(self._settings.themes)
 
     def set_theme_paths(self, paths: list[str]) -> None:
         """Pi parity: ``settings-manager.ts::setThemePaths`` (line 879-883)."""

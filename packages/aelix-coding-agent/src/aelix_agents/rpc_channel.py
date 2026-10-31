@@ -421,7 +421,7 @@ class RpcChannel:
             # symptom, on a stream that arrived in the wrong order. Measured as
             # reachable only from a synthetic child: the harness emits
             # ``MessageEndEvent`` and THEN ``AgentEndEvent``
-            # (``harness/core.py:5519-5523`` for failure, ``:5478`` for abort), so on any real
+            # (``harness/core.py:5540-5544`` for failure, ``:5499`` for abort), so on any real
             # child the terminator is last and the partial is always already
             # folded. It is a property of the kernel's emission order, not of
             # this gate, which is why the gate is still the right shape.

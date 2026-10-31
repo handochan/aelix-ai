@@ -39,6 +39,7 @@ from aelix_agent_core.harness.skills import format_skill_invocation
 from aelix_ai.models import get_supported_thinking_levels
 
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.core.resource_filter import validate_entries
 from aelix_coding_agent.extensions.command_dispatch import (
     CommandDispatchService,
     CommandSurfaceBindings,
@@ -70,6 +71,13 @@ SETTING_FIELDS: dict[str, tuple[str, type, tuple[Any, ...] | None]] = {
     "skill_paths": ("skill_paths", list, None),
     "prompt_template_paths": ("prompt_template_paths", list, None),
     "enabled_models": ("enabled_models", list, None),
+}
+
+#: The settings keys that are #511's resource lists, and their JSON names: RPC
+#: reads and writes them through ``SettingsManager.read_list`` / ``edit_list``.
+RESOURCE_LIST_KEYS: dict[str, str] = {
+    "skill_paths": "skills",
+    "prompt_template_paths": "prompts",
 }
 
 READ_ONLY_METHODS = frozenset(
@@ -434,7 +442,11 @@ class RpcControlPlane:
                 raise ValueError("This RPC host has no settings manager")
             return {
                 "settings": {
-                    key: getattr(self.settings, "get_" + field)()
+                    key: (
+                        self._resource_list(key)
+                        if key in RESOURCE_LIST_KEYS
+                        else getattr(self.settings, "get_" + field)()
+                    )
                     for key, (field, _kind, _choices) in SETTING_FIELDS.items()
                 },
                 "schema": [
@@ -610,10 +622,33 @@ class RpcControlPlane:
             raise ValueError("Setting must be a bounded list of non-empty strings")
         if isinstance(value, str) and (not value or len(value) > 4096 or "\x00" in value):
             raise ValueError("Setting must be a bounded, non-empty string")
+        if key in RESOURCE_LIST_KEYS and isinstance(value, list):
+            # #511 (ADR-0279 D4) — the lists the /skill panel edits go through the
+            # same strict, cross-process edit: read on disk under the lock, and a
+            # file that did not load or cannot be written RAISES instead of
+            # being skipped behind a success.
+            entries = [str(v) for v in value]
+            try:
+                await self.settings.edit_list(
+                    "global", RESOURCE_LIST_KEYS[key], lambda _old: list(entries)
+                )
+            except Exception as exc:  # noqa: BLE001 — reported as the write's verdict
+                raise ValueError(f"Setting {key!r} was not saved: {exc}") from exc
+            return {"key": key, "value": self._resource_list(key), "requiresReload": True}
         # Errors already queued belong to earlier work; report them where the CLI
         # reports them and keep this write's verdict its own.
         for error in self.settings.drain_errors():
             print(f"Warning: settings ({error.scope}): {error.error}", file=sys.stderr)
+        # #511 (C18): a global file that did not load is never written by a
+        # setter (it is skipped, not recorded), so draining above left nothing to
+        # report a skipped write by. Refuse it here instead of returning success.
+        load_error = getattr(self.settings, "load_error", None)
+        failed_load = load_error("global") if callable(load_error) else None
+        if failed_load is not None:
+            raise ValueError(
+                f"Setting {key!r} was not saved: the global settings file did not load "
+                f"({failed_load})"
+            )
         getattr(self.settings, "set_" + field)(value)
         # Setters only enqueue the write; every native writer awaits it (#594).
         await self.settings.flush()
@@ -626,6 +661,20 @@ class RpcControlPlane:
             "value": getattr(self.settings, "get_" + field)(),
             "requiresReload": True,
         }
+
+    def _resource_list(self, key: str) -> list[str]:
+        """The GLOBAL file's list for a resource key, read now and validated (#511, C18).
+
+        ``settings/set`` writes the global scope, so this reads the same one
+        (the merged getter showed a trusted project's list in its place). A
+        value that is not a list of strings reads as ``[]`` rather than as a
+        list of characters; an unreadable file raises.
+        """
+
+        entries, _problems = validate_entries(
+            self.settings.read_list("global", RESOURCE_LIST_KEYS[key])
+        )
+        return entries
 
     async def auth_action(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if self.auth is None:

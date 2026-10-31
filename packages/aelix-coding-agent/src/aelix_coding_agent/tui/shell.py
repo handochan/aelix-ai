@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
+    from aelix_coding_agent.core.skill_selection import SkillControl
     from aelix_coding_agent.extensions.api import Extension
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
@@ -516,6 +517,7 @@ async def run_tui(
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
     read_only: bool = False,
+    skill_control: SkillControl | None = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -583,6 +585,10 @@ async def run_tui(
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
+    :param skill_control: #511 — the session's skill selection (entry.py builds
+        it over the skills holder and the held SettingsManager). Wires ``/skill``
+        to the on/off panel and lets ``/skill:<name>`` say a skill is off rather
+        than "Unknown command". ``None`` (tests) keeps ``/skill`` read-only.
     """
 
     # WP-8 — normalize the optional extensions list to a stable value so the
@@ -1652,6 +1658,26 @@ async def run_tui(
         # as model_registry).
         await run_mcp_viewer(manager=mcp_manager, commit=_commit)
 
+    async def _open_skill_panel() -> None:
+        # #511 (ADR-0279) — /skill: the shared selection panel over the skills
+        # holder. The width is read per frame under the user's render ceiling,
+        # like the transcript's (ADR-0219).
+        from aelix_coding_agent.tui.selection_panel import run_selection_panel
+
+        assert skill_control is not None
+        await run_selection_panel(
+            command_ctx,
+            skill_control.selection,
+            skill_control.kind,
+            title="Skills",
+            noun=("skill", "skills"),
+            effect_note=(
+                "The model gets the new list from your next message; skill text it "
+                "already read stays in this conversation."
+            ),
+            render_width_cap=lambda: render_width_cap["value"],
+        )
+
     async def _open_statusline() -> None:
         # WP-2 (ADR-0160) — /statusline: a multi-checkbox picker over the footer
         # segment registry → persist the enabled-id set to the coding-agent-owned
@@ -1871,7 +1897,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4307``) always passes one, so this is
+            # production caller (``entry.py:4469``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2250,6 +2276,7 @@ async def run_tui(
         new_session=_new_session,
         settings_action=_open_settings,
         scoped_models_action=_open_scoped_models,
+        skill_panel=_open_skill_panel if skill_control is not None else None,
         statusline_action=_open_statusline,
         login_action=_open_login,
         trust_action=_open_trust,
@@ -2330,7 +2357,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5478`` and the hook-fail one ``:5478``)
+    # the abort close-out ``core.py:5499`` and the hook-fail one ``:5499``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2873,7 +2900,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5538-5539`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5559-5560`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3537,6 +3564,7 @@ async def run_tui(
             save_implicit_trust_after_reload=save_implicit_trust_after_reload,
             read_only=read_only,
             late_route=late_route,
+            skill_off_reason=skill_control.kind.off_reason if skill_control is not None else None,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -3823,11 +3851,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1760``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1877``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1743`` already printed at startup, and one that
+    #       what ``entry.py:1860`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3844,7 +3872,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4507-4508``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4528-4529``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4075,6 +4103,7 @@ async def _input_loop(
     save_implicit_trust_after_reload: Callable[[], bool] | None = None,
     read_only: bool = False,
     late_route: LateRoute | None = None,
+    skill_off_reason: Callable[[str], str | None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -4248,12 +4277,18 @@ async def _input_loop(
                 ),
             )
             if expanded is None:
+                # #511 (ADR-0279 D12) — a skill that exists but is OFF is refused
+                # by name, never expanded and never "Unknown command": the panel
+                # is the one place to turn it back on.
+                off = None
+                if skill_off_reason is not None and parsed.text.startswith("/skill:"):
+                    off = skill_off_reason(parsed.text[len("/skill:") :].partition(" ")[0])
                 label = "/" + slash_word(parsed.text)
                 output_queue.put_nowait(
                     (
                         "commit",
                         Text(
-                            f"Unknown command: {label} — type /help",
+                            off or f"Unknown command: {label} — type /help",
                             style="yellow",
                         ),
                     )
@@ -4325,7 +4360,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4238-4254 and
+            # Two audiences, discriminated exactly as entry.py:4400-4416 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

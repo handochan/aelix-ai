@@ -22,6 +22,7 @@ Public surface:
 """
 
 from aelix_ai.settings.settings_manager import (
+    SettingsFileError,
     SettingsManager,
     deep_merge_settings,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "RetrySettings",
     "Settings",
     "SettingsError",
+    "SettingsFileError",
     "SettingsManager",
     "SettingsScope",
     "SettingsStorage",

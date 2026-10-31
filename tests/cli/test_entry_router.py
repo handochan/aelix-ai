@@ -244,6 +244,9 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # the post-/login pick and the held-turn refusal. Accepted for the same
         # reason; this test's launch holds nothing.
         late_route: object = None,
+        # #511 (ADR-0279) — the /skill panel's selection over the skills holder.
+        # Accepted for the same reason as the two above.
+        skill_control: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -740,7 +743,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     # route, and does NOT claim non-existent doc files.
     # #111 — CORRECTED. This used to assert ``/login`` was ABSENT, on the
     # stated ground that "Aelix does not register one". It does:
-    # ``tui/commands.py:2301`` is ``BuiltinCommand("login", "Sign in / add a
+    # ``tui/commands.py:2324`` is ``BuiltinCommand("login", "Sign in / add a
     # provider API key", …)``, and the first-run wizard has been telling users
     # to run it since #23. The message now names it — prefixed by "run
     # 'aelix'", which is what makes a TUI-only command actionable from a
