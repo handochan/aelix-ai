@@ -1152,8 +1152,12 @@ class RpcClient:
     def _build_argv(self) -> list[str]:
         """Pi parity: ``rpc-client.ts:62-72`` argv construction.
 
-        Default: ``python -m aelix --mode rpc``. ``cli_path`` overrides the
-        default invocation (e.g. for a custom shim or a one-off stub).
+        Default: ``python -P -m aelix --mode rpc``. ``-P`` keeps the child's
+        cwd off ``sys.path``, so a project directory holding ``aelix/`` (or a
+        same-named extension module) cannot answer the import (#641).
+        ``cli_path`` overrides the default invocation (e.g. for a custom shim
+        or a one-off stub); a script's own directory is what it imports
+        beside, so that form gets no ``-P``.
         """
 
         opts = self._options
@@ -1165,7 +1169,7 @@ class RpcClient:
         if cli_path is not None:
             argv: list[str] = [sys.executable, cli_path, "--mode", "rpc"]
         else:
-            argv = [sys.executable, "-m", "aelix", "--mode", "rpc"]
+            argv = [sys.executable, "-P", "-m", "aelix", "--mode", "rpc"]
         if opts.provider:
             argv.extend(["--provider", opts.provider])
         if opts.model:

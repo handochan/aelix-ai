@@ -58,7 +58,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:848-853``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:853-858``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:32``), so a chain step that
 forwards a whole uncapped previous summary still fits.

@@ -3016,6 +3016,33 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **A delegated agent no longer imports a project file in place of one of
+  your extensions (#641, ADR-0285).** Delegated agents ran as `python -m
+  aelix_coding_agent` in the project folder, and `python -m` puts that folder
+  first on the import path. So when a global pack's `[plugin.entry] python`
+  named `review_voter:setup`, or an installed entry point named `review_ep`, a
+  `review_voter.py` or `review_ep.py` in the project was imported instead — its
+  top-level code ran in every delegated agent, trusted project or not, and the
+  delegation still finished as if nothing had happened. Measured on both the
+  print and the rpc channel with a real model. Delegated agents now start as
+  `python -P -m aelix_coding_agent`, which leaves the folder off the import
+  path, and so does the RPC client's default server; an empty `PYTHONPATH`
+  segment, which also means the folder, is no longer passed to them. The
+  extension loader also imports every module name — `-e <module>`,
+  `[plugin.entry] python`, an entry point — without the folder that the way
+  aelix was started put on the import path (`python -m`, `python -c`, a script
+  in the folder, an empty `PYTHONPATH` segment such as the one `export
+  PYTHONPATH=$PYTHONPATH:/x` leaves when the variable was unset), wherever that
+  entry sits by then, which `-e <module>` alone did before, and refuses a
+  module of that name that was already imported through it (the pack's load
+  error says so). It now also recognises that folder spelled as `.`, with a
+  trailing separator, through a symlink, in another case (macOS too), and on
+  Windows with `/`. A folder your own environment put on the import path stays:
+  a folder `PYTHONPATH` names, and the `.pth` that `pip install -e .` writes —
+  so a flat-layout editable install such as `examples/starter` still loads when
+  you run aelix from its root, with or without an empty `PYTHONPATH` segment. A
+  virtualenv or a `src/` editable install inside the project is not the project
+  folder and still imports.
 - **A delegated child can no longer put escape sequences on your status line
   (#178).** While a child runs, the status line shows its profile and the tool
   it is using, and the tool name is whatever the child reports. Both were

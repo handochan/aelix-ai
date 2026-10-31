@@ -59,9 +59,9 @@ from aelix_coding_agent.cli.args import Args, parse_args
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
 # ``build_child_argv``/``build_rpc_child_argv`` prefix the command line with
-# ``[sys.executable, "-m", "aelix_coding_agent"]``; ``parse_args`` is handed
-# ``sys.argv[1:]``, i.e. everything after those three.
-_LAUNCH_PREFIX = 3
+# ``[sys.executable, "-P", "-m", "aelix_coding_agent"]``; ``parse_args`` is
+# handed ``sys.argv[1:]``, i.e. everything after those four.
+_LAUNCH_PREFIX = 4
 
 
 # === Fixtures =================================================================

@@ -1166,14 +1166,17 @@
    "PermissionMode.YOLO: PermissionMode.YOLO,",
    "}"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1249-1253": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1007-1007": [
+   "if state.cost or registry is None or not state.provider or not state.model:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1260-1264": [
    "# ``Exception`` only: a ``CancelledError`` here means the CALLER is being",
    "# torn down, and it must propagate — the reaper itself is shielded and",
    "# keeps going regardless.",
    "with contextlib.suppress(Exception):",
    "await asyncio.shield(task)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1303-1311": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1314-1322": [
    "\"\"\"Spawn, stream, reap, and return an envelope. NEVER raises except on",
    "cancellation.",
    "",
@@ -1183,17 +1186,17 @@
    "the human already pressed the key once, and a second press means \"stop",
    "waiting\", not \"restart the 5 s clock\" (finding B1)."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1386-1386": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1397-1397": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1386-1387": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1397-1398": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)",
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1387-1387": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1398-1398": [
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1641-1648": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1652-1659": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",
@@ -1203,13 +1206,13 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1754-1757": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1765-1768": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
    "only purpose was to let a cooperative child clean up."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1779-1781": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1790-1792": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
@@ -1258,7 +1261,7 @@
    "child_cwd: str,",
    "parent_cwd: str,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:848-853": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:853-858": [
    "``profile_to_argv`` supplies ``--mode json -p``, the session flag and the",
    "trailing ``f\"Task: {task}\"``. THE ``\"Task: \"`` PREFIX IS LOAD-BEARING and",
    "must not be stripped: ``args.py`` swallows an unrecognised ``--`` token into",
@@ -1266,11 +1269,8 @@
    "``--`` would silently become a flag and the child would run with an empty",
    "prompt."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:911-911": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:917-917": [
    "\"--no-agents\","
-  ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:996-996": [
-   "if state.cost or registry is None or not state.provider or not state.model:"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/progress.py:145-145": [
    "_TERMINAL_STATES = frozenset({\"done\", \"error\", \"stopped\"})"
@@ -2517,26 +2517,26 @@
    "@overload",
    "def set_widget("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1198-1202": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1200-1204": [
    "def __repr__(self) -> str:",
    "return (",
    "f\"_ManifestEntry(plugin={self.manifest.plugin.id!r}, \"",
    "f\"pkg_dir={str(self.pkg_dir)!r})\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1476-1476": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1478-1478": [
    "eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1869-1872": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1876-1879": [
    "if isinstance(entry, _EntryPointEntry):",
-   "factory = _factory_from_entry_point(entry)",
+   "factory = _factory_from_entry_point(entry, cwd=cwd)",
    "display = getattr(factory, \"__qualname__\", None) or type(factory).__name__",
    "return factory, display, None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:282-282": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:284-284": [
    "extension.resolved_path = str(entry.pkg_dir)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:404-414": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:406-416": [
    "if shell.shortcuts:",
    "# W1 limitation (adversarial-review MEDIUM): the TUI enumerates",
    "# shortcut KEYS once at chrome build, so keys from a lazily-activated",
@@ -2546,16 +2546,16 @@
    "\"they will bind on the next TUI start (key bindings are built \"",
    "\"once at startup)\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:458-459": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:460-461": [
    "1. ``cwd / .aelix / extensions /`` — project-local files / packages.",
    "2. ``<agent_dir> / extensions /`` — user globals. **In every shipped"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:791-793": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:793-795": [
    "home_aelix = Path.home() / \".aelix\" if agent_dir is None else agent_dir",
    "global_dir = (home_aelix / \"extensions\").resolve(strict=False)",
    "for discovered in _discover_in_dir(global_dir, errors=errors):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:796-860": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:798-862": [
    "# 3. Explicit configured paths.",
    "seen_modules: set[str] = set()",
    "for entry in configured_paths:",
@@ -2565,7 +2565,7 @@
    "all_entries.append(entry)",
    "continue"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:798-860": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:800-862": [
    "for entry in configured_paths:",
    "# Callables/factories pass through (P-21 — explicit takes precedence",
    "# over entry_points but loses to local/global directories).",
@@ -2575,7 +2575,7 @@
    "# Issue #114: a dotted module reference (\"pkg.mod\", \"pkg.mod:factory\")",
    "# passes through AS A STRING so _resolve_factory reaches"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:862-865": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:864-867": [
    "# 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).",
    "# Issue #91: this tier no longer imports anything — endpoints are resolved",
    "# from installed metadata, so it is safe for the metadata-only scan too.",
@@ -2663,8 +2663,8 @@
    "collected.append(event)",
    "if event.get(\"type\") == \"agent_end\" and not done.done():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1168-1168": [
-   "argv = [sys.executable, \"-m\", \"aelix\", \"--mode\", \"rpc\"]"
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:1172-1172": [
+   "argv = [sys.executable, \"-P\", \"-m\", \"aelix\", \"--mode\", \"rpc\"]"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_client.py:616-616": [
    "tree.hard_kill()"

@@ -377,7 +377,7 @@ async def test_the_gate_the_child_runs_realizes_the_argv_posture(
     it, which is why the spawner-side clamp is the real guarantee.
     """
 
-    parsed = parse_args(_spawner_argv(tmp_path, mode)[3:])
+    parsed = parse_args(_spawner_argv(tmp_path, mode)[4:])
     assert parsed.permission_mode == mode.value
     child_gate = PermissionExtension(
         posture=PermissionPosture(mode=PermissionMode(parsed.permission_mode)),

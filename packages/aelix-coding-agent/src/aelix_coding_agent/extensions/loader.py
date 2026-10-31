@@ -43,11 +43,12 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from importlib.metadata import EntryPoint
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from aelix_agent_core.contracts import (
@@ -57,6 +58,7 @@ from aelix_agent_core.contracts import (
     PluginManifest,
     parse_manifest_toml,
 )
+from aelix_ai.utils.terminal_text import safe_for_terminal
 from pydantic import ValidationError
 
 from aelix_coding_agent.extensions.api import (
@@ -1637,7 +1639,9 @@ def _entry_point_carrier(ep: EntryPoint, reason: str) -> _EntryPointEntry:
     )
 
 
-def _factory_from_entry_point(entry: _EntryPointEntry) -> ExtensionFactory:
+def _factory_from_entry_point(
+    entry: _EntryPointEntry, *, cwd: Path | None = None
+) -> ExtensionFactory:
     """Resolve a manifest-less endpoint to its factory — the old ``ep.load()``.
 
     Both of ``ep.load()``'s call shapes are preserved on purpose; losing
@@ -1649,7 +1653,10 @@ def _factory_from_entry_point(entry: _EntryPointEntry) -> ExtensionFactory:
       parity: an endpoint may name a class whose instances are callable).
 
     The import happens HERE, at load time, not at discovery: that is the whole
-    point of issue #91.
+    point of issue #91. Since #641 it resolves against the installed
+    environment only (:func:`_import_module_outside_cwd`): the endpoint's
+    distribution passed the provenance gate, and the module name it declares
+    must not then be answered by a same-named file in the project directory.
     """
 
     if not entry.module:
@@ -1657,7 +1664,7 @@ def _factory_from_entry_point(entry: _EntryPointEntry) -> ExtensionFactory:
             f"entry point {entry.name!r} has no module path; expected "
             "'module.path:callable'"
         )
-    obj: Any = importlib.import_module(entry.module)
+    obj: Any = _import_module_outside_cwd(entry.module, cwd=cwd)
     for part in entry.attr.split(".") if entry.attr else ():
         obj = getattr(obj, part)
     if isinstance(obj, type):
@@ -1809,7 +1816,7 @@ async def _resolve_factory(
                 # manifest was never read; routing it through _ManifestEntry
                 # must not make such a pack unloadable.
                 return (
-                    _factory_from_entry_point(entry.ep_ref),
+                    _factory_from_entry_point(entry.ep_ref, cwd=cwd),
                     entry.manifest.plugin.id,
                     entry.manifest,
                 )
@@ -1832,7 +1839,7 @@ async def _resolve_factory(
                 f"manifest has no [plugin.entry] python. Add that entry, or "
                 f"drop those capabilities."
             )
-        factory = _factory_from_module(py_entry)
+        factory = _factory_from_module(py_entry, cwd=cwd)
         if entry.ep_ref is not None and isinstance(factory, type):
             # Adversarial review F1 — the D.1.8 class carve-out, restored on
             # the BOUND path. ``ep.load()`` returned the CLASS and the loader
@@ -1867,7 +1874,7 @@ async def _resolve_factory(
     # factory's own qualname, exactly as the inline-factory branch below
     # produced it when ``_discover_via_entry_points`` returned bare factories.
     if isinstance(entry, _EntryPointEntry):
-        factory = _factory_from_entry_point(entry)
+        factory = _factory_from_entry_point(entry, cwd=cwd)
         display = getattr(factory, "__qualname__", None) or type(factory).__name__
         return factory, display, None
 
@@ -1884,11 +1891,10 @@ async def _resolve_factory(
         if entry.endswith(".py"):
             return _factory_from_file(Path(entry), cwd=cwd), entry, None
         # Issue #114 security fold-in: resolve the module WITHOUT the project
-        # directory on ``sys.path``. See :func:`_import_path_without_cwd`.
+        # directory on ``sys.path``. See :func:`_import_module_outside_cwd`.
         shadow = _cwd_shadow_candidate(entry, cwd)
         try:
-            with _import_path_without_cwd(cwd):
-                return _factory_from_module(entry), entry, None
+            return _factory_from_module(entry, cwd=cwd), entry, None
         except ModuleNotFoundError as exc:
             # Issue #114: this branch became reachable from ``-e``, so a
             # dotless bare name that used to fail as "Extension file not
@@ -1904,20 +1910,307 @@ async def _resolve_factory(
     )
 
 
+def _import_module_outside_cwd(name: str, *, cwd: Path | None) -> ModuleType:
+    """Issues #114 and #641 — import a module reference from the installed environment.
+
+    Every name the loader imports is one the USER or an installed pack chose:
+    ``-e <module>`` (#114), a manifest's ``[plugin.entry] python`` and an
+    ``aelix.extensions`` entry point's module (#641). None of them may be
+    answered by a same-named file in the project directory, so this is the one
+    import the loader does by name, and it does two things:
+
+    1. Refuses a name already in :data:`sys.modules` that was found THROUGH the
+       project directory (:func:`_cached_project_module`). ``import_module``
+       returns a cached module without consulting ``sys.path``, so the path
+       guard alone would hand it back.
+    2. Imports with the project directory off ``sys.path``
+       (:func:`_import_path_without_cwd`).
+
+    Delegated children no longer start with the cwd on ``sys.path`` at all
+    (``python -P -m aelix_coding_agent``, #641); this stays for a user who runs
+    ``python -m aelix_coding_agent`` themselves and for library callers.
+    """
+
+    project_dirs = _project_dir_keys(cwd)
+    cached = _cached_project_module(name, project_dirs)
+    if cached is not None:
+        prefix, location = cached
+        # The location is a path in the project folder, whose name a ``git
+        # clone`` chose: flattened here so no surface that prints the error
+        # (stderr, ``/extension``, the scan log) passes its escapes on.
+        shown = safe_for_terminal(location)
+        raise ImportError(
+            f"{prefix!r} is already imported from the project directory "
+            f"({shown}), so Aelix will not use it for {name!r}: a module "
+            f"reference resolves against the installed environment only, so "
+            f"that a repository cannot decide what it means. It was imported "
+            f"before the extension loader ran, which happens when this process "
+            f"was started with 'python -m' or from a script in this directory; "
+            f"start aelix with its installed command, or install the module.",
+            name=prefix,
+            path=location,
+        )
+    with _import_path_without_cwd(cwd):
+        return importlib.import_module(name)
+
+
+_DirKey = str | tuple[int, int]
+"""One way a directory is recognised: a spelling, or its ``(st_dev, st_ino)``."""
+
+
+def _dir_keys(path: str) -> set[_DirKey]:
+    """``path`` as the keys two spellings of one directory compare equal by.
+
+    ``abspath`` reads ``''`` and ``'.'`` against the process cwd (which is what
+    the import system does with them) and drops a trailing separator;
+    ``normcase`` folds case and turns ``/`` into ``\\`` on Windows and is the
+    identity elsewhere; the ``realpath`` key catches a symlinked spelling
+    (``/tmp`` → ``/private/tmp`` on macOS). The ``(st_dev, st_ino)`` key is the
+    directory itself whatever the spelling, which is the only key that catches
+    another case on a case-insensitive macOS volume: ``normcase`` changes
+    nothing on darwin and ``realpath`` keeps the case it is given (#641 Codex
+    review PC2; #509's review F3 is the same shape). A filesystem that reports
+    no inode gives no such key, so the strings are the fallback. An
+    unrepresentable path (a NUL, a cwd unlinked underneath us) yields what could
+    be computed, possibly nothing.
+    """
+
+    spelled = path or os.curdir
+    keys: set[_DirKey] = set()
+    with contextlib.suppress(OSError, ValueError):
+        keys.add(os.path.normcase(os.path.abspath(spelled)))
+        keys.add(os.path.normcase(os.path.realpath(spelled)))
+    with contextlib.suppress(OSError, ValueError):
+        st = os.stat(spelled)
+        if st.st_ino:
+            keys.add((st.st_dev, st.st_ino))
+    return keys
+
+
+def _site_pth_names(folder: str, site_dirs: Iterable[str] | None = None) -> bool:
+    """Does a ``.pth`` file in a site directory put ``folder`` on ``sys.path``?
+
+    Read as ``site`` reads one: a line that is blank, a comment or an
+    ``import`` is not a path; any other names a folder relative to the site
+    directory. ``site_dirs`` defaults to the interpreter's site-packages and,
+    when enabled, the user site. Unreadable directories and files count as not
+    naming it.
+    """
+
+    if site_dirs is None:
+        import site  # noqa: PLC0415 — only when PYTHONPATH holds an empty segment
+
+        found: list[str] = []
+        with contextlib.suppress(AttributeError):  # an embedder's stripped site
+            found.extend(site.getsitepackages())
+        if site.ENABLE_USER_SITE:
+            found.append(site.getusersitepackages())
+        site_dirs = found
+    want = _dir_keys(folder)
+    for site_dir in site_dirs:
+        try:
+            names = sorted(n for n in os.listdir(site_dir) if n.endswith(".pth"))
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(site_dir, name), encoding="utf-8", errors="replace") as f:
+                    lines = f.read().splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not line.strip() or line.startswith(("#", "import ", "import\t")):
+                    continue
+                if _dir_keys(os.path.join(site_dir, line.rstrip())) & want:
+                    return True
+    return False
+
+
+def _interpreter_path_entries(
+    path: Sequence[object],
+    *,
+    safe_path: bool,
+    pythonpath: str | None,
+    pth_names: Callable[[str], bool] = _site_pth_names,
+) -> tuple[str, ...]:
+    """The values of the ``sys.path`` entries the interpreter's launch put there.
+
+    Two kinds:
+
+    - ``sys.path[0]``, unless ``-P`` / ``PYTHONSAFEPATH`` left it out: the cwd
+      under ``python -m``, ``''`` under ``python -c``, the script's folder for
+      ``python <script>`` and a console script;
+    - the cwd, once, when ``PYTHONPATH`` holds an empty segment, which Python
+      reads as the cwd and adds as an absolute path — what ``export
+      PYTHONPATH=$PYTHONPATH:/x`` writes when the variable was unset. Two
+      empty segments add one entry: ``site`` drops the duplicate.
+
+    It drops a ``.pth`` line naming a folder already on ``sys.path`` the same
+    way, so under that ``PYTHONPATH`` a flat-layout ``pip install -e .`` run
+    from its own root has ONE entry for the cwd, and it is the ``.pth``'s too:
+    taking it off failed the repo's ``examples/starter`` with "No module named
+    'aelix_starter'" (measured, #641 fix round 2). So the cwd is not recorded
+    when a ``.pth`` names it (``pth_names``); the folder is the user's.
+
+    ``pythonpath`` is ``None`` under ``-E`` / ``-I``, which ignore the variable.
+    """
+
+    entries: list[str] = []
+    if not safe_path and path and isinstance(path[0], str):
+        entries.append(path[0])
+    if pythonpath and "" in pythonpath.split(os.pathsep):
+        with contextlib.suppress(OSError):  # cwd unlinked underneath us
+            cwd = os.getcwd()
+            if not pth_names(cwd):
+                entries.append(cwd)
+    return tuple(entries)
+
+
+_LAUNCH_PATH_ENTRIES = _interpreter_path_entries(
+    sys.path,
+    safe_path=bool(sys.flags.safe_path),
+    pythonpath=None if sys.flags.ignore_environment else os.environ.get("PYTHONPATH"),
+)
+""":func:`_interpreter_path_entries`, read when this module is imported.
+
+That is before any extension runs, so an entry is still known once something
+has moved it — a global file extension's ``sys.path.insert(0, …)`` puts
+``python -m``'s cwd at index 1 (#641 verify R1). A module-level seam, like
+:data:`_OS_NAME`, so a test can say which launch it models without restarting
+the interpreter.
+"""
+
+
+def _project_dir_keys(cwd: Path | None) -> frozenset[_DirKey]:
+    """The directories a module reference must not resolve from, as :func:`_dir_keys`.
+
+    The process's working directory — what ``python -m`` puts at
+    ``sys.path[0]`` and what ``''`` means — and the loader's ``cwd``, which
+    differs from it for a library caller loading on behalf of another project.
+    """
+
+    keys: set[_DirKey] = set()
+    with contextlib.suppress(OSError):  # cwd unlinked underneath us
+        keys |= _dir_keys(os.getcwd())
+    if cwd is not None:
+        keys |= _dir_keys(str(cwd))
+    return frozenset(keys)
+
+
+def _launch_entries(project_dirs: frozenset[_DirKey]) -> list[tuple[int, str]]:
+    """The ``sys.path`` entries that put a project directory there by how the process started.
+
+    ``(index, entry)`` pairs, in order. Two kinds, and only these:
+
+    - ``''`` — what ``python -c`` and the REPL insert, and it means "the cwd at
+      lookup time", wherever it sits;
+    - for each value in :data:`_LAUNCH_PATH_ENTRIES` that names a project
+      directory, the first entry equal to it not already taken, wherever it
+      now sits: ``python -m``'s cwd behind an extension's insert, the cwd an
+      empty ``PYTHONPATH`` segment put after a console script's folder (#641
+      verify R1; round 1 looked at ``sys.path[0]`` alone and missed both).
+
+    Everything else on ``sys.path`` is the user's environment — a folder
+    ``PYTHONPATH`` names, a ``.pth`` file in site-packages — and a repository
+    can write neither. #641's first cut removed every entry naming the cwd,
+    and so broke a flat-layout ``pip install -e .`` run from its own root: the
+    ``.pth`` it installs adds the project root, which is the cwd (#641 verify
+    V1, measured on the repo's own ``examples/starter``). ``site`` appends that
+    entry after the launch's own, so the first equal entry is the launch's.
+    """
+
+    taken = {i for i, p in enumerate(sys.path) if p == ""}
+    for value in _LAUNCH_PATH_ENTRIES:
+        if not _dir_keys(value) & project_dirs:
+            continue
+        for i, p in enumerate(sys.path):
+            if p == value and i not in taken:
+                taken.add(i)
+                break
+    return [(i, sys.path[i]) for i in sorted(taken)]
+
+
+def _cached_project_module(
+    name: str, project_dirs: frozenset[_DirKey]
+) -> tuple[str, str] | None:
+    """The first cached prefix of ``name`` found through a project directory.
+
+    Returns ``(module name, location)`` or ``None``. "Found through a project
+    directory" means the module's file (a plain module) or each of its package
+    directories (a regular or namespace package) sits DIRECTLY in one of
+    ``project_dirs``, and that directory is not on ``sys.path`` other than by
+    :func:`_launch_entries` — exactly the modules :func:`_import_path_without_cwd`
+    stops a fresh import from producing. A flat editable install's module, put
+    in the cwd's place by its own ``.pth``, is what a fresh import would find
+    too, so it is not refused (#641 verify V1).
+
+    Deliberately NOT "its file is anywhere under the cwd". That reading would
+    refuse every installed module when aelix runs from a virtualenv inside the
+    project (``./.venv/lib/…/site-packages``), and an extension author's own
+    editable install (``pip install -e .`` puts ``./src`` on ``sys.path``,
+    which the path guard does not remove either). A module with no recorded
+    location — injected into ``sys.modules`` by hand, built-in, frozen — cannot
+    be placed and is not refused.
+    """
+
+    reachable: set[_DirKey] | None = None
+    parts = name.split(".")
+    for depth in range(1, len(parts) + 1):
+        prefix = ".".join(parts[:depth])
+        module = sys.modules.get(prefix)
+        if module is None:
+            continue
+        for location in _module_locations(module):
+            where = _dir_keys(os.path.dirname(location))
+            if not where & project_dirs:
+                continue
+            if reachable is None:
+                launched = {i for i, _ in _launch_entries(project_dirs)}
+                reachable = set()
+                for i, entry in enumerate(sys.path):
+                    if i not in launched and isinstance(entry, str):
+                        reachable |= _dir_keys(entry)
+            if not where & reachable:
+                return prefix, location
+    return None
+
+
+def _module_locations(module: ModuleType) -> list[str]:
+    """Where ``module`` was found: its package directories, else its file."""
+
+    spec = getattr(module, "__spec__", None)
+    search = getattr(spec, "submodule_search_locations", None)
+    if search is None:
+        search = getattr(module, "__path__", None)
+    if search is not None:
+        try:
+            return [loc for loc in search if isinstance(loc, str)]
+        except TypeError:  # a ``__path__`` that is not iterable
+            return []
+    origin = getattr(spec, "origin", None)
+    if not (isinstance(origin, str) and os.path.isabs(origin)):
+        # ``'built-in'`` / ``'frozen'``, or no spec at all.
+        origin = getattr(module, "__file__", None)
+    return [origin] if isinstance(origin, str) else []
+
+
 def _import_path_without_cwd(cwd: Path | None) -> AbstractContextManager[None]:
     """Issue #114 — take the project directory off ``sys.path`` for an import.
 
     ``-e <module>`` became reachable in #114, and ``importlib.import_module``
     resolves a name against the ambient ``sys.path``. Under ``python -m
-    aelix_coding_agent`` — which is not exotic here: it is verbatim the
-    command :mod:`aelix_agents.print_channel` uses to spawn EVERY subagent,
-    with the child's cwd — ``sys.path[0]`` is the current directory. Without
-    this guard, ``-e acme`` run inside a cloned repo that happens to contain
-    ``acme.py`` imports the REPO's file and executes its top-level code, while
-    the user's genuinely installed ``acme`` never loads. Nothing prevented it:
-    :func:`_is_module_ref` clause 4 tests ``<cwd>/acme`` (no ``.py``) and so
-    does not fire, tier-3 explicit entries are loaded outside the
-    ``no_project_local`` trust gate, and ``--no-approve`` is not consulted.
+    aelix_coding_agent`` ``sys.path[0]`` is the current directory — and until
+    #641 that was verbatim the command :mod:`aelix_agents.print_channel` used
+    to spawn EVERY subagent, with the child's cwd. Without this guard, ``-e
+    acme`` run inside a cloned repo that happens to contain ``acme.py`` imports
+    the REPO's file and executes its top-level code, while the user's genuinely
+    installed ``acme`` never loads. Nothing prevented it: :func:`_is_module_ref`
+    clause 4 tests ``<cwd>/acme`` (no ``.py``) and so does not fire, tier-3
+    explicit entries are loaded outside the ``no_project_local`` trust gate, and
+    ``--no-approve`` is not consulted. #641 found the same hole in the other two
+    imports by name — a manifest's ``[plugin.entry] python`` and an entry
+    point's module — and routed all three through
+    :func:`_import_module_outside_cwd`.
 
     ``-e <module>`` means "the module this Aelix installation can import", so
     the project directory has no business in that lookup; a project-local
@@ -1927,21 +2220,25 @@ def _import_path_without_cwd(cwd: Path | None) -> AbstractContextManager[None]:
     ``a.b`` imports ``a`` — executing a hostile ``a/__init__.py`` during the
     very check meant to detect it.
 
+    The entries removed are :func:`_launch_entries`: ``''``, and the entries
+    the interpreter's launch put there (``sys.path[0]`` without ``-P``, the cwd
+    of an empty ``PYTHONPATH`` segment) wherever they now sit, when they name
+    the process cwd or ``cwd`` under :func:`_dir_keys` — so ``'.'``, a trailing
+    separator, a symlinked spelling, another case (the directory's identity)
+    and, on Windows, another separator are caught too (#641; the #114 version
+    compared the raw strings). Only the directory itself: ``./src`` on
+    ``sys.path`` is an editable install, not the project directory. And only
+    what the launch put there: a folder ``PYTHONPATH`` names and a ``.pth``
+    entry naming the cwd are the user's own environment and stay (#641 verify
+    V1).
+
     Removed entries are re-inserted at their original indices rather than by
     assigning a saved list back, so a ``sys.path`` mutation made by the
     extension while it imports survives. ``sys.path`` is process-global and
     this is not thread-safe; extension loading is a sequential startup step.
     """
 
-    blocked: set[str] = {""}
-    with contextlib.suppress(OSError):  # cwd unlinked underneath us
-        blocked.add(os.getcwd())
-    if cwd is not None:
-        blocked.add(str(cwd))
-        with contextlib.suppress(OSError):  # unresolvable cwd
-            blocked.add(str(cwd.resolve()))
-
-    removed = [(i, p) for i, p in enumerate(sys.path) if p in blocked]
+    removed = _launch_entries(_project_dir_keys(cwd))
 
     @contextlib.contextmanager
     def _guard() -> Iterator[None]:
@@ -2073,7 +2370,9 @@ def _unresolvable_module_ref_error(
     return rebuilt
 
 
-def _factory_from_module(module_path: str) -> ExtensionFactory:
+def _factory_from_module(
+    module_path: str, *, cwd: Path | None = None
+) -> ExtensionFactory:
     """Import a module and return its factory callable.
 
     Sprint 6h₉b §C: now accepts ``"module:callable"`` colon-separated
@@ -2088,6 +2387,10 @@ def _factory_from_module(module_path: str) -> ExtensionFactory:
     so the empty-module / empty-callable ``ValueError`` below is
     unreachable from manifests — it remains as defense-in-depth for
     direct test / programmatic callers that bypass the manifest layer.
+
+    The import never consults the project directory (issue #114 for ``-e``,
+    #641 for ``[plugin.entry] python``): see :func:`_import_module_outside_cwd`.
+    ``cwd=None`` still blocks the process's working directory.
 
     Raises:
         ValueError: when colon-form has empty module or empty callable
@@ -2104,7 +2407,7 @@ def _factory_from_module(module_path: str) -> ExtensionFactory:
                 f"Invalid module:callable form {module_path!r}; "
                 "expected 'module.path:callable_name'"
             )
-        module = importlib.import_module(module_name)
+        module = _import_module_outside_cwd(module_name, cwd=cwd)
         factory = getattr(module, callable_name, None)
         if factory is None or not callable(factory):
             raise AttributeError(
@@ -2114,7 +2417,7 @@ def _factory_from_module(module_path: str) -> ExtensionFactory:
         return factory
 
     # Legacy form: bare module, look for top-level ``setup``.
-    module = importlib.import_module(module_path)
+    module = _import_module_outside_cwd(module_path, cwd=cwd)
     factory = getattr(module, "setup", None)
     if factory is None or not callable(factory):
         raise AttributeError(
@@ -2198,7 +2501,6 @@ async def _invoke_factory(
     # imports :class:`ExtensionManifestError` from this module, so this module
     # may not import it at module scope (§6.3).
     if manifest is not None and manifest.contributes.hooks:
-        from collections.abc import Callable
         from typing import cast
 
         from aelix_coding_agent.extensions.subprocess_hooks import (

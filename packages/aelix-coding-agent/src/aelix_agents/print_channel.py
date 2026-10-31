@@ -839,8 +839,13 @@ def build_child_argv(
 ) -> list[str]:
     """The child's exact command line — §(l).
 
-    ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1168`` does and which
+    ``[sys.executable, "-P", "-m", "aelix_coding_agent", …]`` and nothing else.
+    ``-P`` (#641) keeps the child's cwd — the project — off ``sys.path``:
+    ``python -m`` puts it at ``sys.path[0]``, so a project file named like an
+    installed extension module (a global pack's ``[plugin.entry] python``, an
+    entry point's module) was imported in its place, whatever the project's trust.
+    Python 3.11 is the floor, so the flag is always there. Specifically NOT
+    ``-m aelix``, which ``rpc/rpc_client.py:1172`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -893,6 +898,7 @@ def build_child_argv(
 
     return [
         sys.executable,
+        "-P",
         "-m",
         "aelix_coding_agent",
         *profile_to_argv(
@@ -963,7 +969,12 @@ def build_child_env(
     existing = env.get("PYTHONPATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
     if root not in parts:
-        env["PYTHONPATH"] = os.pathsep.join([root, *parts])
+        parts.insert(0, root)
+    # Rebuilt from ``parts`` EVERY time, also when the root was already listed:
+    # an empty segment (``'<root>:'``) is the cwd — the project — on the child's
+    # ``sys.path`` even under ``-P``, and a project ``sitecustomize.py`` then ran
+    # at the child's startup (#641 verify V4).
+    env["PYTHONPATH"] = os.pathsep.join(parts)
 
     return env
 

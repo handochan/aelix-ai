@@ -37,9 +37,9 @@ from aelix_coding_agent.agents.resolver import profile_to_argv
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.cli.args import parse_args
 
-# The three leading tokens ``build_child_argv`` always emits. Split out because
+# The four leading tokens ``build_child_argv`` always emits. Split out because
 # ``parse_args`` takes the argv WITHOUT them (it is handed ``sys.argv[1:]``).
-_LAUNCH_PREFIX = 3
+_LAUNCH_PREFIX = 4
 
 
 def _profile(**kwargs: object) -> AgentProfile:
@@ -75,16 +75,16 @@ def _argv(
 
 
 def test_child_is_launched_as_a_module_not_as_the_console_script(tmp_path: Path) -> None:
-    """``[sys.executable, "-m", "aelix_coding_agent"]`` and nothing else.
+    """``[sys.executable, "-P", "-m", "aelix_coding_agent"]`` and nothing else.
 
-    NOT ``-m aelix`` (``rpc/rpc_client.py:1168`` does that and it is a live bug —
+    NOT ``-m aelix`` (``rpc/rpc_client.py:1172`` does that and it is a live bug —
     ``aelix`` is the umbrella meta-package demo) and NOT the ``aelix`` console
     script, which in a worktree resolves to whichever tree owns the editable
     install rather than the code the parent is running.
     """
 
     argv = _argv(tmp_path)
-    assert argv[:_LAUNCH_PREFIX] == [sys.executable, "-m", "aelix_coding_agent"]
+    assert argv[:_LAUNCH_PREFIX] == [sys.executable, "-P", "-m", "aelix_coding_agent"]
 
 
 def test_the_oneshot_json_channel_is_requested(tmp_path: Path) -> None:
@@ -232,6 +232,7 @@ def test_profile_to_argv_matches_spawner_argv(tmp_path: Path) -> None:
     )
     assert argv == [
         sys.executable,
+        "-P",
         "-m",
         "aelix_coding_agent",
         *profile_to_argv(profile, prompt_path=prompt, oneshot=True, task="go"),

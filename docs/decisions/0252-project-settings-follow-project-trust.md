@@ -424,3 +424,17 @@ directories found, relative to the cwd; `/trust` gains a fifth row naming them;
 the headless notice reads "… and .agents/skills skipped in an untrusted
 directory …". `aelix_agents.trust.child_trust_argv` calls the predicate, so a
 same-cwd delegated child under such a folder runs with `--no-approve`.
+
+
+## 13. Note (2026-11-01, #641): a module name is not answered by the project folder
+
+*Amended 2026-11-01 by [ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D1–D4.*
+The boundary here — an untrusted project's code does not run — held for the
+`.aelix/` resources and not for an import by name. Every delegated child ran as
+`python -m aelix_coding_agent` in the project folder, which puts that folder at
+`sys.path[0]`, so a project file named like a global pack's
+`[plugin.entry] python` module or an installed entry point's module was imported
+in its place, in a trusted project or not. Children now start with `-P`, and the
+loader imports those names, and `-e <module>`, without the folder that the
+launch put on `sys.path`, refusing a same-named module already imported through
+it.

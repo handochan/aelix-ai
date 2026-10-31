@@ -65,8 +65,8 @@ from aelix_coding_agent.extensions.api import (
 )
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
-_LAUNCH_PREFIX = 3
-"""``[sys.executable, "-m", "aelix_coding_agent"]`` — ``parse_args`` sees the rest."""
+_LAUNCH_PREFIX = 4
+"""``[sys.executable, "-P", "-m", "aelix_coding_agent"]`` — ``parse_args`` sees the rest."""
 
 
 # === Fixtures =================================================================

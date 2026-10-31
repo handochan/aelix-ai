@@ -5,6 +5,8 @@ Status: Accepted (2026-07-26) — owner-ratified authority posture (Option C).
 `timeout_ms` precedence and its 600 000 ms default are gone, and §(j)'s exit
 wait after both pipes close has its own 30 s bound instead of the deadline — see
 the dated notes there.**
+**Amended 2026-11-01 (ADR-0285, #641): the child's command line starts
+`[sys.executable, "-P", "-m", "aelix_coding_agent", …]` — see §(l).**
 **Amended 2026-10-11 (#407): `/agents run` sanitises child-influenced display
 text through the shared terminal helper — see §(l).**
 **Amended 2026-10-08 (#399): R2's 300-character task cut is removed — see R2.**
@@ -526,7 +528,11 @@ inversion. ADR-0196 fixed this at the format layer; the spawner must not
 re-introduce it.
 
 argv is `[sys.executable, "-m", "aelix_coding_agent", *profile_to_argv(...),
-"--permission-mode", <mode>, *child_trust_argv(...), "--no-agents"]`. Never
+"--permission-mode", <mode>, *child_trust_argv(...), "--no-agents"]`.
+*Note 2026-11-01 ([ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D1, #641): `-P` now precedes `-m` here and
+in the rpc channel's argv. `-m` put the child's cwd — the project — at
+`sys.path[0]`, so a project file named like an extension module the child loads
+was imported in its place.* Never
 `-m aelix` (`rpc/rpc_client.py:466` does exactly that and it is a **live bug** —
 `python -m aelix` is the umbrella meta-package demo) and never the `aelix`
 console script. `profile_to_argv` (`agents/resolver.py:183-206`) already prepends
