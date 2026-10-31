@@ -1,6 +1,6 @@
 # 0194. TUI flicker round 3 — CSI 2026 bracket re-scope + atomic tail handoff
 
-Status: Accepted
+Status: Accepted — amended 2026-10-31 (#632, ADR-0280): while the chrome is pinned, the bracket also holds the CPR answer's repaint.
 Date: 2026-07-14
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적 목표입니다."**
@@ -115,3 +115,26 @@ dropped). The pump folds the drain's **last** tail into the batch through it:
   batch. Fixing it needs either holding the bracket across the CPR wait or
   seeding a height estimate through the reset — both riskier than the artifact;
   revisit only if live use still shows it.
+
+## Amendment (2026-10-31, #632) — while the chrome is pinned, the bracket holds the CPR repaint
+
+The known residual above is fixed for a pinned chrome (ADR-0280), the state a
+session is in once its transcript has filled the screen. There the frame before
+the CPR answer was not only missing the CPR-gated rows: with a band open above
+the chrome it was drawn in the wrong place, under the printed lines, and the
+chrome jumped to the last rows one round trip later. `print_above` and
+`print_above_many` now wait, inside the bracket, for the CPR answer, at most
+0.1 s, and repaint at once (`Application._redraw`, the private call
+`in_terminal` makes). Measured on a 2026 terminal with answers inside 0.1 s:
+no painted frame without the footer — 0, against 2 per turn and 11 in a
+30-line stream before — and the input row no longer moves between two rows
+while a stream commits. A slower answer gets the frames described above, as
+before. This is the first option this section named, "holding the bracket
+across the CPR wait", taken only while pinned and bounded because the output
+pump waits on the print; a missing answer, or a wait or repaint that raises,
+drops the pin for the session.
+
+A terminal without 2026 still paints the frame before the answer. With a band
+open, it now draws no chrome row there (ADR-0280 D4); with no band, it is the
+frame described above. Not pinned — a screen the transcript has not filled —
+nothing here changed.

@@ -59,7 +59,7 @@ from prompt_toolkit.layout import (
     Layout,
     Window,
 )
-from prompt_toolkit.layout.containers import AnyContainer, ScrollOffsets
+from prompt_toolkit.layout.containers import AnyContainer, Container, ScrollOffsets
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
@@ -78,6 +78,8 @@ if TYPE_CHECKING:
     from prompt_toolkit.formatted_text import StyleAndTextTuples
     from prompt_toolkit.input.base import Input
     from prompt_toolkit.layout.controls import GetLinePrefixCallable
+    from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+    from prompt_toolkit.layout.screen import Screen, WritePosition
     from prompt_toolkit.output.base import Output
 
 logger = logging.getLogger(__name__)
@@ -367,6 +369,81 @@ class _MarkedCompletionsMenu(ConditionalContainer):
         )
 
 
+# #632 (ADR-0280) — the rows a pinned chrome's pad may take: "all the spare
+# ones". The pad never takes a row anything else wants, so any number at least
+# as tall as a terminal means the same thing.
+_ALL_SPARE_ROWS = 10_000
+# #632 — the longest the bottom pin waits for a CPR answer: the settle inside
+# the 2026 bracket (``AelixChrome._settle_pinned``) and the hold that keeps the
+# chrome off the screen meanwhile (``_hold_for_cpr``). A local answer comes in
+# milliseconds (7 ms per turn of two prints, measured in a pty); past 0.1 s it
+# is a remote link, and the chrome is drawn as before #632 until it comes,
+# instead of being absent and stalling the output for the round trip (with
+# 0.5 s, an answer 0.5 s late kept the chrome off for 1013 ms per turn; with
+# 0.1 s, 108 ms — ADR-0280 D4).
+_CPR_HOLD_LIMIT = 0.1
+# #632 — ``AelixChrome._fresh_cpr`` when no CPR was asked after clear(): pin
+# detection waits for the next one a print asks.
+_AWAIT_NEXT_CPR = object()
+
+
+def _writes_vt(output: object) -> bool:
+    """Whether ``output.write_raw`` reaches a terminal that interprets ANSI.
+
+    False for prompt-toolkit's legacy ``Win32Output`` (it has the console API
+    and no VT output behind it): its ``write_raw`` prints the characters
+    through ``WriteConsoleW``. ``Windows10_Output`` and ``ConEmuOutput`` keep a
+    ``vt100_output`` and send ``write_raw`` there.
+    """
+
+    return not hasattr(output, "get_win32_screen_buffer_info") or hasattr(output, "vt100_output")
+
+
+class _BottomPad(Container):
+    """Spare rows above the chrome, so a pinned chrome sits on the last rows (#632).
+
+    Inline prompt-toolkit reserves ``max(rows below its first row, last height,
+    preferred)`` rows and moves that first row down only when a line is printed
+    above it. When the chrome shrinks after growing — an in-flow modal
+    (ADR-0159) closing, the working row going away, a stream tail committed —
+    the reserved rows stay, and the body ``HSplit`` lays its children out from
+    the top, so they were left empty BELOW the footer.
+
+    ``preferred=0, max=rows()``: the pad takes only rows no other child wants, so
+    it never makes the rendered region taller and cannot scroll the terminal.
+    While the chrome is pinned it takes all of them: the empty band then sits
+    between the transcript and the chrome, where the next ``print_above``
+    writes. ``last_rows`` is the band it drew last (ADR-0280).
+    """
+
+    def __init__(self, rows: Callable[[], int]) -> None:
+        self._rows = rows
+        self.last_rows = 0
+
+    def reset(self) -> None:
+        pass
+
+    def preferred_width(self, max_available_width: int) -> Dimension:
+        return Dimension()
+
+    def preferred_height(self, width: int, max_available_height: int) -> Dimension:
+        return Dimension(min=0, preferred=0, max=max(0, self._rows()))
+
+    def write_to_screen(
+        self,
+        screen: Screen,
+        mouse_handlers: MouseHandlers,
+        write_position: WritePosition,
+        parent_style: str,
+        erase_bg: bool,
+        z_index: int | None,
+    ) -> None:
+        self.last_rows = write_position.height
+
+    def get_children(self) -> list[Container]:
+        return []
+
+
 class AelixChrome:
     """The persistent prompt-toolkit Application + live bottom regions.
 
@@ -525,6 +602,28 @@ class AelixChrome:
         # A zero-row idle placeholder — measured to contribute 0 rows, so the
         # slot adds no gap to the chrome when no modal is open.
         self._modal_placeholder: Window = Window(height=0)
+        # #632 (ADR-0280) — ``_pinned`` is set once the chrome reaches the
+        # terminal bottom with no modal open, i.e. the transcript has filled the
+        # screen; from then on ``_BottomPad`` keeps the chrome on the last rows,
+        # until clear() empties the screen. ``_pin_failed`` latches a failure of
+        # the private repaint the pin leans on (``_settle_pinned``): the chrome
+        # then lays out as it did before #632 for the rest of the session.
+        # ``_band_rows`` is the empty band above the chrome at the last render
+        # whose height was known; ``_hold_since`` times ``_hold_for_cpr``.
+        # ``_restart_seq`` counts what starts the renderer over — every print
+        # and clear() — so a settle that outlived one does nothing;
+        # ``_fresh_cpr`` is the CPR answer pin detection waits for after
+        # clear() or a resize (an answer to a query asked before them
+        # describes a screen that is gone).
+        self._pinned = False
+        self._pin_failed = False
+        self._band_rows = 0
+        self._hold_since: float | None = None
+        self._restart_seq = 0
+        self._fresh_cpr: object | None = None
+        self._noted_size: object | None = None
+        self._input_row: ConditionalContainer | None = None
+        self._pad = _BottomPad(lambda: _ALL_SPARE_ROWS if self._pinned else 0)
         self._input_window: Window | None = None
         self.app: Application[None] = self._build_app(pt_input, pt_output)
 
@@ -652,9 +751,15 @@ class AelixChrome:
         # ConditionalContainer only toggles VISIBILITY. Non-capturing floats
         # (autocomplete / toasts) use add_float — is_modal_open() stays False for
         # them — so the input stays visible while a completion menu is open.
+        # #632 — ``hold`` draws no row in the repaint before a CPR answer while
+        # a pinned chrome has a band open: drawn then, the chrome would sit under
+        # the printed lines and jump to the bottom one round trip later
+        # (``_hold_for_cpr``). The other rows are gated on the CPR already.
+        hold = Condition(self._hold_for_cpr)
         input_conditional = ConditionalContainer(
-            input_window, filter=Condition(lambda: not self.is_modal_open())
+            input_window, filter=Condition(lambda: not self.is_modal_open()) & ~hold
         )
+        self._input_row = input_conditional
         # #66 item 5 — the "Working…" row sits ABOVE the input (was below).
         # gate_visible keeps it at 0 rows when idle (no blank gap), and it
         # renders below any open modal_slot (no collision).
@@ -688,14 +793,27 @@ class AelixChrome:
         # ``tests/tui/test_input_box_height.py``.
         body = HSplit(
             [
+                self._pad,
                 header,
                 breadcrumb,
-                Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
-                modal_slot,
+                ConditionalContainer(
+                    Window(
+                        FormattedTextControl(self._render_widgets_above),
+                        dont_extend_height=True,
+                    ),
+                    filter=~hold,
+                ),
+                ConditionalContainer(modal_slot, filter=~hold),
                 working_row,
                 working_spacer,
                 input_conditional,
-                Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
+                ConditionalContainer(
+                    Window(
+                        FormattedTextControl(self._render_widgets_below),
+                        dont_extend_height=True,
+                    ),
+                    filter=~hold,
+                ),
                 _ansi_row(self._render_status),
                 _footer_row(),
             ]
@@ -724,6 +842,7 @@ class AelixChrome:
             min_redraw_interval=0.08,
             input=pt_input,
             output=pt_output,
+            after_render=self._note_render,
         )
         # Alt+Enter (ADR-0119 follow-up) is the 2-key sequence ("escape",
         # "enter"), which makes Esc a PREFIX key — so a standalone Esc (the
@@ -1246,10 +1365,13 @@ class AelixChrome:
         # bytes are flushed before ``__aexit__`` returns), and terminals
         # auto-release a stale 2026 bracket on a short timeout, so an
         # exception inside cannot wedge the screen (belt: the finally below).
+        self._restart_seq += 1
+        seq = self._restart_seq
         self._sync_update(True)
         try:
             async with in_terminal():
                 _print_to(self._console, renderable)
+            await self._settle_pinned(seq)
         finally:
             self._sync_update(False)
         self.app.invalidate()
@@ -1289,6 +1411,8 @@ class AelixChrome:
             if apply_before_redraw is not None:
                 apply_before_redraw()
             return
+        self._restart_seq += 1
+        seq = self._restart_seq
         self._sync_update(True)
         try:
             async with in_terminal():
@@ -1296,6 +1420,7 @@ class AelixChrome:
                     _print_to(self._console, renderable)
                 if apply_before_redraw is not None:
                     apply_before_redraw()
+            await self._settle_pinned(seq)
         finally:
             self._sync_update(False)
         self.app.invalidate()
@@ -1310,10 +1435,25 @@ class AelixChrome:
         whole body is exception-suppressed, so it never raises in tests.
         """
 
+        self._pinned = False
+        self._band_rows = 0
+        self._restart_seq += 1
         with contextlib.suppress(Exception):
             output = self.app.output
-            output.write_raw("\x1b[3J\x1b[2J\x1b[H")
-            output.flush()
+            if _writes_vt(output):
+                # The scrollback; ``Renderer.clear`` below clears the screen.
+                # A legacy Windows console has no VT to read it, and its
+                # erase_screen clears the whole buffer, history included.
+                output.write_raw("\x1b[3J")
+            # #632 — through the renderer, not as raw ANSI: the renderer kept
+            # the old screen's first row and height, so its next frame was
+            # drawn from the old cursor (the garbled first frame after
+            # /clear), and the pin would have been set again from them.
+            # ``Renderer.clear`` erases, clears and homes the cursor through
+            # the output (the console API on a legacy Windows console, where
+            # raw ANSI does not move the cursor) and asks where it is.
+            self.app.renderer.clear()
+            self._arm_fresh_cpr()
         self.invalidate()
 
     def copy_to_clipboard(self, text: str) -> bool:
@@ -1661,6 +1801,239 @@ class AelixChrome:
     #: the exit window). Declared here, at the end of the class, so the lines
     #: above keep their numbers (gated citations name them).
     interrupt_armed: bool = False
+
+    # === #632 (ADR-0280) — the bottom pin ===================================
+
+    def _note_render(self, _app: object = None) -> None:
+        """After every render: note the band, and pin once the screen is full.
+
+        The chrome is pinned when, with no modal open, it reaches the terminal
+        bottom: the rows above its first row plus its own height — the input
+        counted as one row — fill the screen. A modal is left out on purpose,
+        and a tall draft is counted as one row: either one alone would
+        otherwise pin the chrome to the bottom of a screen the transcript has
+        not filled, where today it follows the text (#632 F2). Nothing is
+        noted from a render whose height is unknown (the repaint before a CPR
+        answer), and nothing is pinned from a CPR answer to a query asked
+        before clear() or a resize (``_fresh_cpr``); any failure leaves the
+        chrome unpinned.
+        """
+
+        try:
+            renderer = self.app.renderer
+            size = self.app.output.get_size()
+            if self._noted_size is not None and size != self._noted_size:
+                # A resize erased and asked a CPR: older answers are stale, and
+                # a settle still waiting is moot (prompt-toolkit repaints on
+                # the resize's answer).
+                self._restart_seq += 1
+                self._arm_fresh_cpr()
+            self._noted_size = size
+            if not renderer.height_is_known:
+                return
+            self._band_rows = self._pad.last_rows
+            self._hold_since = None
+            if self._pinned or self._pin_failed or self._modal is not None:
+                return
+            if not self._fresh_cpr_answered():
+                return
+            above = renderer.rows_above_layout
+            content = self.app.layout.container.preferred_height(size.columns, size.rows)
+            draft = 0
+            if self._input_row is not None:
+                rows = self._input_row.preferred_height(size.columns, size.rows).preferred
+                draft = max(0, rows - 1)
+        except Exception:  # noqa: BLE001 — height unknown / torn down → not pinned
+            return
+        if above + content.preferred - draft >= size.rows:
+            self._pinned = True
+
+    def _arm_fresh_cpr(self) -> None:
+        """Make pin detection wait for the CPR answer to the query asked last.
+
+        prompt-toolkit applies every CPR answer to the current geometry
+        (``Renderer.report_absolute_cursor_row``), and ``Renderer.reset`` keeps
+        the queries still outstanding. An answer to one asked before clear()
+        or a resize arrives first and describes a screen that is gone; pinned
+        from it, the chrome would sit on the last rows of an empty screen for
+        good. The answers come back in the order asked, so the newest query's
+        is the first one that counts. With no new query (no CPR, or one was
+        already pending and prompt-toolkit asked none), wait for the next one
+        a print asks.
+        """
+
+        try:
+            pending = self.app.renderer._waiting_for_cpr_futures
+        except Exception:  # noqa: BLE001 — renderer without the queue → no gate
+            self._fresh_cpr = None
+            return
+        if not self.app.output.responds_to_cpr:
+            self._fresh_cpr = None  # the height was read synchronously
+        else:
+            self._fresh_cpr = pending[-1] if pending else _AWAIT_NEXT_CPR
+
+    def _fresh_cpr_answered(self) -> bool:
+        """Whether the CPR answer ``_arm_fresh_cpr`` waits for has arrived."""
+
+        waited = self._fresh_cpr
+        if waited is None:
+            return True
+        if waited is _AWAIT_NEXT_CPR:
+            return False
+        if not isinstance(waited, asyncio.Future) or not waited.done() or waited.cancelled():
+            return False
+        self._fresh_cpr = None
+        return True
+
+    def _rearm_fresh_cpr(self) -> None:
+        """After a print's CPR query: wait for it if the one awaited is gone.
+
+        Gone: cancelled, or dropped unanswered — a ``wait_for_cpr_responses``
+        that gives up empties the whole queue, later queries included.
+        """
+
+        waited = self._fresh_cpr
+        if waited is _AWAIT_NEXT_CPR:
+            self._arm_fresh_cpr()
+            return
+        if not isinstance(waited, asyncio.Future) or (waited.done() and not waited.cancelled()):
+            return
+        try:
+            dropped = waited.cancelled() or waited not in self.app.renderer._waiting_for_cpr_futures
+        except Exception:  # noqa: BLE001 — renderer without the queue → stop waiting
+            self._fresh_cpr = None
+            return
+        if dropped:
+            self._arm_fresh_cpr()
+
+    def _hold_for_cpr(self) -> bool:
+        """Whether this repaint draws no chrome row: before a CPR answer, band open.
+
+        ``in_terminal`` repaints right after its print, before the CPR answer
+        says where the app's first row now is, so the pad cannot be sized: a
+        pinned chrome with a band open would be drawn under the printed lines
+        and jump down to the last rows one round trip later. A terminal with
+        CSI 2026 never paints that frame (``_settle_pinned``); one without it
+        would show the jump on every print until the band fills, so the frame
+        draws nothing instead — the input, the widgets above and below it (the
+        stream tail, a delegation panel) and an open modal. Held at most
+        :data:`_CPR_HOLD_LIMIT` seconds: a print's settle then ends the hold
+        and repaints; otherwise (a resize) the next ``refresh_interval``
+        repaint draws it, as before #632; so does any failure.
+        """
+
+        if not self._pinned or self._band_rows <= 0:
+            return False
+        try:
+            renderer = self.app.renderer
+            if not renderer.waiting_for_cpr or renderer.height_is_known:
+                return False
+        except Exception:  # noqa: BLE001 — torn-down renderer → draw
+            return False
+        now = self._time()
+        if self._hold_since is None:
+            self._hold_since = now
+        return now - self._hold_since <= _CPR_HOLD_LIMIT
+
+    async def _settle_pinned(self, seq: int) -> None:
+        """Repaint a pinned chrome inside the caller's CSI 2026 bracket.
+
+        ADR-0194 left the CPR-gated rows out of the bracketed frame: the exit
+        repaint of ``in_terminal`` runs before the CPR answer, and the answer's
+        repaint lands after ``?2026l``. For a pinned chrome that frame is also
+        in the wrong place. Waiting here for the answer and repainting at once
+        — ``Application._redraw``, private, the call ``in_terminal`` itself
+        makes — puts the chrome on the last rows inside the bracket. Skipped
+        without CPR: Windows reads the rows below the cursor synchronously, so
+        ``in_terminal``'s repaint is already right.
+
+        The wait is at most :data:`_CPR_HOLD_LIMIT`: the output pump is waiting
+        on this print, and a slower answer is a remote link. Then the hold ends
+        and the frame is repainted, still inside the bracket, as before #632:
+        left held, a 2026 terminal would paint a frame with no chrome row for
+        the rest of the round trip (#632 round 2). prompt-toolkit repaints when
+        the answer comes. ``Renderer.wait_for_cpr_responses`` goes on in the
+        background; it gives up after a second, returning normally, so whether
+        an answer came is read from the queries it waited on (``asked``), not
+        from the live queue, where a resize's own query would look like a
+        missing answer.
+
+        ``seq`` is this print's ``_restart_seq``. A clear(), a resize or a later
+        print since makes the wait moot: the first two start the renderer over,
+        and the later print settles itself. A failure — no answer, or the wait
+        or the repaint raising — drops the pin for the session; the chrome then
+        lays out as it did before #632.
+        """
+
+        self._rearm_fresh_cpr()
+        if not self._pinned:
+            return
+        try:
+            if not self.app.output.responds_to_cpr:
+                return
+            renderer = self.app.renderer
+            asked = list(renderer._waiting_for_cpr_futures)
+            waiting = asyncio.ensure_future(renderer.wait_for_cpr_responses())
+            done, _ = await asyncio.wait({waiting}, timeout=_CPR_HOLD_LIMIT)
+            if waiting not in done:
+                waiting.add_done_callback(lambda task: self._check_late_cpr(task, asked, seq))
+                if not self._settle_is_moot(seq):
+                    self._hold_since = float("-inf")  # the hold is over for this print
+                    self.app._redraw()
+                return
+            waiting.result()
+            if self._settle_is_moot(seq):
+                return
+            if not self._answered(asked):
+                self._drop_pin("no CPR answer within the wait")
+                return
+            self.app._redraw()
+        except Exception:  # noqa: BLE001 — a private API that moved → today's layout
+            logger.debug("bottom pin: the pinned repaint failed", exc_info=True)
+            self._drop_pin("the pinned repaint raised")
+
+    def _settle_is_moot(self, seq: int) -> bool:
+        """A clear() or a later print since, the pin gone, or a block running."""
+
+        return (
+            seq != self._restart_seq
+            or not self._pinned
+            or bool(getattr(self.app, "_running_in_terminal", False))
+        )
+
+    def _answered(self, asked: list[asyncio.Future[None]]) -> bool:
+        """Whether every CPR query a settle waited on got its answer.
+
+        ``wait_for_cpr_responses`` cancels the ones it gave up on. With none
+        asked (no query was outstanding), the renderer must know its height.
+        """
+
+        if asked:
+            return all(f.done() and not f.cancelled() for f in asked)
+        renderer = self.app.renderer
+        return not renderer.waiting_for_cpr and renderer.height_is_known
+
+    def _check_late_cpr(
+        self, task: asyncio.Future[None], asked: list[asyncio.Future[None]], seq: int
+    ) -> None:
+        """The background end of a settle that stopped waiting at the limit."""
+
+        try:
+            if task.cancelled() or task.exception() is not None:
+                return
+            if self._settle_is_moot(seq) or self._answered(asked):
+                return
+        except Exception:  # noqa: BLE001 — torn down → nothing to drop
+            return
+        self._drop_pin("no CPR answer within a second")
+
+    def _drop_pin(self, why: str) -> None:
+        """Lay the chrome out as before #632 for the rest of the session."""
+
+        logger.debug("bottom pin dropped: %s", why)
+        self._pinned = False
+        self._pin_failed = True
+        self.invalidate()
 
 
 class SoftWrapped:

@@ -1,6 +1,6 @@
 # ADR-0159 — In-flow modal slot (fix centered-Float clipping) + footer permission-first / steering-hidden
 
-- **Status:** Accepted
+- **Status:** Accepted — amended 2026-10-31 (#632, ADR-0280): where the chrome sits after a modal closes.
 - **Date:** 2026-06-21
 - **Sprint:** 6h₂₈ (TUI v2 overhaul roadmap)
 - **Supersedes/relates:** ADR-0105 (`AelixTUIContext` dialogs + `show_modal` over Floats —
@@ -99,3 +99,29 @@ cursor-anchored, so it fit inside the rows the app already owned.
   app's rendered region upward; capping only shrinks the (already clipped) overlay.
 - **`HSplit(height=Dimension(max=…))` wrapper** — forces preferred to 0/1, never grows the body
   (see Decision §2).
+
+## Amendment (2026-10-31, #632) — the chrome does not stay where a closed modal was
+
+The slot works as decided above, and growing the region upward is still how a
+tall modal stays whole. What it left behind was not decided here: the terminal
+scrolls up for the modal, and inline prompt-toolkit moves the app's first row
+down again only when a line is printed above it. When the modal closed, the
+input, status and footer stayed where the modal had been, with the rows below
+the footer empty (measured on `e19ab55e`: 9 rows after `/model`, 13 after
+`/settings`, 11 after the delegation consent dialog, the same at 80x24, 80x30
+and 120x40).
+
+ADR-0280 pins the chrome to the last rows once the transcript has filled the
+screen: a pad above the chrome takes the spare rows, so the rows a modal used
+become a band between the transcript and the input, which the next print
+fills. The slot itself, `show_modal` and `overlay.py` are unchanged. A screen
+the transcript has not filled lays out as before.
+
+**Slot content should size to its content** (`dont_extend_height=True`, or a
+height of its own). Spare rows were handed to a child that can grow; once the
+chrome is pinned, the pad that keeps it on the last rows is such a child too,
+and `HSplit` shares the spare rows between them in turn: a `Window` without
+`dont_extend_height`, opened into a 14-row band, got 10 rows from its top to
+the footer where it used to get 16 (round-1 verifier, #632). Every dialog that
+ships sizes to its content and is unaffected; a new panel in the slot should
+do the same.

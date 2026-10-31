@@ -1438,7 +1438,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:967-970``) and wave 2 may start half an hour after
+            # (``chrome.py:1086-1089``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was. A
             # resume passes the first run's granted posture (#610 D10).

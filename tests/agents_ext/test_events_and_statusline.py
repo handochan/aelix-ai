@@ -2,7 +2,7 @@
 
 Two consumers, one tap. The event bus is what a P4 dashboard, a Web UI or a
 third-party extension subscribes to; the statusline is the one height-1 row the
-user actually sees (``tui/chrome.py:1097-1108`` — multi-row panels are
+user actually sees (``tui/chrome.py:1216-1227`` — multi-row panels are
 ``set_widget``, which is P4).
 
 THREE MEASURED HAZARDS ARE PINNED HERE, and each is invisible in production:

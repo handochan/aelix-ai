@@ -1043,6 +1043,38 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The input, status line and footer go back to the bottom of the terminal
+  when a dialog closes (#632, ADR-0280).** A dialog that opens above the input —
+  `/model`, `/settings`, `/scoped-models`, `/extension`, the delegation consent
+  dialog, a tool approval — scrolls the terminal up when it is taller than the
+  rows below the input. When it closed, the input and footer stayed where the
+  dialog had been, and the rows below the footer were empty until enough new
+  output pushed them down: 9 rows after `/model`, 13 after `/settings`, 11
+  after the consent dialog, at 80x24, 80x30 and 120x40 alike. Once the
+  transcript has filled the screen, the input and footer now stay on the last
+  rows, and those rows sit as a blank band above the input that the next
+  output fills. The same holds after a resize, and when the working row goes
+  away at the end of a turn. A session whose screen is not full yet looks as
+  before, and so does one where only a tall draft reached the bottom. On a
+  terminal with synchronized output (CSI 2026) the status line and footer no
+  longer blink out for a moment after each block of output while the input is
+  at the bottom, as long as the terminal answers aelix's cursor-position query
+  within a tenth of a second. On one without it, such as macOS Terminal.app,
+  the input, the footer and any open dialog disappear for a moment after each
+  block of output instead of jumping up into the band while a band is open. On
+  a slower link, where that answer takes longer than a tenth of a second, the
+  input and any open dialog sit up in the band without the footer until the
+  answer comes, as they did before this change; on a terminal without
+  synchronized output they first disappear for about a tenth of a second. There
+  a reply whose first text arrives within a tenth of a second of Enter is also
+  shown up to one round trip later (answers 0.5 s late, no synchronized
+  output: 27 → 505 ms). A terminal that stops answering that query gets the
+  old layout back for the session.
+  The first frame after `/clear`, `/new` and `/resume` is now drawn whole; it
+  used to show the input without its `❯` and no footer, and on a legacy Windows
+  console it no longer prints the clear as text. The `/settings` row "Clear on
+  shrink" still does nothing, and its help no longer says it clears the
+  scrollback.
 - **A delegation whose text holds half of a character or a NUL is refused
   before it costs anything, and the turn goes on (#627, ADR-0277 amendment
   2026-10-31).** A tool call's JSON can carry half of an emoji (`"\ud83d"`) or

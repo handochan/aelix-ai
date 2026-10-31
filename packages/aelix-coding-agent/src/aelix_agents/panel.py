@@ -62,7 +62,7 @@ prunes (``harness/loop.py:581`` declares ``update_events``, ``:608`` appends,
 and it is drained only when the turn settles), and ``loop.py`` is KERNEL — it
 may not be edited — so throttling here is the ONLY legal mitigation for H10.
 
-500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:723``),
+500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:841``),
 so every emission is guaranteed visible while 5 Hz is already past the rate a
 human reads a changing row. It bounds a 10-minute child at ~1 200 interval
 flushes PLUS the forced flushes on every ``current_tool`` transition (two per
@@ -102,7 +102,7 @@ and it was the character count that let a row through at twice its promised
 width.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
-row (``chrome.py:1097-1108`` joins them with two spaces), so the last two
+row (``chrome.py:1216-1227`` joins them with two spaces), so the last two
 columns are the join, not content. It is not lower than that because S10's own
 worked example —
 ``agent scout ×4 · 2 running · 1 done · 1 queued · 33s · 12.3k tok · $0.0093``
@@ -145,10 +145,10 @@ one row each (:func:`panel_height`). Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
 bound: ``chrome._render_widget_lines`` joins the list with ``\\n`` and ANSI-parses
-it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1167``/``:693``),
+it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1286``/``:800-802``),
 which is multi-row and uncapped, so an over-long list pushes the transcript and
 the input line off screen. Contrast ``chrome._render_status``, which strips
-newlines because "this is a fixed height=1 chrome row" (``chrome.py:1097-1099``) —
+newlines because "this is a fixed height=1 chrome row" (``chrome.py:1216-1218``) —
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
@@ -515,7 +515,7 @@ def _short_profile(name: str) -> str:
 
     :func:`format_aggregate_status` was ALSO the panel's header line until
     ADR-0278, and the panel is not newline-stripped downstream the way the
-    statusline is (``chrome.py:1097-1099``). A profile name of 16 characters
+    statusline is (``chrome.py:1216-1218``). A profile name of 16 characters
     containing newlines would pass the length cap and still add rows to the
     widget, so the same helper that bounds every panel row bounds this too.
     """
@@ -628,7 +628,7 @@ def format_aggregate_status(
     has published yet — the profile name is only knowable from a snapshot, and a
     row that cannot name the agent is noise on a shared row). The caller must
     treat ``""`` as "write no row", NOT as "write an empty row": an empty
-    segment still costs the two-space join at ``chrome.py:1108``.
+    segment still costs the two-space join at ``chrome.py:1227``.
 
     NUMBERS. ``elapsed`` is the MAX over live members — they start together, so
     the oldest one is the batch's age; the executor's own measured wall clock is

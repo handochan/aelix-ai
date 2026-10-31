@@ -13,7 +13,7 @@ Determinism (mirrors the ``test_chrome.py`` idioms — read it for the base patt
 - Injected clock (``time_fn``) so the working-spinner frame is stable.
 - ``enable_cpr=True`` on the output, then we *feed a synthetic CPR response*
   (``\x1b[<row>;<col>R``) on the pipe input once the app is running. The chrome
-  gates every row behind ``renderer_height_is_known`` (``chrome.py:536-552``), which
+  gates every row behind ``renderer_height_is_known`` (``chrome.py:635-651``), which
   only flips once a Cursor-Position-Report arrives; without it nothing paints.
   This is the headless analogue of a real terminal answering the CPR query.
 - No wall-clock sleeps as synchronisation points (#315). Every step waits for
