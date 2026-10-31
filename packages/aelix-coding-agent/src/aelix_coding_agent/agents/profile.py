@@ -38,6 +38,11 @@ from typing import Any, Literal
 
 from aelix_agent_core.harness._frontmatter import parse_frontmatter
 
+from aelix_coding_agent.agents.sendable import (
+    join_surrogate_pairs,
+    unencodable_character,
+    unsendable_character,
+)
 from aelix_coding_agent.cli.args import VALID_THINKING_LEVELS
 
 # Mirrors ``skills.py:43-47`` so a profile name and a skill name are the same
@@ -62,7 +67,7 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:777``, ``consent.py:556``, ``posture.py:222``,
+literal ``"project"`` (``runtime.py:779``, ``consent.py:556``, ``posture.py:222``,
 ``profile.py``'s ``extensions:`` cut, ``discovery.py:357``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 
@@ -299,6 +304,11 @@ def parse_profile(
         suffix = f": {parse_error}" if parse_error else ""
         _err("parse_failed", f"failed to parse YAML frontmatter{suffix}")
         return ParseProfileResult(diagnostics=diagnostics)
+    # PyYAML leaves ``"\ud83d\ude42"`` as two lone halves where JSON's decoder
+    # joins them, so a value written as ``json.dumps`` writes it is joined
+    # here, before anything reads it — the check below then refuses only a half
+    # that really is alone (#627 review round 2).
+    frontmatter = {key: _joined(value) for key, value in frontmatter.items()}
 
     # An UNCLOSED frontmatter block is the dangerous case, not merely an empty
     # one: ``parse_frontmatter`` returns ``({}, <the whole file>, None)`` for it
@@ -318,6 +328,23 @@ def parse_profile(
             # output_schema) must not brick a profile on an older aelix, but it
             # must not be invisible either.
             _warn("unknown_field", f"unknown frontmatter key {key!r} (ignored)")
+
+    # A NUL OR A LONE SURROGATE IN ANY VALUE IS FATAL (#627). YAML's ``"\0"``
+    # and ``"\ud83d"`` escapes put them in a value, and a NUL byte in the body
+    # survives the UTF-8 read. A delegation launched from such a profile was
+    # approved, charged and recorded, and its child file created, before the
+    # launch failed on the model id or the prompt; the parent's own requests
+    # carry the description in the ``agent`` tool's roster. Every known key and
+    # the body are read as written; an unknown key is ignored, so its value is.
+    for key in sorted(_KNOWN_KEYS & frontmatter.keys()):
+        for value in _strings(frontmatter[key]):
+            what = unsendable_character(value)
+            if what is not None:
+                _err("invalid_metadata", f"{key} holds {what}{_UNSENDABLE_NOTE}")
+                break
+    body_holds = unsendable_character(body)
+    if body_holds is not None:
+        _err("invalid_metadata", f"body holds {body_holds}{_UNSENDABLE_NOTE}")
 
     # === Identity ==========================================================
     raw_name = frontmatter.get("name")
@@ -428,6 +455,89 @@ def parse_profile(
         approval_mode=approval_mode,  # type: ignore[arg-type]
     )
     return ParseProfileResult(profile=profile, diagnostics=diagnostics)
+
+
+_UNSENDABLE_NOTE = (
+    ", which no delegated agent can be handed and no model request should "
+    "carry; remove it"
+)
+
+_ARGV_FIELDS: tuple[str, ...] = (
+    "model",
+    "provider",
+    "thinking",
+    "tools",
+    "skills",
+    "extensions",
+)
+"""The fields a delegated launch puts on the child's command line
+(``resolver.profile_to_flags``). ``name`` and ``description`` are not among
+them: the prompt file's name is made safe from ``name`` (``_safe_stem``), the
+records are written escaped, and a launch with either holding a NUL ran (review
+round 2) — so neither is refused."""
+
+
+def unlaunchable_profile(profile: AgentProfile) -> str | None:
+    """Why ``profile`` cannot be launched as a delegated agent, else ``None``
+    (#627). Only what BREAKS the launch, after the budget, the records and the
+    child's file are spent, is refused:
+
+    * a field the launch puts on the command line (:data:`_ARGV_FIELDS`) holding
+      a NUL or a lone surrogate ``os.fsencode`` refuses — ``create_subprocess_exec``
+      raises on either. Held to the OS's rule, not the text rule
+      (``sendable.unencodable_character``): a ``skills:`` path under a
+      directory whose name is not UTF-8 is a path the child can open;
+    * a body holding a lone surrogate: the prompt file is written as UTF-8
+      (``prompt_file.write_prompt_file``), which raises on one. A NUL is
+      written, so it is not refused here (a profile FILE holding one does not
+      parse).
+
+    :func:`parse_profile` refuses such a file, so this is for a profile that
+    never went through it: one an extension builds and hands
+    ``SubagentRuntime.spawn``. The runtime asks before the dialog, the budget,
+    the records and the prompt file (``aelix_agents.runtime``).
+    """
+
+    for name in _ARGV_FIELDS:
+        for value in _strings(getattr(profile, name, None)):
+            what = unencodable_character(value)
+            if what is not None:
+                return (
+                    f"agent profile {profile.name!r}: {name} holds {what}, which no "
+                    "command line can carry. Fix the profile."
+                )
+    body = getattr(profile, "body", None)
+    if isinstance(body, str):
+        try:
+            body.encode("utf-8")
+        except UnicodeEncodeError:
+            return (
+                f"agent profile {profile.name!r}: body holds half of a character (a "
+                "lone surrogate), which its prompt file cannot be written with. Fix "
+                "the profile."
+            )
+    return None
+
+
+def _strings(value: Any) -> tuple[str, ...]:
+    """The strings in a field: itself, or the strings of a list or tuple."""
+
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
+def _joined(value: Any) -> Any:
+    """A frontmatter value with its surrogate pairs joined
+    (``sendable.join_surrogate_pairs``): a string, or each string of a list."""
+
+    if isinstance(value, str):
+        return join_surrogate_pairs(value)
+    if isinstance(value, list):
+        return [join_surrogate_pairs(item) if isinstance(item, str) else item for item in value]
+    return value
 
 
 # === Validation helpers =====================================================

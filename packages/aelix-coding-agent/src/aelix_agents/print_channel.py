@@ -88,6 +88,7 @@ from aelix_coding_agent.agents.resolver import (
     inherits_parent_model,
     profile_to_argv,
 )
+from aelix_coding_agent.agents.sendable import unencodable_refusal
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
@@ -458,7 +459,7 @@ def narrow_tools(
     ``tools=()`` is preserved, NOT collapsed: ``profile_to_argv`` emits
     ``--no-tools`` for it, whereas ``--tools ''`` parses to ``[]`` which
     ``_resolve_active_tools`` reads as falsy → ``None`` → EVERY tool active
-    (``agents/profile.py:167-177`` documents the inversion).
+    (``agents/profile.py:172-182`` documents the inversion).
     """
 
     grant = set(parent_grant) if parent_grant is not None else set(ALL_TOOL_NAMES)
@@ -618,6 +619,17 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
         # The parent's OWN cwd, not a model-supplied string: nothing to validate
         # that the process is not already living with.
         return str(parent)
+    # #627: the ``agent`` parser's sentence, for every door — an extension's
+    # ``spawn(cwd=…)`` got the codec's or the OS's message instead. The OS's
+    # RULE, though, not the text rule (``sendable.unencodable_character``):
+    # ``resume_cwd`` brings a RECORDED cwd back through here, and on Linux a
+    # directory whose name is not UTF-8 decodes to U+DC80-U+DCFF, which
+    # ``os.fsencode`` takes back to its own bytes — refusing it refused every
+    # resume under such a directory (review round 2). The model's own ``cwd``
+    # has already met the text rule in the parser.
+    refusal = unencodable_refusal(cwd, where="'cwd'", resend="the directory")
+    if refusal is not None:
+        raise ValueError(refusal)
     candidate = Path(cwd)
     if not candidate.is_absolute():
         candidate = Path(parent_cwd) / candidate
@@ -915,7 +927,7 @@ def build_child_env(
     env = dict(os.environ if base is None else base)
 
     # The depth gate. INERT at MAX_SUBAGENT_DEPTH == 1 — both branches yield 1,
-    # and ``agents/profile.py:220`` defaults ``role`` to ``"leaf"`` — but wired
+    # and ``agents/profile.py:225`` defaults ``role`` to ``"leaf"`` — but wired
     # now so P3 only has to raise the cap. Computed from the INHERITED value
     # before the key is overwritten.
     depth = (

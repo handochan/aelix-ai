@@ -877,7 +877,7 @@
    "tag = _DID_NOT_START_TAG if not member.started else member.result.status",
    "summary = member.result.summary or NO_OUTPUT",
    "error = member.result.error",
-   "# The note set mirrors ``render_subagent_result`` (``tool.py:1392-1402``) so a",
+   "# The note set mirrors ``render_subagent_result`` (``tool.py:1405-1415``) so a",
    "# batch member never says less about itself than the same child would say on",
    "# the single-mode path. Asked of the UNCAPPED summary: an error that the",
    "# budget cut out of the body is part of the summary still, and re-adding it",
@@ -966,7 +966,7 @@
    "# the rung above. A memo let a LATER tool call skip the dialog — its tasks and",
    "# its cwd were chosen after the human had answered and were never on screen. A",
    "# batch is ONE tool call, already validated by the hook and frozen into",
-   "# ``PendingSpawn`` (``tool.py:400-424``), whose every task and whose one cwd are",
+   "# ``PendingSpawn`` (``tool.py:401-425``), whose every task and whose one cwd are",
    "# rendered before the human answers — and if they cannot all be rendered, the",
    "# call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing",
    "# is memoised and the grant is still spent by exactly this one call."
@@ -1166,14 +1166,14 @@
    "PermissionMode.YOLO: PermissionMode.YOLO,",
    "}"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1230-1234": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1242-1246": [
    "# ``Exception`` only: a ``CancelledError`` here means the CALLER is being",
    "# torn down, and it must propagate — the reaper itself is shielded and",
    "# keeps going regardless.",
    "with contextlib.suppress(Exception):",
    "await asyncio.shield(task)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1284-1292": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1296-1304": [
    "\"\"\"Spawn, stream, reap, and return an envelope. NEVER raises except on",
    "cancellation.",
    "",
@@ -1183,17 +1183,17 @@
    "the human already pressed the key once, and a second press means \"stop",
    "waiting\", not \"restart the 5 s clock\" (finding B1)."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1367-1367": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1379-1379": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1367-1368": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1379-1380": [
    "row.prompt = write_prompt_file(plan.resolved.name, profile.body)",
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1368-1368": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1380-1380": [
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1622-1629": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1634-1641": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",
@@ -1203,21 +1203,21 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1735-1738": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1747-1750": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
    "only purpose was to let a cooperative child clean up."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1760-1762": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1772-1774": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:223-223": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:224-224": [
    "state: SubagentState = \"starting\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:263-297": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:264-298": [
    "@dataclass(frozen=True)",
    "class SpawnPlan:",
    "\"\"\"Everything decided BEFORE a process exists.",
@@ -1227,15 +1227,15 @@
    "the time one of these is built, and none of them may be re-decided by the",
    "spawn path. In particular :attr:`permission_mode` is the CONSENT-RESOLVED"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:282-284": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:283-285": [
    "\"\"\"The parent's LIVE grant (``ExtensionContext.get_active_tools``). ``None``",
    "means \"the parent holds every built-in\", which is what the harness's own",
    "``None`` sentinel means before it is materialised.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:590-590": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:591-591": [
    "def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:590-640": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:591-641": [
    "def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:",
    "\"\"\"Contain the child's working directory inside the parent's — §(l).",
    "",
@@ -1245,10 +1245,10 @@
    "the task somewhere the model did not ask for and nobody was told about.",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:603-603": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:604-604": [
    "DEFENCE (F1 belt). POSIX permits every byte but ``/`` and NUL in a path"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:815-882": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:827-894": [
    "def build_child_argv(",
    "child_profile: AgentProfile,",
    "*,",
@@ -1258,7 +1258,7 @@
    "child_cwd: str,",
    "parent_cwd: str,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:836-841": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:848-853": [
    "``profile_to_argv`` supplies ``--mode json -p``, the session flag and the",
    "trailing ``f\"Task: {task}\"``. THE ``\"Task: \"`` PREFIX IS LOAD-BEARING and",
    "must not be stripped: ``args.py`` swallows an unrecognised ``--`` token into",
@@ -1266,10 +1266,10 @@
    "``--`` would silently become a flag and the child would run with an empty",
    "prompt."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:899-899": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:911-911": [
    "\"--no-agents\","
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:977-977": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:989-989": [
    "if state.cost or registry is None or not state.provider or not state.model:"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/progress.py:145-145": [
@@ -1293,7 +1293,7 @@
    "\"\"\"Bind a member's freshly minted spawn id to (group, submitted index).",
    "",
    "Called from the executor's per-member ``on_event`` closure, which runs",
-   "BEFORE this bridge sees the same snapshot (``runtime.py:1874-1878``), so by",
+   "BEFORE this bridge sees the same snapshot (``runtime.py:1898-1902``), so by",
    "the time :meth:`__call__` is reached the membership is already known.",
    "Idempotent: the closure calls it on every snapshot, not only the first,",
    "because \"the first\" is not a fact the closure can cheaply know."
@@ -1311,7 +1311,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/reaper.py:120-120": [
    "DEFAULT_GRACE_SECONDS = 5.0"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1328-1385": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1352-1409": [
    "if self._draining or self._closed:",
    "return _error_result(resolved, _SESSION_DRAINING)",
    "# THE PARENT'S AUTHORITY, READ ONCE — the frozen record of what it was",
@@ -1321,7 +1321,7 @@
    "# this run and leaks no registry row (#610 critique M4).",
    "parent_cwd = self.host.cwd()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1374-1388": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1398-1412": [
    "refusal = self._admit_live()",
    "if refusal is not None:",
    "return _error_result(resolved, refusal)",
@@ -1331,7 +1331,7 @@
    "# started exactly as one that ran for ten minutes did. Refunding would let",
    "# a task that reliably fails loop forever."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1377-1385": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1401-1409": [
    "# THE BUDGET (MEDIUM #2, S6). One charge per CHILD, taken only once the",
    "# delegation has been admitted, never refunded: the cost being bounded is",
    "# \"how many children may one turn start\", and a child that died instantly",
@@ -1341,37 +1341,37 @@
    "if self._delegations_this_prompt >= MAX_DELEGATIONS_PER_PROMPT:",
    "return _error_result(resolved, _BUDGET_EXHAUSTED)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1385-1385": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1409-1409": [
    "self._delegations_this_prompt += 1"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1386-1386": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1410-1410": [
    "spawn_id = _new_id()"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1399-1400": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1423-1424": [
    "def _emit(state: _StreamState) -> None:",
    "self._publish(child, state, on_event, spawn_model=spawn_model)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1421-1421": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1445-1445": [
    "permission_mode=_tighten(grant.mode, permission_floor),"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1429-1429": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1453-1453": [
    "self._publish(child, child.stream, on_event, spawn_model=spawn_model)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:181-181": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:183-183": [
    "_TERMINAL_STATES = frozenset({\"done\", \"error\", \"stopped\"})"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1874-1878": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1898-1902": [
    "for tap in (on_event, self.host.on_progress):",
    "if tap is None:",
    "continue",
    "with contextlib.suppress(Exception):",
    "tap(progress)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1877-1878": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1901-1902": [
    "with contextlib.suppress(Exception):",
    "tap(progress)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1928-1939": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:1952-1963": [
    "def _tighten(mode: PermissionMode, floor: PermissionMode | None) -> PermissionMode:",
    "\"\"\"Rank-MIN of a consented mode and an optional live floor. Only tightens.",
    "",
@@ -1396,7 +1396,7 @@
    "during ``harness.bootstrap()`` even in interactive mode, re-pointed on every",
    "``/new`` / ``/fork`` / ``/resume``, and back to ``False`` on TUI exit), the"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:735-740": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:737-742": [
    "def _admit_live(self) -> str | None:",
    "\"\"\"``None`` to proceed, or the refusal text. Never raises.\"\"\"",
    "",
@@ -1404,22 +1404,22 @@
    "return _TOO_MANY_LIVE",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:777-777": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:779-779": [
    "if profile.scope == \"project\" and not allow_project:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:795-798": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:797-800": [
    "async def spawn(",
    "self,",
    "resolved: ResolvedProfile,",
    "task: str,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:833-836": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:843-846": [
    "grant = await request_spawn_consent(",
    "self.host.consent_context(),",
    "resolved,",
    "task,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:833-838": [
+  "packages/aelix-coding-agent/src/aelix_agents/runtime.py:843-848": [
    "grant = await request_spawn_consent(",
    "self.host.consent_context(),",
    "resolved,",
@@ -1484,10 +1484,20 @@
    "that reached EOF is how a mid-flight death is distinguished from a clean",
    "finish that merely produced no text.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1038-1038": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1000-1085": [
+   "def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:",
+   "\"\"\"The ``[agent … ]`` footer both renderers print.",
+   "",
+   "``status`` overrides ``result.status`` and exists for exactly one caller:",
+   "``aggregate._member_block`` (``aggregate.py:249-310``) rendering a member",
+   "that NEVER STARTED. Its envelope carries ``status=\"error\"`` like every other",
+   "refusal, so without the override the footer says ``error`` one line under a",
+   "heading that says ``did not start``. Keyword-only with a ``None`` default so"
+  ],
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1051-1051": [
    "if usage.cost:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1345-1354": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1358-1367": [
    "if result.dropped_tools:",
    "notes.append(",
    "\"Tools not granted to this agent: \"",
@@ -1497,7 +1507,7 @@
    "if result.dropped_lines:",
    "notes.append("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1358-1391": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1371-1404": [
    "def render_subagent_result(result: SubagentResult) -> ToolResult:",
    "\"\"\"Fold the envelope into what the parent's model reads.",
    "",
@@ -1507,7 +1517,7 @@
    "which is what the truncation marker points at when there is one (#199).",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1392-1402": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1405-1415": [
    "body = result.summary or \"(no output)\"",
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
@@ -1517,29 +1527,29 @@
    "notes.append(f\"Error: {note}\")",
    "if result.note:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1393-1395": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1406-1408": [
    "notes: list[str] = []",
    "if result.error and not error_repeats_summary(",
    "body, result.error, truncated=result.truncated"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1394-1394": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1407-1407": [
    "if result.error and not error_repeats_summary("
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1409-1409": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1422-1422": [
    "text = \"\\n\\n\".join([body, *notes, _usage_line(result)])"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1412-1412": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:1425-1425": [
    "details=result.details,"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:357-357": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:358-358": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:357-359": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:358-360": [
    "\"\"\"ALWAYS at least one, ALWAYS a tuple. ``mode=\"single\"`` normalizes ``task``",
    "into a 1-tuple at parse time so the single and batch paths downstream are one",
    "code path rather than two that must be kept in agreement.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:400-417": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:401-418": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1549,7 +1559,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:400-424": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:401-425": [
    "@dataclass(frozen=True)",
    "class PendingSpawn:",
    "\"\"\"What the ``tool_call`` hook approved, waiting for ``execute()``.",
@@ -1559,7 +1569,7 @@
    ":attr:`ToolExecutionContext.tool_call_id` are the SAME id, which is what",
    "makes the hand-off possible without touching the transcript."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:672-678": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:676-682": [
    "if len(raw) > MAX_PARALLEL_TASKS:",
    "raise AgentCallError(",
    "f\"{len(raw)} tasks is more than one call may carry — the limit is \"",
@@ -1568,7 +1578,7 @@
    "\"bigger task.\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:857-866": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:870-879": [
    "``execution_mode=\"sequential\"`` IS A SECURITY SETTING, not a performance",
    "one, and mirrors what ``tools/bash.py``'s ``create_bash_tool`` declares. The",
    "kernel's ``_execute_tool_calls``",
@@ -1578,18 +1588,8 @@
    "product-core cost. It is belt-and-braces with the hook location and with",
    "``consent.py``'s process-wide lock — and because the description is"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:881-881": [
+  "packages/aelix-coding-agent/src/aelix_agents/tool.py:894-894": [
    "execution_mode=\"sequential\","
-  ],
-  "packages/aelix-coding-agent/src/aelix_agents/tool.py:987-1072": [
-   "def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:",
-   "\"\"\"The ``[agent … ]`` footer both renderers print.",
-   "",
-   "``status`` overrides ``result.status`` and exists for exactly one caller:",
-   "``aggregate._member_block`` (``aggregate.py:249-310``) rendering a member",
-   "that NEVER STARTED. Its envelope carries ``status=\"error\"`` like every other",
-   "refusal, so without the override the footer says ``error`` one line under a",
-   "heading that says ``did not start``. Keyword-only with a ``None`` default so"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/discovery.py:357-357": [
    "if profile.scope == \"project\" and not project_trusted:"
@@ -1603,7 +1603,7 @@
    "f\"{user_agents_dir(agent_dir)}.\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:167-177": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:172-182": [
    "tools: tuple[str, ...] | None = None",
    "\"\"\"THREE-valued, and the distinction is load-bearing:",
    "",
@@ -1613,26 +1613,26 @@
    "",
    "``()`` must NOT collapse onto ``--tools ''``: ``parse_args(['--tools',''])``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:187-187": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:192-192": [
    "inherit_skills: bool = True"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:199-199": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:204-204": [
    "inherit_extensions: bool = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:220-220": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:225-225": [
    "role: Literal[\"leaf\", \"orchestrator\"] = \"leaf\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:229-229": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:234-234": [
    "output_cap: int = 51200"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:244-248": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:249-253": [
    "approval_mode: Literal[\"inherit\", \"ask\", \"auto\", \"deny\"] = \"inherit\"",
    "\"\"\"READ by ``posture.child_permission_mode`` and by the consent gate: it is",
    "how a profile DECLARES that it needs write authority, which is what lets the",
    "spawn dialog offer to widen a ``plan`` clamp. It cannot grant that authority",
    "on its own — only a human answering the dialog can.\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:374-379": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:401-406": [
    "if extensions and scope == \"project\":",
    "_err(",
    "\"scope_forbidden\",",
@@ -1640,10 +1640,10 @@
    "\"~/.aelix/agent/agents/ or pass -e explicitly.\",",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:52-52": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:57-57": [
    "ProfileScope = Literal[\"bundled\", \"user\", \"project\", \"explicit\"]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:84-84": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/agents/profile.py:89-89": [
    "_APPROVAL_MODES: tuple[str, ...] = (\"inherit\", \"ask\", \"auto\", \"deny\")"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/resolver.py:556-557": [
@@ -2906,17 +2906,17 @@
    "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1342-1343": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1351-1352": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1743-1743": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1752-1752": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2292-2292": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2301-2301": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2293-2293": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2302-2302": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1158-1160": [

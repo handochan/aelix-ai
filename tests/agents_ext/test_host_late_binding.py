@@ -373,7 +373,7 @@ async def test_an_empty_live_grant_hands_the_child_no_tools_not_every_tool(
     the obvious tidy-up reverses the fix. ``return list(...) or None``, or any
     ``if not tools: return None``, reads as harmless and is not: ``None`` on
     :attr:`SubagentHost.active_tools` means "the parent holds every built-in"
-    (``print_channel.py:282-284``), so it would hand a parent running
+    (``print_channel.py:283-285``), so it would hand a parent running
     ``--no-tools`` a child running EVERY tool. That is the fail-open hole #304
     closed, re-opened from the other end.
 

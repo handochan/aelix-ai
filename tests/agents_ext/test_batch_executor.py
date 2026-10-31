@@ -255,7 +255,7 @@ class _ExplodingChannel(_RecordingChannel):
     """Raises ``OSError`` for the first member, answers normally for the rest.
 
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1367`` vs ``:1368``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1379`` vs ``:1380``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
@@ -575,7 +575,7 @@ async def test_the_previous_summary_reaches_the_next_step_fenced(
     The substitution happens inside the TASK STRING and never touches argv — the
     ``"Task: "`` prefix ``profile_to_argv`` prepends is what keeps a summary
     beginning with ``--`` from being swallowed into ``parsed.unknown_flags``
-    (``print_channel.py:836-841``). So the assertion is on
+    (``print_channel.py:848-853``). So the assertion is on
     ``SpawnPlan.task``, which is exactly what rides that one argv element.
     """
 
@@ -788,7 +788,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1735-1738``.
+    ``print_channel.py:1747-1750``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -827,7 +827,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1735-1738``.
+    escalation at ``print_channel.py:1747-1750``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1277,7 +1277,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1928-1939``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1952-1963``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1346,7 +1346,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
 ) -> None:
     """S8, asserted at the layer where it is actually assertable.
 
-    ``SpawnPlan`` (``print_channel.py:263-297``) carries no argv and no env —
+    ``SpawnPlan`` (``print_channel.py:264-298``) carries no argv and no env —
     both are built inside ``PrintChannel.run`` — so "a batch member cannot nest"
     cannot be read off a recording channel. And the one L1-reachable statement
     ("set ``AELIX_SUBAGENT_DEPTH=1`` and the batch is blocked at the hook") merely
@@ -1354,7 +1354,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
     ``test_tool_and_security.py:674-686``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
-    (``print_channel.py:899``, unconditional, so it survives any settings gate)
+    (``print_channel.py:911``, unconditional, so it survives any settings gate)
     and the depth env var. That is what would fire if a future refactor cached
     member 1's argv and mutated only the task.
     """
@@ -1387,7 +1387,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1386``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1410``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.
@@ -1585,7 +1585,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1735-1738`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1747-1750`` at once.
     """
 
     marker_dir = tmp_path / "markers"

@@ -971,7 +971,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1377-1385``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1401-1409``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -997,7 +997,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:357-359``), so the single and batch doors are
+        # always non-empty (``tool.py:358-360``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -1405,7 +1405,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:400-417``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:401-418``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -1477,7 +1477,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1386``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1410``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1499,7 +1499,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1874-1878``) with no ``await`` between them, so THIS
+            # (``runtime.py:1898-1902``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

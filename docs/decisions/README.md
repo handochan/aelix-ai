@@ -80,7 +80,13 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   and `id` right after `profile`, before `mode`, `task`, `tasks` and `cwd` — OpenRouter's
   Ionstream upstream writes keys only in declared order and delivered 0 of 38 resumes with their
   `task` under the old order, 10 of 10 under the new — and a resume that arrives without `task`
-  is told so, and to send it once more and then delegate afresh.
+  is told so, and to send it once more and then delegate afresh. Amended 2026-10-31 (#627): a
+  lone surrogate or a NUL in any string the model sends `agent` (`profile`, `task`, each of
+  `tasks`, `cwd`, `id`) is refused by the parser before the dialog, the budget, the records and
+  the child's file — it used to end the turn, or spend all of those and fail `embedded null
+  byte` — `/agents run` and RPC `agents/run` refuse such a task before they look the profile
+  up, a profile file holding either does not parse, and the runtime's doors refuse such a task,
+  instruction, `cwd` or built profile; a chain's `{previous}` gets U+FFFD in their place.
 - [0276 — A delegation has no time limit, and a stopped child reports what it did](0276-delegation-has-no-time-limit.md)
   (Accepted 2026-10-28; #604 phase 0). There is no delegation time limit: the `agent` tool's
   `timeout_ms` is gone (a call that still sends it runs and the value is ignored), a profile's

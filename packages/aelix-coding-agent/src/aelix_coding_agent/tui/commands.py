@@ -1279,6 +1279,15 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                 Text(f"/agents run needs a name and a task. {_AGENTS_USAGE}", style="yellow")
             )
             return
+        # #627: a NUL or half of a character is refused before the profile is
+        # resolved, so a project profile's confirmation is never asked for a
+        # task that cannot run. The runtime would refuse it after that dialog.
+        from aelix_coding_agent.agents.sendable import unsendable_refusal
+
+        refusal = unsendable_refusal(task, where="The task", resend="the task")
+        if refusal is not None:
+            ctx.commit(Text(f"✖ agents run failed: {refusal}", style="bold red"))
+            return
         # ``allow_project`` starts FALSE and is only ever raised by the explicit
         # per-identity confirmation below (ADR-0197 §(f)) — the identity door is
         # deliberately STRICTER than the authority door, and it fails closed.
