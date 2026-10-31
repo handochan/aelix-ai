@@ -248,7 +248,7 @@ def _argv(plan: SpawnPlan) -> list[str]:
         parent_cwd=plan.parent_cwd,
         session_path=plan.session_path,
         model_pin=plan.limits.model,
-    )[3:]
+    )[4:]
 
 
 def _rewrite_line(path: Path, index: int, edit: Any) -> None:

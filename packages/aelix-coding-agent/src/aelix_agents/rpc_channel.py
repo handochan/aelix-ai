@@ -194,10 +194,11 @@ def build_rpc_child_argv(
     drops the argument on this branch anyway. Do not "fix" it by appending the
     task; that would put the user's prompt on a command line for no effect.
 
-    ``-m aelix_coding_agent`` and nothing else. Specifically NOT ``-m aelix``,
-    which is the umbrella package's mock-echo demo, and NOT the ``aelix``
-    console script, which in a worktree resolves to the other tree's editable
-    install.
+    ``-P -m aelix_coding_agent`` and nothing else — ``-P`` for the reason
+    :func:`~aelix_agents.print_channel.build_child_argv` gives (#641).
+    Specifically NOT ``-m aelix``, which is the umbrella package's mock-echo
+    demo, and NOT the ``aelix`` console script, which in a worktree resolves to
+    the other tree's editable install.
 
     ``parent_model`` is forwarded exactly as the print channel forwards it (see
     :func:`~aelix_agents.print_channel.build_child_argv`), and the module
@@ -217,6 +218,7 @@ def build_rpc_child_argv(
     del task  # delivered over the wire; see the docstring
     return [
         sys.executable,
+        "-P",
         "-m",
         "aelix_coding_agent",
         *profile_to_argv(
@@ -438,7 +440,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1641-1648``); this channel
+            # ``_eager_abort`` (``print_channel.py:1652-1659``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

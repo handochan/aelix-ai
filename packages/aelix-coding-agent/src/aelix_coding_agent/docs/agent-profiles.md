@@ -218,6 +218,11 @@ Ordinary builtin children and child-only extension selections
 retain their behavior. `/agents show` and consent use the same model decision;
 the internal route requirement contains a digest, never a URL or credential.
 
+With `inherit_extensions: true` the child loads your global and installed
+extensions the way the parent does. It runs as `python -P -m aelix_coding_agent`
+in its working folder, so a file there named like one of those extensions'
+modules is not imported in its place (#641).
+
 Everything else reaches the child as written and is resolved by the same rule as
 `--model` (see
 [providers-and-models.md](providers-and-models.md#how-a---model-string-becomes-a-provider)):

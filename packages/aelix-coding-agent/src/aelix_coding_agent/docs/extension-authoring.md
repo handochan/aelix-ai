@@ -342,6 +342,20 @@ Pass `--extension` / `-e` (repeatable). The value can be:
 
 A module is expected to expose a `setup` callable (the factory convention).
 
+A module name — here, in a manifest's `[plugin.entry] python`, or in an
+`aelix.extensions` entry point — is imported from the environment aelix is
+installed in, never from the directory you run aelix in: when the way aelix was
+started put that directory on the import path (`python -m aelix_coding_agent`,
+`python -c`, an empty `PYTHONPATH` segment), it is taken off for the import,
+and a same-named module already imported through it is refused (#114, #641). A
+directory your own environment put there stays — a folder `PYTHONPATH` names,
+or the `.pth` that `pip install -e .` writes for
+a flat-layout pack, so you can run aelix from the root of the pack you are
+developing. Delegated agents start with `python -P`, which keeps their working
+folder off the import path entirely. To load a file that sits in your project,
+give its path (`-e ./my_extension.py`) or put it under `.aelix/extensions/`,
+where [Project trust](#project-trust) decides.
+
 ### Auto-discovery
 
 Aelix also discovers extensions without `-e`, from three channels:

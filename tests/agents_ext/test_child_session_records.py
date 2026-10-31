@@ -633,7 +633,7 @@ def _child_argv(plan: SpawnPlan) -> list[str]:
         child_cwd=plan.cwd,
         parent_cwd=plan.parent_cwd,
         session_path=plan.session_path,
-    )[3:]
+    )[4:]
 
 
 # === The records, on every exit path (A.3) ====================================

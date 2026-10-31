@@ -255,7 +255,7 @@ class _ExplodingChannel(_RecordingChannel):
     """Raises ``OSError`` for the first member, answers normally for the rest.
 
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:1386`` vs ``:1387``) and
+    OUTSIDE its own ``try`` (``print_channel.py:1397`` vs ``:1398``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
@@ -575,7 +575,7 @@ async def test_the_previous_summary_reaches_the_next_step_fenced(
     The substitution happens inside the TASK STRING and never touches argv — the
     ``"Task: "`` prefix ``profile_to_argv`` prepends is what keeps a summary
     beginning with ``--`` from being swallowed into ``parsed.unknown_flags``
-    (``print_channel.py:848-853``). So the assertion is on
+    (``print_channel.py:853-858``). So the assertion is on
     ``SpawnPlan.task``, which is exactly what rides that one argv element.
     """
 
@@ -788,7 +788,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1754-1757``.
+    ``print_channel.py:1765-1768``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -827,7 +827,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1754-1757``.
+    escalation at ``print_channel.py:1765-1768``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1354,7 +1354,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
     ``test_tool_and_security.py:674-686``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
-    (``print_channel.py:911``, unconditional, so it survives any settings gate)
+    (``print_channel.py:917``, unconditional, so it survives any settings gate)
     and the depth env var. That is what would fire if a future refactor cached
     member 1's argv and mutated only the task.
     """
@@ -1585,7 +1585,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1754-1757`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1765-1768`` at once.
     """
 
     marker_dir = tmp_path / "markers"

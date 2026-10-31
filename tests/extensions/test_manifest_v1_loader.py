@@ -73,10 +73,14 @@ def _write_plugin_dir(
     if module_name and module_src is not None:
         # Place the module on sys.path so ``importlib.import_module`` can
         # resolve it. Each test uses a unique module name to avoid the
-        # import cache leaking state across tests.
-        module_file = parent / f"{module_name}.py"
-        module_file.write_text(module_src, encoding="utf-8")
-        sys.path.insert(0, str(parent))
+        # import cache leaking state across tests. NOT in ``parent`` itself:
+        # the tests load with ``cwd=parent``, and since #641 a manifest's
+        # ``[plugin.entry] python`` is never resolved from the project
+        # directory — ``_site`` stands in for an installed location.
+        site = _site_dir(parent)
+        site.mkdir(exist_ok=True)
+        (site / f"{module_name}.py").write_text(module_src, encoding="utf-8")
+        sys.path.insert(0, str(site))
 
     if pyproject_extensions is not None:
         body_lines = ["[tool.aelix]"]
@@ -94,11 +98,18 @@ def _write_plugin_dir(
     return pkg_dir
 
 
-def _cleanup_sys_path(parent: Path) -> None:
-    """Remove ``parent`` from ``sys.path`` after a test installs it."""
+def _site_dir(parent: Path) -> Path:
+    """Where :func:`_write_plugin_dir` puts an importable module: beside the cwd."""
 
-    while str(parent) in sys.path:
-        sys.path.remove(str(parent))
+    return parent / "_site"
+
+
+def _cleanup_sys_path(parent: Path) -> None:
+    """Remove ``parent``'s module directory from ``sys.path`` after a test installs it."""
+
+    for entry in (str(parent), str(_site_dir(parent))):
+        while entry in sys.path:
+            sys.path.remove(entry)
 
 
 _VALID_MANIFEST = textwrap.dedent("""

@@ -456,8 +456,10 @@ async def test_module_import_ignores_the_project_directory(
         "def setup(aelix):\n    return None\n",
         encoding="utf-8",
     )
-    # Simulate `python -m`: the project directory is sys.path[0].
+    # Simulate `python -m`: the project directory is sys.path[0], and the
+    # loader recorded it as the launch's entry when it was imported (#641).
     monkeypatch.syspath_prepend(str(cwd))
+    monkeypatch.setattr(loader_mod, "_LAUNCH_PATH_ENTRIES", (str(cwd),))
 
     result = await _via_cli_path(
         ["aelix_shadow_probe_zz"], cwd=cwd, agent_dir=agent_dir

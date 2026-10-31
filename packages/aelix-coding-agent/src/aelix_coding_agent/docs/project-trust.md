@@ -112,7 +112,21 @@ global SYSTEM.md / APPEND_SYSTEM.md and explicit system prompt flags,
 `--agent-file` profiles outside the project, and installed entry-point
 extensions (`project_trust.py:29-37`).
 
-That last list rests on a premise that had to be *made* true, which is the next
+Because they are your choices, the folder you are in must not be able to answer
+them. A module **name** — `-e acme`, a global pack's `[plugin.entry] python`,
+an installed entry point's module — is imported from the installed environment
+only: when the way aelix was started put the project folder on the import path
+(`python -m`, `python -c`, an empty `PYTHONPATH` segment), it is taken off for
+that import wherever it sits, and a module of that name already imported
+through it is refused instead of reused (a folder your own `PYTHONPATH` or a
+`.pth` names is your environment and stays) (#114, #641,
+[ADR-0285](https://github.com/handochan/aelix-ai/blob/main/docs/decisions/0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md)).
+Delegated agents start as `python -P -m aelix_coding_agent`, so their working
+folder is not on the import path at all; before #641 a file in it named like
+one of your extensions' modules ran in place of that module in every delegated
+agent, trusted project or not.
+
+That list rests on a premise that had to be *made* true, which is the next
 section.
 
 ## ADR-0203: a repo `.env` is default-deny

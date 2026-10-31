@@ -231,8 +231,8 @@ def test_the_argv_carries_rpc_mode_no_session_and_the_anti_nesting_flags() -> No
         child_cwd="/tmp",
         parent_cwd="/tmp",
     )
-    assert argv[:3] == [sys.executable, "-m", "aelix_coding_agent"]
-    assert argv[3:5] == ["--mode", "rpc"]
+    assert argv[:4] == [sys.executable, "-P", "-m", "aelix_coding_agent"]
+    assert argv[4:6] == ["--mode", "rpc"]
     assert "--no-session" in argv
     assert "--no-agents" in argv
     assert argv[argv.index("--permission-mode") + 1] == PermissionMode.PLAN.value
