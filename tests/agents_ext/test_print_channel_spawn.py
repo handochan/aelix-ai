@@ -2176,7 +2176,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1242-1246``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1249-1253``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2228,7 +2228,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1379``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1386``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default

@@ -461,7 +461,7 @@ async def discover_and_load_extensions(
        ``~/.aelix/extensions/``: both production call sites
        (``cli/entry.py:2081`` and ``:3009``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
-       (``cli/config.py:82-92``) returns ``$AELIX_CODING_AGENT_DIR`` or
+       (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
        ``~/.aelix/extensions``, but no shipped caller takes it — it exists for
        tests and direct library use. Naming the fallback as if it were the

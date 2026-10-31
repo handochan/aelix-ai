@@ -53,6 +53,23 @@ identical observable state; a user behind a corporate TLS proxy then saw only an
 opaque error at their first model request. Reading it belongs in the one verb
 that already answers "what would run here?".
 
+It lists the **MCP servers** the one ``mcp.json`` a launch here would read
+declares (#512, ADR-0282), in the state words ``/mcp`` and ``/extension`` use:
+``enabled`` for a server the next launch starts, ``disabled`` for an entry with
+``"enabled": false`` — with the file and key that turn it back on. That is
+inspection too: it reads the file and starts no server (a ``stdio`` entry is a
+process the launch would spawn), and an untrusted project's ``.aelix/mcp.json``
+is reported as skipped without being listed, as the launch skips it. Trust is
+the one ``aelix -p`` would reach — the saved decision, then the global
+``defaultProjectTrust`` — and for a project file the block says what that leaves
+out: the ``project_trust`` extension vote and the prompt of an interactive
+launch, which this command does not run (ADR-0282, amended 2026-11-01). Endpoints
+are not printed — a url can carry a token, and this output is what gets pasted
+into a bug report. Servers an extension declares (``contributes.mcp_servers``)
+are not listed: which of them a launch starts is decided by the manifest scan,
+the capability gate and the name rule in ``cli/entry.py``, and that inventory
+is #25's to show.
+
 Shaped after ``cli/docs.py`` and ``cli/extension_install.py``: ``-h``/``--help``
 prints the usage, exit **2** for a usage error, diagnostics on stderr and product
 output on stdout, and no ``rich``/``prompt_toolkit`` import so it runs without
@@ -67,6 +84,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
 if TYPE_CHECKING:
+    from aelix_ai.settings.types import DefaultProjectTrust
     from aelix_status.snapshot import ExtensionSnapshot
 
 #: Same value and same meaning as ``docs._EXIT_USAGE`` and
@@ -204,6 +222,103 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
         print(f"  ! {clean(trust['strict_relaxed_reason'], 600)}", file=stream)
 
 
+#: The width the MCP rows are laid out for: the output is read in a terminal
+#: and pasted into bug reports, so it is sized for the narrowest common one.
+_ROW_CELLS = 80
+
+
+def _cells(text: str) -> int:
+    """Terminal cells ``text`` takes — wide East Asian characters two, combining
+    marks and format characters none. Standard library only: this command runs
+    without the ``[tui]`` extra, which is where ``wcwidth`` comes from."""
+
+    import unicodedata
+
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _fit_cells(text: str, cells: int) -> str:
+    """``text`` cut to ``cells`` terminal cells, ``…`` included when it is cut."""
+
+    if _cells(text) <= cells:
+        return text
+    kept: list[str] = []
+    used = 0
+    for ch in text:
+        width = _cells(ch)
+        if used + width > cells - 1:
+            break
+        kept.append(ch)
+        used += width
+    return "".join(kept) + "…"
+
+
+def _render_mcp(mcp: dict[str, Any], stream: TextIO) -> None:
+    """The MCP block: the configured servers in the shared state words (#512)."""
+
+    from aelix_ai.utils.terminal_text import safe_for_terminal
+
+    from aelix_coding_agent.core.mcp_servers import McpServerStatus, enable_hint
+
+    def clean(value: object, limit: int = 300) -> str:
+        return safe_for_terminal(str(value), max_chars=limit)
+
+    print(file=stream)
+    label = clean(mcp["config_label"]) if mcp["config_label"] else None
+    if mcp["skipped_untrusted"]:
+        # The project file is the one a launch here picks, so the global file is
+        # not read for servers either; only its names still count (ADR-0282 D5).
+        print(f"MCP servers: {label} skipped — this directory is not trusted.", file=stream)
+        print(
+            "  A launch here starts none of its servers, and none of your global\n"
+            "  mcp.json's, which it replaces; the global file's names still keep an\n"
+            "  extension's server of the same name off.",
+            file=stream,
+        )
+    elif label is None:
+        print("MCP servers: none configured.", file=stream)
+    elif not mcp["servers"]:
+        print(f"MCP servers ({label}): none.", file=stream)
+    else:
+        servers = mcp["servers"]
+        print(f"MCP servers ({label}):", file=stream)
+        # Display cells, not code points (#512 review 512-05): a Korean name
+        # took twice its length. The transport and state columns are reserved
+        # first and the name gets what is left of the row.
+        transport_w = max(len(s["transport"]) for s in servers)
+        state_w = max(len(s["state"]) for s in servers)
+        name_room = max(8, _ROW_CELLS - 2 - 2 - transport_w - 2 - state_w)
+        names = [clean(s["name"], 300) for s in servers]
+        name_w = min(max(_cells(n) for n in names), name_room)
+        for name, s in zip(names, servers, strict=True):
+            shown = _fit_cells(name, name_w)
+            pad = " " * (name_w - _cells(shown))
+            print(
+                f"  {shown}{pad}  {s['transport'].ljust(transport_w)}  {s['state']}",
+                file=stream,
+            )
+        hint = enable_hint(
+            McpServerStatus(
+                name=s["name"], transport=s["transport"], state=s["state"], config=label
+            )
+            for s in servers
+        )
+        for line in hint:
+            print(f"  {line}", file=stream)
+    for warning in mcp["warnings"]:
+        print(f"  ! {clean(warning, 600)}", file=stream)
+    if mcp.get("trust_note"):
+        import textwrap
+
+        for line in textwrap.wrap(f"({mcp['trust_note']})", width=_ROW_CELLS - 4):
+            print(f"  {line}", file=stream)
+
+
 def _render_text(report: dict[str, Any], stream: TextIO) -> None:
     print(f"aelix {report['version']}", file=stream)
     print(file=stream)
@@ -253,6 +368,8 @@ def _render_text(report: dict[str, Any], stream: TextIO) -> None:
             file=stream,
         )
 
+    _render_mcp(report["mcp"], stream)
+
     print(file=stream)
     print(
         "Only a running session can answer: "
@@ -284,7 +401,10 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     from aelix_status.snapshot import bounded_emitted_value, summarise_extensions
 
     from aelix_coding_agent.cli.config import VERSION, get_agent_dir
-    from aelix_coding_agent.cli.project_trust import resolve_project_trusted
+    from aelix_coding_agent.cli.project_trust import (
+        has_trust_requiring_project_resources,
+        resolve_project_trusted,
+    )
     from aelix_coding_agent.extensions.always_on import BUILTIN_ALWAYS_ON_NAMES
 
     cwd = Path.cwd()
@@ -308,11 +428,27 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     # ``override=None`` because this command parses no ``--approve`` /
     # ``--no-approve`` — reporting a trust decision that a flag made would
     # describe a launch nobody is performing.
+    #
+    # ``default_project_trust`` is the GLOBAL setting the launch passes too
+    # (``entry.py`` ``_resolve_project_trust``; ``get_default_project_trust``
+    # reads the global scope only, and the manager is built untrusted as the
+    # launch builds it). Without it a user with ``"defaultProjectTrust":
+    # "always"`` and no saved decision was told a project was NOT trusted —
+    # and its ``.aelix/mcp.json`` skipped — that every launch trusts (#512
+    # review 512-04). What this cannot reproduce is step 3, the ``project_trust``
+    # extension vote, and the prompt of an interactive launch; the MCP block
+    # says so (``trust_note``). Read only where the resolver gets that far: a
+    # directory with nothing to gate is trusted at step 2, before the setting.
     project_trusted = await resolve_project_trusted(
         cwd,
         override=None,
         has_ui=False,
         agent_dir=agent_dir,
+        default_project_trust=(
+            _default_project_trust(cwd, agent_dir)
+            if has_trust_requiring_project_resources(cwd)
+            else "ask"
+        ),
     )
 
     report: dict[str, Any] = {
@@ -327,6 +463,9 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         # has every reason to skip loading extension code, and that is exactly
         # the run where this block must still answer.
         "trust_store": describe_trust_store().as_dict(),
+        # Reported under ``--no-extensions`` too: reading mcp.json executes
+        # nothing and starts nothing.
+        "mcp": _collect_mcp(cwd, project_trusted),
     }
 
     if not discover:
@@ -358,6 +497,79 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     # 4138-character ``plugin.version`` reaching a report unbounded.
     report["extension_errors"] = [bounded_emitted_value(str(e)) for e in loaded.errors]
     return report
+
+
+def _default_project_trust(cwd: Path, agent_dir: str | None) -> DefaultProjectTrust:
+    """The global ``defaultProjectTrust``, as the launch reads it; ``"ask"`` if
+    the settings cannot be read (the launch reports that error, this one has no
+    session to report it to)."""
+
+    from aelix_ai.settings import SettingsManager
+
+    try:
+        manager = SettingsManager.create(
+            cwd=str(cwd),
+            agent_dir=Path(agent_dir) if agent_dir is not None else None,
+            project_trusted=False,
+        )
+        return manager.get_default_project_trust()
+    except Exception:  # noqa: BLE001 — a label, never a reason to fail the command
+        return "ask"
+
+
+#: Why the MCP block cannot promise the launch's trust decision. Printed when
+#: the file in question is the project's, which is the only one trust gates.
+_TRUST_NOTE = (
+    "Trust here is what aelix -p decides: a saved decision, then defaultProjectTrust. "
+    "A launch first asks extensions' project_trust handlers, and an interactive one "
+    "asks you if nothing has decided by then; status cannot predict either."
+)
+
+
+def _collect_mcp(cwd: Path, project_trusted: bool) -> dict[str, Any]:
+    """The ``mcp`` key: the file a launch here reads and its servers' states.
+
+    Through ``load_mcp_config`` — the loader the launch calls — and the
+    launch's own trust rule: an untrusted ``project`` file is skipped whole, so
+    its entries are not listed. Server names are bounded like every other
+    author-controlled string this command emits. A warning drops the file path
+    it starts with — ``config`` already names the file, and the path alone ate
+    the 128-character bound — and is bounded at a sentence's length instead,
+    because the reason is the part a reader needs.
+    """
+
+    from aelix_ai.utils.terminal_text import safe_for_terminal
+    from aelix_status.snapshot import bounded_emitted_value
+
+    from aelix_coding_agent.cli.config import load_mcp_config
+    from aelix_coding_agent.core.mcp_servers import config_statuses
+
+    config = load_mcp_config(str(cwd))
+    prefix = f"{config.path}: "
+
+    def warning_text(warning: str) -> str:
+        if warning.startswith(prefix):
+            warning = warning[len(prefix) :]
+        return safe_for_terminal(warning, max_chars=600)
+
+    skipped = config.source == "project" and not project_trusted
+    statuses = [] if skipped else config_statuses(config.contribs, config.disabled_servers())
+    return {
+        "config": str(config.path) if config.path is not None else None,
+        "config_label": config.label or None,
+        "source": config.source,
+        "skipped_untrusted": skipped,
+        "servers": [
+            {
+                "name": bounded_emitted_value(s.name),
+                "transport": s.transport,
+                "state": s.state,
+            }
+            for s in statuses
+        ],
+        "warnings": [] if skipped else [warning_text(w) for w in config.warnings],
+        "trust_note": _TRUST_NOTE if config.source == "project" else None,
+    }
 
 
 async def run_status_command(args: list[str]) -> int:

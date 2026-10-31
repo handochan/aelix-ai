@@ -23,6 +23,54 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **An MCP server can be turned off without deleting it: `"enabled": false` in
+  `mcp.json` (#512, ADR-0282).** The key used to be ignored — a server written
+  with `"enabled": false` was started anyway.
+  - A disabled server is not started and the model never sees its tools; `/mcp`,
+    `/extension`'s Installed tab and `aelix status` still list it as `disabled`,
+    last, with the file and key that turn it back on. `enabled` defaults to
+    `true`; a change takes effect at the next start (`/reload` does not
+    reconnect MCP servers).
+  - A delegated agent never starts a server its parent's `mcp.json` kept off,
+    or an extension's server of a name that file declares, whichever file the
+    agent itself reads. It usually reads a different one: it does not trust the
+    project and does not get `$AELIX_MCP_CONFIG`. The parent passes it the
+    names — never a command, url or credential — and they can only keep
+    servers off. The list is capped at 16 KiB, several hundred names; past
+    that the agent still starts, and aelix warns how many names it left out.
+  - `enabled` must be `true` or `false`: `"false"`, `0` or `null` is a warning
+    and that server is not started; the others start as usual. `"disabled":
+    true` (another client's spelling) is not read: it does not turn that server
+    off, and a warning says to write `"enabled": false`.
+  - The three surfaces now use the same state words — `connected`, `failed` (its
+    connect at launch failed; `/mcp` used to say `disconnected`), `disconnected`,
+    `disabled`, and in `aelix status`, which starts nothing, `enabled`.
+  - `aelix status` has an MCP block: the file a launch here reads, each
+    server's transport and state, and that file's warnings (also under
+    `--no-extensions`; endpoints are not printed, since a url can carry a
+    token, and an invalid entry's warning names the field, not its value). An
+    untrusted project's `.aelix/mcp.json` is reported as skipped. It now
+    applies your global `defaultProjectTrust` as a launch does, and says that
+    an extension's `project_trust` handler or the trust prompt can still decide
+    otherwise.
+  - `/mcp` shows server names and file names as plain text: markup in a name
+    is no longer interpreted (`close[/]` used to blank the panel) and escape
+    codes are stripped. It shows a url as its scheme, host and port only — a
+    token can ride the query or the path — and a long name is cut with `…`
+    instead of pushing the state off an 80-column screen.
+  - A server name your `mcp.json` declares — enabled, disabled or skipped — is
+    no longer given to an extension's server (`contributes.mcp_servers`): that
+    server is not started, and a notice says which extension and which file.
+    The old notice said such a server "starts"; it never did. In an untrusted
+    project, whose `.aelix/mcp.json` replaces your global file there, the
+    global file's names still count.
+  - An entry with no `command` (stdio) or `url` (http/sse) is reported when
+    aelix starts instead of failing at connect. In a project's
+    `.aelix/mcp.json`, an entry that only sets `enabled` — pi's way to turn off a
+    global server in one project — is told it does nothing here: aelix reads
+    that file instead of the global one, not on top of it.
+  - New guide: `aelix docs mcp` (`mcp-servers`).
+
 - **`/skill` turns skills on and off, and the `skills` / `prompts` settings
   lists work (#511, ADR-0279; absorbs #595).** The lists pi documents were in
   every settings file and read by nothing: `"skills": ["-pdf-tools"]` did

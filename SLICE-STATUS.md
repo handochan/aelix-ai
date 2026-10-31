@@ -152,7 +152,7 @@ moved. Anyone extending this slice should follow the pattern.
    is taken and the cross-process write-safety guarantee is quietly lost. The
    fix is `msvcrt.locking` on the win32 arm; the risk is corruption under
    concurrent writers, not a traceback.
-4. **`%APPDATA%` config dir.** `cli/config.py:92` hard-codes
+4. **`%APPDATA%` config dir.** `cli/config.py:95` hard-codes
    `Path.home()/".aelix"/"agent"`. Correct-ish on Windows once W1's variables
    are set, but not the platform convention (`%APPDATA%\aelix`). Decide
    deliberately: changing it is a migration, not a bug fix.

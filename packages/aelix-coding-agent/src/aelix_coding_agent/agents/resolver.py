@@ -638,7 +638,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:3950-3952``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:4063-4065``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

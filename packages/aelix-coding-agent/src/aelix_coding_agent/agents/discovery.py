@@ -4,7 +4,7 @@ AELIX-ORIGINAL. Three directories are scanned, non-recursively, for
 ``<name>.md``, in ASCENDING order of precedence:
 
 * BUNDLED — ``<this package>/agents/builtin``, always. Ships in the wheel.
-* USER   — ``<get_agent_dir()>/agents`` (``cli/config.py:82``), always.
+* USER   — ``<get_agent_dir()>/agents`` (``cli/config.py:85``), always.
 * PROJECT — ``<cwd>/.aelix/agents``, **only when the project is trusted**.
 
 The bundled tier is an ON-RAMP, not a security tier. ``profile`` is a REQUIRED
@@ -98,7 +98,7 @@ def builtin_agents_dir() -> Path:
 
 
 def user_agents_dir(agent_dir: str | None = None) -> Path:
-    """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:82``).
+    """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:85``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
     same convention as ``_resolve_skill_tiers`` (``entry.py:1504``).
