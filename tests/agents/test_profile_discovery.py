@@ -3,7 +3,7 @@
 The two rules under test that are SECURITY rules, not ergonomics:
 
 * the project tier is inert until ``project_trusted`` (which only became a real
-  gate once ``project_trust.py:223-248`` learned about ``.aelix/agents/``);
+  gate once ``project_trust.py:238-263`` learned about ``.aelix/agents/``);
 * scope is decided by resolved-path CONTAINMENT, so ``--agent-file`` cannot
   launder a project profile into the ungated ``explicit`` bucket.
 """
@@ -175,7 +175,7 @@ def test_duplicate_name_in_scope_last_wins_with_warning(
 
 
 def test_missing_dirs_are_not_an_error(tmp_path: Path) -> None:
-    """Mirrors ``load_skills`` (``skills.py:167-168``): absent → silent."""
+    """Mirrors ``load_skills`` (``skills.py:182-183``): absent → silent."""
 
     result = discover_profiles(
         tmp_path / "nope",

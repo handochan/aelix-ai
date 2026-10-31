@@ -118,7 +118,7 @@ _SENSITIVE_BASENAMES = frozenset(
 # refused `~/.aws/credentials` while measuring ALLOW on the two stores that
 # carry an extension — gcloud's `credentials.db` and Terraform's
 # `credentials.tfrc.json` — which is the exact-vs-suffix half of the same
-# finding. `.env.` follows `permission.py:506`, which has folded `.env.local`
+# finding. `.env.` follows `permission.py:513`, which has folded `.env.local`
 # in with `.env` for writes since the write guard existed.
 _SENSITIVE_BASENAME_STEMS: tuple[str, ...] = ("credentials.", ".env.")
 

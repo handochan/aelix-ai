@@ -20,6 +20,11 @@ Gates the arbitrary-code-execution and identity surfaces aelix exposes from an
   project settings scope, which can choose the default model and provider the
   prompts go to. ``SettingsManager`` neither reads nor writes it until the CLI
   calls ``set_project_trusted(True)`` after this module's decision.
+- ``<dir>/.agents/skills`` for the cwd and each parent up to the git root
+  (#509, ADR-0281, pi ``trust-manager.ts`` ``hasTrustRequiringProjectResources``)
+  — the Agent Skills location other agents write, the same prompt-injection
+  surface as ``.aelix/skills``. The list is ``core/skill_dirs.py``'s, the one
+  the skill scan reads; the user's own ``~/.agents/skills`` is never in it.
 
 Explicit ``-e <path>`` extensions, ``$AELIX_MCP_CONFIG`` / global MCP,
 ``--agent-file`` profiles outside the project, and installed entry-point
@@ -45,7 +50,7 @@ This is a since-pin pi feature (pi added Project Trust after aelix's pin
 Aelix narrows the resource set to the surfaces listed above (pi's
 ``themes`` loader does not exist in aelix yet — Sprint spec §2.2;
 ``skills`` and ``prompts`` joined with #115, ``settings.json`` with #369,
-and system prompt files with #287) and widens it by one aelix-original family,
+system prompt files with #287 and ``.agents/skills`` with #509) and widens it by one aelix-original family,
 ``agents/``, which pi has no analogue for.
 
 Issue #5 (Lane C) closed ONE of the originally-deferred protected-core items
@@ -102,6 +107,12 @@ from aelix_agent_core.harness.hooks import (
     ProjectTrustHookEvent,
 )
 
+from aelix_coding_agent.core.skill_dirs import (
+    git_root,
+    parent_relative,
+    trust_requiring_agents_skill_dirs,
+)
+
 from .config import CONFIG_DIR_NAME, get_agent_dir
 
 if TYPE_CHECKING:
@@ -155,7 +166,11 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
     - ``cwd/.aelix/skills/`` exists as a directory with at least one entry
       (#115 — see the clause comment below), OR
     - ``cwd/.aelix/prompt-templates/`` exists as a directory with at least
-      one entry (#115).
+      one entry (#115), OR
+    - a ``.agents/skills`` directory holding a ``SKILL.md`` or a subfolder
+      the loader would read, in ``cwd`` or a parent up to the git root, that
+      is not the user's ``~/.agents/skills`` (#509 — see the clause comment
+      below).
 
     Otherwise ``False`` → there is nothing dangerous to gate, so
     :func:`resolve_project_trusted` trusts the directory without prompting
@@ -295,7 +310,18 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
         except OSError:
             pass
 
-    return False
+    # #509 (ADR-0281) — the Agent Skills directories, pi's eighth family. The
+    # skill scan (``entry._resolve_skill_tiers``) reads ``<dir>/.agents/skills``
+    # for the cwd and each parent up to the git root, in a trusted project only;
+    # without this clause a repo whose only skills sit there — at its root while
+    # the user works in a subdirectory, say — was trusted at step 2 and its
+    # SKILL.md text reached the system prompt unasked: the hole #115 closed for
+    # ``.aelix/skills``. ``trust_requiring_agents_skill_dirs`` walks the SAME
+    # list the scan reads (``core/skill_dirs.py``), so trust covers everything
+    # the scan can load. pi's check walks every ancestor, past the git root; the
+    # user's own ``~/.agents/skills`` is left out in both, so a folder under the
+    # home directory outside a repository does not ask because of it.
+    return bool(trust_requiring_agents_skill_dirs(cwd))
 
 
 # === Prompt contract (the UI returns this) ==================================
@@ -341,7 +367,70 @@ class ProjectTrustStoreEntry:
 # === Prompt wording + options (pi ``getProjectTrustOptions``) ===============
 
 
-def format_project_trust_prompt(cwd: Path) -> str:
+def _one_row(text: str) -> str:
+    """*text* as one row: every character a terminal would act on drawn by its name (#179).
+
+    The ``/skill`` panel's ``flat`` (``tui/approval_dialog._shown`` with
+    ``one_row``) without its TUI import, which this module must not need: an
+    ESC is ``^[``, a newline ``^J``, a BiDi override ``<U+202E>``. A directory
+    name from a cloned repository is text someone else wrote; a newline in it
+    must not start a row of the question that looks like the question's own.
+    """
+
+    from aelix_ai.utils.terminal_text import contains_steering_chars  # noqa: PLC0415
+
+    out: list[str] = []
+    for ch in text:
+        if ch.isprintable() or not contains_steering_chars(ch):
+            out.append(ch)
+            continue
+        cp = ord(ch)
+        out.append("^" + chr(cp + 0x40) if cp < 0x20 else "^?" if cp == 0x7F else f"<U+{cp:04X}>")
+    return "".join(out)
+
+
+#: How many ``.agents/skills`` directories the start-up question and ``/trust``
+#: name before a count. Neither scrolls: measured in a pty at 80x24, the
+#: start-up question is 17 rows without them, and with one row per directory by
+#: full path its options fell off the bottom of the screen under a long cwd and
+#: two directories (ADR-0281 D6); ``/trust``'s own
+#: frame does not scroll its title either, and every row it adds is a row the
+#: options lose (ADR-0253 §11.3). ``/skill`` lists every one.
+_SKILL_DIRS_SHOWN = 3
+
+
+def agents_skill_dirs_phrase(cwd: Path, dirs: Sequence[Path]) -> str:
+    """``.agents/skills, ../.agents/skills and 1 more`` — where *dirs* are, from *cwd* (#509).
+
+    Relative to *cwd*, which the question prints just above: every directory is
+    ``cwd`` or a parent, so the phrase holds ``..`` and ``.agents/skills`` and
+    no folder name a repository chose, and stays a few cells per directory
+    however deep or strange the path — the full path would add a row or more
+    each. More than three levels up the ``..`` are counted,
+    ``../×65/.agents/skills`` (``skill_dirs.parent_relative``): written out,
+    65 levels took the sentence to five rows and the last option off an 80x24
+    screen (#509 review F5). A directory that is not a parent's after all
+    (another drive on Windows) is its full path. Flattened anyway
+    (:func:`_one_row`); nearest first; the first :data:`_SKILL_DIRS_SHOWN`,
+    then a count.
+    """
+
+    def rel(path: Path) -> str:
+        relative = parent_relative(path, cwd)
+        return str(path) if relative is None else relative
+
+    named = [_one_row(rel(d)) for d in list(dirs)[:_SKILL_DIRS_SHOWN]]
+    rest = len(dirs) - len(named)
+    if rest:
+        return f"{', '.join(named)} and {rest} more (/skill lists them)"
+    if len(named) > 1:
+        return f"{', '.join(named[:-1])} and {named[-1]}"
+    return named[0] if named else ""
+
+
+def format_project_trust_prompt(
+    cwd: Path, agents_skill_dirs: Sequence[Path] | None = None
+) -> str:
     """Pi parity (``.aelix`` substituted): the trust prompt body.
 
     Pi source: ``project-trust.ts:24-26`` ``formatProjectTrustPrompt``.
@@ -351,8 +440,17 @@ def format_project_trust_prompt(cwd: Path) -> str:
     consent to exactly what this string discloses, and a user cannot approve a
     surface the prompt never mentioned. "agent profiles" was added with the
     ``.aelix/agents/`` clause (ADR-0196); "skills" and "prompt templates" with
-    the #115 clause; ".aelix/settings.json" with the #369 clause. Keep them in
-    lockstep, and extend both together when ``.aelix/teams/`` lands in P4.
+    the #115 clause; ".aelix/settings.json" with the #369 clause; the
+    ``.agents/skills`` sentence with the #509 clause. Keep them in lockstep,
+    and extend both together when ``.aelix/teams/`` lands in P4.
+
+    ``.agents/skills`` (#509, ADR-0281) is the one family outside ``cwd``, so
+    it gets its own sentence, always — a later ``/reload`` reads one that
+    arrives with a ``git pull`` — which ends by naming the directories that
+    made the folder ask (:func:`agents_skill_dirs_phrase`), so the answer is
+    about the folders it names. *agents_skill_dirs* defaults to
+    :func:`~aelix_coding_agent.core.skill_dirs.trust_requiring_agents_skill_dirs`.
+    pi's prompt names no directory.
 
     The consequence is spelled in TWO clauses because the families carry two
     different risks and one sentence covering both would misdescribe each. Code
@@ -365,14 +463,28 @@ def format_project_trust_prompt(cwd: Path) -> str:
     (#369).
     """
 
-    return (
-        "Trust project folder?\n"
-        f"{cwd}\n\n"
-        "This allows Aelix to load .aelix extensions, MCP servers, and agent "
-        "profiles, which can execute arbitrary code on your machine — to "
-        "load .aelix skills and prompt templates, whose text is placed into "
-        "the agent's instructions — and to apply .aelix/settings.json, which "
-        "can choose the model and provider your prompts are sent to."
+    if agents_skill_dirs is None:
+        agents_skill_dirs = trust_requiring_agents_skill_dirs(cwd)
+    above = (
+        "in the folders above, up to the repository root"
+        if git_root(cwd) is not None
+        else "in every folder above"
+    )
+    found = agents_skill_dirs_phrase(cwd, agents_skill_dirs)
+    return "\n".join(
+        [
+            "Trust project folder?",
+            f"{cwd}",
+            "",
+            "This allows Aelix to load .aelix extensions, MCP servers, and agent "
+            "profiles, which can execute arbitrary code on your machine — to "
+            "load .aelix skills and prompt templates, whose text is placed into "
+            "the agent's instructions — and to apply .aelix/settings.json, which "
+            "can choose the model and provider your prompts are sent to.",
+            "",
+            f"Trusting also loads the skills in .agents/skills here and {above}"
+            + (f"; found in {found}." if found else "."),
+        ]
     )
 
 
@@ -505,7 +617,11 @@ def format_trust_decision(cwd: Path, entry: ProjectTrustStoreEntry | None) -> st
 
 
 def trust_selector_title(
-    cwd: Path, entry: ProjectTrustStoreEntry | None, *, session_trusted: bool
+    cwd: Path,
+    entry: ProjectTrustStoreEntry | None,
+    *,
+    session_trusted: bool,
+    agents_skill_dirs: Sequence[Path] | None = None,
 ) -> str:
     """The rows ``/trust`` shows above its options (#380, pi ``trust-selector.ts:54-69``).
 
@@ -517,14 +633,28 @@ def trust_selector_title(
     §11.3 measured a taller ``/trust`` title pushing them off the modal. A
     path wider than the screen still adds rows: ``tui/shell.py`` cuts these
     lines to the width ``/trust`` opens at, as pi's ``Text`` wraps them.
+
+    #509 (ADR-0281): when a ``.agents/skills`` directory makes the folder ask
+    (*agents_skill_dirs*, by default
+    :func:`~aelix_coding_agent.core.skill_dirs.trust_requiring_agents_skill_dirs`),
+    a fifth row, ``Skills found in: ../.agents/skills …``
+    (:func:`agents_skill_dirs_phrase`) — the decision covers folders the path
+    above does not show. Nothing is added where there is none.
     """
 
+    if agents_skill_dirs is None:
+        agents_skill_dirs = trust_requiring_agents_skill_dirs(cwd)
     return "\n".join(
         (
             "Project trust",
             str(cwd),
             f"Saved decision: {format_trust_decision(cwd, entry)}",
             f"Current session: {'trusted' if session_trusted else 'untrusted'}",
+            *(
+                [f"Skills found in: {agents_skill_dirs_phrase(cwd, agents_skill_dirs)}"]
+                if agents_skill_dirs
+                else []
+            ),
         )
     )
 

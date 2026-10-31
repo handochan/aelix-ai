@@ -10,7 +10,7 @@ one idiom; the frontmatter parser itself is shared
 Two deliberate divergences from ``skills.py``, both required:
   * ``ProfileDiagnostic.type`` admits ``"error"`` — a bad profile must be
     fatal, whereas ``SkillDiagnostic.type`` is ``Literal["warning"]`` only
-    (``skills.py:80-87``). Running under an identity other than the one the
+    (``skills.py:84-91``). Running under an identity other than the one the
     user asked for is a safety problem, not a warning.
   * unknown frontmatter keys emit a WARNING (``skills.py`` ignores them
     silently) so P2+ fields (``deny_tools`` / ``mcp_servers`` / ``extends`` /
@@ -45,11 +45,11 @@ from aelix_coding_agent.agents.sendable import (
 )
 from aelix_coding_agent.cli.args import VALID_THINKING_LEVELS
 
-# Mirrors ``skills.py:43-47`` so a profile name and a skill name are the same
+# Mirrors ``skills.py:47-51`` so a profile name and a skill name are the same
 # shape of identifier. The regex ALONE is not enough: ``^[a-z0-9-]+$`` happily
 # accepts ``--tools`` and ``-p``, which would be indistinguishable from a flag
 # once a name reaches an argv (``resolver.profile_to_argv``). All four rules
-# from ``skills.py:470-482`` are ported below in :func:`_validate_name`.
+# from ``skills.py:547-559`` are ported below in :func:`_validate_name`.
 _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _NAME_REGEX = re.compile(r"^[a-z0-9-]+$")
@@ -79,7 +79,7 @@ ProfileDiagnosticCode = Literal[
     "missing_path",
     "scope_forbidden",
 ]
-"""Mirrors ``SkillDiagnosticCode`` (``skills.py:50-56``) minus the two
+"""Mirrors ``SkillDiagnosticCode`` (``skills.py:54-60``) minus the two
 directory-walk codes (profiles are a flat non-recursive glob) plus the three
 aelix-original ones (``unknown_field`` / ``missing_path`` /
 ``scope_forbidden``)."""
@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4387-4404``."""
+``cli/entry.py:4404-4421``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -120,7 +120,7 @@ _KNOWN_KEYS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class ProfileDiagnostic:
-    """Mirrors ``SkillDiagnostic`` (``skills.py:80-87``).
+    """Mirrors ``SkillDiagnostic`` (``skills.py:84-91``).
 
     Divergence: ``type`` admits ``"error"`` and DEFAULTS to it. A profile is an
     identity — a half-applied one is worse than none — so every validation
@@ -145,10 +145,10 @@ class AgentProfile:
     """
 
     name: str
-    """Required. Validated by all four ``skills.py:470-482`` rules."""
+    """Required. Validated by all four ``skills.py:547-559`` rules."""
 
     description: str
-    """Required, non-empty, ≤1024 chars (``skills.py:487-495``)."""
+    """Required, non-empty, ≤1024 chars (``skills.py:564-572``)."""
 
     body: str
     """Required, non-empty — THE SYSTEM PROMPT (replaced or appended per
@@ -186,7 +186,7 @@ class AgentProfile:
 
     skills: tuple[str, ...] = ()
     """ABSOLUTE paths after parse. aelix's ``--skill`` takes a PATH, not a name
-    (``cli/entry.py:1463-1506``) — unlike pi. Relative entries resolve against the
+    (``cli/entry.py:1467-1510``) — unlike pi. Relative entries resolve against the
     PROFILE's own directory, never cwd, so a profile is portable across cwds."""
 
     inherit_skills: bool = True
@@ -205,7 +205,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:2012-2014``)."""
+    paths still load (``cli/entry.py:2029-2031``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's
@@ -255,7 +255,7 @@ class AgentProfile:
 
 @dataclass(frozen=True)
 class ParseProfileResult:
-    """Mirrors ``LoadSkillsResult`` (``skills.py:90-95``).
+    """Mirrors ``LoadSkillsResult`` (``skills.py:94-99``).
 
     :attr:`profile` is :data:`None` iff at least one diagnostic has
     ``type == "error"``.
@@ -300,7 +300,7 @@ def parse_profile(
 
     frontmatter, body, parse_error = parse_frontmatter(content)
     if frontmatter is None:
-        # Mirrors ``skills.py:393-406`` — surface YAML's own message.
+        # Mirrors ``skills.py:470-482`` — surface YAML's own message.
         suffix = f": {parse_error}" if parse_error else ""
         _err("parse_failed", f"failed to parse YAML frontmatter{suffix}")
         return ParseProfileResult(diagnostics=diagnostics)
@@ -544,7 +544,7 @@ def _joined(value: Any) -> Any:
 
 
 def _validate_name(name: str) -> list[str]:
-    """Port of ``skills.py:463-483`` minus the parent-directory rule.
+    """Port of ``skills.py:540-560`` minus the parent-directory rule.
 
     A profile's identity is its ``name`` FIELD, not its filename (a mismatch is
     a discovery-level warning), so the ``name != parent_dir_name`` clause does
@@ -629,11 +629,11 @@ def _parse_path_list(
     """Resolve ``skills:`` / ``extensions:`` entries to ABSOLUTE paths.
 
     aelix's ``--skill`` and ``--extension``/``-e`` take PATHS, not names
-    (``cli/entry.py:1463-1506``, ``args.py``) — a divergence from pi that the spec
+    (``cli/entry.py:1467-1510``, ``args.py``) — a divergence from pi that the spec
     originally got wrong. Relative entries resolve against ``profile_dir``, NOT
     cwd: a profile must mean the same thing from any working directory, and an
     absolute result round-trips unchanged through ``_resolve_skill_tiers``'
-    cwd-relative logic (``entry.py:1494-1500``).
+    cwd-relative logic (``entry.py:1507-1513``).
 
     A non-existent path is a WARNING here — ``/agents list`` must never break —
     and ``discovery.resolve_profile`` escalates it to fatal, because running

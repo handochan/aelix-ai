@@ -3,10 +3,10 @@
 Before this entry ``_is_auto_allowable_write`` returned :data:`True` for
 ``.aelix/agents/evil.md``, ``.aelix/extensions/evil.py``, ``.aelix/mcp.json``
 and ``.aelix/settings.json`` — those are EXACTLY the three resources the Project
-Trust gate exists to guard (``cli/project_trust.py:137-282``) plus the user's
+Trust gate exists to guard (``cli/project_trust.py:148-293``) plus the user's
 own configuration. An auto-accepting agent could therefore WRITE the project
 identity / project extension that a LATER run then EXECUTES under an ancestor
-``trust.json: true`` (``project_trust.py:907-914``; transitivity is documented
+``trust.json: true`` (``project_trust.py:1037-1044``; transitivity is documented
 at ``:60-61``). ``--no-approve`` cannot touch that: it stops a child LOADING
 such a file, never writing one.
 
@@ -110,6 +110,7 @@ def test_existing_sensitive_components_unchanged() -> None:
 
     assert {".ssh", ".gnupg", "cron.d", "cron.daily"} <= _SENSITIVE_DIR_COMPONENTS
     assert ".aelix" in _SENSITIVE_DIR_COMPONENTS
+    assert ".agents" in _SENSITIVE_DIR_COMPONENTS
 
 
 # ============================================================
@@ -269,6 +270,72 @@ async def test_a_headless_child_cannot_widen_into_dot_aelix_via_a_symlink(
 
 
 # ============================================================
+# ``.agents`` — the Agent Skills directories (#509, ADR-0281 D10)
+# ============================================================
+#
+# ``.agents/skills`` is read as skills: the project's and each parent's up to
+# the git root in a trusted project, and the user's ``~/.agents/skills`` in
+# every project, ungated. Measured before this entry (Codex review F1) with the
+# delegated-child posture below: the write landed, a parent trusted at launch
+# put its description in the system prompt on ``/reload``, and the same write
+# from a session started in ``$HOME`` loaded in an unrelated ``--no-approve``
+# project.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".agents/skills/planted/SKILL.md",
+        ".agents/skills/group/planted.md",
+        "sub/.agents/skills/x/SKILL.md",
+        "/proj/.agents/skills/x/SKILL.md",
+        ".AGENTS/Skills/x/SKILL.md",
+        "src/../.agents/skills/x/SKILL.md",
+    ],
+)
+def test_agents_paths_are_not_auto_allowable(path: str) -> None:
+    assert _is_auto_allowable_write(path, _CWD) is False
+
+
+@pytest.mark.parametrize("path", ["docs/agents.md", "docs/.agentsrc", "agents/notes.md"])
+def test_a_name_that_is_not_the_agents_component_is_ordinary(path: str) -> None:
+    assert _is_auto_allowable_write(path, _CWD) is True
+
+
+def test_a_symlink_into_dot_agents_is_not_auto_allowable(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".agents" / "skills").mkdir(parents=True)
+    (repo / "docs").symlink_to(".agents")
+    assert _is_auto_allowable_write("docs/skills/x/SKILL.md", str(repo)) is False
+
+
+async def test_a_headless_child_cannot_plant_an_agents_skill(tmp_path: Path) -> None:
+    """The cut end to end, in a project and from a session started in the home directory."""
+
+    home = tmp_path / "home"
+    home.mkdir()
+    ui = _RecordingUI()
+    perm = PermissionExtension(
+        posture=PermissionPosture(mode=PermissionMode.AUTO_ACCEPT),
+        headless_default="block",
+    )
+    for cwd, path in (
+        (_CWD, ".agents/skills/planted/SKILL.md"),
+        (str(home), ".agents/skills/global-plant/SKILL.md"),
+    ):
+        event = ToolCallHookEvent(
+            tool_call_id="t1",
+            tool_name="write",
+            args={"path": path, "content": "---\nname: x\ndescription: x\n---\n"},
+            context=BUILTIN_CONTEXT,
+        )
+        ctx = _FakeCtx(has_ui=False, ui=ui, cwd=cwd)
+        result = await perm._on_tool_call(event, ctx)  # type: ignore[arg-type]
+        assert result is not None and result.block is True, (cwd, path)
+    assert ui.select_calls == 0
+
+
+# ============================================================
 # The full ladder
 # ============================================================
 
@@ -277,7 +344,7 @@ async def test_aelix_write_prompts_under_auto_accept() -> None:
     """Interactive AUTO_ACCEPT + ``.aelix/agents/x.md`` → preview runner.
 
     The deliberate, user-visible behaviour change (ADR-0197 §(i) / CHANGELOG):
-    branch (f) declines, control reaches the prompt at ``permission.py:811-819``
+    branch (f) declines, control reaches the prompt at ``permission.py:818-826``
     instead of returning ``None``.
     """
 

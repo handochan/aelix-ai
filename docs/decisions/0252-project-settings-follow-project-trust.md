@@ -248,7 +248,9 @@ Every piece turns at least one row red:
   startup selector shows all of it). Closed by §10 (#380): `/trust` shows pi's trust
   selector rows instead.
 - pi's `.agents/skills` ancestor walk and its `themes`/`SYSTEM.md`/`APPEND_SYSTEM.md`
-  resources are still not in aelix's set (no loaders).
+  resources are still not in aelix's set (no loaders). *(2026-10-31, #509: the
+  `.agents/skills` walk is now — [ADR-0281](0281-skills-are-also-read-from-the-agent-skills-directories.md),
+  §12. `SYSTEM.md` / `APPEND_SYSTEM.md` joined with #287, ADR-0257.)*
 
 ## 6. Owner decisions recorded here
 
@@ -406,3 +408,19 @@ launch (an extension's answer, a saved decision or `defaultProjectTrust` still
 decide before any prompt, and `-p` needs `--approve` only where none does). The panel names that consequence and saves only
 on a second Enter. An untrusted project's skills are shown as one locked row
 counted from a directory listing; no file in it is opened.
+
+
+## 12. Note (2026-10-31, #509): `.agents/skills` is a gated resource
+
+*Amended 2026-10-31 by [ADR-0281](0281-skills-are-also-read-from-the-agent-skills-directories.md) D3 and D6.*
+`has_trust_requiring_project_resources` counts a `.agents/skills` directory
+holding a `SKILL.md` or a subfolder the skill loader would read (not hidden, not
+`node_modules`; a `README.md` alone does not count) in the cwd or any folder
+above it up to the git root (the filesystem root outside a repository) — the same list a trusted run reads, from one walk
+(`core/skill_dirs.py`) — and never the user's own `~/.agents/skills`. pi's check
+walks every ancestor, past the git root; aelix asks only about what it would
+load. The start-up question gains a sentence naming the family, ending with the
+directories found, relative to the cwd; `/trust` gains a fifth row naming them;
+the headless notice reads "… and .agents/skills skipped in an untrusted
+directory …". `aelix_agents.trust.child_trust_argv` calls the predicate, so a
+same-cwd delegated child under such a folder runs with `--no-approve`.

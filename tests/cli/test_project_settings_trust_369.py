@@ -47,7 +47,8 @@ from tests.env_sandbox import sandbox_home
 _PAIR = {"defaultProvider": "openai", "defaultModel": "gpt-4o-mini"}
 _NOTICE = (
     "Notice: project-local .aelix resources (extensions, skills, agent profiles, "
-    "settings) skipped in an untrusted directory; pass --approve to trust."
+    "settings) and .agents/skills skipped in an untrusted directory; pass --approve "
+    "to trust."
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

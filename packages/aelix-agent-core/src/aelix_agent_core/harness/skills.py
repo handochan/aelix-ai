@@ -26,6 +26,10 @@ Aelix divergences from Pi (intentional, justified):
   ``.gitignore`` semantics Pi relies on.
 - ``parseFrontmatter`` is shared with the prompt-templates loader via
   :mod:`._frontmatter` (Sprint 6h₁ W6 — W4 m4).
+- ``agents=True`` reads an Agent Skills directory (``.agents/skills``) the way
+  pi's coding agent does (#509, ADR-0281; pi ``package-manager.ts``
+  ``collectSkillEntries`` mode ``"agents"``, and ``skills.ts``
+  ``loadSkillFromFile``'s ``isDeclaredSkill``).
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Literal
+from typing import Any, Literal
 
 import pathspec
 
@@ -125,7 +129,9 @@ def format_skill_invocation(
 
 
 # Pi parity: ``skills.ts:49-75`` — ``loadSkills``.
-def load_skills(dirs: str | Path | list[str | Path]) -> LoadSkillsResult:
+def load_skills(
+    dirs: str | Path | list[str | Path], *, agents: bool = False
+) -> LoadSkillsResult:
     """Pi parity: ``loadSkills(env, dirs)``.
 
     For each input directory:
@@ -136,6 +142,15 @@ def load_skills(dirs: str | Path | list[str | Path]) -> LoadSkillsResult:
       - Honor ``.gitignore``, ``.ignore``, ``.fdignore`` with
         relative-path prefixing.
       - Skip hidden entries (``.``-prefixed) and ``node_modules``.
+
+    ``agents=True`` is the rule pi's coding agent reads ``~/.agents/skills``
+    and ``.agents/skills`` by (#509, pi ``package-manager.ts``
+    ``collectSkillEntries`` mode ``"agents"``, pi ``5e11f6586``): the root's
+    own ``.md`` files are NOT skills — that directory is shared with other
+    agents, and a ``README.md`` there would be a warning at every launch — and
+    a ``.md`` file in a grouping folder below it (one with no ``SKILL.md``)
+    is a skill when its frontmatter has a description, and is skipped without
+    a word otherwise (pi ``loadSkillFromFile``'s ``isDeclaredSkill``).
 
     Missing directories are silently skipped (Pi: ``not_found`` is not
     a diagnostic).
@@ -175,11 +190,12 @@ def load_skills(dirs: str | Path | list[str | Path]) -> LoadSkillsResult:
         # ``include_root_files=True`` only at the top level.
         _load_skills_from_dir_internal(
             root_dir,
-            include_root_files=True,
+            include_root_files=not agents,
             patterns=[],
             root_dir=root_dir,
             skills=skills,
             diagnostics=diagnostics,
+            nested_markdown=agents,
         )
 
     return LoadSkillsResult(skills=skills, diagnostics=diagnostics)
@@ -194,8 +210,13 @@ def _load_skills_from_dir_internal(
     root_dir: Path,
     skills: list[Skill],
     diagnostics: list[SkillDiagnostic],
+    nested_markdown: bool = False,
 ) -> None:
     """Recursive helper for :func:`load_skills`.
+
+    ``nested_markdown`` is ``load_skills(agents=True)``'s second half: below
+    the root, a ``.md`` file in a folder with no ``SKILL.md`` is offered to
+    :func:`_load_skill_from_file` as an undeclared skill.
 
     ``patterns`` carries the cumulative ignore patterns accumulated by
     ancestor directories. Each level builds a fresh
@@ -270,15 +291,19 @@ def _load_skills_from_dir_internal(
                 root_dir=root_dir,
                 skills=skills,
                 diagnostics=diagnostics,
+                nested_markdown=nested_markdown,
             )
             continue
 
         # Pi parity (``skills.ts:168-171``): root-level .md files only.
         if not entry.is_file():
             continue
-        if not include_root_files:
-            continue
         if not entry.name.endswith(".md"):
+            continue
+        if nested_markdown and directory != root_dir:
+            _load_skill_from_file(entry, skills, diagnostics, declared=False)
+            continue
+        if not include_root_files:
             continue
         _load_skill_from_file(entry, skills, diagnostics)
 
@@ -324,7 +349,12 @@ def _add_ignore_rules(
         if not ignore_path.is_file():
             continue
         try:
-            content = ignore_path.read_text(encoding="utf-8")
+            # Read as Node's ``readFileSync(path, "utf-8")`` reads it: a byte
+            # that is not UTF-8 becomes U+FFFD. Strict, one such byte in an
+            # ignore file raised out of ``load_skills`` and lost every skill
+            # of the load (#509 review F4 — ``~/.agents/skills`` is written by
+            # other tools and read at every launch).
+            content = ignore_path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             diagnostics.append(
                 SkillDiagnostic(
@@ -369,16 +399,60 @@ def _prefix_ignore_pattern(line: str, prefix: str) -> str | None:
     return f"!{prefixed}" if negated else prefixed
 
 
+def _has_description(frontmatter: dict[str, Any] | None) -> bool:
+    """pi ``isDeclaredSkill`` for a grouped ``.md``: its frontmatter has a non-blank description."""
+
+    raw = (frontmatter or {}).get("description")
+    return isinstance(raw, str) and bool(raw.strip())
+
+
+def _lenient_frontmatter(file_path: Path) -> dict[str, Any] | None:
+    """*file_path*'s frontmatter read as Node reads text: a byte that is not UTF-8 is U+FFFD."""
+
+    try:
+        text = file_path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    return parse_frontmatter(text)[0]
+
+
 # Pi parity: ``skills.ts:233-279`` — ``loadSkillFromFile``.
 def _load_skill_from_file(
     file_path: Path,
     skills: list[Skill],
     diagnostics: list[SkillDiagnostic],
+    *,
+    declared: bool = True,
 ) -> None:
-    """Read + validate a SKILL.md (or root .md) file."""
+    """Read + validate a SKILL.md (or root .md) file.
+
+    ``declared=False`` is a ``.md`` file in an Agent Skills grouping folder
+    (``load_skills(agents=True)``): pi's ``isDeclaredSkill`` is false for it,
+    so a file whose frontmatter does not parse or has no description is not a
+    skill and says nothing, and its name is not checked against the grouping
+    folder it sits in — that folder is not the skill's own.
+    """
 
     try:
         raw = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # Not UTF-8 (#509 review F4). pi reads with Node's lenient decoder and
+        # never fails here; this raised out of ``load_skills`` and lost every
+        # other skill of the load — in ``~/.agents/skills``, which other tools
+        # write, at every launch. A grouped ``.md`` that declares no skill even
+        # read leniently is documentation and is skipped without a word, as pi
+        # skips it; a skill is skipped with this one diagnostic rather than
+        # loaded with its bytes replaced.
+        if not declared and not _has_description(_lenient_frontmatter(file_path)):
+            return
+        diagnostics.append(
+            SkillDiagnostic(
+                code="read_failed",
+                message=f"not UTF-8 text ({exc.reason} at byte {exc.start}); skipped",
+                path=str(file_path),
+            )
+        )
+        return
     except OSError as exc:
         # Pi parity (``skills.ts:240``): ``read_failed``.
         diagnostics.append(
@@ -391,6 +465,8 @@ def _load_skill_from_file(
         return
 
     frontmatter, body, parse_error = parse_frontmatter(raw)
+    if not declared and not _has_description(frontmatter):
+        return
     if frontmatter is None:
         # Pi parity (``skills.ts:246``): ``parse_failed``.
         # Sprint 6h₁ W6 (P-233): surface the YAML error so the diagnostic
@@ -429,7 +505,8 @@ def _load_skill_from_file(
     raw_name = frontmatter.get("name")
     frontmatter_name = raw_name if isinstance(raw_name, str) else None
     name = frontmatter_name or parent_dir_name
-    for err in _validate_name(name, parent_dir_name):
+    # An undeclared file's folder groups skills; it is not this one's (#509).
+    for err in _validate_name(name, parent_dir_name if declared else name):
         diagnostics.append(
             SkillDiagnostic(
                 code="invalid_metadata",

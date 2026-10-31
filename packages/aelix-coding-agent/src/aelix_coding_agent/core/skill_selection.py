@@ -50,6 +50,13 @@ from .resource_selection import (
     ResourceSelection,
     SettingsLists,
 )
+from .skill_dirs import (
+    AGENTS_DIR_NAME,
+    parent_relative,
+    path_key,
+    project_agents_skill_dirs,
+    skipped_entry,
+)
 
 if TYPE_CHECKING:
     pass
@@ -72,6 +79,9 @@ _UNTRUSTED_KEY = "untrusted:project"
 class SkillSource:
     tier: SkillTier
     directory: str
+    agents: bool = False
+    """An Agent Skills directory (``~/.agents/skills``, ``.agents/skills``, #509):
+    scanned by pi's rule for them, ``load_skills(agents=True)``."""
 
 
 @dataclass(frozen=True)
@@ -151,22 +161,36 @@ def load_skill_catalog(
     ordered.sort(key=lambda s: _TIER_ORDER[s.tier])
 
     diagnostics = []
+    seen_diagnostics: set[tuple[str, str, str]] = set()
     winners: list[Skill] = []
     winner_source: dict[str, SkillSource] = {}
     by_name: dict[str, Skill] = {}
     shadowed: list[ShadowedSkill] = []
     origins: dict[str, SkillSource] = {}
-    seen_files: set[str] = set()
-    seen_dirs: set[str] = set()
+    seen_files: set[tuple[int, int] | str] = set()
+    seen_dirs: set[tuple[tuple[int, int] | str, bool]] = set()
     for source in ordered:
-        real_dir = os.path.realpath(source.directory)
-        if real_dir in seen_dirs:
+        # One scan per directory AND rule (#509 review F2). A directory named
+        # by a settings path or ``--skill`` is read by aelix's rule (root ``.md``
+        # files are skills) and the same directory found as ``.agents/skills``
+        # by the Agent Skills rule (grouped ``.md`` files are); keyed by the
+        # directory alone, whichever came first erased what only the other
+        # finds. A file both find is still taken once, below.
+        scan = (path_key(source.directory), source.agents)
+        if scan in seen_dirs:
             continue
-        seen_dirs.add(real_dir)
-        result = load_skills(source.directory)
-        diagnostics.extend(result.diagnostics)
+        seen_dirs.add(scan)
+        result = load_skills(source.directory, agents=source.agents)
+        # Both rules read a ``SKILL.md`` alike, so the second scan of one
+        # directory repeated the first one's warnings at launch; each is said
+        # once (#509 review R1).
+        for diag in result.diagnostics:
+            said = (diag.code, diag.path, diag.message)
+            if said not in seen_diagnostics:
+                seen_diagnostics.add(said)
+                diagnostics.append(diag)
         for skill in result.skills:
-            real = os.path.realpath(skill.file_path)
+            real = path_key(skill.file_path)
             if real in seen_files:
                 continue  # the same file reached twice (``--skill`` into a scanned dir)
             seen_files.add(real)
@@ -214,25 +238,35 @@ def load_skill_catalog(
     )
 
 
-def count_untrusted_skills(directory: str) -> int:
-    """How many skills an untrusted ``.aelix/skills`` holds, from a listing alone (ADR-0279 D3).
+def count_untrusted_skills(directory: str, *, agents: bool = False) -> int:
+    """How many skills an untrusted project directory holds, from a listing alone (ADR-0279 D3).
 
-    No file is opened: a subdirectory with a ``SKILL.md`` counts, and so does
-    a root ``.md`` file, as ``load_skills`` would treat them.
+    No file is opened. The loader's own rules decide, as far as a listing shows
+    them (``load_skills``), so the count is never more than trusting the
+    folder would load (#509 review F6): a ``SKILL.md`` in *directory* itself is
+    its one skill (the loader reads no further), hidden entries and
+    ``node_modules`` are skipped (``skill_dirs.skipped_entry``), a
+    subdirectory with a ``SKILL.md`` counts, and so does a root ``.md`` file —
+    except in an Agent Skills directory (*agents*, #509), whose root ``.md``
+    files are not skills. One level only, and ignore files are not read: a
+    skill deeper down or in a grouped ``.md`` is not counted, and one an ignore
+    file excludes is (ADR-0281 Limits).
     """
 
     try:
         names = sorted(os.listdir(directory))
     except OSError:
         return 0
+    if "SKILL.md" in names and os.path.isfile(os.path.join(directory, "SKILL.md")):
+        return 1
     count = 0
     for name in names:
-        if name.startswith("."):
+        if skipped_entry(name):
             continue
         path = os.path.join(directory, name)
         if os.path.isdir(path):
             count += os.path.isfile(os.path.join(path, "SKILL.md"))
-        elif name.endswith(".md"):
+        elif name.endswith(".md") and not agents and os.path.isfile(path):
             count += 1
     return count
 
@@ -337,14 +371,29 @@ class SkillKind:
         return f"{source.tier}:{source.directory}", f"{word}  {self._display_dir(source.directory)}"
 
     def display_path(self, path: str | None) -> str:
-        """*path* relative to the project when inside it, else with ``~`` for the home directory."""
+        """*path* relative to the project when inside it, else with ``~`` for the home directory.
+
+        A parent's ``.agents/skills`` (#509) is relative too, as the trust
+        question names it — ``../../.agents/skills/`` — and bounded however
+        deep the cwd is (``skill_dirs.parent_relative``). By full path its
+        group header was cut from the right at 80 columns, and every parent
+        shares the long prefix that was kept, so each read the same (verify
+        V1). The user's own ``~/.agents/skills`` keeps its ``~``: it is GLOBAL,
+        not a parent's.
+        """
 
         if not path:
             return ""
         for cwd in (self._cwd, self._real_cwd):
             if path.startswith(cwd + os.sep):
                 return os.path.relpath(path, cwd)
-        return _short(path, self._home)
+        short = _short(path, self._home)
+        if not short.startswith(os.path.join("~", AGENTS_DIR_NAME, "")):
+            for cwd in (self._cwd, self._real_cwd):
+                relative = parent_relative(path, cwd)
+                if relative is not None:
+                    return relative
+        return short
 
     def items(self) -> list[ResourceItem]:
         catalog = self._catalog()
@@ -397,29 +446,54 @@ class SkillKind:
                     ),
                 )
             )
-        if not self._project_trusted and not self._no_skills():
-            count = count_untrusted_skills(self._project_skills_dir)
-            if count:
-                rows.append(
-                    (
-                        _GROUP_ORDER["project"],
-                        -1,
-                        ResourceItem(
-                            kind="skill",
-                            key=_UNTRUSTED_KEY,
-                            label=f"{count} skill{'s' if count != 1 else ''} not loaded",
-                            description="This folder is not trusted, so its skills are not read.",
-                            group="project-untrusted",
-                            group_label=f"PROJECT  {self._display_dir(self._project_skills_dir)}",
-                            path=None,
-                            identities=(),
-                            scope="project",
-                            source_base=self._project_skills_dir,
-                        ),
-                    )
+        untrusted = self._untrusted_dirs()
+        for position, (key, directory, agents) in enumerate(untrusted):
+            count = count_untrusted_skills(directory, agents=agents)
+            if not count:
+                continue
+            rows.append(
+                (
+                    _GROUP_ORDER["project"],
+                    position - len(untrusted),
+                    ResourceItem(
+                        kind="skill",
+                        key=key,
+                        label=f"{count} skill{'s' if count != 1 else ''} not loaded",
+                        description="This folder is not trusted, so its skills are not read.",
+                        group=f"project-untrusted:{directory}" if agents else "project-untrusted",
+                        group_label=f"PROJECT  {self._display_dir(directory)}",
+                        path=None,
+                        identities=(),
+                        scope="project",
+                        source_base=directory,
+                    ),
                 )
-        rows.sort(key=lambda r: (r[0], r[1]))
+            )
+        # A group's rows stay together (#509): a shadowed row sorts after every
+        # winner, so ordering by index alone drew a second header for its
+        # directory below the next one's — with ``.agents/skills`` a project or
+        # global tier has several directories.
+        first: dict[str, int] = {}
+        for _order, index, item in rows:
+            first[item.group] = min(first.get(item.group, index), index)
+        rows.sort(key=lambda r: (r[0], first[r[2].group], r[1]))
         return [r[2] for r in rows]
+
+    def _untrusted_dirs(self) -> list[tuple[str, str, bool]]:
+        """``(row key, directory, agents)`` for each untrusted project directory (ADR-0279 D3).
+
+        ``.aelix/skills``, then each ``.agents/skills`` the scan would read were
+        the folder trusted (#509), nearest first. None when trusted, or under
+        ``--no-skills`` (nothing but ``--skill`` is scanned then).
+        """
+
+        if self._project_trusted or self._no_skills():
+            return []
+        out = [(_UNTRUSTED_KEY, self._project_skills_dir, False)]
+        out += [
+            (f"{_UNTRUSTED_KEY}:{d}", str(d), True) for d in project_agents_skill_dirs(self._cwd)
+        ]
+        return out
 
     def locks(self) -> dict[str, Lock]:
         catalog = self._catalog()
@@ -436,6 +510,8 @@ class SkillKind:
                 f"({self.display_path(lost.winner.file_path)})",
             )
         locks[_UNTRUSTED_KEY] = Lock(False, "this folder is not trusted; /trust to decide")
+        for key, _directory, _agents in self._untrusted_dirs():
+            locks[key] = locks[_UNTRUSTED_KEY]
         return locks
 
     def applied(self) -> set[str]:

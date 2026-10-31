@@ -40,18 +40,28 @@ descended further.
 1. **`--skill <path>`** (and an agent profile's `skills:`) — added explicitly
    and never gated: an explicit flag is your choice, not something a clone
    decided for you. Always on for that run.
-2. **Project** — `<project>/.aelix/skills/<name>/SKILL.md`. Shared with whoever
-   clones the repo, and **gated**: because a skill's description goes into the
-   system prompt, a project that carries skills is a project that can write
-   instructions into the agent. Aelix asks once before trusting the directory
-   and skips it if you decline.
-3. **User** — `~/.aelix/agent/skills/<name>/SKILL.md`. Available in every
-   project. This is where a skill you want to keep should go.
+2. **Project** — `<project>/.aelix/skills/<name>/SKILL.md`, then
+   `.agents/skills/<name>/SKILL.md` in the working directory and each folder
+   above it up to the repository root, nearest first (the Agent Skills
+   location other agents use). Shared with whoever clones the repo, and
+   **gated**: because a skill's description goes into the system prompt, a
+   project that carries skills is a project that can write instructions into
+   the agent. Aelix asks once before trusting the directory — naming the
+   `.agents/skills` folders it found — and skips them all if you decline.
+3. **User** — `~/.aelix/agent/skills/<name>/SKILL.md`, then
+   `~/.agents/skills/<name>/SKILL.md`. Available in every project, never
+   gated. This is where a skill you want to keep should go;
+   `~/.agents/skills` is the place to share one with other agents.
 4. **Packaged** — ships inside Aelix. This file is one of them. Not writable;
    a user or project skill of the same name replaces it.
 
+In a `.agents/skills` directory a `.md` file at its top level (a `README.md`)
+is not a skill, and a `.md` file with a `description` in a grouping folder
+below it is — the rule pi and other agents read those directories by.
+
 `--no-skills` turns tiers 2-4 off. A path in the `skills` list of a
-`settings.json` adds another directory (for example `~/.claude/skills`), and
+`settings.json` adds another directory (for example `~/.claude/skills`, which
+is not read by itself), and
 `!glob`, `-name` and `+name` entries in that list turn skills off and on — which
 is what the `/skill` panel writes (`aelix docs skills-and-prompts`).
 

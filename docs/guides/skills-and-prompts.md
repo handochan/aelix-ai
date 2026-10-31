@@ -10,25 +10,41 @@ and when a change takes effect. Writing a skill is covered by the packaged
 
 ## Where skills come from, and which one wins
 
-| Tier | Directory | Notes |
+| Tier | Directories, in order | Notes |
 | --- | --- | --- |
 | this run | `--skill <path>`, an agent profile's `skills:` | always on for the run |
-| project | `<cwd>/.aelix/skills/` | only when the folder is trusted ([project-trust](project-trust.md)) |
-| global | `~/.aelix/agent/skills/` | every project |
+| project | `<cwd>/.aelix/skills/`, then `.agents/skills/` in `<cwd>` and each folder above it up to the repository root, nearest first | only when the folder is trusted ([project-trust](project-trust.md)) |
+| global | `~/.aelix/agent/skills/`, then `~/.agents/skills/` | every project |
 | bundled | inside Aelix (`writing-skills`, `extending-aelix`) | |
 
-A path in a settings file's `skills` list adds a directory to that file's tier
-(see below) — this is how you add `~/.claude/skills`.
+`~/.agents/skills/` and `.agents/skills/` are the Agent Skills locations pi and
+other agents read (#509, ADR-0281), so skills you wrote for another agent load
+here too. Outside a repository the project walk goes up to the filesystem root;
+your own `~/.agents/skills/` is always global, even when that walk passes your
+home directory. In those directories a skill is a folder with a `SKILL.md` (or
+a `.md` file with a `description` in a grouping folder below), as pi reads
+them; a `.md` file directly in `.agents/skills/` — a `README.md` — is not a skill.
+A skill file that is not UTF-8 text is skipped with a warning, and the other
+skills still load; a `.md` in a grouping folder that is not UTF-8 and declares
+no skill is skipped without one.
 
-**Two skills with the same name:** the first tier in the table wins
-(`--skill` > project > global > bundled). The others are not loaded; `/skill`
+A path in a settings file's `skills` list adds a directory to that file's tier
+(see below) — this is how you add `~/.claude/skills`, which Aelix does not read
+by itself (pi dropped it too).
+
+**Two skills with the same name:** the first directory in the table wins
+(`--skill` > project > global > bundled, and inside a tier in the order shown).
+The others are not loaded; `/skill`
 lists them as locked "shadowed" rows that name the winner. A skill of your own
-called `writing-skills` therefore replaces the bundled one.
+called `writing-skills` therefore replaces the bundled one, and a project's
+`.aelix/skills/` beats its `.agents/skills/`.
 
 ## The `/skill` panel
 
 `/skill` (or `/skills`) opens a checklist of every skill found, on or off,
-grouped by where it came from:
+grouped by the directory it came from (one header per directory; a
+`.agents/skills/` above your folder is shown relative to it, `../.agents/skills/`,
+as the trust question names it):
 
 ```
 ── Skills ──────────────────────────────────── Save to [Global]  This project ──
@@ -61,8 +77,9 @@ The right-hand column: `* unsaved` (changed here, not saved yet), `off`,
 (the files say something this session is not using yet — another session or a
 hand edit changed them; Enter applies it), `locked` and `shadowed`. Round
 brackets — `(✓)` — mark a row that cannot be toggled: a `--skill` skill, a
-shadowed duplicate, or the one row standing for an untrusted project's skills
-(counted from the directory listing; none of them is read).
+shadowed duplicate, or the row standing for an untrusted project directory's
+skills — one for `.aelix/skills/` and one for each `.agents/skills/` the walk
+finds (counted from the directory listing; none of them is read).
 
 If a save fails — a settings file that does not parse, a read-only file — the
 panel stays open with your changes and a red line naming the file, and nothing

@@ -214,7 +214,8 @@ def _render_text(report: dict[str, Any], stream: TextIO) -> None:
             "project trust",
             "trusted"
             if report["project_trusted"]
-            else "NOT trusted — .aelix/ resources here are skipped",
+            # .agents/skills as the headless notice names it (#509 verify V4).
+            else "NOT trusted — .aelix/ resources and .agents/skills here are skipped",
         ),
         ("manifest API level", str(report["manifest_api_level"])),
     ]

@@ -12,9 +12,11 @@ answer it.
 
 ## The one sentence
 
-A `.aelix/` directory inside your working directory is content someone else
-wrote. Nothing in it is loaded until you say so — its `settings.json` included —
-except that trust is decided once per directory and then remembered.
+A `.aelix/` directory inside your working directory — and a `.agents/skills`
+directory in it or in a folder above it, up to the repository root — is content
+someone else wrote. Nothing in it is loaded until you say so — its
+`settings.json` included — except that trust is decided once per directory and
+then remembered.
 
 ## Exactly which resources are gated
 
@@ -31,18 +33,29 @@ The complete list comes from
 | `<cwd>/.aelix/agents/` | An agent profile is an **identity** — it can replace the system prompt and swap the model and tool allow-list. |
 | `<cwd>/.aelix/skills/` | A skill's name, description and location go into the system prompt verbatim. |
 | `<cwd>/.aelix/prompt-templates/` | A template body becomes a user turn verbatim on `/<name>`. |
+| `<dir>/.agents/skills/` for `<cwd>` and each folder above it, up to the repository root (the filesystem root outside a repository) | The Agent Skills location other agents use (#509, ADR-0281): the same as `.aelix/skills/`. Your own `~/.agents/skills/` is never one of these — it is read in every folder, ungated, and a folder under your home directory does not ask because of it. |
 
 Two structural details that decide whether you are asked at all:
 
-- The four directory entries (`extensions/`, `agents/`, `skills/`,
+- The directory entries (`extensions/`, `agents/`, `skills/`,
   `prompt-templates/`) require **at least one entry** to count. An empty
   `.aelix/extensions/` loads nothing, so it does not trip the gate
-  (`project_trust.py:210`, `:245`, `:293`).
+  (`project_trust.py:225`, `:260`, `:308`). A `.agents/skills/` counts when its
+  listing shows something a skill can be read from: a `SKILL.md`, or a
+  subfolder that is not hidden and not `node_modules` (even an empty one —
+  nothing below is listed). One holding only a `README.md` loads nothing and
+  does not ask; nor does one that cannot be listed.
+- The `.agents/skills/` folders the gate counts are exactly the ones a trusted
+  run reads (`core/skill_dirs.py`, one walk for both): from your cwd up to the
+  nearest folder holding `.git` (a worktree's `.git` file counts), or to the
+  filesystem root outside a repository. A `.agents/skills/` above the
+  repository is never read and never asks. pi's check walks every folder
+  above, past the repository root; aelix asks only about what it would load.
 - `settings.json`, `SYSTEM.md` and `APPEND_SYSTEM.md` count if **anything**
   exists at that path — a FIFO or a directory asks too, as in pi (`existsSync`); a file test let a FIFO skip a
   saved denial. `mcp.json` counts when it is a file.
 - If none of these resources is present, the directory is trusted **without a prompt**
-  (`project_trust.py:883-884`). There is nothing to gate, so there is no
+  (`project_trust.py:1013-1014`). There is nothing to gate, so there is no
   question to ask.
 
 **Saving a project choice creates the gate.** `/skill`'s "This project" target
@@ -54,12 +67,13 @@ extension's `project_trust` answer, then a saved decision, then
 denies, so needs `--approve`, where nothing earlier decides) — so the panel says this and waits
 for a second Enter before creating it. In an untrusted folder the
 target cannot be chosen at all, and the project's skills appear in `/skill` as
-one locked row whose count comes from listing `.aelix/skills/`: no `SKILL.md`
-in it is opened. See [skills-and-prompts](skills-and-prompts.md).
+one locked row per directory — `.aelix/skills/` and each `.agents/skills/` a
+trusted run would read — whose count comes from listing it: no `SKILL.md` in
+it is opened. See [skills-and-prompts](skills-and-prompts.md).
 
 `.aelix/teams/` is reserved and deliberately **not** checked — that clause lands
 with the loader that reads team descriptors, not before it
-(`project_trust.py:240-242`).
+(`project_trust.py:255-257`).
 
 ## What the gate does not protect
 
@@ -96,7 +110,7 @@ provenance — do you know who wrote this — not a containment boundary.
 explicit `-e <path>` extensions, `$AELIX_MCP_CONFIG`, global MCP config,
 global SYSTEM.md / APPEND_SYSTEM.md and explicit system prompt flags,
 `--agent-file` profiles outside the project, and installed entry-point
-extensions (`project_trust.py:24-32`).
+extensions (`project_trust.py:29-37`).
 
 That last list rests on a premise that had to be *made* true, which is the next
 section.
@@ -175,19 +189,43 @@ Before this, `https://{TENANT_KEY}.owner-gateway.invalid/v1` plus a `.env`
 
 ### Interactively
 
-The first time you run `aelix` in a directory carrying any of the six
-resources, you get a selector (`project_trust.py:388-414`):
+The first time you run `aelix` in a directory carrying any of these
+resources, you get a selector (`project_trust.py:500-526`):
 
 ```
 Trust project folder?
-/path/to/repo
+/path/to/repo/pkg/app
 
 This allows Aelix to load .aelix extensions, MCP servers, and agent profiles,
 which can execute arbitrary code on your machine — to load .aelix skills and
 prompt templates, whose text is placed into the agent's instructions — and to
 apply .aelix/settings.json, which can choose the model and provider your
 prompts are sent to.
+
+Trusting also loads the skills in .agents/skills here and in the folders above,
+up to the repository root; found in ../.agents/skills and ../../.agents/skills.
 ```
+
+The last sentence is always there; "found in …" names the `.agents/skills`
+folders that made it ask, relative to the folder printed at the top (at most
+three, then a count — `/skill` lists every one), so a folder name the
+repository chose never reaches the question. More than three folders up, the
+`..` are counted — `../×5/.agents/skills` — so the sentence does not grow with
+the depth. The folder's own path at the top and the `Trust parent folder`
+option still do: at 80x24, a path of about 160 characters fills the screen,
+and a longer one, or one with a line break or wide characters in a folder name,
+can push the last options below the bottom edge.
+
+A write under `.agents/` is never auto-accepted, as one under `.aelix/` is not:
+in the TUI `auto-accept-edits` and `auto` ask for it, and a delegated agent
+without a UI is refused it, so neither leaves a skill there that a later run
+loads unasked. (`yolo`, and a plain `-p` run, which have no one to ask, write
+it as they write anything.) The rule goes by a `.agents` folder anywhere in
+the path, as the `.aelix` one does, so it also asks about files that are not
+skills (`.agents/plans/x.md`) and about every write in a project that itself
+sits inside a `.agents` folder (`/work/.agents/proj/src/main.py`). It goes by
+the names in the path you write to: a write to the real folder that a symlink
+named `.agents` points at is not caught.
 
 | Option | Effect |
 | --- | --- |
@@ -197,7 +235,7 @@ prompts are sent to.
 | `Do not trust` | Refused, and remembered. |
 | `Do not trust (this session only)` | Refused now, nothing written. |
 
-Cancelling (Esc / Ctrl+C) denies (`project_trust.py:928-930`). The text breaks
+Cancelling (Esc / Ctrl+C) denies (`project_trust.py:1058-1060`). The text breaks
 between words at your terminal's width, as pi's does (#380).
 
 ### `/trust`, after startup
@@ -226,7 +264,8 @@ Current session: trusted
 ```
 
 `Saved decision` is `none` when nothing is saved, and names the folder whose entry
-decided. `✓` marks the option that saved it, and the cursor starts there. `Trust parent folder` also removes the
+decided. Where `.agents/skills` folders make the folder ask, a fifth row names
+them, as the start-up question does: `Skills found in: ../.agents/skills`. `✓` marks the option that saved it, and the cursor starts there. `Trust parent folder` also removes the
 folder's own entry, so a saved `Do not trust` here no longer outranks the parent.
 
 ### `--approve` / `-a` and `--no-approve` / `-na`
@@ -237,7 +276,7 @@ aelix --no-approve     # ignore them for this run
 ```
 
 Both **short-circuit** the whole resolution: no prompt, and **nothing is
-persisted** (`project_trust.py:878-880`). They are per-run overrides, so they are
+persisted** (`project_trust.py:1008-1010`). They are per-run overrides, so they are
 the right tool for CI and for a one-off look at an unfamiliar repository — and
 the wrong tool for recording a decision.
 
@@ -247,13 +286,13 @@ both: `aelix --no-approve --no-context-files`.
 ### Headless
 
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
-undecided directory is **denied** (`project_trust.py:922-924`, pi parity). The
+undecided directory is **denied** (`project_trust.py:1052-1054`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3542-3547`, the text at `:962-967`), because a silent drop looks identical to a
+(`cli/entry.py:3559-3564`, the text at `:966-971`), because a silent drop looks identical to a
 misconfiguration:
 
 ```
-Notice: project-local .aelix resources (extensions, skills, agent profiles, settings) skipped in an untrusted directory; pass --approve to trust.
+Notice: project-local .aelix resources (extensions, skills, agent profiles, settings) and .agents/skills skipped in an untrusted directory; pass --approve to trust.
 ```
 
 A repository that carries only `.aelix/settings.json` is now in this group
@@ -269,12 +308,12 @@ stdout is unchanged.
 ## Where the answer is stored
 
 `~/.aelix/agent/trust.json` — more precisely `<agent_dir>/trust.json`
-(`project_trust.py:538`, `:552-554`). A JSON object mapping an absolute
+(`project_trust.py:668`, `:682-684`). A JSON object mapping an absolute
 canonical path to `true` / `false` / `null`, keys sorted, written atomically via
-a temp file plus `os.replace` (`project_trust.py:610-630`).
+a temp file plus `os.replace` (`project_trust.py:740-760`).
 
 Lookup walks **up** from your cwd to the first decided ancestor
-(`project_trust.py:632-654`), which gives two useful properties:
+(`project_trust.py:762-784`), which gives two useful properties:
 
 - trusting `~/work` transitively trusts everything under it;
 - a `false` on a child beats a `true` on an ancestor.
@@ -283,11 +322,11 @@ Lookup walks **up** from your cwd to the first decided ancestor
 
 To revoke, delete the entry (or the file). A malformed store is treated as *no
 decision* rather than an error — it falls through to the prompt-or-deny path,
-which is the safe direction (`project_trust.py:908-914`).
+which is the safe direction (`project_trust.py:1038-1044`).
 
 ## The full resolution order
 
-`resolve_project_trusted` (`project_trust.py:827-937`), in order. The first step
+`resolve_project_trusted` (`project_trust.py:957-1067`), in order. The first step
 that produces an answer wins:
 
 1. `--approve` / `--no-approve` — returns immediately. No prompt, no write.
@@ -342,7 +381,7 @@ If a directory had nothing to gate at startup, you were never asked, and step 2
 trusted it. If trust-requiring resources appear *later* — a `git pull` that adds
 `.aelix/extensions/` — and a `/reload` picks them up, aelix writes that implicit
 trust to the store rather than asking
-(`maybe_save_implicit_project_trust_after_reload`, `project_trust.py:699-764`).
+(`maybe_save_implicit_project_trust_after_reload`, `project_trust.py:829-894`).
 
 It runs **after** the reload, so it does not stop the new resources from loading;
 by the time it is called they already have. It converts "never asked" into
