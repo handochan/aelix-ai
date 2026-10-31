@@ -30,7 +30,7 @@ WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
 (``loop.py:905``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:290``). Two modals from one batch would collide on
-``tui/chrome.py:524``'s single ``_modal`` slot — ``mount_modal`` overwrites
+``tui/chrome.py:601``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
 tool's ``execution_mode="sequential"`` are the belt and braces.

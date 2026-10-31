@@ -36,6 +36,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0280 — The chrome stays on the last rows once the transcript fills the screen](0280-the-chrome-stays-on-the-last-rows-once-the-transcript-fills-the-screen.md)
+  (Accepted 2026-10-31; #632). Once the chrome has reached the terminal bottom with no modal open,
+  it is pinned there: a pad above it takes the spare rows inline prompt-toolkit keeps reserved, so
+  the rows a closed modal (`/model`, `/settings`, the consent dialog, an approval) used become a band
+  between the transcript and the input, which the next print fills — no longer 6–13 empty rows
+  below the footer. A screen the transcript has not filled lays out as before. While pinned,
+  `print_above` holds its CSI 2026 bracket for the CPR answer, at most 0.1 s, and repaints inside
+  it (private `Application._redraw`; no answer, or a raise, drops the pin for the session); without
+  2026 the chrome — an open dialog included — is held off that frame instead of jumping, at most
+  0.1 s. A draft counts as one row, and the pin waits for a fresh CPR answer after `clear()` or a
+  resize. `clear()` clears through `Renderer.clear` (no garbled first frame after `/clear`; the
+  legacy Windows console clears through its API). `clear_on_shrink` (#84) stays inert. Amends
+  ADR-0159 (slot content should size to its content) and ADR-0194.
 - [0278 — One delegation panel for every `agent` call, two rows per child](0278-one-delegation-panel-for-every-agent-call.md)
   (Accepted 2026-10-30; #132, absorbs #26). Every call of the model's `agent` tool — a single
   delegation and a resume included — draws one `set_widget` panel above the input (layout A,

@@ -494,7 +494,7 @@ async def test_a_mismatched_grant_is_refused(tmp_path: Path) -> None:
 async def test_two_concurrent_hook_invocations_serialize(tmp_path: Path) -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:524``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:601``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn hangs
     until Ctrl+C. Three independent defences cover it — the kernel's own
     sequential prep phase, the tool's ``execution_mode="sequential"``, and

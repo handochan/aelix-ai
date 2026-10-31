@@ -1098,7 +1098,7 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
     once per call, inside ``_grant_for`` (``extension.py:1190``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
-    self.is_modal_open())`` (``chrome.py:967-970``). Under P2 the resulting window
+    self.is_modal_open())`` (``chrome.py:1086-1089``). Under P2 the resulting window
     was one child and milliseconds; here wave 2 may start any time later —
     no clock bounds wave 1 since #604. A user who watches the first four children do
     something alarming and tightens must reach members 5-8.

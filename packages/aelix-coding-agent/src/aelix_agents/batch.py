@@ -83,7 +83,7 @@ a ninth live child in a session that already holds four is a resource refusal.
 
 WHAT BOUNDS HOW LONG THE USER WAITS is the human, not a clock (#604, ADR-0276).
 While a delegation runs, Enter is still routed to ``steer()`` as a MESSAGE
-(``chrome.py:784-790``), so the way out is the interrupt: Esc or Ctrl+C cancel
+(``chrome.py:903-909``), so the way out is the interrupt: Esc or Ctrl+C cancel
 the turn, which cancels this batch and kills every live member
 (``print_channel._eager_abort``); SIGTERM / SIGHUP abort the turn the same way
 (``tui/shell.py``), and ``-p`` turns SIGINT into the same cancellation. The
@@ -169,7 +169,7 @@ class _Batch:
     posture: Callable[[], PermissionMode]
     """The parent's LIVE posture getter (``extension._host_posture``), read once
     per member — never a value captured at call time. shift+tab stays bound while
-    a turn runs (``chrome.py:967-970``), and wave 2 may start any time after
+    a turn runs (``chrome.py:1086-1089``), and wave 2 may start any time after
     wave 1 — there is no time limit on wave 1 (#604)."""
     clamp_at_start: PermissionMode
     """The child clamp implied by the parent posture when the batch began. It is
@@ -491,7 +491,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     (``runtime.py:1445``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
-    (``chrome.py:967-970``), and the input window holds focus while a turn runs;
+    (``chrome.py:1086-1089``), and the input window holds focus while a turn runs;
     that is precisely how Enter reaches ``steer()``. Under P2 the resulting window
     was one child and milliseconds. Here it is as long as the batch runs — no
     clock bounds it since #604 — and S11 has deliberately removed every other

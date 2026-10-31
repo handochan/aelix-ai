@@ -2832,12 +2832,18 @@
    "full height, so the security-critical deny option is ALWAYS visible even when",
    "the diff body is far taller than the cap."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1097-1099": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1086-1089": [
+   "@kb.add(",
+   "\"s-tab\",",
+   "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
+   ")"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1216-1218": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1097-1108": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1216-1227": [
    "def _render_status(self) -> str:",
    "# Strip newlines: this is a fixed height=1 chrome row.",
    "parts = [v.replace(\"\\n\", \" \") for v in self._status.values()]",
@@ -2847,13 +2853,13 @@
    "hint = self._ctrl_c_exit_hint()",
    "if hint:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1108-1108": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1227-1227": [
    "return \" \".join(parts)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1167-1167": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1286-1286": [
    "return ANSI(\"\\n\".join(lines))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1457-1463": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:1597-1603": [
    "def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:",
    "slots = self._widgets_above if above else self._widgets_below",
    "if lines is None:",
@@ -2862,10 +2868,10 @@
    "slots[key] = list(lines)",
    "self.invalidate()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:524-524": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:601-601": [
    "self._modal: AnyContainer | None = None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:536-552": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:635-651": [
    "def _ansi_row(",
    "getter: Callable[[], str], *, gate_visible: bool = False",
    ") -> ConditionalContainer:",
@@ -2875,7 +2881,7 @@
    "if gate_visible:",
    "cond = cond & Condition(lambda: self._working_visible or self._running)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:676-688": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:781-793": [
    "# ``widgets_above``/``widgets_below`` stay UNGATED on purpose. An empty",
    "# ``FormattedTextControl`` reports ``line_count == 1``, so each holds a",
    "# permanent 1-row floor — that row is a LAYOUT STABILISER, not dead space.",
@@ -2885,13 +2891,15 @@
    "# runs inside ``print_above_many``'s ``apply_before_redraw`` hook, i.e.",
    "# inside the erase/CPR two-phase fold-in the round-3 flicker fix made"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:693-693": [
-   "Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),"
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:800-802": [
+   "Window(",
+   "FormattedTextControl(self._render_widgets_above),",
+   "dont_extend_height=True,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:723-723": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:841-841": [
    "refresh_interval=0.1,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:784-790": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:903-909": [
    "if self._running and submit_text.strip() and self.on_steer is not None:",
    "self.buffer.reset()",
    "with contextlib.suppress(Exception):",
@@ -2899,12 +2907,6 @@
    "self._reset_paste_state()",
    "self.on_steer(submit_text)",
    "return"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/chrome.py:967-970": [
-   "@kb.add(",
-   "\"s-tab\",",
-   "filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),",
-   ")"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1351-1352": [
    "for renderable in _render_subagent_result(result):",
