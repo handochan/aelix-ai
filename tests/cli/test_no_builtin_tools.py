@@ -48,7 +48,7 @@ _BUILT = 42
 """Sentinel exit code meaning "the run reached the first harness build".
 
 Not a real ``_async_main`` return value: the spy raises out of
-``create_agent_session_runtime`` (``cli/entry.py:4158``), which is AFTER the
+``create_agent_session_runtime`` (``cli/entry.py:4219``), which is AFTER the
 factory has built and filtered the harness and BEFORE ``run_print_mode`` would
 attempt a turn. Any other code means the run bailed earlier, which is itself the
 assertion for the negative tests.
@@ -290,7 +290,7 @@ async def test_filter_never_raises_on_removed_tool(
     unknown name (``core.py:4470-4476``). On the reload path that raise would be
     unrecoverable — ``reload()`` has already disposed the old harness by then —
     which is exactly why the reloaded build is unfiltered (``on_reload=True``,
-    ``cli/entry.py:1998-2011``). The ``--no-builtin-tools`` filter runs on that
+    ``cli/entry.py:2002-2015``). The ``--no-builtin-tools`` filter runs on that
     same rebuild, and it computes its names FROM the live ``state.tools`` before
     intersecting with ``parsed.tools``, so a since-removed name can only be
     dropped, never re-asserted.

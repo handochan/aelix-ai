@@ -1922,6 +1922,10 @@ async def _build_harness_options(
     mcp_tools: list[AgentTool] | None = None,
     get_api_key_and_headers: Callable[..., Any] | None = None,
     project_trusted: bool = True,
+    # #638 — ``--approve`` or a saved yes for this folder; see
+    # :func:`_project_explicitly_trusted`. ``False`` refuses a module-shaped
+    # ``-e`` that a project path answers.
+    project_explicitly_trusted: bool = False,
     permission_ext: PermissionExtension | None = None,
     agents_ext: Any | None = None,
     captured_extensions: list[Any] | None = None,
@@ -2102,6 +2106,7 @@ async def _build_harness_options(
         prepend=prepend_extensions,
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
+        project_explicitly_trusted=project_explicitly_trusted,
         # Issue #91 provenance gate — the ``--trust-extension-path`` override
         # (distribution names allowed despite resolving outside site-packages).
         trusted_ep_dists=frozenset(parsed.trust_extension_paths),
@@ -2533,6 +2538,49 @@ async def _resolve_project_trust(
         ),
     )
     return trusted
+
+
+def _project_explicitly_trusted(
+    parsed: Args,
+    cwd: str,
+    project_trusted: bool,
+    default_project_trust: DefaultProjectTrust = "ask",
+) -> bool:
+    """#638 (owner decisions 2026-11-01) — did the USER say yes to this folder?
+
+    ``--approve``; the global ``defaultProjectTrust: "always"``, read as the
+    launch reads it (``get_default_project_trust``: global scope only, so a
+    repository cannot set it); or a saved trust decision of yes
+    (``trust.json``, nearest ancestor first, so a parent folder's counts: what
+    the prompt's "Trust" / "Trust parent folder" and a ``project_trust`` vote
+    with ``remember`` write). Read after :func:`_resolve_project_trust`, so an
+    answer given at this launch's prompt is already saved.
+
+    Not explicit: a folder with nothing to gate (trusted without a question)
+    and an unsaved answer — "Trust (this session only)", a vote without
+    ``remember``. ``resolve_project_trusted`` returns one bool and cannot say
+    which step decided, so those read the same here as "nothing to gate".
+
+    One saved yes nobody gave counts all the same (a known gap, ADR-0285
+    Limits): ``maybe_save_implicit_project_trust_after_reload`` writes ``True``
+    for a folder that had nothing to gate at launch once a ``/reload`` finds
+    resources there, without asking, and ``trust.json`` holds only the bool.
+
+    Gates exactly one thing: a module-shaped ``-e acme`` that only a path in
+    the folder answers loads that path only when this is ``True`` (ADR-0285 D5).
+    A malformed store is no decision, as it is for the resolution itself.
+    """
+
+    if not project_trusted:
+        return False
+    if parsed.project_trust_override is not None:
+        return parsed.project_trust_override
+    if default_project_trust == "always":
+        return True
+    try:
+        return ProjectTrustStore(get_agent_dir()).get(Path(cwd)) is True
+    except ValueError:
+        return False
 
 
 #: #367 verify round 4, B1 — the first sentence of every turn-gate reason
@@ -3043,6 +3091,13 @@ async def _async_main(argv: list[str]) -> int:
             )
             trust_vote_extensions = list(_vote_loaded.extensions)
             for _err in _vote_loaded.errors:
+                # #638 verify R3: a refused module-shaped ``-e`` (the one error
+                # ``verify_applies`` is false for) is decided by the trust this
+                # load runs before. Printed here it read as final above a prompt
+                # whose "Trust" then loads the entry; the load after the
+                # decision reports it, or loads it.
+                if not _err.verify_applies:
+                    continue
                 print(f"Warning: project_trust vote-load: {_err}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — vote-load failure must not block startup
             print(f"Warning: project_trust vote-load failed: {exc}", file=sys.stderr)
@@ -3068,12 +3123,16 @@ async def _async_main(argv: list[str]) -> int:
         else None
     )
 
+    default_project_trust = settings_manager.get_default_project_trust()
     project_trusted = await _resolve_project_trust(
         parsed,
         cwd,
         app_mode,
         extensions=trust_vote_extensions,
-        default_project_trust=settings_manager.get_default_project_trust(),
+        default_project_trust=default_project_trust,
+    )
+    project_explicitly_trusted = _project_explicitly_trusted(
+        parsed, cwd, project_trusted, default_project_trust
     )
     # #369 — project settings follow project trust (pi @ ``b223082bb``
     # ``resource-loader.ts:520`` ``setProjectTrusted(projectTrusted)``). FIRST thing after the
@@ -3571,6 +3630,7 @@ async def _async_main(argv: list[str]) -> int:
             agent_dir=Path(get_agent_dir()),
             no_discovery=parsed.no_extensions,
             no_project_local=not project_trusted,
+            project_explicitly_trusted=project_explicitly_trusted,
             # Issue #91 provenance gate — the scan path is what reaches
             # contributes.mcp_servers, so it MUST honour the same gate + override.
             trusted_ep_dists=frozenset(parsed.trust_extension_paths),
@@ -3845,6 +3905,7 @@ async def _async_main(argv: list[str]) -> int:
             mcp_tools=mcp_tools,
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
+            project_explicitly_trusted=project_explicitly_trusted,
             permission_ext=permission_ext,
             # ADR-0197 — same hold-the-ref rule as ``permission_ext``: ONE
             # instance reaches every (re)build, so the live child registry and

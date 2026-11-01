@@ -3043,6 +3043,31 @@ unwritten. Add them with the next release.
   you run aelix from its root, with or without an empty `PYTHONPATH` segment. A
   virtualenv or a `src/` editable install inside the project is not the project
   folder and still imports.
+- **`-e acme` no longer runs a project's `acme` folder unless you trusted that
+  folder yourself (#638, ADR-0285).** A module-shaped `-e` loads the file or
+  folder of that name when the directory you are in has one, and an explicit
+  `-e` is loaded whether or not the project is trusted. So in a cloned
+  repository holding `acme/`, `aelix -e acme --no-approve` printed a warning
+  that the local folder would be loaded instead of the installed module, and
+  then ran `acme/__init__.py`; under `-p` in a folder with a `.aelix/` resource
+  and no decision it ran twice, once in the trust vote before the decision; and
+  a repository with no `.aelix/` at all, which is trusted without a question,
+  ran it as well. Such an entry now loads the folder only when you trusted it
+  explicitly: `--approve`, a saved "Trust" for that folder or a parent, or
+  `defaultProjectTrust: "always"` in your global settings. Anywhere else —
+  `--no-approve`, a saved "Do not trust", an undecided folder under `-p`, the
+  trust vote (which no longer prints the refusal before the decision), a
+  folder with nothing to gate, "Trust (this session only)" — it is refused
+  before anything in it is opened, and the message starts with what to type:
+  `-e ./acme` to load the folder on purpose, or `-e acme:setup` for the
+  installed module, which that spelling always means. The folder path in the
+  message is printed without its control characters, and `/extension` no
+  longer points you at `aelix extension verify` for it. `-e ./acme` and other
+  paths you type load as before. Known gap: the trust aelix saves on its own
+  when a folder that had nothing to gate gains `.aelix/` resources and you run
+  `/reload` ("Saved project trust for this folder") counts as a saved "Trust"
+  from the next launch. `ExtensionLoadError` gains a defaulted
+  `verify_applies` field, which `dataclasses.asdict` now includes.
 - **A delegated child can no longer put escape sequences on your status line
   (#178).** While a child runs, the status line shows its profile and the tool
   it is using, and the tool name is whatever the child reports. Both were

@@ -86,10 +86,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExtensionLoadError:
-    """Captures a per-extension failure without aborting the whole load."""
+    """Captures a per-extension failure without aborting the whole load.
+
+    ``verify_applies`` says whether ``aelix extension verify`` — which reads
+    installed endpoints only — has anything to add, so the ``/extension``
+    viewer's pointer to it is not printed under a refusal it cannot explain
+    (the #638 one for an ``-e`` entry). Left out of ``repr`` and ``==``: the
+    CLI prints the dataclass as it always has, and callers compare errors by
+    what they say.
+    """
 
     path: str
     error: str
+    verify_applies: bool = field(default=True, repr=False, compare=False)
 
 
 @dataclass
@@ -440,6 +449,7 @@ async def discover_and_load_extensions(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
     flag_values: Mapping[str, bool | str] | None = None,
 ) -> LoadExtensionsResult:
@@ -461,7 +471,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2098`` and ``:3026``) pass
+       (``cli/entry.py:2102`` and ``:3074``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
@@ -512,6 +522,16 @@ async def discover_and_load_extensions(
     4): the trust gate must suppress untrusted project-local code WITHOUT
     breaking user-chosen global/explicit/installed extensions.
 
+    ``project_explicitly_trusted`` (issue #638, owner decisions 2026-11-01):
+    ``True`` only when the USER said yes to this folder — ``--approve``, the
+    global ``defaultProjectTrust: "always"``, or a saved trust decision of yes
+    (``cli/entry.py`` ``_project_explicitly_trusted``). A module-shaped tier-3
+    entry that only a path in the folder answers (``-e acme`` beside
+    ``acme/``) loads only then, and only with ``no_project_local`` false;
+    otherwise it is refused before anything in it is opened. That includes a
+    folder trusted because it has nothing to gate. ``False`` by default, so a
+    library caller that does not say gets the refusal.
+
     ``trusted_ep_dists`` (issue #91 provenance gate, option C): PEP 503 canonical
     distribution names the operator explicitly vouched for via
     ``--trust-extension-path``. The entry-point tier REFUSES any
@@ -527,6 +547,7 @@ async def discover_and_load_extensions(
         prepend=prepend,
         no_discovery=no_discovery,
         no_project_local=no_project_local,
+        project_explicitly_trusted=project_explicitly_trusted,
         trusted_ep_dists=trusted_ep_dists,
     )
     result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
@@ -706,6 +727,7 @@ def _discover_entries(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
     entry_points_metadata_only: bool = False,
 ) -> tuple[
@@ -797,6 +819,7 @@ def _discover_entries(
 
     # 3. Explicit configured paths.
     seen_modules: set[str] = set()
+    refused_shadowed: set[str] = set()
     for entry in configured_paths:
         # Callables/factories pass through (P-21 — explicit takes precedence
         # over entry_points but loses to local/global directories).
@@ -824,8 +847,37 @@ def _discover_entries(
         # wins, so `-e mypkg.ext` with `mypkg.ext/` present keeps loading from
         # disk exactly as it did before #114 — but it means the visited
         # directory, not the user, decided what the name means, and the code
-        # about to run is project-local and outside the `no_project_local`
-        # trust gate. Do not let that happen silently.
+        # about to run is project-local. Do not let that happen silently.
+        #
+        # Issue #638: and do not let it happen at all unless the USER trusted
+        # this folder — ``--approve``, ``defaultProjectTrust: "always"`` or a
+        # saved trust decision of yes (``project_explicitly_trusted``; owner
+        # decisions 2026-11-01). Not trusted (``no_project_local``:
+        # ``--no-approve``, a denied or undecided headless directory, the
+        # pre-trust vote load) is refused, and so is a folder trusted without
+        # anyone saying so — nothing to gate, a session-only "Trust": a
+        # repository that wants ``-e acme`` to run its ``acme/`` would
+        # otherwise only have to ship no ``.aelix/``.
+        # A module-shaped entry has no separator, so clause 4 only ever found it
+        # at ``cwd / entry`` — the project folder is the sole reason it is a
+        # path. Refused before anything is opened; the two spellings that say
+        # what was meant still work (``./acme`` is a path the user typed,
+        # ``acme:setup`` can only be the installed module).
+        if (
+            isinstance(entry, str)
+            and _is_module_shaped(entry)
+            and (no_project_local or not project_explicitly_trusted)
+        ):
+            if entry not in refused_shadowed:
+                refused_shadowed.add(entry)
+                errors.append(
+                    ExtensionLoadError(
+                        path=entry,
+                        error=_shadowed_entry_refusal(entry, cwd),
+                        verify_applies=False,
+                    )
+                )
+            continue
         if isinstance(entry, str) and _is_module_shaped(entry):
             logger.warning(
                 "extension entry %r looks like a module reference, but %s "
@@ -834,7 +886,8 @@ def _discover_entries(
                 "confirm you meant the local path, or run from another "
                 "directory to load the module.",
                 entry,
-                Path(entry) if Path(entry).is_absolute() else (cwd / entry),
+                # Flattened for the reason the refusal's path is (#638 V5).
+                safe_for_terminal(str(cwd / entry)),
                 entry,
             )
             # NO ``continue`` — the warning is advisory and the entry falls
@@ -888,6 +941,41 @@ def _discover_entries(
     return all_entries, errors
 
 
+def _shadowed_entry_refusal(entry: str, cwd: Path) -> str:
+    """Issue #638 — why a module-shaped ``-e`` naming a project path is refused.
+
+    The ACTION comes first: ``/extension`` cuts a row at the terminal width, and
+    at 80 columns the first cut of this message lost both hints behind the path
+    (#638 verify V6). ``./<entry>`` loads the project path on purpose, and — for
+    an entry without a ``:`` — ``<entry>:setup`` is the same factory as the
+    bare module form but can only be read as a module (clause 4 tests a path
+    literally named ``acme:setup``), so it loads the installed module from
+    right here. An entry that already holds a ``:`` gets "run from another
+    folder" instead.
+
+    The path is flattened (:func:`~aelix_ai.utils.terminal_text.safe_for_terminal`):
+    the folder's name is whatever a ``git clone`` chose, and the message reaches
+    the scan's log line and ``/extension`` as well as stderr (#638 verify V5,
+    Codex review PC5). ``entry`` itself is module-shaped, so it holds no control
+    character.
+    """
+
+    local = safe_for_terminal(str(cwd / entry))
+    if ":" not in entry:
+        hints = f"pass -e ./{entry} or -e {entry}:setup"
+        meanings = f"-e ./{entry} loads that path on purpose, -e {entry}:setup the installed module"
+    else:
+        hints = f"pass -e ./{entry}, or run from another folder"
+        meanings = f"-e ./{entry} loads that path on purpose; elsewhere {entry!r} is the installed module"
+    # No leading "refused": the ``/extension`` viewer prefixes every load
+    # error with it, and the CLI's "Warning: extension load:" line needs none.
+    return (
+        f"not loaded: {hints} — {entry!r} would load {local} from this folder, "
+        f"which is not explicitly trusted (--approve, or a saved trust decision); "
+        f"{meanings}."
+    )
+
+
 def scan_extension_manifests(
     configured_paths: list[str | Path | ExtensionFactory],
     *,
@@ -895,6 +983,7 @@ def scan_extension_manifests(
     agent_dir: Path | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
 ) -> list[PluginManifest]:
     """Issue #21 — metadata-ONLY manifest scan (no plugin code execution).
@@ -958,6 +1047,7 @@ def scan_extension_manifests(
         agent_dir=agent_dir,
         no_discovery=no_discovery,
         no_project_local=no_project_local,
+        project_explicitly_trusted=project_explicitly_trusted,
         trusted_ep_dists=trusted_ep_dists,
         entry_points_metadata_only=True,
     )

@@ -356,6 +356,14 @@ folder off the import path entirely. To load a file that sits in your project,
 give its path (`-e ./my_extension.py`) or put it under `.aelix/extensions/`,
 where [Project trust](#project-trust) decides.
 
+If the directory you run in holds a file or folder with the module's name
+(`my_package.my_extension`, or `acme` for `-e acme`), that path wins and a
+warning says so — but only in a folder you trusted yourself (`--approve`, a
+saved "Trust", or `defaultProjectTrust: "always"`). Anywhere else, a folder
+with nothing to gate included, the entry is refused instead (#638): write `-e
+./acme` to load the folder, or `-e acme:setup` — the same factory, spelled so
+it can only be the installed module.
+
 ### Auto-discovery
 
 Aelix also discovers extensions without `-e`, from three channels:
@@ -378,7 +386,9 @@ run `aelix` in a directory that has them, you are asked to approve; in
 non-interactive mode they are denied by default. Use `--approve` / `-a` to trust
 project-local resources for a run, or `--no-approve` / `-na` to ignore them.
 Global extensions (`~/.aelix/agent/extensions/`), explicit `-e`, and
-`entry_points` are always loaded. See ADR-0149 for the trust model.
+`entry_points` are always loaded — except a module-shaped `-e` that only a path
+in the project answers, which loads only in a folder you trusted explicitly
+(above). See ADR-0149 for the trust model.
 
 ## Disabling extensions
 
