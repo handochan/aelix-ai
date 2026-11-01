@@ -42,7 +42,7 @@ def _child_env(tmp_path: Path) -> dict[str, str]:
     """Hermetic env: the child must not read or write the developer's ~/.aelix.
 
     ``AELIX_CODING_AGENT_DIR`` / ``AELIX_SETTINGS_PATH`` are the seams the rest
-    of the suite isolates through (``cli/config.py:36``).
+    of the suite isolates through (``cli/config.py:39``).
     """
 
     return child_env(

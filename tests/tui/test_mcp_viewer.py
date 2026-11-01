@@ -90,7 +90,7 @@ async def test_run_renders_servers_states_and_counts() -> None:
     assert "2 servers" in out
     assert "alpha" in out and "connected" in out
     assert "beta" in out and "disconnected" in out
-    assert "https://x/api" in out
+    assert "https://x/…" in out, "a url's path is not shown (#512 verify R7)"
     assert "2" in out  # tool count for the connected server
 
 

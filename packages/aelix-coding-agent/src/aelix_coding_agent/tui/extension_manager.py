@@ -26,6 +26,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.core.mcp_servers import (
+    McpServerStatus,
+    connection_status,
+    disabled_note,
+    runtime_statuses,
+)
 from aelix_coding_agent.extensions.always_on import (
     BUILTIN_ALWAYS_ON_NAMES,
     is_builtin_always_on,
@@ -113,14 +119,25 @@ def _error_rows(errors: Any) -> list[str]:
     return rows
 
 
+def _mcp_status(item: Any) -> McpServerStatus:
+    """``item`` as a status row: a row already, or a bare connection read through
+    the shared vocabulary (``core.mcp_servers.connection_status``)."""
+
+    return item if isinstance(item, McpServerStatus) else connection_status(item)
+
+
 def build_installed_lines(extensions: Any, mcp_conns: Any, errors: Any = None) -> list[str]:
     """Render the "Installed" tab: loaded extensions, refusals, then MCP servers.
 
     ``extensions`` is the discovered ``list[Extension]`` (each with an optional
-    parsed manifest carrying name/version); ``mcp_conns`` is an iterable of MCP
-    connection objects (``McpClientManager.connections.values()`` — each with
-    ``name`` / ``transport`` / ``connected``). Both are fully getattr-guarded so
-    a missing field degrades to ``"?"`` / an omitted version rather than raising.
+    parsed manifest carrying name/version); ``mcp_conns`` is an iterable of
+    ``core.mcp_servers.McpServerStatus`` rows (``runtime_statuses(manager)``,
+    which :func:`run_extension_manager` passes — #512, ADR-0282: the state words
+    ``/mcp`` and ``aelix status`` print, ``disabled`` among them, with the file
+    and key that turn one back on) or of bare MCP connection objects (``name`` /
+    ``transport`` / ``connected``), read through the same vocabulary. Both are
+    fully getattr-guarded so a missing field degrades to ``"?"`` / an omitted
+    version rather than raising.
 
     ``errors`` (issue #126) is the loader's ``LoadExtensionsResult.errors``: the
     packs that were found and then NOT loaded — an untrusted ``sys.path``
@@ -174,11 +191,14 @@ def build_installed_lines(extensions: Any, mcp_conns: Any, errors: Any = None) -
         if lines:
             lines.append("")
         lines.append("MCP servers:")
-        for conn in conns:
-            name = getattr(conn, "name", None) or "?"
-            transport = getattr(conn, "transport", None) or "?"
-            state = "connected" if getattr(conn, "connected", False) else "disconnected"
-            lines.append(f"  {name} — {transport} — {state}")
+        for status in (_mcp_status(item) for item in conns):
+            row = f"  {status.name} — {status.transport} — {status.state}"
+            if status.state == "disabled":
+                # On the row, not as a hint under the list: this modal does not
+                # scroll, and rows below the room are not drawn. The footer
+                # below already says MCP servers load at startup.
+                row += f" ({disabled_note(status)})"
+            lines.append(row)
     if builtins:
         if lines:
             lines.append("")
@@ -401,8 +421,7 @@ async def run_extension_manager(
     # captured once — and so are the load errors, which are produced by the same
     # discovery pass.
     def _installed() -> list[str]:
-        conns = list(getattr(mcp_manager, "connections", {}).values())
-        return build_installed_lines(exts, conns, load_errors)
+        return build_installed_lines(exts, runtime_statuses(mcp_manager), load_errors)
 
     def _default_catalog() -> tuple[str, bool] | None:
         # Guard ③ (ADR-0192): read the injected built-in default value live so an

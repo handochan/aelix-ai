@@ -30,3 +30,14 @@ All lenses' substantive findings CONFIRMED and fixed in the same pass, including
 - `ExtensionRuntimeActions` is now 17 fields (`refresh_hooks` added — all constructors updated).
 - **Deferred with evidence:** #20 renderer half (needs an entry-stream replay refactor — `build_context()` discards `custom_type`; live push site absent in pi too); `contributes.{themes,descriptors,tui_widgets}`; lazy `on_tool_call` (needs schema-carrying ToolContribs); manifest-MCP on `/reload`.
 - **Gate:** pytest 4578 pass / 1 skip (+28 vs the post-#57 4550 baseline) · ruff clean · pyright 8 pre-existing `scripts/pyright_spike.py` errors only.
+
+
+## Note (2026-10-31, #512): the `mcp.json` name rule is explicit
+
+*Amended 2026-10-31 by [ADR-0282](0282-an-mcp-server-can-be-turned-off-in-mcp-json-and-every-surface-names-its-state-in-one-vocabulary.md) D5.* An `mcp.json` entry still beats a
+manifest server of the same name, but no longer through `McpClientManager`'s
+last-wins dict: `cli/entry.py` drops the manifest server before the manager and
+prints that it is not started, instead of the "starts MCP server" notice that
+used to print for it. Every name the file declares counts — an enabled, a
+disabled (`"enabled": false`) or a skipped entry's — and an untrusted project
+file's names do not. Manifests have no `enabled` key.

@@ -106,11 +106,18 @@ def test_module_exports() -> None:
         "ENV_MCP_CONFIG",
         "ENV_SESSION_DIR",
         "VERSION",
+        # #512 — the loader's richer result: the servers to connect, the
+        # disabled entries surfaces still list, warnings, the file.
+        "McpConfig",
         "McpConfigSource",
         "expand_tilde_path",
         "get_agent_dir",
         "get_bin_dir",
         "get_session_dir",
+        # #512 (ADR-0282 D5) — the global file alone, for its names where an
+        # untrusted project file is the one picked.
+        "load_global_mcp_config",
+        "load_mcp_config",
         "load_mcp_server_contribs",
         # #115 — the packaged skills tier. Aelix-original: pi ships no built-in
         # skills, but the #115 knowledge channel is otherwise empty on a fresh

@@ -108,7 +108,7 @@ async def _run(
     seen: list[str] = []
 
     class _SpyManager:
-        def __init__(self, contribs):
+        def __init__(self, contribs, **_kwargs):
             seen.extend(c.name for c in contribs)
 
         async def connect_all(self):

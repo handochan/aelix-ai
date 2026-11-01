@@ -228,3 +228,13 @@ or imported.
 
 Sprint 6h₉d / Phase 5b-foundation (shipped). Next: Sprint 6h₉e — subprocess
 hooks (Tier 4b).
+
+
+## Note (2026-10-31, #512): `enabled`, and entries with no endpoint
+
+*Amended 2026-10-31 by [ADR-0282](0282-an-mcp-server-can-be-turned-off-in-mcp-json-and-every-surface-names-its-state-in-one-vocabulary.md) D1–D2.* An `mcp.json` entry takes
+`"enabled": false` to stay listed without being connected; a non-boolean
+`enabled` is warned and the entry skipped. A stdio entry with no `command` and an
+http/sse entry with no `url` are reported at load instead of failing at connect.
+The one-file resolution is unchanged. `McpClientManager` also holds the disabled
+entries (no connection) and the names whose `connect_all` raised (D4).

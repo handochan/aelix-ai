@@ -125,6 +125,10 @@ ALIASES: dict[str, str] = {
     "api-keys": "credentials",
     "models.json": "models-json",
     "custom-models": "models-json",
+    # #512 — `mcp` was a near miss ("no guide covers MCP servers on their own")
+    # until the mcp-servers guide existed.
+    "mcp": "mcp-servers",
+    "mcp.json": "mcp-servers",
     "catalog": "private-catalog",
     "marketplace": "private-catalog",
     "install": "getting-started",
@@ -162,13 +166,6 @@ NEAR_MISSES: dict[str, str] = {
         "`agent-profiles` (the `skills:` frontmatter key, which takes paths) and "
         "`project-trust` (why a project-local .aelix/skills/ is gated)."
     ),
-    "mcp": (
-        "no guide covers MCP servers on their own. `extension-authoring` "
-        "documents the `contributes.mcp_servers` manifest family and the "
-        "capability flags that gate it, `project-trust` covers the "
-        "project-local .aelix/mcp.json gate, and the packaged reference "
-        "manifest annotates every field."
-    ),
     "hooks": (
         "no standalone hooks guide. `extension-authoring` covers both hook "
         "surfaces — `aelix.on(...)` for in-process handlers and the "
@@ -187,7 +184,6 @@ NEAR_MISSES: dict[str, str] = {
 #: entry at a file nothing provides and assert the omission.
 NEAR_MISS_FILES: dict[str, tuple[tuple[str, ...], ...]] = {
     "skills": (("skills", "writing-skills", "SKILL.md"),),
-    "mcp": (("examples", "echo", "aelix-plugin.toml"),),
     "hooks": (("examples", "echo", "aelix-plugin.toml"),),
 }
 

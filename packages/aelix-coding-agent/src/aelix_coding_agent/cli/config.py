@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.manifest import McpServerContrib
+
+    from aelix_coding_agent.core.mcp_servers import DisabledMcpServer
 
 APP_NAME = "aelix"
 """Pi parity: ``APP_NAME = "pi"`` — Aelix substitutes ``"aelix"``
@@ -148,36 +151,124 @@ McpConfigSource = Literal["env", "project", "global"]
 untrusted directory while keeping user-chosen ``env`` / ``global`` ones."""
 
 
-def load_mcp_server_contribs(
-    cwd: str,
-) -> tuple[list[McpServerContrib], list[str], McpConfigSource | None]:
+@dataclass(frozen=True)
+class McpConfig:
+    """The one ``mcp.json`` a launch reads, split by what a launch does with it.
+
+    #512 (ADR-0282). ``contribs`` are the servers to connect; ``disabled`` the
+    entries with ``"enabled": false`` — listed by ``/mcp``, ``/extension`` and
+    ``aelix status``, never connected, their tools never registered.
+    ``warnings`` are the entries that were skipped and why; ``declared`` every
+    name, skipped or not. ``source`` and ``path`` say which file it was (both
+    :data:`None` when there is none).
+    """
+
+    contribs: list[McpServerContrib] = field(default_factory=list)
+    disabled: list[McpServerContrib] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    declared: list[str] = field(default_factory=list)
+    """Every server name the file declares, the skipped ones included: the names
+    a manifest server cannot take (``cli/entry.py``, ADR-0282 D5)."""
+    source: McpConfigSource | None = None
+    path: Path | None = None
+    cwd: str = ""
+
+    @property
+    def label(self) -> str:
+        """The file as a surface names it (``core.mcp_servers.config_label``)."""
+
+        from aelix_coding_agent.core.mcp_servers import config_label
+
+        if self.path is None:
+            return ""
+        return config_label(self.path, self.source, cwd=self.cwd)
+
+    def disabled_servers(self) -> list[DisabledMcpServer]:
+        from aelix_coding_agent.core.mcp_servers import DisabledMcpServer
+
+        return [DisabledMcpServer(contrib=c, config=self.label) for c in self.disabled]
+
+    @property
+    def off(self) -> frozenset[str]:
+        """The declared names this file starts nothing for: its disabled entries
+        and the ones it skipped. What a delegated child must not start either
+        (``core.mcp_servers.McpNameRecord``, ADR-0282 D9)."""
+
+        return frozenset(self.declared) - {c.name for c in self.contribs}
+
+
+def _shown(value: object) -> str:
+    """A JSON value quoted for a warning: JSON spelling, ASCII, bounded."""
+
+    try:
+        text = json.dumps(value, ensure_ascii=True)
+    except (TypeError, ValueError):  # pragma: no cover — json.loads output always dumps
+        text = type(value).__name__
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _invalid_reason(exc: Exception) -> str:
+    """Why an entry did not validate: each field and its reason, never its value.
+
+    ``str()`` of a pydantic ``ValidationError`` quotes the input
+    (``input_value=['https://…?token=…']``), and a url or an ``env`` value is
+    where a credential lives; ``aelix status`` prints these warnings, and its
+    output is pasted into bug reports (#512 review 512-02). ``errors()`` gives
+    the location and the message separately, so only those two are kept. Any
+    other exception here comes from ``list()`` / ``dict()`` over ``args`` /
+    ``env``, whose messages name a type or a length, not a value.
+    """
+
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    parts = []
+    for item in exc.errors():
+        loc = ".".join(str(part) for part in item.get("loc", ())) or "entry"
+        if len(loc) > 40:
+            loc = loc[:39] + "…"
+        parts.append(f"{loc}: {item.get('msg', 'invalid')}")
+    return "; ".join(parts) or f"invalid ({type(exc).__name__})"
+
+
+def load_mcp_config(cwd: str) -> McpConfig:
     """Load MCP server definitions from a Claude-Code-style JSON config.
 
-    Resolution precedence:
+    Resolution precedence — ONE file, the first that exists:
 
     1. ``$AELIX_MCP_CONFIG`` (explicit override), else
     2. ``<cwd>/.aelix/mcp.json`` (project-local), else
     3. ``<get_agent_dir()>/mcp.json`` (user global).
 
+    The files are NOT merged (ADR-0282 keeps this; pi merges, and lets a project
+    entry override only ``enabled`` / ``exposure`` of a global server — the
+    deferred question). A project file therefore replaces the global one in that
+    directory, which is why an entry with no ``command`` or ``url`` there gets a
+    warning that says so: it is pi's override shape, and here it overrides
+    nothing.
+
     File shape::
 
         {"mcpServers": {"<name>": {"command": "npx",
           "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-          "env": {...}}}}
+          "env": {...}, "enabled": true}}}
 
     ``transport`` defaults to ``"stdio"`` when ``command`` is present, else
     ``"http"`` when ``url`` is present (an explicit ``transport`` always wins).
-    Missing file → ``([], [], None)``. Per-entry errors (bad JSON / invalid
-    entry) are returned as warning strings rather than raised, so one malformed
-    server never aborts startup.
+    ``enabled`` (#512) defaults to ``true``; ``false`` keeps the entry listed
+    without connecting it. Per-entry errors (bad JSON, an invalid entry, a
+    non-boolean ``enabled`` — pi ``core/mcp-servers.ts`` ``validateMcpServerConfig``
+    rejects it the same way, and skipping is the side that starts nothing — a
+    stdio entry with no ``command`` or an http/sse one with no ``url``) are
+    returned as warning strings rather than raised, so one malformed server
+    never aborts startup.
 
-    Returns a 3-tuple ``(contribs, warnings, source)`` where ``source`` tags
-    which tier the resolved config came from (``"env"`` / ``"project"`` /
-    ``"global"``), or :data:`None` when no config file was found. The Project
-    Trust gate (Sprint P0 #10) uses ``source`` to suppress ONLY ``"project"``
-    (auto-discovered ``cwd/.aelix/mcp.json``) contribs in an untrusted
-    directory — ``"env"`` (``$AELIX_MCP_CONFIG``) and ``"global"`` are explicit
-    user choices and are never gated.
+    ``source`` tags which tier the file came from (``"env"`` / ``"project"`` /
+    ``"global"``). The Project Trust gate (Sprint P0 #10) uses it to suppress
+    ONLY ``"project"`` (auto-discovered ``cwd/.aelix/mcp.json``) servers in an
+    untrusted directory — ``"env"`` (``$AELIX_MCP_CONFIG``) and ``"global"`` are
+    explicit user choices and are never gated.
 
     That last sentence has a PRECONDITION (ADR-0203): ``$AELIX_MCP_CONFIG`` is
     an "explicit user choice" only because ``cli/runtime_bootstrap.py``
@@ -188,8 +279,6 @@ def load_mcp_server_contribs(
     ungated is a decision about the USER's intent, and it is sound only while
     the env var behind it can carry nothing else.
     """
-
-    from aelix_agent_core.contracts.manifest import McpServerContrib
 
     source: McpConfigSource
     override = os.environ.get(ENV_MCP_CONFIG)
@@ -205,40 +294,118 @@ def load_mcp_server_contribs(
             path = Path(get_agent_dir()) / "mcp.json"
             source = "global"
 
+    return _read_mcp_config(path, source, cwd)
+
+
+def load_global_mcp_config(cwd: str) -> McpConfig:
+    """The user's global ``mcp.json`` alone, whichever file a launch reads.
+
+    For its NAMES (ADR-0282 D5, amended 2026-11-01): where an untrusted project
+    ``.aelix/mcp.json`` is the file :func:`load_mcp_config` picks, nothing from
+    either file starts, but the global file's names still keep an extension's
+    server of the same name off — the user wrote them, the repo did not. Its
+    servers are never connected from this function's result.
+    """
+
+    return _read_mcp_config(Path(get_agent_dir()) / "mcp.json", "global", cwd)
+
+
+def _read_mcp_config(path: Path, source: McpConfigSource, cwd: str) -> McpConfig:
+    from aelix_agent_core.contracts.manifest import McpServerContrib
+
     if not path.is_file():
-        return [], [], None
+        return McpConfig(cwd=cwd)
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return [], [f"{path}: {exc}"], source
+        return McpConfig(warnings=[f"{path}: {exc}"], source=source, path=path, cwd=cwd)
 
     servers = raw.get("mcpServers") if isinstance(raw, dict) else None
     if not isinstance(servers, dict):
-        return [], [f"{path}: missing or invalid 'mcpServers' object"], source
+        return McpConfig(
+            warnings=[f"{path}: missing or invalid 'mcpServers' object"],
+            source=source,
+            path=path,
+            cwd=cwd,
+        )
 
     contribs: list[McpServerContrib] = []
+    disabled: list[McpServerContrib] = []
     warnings: list[str] = []
     for name, spec in servers.items():
         if not isinstance(spec, dict):
             warnings.append(f"{path}: server {name!r} is not an object")
             continue
+        enabled = spec.get("enabled", True)
+        if not isinstance(enabled, bool):
+            warnings.append(
+                f'{path}: server {name!r}: "enabled" must be true or false, not '
+                f"{_shown(enabled)}; not started"
+            )
+            continue
         transport = spec.get("transport") or ("stdio" if spec.get("command") else "http")
         try:
-            contribs.append(
-                McpServerContrib(
-                    name=name,
-                    transport=transport,
-                    command=spec.get("command"),
-                    args=list(spec.get("args") or []),
-                    url=spec.get("url"),
-                    env=dict(spec.get("env") or {}),
-                )
+            contrib = McpServerContrib(
+                name=name,
+                transport=transport,
+                command=spec.get("command"),
+                args=list(spec.get("args") or []),
+                url=spec.get("url"),
+                env=dict(spec.get("env") or {}),
             )
         except Exception as exc:  # noqa: BLE001 — Pydantic ValidationError et al.
-            warnings.append(f"{path}: server {name!r}: {exc}")
+            warnings.append(f"{path}: server {name!r}: {_invalid_reason(exc)}; not started")
+            continue
+        if not (contrib.command if contrib.transport == "stdio" else contrib.url):
+            message = (
+                f'{path}: server {name!r} needs "command" (stdio) or "url" (http/sse); not started'
+            )
+            if source == "project" and not any(k in spec for k in ("command", "url", "transport")):
+                from aelix_coding_agent.core.mcp_servers import config_label
 
-    return contribs, warnings, source
+                global_file = config_label(Path(get_agent_dir()) / "mcp.json", "global")
+                message += (
+                    f". aelix reads only this file here, not {global_file} as well, "
+                    "so an entry in it cannot change or turn off a global server"
+                )
+            warnings.append(message)
+            continue
+        if enabled and spec.get("disabled", False) is not False:
+            # Cline's spelling. Said, not honoured: the key aelix reads is
+            # ``enabled``, and reading a second one would make two keys that
+            # can disagree (#512 verify V8).
+            # Not "starts": trust and an inherited record decide that, later
+            # (#512 verify R2).
+            warnings.append(
+                f'{path}: server {name!r}: "disabled" does not turn it off — aelix reads '
+                '"enabled" (write "enabled": false to keep it off)'
+            )
+        (contribs if enabled else disabled).append(contrib)
+
+    return McpConfig(
+        contribs=contribs,
+        disabled=disabled,
+        warnings=warnings,
+        declared=[str(name) for name in servers],
+        source=source,
+        path=path,
+        cwd=cwd,
+    )
+
+
+def load_mcp_server_contribs(
+    cwd: str,
+) -> tuple[list[McpServerContrib], list[str], McpConfigSource | None]:
+    """The servers to CONNECT from :func:`load_mcp_config`, its warnings and source.
+
+    The pre-#512 3-tuple. Disabled entries are not in it, so a caller that
+    connects what this returns can never start one; a surface that lists
+    servers reads :func:`load_mcp_config` for them.
+    """
+
+    config = load_mcp_config(cwd)
+    return config.contribs, config.warnings, config.source
 
 
 __all__ = [
@@ -248,11 +415,14 @@ __all__ = [
     "ENV_MCP_CONFIG",
     "ENV_SESSION_DIR",
     "VERSION",
+    "McpConfig",
     "McpConfigSource",
     "expand_tilde_path",
     "get_agent_dir",
     "get_bin_dir",
     "get_session_dir",
+    "load_global_mcp_config",
+    "load_mcp_config",
     "load_mcp_server_contribs",
     "packaged_skills_dir",
 ]

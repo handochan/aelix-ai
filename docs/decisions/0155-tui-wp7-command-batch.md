@@ -129,3 +129,13 @@ The same helper backs the `/thinking <level>` echo, the `/settings` → **Thinki
 confirmation line and the 🧠 statusline segment, so one action cannot leave two surfaces naming
 two different tiers. The `/settings` row's own value is the stored default and stays bare: it
 belongs to no model (ADR-0125).
+
+
+## Note (2026-10-31, #512): `/mcp`'s states come from one vocabulary
+
+*Amended 2026-10-31 by [ADR-0282](0282-an-mcp-server-can-be-turned-off-in-mcp-json-and-every-surface-names-its-state-in-one-vocabulary.md) D3.* `/mcp` renders
+`core.mcp_servers.runtime_statuses(manager)`: `connected`, `failed` (its launch
+connect raised), `disconnected`, and `disabled` — an `"enabled": false` entry,
+listed last with the file and key that turn it back on. The title adds
+`· N disabled`. A manager holding only disabled entries is listed rather than
+"No MCP servers configured.". It is still a read-only snapshot.

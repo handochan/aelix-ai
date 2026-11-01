@@ -917,7 +917,7 @@ def build_child_env(
 ) -> dict[str, str]:
     """The child's environment — §(l).
 
-    Inherited wholesale and then amended in four places. What is NOT touched is
+    Inherited wholesale and then amended in five places. What is NOT touched is
     as deliberate as what is: ``AELIX_CODING_AGENT_DIR``, ``AELIX_SETTINGS_PATH``,
     ``AELIX_AUTH_PATH``, ``XDG_CONFIG_HOME``, ``PI_OFFLINE`` and every provider
     API key all pass through, because a child that cannot authenticate is a
@@ -947,6 +947,13 @@ def build_child_env(
     # server — N delegations become N × M processes, none of which the parent
     # tracks.
     env.pop("AELIX_MCP_CONFIG", None)
+    # ...and what this launch's mcp.json turned off or claimed goes along by
+    # NAME, so the child — which reads its own file, usually untrusted — never
+    # starts a server the parent's config kept off (#512, ADR-0282 D9). Names
+    # only: the child can use them to suppress and for nothing else.
+    from aelix_coding_agent.core.mcp_servers import pass_mcp_names_to_child
+
+    pass_mcp_names_to_child(env)
 
     # Closes the worktree/venv trap deterministically: the parent may be running
     # from a source tree that is on ITS ``sys.path`` only because of how it was

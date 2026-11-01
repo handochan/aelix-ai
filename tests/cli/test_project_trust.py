@@ -700,7 +700,7 @@ async def test_integration_untrusted_headless_skips_project_mcp(
     connected: dict[str, object] = {"contribs": None}
 
     class _SpyManager:
-        def __init__(self, contribs):
+        def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
         async def connect_all(self):
@@ -740,7 +740,7 @@ async def test_integration_approve_connects_project_mcp(
     connected: dict[str, object] = {"contribs": None}
 
     class _SpyManager:
-        def __init__(self, contribs):
+        def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
         async def connect_all(self):
@@ -783,7 +783,7 @@ async def test_integration_env_mcp_not_gated_in_untrusted_dir(
     connected: dict[str, object] = {"contribs": None}
 
     class _SpyManager:
-        def __init__(self, contribs):
+        def __init__(self, contribs, **_kwargs):
             connected["contribs"] = contribs
 
         async def connect_all(self):

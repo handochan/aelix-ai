@@ -186,8 +186,8 @@ def test_every_file_a_near_miss_points_at_is_in_the_wheel(
     """#101 review L10 — the near-miss pointers, asserted against the ARTIFACT.
 
     ``aelix docs skills`` now hands an installed user the absolute path of
-    ``skills/writing-skills/SKILL.md``, and ``mcp`` / ``hooks`` the annotated
-    reference manifest. A source-tree check cannot see the failure that matters
+    ``skills/writing-skills/SKILL.md``, and ``hooks`` the annotated reference
+    manifest (``mcp`` had the same pointer until #512 gave it a guide). A source-tree check cannot see the failure that matters
     here: those files being excluded from the wheel would leave the message
     naming a path that exists only in a checkout, which is precisely the class
     of bug this whole file was written for.
