@@ -1897,7 +1897,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4469``) always passes one, so this is
+            # production caller (``entry.py:4486``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3851,11 +3851,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1877``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1894``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1860`` already printed at startup, and one that
+    #       what ``entry.py:1877`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4206,6 +4206,9 @@ async def _input_loop(
             # Deliberately NOT a gate: by this line the new resources are
             # already loaded. Making it one was measured to work and was
             # declined in favour of pi parity — see ADR-0216 and #112.
+            # Both families are named (#509 verify V2): the predicate counts a
+            # ``.agents/skills`` here or in a parent too, and one that arrived
+            # alone was announced as ``.aelix`` resources the folder never had.
             if save_implicit_trust_after_reload is not None:
                 with contextlib.suppress(Exception):
                     if save_implicit_trust_after_reload():
@@ -4213,8 +4216,8 @@ async def _input_loop(
                             (
                                 "commit",
                                 Text(
-                                    "Saved project trust for this folder "
-                                    "(it gained .aelix resources during this session).",
+                                    "Saved project trust for this folder (it gained .aelix "
+                                    "resources or .agents/skills during this session).",
                                     style="yellow",
                                 ),
                             )
@@ -4360,7 +4363,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4400-4416 and
+            # Two audiences, discriminated exactly as entry.py:4417-4433 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

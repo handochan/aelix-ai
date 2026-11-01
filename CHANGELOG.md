@@ -23,6 +23,43 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Skills in `~/.agents/skills` load everywhere, and a trusted project's
+  `.agents/skills` load from the folder up to the repository root (#509,
+  ADR-0281).** These are the Agent Skills locations pi and other agents use;
+  Aelix read only its own folders, so skills written for another agent were
+  not there.
+  - `~/.agents/skills` is read in every folder, never gated, after
+    `~/.aelix/agent/skills` (a same-name skill in `~/.aelix/agent/skills` wins).
+  - `.agents/skills` in the working folder and each folder above it, up to the
+    repository root (or the filesystem root outside a repository), load only
+    when the folder is trusted, after `.aelix/skills`, nearest first. A
+    repository with skills there now asks the trust question, and under `-p` is
+    skipped until `--approve` or a saved decision; a folder under your home
+    directory does not ask because of your own `~/.agents/skills` (also when
+    `HOME` is spelled in another case, or a project links to it). A
+    `.agents/skills` holding only a `README.md` does not ask.
+  - A write under `.agents/` is no longer auto-accepted, as under `.aelix/`:
+    `auto-accept-edits` asks for it and a delegated agent is refused it, so
+    neither can leave a skill there that a later run loads. The rule goes by
+    the names in the written path, so a write to the real folder behind a
+    symlink named `.agents` (or `.aelix`) is still accepted.
+  - The trust question says it also loads them and names the ones it found
+    (`../.agents/skills`, and `../×5/.agents/skills` more than three folders
+    up); `/trust` shows them too; the `-p` notice reads "… and .agents/skills
+    skipped in an untrusted directory", and `aelix status` and the `/reload`
+    trust message name them as well.
+  - In those folders a `README.md` at the top is not a skill (no warning at
+    every launch), and a `.md` file with a `description` in a grouping folder
+    is — as pi reads them. A skill file that is not UTF-8 is skipped with a
+    warning instead of stopping every skill from loading.
+  - `/skill` groups skills by each directory, `.agents/skills` ones included
+    (a folder above yours as `../.agents/skills/`), a same-name copy shown as
+    shadowed under its own directory, and an untrusted folder shows one locked
+    row per directory it did not read. A scrolled list no longer shows a group
+    header with nothing under it.
+  - `~/.claude/skills` is still not read by itself; add it to the `skills` list
+    in `settings.json`.
+
 - **`/skill` turns skills on and off, and the `skills` / `prompts` settings
   lists work (#511, ADR-0279; absorbs #595).** The lists pi documents were in
   every settings file and read by nothing: `"skills": ["-pdf-tools"]` did

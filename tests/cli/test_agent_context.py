@@ -213,7 +213,7 @@ def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
     ``extensions/loader.py:791-793`` scans ``get_agent_dir()/extensions`` and
-    ``cli/entry.py:2081`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
+    ``cli/entry.py:2098`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
     nothing ever reads.
@@ -822,7 +822,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:592-593``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:599-600``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -913,9 +913,9 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     - PLAN mode blocks every mutating tool on EVERY surface — the check sits
       above the read-only short-circuit precisely so it binds headless too
-      (``permission.py:756-764``).
+      (``permission.py:763-771``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:806-809``, ``headless_default == "block"``).
+      (``permission.py:813-816``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most

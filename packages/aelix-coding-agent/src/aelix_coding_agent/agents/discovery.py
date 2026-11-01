@@ -17,7 +17,7 @@ own ``explorer``.
 
 The project tier is gated because a profile is an identity: it can replace the
 system prompt, swap the model, and (outside project scope) name extensions.
-``cli/project_trust.py:223-248`` learns about ``.aelix/agents/`` in the same
+``cli/project_trust.py:238-263`` learns about ``.aelix/agents/`` in the same
 change that adds this module — without that, ``project_trusted`` here is
 decorative (an agents-only ``.aelix`` resolves trusted with no prompt in every
 mode).
@@ -70,7 +70,7 @@ class ProfileError(Exception):
 
 @dataclass(frozen=True)
 class ProfileDiscoveryResult:
-    """Mirrors ``LoadSkillsResult`` (``skills.py:90-95``).
+    """Mirrors ``LoadSkillsResult`` (``skills.py:94-99``).
 
     ``diagnostics`` includes the warnings of profiles that DID load (unknown
     keys, missing skill paths, name/filename mismatch, collisions) as well as
@@ -101,7 +101,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:82``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_tiers`` (``entry.py:1504``).
+    same convention as ``_resolve_skill_tiers`` (``entry.py:1520``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"
@@ -190,7 +190,7 @@ def discover_profiles(
     Non-recursive ``*.md`` glob per directory; dotfiles and subdirectories are
     skipped (a profile is a single file — there is no ``agents/<name>/agent.md``
     form). Missing directories are NOT an error, mirroring ``load_skills``
-    (``skills.py:167-168``).
+    (``skills.py:182-183``).
 
     Identity is the ``name`` FIELD, not the filename; a mismatch is a warning
     (the file still loads under its declared name). Within one scope a duplicate
@@ -287,7 +287,7 @@ def load_profile_file(
     try:
         content = resolved.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        # Mirrors ``skills.py:380-391`` — a read failure is a diagnostic, not a
+        # Mirrors ``skills.py:436-465`` — a read failure is a diagnostic, not a
         # raise; ``resolve_profile`` is the one that escalates.
         return ParseProfileResult(
             diagnostics=[

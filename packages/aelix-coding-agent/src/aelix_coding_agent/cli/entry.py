@@ -93,6 +93,7 @@ from aelix_coding_agent.core.runnable_models import (
     turn_refusal,
     unsupported_message,
 )
+from aelix_coding_agent.core.skill_dirs import project_agents_skill_dirs, user_agents_skills_dir
 from aelix_coding_agent.core.skill_selection import (
     ApplyGate,
     SkillCatalog,
@@ -955,14 +956,17 @@ def _print_untrusted_project_notice() -> None:
     One text for both headless sites — the run's non-interactive modes and
     ``--list-models`` (#369 round 2). Every family it names is skipped by the
     same decision: extensions (the factory's ``no_project_local``), skills
-    (``_resolve_skill_dirs``), agent profiles (``discover_profiles``) and,
-    since #369, ``.aelix/settings.json`` (``SettingsManager`` built untrusted).
+    (``_resolve_skill_dirs``), agent profiles (``discover_profiles``),
+    since #369 ``.aelix/settings.json`` (``SettingsManager`` built untrusted)
+    and since #509 the ``.agents/skills`` of the folder and its parents (also
+    ``_resolve_skill_tiers``) — a repo whose only skills sit there is in this
+    group, and a notice that named only ``.aelix`` would misname what it skipped.
     """
 
     print(
         "Notice: project-local .aelix resources (extensions, skills, agent "
-        "profiles, settings) skipped in an untrusted directory; pass "
-        "--approve to trust.",
+        "profiles, settings) and .agents/skills skipped in an untrusted "
+        "directory; pass --approve to trust.",
         file=sys.stderr,
     )
 
@@ -1480,10 +1484,19 @@ def _resolve_skill_tiers(
       this guard decided nothing. Then the global agent skills dir
       (``~/.aelix/agent/skills``) and the PACKAGED skills dir that ships inside
       the wheel.
+    - #509 (ADR-0281): the Agent Skills directories, read by pi's rule for them
+      (``SkillSource.agents``). In the project tier, after ``.aelix/skills``,
+      every ``.agents/skills`` from ``cwd`` up to the git root, nearest first —
+      only when trusted, and the trust gate counts the same list; in the global
+      tier, after ``~/.aelix/agent/skills``, ``~/.agents/skills``, never gated
+      and never read as a project directory (``core/skill_dirs.py``).
 
     The order is precedence (ADR-0279 D9): a same-name skill is taken from the
     first tier that has it — ``--skill`` > project > global > bundled — and
-    the others are listed as shadowed. Before #511 nothing deduplicated, the
+    the others are listed as shadowed. Within a tier the order is pi's
+    (``package-manager.ts`` ``addAutoDiscoveredResources``, kept by its stable
+    precedence sort): aelix's own directory before ``.agents``, and a nearer
+    ``.agents/skills`` before a farther one. Before #511 nothing deduplicated, the
     bundled directory was scanned FIRST, and ``/skill:<name>`` expanded the
     bundled copy over the user's own while this docstring claimed the reverse.
 
@@ -1501,7 +1514,11 @@ def _resolve_skill_tiers(
     if not parsed.no_skills:
         if project_trusted:
             sources.append(SkillSource("project", str(Path(cwd) / CONFIG_DIR_NAME / "skills")))
+            sources += [
+                SkillSource("project", str(d), agents=True) for d in project_agents_skill_dirs(cwd)
+            ]
         sources.append(SkillSource("global", str(Path(get_agent_dir()) / "skills")))
+        sources.append(SkillSource("global", str(user_agents_skills_dir()), agents=True))
         sources.append(SkillSource("bundled", str(packaged_skills_dir())))
     return sources
 

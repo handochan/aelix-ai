@@ -8,6 +8,7 @@ character from a file reaching the terminal.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 import pytest
@@ -205,6 +206,43 @@ def test_the_cursor_group_header_stays_pinned_and_the_counter_shows() -> None:
     assert frame[2].startswith(" GLOBAL")
     assert "(61/120)" in frame[1]
     assert any("▸ [✓] s060" in row for row in frame)
+
+
+def _one_row_groups(count: int) -> SelectionModel:
+    states = []
+    for i in range(count):
+        label = f"PROJECT  {'../' * i}.agents/skills/"
+        item = dataclasses.replace(_item(f"g{i}-skill"), group=f"g{i}", group_label=label)
+        states.append(ItemState(item, True, True, None))
+    return SelectionModel(_snapshot(states), "Skills", ("skill", "skills"))
+
+
+@pytest.mark.parametrize("viewport_rows", [2, 3, 4, 5])
+def test_a_pinned_header_always_has_a_row_of_its_group_under_it(viewport_rows: int) -> None:
+    """#509 verify V6: the pin replaced the top row, so a one-row group showed a bare header.
+
+    Every untrusted ``.agents`` folder is a one-row group. Walked down to the
+    end and back, no header may sit on top of another or at the window's top
+    with nothing of its own under it, the cursor row is always drawn, and the
+    height never changes.
+    """
+
+    model = _one_row_groups(7)
+    layout = plan_layout(model, 80, 17)
+    layout = type(layout)(80, layout.fixed_rows + viewport_rows, layout.description_rows, 0)
+    assert layout.viewport == viewport_rows
+    heights = set()
+    for step in range(16):
+        frame = _plain(render_panel(model, layout))
+        heights.add(len(frame))
+        body = frame[2 : 2 + viewport_rows]
+        kinds = ["h" if r.startswith(" PROJECT") else "i" if r.strip() else "" for r in body]
+        assert kinds[0] == "h", body
+        for top, below in zip(kinds, kinds[1:], strict=False):
+            assert not (top == "h" and below in ("h", "")), body
+        assert any(f"▸ [✓] g{model.cursor}-skill" in r for r in body), (model.cursor, body)
+        model.move(1 if step < 8 else -1)
+    assert heights == {layout.height}
 
 
 def test_narrow_drops_the_description_column_and_shortens_the_scope_control() -> None:

@@ -456,11 +456,11 @@ _SENSITIVE_BASENAMES = frozenset(
 #
 # ``.aelix`` (ADR-0197 §(i), P2): ``.aelix/extensions/*.py``, ``.aelix/mcp.json``
 # and ``.aelix/agents/*.md`` are EXACTLY the three resources the Project Trust
-# gate exists to guard (``cli/project_trust.py:137-282``), and
+# gate exists to guard (``cli/project_trust.py:148-293``), and
 # ``.aelix/settings.json`` is the user's own configuration. Before this entry an
 # auto-accepting agent could WRITE the project identity / project extension that
 # a LATER run then EXECUTES under an ancestor ``trust.json: true``
-# (``project_trust.py:907-914``, transitivity documented at ``:79-80``) — a
+# (``project_trust.py:1037-1044``, transitivity documented at ``:84-85``) — a
 # write-to-exec escalation that ``--no-approve`` cannot touch, because
 # ``--no-approve`` only stops LOADING such a file, never writing one. Delegation
 # (ADR-0197) makes this reachable by a process nobody is watching and is a HARD
@@ -471,8 +471,15 @@ _SENSITIVE_BASENAMES = frozenset(
 # BEHAVIOUR CHANGE (CHANGELOG + ADR-0197): an INTERACTIVE AUTO_ACCEPT user
 # editing their own ``.aelix/agents/*.md`` now sees the 4-option prompt instead
 # of a silent write. That is the intended trade.
+#
+# ``.agents`` (#509, ADR-0281 D10): ``.agents/skills`` is read as skills — the
+# project's and each parent's up to the git root in a trusted project, and the
+# user's ``~/.agents/skills`` in EVERY project, ungated. Without this entry an
+# ``auto-accept-edits`` child wrote ``.agents/skills/x/SKILL.md`` unasked and the
+# parent's next ``/reload`` put its text in the system prompt; started in
+# ``$HOME``, it planted a skill every later project loads, ``--no-approve`` or not.
 _SENSITIVE_DIR_COMPONENTS = frozenset(
-    {".aelix", ".ssh", ".gnupg", "cron.d", "cron.daily"}
+    {".aelix", ".agents", ".ssh", ".gnupg", "cron.d", "cron.daily"}
 )
 
 

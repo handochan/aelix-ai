@@ -21,6 +21,9 @@ cancelled edit writes nothing or keeps memory and disk agreeing; Windows retries
 a replace a reader blocks; a UTF-8 BOM is accepted), D6 (the deferred apply
 refuses an unreadable file; the warning names it once), D8 (the refusal is one
 of its warnings), D11 (a panel too small for one row refuses typing too).
+Amended 2026-10-31 by ADR-0281 (#509): D9 (the order inside a tier, with the
+`.agents/skills` directories) and D11 (one group per directory in PROJECT too,
+each drawn once).
 Date: 2026-10-31
 Issue: #511 (absorbs #595). Design (owner-approved layout A and §7 decisions
 2–11 and 13) and its triage: `.omc/specs/511-design-2026-10-31.md`; the review
@@ -372,6 +375,13 @@ bundled-first scan, which let the shipped `writing-skills` beat a user's own.
 the catalog's `origins` (by file path); RPC's `_skill_source_info` still reads no
 scope from the skill.
 
+*Amended 2026-10-31 by [ADR-0281](0281-skills-are-also-read-from-the-agent-skills-directories.md) D4 (#509):*
+the tiers are unchanged and each now has an order inside it, pi's: project —
+`.aelix/skills`, then `.agents/skills` in the cwd and each folder above it up to
+the git root, nearest first, then the project file's paths; global —
+`~/.aelix/agent/skills`, then `~/.agents/skills`, then the global file's paths.
+`SkillSource` gains `agents` (the Agent Skills discovery rule).
+
 ### D10. `/reload` rescans; prompts are filtered without a panel
 
 `/reload` rescans the skill and prompt directories and re-reads both lists, as
@@ -390,7 +400,11 @@ loaded on its own to keep the path the path entries need.
 `SelectionList` and `run_selection_panel` over `show_modal`.
 
 - A grouped checklist — PROJECT, GLOBAL (one group per source directory),
-  BUNDLED, THIS RUN — one row per item: `[✓]` / `[ ]`, `(✓)` / `( )` for a
+  BUNDLED, THIS RUN — one row per item *(amended 2026-10-31 by
+  [ADR-0281](0281-skills-are-also-read-from-the-agent-skills-directories.md) D7, #509: PROJECT
+  has one group per source directory too — `.aelix/skills` and each
+  `.agents/skills` — every group is drawn once, its shadowed rows under it,
+  and an untrusted project shows one locked summary row per directory)*: `[✓]` / `[ ]`, `(✓)` / `( )` for a
   locked row, the name (12–24 cells), the description, and a status column
   (`* unsaved`, `off · pending`, `project`, `off`, `locked`, `shadowed`). Below a
   rule, a detail strip: the name and path, the description (2 rows at 70 columns

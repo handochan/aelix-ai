@@ -391,12 +391,21 @@ def _window(model: SelectionModel, viewport: int) -> list[tuple[str, Any]]:
         return [("i", model.cursor)]
     if scroll > 0 and display[scroll][0] == "i" and pos == scroll:
         scroll -= 1
-    model.scroll = scroll
     rows = list(display[scroll : scroll + viewport])
     if scroll > 0 and rows and rows[0][0] == "i":
-        # The cursor's group header stays pinned above the window.
-        index = rows[0][1]
-        rows[0] = ("h", model.visible()[index].item.group_label)
+        if len(rows) > 1 and rows[1][0] == "i":
+            # The top row's group header stays pinned above the rest of its group.
+            index = rows[0][1]
+            rows[0] = ("h", model.visible()[index].item.group_label)
+        else:
+            # The top row is the last of its group in view, so a header pinned
+            # there would stand over the next group's with no row of its own
+            # (#509 verify V6: every untrusted ``.agents`` folder is a one-row
+            # group). Start at that next header instead; the cursor is below
+            # it, and at the end of the list one row is left blank.
+            scroll += 1
+            rows = list(display[scroll : scroll + viewport])
+    model.scroll = scroll
     return rows
 
 
