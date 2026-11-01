@@ -14,7 +14,7 @@ Independent of #121's injection policy: on ANY policy the flag the user typed ha
 to survive one hop.
 
 WHY THE FLAG IS NOT ASSERTED ON ``build_child_argv``'s OWN OUTPUT. It does not
-belong there. ``resolver.profile_to_flags`` (``resolver.py:556-557``) already
+belong there. ``resolver.profile_to_flags`` (``resolver.py:560-561``) already
 owns the one place a profile becomes ``--no-context-files``, so the inherit is a
 CLAMP on the profile that reaches the builder — see
 :func:`~aelix_agents.print_channel.narrow_context_files`. The tests below
@@ -408,7 +408,7 @@ def test_the_extension_reads_the_parents_flag_live() -> None:
     """A callable, not a captured bool — and against a REAL ``Args``.
 
     ``/agents use`` overlays a profile onto the same ``Args`` object
-    ``cli/entry.py``'s harness factory closed over: ``agents/service.py:408``
+    ``cli/entry.py``'s harness factory closed over: ``agents/service.py:411``
     resets it with ``__dict__.update`` and ``apply_profile_to_args`` then sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Both
     halves are exercised below on ONE object, so a captured bool fails in both

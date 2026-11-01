@@ -885,3 +885,16 @@ skill found beside them. `/agents use` rescans through the same loader as launch
 and `/reload` (`_load_skill_catalog`) and hands the harness
 `effective_skills(holder)`, as does its rollback; a profile's `skills:` paths
 are forced on (a lock in `/skill`).
+
+## Note 2026-11-01 — ADR-0283 (#510)
+
+A profile's `tools:` and `builtin_tools: false` are run LOCKS, as the
+`--tools` / `--no-builtin-tools` flags they overlay are: `/agents use` rebuilds
+the harness's `ToolPolicy` from the overlaid `Args` (tagged `profile`, keeping
+the `defaultTools` selection the session applied), so no extension, lazy
+registration or `/reload` widens the profile's set, and `/tool` shows those
+rows locked until `/agents use --none`. The rollback restores the previous set
+and policy through `AgentHarness.restore_active_tools` instead of writing
+`state.active_tool_names`, and the skills catalog it composes is gated on the
+live tool set, as the rebuilder's is.
+

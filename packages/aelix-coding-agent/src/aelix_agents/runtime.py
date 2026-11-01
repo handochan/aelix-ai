@@ -81,6 +81,7 @@ from aelix_agents.child_session import (
     ResumeTarget,
     SpawnReceipt,
     append_records,
+    exclude_tools_refusal,
     resume_damaged,
     session_id_of,
 )
@@ -111,7 +112,7 @@ from aelix_agents.prompt_file import remove_prompt_dir
 from aelix_agents.stream import activity_of, path_for_display, written_paths
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from aelix_coding_agent.subagent_contract import SubagentMode
 
@@ -360,6 +361,12 @@ class SubagentHost:
     active_tools: Callable[[], list[str] | None] = lambda: None
     """``ExtensionContext.get_active_tools``. ``None`` means the harness has not
     materialised its ``None`` sentinel yet, i.e. every built-in is active."""
+    exclude_tools: Callable[[], Sequence[str]] = lambda: ()
+    """The parent's ``--exclude-tools`` patterns (#510, ADR-0283, owner decision
+    6) and the names its ``defaultTools`` keeps off (owner decision B),
+    forwarded to every child as ``--exclude-tools`` so its registry lacks them
+    too — whatever settings the child itself reads. The default — none — is
+    what every child got before #510."""
     context_files: Callable[[], bool] = lambda: True
     """Does the parent load auto-discovered ``AGENTS.md`` project context?
 
@@ -372,7 +379,7 @@ class SubagentHost:
     holds the design argument.
 
     LIVE, like every other field here, and measurably so: ``/agents use`` edits
-    the parent's ``Args`` IN PLACE — ``agents/service.py:408`` resets it with
+    the parent's ``Args`` IN PLACE — ``agents/service.py:411`` resets it with
     ``__dict__.update`` and then ``apply_profile_to_args`` sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Probed
     on one ``Args``: same object id throughout, ``False → True`` on the
@@ -625,7 +632,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1007``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1032``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -754,7 +761,7 @@ class _SubagentRuntimeImpl:
         against the user's own (``agents/service.py:109-110``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a
         per-identity confirmation happened, exactly as
-        ``agents/service.py:355-371`` does for ``/agents use``.
+        ``agents/service.py:356-372`` does for ``/agents use``.
 
         NAME ONLY, and that is a security choice, not a limitation. The
         Protocol parameter is spelled ``name_or_path`` for P3 shape stability,
@@ -1358,6 +1365,9 @@ class _SubagentRuntimeImpl:
         # this run and leaks no registry row (#610 critique M4).
         parent_cwd = self.host.cwd()
         parent_tools = _frozen_tools(self.host.active_tools())
+        # #510 — unguarded like ``active_tools``: a getter that raises costs
+        # this spawn rather than launching a child without the exclusions.
+        parent_exclude = tuple(dict.fromkeys(str(p) for p in self.host.exclude_tools()))
         # UNGUARDED, exactly like ``active_tools`` one line up. A host getter
         # that raises kills this spawn instead of quietly answering "the parent
         # loads context files" — which for THIS flag is the silent
@@ -1375,6 +1385,7 @@ class _SubagentRuntimeImpl:
             parent_tools=parent_tools,
             parent_context_files=parent_context_files,
             parent_thinking=parent_thinking,
+            parent_exclude_tools=parent_exclude,
             # The parent's model and registry, read at the moment the model
             # flags are decided — once. ``PrintChannel`` used to read both again
             # at argv time, after the receipt had named a model (#610 D8). The
@@ -1393,6 +1404,12 @@ class _SubagentRuntimeImpl:
                 return _error_result(resolved, str(exc))
             child_cwd = computed.limits.cwd
         limits = computed.limits
+        # #510 (Codex F03) — the exclusions as the record's reader bounds them,
+        # fresh and after a resume's union: refused here, before a row, a
+        # receipt or a process, rather than written and refused on resume.
+        excluded_refusal = exclude_tools_refusal(limits.exclude_tools)
+        if excluded_refusal is not None:
+            return _error_result(resolved, excluded_refusal)
         # Built here for the same reason: the record builders must stay total.
         limits_record = limits.to_record()
         refusal = self._admit_live()
@@ -1446,6 +1463,7 @@ class _SubagentRuntimeImpl:
             parent_tools=parent_tools,
             parent_context_files=parent_context_files,
             parent_thinking=parent_thinking,
+            parent_exclude_tools=parent_exclude,
             limits=limits,
             dropped_tools=computed.dropped,
             resumes=resume.target.first_key if resume is not None else None,
@@ -1552,7 +1570,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:224``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1397-1398``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1423-1424``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

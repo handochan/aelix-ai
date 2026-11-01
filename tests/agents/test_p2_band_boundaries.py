@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1169``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1174``,
 # ``rpc/rpc_mode.py:1630``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -662,6 +662,20 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # which the hosted catalog's refresher emits. No ``aelix_agents``
         # import, no spawn site, no cap, no consent path, no registry surface.
         "packages/aelix-agent-core/src/aelix_agent_core/runtime/_types.py",
+        # ADR-0283, #510. ``harness/tool_policy.py`` is NEW: the frozen
+        # ``ToolPolicy`` the harness commits every registry and active-set write
+        # through (``_commit_tools``) — ``--exclude-tools`` kept out of the
+        # registry, the tool flags' run locks, and the names the ``defaultTools``
+        # setting turns off — plus pi's ``*`` name matcher. Pure data and string
+        # matching: no ``aelix_agents`` import, no spawn site, no cap, no consent
+        # path, no registry surface. ``harness/core.py`` and
+        # ``runtime/agent_session_runtime.py`` (listed above) changed again to
+        # route the constructor seed, ``set_active_tools``, the ``register_tool``
+        # refresh, ``set_tools`` and ``/reload``'s round trip through it, and to
+        # re-chain a ``before_agent_start`` prompt onto a mid-hook rebuild. A tool
+        # selection created the requirement; delegation did not —
+        # ``test_kernel_has_no_subagent_surface`` still passes.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/tool_policy.py",
     }
 )
 

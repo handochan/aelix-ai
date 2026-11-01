@@ -745,6 +745,86 @@ def test_every_writer_of_the_active_set_rebuilds() -> None:
     )
 
 
+def test_nothing_writes_the_registry_or_the_active_set_outside_commit_tools() -> None:
+    """#510 (ADR-0283, C7; Codex F02) — ONE policy boundary, held by AST over ``packages/``.
+
+    Every write of a harness's ``state.tools`` / ``state.active_tool_names``
+    goes through ``AgentHarness._commit_tools``, which applies the run's tool
+    policy: an assignment (plain, augmented, annotated or to an item), an
+    in-place list mutation, an ``AgentState(...)`` built with tools or an
+    active set, and a replacement of the harness's whole ``_state`` outside its
+    constructor are each a way round it. The constructor is not exempt: it
+    seeds an empty registry and commits the merged tools (F02).
+    """
+
+    import ast
+
+    repo = Path(__file__).resolve().parents[2]
+    fields = {"tools", "active_tool_names"}
+    mutators = {"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"}
+    core = repo / "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py"
+
+    def _is_state(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr in {"state", "_state"}
+
+    def _is_field(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr in fields and _is_state(node.value)
+
+    offenders: list[str] = []
+    for path in sorted((repo / "packages").glob("*/src/**/*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        rel = path.relative_to(repo).as_posix()
+        parents: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+
+        def _function(node: ast.AST, parents: dict[ast.AST, ast.AST] = parents) -> str:
+            current: ast.AST | None = node
+            while current is not None:
+                if isinstance(current, ast.FunctionDef | ast.AsyncFunctionDef):
+                    return current.name
+                current = parents.get(current)
+            return "<module>"
+
+        for node in ast.walk(tree):
+            targets: list[ast.AST] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+                targets = [node.target]
+            for target in targets:
+                base = target.value if isinstance(target, ast.Subscript) else target
+                if _is_field(base) and not (path == core and _function(node) == "_commit_tools"):
+                    offenders.append(f"{rel}:{node.lineno} assigns {ast.unparse(target)}")
+                if (
+                    path == core
+                    and isinstance(target, ast.Attribute)
+                    and target.attr == "_state"
+                    and _function(node) != "__init__"
+                ):
+                    offenders.append(f"{rel}:{node.lineno} replaces the harness state")
+            if isinstance(node, ast.Call):
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr in mutators
+                    and _is_field(func.value)
+                ):
+                    offenders.append(f"{rel}:{node.lineno} mutates {ast.unparse(func.value)}")
+                if (
+                    isinstance(func, ast.Name)
+                    and func.id == "AgentState"
+                    and (len(node.args) > 2 or any(k.arg in fields for k in node.keywords))
+                ):
+                    offenders.append(f"{rel}:{node.lineno} builds AgentState with tools")
+
+    assert offenders == [], (
+        "these write a harness's tool registry or active set around the policy "
+        f"boundary (AgentHarness._commit_tools, ADR-0283): {offenders}"
+    )
+
+
 def test_a_toolless_prompt_gives_no_instruction_it_cannot_follow() -> None:
     """#120 review (HIGH) — the contradiction the first revision shipped.
 

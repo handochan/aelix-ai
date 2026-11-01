@@ -517,7 +517,8 @@ def test_the_launch_wiring_holds_the_apply_gate_over_every_build() -> None:
 
     ``_async_main`` builds ONE ``ApplyGate``; ``_harness_factory`` — the only
     caller of ``_build_harness``, and the factory the runtime and the TUI get —
-    holds it for the whole build; and every ``SkillKind`` is handed that gate.
+    holds it for the whole build; and every ``SkillKind`` — and, since #510,
+    every ``ToolKind`` — is handed that gate (one gate for every selection).
     The behaviour on each side of the wiring is the tests above; this pins the
     wiring itself, which no behavioural test reaches without a whole launch.
     """
@@ -538,7 +539,7 @@ def test_the_launch_wiring_holds_the_apply_gate_over_every_build() -> None:
         and isinstance(node.value.func, ast.Name)
         and node.value.func.id == "ApplyGate"
     ]
-    assert [ast.unparse(g.targets[0]) for g in gates] == ["skill_apply_gate"]
+    assert [ast.unparse(g.targets[0]) for g in gates] == ["selection_apply_gate"]
 
     factory = next(
         node
@@ -549,11 +550,11 @@ def test_the_launch_wiring_holds_the_apply_gate_over_every_build() -> None:
         call
         for with_ in ast.walk(factory)
         if isinstance(with_, ast.With)
-        and [ast.unparse(item.context_expr) for item in with_.items] == ["skill_apply_gate"]
+        and [ast.unparse(item.context_expr) for item in with_.items] == ["selection_apply_gate"]
         for call in ast.walk(with_)
         if isinstance(call, ast.Call) and ast.unparse(call.func) == "_build_harness"
     ]
-    assert len(held) == 1, "_harness_factory must build under `with skill_apply_gate:`"
+    assert len(held) == 1, "_harness_factory must build under `with selection_apply_gate:`"
     builds = [
         node
         for node in ast.walk(main)
@@ -577,16 +578,17 @@ def test_the_launch_wiring_holds_the_apply_gate_over_every_build() -> None:
     assert factories and set(factories) == {"_harness_factory"}
     assert runtime == ["_harness_factory"]
 
-    kinds = [
-        node
-        for node in ast.walk(main)
-        if isinstance(node, ast.Call) and ast.unparse(node.func) == "SkillKind"
-    ]
-    assert kinds, "no SkillKind built at launch"
-    for kind in kinds:
-        assert {kw.arg: ast.unparse(kw.value) for kw in kind.keywords}.get(
-            "gate"
-        ) == "skill_apply_gate", f"SkillKind at line {kind.lineno} is not given the gate"
+    for name in ("SkillKind", "ToolKind"):
+        kinds = [
+            node
+            for node in ast.walk(main)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == name
+        ]
+        assert kinds, f"no {name} built at launch"
+        for kind in kinds:
+            assert {kw.arg: ast.unparse(kw.value) for kw in kind.keywords}.get(
+                "gate"
+            ) == "selection_apply_gate", f"{name} at line {kind.lineno} is not given the gate"
 
 
 def test_the_catalog_is_a_load_result() -> None:
@@ -705,6 +707,9 @@ async def test_a_turn_claimed_before_the_waiter_resumes_keeps_the_apply_waiting(
         "result": load_skill_catalog([SkillSource("global", str(root))], SettingsLists())
     }
     harness = _BusyHarness()
+    # pdf is in use, and the file now says off: something to apply (#510 — a
+    # busy apply with nothing pending defers nothing).
+    harness.skills = [SimpleNamespace(name="pdf")]
     kind = _kind(holder, harness, tmp_path)
     selection = ResourceSelection(
         manager, global_base=str(agent), project_base=str(tmp_path / ".aelix"), project_trusted=True
@@ -737,6 +742,7 @@ async def test_an_apply_waiting_on_a_replaced_harness_lands_on_the_new_one(
         "result": load_skill_catalog([SkillSource("global", str(root))], SettingsLists())
     }
     old, new = _BusyHarness(), _BusyHarness()
+    old.skills = [SimpleNamespace(name="pdf")]  # in use, saved off: pending (see above)
     live = {"h": old}
     kind = SkillKind(
         holder=holder,

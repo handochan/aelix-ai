@@ -11,7 +11,7 @@ measured reasons, all of which make the hook the only correct location:
 1. **``execute()`` is not serialised.** The kernel runs ``before_tool_call`` in
    the SEQUENTIAL prep phase (``loop.py:526-547``, driven from ``:837-872``) but
    ``execute`` under ``asyncio.gather`` (``loop.py:905``), with
-   ``tool_execution = "parallel"`` by default (``harness/core.py:290``). Two
+   ``tool_execution = "parallel"`` by default (``harness/core.py:297``). Two
    modals from one batch collide on ``tui/chrome.py:601``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C.
@@ -117,7 +117,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:939-942``), and NO process is
+into a blocked call the model reads (``extension.py:955-958``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -251,7 +251,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:939-942``) with no process created.
+    # (``extension.py:955-958``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -410,7 +410,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:4726-4728`` explicitly permits a later handler to mutate
+    ``harness/core.py:4908-4910`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -706,7 +706,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:939-942``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:955-958``) and
     the kernel renders it as a model-readable immediate error result
     (``loop.py:534-547``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
@@ -906,7 +906,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1522``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1551``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:4117-4133``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """

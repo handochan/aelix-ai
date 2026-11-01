@@ -315,6 +315,19 @@ async def test_agents_show_renders_resolved_flags(bench: _Bench) -> None:
     assert "You are SCOUT." in out
 
 
+async def test_agents_show_lists_what_a_child_is_started_without(bench: _Bench) -> None:
+    """#510 (owner decision B): the run's ``--exclude-tools`` and what ``defaultTools`` keeps off."""
+
+    from aelix_agent_core.harness.tool_policy import ToolPolicy
+
+    _write_profile(bench.user_agents, "scout", "name: scout\ndescription: d", "You are SCOUT.")
+    bench.harness.set_tool_policy(
+        ToolPolicy(exclude=("gh__*",), saved_off=frozenset({"weather", "gh__x"}))
+    )
+    out = await bench.run("/agents show scout")
+    assert "--exclude-tools 'gh__*,weather'" in out
+
+
 async def test_agents_show_omits_unset_fields(bench: _Bench) -> None:
     """No literal ``None`` in either panel, and no flag for an unset field."""
 
@@ -620,7 +633,7 @@ async def test_failed_use_leaves_args_and_harness_untouched(bench: _Bench) -> No
 
     Regression for the review's proven half-commit. Refusing early is not enough:
     ``harness.set_active_tools`` validates every name against ``state.tools`` and
-    raises (``core.py:4468-4476``) for a typo, an MCP tool whose server never
+    raises (``core.py:4643-4657``) for a typo, an MCP tool whose server never
     connected, or an extension tool under ``inherit_extensions: false`` — none of
     which profile PARSING can catch. Without the rollback the raise left
     ``parsed.tools`` carrying the rejected names and the prompt already swapped,

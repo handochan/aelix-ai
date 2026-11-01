@@ -91,12 +91,12 @@ class Topic:
 #: vocabulary (#101 names `extension`, `extension-api`, `tools`, `skills`,
 #: `security`), and the words a user reaches for that are not the filename.
 #:
-#: `tools` maps to the extension-authoring guide deliberately: that guide's
-#: "Registering a tool" section is the only document in the repo about tools as
-#: a thing you can add. The built-in tool LIST is not documented in a guide at
-#: all — it lives in `aelix --help` under `--tools` — so a `tools` topic
-#: promising otherwise would be the invented document this module refuses to
-#: create.
+#: `tools` mapped to the extension-authoring guide while that guide's
+#: "Registering a tool" section was the only document about tools. #510 wrote
+#: one — the built-in tools, `--exclude-tools`, the tool flags, `/tool` and
+#: `defaultTools` — and its file is `tools.md`, so the name now finds it by
+#: itself; `tool`, `exclude-tools` and `default-tools` point there too. Writing
+#: a tool is still `extension`, `extension-api` and `plugin`.
 #:
 #: `auth` and `login` follow the text they name. They meant the providers guide
 #: while it held "Providing an API key"; #490 moved that section (the four key
@@ -109,8 +109,10 @@ ALIASES: dict[str, str] = {
     "extension-api": "extension-authoring",
     "extensions": "extension-authoring",
     "extension-authoring": "extension-authoring",
-    "tools": "extension-authoring",
     "plugin": "extension-authoring",
+    "tool": "tools",
+    "exclude-tools": "tools",
+    "default-tools": "tools",
     "agents": "agent-profiles",
     "agent": "agent-profiles",
     "profiles": "agent-profiles",

@@ -179,6 +179,7 @@ The handle exposes more than tools and commands. The most useful members:
 | `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). A user sets one on the command line — see [Flags](#flags). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
+| `set_active_tools(names)` / `get_all_tools()` | Choose which registered tools are on. It can only NARROW what the run allows: a tool `--exclude-tools` removed, one `--no-tools` / `--tools` / `--no-builtin-tools` or an agent profile locks off, or one the user turned off in `defaultTools` (`/tool`) is left off without an error; an unknown name raises. See [tools.md](tools.md). |
 | `append_entry(custom_type, data=None)` | Record a `CustomEntry` in the session file. The model never sees it. Name it with your own `custom_type` (the `aelix.` namespace is for first-party records) and keep `data` to JSON values: lists rather than tuples, string keys, finite floats. See ADR-0242. |
 
 `on(...)` subscribes to the harness hook events (the same lifecycle the core

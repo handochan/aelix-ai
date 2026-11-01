@@ -678,7 +678,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:285-395``), which blocks for the whole
+    (``cli/entry.py:294-404``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -701,7 +701,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2114-2131``) nor child (``modes/print_mode.py:234-293``)
+    (``tui/shell.py:2137-2154``) nor child (``modes/print_mode.py:234-293``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -1938,7 +1938,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
-    which, since ``agents/resolver.py:617-618`` makes the whole task the initial
+    which, since ``agents/resolver.py:621-622`` makes the whole task the initial
     prompt, is the only thing a subagent ever does.
 
     Driven through a HELPER parent so the test process is not the one killed.
@@ -2176,7 +2176,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1260-1264``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1285-1289``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2228,7 +2228,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1397``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1423``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
@@ -2764,7 +2764,7 @@ def test_orchestrator_and_leaf_produce_different_depth(
 ) -> None:
     """Closes finding I3 — ``role`` is arithmetically INERT at MAX == 1.
 
-    Both branches yield 1 there, and ``agents/profile.py:225`` defaults ``role``
+    Both branches yield 1 there, and ``agents/profile.py:232`` defaults ``role``
     to ``"leaf"``, so the shipped test would pass vacuously. Raising the cap is
     what makes the two branches distinguishable, and it is exactly what P3 does.
     """
@@ -2784,7 +2784,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:340-348``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:349-357``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"
@@ -2972,7 +2972,7 @@ async def test_nested_project_extension_not_executed_in_relocated_child(
     """§(g) clause 2, against a REAL child.
 
     ``inherit_extensions: true`` on purpose: with the shipped default
-    (``False``, ``agents/profile.py:204``) ``profile_to_flags`` already
+    (``False``, ``agents/profile.py:211``) ``profile_to_flags`` already
     emits ``--no-extensions`` and NO project extension is discovered at all, so
     the trust flag would be untestable. This is the one profile shape where
     clause 2 is the thing standing between the child and the vendored code —

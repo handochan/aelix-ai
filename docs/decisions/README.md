@@ -36,6 +36,25 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0283 — Tools are turned on and off through one policy: `--exclude-tools`, the tool flags as locks, `defaultTools` and the `/tool` panel](0283-tools-are-turned-on-and-off-through-one-policy.md)
+  (Accepted 2026-11-01; #510). `ToolPolicy` holds the run's tool rules and
+  `AgentHarness._commit_tools` is the one writer of the registry and the active set — the
+  constructor seed, `set_active_tools`, the `register_tool` refresh, `set_tools`, `/reload`'s
+  round trip and `/agents use` all go through it, held by an AST gate over `packages/`.
+  `--exclude-tools` / `-xt` (pi's `*` matcher, repeatable, unknown entries warned) removes tools
+  from the registry and beats `--tools`. `--no-tools`, `--no-builtin-tools`, `--tools` and a
+  profile's `tools:` are run locks no extension or `/reload` widens (ends ADR-0179's union under
+  `--tools`; `--no-tools` + `/reload` no longer turns tools on). `defaultTools` is pi's grammar
+  with every tool on by default: plain names replace the built-ins only, `±` reach any tool,
+  `[]` is "no built-ins" and absent is "all", and the editor moves one tool at a time. `/tool`
+  (alias `/tools`) is the ADR-0279 panel over it — lock tags, server-off and failed-extension
+  placeholders, a delta apply from the next request with `resources_update["tools"]`. RPC
+  `tools/set_active` refuses an excluded or locked-off name with the reason and turns a
+  saved-off one on for the run. Delegated children get the parent's `-xt` and the tools its
+  `defaultTools` keeps off on both channels (recorded in `ChildLimits`, resumed as a union,
+  bounded before admission). The editor reads raw entries as the launch does and refuses a
+  global save that would move another tool here or elsewhere. The shared panel pieces #25
+  reuses are built here. Amends ADR-0279 D15/D16, ADR-0179, ADR-0196.
 - [0282 — An MCP server can be turned off in `mcp.json`, and every surface names its state in one vocabulary](0282-an-mcp-server-can-be-turned-off-in-mcp-json-and-every-surface-names-its-state-in-one-vocabulary.md)
   (Accepted 2026-10-31; #512). `"enabled": false` on an `mcp.json` entry keeps it listed and
   unstarted — no connection, no tools; a non-boolean `enabled` is warned and the entry skipped

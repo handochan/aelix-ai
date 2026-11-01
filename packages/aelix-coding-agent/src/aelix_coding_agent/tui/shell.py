@@ -119,6 +119,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
     from aelix_coding_agent.core.skill_selection import SkillControl
+    from aelix_coding_agent.core.tool_selection import ToolControl
     from aelix_coding_agent.extensions.api import Extension
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
@@ -518,6 +519,7 @@ async def run_tui(
     install_signal_handlers: bool = True,
     read_only: bool = False,
     skill_control: SkillControl | None = None,
+    tool_control: ToolControl | None = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -589,6 +591,9 @@ async def run_tui(
         it over the skills holder and the held SettingsManager). Wires ``/skill``
         to the on/off panel and lets ``/skill:<name>`` say a skill is off rather
         than "Unknown command". ``None`` (tests) keeps ``/skill`` read-only.
+    :param tool_control: #510 — the session's tool selection (entry.py builds it
+        over the live harness and the held SettingsManager). Wires ``/tool`` and
+        ``/tools`` to the on/off panel; ``None`` (tests) keeps the read-only list.
     """
 
     # WP-8 — normalize the optional extensions list to a stable value so the
@@ -1678,6 +1683,24 @@ async def run_tui(
             render_width_cap=lambda: render_width_cap["value"],
         )
 
+    async def _open_tool_panel() -> None:
+        # #510 (ADR-0283) — /tool (and /tools): the same panel over the tools
+        # kind. Locked rows say why (an exclusion, a flag, a profile, a server
+        # that is off); Enter saves to ``defaultTools`` and applies the change
+        # from the next model request.
+        from aelix_coding_agent.tui.selection_panel import run_selection_panel
+
+        assert tool_control is not None
+        await run_selection_panel(
+            command_ctx,
+            tool_control.selection,
+            tool_control.kind,
+            title="Tools",
+            noun=("tool", "tools"),
+            effect_note="The model gets the new tool list from your next message.",
+            render_width_cap=lambda: render_width_cap["value"],
+        )
+
     async def _open_statusline() -> None:
         # WP-2 (ADR-0160) — /statusline: a multi-checkbox picker over the footer
         # segment registry → persist the enabled-id set to the coding-agent-owned
@@ -1897,7 +1920,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4660``) always passes one, so this is
+            # production caller (``entry.py:4733``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2277,6 +2300,7 @@ async def run_tui(
         settings_action=_open_settings,
         scoped_models_action=_open_scoped_models,
         skill_panel=_open_skill_panel if skill_control is not None else None,
+        tool_panel=_open_tool_panel if tool_control is not None else None,
         statusline_action=_open_statusline,
         login_action=_open_login,
         trust_action=_open_trust,
@@ -2357,7 +2381,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5499`` and the hook-fail one ``:5499``)
+    # the abort close-out ``core.py:5681`` and the hook-fail one ``:5681``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2495,7 +2519,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2783``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2814``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2503,7 +2527,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2828``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2860``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2818,11 +2842,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2049``), so the refresh below is
+                # ``_state.messages`` (``core.py:2080``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1695``), so this never discards a figure a running
+                # ``core.py:1726``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -2900,7 +2924,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5559-5560`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5741-5742`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2928,7 +2952,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2828``).
+        # the model is already swapped in (``core.py:2860``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3851,11 +3875,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1894``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1934``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1877`` already printed at startup, and one that
+    #       what ``entry.py:1917`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3872,7 +3896,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4528-4529``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4710-4711``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4363,7 +4387,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4591-4607 and
+            # Two audiences, discriminated exactly as entry.py:4664-4680 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

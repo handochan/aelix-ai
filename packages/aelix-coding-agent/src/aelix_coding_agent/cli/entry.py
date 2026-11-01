@@ -43,6 +43,7 @@ from aelix_agent_core.harness.core import (
     AgentHarnessError,
     AgentHarnessOptions,
 )
+from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
     create_agent_session_runtime,
@@ -102,6 +103,14 @@ from aelix_coding_agent.core.skill_selection import (
     SkillSource,
     effective_skills,
     load_skill_catalog,
+)
+from aelix_coding_agent.core.tool_selection import (
+    ToolControl,
+    ToolKind,
+    build_tool_policy,
+    default_tools_lists,
+    launch_tool_warnings,
+    resolve_saved_off,
 )
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
@@ -1759,6 +1768,37 @@ def _visible_tools(
     return [t for t in tools if t.name in allowed]
 
 
+def _policy_visible_tools(
+    tools: Sequence[AgentTool], active: Sequence[str] | None, policy: ToolPolicy
+) -> list[AgentTool]:
+    """:func:`_visible_tools`, less what *policy* keeps off (#510) — the first build's set."""
+
+    return [
+        t
+        for t in _visible_tools(tools, active)
+        if policy.excluded(t.name) is None and policy.allows(t.name)
+    ]
+
+
+def _tool_policy(
+    parsed: Args,
+    settings_manager: SettingsManager | None,
+    project_trusted: bool,
+    *,
+    saved_off: frozenset[str] | None = None,
+) -> ToolPolicy:
+    """The run's :class:`ToolPolicy` (#510, ADR-0283): the flags, then ``defaultTools``.
+
+    ``saved_off`` given (``/agents use``) keeps the selection the session
+    applied; otherwise both files are evaluated as this process loaded them.
+    """
+
+    if saved_off is None:
+        lists = default_tools_lists(settings_manager, project_trusted=project_trusted)
+        saved_off = resolve_saved_off(lists.global_list, lists.project_list, ALL_TOOL_NAMES)
+    return build_tool_policy(parsed, saved_off=saved_off, builtin=ALL_TOOL_NAMES)
+
+
 def _resolve_system_prompt(
     parsed: Args, cwd: str, *, tools: Sequence[AgentTool], project_trusted: bool = False
 ) -> str:
@@ -1870,7 +1910,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:677-678``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:707-708``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     from .system_prompt_files import discover_system_prompt_file
 
@@ -2016,6 +2056,13 @@ async def _build_harness_options(
     # extension-tool union. ``_resolve_active_tools`` still applies on first build /
     # /new / /fork / /resume.
     active_tool_names = None if on_reload else _resolve_active_tools(parsed)
+    # #510 (ADR-0283) — the run's tool policy: ``--exclude-tools``, the locks
+    # the other tool flags (or a profile's overlay of them) set, and what the
+    # ``defaultTools`` setting turns off, read from both files as this process
+    # loaded them (``/reload`` re-read them first). The harness commits every
+    # registry and active-set change through it, so this build, every
+    # ``register_tool``, an MCP attach and ``/reload`` all obey the same rules.
+    tool_policy = _tool_policy(parsed, settings_manager, project_trusted)
     # Issue #120 — the FIRST build's tool list, which is a floor and not the
     # final answer. Extensions have not registered yet here (``agents_ext`` and
     # ``StatusExtension`` are appended ~40 lines below, and on-disk extensions
@@ -2024,10 +2071,11 @@ async def _build_harness_options(
     # post-registration rebuild in :func:`_harness_factory` is what makes it
     # exact; the ``you may have access to other custom tools`` sentence in the
     # prompt is what makes it honest in the window before that runs.
+    first_tools = _policy_visible_tools(tools, active_tool_names, tool_policy)
     system_prompt = _resolve_system_prompt(
         parsed,
         cwd,
-        tools=_visible_tools(tools, active_tool_names),
+        tools=first_tools,
         project_trusted=project_trusted,
     )
     # Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like
@@ -2091,7 +2139,7 @@ async def _build_harness_options(
                 # A CALLABLE over the RESOLVED decision, never
                 # ``ctx.is_project_trusted()``: that getter's unbound default is
                 # ``True`` (``extensions/api.py`` ``is_project_trusted or
-                # (lambda: True)`` / ``harness/core.py:308``), so a harness that
+                # (lambda: True)`` / ``harness/core.py:315``), so a harness that
                 # nobody told about trust reports itself trusted.
                 project_trusted=lambda: project_trusted,
                 # The SAME holder ``/extension``'s viewer reads, by reference, so
@@ -2237,12 +2285,13 @@ async def _build_harness_options(
         extensions=loaded.extensions,
         runtime=loaded.runtime,
         active_tool_names=active_tool_names,
+        tool_policy=tool_policy,
         # ADR-0196 — ``--thinking <level>`` (and therefore an agent profile's
         # ``thinking:``) was PARSED BUT UNCONSUMED: ``args.py`` was the only
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:275 / :713-714), so wiring it
+        # ``AgentState.thinking_level``, core.py:276 / :750-751), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -2269,7 +2318,14 @@ async def _build_harness_options(
     )
 
     options.append_system_prompt = _resolve_append_chunks(
-        parsed, cwd, skills=skills, project_trusted=project_trusted
+        parsed,
+        cwd,
+        skills=skills,
+        project_trusted=project_trusted,
+        # #510 — the first build knows the built-ins the policy leaves on, and
+        # ``read`` is one of them: an excluded or saved-off ``read`` must not
+        # have the catalog tell the model to use it (pi #10635's lesson).
+        live_tool_names=[t.name for t in first_tools],
     )
 
     # Issue #120 — the callback that keeps the prompt's tool list true for the
@@ -3221,6 +3277,10 @@ async def _async_main(argv: list[str]) -> int:
                 # and, on a reasoning-mandatory model, died on its first
                 # request (``400 Reasoning is mandatory``).
                 thinking=lambda: _live_thinking_of(session_host),
+                # #510 — the parent's ``--exclude-tools`` (owner decision 6) and
+                # what its ``defaultTools`` keeps off (owner decision B), read
+                # LIVE off the harness's policy: ``/tool`` and RPC move it.
+                exclude_tools=lambda: _live_child_exclusions(session_host, parsed),
             )
 
     # === Agent profile identity (ADR-0196) ===================================
@@ -3764,7 +3824,10 @@ async def _async_main(argv: list[str]) -> int:
         "result": _load_skill_catalog(parsed, cwd, project_trusted, settings_manager)
     }
     # #511 (Codex X2) — held by the harness factory for each build; see there.
-    skill_apply_gate = ApplyGate()
+    # #510 — one gate for every selection: skills and tools are built in the
+    # same factory pass, so a ``/tool`` apply waits for a build just as a
+    # ``/skill`` one does (ADR-0283).
+    selection_apply_gate = ApplyGate()
     for diag in skills_holder["result"].diagnostics:
         print(
             f"Warning: skill load: {diag.message} ({diag.path})",
@@ -3993,7 +4056,7 @@ async def _async_main(argv: list[str]) -> int:
             opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:769``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:806``, AFTER
         # the registry merge at ``:564``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What
@@ -4143,7 +4206,7 @@ async def _async_main(argv: list[str]) -> int:
     ) -> AgentHarness:
         """Every harness build — launch, /new, /fork, /resume, /import, /reload, RPC.
 
-        #511 (Codex X2): held under ``skill_apply_gate`` for the WHOLE build. The
+        #511 (Codex X2): held under ``selection_apply_gate`` for the WHOLE build. The
         build reads the skills holder, installs skills on the candidate and then
         awaits; a deferred ``/skill`` apply landing in between would leave the
         holder, the outgoing harness and the candidate disagreeing. While the
@@ -4151,7 +4214,7 @@ async def _async_main(argv: list[str]) -> int:
         right after this returns, so the apply then lands on it.
         """
 
-        with skill_apply_gate:
+        with selection_apply_gate:
             return await _build_harness(new_session, reload_seed=reload_seed)
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
@@ -4390,6 +4453,16 @@ async def _async_main(argv: list[str]) -> int:
     # that one door open onto the exact defect.
     runtime.set_writer_lock(session_lock)
     session_host["runtime"] = runtime
+    # #510 (ADR-0283, ADR-0279 D8) — once per launch, now that the registry is
+    # whole: an ``--exclude-tools`` entry that matches nothing, a ``--tools``
+    # name an exclusion removes, and the ``defaultTools`` entries that are
+    # malformed or name no loaded tool.
+    for warning in launch_tool_warnings(
+        runtime.harness,
+        parsed,
+        default_tools_lists(settings_manager, project_trusted=project_trusted),
+    ):
+        print(f"Warning: {warning}", file=sys.stderr)
 
     # === Unrunnable-startup-model gate (#98) ===
     # Placed AFTER the harness build so ``bind_model_registry`` has replayed the
@@ -4694,13 +4767,35 @@ async def _async_main(argv: list[str]) -> int:
                     project_skills_dir=str(Path(cwd) / CONFIG_DIR_NAME / "skills"),
                     no_skills=lambda: bool(parsed.no_skills),
                     skill_commands_enabled=settings_manager.get_enable_skill_commands,
-                    gate=skill_apply_gate,
+                    gate=selection_apply_gate,
+                ),
+            )
+            # #510 (ADR-0283) — /tool's panel: the same service over the
+            # ``defaultTools`` lists, and the tools kind over the live harness
+            # (its registry, the tools its policy excluded and its locks), the
+            # MCP servers #512 names the state of, and the extensions that did
+            # not load.
+            from aelix_coding_agent.core.mcp_servers import runtime_statuses
+
+            tool_control = ToolControl(
+                selection=ResourceSelection(
+                    settings_manager,
+                    global_base=global_base,
+                    project_base=project_base,
+                    project_trusted=project_trusted,
+                ),
+                kind=ToolKind(
+                    harness=lambda: runtime.harness,
+                    gate=selection_apply_gate,
+                    mcp_statuses=lambda: runtime_statuses(mcp_manager),
+                    extension_errors=lambda: list(discovered_extension_errors),
                 ),
             )
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
                 skill_control=skill_control,
+                tool_control=tool_control,
                 prompt_file_paths=lambda: [
                     path
                     for path in (
@@ -5046,6 +5141,20 @@ def _live_session_of(host: dict[str, Any]) -> Session | None:
     if runtime is None:
         return None
     return runtime.session
+
+
+def _live_child_exclusions(host: dict[str, Any], parsed: Args) -> tuple[str, ...]:
+    """#510 — a delegated child's ``--exclude-tools``: :func:`delegated_exclusions` of the
+    runtime host's CURRENT harness policy, or ``parsed.exclude_tools`` before it exists.
+    """
+
+    from aelix_coding_agent.core.tool_selection import delegated_exclusions  # noqa: PLC0415
+
+    runtime = host.get("runtime")
+    policy = getattr(runtime.harness, "tool_policy", None) if runtime is not None else None
+    if not isinstance(policy, ToolPolicy):
+        return tuple(dict.fromkeys(parsed.exclude_tools))
+    return delegated_exclusions(policy)
 
 
 def _live_model_of(host: dict[str, Any]) -> Model | None:

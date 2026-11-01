@@ -29,7 +29,7 @@ WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 ``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:526-547``, driven
 from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
 (``loop.py:905``) with ``tool_execution = "parallel"`` by default
-(``harness/core.py:290``). Two modals from one batch would collide on
+(``harness/core.py:297``). Two modals from one batch would collide on
 ``tui/chrome.py:601``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
@@ -291,7 +291,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:1209-1221``, this module's own ``_grant`` — is
+    constructor — ``extension.py:1225-1237``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -385,7 +385,7 @@ def _sanitize_field(value: object, *, limit: int | None = DIALOG_FIELD_CHARS) ->
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:591-641``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:610-660``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
@@ -921,7 +921,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:843-846``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:850-853``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The

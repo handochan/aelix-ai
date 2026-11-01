@@ -67,7 +67,7 @@ model had no legal value to pass — delegation was 0% usable out of the box.
 
 It is deliberately NOT a security boundary: bundled files ship with the code, so
 they are exactly as trusted as the code, and every gate in the tree tests the
-literal ``"project"`` (``runtime.py:779``, ``consent.py:556``, ``posture.py:222``,
+literal ``"project"`` (``runtime.py:786``, ``consent.py:556``, ``posture.py:222``,
 ``profile.py``'s ``extensions:`` cut, ``discovery.py:357``). ``"bundled"`` falls
 through all of them the same way ``"user"`` does, which is the intended reading."""
 
@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4578-4595``."""
+``cli/entry.py:4651-4668``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -184,9 +184,16 @@ class AgentProfile:
     builtin_tools: bool = True
     """``false`` emits ``--no-builtin-tools`` (extension/MCP tools survive)."""
 
+    exclude_tools: tuple[str, ...] = ()
+    """NOT read from the frontmatter: the PARENT's ``--exclude-tools`` patterns,
+    set on a delegated child's profile by ``aelix_agents.print_channel
+    .narrow_tools`` (#510, ADR-0283) and emitted as ``--exclude-tools`` by
+    ``resolver.profile_to_flags`` — the one place a profile becomes flags, so
+    both channels and ``/agents show`` carry it alike."""
+
     skills: tuple[str, ...] = ()
     """ABSOLUTE paths after parse. aelix's ``--skill`` takes a PATH, not a name
-    (``cli/entry.py:1467-1510``) — unlike pi. Relative entries resolve against the
+    (``cli/entry.py:1476-1519``) — unlike pi. Relative entries resolve against the
     PROFILE's own directory, never cwd, so a profile is portable across cwds."""
 
     inherit_skills: bool = True
@@ -205,7 +212,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:2033-2035``)."""
+    paths still load (``cli/entry.py:2081-2083``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's
@@ -218,7 +225,7 @@ class AgentProfile:
     """Validated against ``cli.args.VALID_THINKING_LEVELS``.
 
     DELIBERATE ASYMMETRY with the CLI flag: ``--thinking bogus`` warns and drops
-    the value (``args.py:659-676``) because a typo must not abort a session
+    the value (``args.py:694-711``) because a typo must not abort a session
     already being launched; a profile is a checked-in file read before anything
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 
@@ -629,11 +636,11 @@ def _parse_path_list(
     """Resolve ``skills:`` / ``extensions:`` entries to ABSOLUTE paths.
 
     aelix's ``--skill`` and ``--extension``/``-e`` take PATHS, not names
-    (``cli/entry.py:1467-1510``, ``args.py``) — a divergence from pi that the spec
+    (``cli/entry.py:1476-1519``, ``args.py``) — a divergence from pi that the spec
     originally got wrong. Relative entries resolve against ``profile_dir``, NOT
     cwd: a profile must mean the same thing from any working directory, and an
     absolute result round-trips unchanged through ``_resolve_skill_tiers``'
-    cwd-relative logic (``entry.py:1507-1513``).
+    cwd-relative logic (``entry.py:1516-1522``).
 
     A non-existent path is a WARNING here — ``/agents list`` must never break —
     and ``discovery.resolve_profile`` escalates it to fatal, because running

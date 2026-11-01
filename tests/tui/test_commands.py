@@ -279,7 +279,8 @@ def test_sprint_a_registry_set() -> None:
     # /skill, the on/off panel, with /skills its alias); ADR-0196 /agents
     # (after skills — the same shape of markdown resource, carrying identity
     # rather than a capability); #112 /trust (after login — both answer a
-    # "who do I let act here" question, and pi groups them the same way).
+    # "who do I let act here" question, and pi groups them the same way); #510
+    # renamed /tools to /tool, the on/off panel, with /tools its alias.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -295,7 +296,7 @@ def test_sprint_a_registry_set() -> None:
         "session",
         "name",
         "thinking",
-        "tools",
+        "tool",
         "skill",
         "agents",
         "hooks",
@@ -711,7 +712,7 @@ def test_tools_degrades_when_empty() -> None:
 #
 # ``--no-tools`` leaves every tool REGISTERED (``_state.tools``) but sets the
 # active filter to ``[]``, and the turn sends only the active set to the model
-# (``harness/core.py:5248-5254``). Reporting the registered list therefore claimed
+# (``harness/core.py:5430-5436``). Reporting the registered list therefore claimed
 # tools the model provably did not have. Both readouts report the ACTIVE set.
 
 
@@ -857,7 +858,7 @@ def test_handlers_degrade_on_bare_fake_harness() -> None:
 
 def test_help_lists_new_commands() -> None:
     out = _render(build_help_renderable(BUILTIN_COMMANDS))
-    for name in ("model", "clear", "compact", "cost", "tools", "mode"):
+    for name in ("model", "clear", "compact", "cost", "tool", "mode"):
         assert f"/{name}" in out
 
 

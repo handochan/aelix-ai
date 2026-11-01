@@ -97,6 +97,7 @@ from aelix_agent_core.harness.hooks import (
     make_tool_call_event,
     make_tool_result_event,
 )
+from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_agent_core.loop import agent_loop
 from aelix_agent_core.types import (
     AfterToolCallContext,
@@ -274,6 +275,12 @@ class AgentHarnessOptions:
     resources: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.resources. Pi: types.ts:565
     thinking_level: str | None = None  # Sprint 3b wired — flows into AgentState.thinking_level. Pi: types.ts:~576
     active_tool_names: list[str] | None = None  # Sprint 3b wired — flows via F-9 validator path. Pi: types.ts:~577
+    # #510 (ADR-0283) — the run's tool rules: what may be registered and what may
+    # be active. Every registry and active-set write goes through
+    # :meth:`AgentHarness._commit_tools`, which applies it. ``None`` allows
+    # everything, which is what an SDK caller and every test that builds a
+    # harness directly get.
+    tool_policy: ToolPolicy | None = None
     # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571. A raise
     # fails the turn as AgentHarnessError("auth"), unless the exception carries a
     # non-empty str ``retry_reason`` (#379, ADR-0251 §4): that one becomes an error
@@ -608,6 +615,29 @@ class _SetupFailure:
     ended: bool = False
 
 
+def _rechain_system_prompt(returned: str, before: str, live: str) -> str:
+    """The prompt a turn runs with when ``before_agent_start`` returned one (#510, Codex F05).
+
+    The handlers chain from *before*, the prompt when the event was built; a
+    handler that changes the tools meanwhile (a ``set_active_tools``, the
+    ``agent`` tool's re-registration) rebuilds the LIVE prompt. Text they ADDED
+    — after *before*, before it, or both (Codex F02) — is put around *live*
+    instead, so the prompt and ``_run``'s tool snapshot agree; *before* is found
+    inside only when it occurs once. A prompt replaced outright is kept as it
+    was returned: its tool list is its own (ADR-0283 Limits).
+    """
+
+    if live == before or not before:
+        return returned
+    if returned.count(before) == 1:
+        return returned.replace(before, live, 1)
+    if returned.startswith(before):
+        return live + returned[len(before) :]
+    if returned.endswith(before):
+        return returned[: len(returned) - len(before)] + live
+    return returned
+
+
 class AgentHarness:
     """Hook-aware orchestrator built on top of :func:`agent_loop`.
 
@@ -687,12 +717,19 @@ class AgentHarness:
         # :meth:`_rebuild_system_prompt`.
         self._system_prompt_rebuilder = options.system_prompt_rebuilder
 
+        # #510 (ADR-0283, Codex F02) — the registry is SEEDED EMPTY and the
+        # merged tools are committed through the policy, so an excluded tool
+        # never enters it, not even for the length of this constructor. The
+        # prompt is not rebuilt here (it never was at this point); the first
+        # rebuild is the active-set seed below or the factory's.
+        self._tool_policy: ToolPolicy = options.tool_policy or ToolPolicy()
+        self._excluded_tools: dict[str, tuple[AgentTool, str]] = {}
         self._state = AgentState(
             system_prompt=base_system_prompt,
             model=options.model,
-            tools=list(merged_tools),
             messages=list(options.initial_messages),
         )
+        self._commit_tools(list(merged_tools), None, rebuild=False)
         # Sprint 4a — populate ``state.session_id`` from the attached
         # Session's metadata when present (Pi parity:
         # ``before_provider_request`` uses this). The metadata is stored
@@ -991,9 +1028,10 @@ class AgentHarness:
            ``register_tool`` calls ``refresh_tools()`` with NO options — so a
            newly-registered tool is auto-activated *even when an explicit
            active filter already exists* (added on top of it).
-        4. Assign ``_state.active_tool_names`` **directly** (NOT via
+        4. Commit both through :meth:`_commit_tools` (NOT via
            :meth:`_action_set_active_tools` / :meth:`set_tools`, whose
-           validators raise on stale names mid-rebuild).
+           validators raise on stale names mid-rebuild), which applies the
+           run's :class:`ToolPolicy` (#510).
 
         None→explicit-list materialization decision: pi always materializes
         the active set via ``setActiveToolsByName([...])``. We mirror that —
@@ -1007,35 +1045,25 @@ class AgentHarness:
         previous_registry_names = {tool.name for tool in self._state.tools}
         previous_active_names = self._action_get_active_tools()
 
-        self._state.tools = self._rebuild_tool_registry()
-        current_registry_names = {tool.name for tool in self._state.tools}
+        registry = self._rebuild_tool_registry()
 
         # pi: nextActiveToolNames = [...previousActiveToolNames], then push
         # every registry name not present before the rebuild (auto-activate).
         next_active = list(previous_active_names)
-        for tool in self._state.tools:
+        for tool in registry:
             if tool.name not in previous_registry_names:
                 next_active.append(tool.name)
 
-        # pi: filter(isAllowedTool) + new Set(...) — keep only names still in
-        # the registry, dedup while preserving order.
-        seen: set[str] = set()
-        materialized: list[str] = []
-        for name in next_active:
-            if name in current_registry_names and name not in seen:
-                seen.add(name)
-                materialized.append(name)
-
-        # Direct assignment — _action_set_active_tools/set_tools validators
-        # would raise on any stale name that slipped through.
-        self._state.active_tool_names = materialized
-        # Issue #120 — pi reaches its rebuild for free here, because
-        # ``_refreshToolRegistry`` ENDS in ``setActiveToolsByName``
-        # (``agent-session.ts:2553``). The direct assignment above is the whole
-        # reason aelix does not, so the call is explicit. Without it a
-        # ``register_tool`` at runtime auto-activates a tool the prompt has
-        # never heard of — which is issue #120's third completion criterion.
-        self._rebuild_system_prompt()
+        # pi: filter(isAllowedTool) + new Set(...). ``_commit_tools`` keeps
+        # only names still in the registry, dedups in order, and — #510 — drops
+        # an excluded tool from the registry and a locked-off or saved-off one
+        # from the set, so a ``register_tool`` (the ``agent`` tool's
+        # re-registration, a lazy pack) cannot widen what the run allows. It
+        # assigns directly and never raises on a stale name, and it ends in the
+        # prompt rebuild pi reaches through ``setActiveToolsByName``
+        # (``agent-session.ts:2553``, #120): without it a ``register_tool`` at
+        # runtime auto-activates a tool the prompt has never heard of.
+        self._commit_tools(registry, next_active)
 
     # === Public properties ===
 
@@ -1519,6 +1547,7 @@ class AgentHarness:
                     await self._emit_queue_update()
                 # Fire the before_agent_start hook so extensions can inject
                 # messages or rewrite the system prompt before the first turn.
+                prompt_before_hook = self._state.system_prompt
                 injected = await self._emit_before_agent_start(text)
                 prompts: list[AgentMessage] = []
                 if injected and injected.messages:
@@ -1526,7 +1555,9 @@ class AgentHarness:
                 prompts.extend(drained_next)
                 prompts.append(user_msg)
                 system_prompt = (
-                    injected.system_prompt
+                    _rechain_system_prompt(
+                        injected.system_prompt, prompt_before_hook, self._state.system_prompt
+                    )
                     if injected and injected.system_prompt is not None
                     else self._state.system_prompt
                 )
@@ -2933,9 +2964,145 @@ class AgentHarness:
         The active-set is a per-process runtime concept in Pi — restoration
         is via ``options.activeToolNames`` on harness construction, not
         session replay.
+
+        #510 (ADR-0283): the run's :class:`ToolPolicy` applies — a name the
+        policy keeps off (excluded, locked off, saved off) is dropped, never
+        raised on; an unknown name still raises (F-9).
         """
 
         self._action_set_active_tools(tool_names)
+
+    # === #510 (ADR-0283) — the tool policy ===================================
+
+    @property
+    def tool_policy(self) -> ToolPolicy:
+        """The rules every registry and active-set change is committed under."""
+
+        return self._tool_policy
+
+    def excluded_tools(self) -> list[tuple[AgentTool, str]]:
+        """The tools the policy keeps out of the registry, with why, in registration order."""
+
+        return list(self._excluded_tools.values())
+
+    def tool_refusal(self, name: str) -> str | None:
+        """Why *name* cannot be on at all this run (excluded, locked off), or ``None`` (RPC's)."""
+
+        return self._tool_policy.run_refusal(name)
+
+    def set_tool_policy(
+        self,
+        policy: ToolPolicy,
+        *,
+        turn_on: tuple[str, ...] | list[str] = (),
+        strict: bool = False,
+    ) -> None:
+        """Install *policy*, then commit the live set clamped to it, plus *turn_on*.
+
+        A DELTA, not a reseed (owner decision 2): the set keeps what is active
+        now — an extension's narrowing survives — loses what the new policy
+        keeps off, and gains *turn_on* (the names a panel turned back on) where
+        the policy allows them. ``strict`` computes the prompt first and
+        raises what the rebuilder raises, changing nothing (ADR-0279 D7).
+        """
+
+        current = self._action_get_active_tools()
+        target = current + [n for n in turn_on if n not in current]
+        self._commit_tools(self._full_registry(), target, policy=policy, strict=strict)
+
+    def restore_active_tools(
+        self, names: list[str] | None, *, policy: ToolPolicy | None = None
+    ) -> None:
+        """Make *names* the active set as far as the policy allows; ``None`` is every tool.
+
+        For callers that put back a set they saved — ``/agents use``'s
+        rollback, ``/reload``'s round trip: a name no longer registered is
+        dropped instead of raised on, and *policy*, when given, is installed
+        with it.
+        """
+
+        self._commit_tools(self._full_registry(), names, policy=policy)
+
+    def _full_registry(self) -> list[AgentTool]:
+        """The registry with the tools the policy excluded, for a commit that re-applies it."""
+
+        registered = {t.name for t in self._state.tools}
+        return list(self._state.tools) + [
+            tool for tool, _reason in self._excluded_tools.values() if tool.name not in registered
+        ]
+
+    def _commit_tools(
+        self,
+        registry: list[AgentTool],
+        active: list[str] | None,
+        *,
+        rebuild: bool = True,
+        strict: bool = False,
+        policy: ToolPolicy | None = None,
+    ) -> None:
+        """THE ONE WRITER of ``state.tools`` and ``state.active_tool_names`` (#510, C7).
+
+        1. Filter *registry* by the policy's exclusions, recording each name it
+           kept out and why (:meth:`excluded_tools`).
+        2. The active set: *active* (``None`` = every tool) restricted to the
+           registry and to what the policy allows — a locked-off or saved-off
+           name is dropped, a locked-on one stays as asked. ``None`` stays
+           ``None`` while the policy keeps nothing off, so an unrestricted
+           harness looks exactly as it did before the policy existed.
+        3. Assign both, then rebuild the prompt (#120) — or, with *strict*,
+           compute the prompt BEFORE assigning and let a rebuilder failure
+           raise with nothing changed.
+
+        ``tests/cli/test_prompt_tool_honesty.py`` holds an AST gate: nothing
+        else in ``packages/`` assigns a harness's ``tools`` or
+        ``active_tool_names``, constructs its state with tools, or replaces it.
+        """
+
+        rules = policy if policy is not None else self._tool_policy
+        kept: list[AgentTool] = []
+        excluded: dict[str, tuple[AgentTool, str]] = {}
+        seen_tools: set[str] = set()
+        for tool in registry:
+            if tool.name in seen_tools:
+                continue
+            seen_tools.add(tool.name)
+            reason = rules.excluded(tool.name)
+            if reason is not None:
+                excluded[tool.name] = (tool, reason)
+                continue
+            kept.append(tool)
+        names = [t.name for t in kept]
+        new_active: list[str] | None
+        if active is None:
+            new_active = [n for n in names if rules.allows(n)] if rules.restricts(names) else None
+        else:
+            registered = set(names)
+            new_active = []
+            seen: set[str] = set()
+            dropped: list[str] = []
+            for name in active:
+                if name in seen:
+                    continue
+                seen.add(name)
+                if name in registered and rules.allows(name):
+                    new_active.append(name)
+                elif name in registered or name in excluded:
+                    dropped.append(name)
+            if dropped:
+                _log.debug("tool policy kept these off: %s", dropped)
+        prompt: str | None = None
+        rebuilder = self._system_prompt_rebuilder
+        if strict and rebuilder is not None:
+            allowed = set(new_active) if new_active is not None else None
+            prompt = rebuilder([t for t in kept if allowed is None or t.name in allowed])
+        self._tool_policy = rules
+        self._excluded_tools = excluded
+        self._state.tools = kept
+        self._state.active_tool_names = new_active
+        if prompt is not None:
+            self._state.system_prompt = prompt
+        elif rebuild:
+            self._rebuild_system_prompt()
 
     def _prompt_tools(self) -> list[AgentTool]:
         """The active tools, in registry order — what a rebuilt prompt describes."""
@@ -3511,7 +3678,13 @@ class AgentHarness:
         new_names = {t.name for t in tools}
         if active_tool_names is not None:
             # Explicit active list — validate against new tool names.
-            unknown = [n for n in active_tool_names if n not in new_names]
+            # #510 — a name the policy excludes is known, not unknown: it is
+            # dropped by the commit below like any other name it keeps off.
+            unknown = [
+                n
+                for n in active_tool_names
+                if n not in new_names and self._tool_policy.excluded(n) is None
+            ]
             if unknown:
                 raise AgentHarnessError(
                     "invalid_argument",
@@ -3535,18 +3708,20 @@ class AgentHarness:
                     f"(or a fresh list) to intentionally widen the filter.",
                 )
             new_active = list(self._state.active_tool_names)
-        # Atomic mutation after all validation succeeded.
-        self._state.tools = list(tools)
-        self._state.active_tool_names = new_active
-        # Issue #120 review (MEDIUM). This method replaces BOTH the registry
-        # and the active filter, so it changes what the prompt should say by
-        # exactly as much as :meth:`set_active_tools` does — and it was the one
-        # writer that did not rebuild, which made
-        # :meth:`_rebuild_system_prompt`'s "called from every place the active
-        # set changes" false as written. Placed after the atomic mutation for
-        # the same reason as there: a rejected call must not leave the prompt
-        # describing a registry the state never took.
-        self._rebuild_system_prompt()
+        # Atomic mutation after all validation succeeded, through the policy
+        # (#510): an MCP attach cannot register an excluded tool or activate
+        # one the run keeps off. The tools it already excluded stay recorded
+        # as excluded unless this list replaces them by name. The commit ends
+        # in the rebuild (#120 review, MEDIUM: this method replaces BOTH the
+        # registry and the active filter, and was once the writer that did not
+        # rebuild); a rejected call never reaches it, so the prompt cannot
+        # describe a registry the state never took.
+        taken = {t.name for t in tools}
+        self._commit_tools(
+            list(tools)
+            + [tool for tool, _reason in self._excluded_tools.values() if tool.name not in taken],
+            new_active,
+        )
 
     # === Sprint 3b — next_turn / append_message (Pi: agent-harness.ts:572-582) ===
 
@@ -4467,19 +4642,25 @@ class AgentHarness:
 
     def _action_set_active_tools(self, names: list[str]) -> None:
         # F-9: non-destructive — record the active filter, don't drop tools.
+        # #510 — a name the policy excludes is known too (it is never in the
+        # registry); like a locked-off or saved-off one it is dropped by the
+        # commit, so an extension can narrow the set but never widen it past
+        # the run's rules (owner decisions 1-2, ADR-0283). Unknown still raises.
         known = {t.name for t in self._state.tools}
-        unknown = [n for n in names if n not in known]
+        unknown = [
+            n for n in names if n not in known and self._tool_policy.excluded(n) is None
+        ]
         if unknown:
             raise AgentHarnessError(
                 "invalid_argument",
                 f"set_active_tools: unknown tool name(s): {unknown!r}",
             )
-        self._state.active_tool_names = list(names)
         # Pi parity: ``setActiveToolsByName`` rebuilds the system prompt from
-        # the new tool set before returning (``agent-session.ts:940-942``).
-        # AFTER the assignment and after the validator, so a rejected call
-        # cannot leave the prompt describing a set the state never took.
-        self._rebuild_system_prompt()
+        # the new tool set before returning (``agent-session.ts:940-942``) —
+        # the commit does, AFTER the assignment and after the validator, so a
+        # rejected call cannot leave the prompt describing a set the state
+        # never took.
+        self._commit_tools(self._full_registry(), list(names))
 
     def _rebuild_system_prompt(self) -> None:
         """Re-derive ``state.system_prompt`` from the ACTIVE tools. Issue #120.
@@ -4488,21 +4669,22 @@ class AgentHarness:
         supplied — see that field for why the callback exists and what it is
         expected to return.
 
-        Called from every place the active set or the registry changes, which
-        is THREE writers, not the two the first revision of this docstring
-        claimed: :meth:`_action_set_active_tools` (the extension-facing setter
-        and the public :meth:`set_active_tools`),
-        :meth:`_refresh_extension_tools` (``register_tool`` at runtime), and
+        Called from every place the active set or the registry changes. Since
+        #510 that is ONE writer, :meth:`_commit_tools`, which every other path
+        goes through: :meth:`_action_set_active_tools` (the extension-facing
+        setter and the public :meth:`set_active_tools`),
+        :meth:`_refresh_extension_tools` (``register_tool`` at runtime),
         :meth:`set_tools` (atomic registry replace — the one the first revision
-        missed while asserting there was nothing to miss). Pi funnels the first
-        two through ``setActiveToolsByName``; aelix's refresh path assigns
-        ``active_tool_names`` directly to dodge the validator, so each caller
-        invokes this itself rather than inheriting the rebuild.
+        of this docstring missed while asserting there was nothing to miss),
+        :meth:`set_tool_policy` and :meth:`restore_active_tools`. The
+        constructor's seed is the one commit that does not rebuild.
 
         The list is kept honest by ``test_every_writer_of_the_active_set_rebuilds``
         (``tests/cli/test_prompt_tool_honesty.py``), which enumerates the
         assignments to ``_state.active_tool_names`` / ``_state.tools`` in this
-        module and fails when one of them is not followed by a rebuild.
+        module and fails when one of them is not followed by a rebuild, and by
+        the #510 gate beside it, which allows those assignments nowhere but
+        :meth:`_commit_tools`.
 
         FAILURE IS SWALLOWED, deliberately. The callback runs product-layer
         code — it touches the filesystem (the docs signpost globs the bundled

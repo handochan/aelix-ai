@@ -11,7 +11,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``), or it is a chain step
 waiting for the one before it, and has no spawn id at all, because
 ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:1410``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:1427``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -69,7 +69,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:1423-1424``), which for a chatty child is hundreds per
+stdout line (``runtime.py:1440-1441``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 1
@@ -2290,7 +2290,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:1410``).
+        (``runtime.py:1427``).
         """
 
         if index < 0:

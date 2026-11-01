@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:2068-2070`` documents Guardrail-first as a security
+``Permission`` (``entry.py:2116-2118`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -113,7 +113,7 @@ from aelix_agents.tool import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from aelix_agent_core.harness.hooks import (
         BeforeAgentStartHookEvent,
@@ -226,7 +226,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:3163-3179`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:3219-3235`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -286,7 +286,7 @@ class AgentsExtension:
     overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
     factory closed over. Probed on one object — ``apply_profile_to_args`` with
     a ``context_files: false`` profile flips it to ``True``, and
-    ``agents/service.py:408``'s ``__dict__.update`` reset flips it back — same
+    ``agents/service.py:411``'s ``__dict__.update`` reset flips it back — same
     ``id()`` throughout. A bool captured at construction would be stale in both
     directions.
 
@@ -357,11 +357,20 @@ class AgentsExtension:
     (:meth:`_host_thinking`). There is no hook-context rung — an
     ``ExtensionContext`` carries no thinking level."""
 
+    exclude_tools: Callable[[], Sequence[str]] | None = None
+    """What every child is started without, read live (#510, ADR-0283).
+
+    Wired in ``cli/entry.py`` to the parent's ``--exclude-tools`` patterns and
+    the tools its ``defaultTools`` keeps off now
+    (``core/tool_selection.py`` ``delegated_exclusions``); every child gets
+    them as they are (:attr:`~aelix_agents.runtime.SubagentHost.exclude_tools`).
+    ``None`` is the unwired default: no exclusions, as before #510."""
+
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:4726-4728``
+    smuggled through ``event.args`` even though ``harness/core.py:4908-4910``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -478,6 +487,7 @@ class AgentsExtension:
             cwd=self._host_cwd,
             posture=self._host_posture,
             active_tools=self._host_active_tools,
+            exclude_tools=self._host_exclude_tools,
             context_files=self._host_context_files,
             consent_context=self._host_consent_context,
             project_trusted=self._host_project_trusted,
@@ -604,7 +614,7 @@ class AgentsExtension:
 
         ``ExtensionAPI.get_active_tools`` calls
         ``runtime.actions.get_active_tools`` — literally the same bound method
-        ``_make_context_kwargs`` puts on the context (``core.py:737``), only on
+        ``_make_context_kwargs`` puts on the context (``core.py:774``), only on
         the CURRENT harness rather than a dead one, since ``self._api`` is
         replaced by ``_invoke_factory`` on every rebuild while ``self._ctx`` is
         not. An unbound runtime raises ``ExtensionError`` (measured), so a host
@@ -715,7 +725,7 @@ class AgentsExtension:
         the value was "re-read every time a context is built … the model the
         parent's own next turn would use". Only the first half holds:
         ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
-        (``core.py:4244``) and ``ExtensionContext.model`` hands back
+        (``core.py:4419``) and ``ExtensionContext.model`` hands back
         ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
         hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
         are slash commands that fire none, so the parent's next turn could
@@ -742,6 +752,12 @@ class AgentsExtension:
             return ctx.model
         except Exception:  # noqa: BLE001 — a stale ctx must not brick a spawn
             return None
+
+    def _host_exclude_tools(self) -> tuple[str, ...]:
+        """What a child is started without RIGHT NOW (#510); none when unwired."""
+
+        getter = self.exclude_tools
+        return tuple(getter()) if getter is not None else ()
 
     def _host_thinking(self) -> str | None:
         """The parent's thinking level RIGHT NOW, for a child that inherits the
@@ -858,7 +874,7 @@ class AgentsExtension:
         """Refresh the roster, reset the delegation budget, drop stale grants,
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
-        ``before_agent_start`` (``harness/core.py:1522``) runs BEFORE the
+        ``before_agent_start`` (``harness/core.py:1551``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
@@ -870,7 +886,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:972-1038``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1009-1075``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -971,7 +987,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1401-1409``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1418-1426``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1258,7 +1274,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:1276-1285``).
+        seam is released on teardown, ``extension.py:1292-1301``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -1397,7 +1413,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:4726-4728``
+        security property rather than a style rule. ``harness/core.py:4908-4910``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``
@@ -1477,7 +1493,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1410``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1427``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1499,7 +1515,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1898-1902``) with no ``await`` between them, so THIS
+            # (``runtime.py:1916-1920``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a

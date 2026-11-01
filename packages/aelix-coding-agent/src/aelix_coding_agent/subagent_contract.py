@@ -70,7 +70,7 @@ SubagentState = Literal["starting", "running", "done", "error", "stopped"]
 SubagentOutcome = Literal["ok", "error", "timeout", "aborted", "declined"]
 # Only "single" is live in P2 — ``spawn`` raises ``ValueError`` on the other
 # two. The literal ships whole so the on-the-wire vocabulary never changes
-# shape between phases (same reasoning as ``agents/profile.py:225``'s ``role``).
+# shape between phases (same reasoning as ``agents/profile.py:232``'s ``role``).
 SubagentMode = Literal["single", "parallel", "chain"]
 
 
@@ -412,7 +412,7 @@ class SubagentRuntime(Protocol):
         unless ``allow_project`` is True. Directory trust is a yes-once decision
         ancestors inherit (``cli/project_trust.py:84-85``); it is not consent to
         a project-local IDENTITY, which additionally wins a name collision
-        against the user's own. Mirrors ``agents/service.py:355-371``.
+        against the user's own. Mirrors ``agents/service.py:356-372``.
         Model-driven callers must always pass False.
 
         THE REFUSAL IS TYPED: raise :class:`ProjectScopeRefused` (or a subclass)

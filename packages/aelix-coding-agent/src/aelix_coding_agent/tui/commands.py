@@ -198,6 +198,11 @@ class CommandContext:
     ``selection_panel.run_selection_panel`` over the session's ``SkillKind``.
     ``None`` in headless tests and in a host with no settings, where ``/skill``
     falls back to the read-only list."""
+    tool_panel: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to the ``/tool`` on/off panel (#510, ADR-0283): the
+    same ``selection_panel`` over the session's ``ToolKind``. ``None`` in
+    headless tests and a host with no settings, where ``/tool`` (and its alias
+    ``/tools``) fall back to the read-only list of active tools."""
     statusline_action: Callable[[], Awaitable[None]] | None = None
     """``run_tui`` wires this to its ``_open_statusline`` flow (a multi-checkbox
     picker over the footer-segment registry that persists the enabled-id set to
@@ -435,7 +440,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2225``) and render it
+    the harness's own auto-compaction guard at ``core.py:2256``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -506,7 +511,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5248-5254`` intersects ``_state.tools`` with
+    (``harness/core.py:5430-5436`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -554,6 +559,26 @@ async def _tools_handler(ctx: CommandContext, args: str) -> None:
         desc = getattr(tool, "description", None) or ""
         table.add_row(name, desc)
     ctx.commit(Panel(table, title="Tools", box=ROUNDED, border_style="cyan"))
+
+
+async def _tool_handler(ctx: CommandContext, args: str) -> None:
+    """``/tool`` (alias ``/tools``) — turn tools on or off (#510, ADR-0283).
+
+    Opens the shared selection panel: Space toggles, ←/→ picks the settings
+    file, Enter saves to ``defaultTools`` and applies from the next model
+    request, Esc discards. A tool the run locks (``--exclude-tools``,
+    ``--no-tools``, ``--tools``, a profile) says why and does not move. Where
+    no panel is wired (headless, no settings) it lists the active tools, as
+    ``/tools`` did before.
+    """
+
+    if ctx.tool_panel is None:
+        await _tools_handler(ctx, args)
+        return
+    try:
+        await ctx.tool_panel()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ /tool failed: {exc}", style="bold red"))
 
 
 async def _skills_handler(ctx: CommandContext, args: str) -> None:
@@ -647,7 +672,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1122-1144``).
+    made ``--tools ''`` enable everything (``entry.py:1131-1153``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -775,7 +800,9 @@ def _render_agents_diagnostics(result: ProfileDiscoveryResult) -> RenderableType
     )
 
 
-def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[RenderableType]:
+def _render_agent_profile(
+    profile: AgentProfile, registry: Any = None, exclude_tools: tuple[str, ...] = ()
+) -> list[RenderableType]:
     """``/agents show <name>`` — the parsed fields, then the DRY RUN.
 
     The second panel is the auditable half: the exact flags
@@ -787,8 +814,13 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
     ``registry`` is the session's live registry (#344): a spawn splits a
     user-defined provider's ``model:`` into ``--model``/``--provider``, so the
     dry run has to be rendered with the same registry to show the same flags.
+
+    ``exclude_tools`` is what every child of this session gets as
+    ``--exclude-tools`` (#510): the run's patterns and the tools its
+    ``defaultTools`` keeps off, so the dry run shows it as a spawn would emit it.
     """
 
+    import dataclasses
     import shlex
 
     from aelix_coding_agent.agents import profile_to_flags
@@ -824,7 +856,13 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
     dry_run.append("flags  ", style="bold cyan")
     dry_run.append(
         shlex.join(
-            profile_to_flags(profile, prompt_path=profile.file_path, model_registry=registry)
+            profile_to_flags(
+                dataclasses.replace(profile, exclude_tools=exclude_tools)
+                if exclude_tools
+                else profile,
+                prompt_path=profile.file_path,
+                model_registry=registry,
+            )
         )
     )
     lines = profile.body.strip().splitlines()
@@ -847,7 +885,7 @@ def _render_agent_profile(profile: AgentProfile, registry: Any = None) -> list[R
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3902-3919`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3926-3943`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -978,7 +1016,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3072`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3096`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -993,7 +1031,7 @@ async def _confirm_project_agent_for_run(
     # The three ``getattr`` hops are deliberate — a missing or mid-rebuild runtime
     # must degrade to a decline, never raise — but they cost the static type:
     # ``AgentHarness.runtime`` is the KERNEL's ``_ExtensionRuntime | None``
-    # (``harness/core.py:259``), so the chain widens to ``object`` and ``callable()``
+    # (``harness/core.py:260``), so the chain widens to ``object`` and ``callable()``
     # then narrows THAT to ``(...) -> object``, which makes the guarded ``await``
     # below a type error. The annotation states the seam's real shape
     # (``extensions/ext_ui.py:186-193``) so the narrowing lands on it instead;
@@ -1250,7 +1288,13 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                 )
             )
             return
-        for renderable in _render_agent_profile(match, ctx.model_registry):
+        from aelix_agent_core.harness.tool_policy import ToolPolicy  # noqa: PLC0415
+
+        from aelix_coding_agent.core.tool_selection import delegated_exclusions  # noqa: PLC0415
+
+        policy = getattr(ctx.harness, "tool_policy", None)
+        exclude = delegated_exclusions(policy) if isinstance(policy, ToolPolicy) else ()
+        for renderable in _render_agent_profile(match, ctx.model_registry, exclude):
             ctx.commit(renderable)
         return
 
@@ -2067,11 +2111,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1894-1897``
-    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:677-683``
+    # The double count was the same text twice over: ``cli/entry.py:1934-1937``
+    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:707-713``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1894``.
+    # level up, at ``cli/entry.py:1934``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module
@@ -2331,7 +2375,10 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
     BuiltinCommand("name", "Show or set the session name", _name_handler, aliases=("rename",)),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
-    BuiltinCommand("tools", "List registered tools", _tools_handler),
+    BuiltinCommand(
+        "tool", "Turn tools on or off (Space toggles, Enter saves)", _tool_handler,
+        aliases=("tools",),
+    ),
     BuiltinCommand(
         "skill", "Turn skills on or off (Space toggles, Enter saves)", _skill_handler,
         aliases=("skills",),

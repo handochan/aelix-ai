@@ -22,7 +22,6 @@ module gets the filtered list rather than a leak. A plain ``LoadSkillsResult``
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import os
 from collections.abc import Callable, Sequence
@@ -43,12 +42,15 @@ from .resource_filter import (
     split_entry,
 )
 from .resource_selection import (
+    ApplyGate,
     ApplyResult,
     Effect,
     Lock,
     ResourceItem,
     ResourceSelection,
     SettingsLists,
+    harness_busy,
+    wait_harness_idle,
 )
 from .skill_dirs import (
     AGENTS_DIR_NAME,
@@ -277,46 +279,6 @@ def _short(path: str, home: str) -> str:
     return path
 
 
-class ApplyGate:
-    """Held while a harness is being built; an apply waits for it (#511, Codex X2).
-
-    The runtime keeps its old harness pointer while the factory builds the
-    new one, and the factory reads the skills holder, installs skills on the
-    candidate and then AWAITS (session recording, extension setup). An apply
-    landing in that window would update the holder and the outgoing harness
-    while the candidate keeps the list it read — a holder, a prompt and a
-    harness that disagree. The factory holds this gate for its whole build;
-    :meth:`SkillKind.busy` is true while it is held, and the waiter re-checks
-    the LIVE harness once it opens. The runtime swaps its pointer right after
-    the factory returns, with no ``await`` in between, so the next check sees
-    the installed harness. :attr:`generation` counts builds.
-    """
-
-    def __init__(self) -> None:
-        self._depth = 0
-        self._open = asyncio.Event()
-        self._open.set()
-        self.generation = 0
-
-    @property
-    def held(self) -> bool:
-        return self._depth > 0
-
-    def __enter__(self) -> ApplyGate:
-        self._depth += 1
-        self.generation += 1
-        self._open.clear()
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self._depth -= 1
-        if self._depth == 0:
-            self._open.set()
-
-    async def wait_open(self) -> None:
-        await self._open.wait()
-
-
 class SkillKind:
     """The ``/skill`` panel's view of the skills holder (``ResourceKind``)."""
 
@@ -508,6 +470,8 @@ class SkillKind:
                 False,
                 f"shadowed by the {winner} skill of the same name "
                 f"({self.display_path(lost.winner.file_path)})",
+                tag="shadowed",
+                kind="shadowed",
             )
         locks[_UNTRUSTED_KEY] = Lock(False, "this folder is not trusted; /trust to decide")
         for key, _directory, _agents in self._untrusted_dirs():
@@ -556,10 +520,7 @@ class SkillKind:
     def busy(self) -> bool:
         """A turn is running, or a harness is being built (:class:`ApplyGate`)."""
 
-        if self._gate is not None and self._gate.held:
-            return True
-        harness = self._harness()
-        return harness is not None and not getattr(harness, "is_idle", True)
+        return harness_busy(self._harness, self._gate)
 
     async def wait_until_idle(self) -> None:
         """Until the LIVE harness is idle — or has been replaced (C8).
@@ -569,21 +530,7 @@ class SkillKind:
         :meth:`ResourceSelection.apply`'s loop re-checks the new one.
         """
 
-        if self._gate is not None and self._gate.held:
-            await self._gate.wait_open()
-            return
-        harness = self._harness()
-        if harness is None or not self.busy():
-            return
-        waiter = asyncio.ensure_future(harness.wait_for_idle())
-        try:
-            while not waiter.done():
-                await asyncio.wait({waiter}, timeout=0.25)
-                if self._harness() is not harness:
-                    return
-        finally:
-            if not waiter.done():
-                waiter.cancel()
+        await wait_harness_idle(self._harness, self._gate)
 
     async def apply(self, enabled: set[str]) -> ApplyResult:
         """Prepare, then commit, then tell the hook bus (ADR-0279 D6, D7; C9, C10).

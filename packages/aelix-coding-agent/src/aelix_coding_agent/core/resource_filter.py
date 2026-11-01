@@ -96,6 +96,9 @@ class ScopeList:
     scope: Scope
     entries: tuple[str, ...]
     base_dir: str
+    present: bool = True
+    """Whether the file has the key at all. Only a set-level grammar (``defaultTools``,
+    #510) tells an absent key from an empty list; for D1's lists both say nothing."""
 
 
 def split_entry(entry: str) -> tuple[str, str]:

@@ -55,11 +55,16 @@ def test_a_topic_prints_the_guide_to_stdout(
 
 
 def test_an_alias_resolves(capsys: pytest.CaptureFixture[str]) -> None:
-    """The five names #101 asks for, minus the one that has no document."""
+    """The five names #101 asks for, minus the one that has no document.
+
+    #510: ``tools`` is a guide of its own now (turning tools on and off), as
+    ``mcp`` became one with #512; ``tool`` reaches it too.
+    """
     for alias, expected_heading in [
         ("extension", "# Writing an Extension"),
         ("extension-api", "# Writing an Extension"),
-        ("tools", "# Writing an Extension"),
+        ("tools", "# Turning tools on and off"),
+        ("tool", "# Turning tools on and off"),
         ("security", "# Project Trust"),
         ("project-trust", "# Project Trust"),
     ]:

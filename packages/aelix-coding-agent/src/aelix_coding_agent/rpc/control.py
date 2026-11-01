@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, TypeVar
 
 from aelix_agent_core.harness.prompt_templates import (
@@ -36,6 +36,7 @@ from aelix_agent_core.harness.prompt_templates import (
     parse_command_args,
 )
 from aelix_agent_core.harness.skills import format_skill_invocation
+from aelix_agent_core.harness.tool_policy import ToolPolicy
 from aelix_ai.models import get_supported_thinking_levels
 
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -480,12 +481,36 @@ class RpcControlPlane:
             return {"cancelled": result.cancelled}
         if method == "tools/set_active":
             names = params.get("names")
-            available = {tool.name for tool in self.harness.runtime.actions.get_all_tools()}
-            if not isinstance(names, list) or any(
-                not isinstance(n, str) or n not in available for n in names
-            ):
+            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
                 raise ValueError("Active tool names must refer to loaded tools")
-            await self.harness.set_active_tools(names)
+            # #510 (ADR-0283, owner decision 5) — a name the RUN keeps off is
+            # REFUSED with the reason, never dropped: an excluded tool (not
+            # loaded at all) and one a flag or profile locks off. A name the
+            # ``defaultTools`` setting turns off is turned on, as the panel
+            # can: dropped from the policy's saved-off set until the settings
+            # are read again (``resources/reload``, a new session), never
+            # written. An extension's call drops all three.
+            refusal = getattr(self.harness, "tool_refusal", None)
+            if callable(refusal):
+                for name in names:
+                    reason = refusal(name)
+                    if reason is not None:
+                        raise ValueError(f"Cannot turn on {name}: {reason}")
+            available = {tool.name for tool in self.harness.runtime.actions.get_all_tools()}
+            if any(n not in available for n in names):
+                raise ValueError("Active tool names must refer to loaded tools")
+            policy = getattr(self.harness, "tool_policy", None)
+            revived = (
+                {n for n in names if n in policy.saved_off and policy.lock(n) is None}
+                if isinstance(policy, ToolPolicy)
+                else set()
+            )
+            if isinstance(policy, ToolPolicy) and revived:
+                self.harness.restore_active_tools(
+                    names, policy=replace(policy, saved_off=policy.saved_off - revived)
+                )
+            else:
+                await self.harness.set_active_tools(names)
             return {"activeTools": self.harness.runtime.actions.get_active_tools()}
         if method == "commands/run":
             return await self.run_command(params)
@@ -942,6 +967,12 @@ class RpcControlPlane:
         return {"cancelled": False, "sessionFile": branch, "title": title, "restored": True}
 
     async def _restore_selection(self, selection: list[str] | None) -> None:
+        # #510 — through the harness's commit: names gone from the registry
+        # drop, and its policy clamps the rest.
+        restore = getattr(self.harness, "restore_active_tools", None)
+        if callable(restore):
+            restore(selection)
+            return
         live = [tool.name for tool in self.harness.state.tools]
         if selection is None:
             if self.harness.state.active_tool_names is not None:

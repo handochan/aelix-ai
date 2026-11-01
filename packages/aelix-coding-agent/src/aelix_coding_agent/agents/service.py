@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3866-4138``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:3929-4201``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -15,7 +15,7 @@ The three rejected alternatives and why they fail:
   provider/stream bindings and silently reverts an in-session ``/model`` or
   ``/thinking`` choice the user made deliberately.
 * **B — mutate the private ``_state`` only**: ``_current_system_prompt``
-  (``core.py:4453-4458``) already reads ``_state`` as its fallback, but a
+  (``core.py:4628-4633``) already reads ``_state`` as its fallback, but a
   rebuild (``/new``, ``/fork``, ``/resume``) re-derives everything from
   ``parsed`` — so the swap would evaporate on the next session action.
 * **C — a kernel ``set_system_prompt``**: the kernel is read-only for P1
@@ -82,16 +82,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4141-4143``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4204-4206``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2780``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:2836``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:3746`` / ``:4088``).
+        reads on every (re)build (``cli/entry.py:3806`` / ``:4151``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -262,7 +262,7 @@ class AgentProfileService:
         1b. **Snapshot, and roll back on ANY failure.** Refusing first is not
            sufficient, because step 4 talks to the kernel and the kernel can say
            no: ``harness.set_active_tools`` validates every name against
-           ``state.tools`` and raises (``core.py:4468-4476``) for a typo, for an
+           ``state.tools`` and raises (``core.py:4643-4657``) for a typo, for an
            MCP tool whose server never connected, or for an extension tool under
            ``inherit_extensions: false`` — none of which profile PARSING can
            check. Without the rollback that raise left ``parsed.tools`` poisoned
@@ -329,7 +329,7 @@ class AgentProfileService:
         """
 
         # Function-level import: ``cli/entry.py`` imports this package at module
-        # scope (``entry.py:69-74``), so importing it back here at module scope
+        # scope (``entry.py:70-75``), so importing it back here at module scope
         # would close an import cycle. Reusing ITS helpers (rather than
         # re-deriving the same values) is the point — a live identity computed
         # from different inputs than a rebuilt one would silently diverge on the
@@ -339,6 +339,7 @@ class AgentProfileService:
             _resolve_active_tools,
             _resolve_append_chunks,
             _resolve_system_prompt,
+            _tool_policy,
             _visible_tools,
         )
 
@@ -396,6 +397,8 @@ class AgentProfileService:
             if harness.state.active_tool_names is not None
             else None
         )
+        # #510 — the policy the session ran under, put back with the set.
+        live_policy = getattr(harness, "tool_policy", None)
         live_model = harness.state.model
         live_thinking = harness.state.thinking_level
         live_explicit = self.late_route.explicit if self.late_route is not None else False
@@ -472,8 +475,23 @@ class AgentProfileService:
             # pre-build and one post-build; the emission rules are identical.
             #
             # THIS is the call that raises on a profile naming a tool the running
-            # process does not have (``core.py:4468-4476``), which is why
+            # process does not have (``core.py:4643-4657``), which is why
             # everything from step 2 down sits inside the try.
+            # #510 (ADR-0283) — the profile's ``tools:`` / ``builtin_tools:``
+            # are LOCKS, as the flags are: the policy is rebuilt from the
+            # overlaid ``parsed`` (tagged ``profile``) and keeps the selection
+            # this session applied from ``defaultTools``, so an extension can
+            # no more widen a profile's tools than a ``--tools`` list.
+            set_policy = getattr(harness, "set_tool_policy", None)
+            if callable(set_policy) and live_policy is not None:
+                set_policy(
+                    _tool_policy(
+                        self.parsed,
+                        getattr(harness, "settings_manager", None),
+                        self.project_trusted,
+                        saved_off=live_policy.saved_off,
+                    )
+                )
             names = _resolve_active_tools(self.parsed)
             if self.parsed.no_builtin_tools and not self.parsed.no_tools:
                 live = [
@@ -531,6 +549,15 @@ class AgentProfileService:
                     self.cwd,
                     skills=effective_skills(self.skills_holder),
                     project_trusted=self.project_trusted,
+                    # #510 (Codex F05) — the catalog's ``read`` gate reads the
+                    # set just taken, as the rebuilder does: an excluded or
+                    # saved-off ``read`` must not have it advertise skills.
+                    live_tool_names=[
+                        t.name
+                        for t in _visible_tools(
+                            harness.state.tools, harness.state.active_tool_names
+                        )
+                    ],
                 ),
             )
 
@@ -715,8 +742,10 @@ class AgentProfileService:
             #
             # The live half is restored by writing ``AgentState`` directly rather
             # than through the setters: these are values the harness already held,
-            # so they need no re-validation, and ``active_tool_names=None`` ("no
-            # filter") has no setter that can express it. Undoing a ``set_model``
+            # so they need no re-validation. The tools are the exception (#510):
+            # they go back through ``restore_active_tools``, which takes
+            # ``None`` ("no filter") and the previous policy, because nothing
+            # outside the harness's commit may write the active set. Undoing a ``set_model``
             # / ``set_thinking_level`` this way also avoids re-emitting their
             # hooks, which already fired for the value being reverted.
             #
@@ -739,8 +768,13 @@ class AgentProfileService:
             set_settings_seed_active(previous_seed_active)
             self.active = previous_active
             self.skills_holder["result"] = previous_skills
+            # #510 — the set and the policy go back through the harness's one
+            # writer (``restore_active_tools``), BEFORE the prompt, whose exact
+            # previous text then replaces the rebuild that commit made.
+            restore = getattr(harness, "restore_active_tools", None)
+            if callable(restore):
+                restore(live_active_tools, policy=live_policy)
             harness.state.system_prompt = live_prompt
-            harness.state.active_tool_names = live_active_tools
             harness.state.model = live_model
             harness.state.thinking_level = live_thinking
             if self.late_route is not None:
