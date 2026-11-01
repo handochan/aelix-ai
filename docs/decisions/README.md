@@ -36,6 +36,24 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0282 — An MCP server can be turned off in `mcp.json`, and every surface names its state in one vocabulary](0282-an-mcp-server-can-be-turned-off-in-mcp-json-and-every-surface-names-its-state-in-one-vocabulary.md)
+  (Accepted 2026-10-31; #512). `"enabled": false` on an `mcp.json` entry keeps it listed and
+  unstarted — no connection, no tools; a non-boolean `enabled` is warned and the entry skipped
+  (pi), and an entry with no `command`/`url` is reported at load. The one-file rule stays; a
+  pi-style project override is told it overrides nothing. `core/mcp_servers.py` owns the state
+  words (`connected`, `failed`, `disconnected`, `disabled`, `enabled`), the rule that picks one
+  and the "turn it back on" hint; `/mcp`, `/extension` and the new `aelix status` MCP block render
+  it, and #25 reads `runtime_statuses(mcp_manager)`. `McpClientManager` holds disabled entries
+  without a connection and records failed names. A name `mcp.json` declares — enabled, disabled
+  or skipped — beats a manifest server's, which is dropped with a notice (the old notice claimed
+  it started). Deferred: the global/project merge, a `/mcp` toggle. Amends ADR-0101, ADR-0155,
+  ADR-0181. Amended 2026-11-01 (review round 1): D9 — a delegated child gets the parent's
+  turned-off and declared server NAMES (`$AELIX_MCP_PARENT_NAMES`, written by `build_child_env`
+  for both channels) and only suppresses with them; in an untrusted directory the global file's
+  names still count; warnings name the field, not its value; `/mcp` renders names as text
+  without a url's query; `aelix status` applies `defaultProjectTrust` and lays rows out by cells.
+  Round 2: the record is capped at 16 KiB and removed from the child's `os.environ` once read,
+  its notices name the variable, and `/mcp` shows a url as scheme, host and port only.
 - [0279 — Skills, prompts and (later) tools and extensions are turned on and off through one settings contract](0279-resources-are-turned-on-and-off-through-one-settings-contract.md)
   (Accepted 2026-10-31; #511, absorbs #595). The `skills`, `prompts` and (with #25) `extensions`
   lists of both settings files use pi's grammar plus identity: a plain path adds a directory,

@@ -250,19 +250,26 @@ def test_the_skills_near_miss_names_the_packaged_skill_that_answers_it() -> None
     assert "trust" in body.lower()
 
 
-def test_the_mcp_and_hooks_near_misses_name_the_reference_manifest() -> None:
+def test_the_hooks_near_miss_names_the_reference_manifest() -> None:
     """Same shape as `skills`: the annotated `aelix-plugin.toml` ships and
-    documents both declaration families field by field."""
+    documents the declaration family field by field."""
     manifest = packaged_path("examples", "echo", "aelix-plugin.toml")
     assert manifest is not None
     body = manifest.read_text(encoding="utf-8")
-    assert "[[contributes.mcp_servers]]" in body
     assert "[[contributes.hooks]]" in body
 
-    for key in ("mcp", "hooks"):
-        message = near_miss(key)
-        assert message is not None, key
-        assert str(manifest) in message, key
+    message = near_miss("hooks")
+    assert message is not None
+    assert str(manifest) in message
+
+
+def test_mcp_is_a_guide_now_not_a_near_miss() -> None:
+    """#512 wrote the mcp-servers guide; the near miss that said no guide
+    covers MCP servers would now be false."""
+    for key in ("mcp", "MCP", "mcp.json", "mcp-servers"):
+        topic = resolve_topic(key)
+        assert topic is not None and topic.name == "mcp-servers", key
+    assert near_miss("mcp") is None
 
 
 def test_an_unknown_name_has_no_near_miss() -> None:

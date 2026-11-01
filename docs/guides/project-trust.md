@@ -21,7 +21,7 @@ then remembered.
 ## Exactly which resources are gated
 
 The complete list comes from
-`has_trust_requiring_project_resources` in `cli/project_trust.py`. `.aelix` is `CONFIG_DIR_NAME` (`cli/config.py:33`).
+`has_trust_requiring_project_resources` in `cli/project_trust.py`. `.aelix` is `CONFIG_DIR_NAME` (`cli/config.py:36`).
 
 | Resource | Why it is gated |
 | --- | --- |
@@ -288,7 +288,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:1052-1054`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3559-3564`, the text at `:966-971`), because a silent drop looks identical to a
+(`cli/entry.py:3672-3677`, the text at `:966-971`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

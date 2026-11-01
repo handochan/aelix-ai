@@ -124,7 +124,7 @@ from .config import (
     VERSION,
     get_agent_dir,
     get_session_dir,
-    load_mcp_server_contribs,
+    load_mcp_config,
     packaged_skills_dir,
 )
 from .file_processor import process_file_arguments
@@ -3449,10 +3449,31 @@ async def _async_main(argv: list[str]) -> int:
     # every harness rebuild (the tool closures hold live connections, so they
     # survive rebuilds), and dispose ONCE in the finally block. A failed server
     # warns and is skipped — one bad server never aborts the agent.
-    mcp_contribs, mcp_warnings, mcp_source = load_mcp_server_contribs(
-        str(Path.cwd())
+    #
+    # #512 (ADR-0282): an ``"enabled": false`` entry is NOT in ``contribs`` —
+    # it is never connected and its tools never registered — but it is carried
+    # as ``mcp_disabled`` so ``/mcp`` and ``/extension`` still list it. Every
+    # mode reaches MCP through this block (interactive, ``-p``, json, rpc; a
+    # delegated child is a fresh process that reads its own file and the
+    # parent's record, D9), and ``/reload`` reuses ``mcp_tools`` rather than
+    # reconnecting, so this is the whole sweep.
+    from aelix_coding_agent.core.mcp_servers import (
+        MCP_PARENT_NAMES_ENV,
+        McpNameRecord,
+        inherited_mcp_names,
+        set_launch_mcp_names,
     )
-    for warning in mcp_warnings:
+
+    from .config import load_global_mcp_config
+
+    mcp_config = load_mcp_config(str(Path.cwd()))
+    mcp_contribs = list(mcp_config.contribs)
+    mcp_disabled = mcp_config.disabled_servers()
+    mcp_source = mcp_config.source
+    # The file whose NAMES count (D5): the one read, except in an untrusted
+    # directory below.
+    mcp_names_config = mcp_config
+    for warning in mcp_config.warnings:
         print(f"Warning: MCP config: {warning}", file=sys.stderr)
     # Project Trust gate: drop ONLY the auto-discovered project-local
     # ``cwd/.aelix/mcp.json`` contribs from an untrusted directory. ``$AELIX_MCP_CONFIG``
@@ -3472,21 +3493,75 @@ async def _async_main(argv: list[str]) -> int:
     # measured spawning ``sh -c`` at startup, even under ``--no-approve``. The
     # ungated tier is safe only for as long as the env var behind it really does
     # come from the user.
-    if mcp_contribs and mcp_source == "project" and not project_trusted:
-        print(
-            "Notice: project-local .aelix/mcp.json servers skipped in an "
-            "untrusted directory; pass --approve to trust.",
-            file=sys.stderr,
-        )
+    if mcp_source == "project" and not project_trusted:
+        # An untrusted file has no say at all: its disabled entries are not
+        # listed, and no name it declares — not even an invalid entry's — keeps
+        # a manifest server off. The notice speaks only when something that
+        # would have started was skipped.
+        if mcp_contribs:
+            print(
+                "Notice: project-local .aelix/mcp.json servers skipped in an "
+                "untrusted directory; pass --approve to trust.",
+                file=sys.stderr,
+            )
         mcp_contribs = []
+        mcp_disabled = []
+        # ...but the user's GLOBAL file still speaks for its names (D5, amended
+        # 2026-11-01, #512 verify V1). The project file is the one picked, so
+        # nothing from the global file starts here either; before this, a
+        # repo's untrusted ``.aelix/mcp.json`` — ``{"mcpServers": {}}`` was
+        # enough — made NO file's names count, and an extension server the
+        # global file keeps off by name started (measured). NAMES only.
+        mcp_names_config = load_global_mcp_config(str(Path.cwd()))
+    mcp_declared = set(mcp_names_config.declared)
+    mcp_off = set(mcp_names_config.off)
+    # D9 (2026-11-01, #512 review 512-01 / verify V3) — what the aelix that
+    # delegated THIS process turned off or claimed. A child is launched with
+    # ``--no-approve`` and without ``$AELIX_MCP_CONFIG``, so the file its parent
+    # read is usually not the one it reads: a parent's project or env-file
+    # ``"enabled": false`` used to come back on in the child, and a global
+    # extension's server of that name started there. The record (names only,
+    # ``core/mcp_servers.McpNameRecord``) can only SUPPRESS: a server of this
+    # process's own file whose name the parent turned off is not started, and an
+    # extension's server whose name the parent claimed is dropped below.
+    mcp_inherited = inherited_mcp_names()
+    # Read once, then gone (#512 verify R4): left in ``os.environ`` it reached
+    # everything this process's bash tool and ``api.exec`` launch. This launch's
+    # own children get the union below, through ``set_launch_mcp_names``. The
+    # notices name the variable, not a parent: the user's own environment, or a
+    # ``.env`` their ``AELIX_DOTENV_ALLOW`` lists, can set it too.
+    os.environ.pop(MCP_PARENT_NAMES_ENV, None)
+    _record_says = f"${MCP_PARENT_NAMES_ENV} (the names a delegating aelix passes on)"
+    if mcp_inherited.off:
+        _kept_contribs = []
+        for _contrib in mcp_contribs:
+            if _contrib.name in mcp_inherited.off:
+                print(
+                    f"Notice: MCP server {_contrib.name!r} is not started: "
+                    f"{_record_says} keeps it off.",
+                    file=sys.stderr,
+                )
+                continue
+            _kept_contribs.append(_contrib)
+        mcp_contribs = _kept_contribs
+    mcp_off |= mcp_inherited.off
+    # Recorded for THIS process's own children before anything connects, so a
+    # child of a child inherits the union.
+    _launch_record = (
+        McpNameRecord(off=frozenset(mcp_off), claimed=frozenset(mcp_declared)) | mcp_inherited
+    )
+    set_launch_mcp_names(_launch_record)
+    if _unpassed_warning := _launch_record.unpassed_warning():
+        print(_unpassed_warning, file=sys.stderr)
     # Issue #21 (W1) — manifest-declared MCP servers (``contributes.mcp_servers``).
     # A metadata-ONLY scan (no plugin code executes — parses aelix-plugin.toml
     # through the same 4-tier discovery) because MCP connects HERE, before the
     # first harness build where the full extension load runs. Trust is inherited:
     # untrusted project-local plugin dirs are skipped via ``no_project_local``,
     # mirroring the mcp.json project gate above. Ordering: manifest contribs go
-    # FIRST so an explicit .aelix/mcp.json entry WINS a server-name collision
-    # (McpClientManager keys connections by name, last-wins). W1 limitation
+    # FIRST (McpClientManager keys connections by name, last-wins); an mcp.json
+    # entry's win over a manifest server of its name is explicit below (#512),
+    # because a disabled entry has no connection to win with. W1 limitation
     # (documented, ADR-0181): MCP connects once at startup — a manifest written
     # later takes effect on the next process start, not on /reload.
     try:
@@ -3527,16 +3602,54 @@ async def _async_main(argv: list[str]) -> int:
     _manifest_mcp, _mcp_notices, _mcp_refusals = gate_manifest_mcp_contribs(
         reversed(_scanned_manifests)
     )
-    for _notice in _mcp_notices:
-        print(f"Notice: {_notice}", file=sys.stderr)
+    # #512 (ADR-0282 D5): a name the mcp.json declares is the mcp.json's,
+    # whether its entry is enabled, disabled or skipped as invalid. pi: "a
+    # server in mcp.json takes precedence over a registered server of the same
+    # name" (``extensions/mcp/index.ts`` ``registeredServers``) — for valid
+    # entries; aelix extends it to the skipped ones, so an entry the user
+    # mistyped (``"enabled": "false"``) cannot hand its name to an extension's
+    # server and start it. Before this the shadowed server was dropped silently
+    # by McpClientManager's last-wins dict while its "starts" notice still
+    # printed, and ``enabled`` was not read at all. Now the loser is dropped
+    # here, and said.
+    _mcp_off_names = {c.name for c in mcp_names_config.disabled}
+    _mcp_on_names = {c.name for c in mcp_names_config.contribs}
+    _mcp_owner = {
+        id(c): m.plugin.id for m in _scanned_manifests for c in m.contributes.mcp_servers
+    }
+    _manifest_kept = []
+    for _contrib, _notice in zip(_manifest_mcp, _mcp_notices, strict=True):
+        if _contrib.name in mcp_declared:
+            if _contrib.name in _mcp_off_names:
+                _why = " and turns it off"
+            elif _contrib.name in _mcp_on_names:
+                _why = ""
+            elif mcp_names_config is mcp_config:
+                _why = " (skipped: see its warning above)"
+            else:
+                _why = " (an entry it skips as invalid)"
+            _reason = f"{mcp_names_config.label} defines a server of the same name{_why}"
+        elif _contrib.name in mcp_inherited.claimed:
+            _reason = f"{_record_says} reserves that name"
+        else:
+            print(f"Notice: {_notice}", file=sys.stderr)
+            _manifest_kept.append(_contrib)
+            continue
+        print(
+            f"Notice: plugin {_mcp_owner.get(id(_contrib), '?')!r} declares MCP "
+            f"server {_contrib.name!r}, which is not started: {_reason}.",
+            file=sys.stderr,
+        )
     for _refusal in _mcp_refusals:
         print(f"Warning: MCP server refused: {_refusal}", file=sys.stderr)
-    if _manifest_mcp:
-        mcp_contribs = _manifest_mcp + mcp_contribs
+    if _manifest_kept:
+        mcp_contribs = _manifest_kept + mcp_contribs
     mcp_manager: McpClientManager | None = None
     mcp_tools: list[AgentTool] = []
-    if mcp_contribs:
-        mcp_manager = McpClientManager(mcp_contribs)
+    if mcp_contribs or mcp_disabled:
+        # A manager with only disabled entries connects nothing; it exists so
+        # /mcp lists them instead of saying no server is configured.
+        mcp_manager = McpClientManager(mcp_contribs, disabled=mcp_disabled)
         for conn_err in await mcp_manager.connect_all():
             print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
         mcp_tools = await mcp_manager.collect_agent_tools()
@@ -4734,6 +4847,8 @@ async def _async_main(argv: list[str]) -> int:
         if mcp_manager is not None:
             with contextlib.suppress(Exception):
                 await mcp_manager.disconnect_all()
+        # The launch is over; no child of it can still be built (D9).
+        set_launch_mcp_names(None)
 
 
 def _stdout_to_devnull() -> None:
