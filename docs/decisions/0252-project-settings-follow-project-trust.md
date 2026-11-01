@@ -438,3 +438,20 @@ in its place, in a trusted project or not. Children now start with `-P`, and the
 loader imports those names, and `-e <module>`, without the folder that the
 launch put on `sys.path`, refusing a same-named module already imported through
 it.
+
+
+## 14. Note (2026-11-01, #638): a `-e` name the project folder answers needs explicit trust
+
+*Amended 2026-11-01 by [ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D5–D6.*
+`-e acme` in a folder holding `acme/` loaded that folder — an existing path wins
+over the module reading (#114) and an explicit `-e` is outside the
+`no_project_local` gate — so an untrusted project's code ran under
+`--no-approve`, twice under `-p` with a gated resource (the vote load first),
+and in any folder with nothing to gate, which is trusted without a question.
+Such an entry now loads only in a folder the user trusted explicitly
+(`--approve`, a saved trust decision of yes for it or a parent, or the global
+`defaultProjectTrust: "always"`); everywhere else it is refused before anything
+in it is opened, naming `-e ./acme` and `-e acme:setup`. This is the one place
+where the trust this ADR follows is not enough: implicit trust (nothing to
+gate, a session-only answer) does not count. The yes `/reload` saves without
+asking still does, because `trust.json` cannot tell it apart (ADR-0285 Limits).

@@ -501,6 +501,10 @@ evaluator and editor and adapts its result into `ResourceSelection`.
   every extension tool (C11); `defaultTools` (D15, C13).
 - **Separate issue (pre-existing, security, C6):** `-e <module>` resolves to a
   same-named directory under an untrusted cwd (`extensions/loader.py`).
+  *Note 2026-11-01: #638, closed by [ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D5 — such an `-e` loads only in
+  an explicitly trusted folder (`--approve`, a saved yes, `defaultProjectTrust: "always"`) and is
+  refused elsewhere. Settings
+  `extensions` entries are still #25's.*
 
 ## Consequences
 

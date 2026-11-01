@@ -212,8 +212,8 @@ async def test_prompt_lists_the_global_target_first_and_labels_the_trust_gate(
 def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
-    ``extensions/loader.py:793-795`` scans ``get_agent_dir()/extensions`` and
-    ``cli/entry.py:2098`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
+    ``extensions/loader.py:815-817`` scans ``get_agent_dir()/extensions`` and
+    ``cli/entry.py:2102`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
     nothing ever reads.

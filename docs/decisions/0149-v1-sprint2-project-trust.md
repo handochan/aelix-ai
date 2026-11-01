@@ -67,6 +67,13 @@ All in `packages/aelix-coding-agent` — **zero protected `aelix-agent-core` cha
     `--no-approve`. It is a user choice now only because `AELIX_MCP_CONFIG` is on `load_dotenv`'s
     `_DOTENV_LOCKED` list — the one branch `AELIX_DOTENV_ALLOW` cannot open. Not the `^AELIX_`
     rule, which the hatch bypasses and which never runs for this key.
+  - *Note 2026-11-01 ([ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D5, #638).* "Explicit `-e` is never gated" has one
+    exception: a module-shaped `-e acme` that only a path in the cwd answers (`acme/` exists) is the
+    project's choice of meaning, not the user's, and it loads only in a folder the user trusted
+    explicitly (`--approve`, a saved yes for it or a parent, or the global `defaultProjectTrust:
+    "always"`); anywhere else — untrusted, trusted at step 2 because there is nothing to gate, or
+    trusted for this session only — it is refused before anything is opened. `-e ./acme` stays
+    ungated.
 - **AGENTS.md is NOT gated** (pi parity — markdown, not code execution).
 - The `project_trust` extension event + `ctx.is_project_trusted()` (which would touch protected
   `aelix-agent-core`) and `defaultProjectTrust` + `settings.json` suppression (which require first

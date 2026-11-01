@@ -59,17 +59,23 @@ def _isolated(tmp_path: Path) -> tuple[Path, Path]:
 
 
 async def _via_cli_path(
-    entries: list[str], *, cwd: Path, agent_dir: Path
+    entries: list[str], *, cwd: Path, agent_dir: Path, project_trusted: bool = False
 ) -> object:
     """Exactly what ``cli/entry.py`` calls (``[str(p) for p in
-    parsed.extensions]`` into ``discover_and_load_extensions``), with the
-    ambient discovery tiers switched off so only ``-e`` is under test."""
+    parsed.extensions]`` into ``discover_and_load_extensions``, with
+    ``no_project_local=not project_trusted``), with the ambient discovery
+    tiers switched off so only ``-e`` is under test. Untrusted by default, as
+    a headless run in an undecided directory is; #638 made the difference
+    observable for a module-shaped entry that names a project path, and
+    ``project_trusted=True`` here is the EXPLICIT trust that entry needs
+    (``--approve`` or a saved yes)."""
     return await discover_and_load_extensions(
         entries,
         cwd=cwd,
         agent_dir=agent_dir,
         no_discovery=True,
-        no_project_local=True,
+        no_project_local=not project_trusted,
+        project_explicitly_trusted=project_trusted,
     )
 
 
@@ -230,7 +236,8 @@ async def test_a_dotted_name_that_exists_on_disk_is_read_as_a_path(
     """The plan's central ambiguity rule, and the reason this change cannot
     break a working input: ``mypkg.ext`` is module-SHAPED, but a real file at
     that name wins. Precedent — ``classify_target``: "a local path WINS if it
-    exists on disk"."""
+    exists on disk". In an EXPLICITLY trusted project: since #638 any other one
+    refuses it (``test_untrusted_shadowed_entry_638.py``)."""
     cwd, agent_dir = _isolated(tmp_path)
     disk_entry = cwd / "mypkg.ext"
     disk_entry.mkdir()
@@ -240,7 +247,9 @@ async def test_a_dotted_name_that_exists_on_disk_is_read_as_a_path(
 
     assert _is_module_ref("mypkg.ext", cwd=cwd) is False
 
-    result = await _via_cli_path(["mypkg.ext"], cwd=cwd, agent_dir=agent_dir)
+    result = await _via_cli_path(
+        ["mypkg.ext"], cwd=cwd, agent_dir=agent_dir, project_trusted=True
+    )
     assert result.errors == []
     # Loaded from the directory on disk, NOT imported as a module.
     assert len(result.extensions) == 1
@@ -523,7 +532,8 @@ async def test_a_module_shaped_entry_shadowed_by_the_cwd_warns(
     """Path-wins stays (the plan's acceptance case depends on it) but stops
     being silent. Otherwise the directory you happen to be standing in decides
     whether ``-e acme`` means "my installed extension" or "run this repo's
-    code", with no trust gate and no diagnostic."""
+    code", with no trust gate and no diagnostic. This is the EXPLICITLY trusted
+    project; any other one refuses the entry outright (#638)."""
     cwd, agent_dir = _isolated(tmp_path)
     shadow = cwd / "acme_shadow_zz"
     shadow.mkdir()
@@ -533,7 +543,7 @@ async def test_a_module_shaped_entry_shadowed_by_the_cwd_warns(
 
     with caplog.at_level("WARNING", logger=loader_mod.__name__):
         result = await _via_cli_path(
-            ["acme_shadow_zz"], cwd=cwd, agent_dir=agent_dir
+            ["acme_shadow_zz"], cwd=cwd, agent_dir=agent_dir, project_trusted=True
         )
 
     # Still loads from disk — the warning is advisory, not a refusal.

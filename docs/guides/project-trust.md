@@ -126,6 +126,24 @@ folder is not on the import path at all; before #641 a file in it named like
 one of your extensions' modules ran in place of that module in every delegated
 agent, trusted project or not.
 
+One `-e` spelling is the exception to "never gated": a module-shaped name such
+as `-e acme` when the folder you are in holds an `acme` file or directory. An
+existing path wins over the module reading, so there the folder, not you,
+decides what `acme` means. So that entry loads the folder only when **you**
+trusted it: `--approve`, a saved "Trust" for the folder or a parent, or
+`defaultProjectTrust: "always"` in your global settings. Anywhere else it is
+**refused** before anything in it is opened — `--no-approve`, a saved "Do not
+trust", an undecided folder under `-p`, the trust vote that runs before the
+decision (which no longer prints it), and also a folder with nothing to gate,
+which is trusted without a question (above), and "Trust (this session only)",
+a yes to this session rather than to the folder. The message starts with both
+ways to say what you meant: `-e ./acme` for the folder, `-e acme:setup` for the
+installed module (#638). With `--approve`, a saved "Trust" or "always" it warns
+and loads the folder, as before. One saved "Trust" is not yours: when a folder
+that had nothing to gate gains `.aelix/` resources and you `/reload`, aelix
+saves trust for it without asking ("Saved project trust for this folder"), and
+from the next launch that counts too (a known gap).
+
 That list rests on a premise that had to be *made* true, which is the next
 section.
 
@@ -302,7 +320,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:1052-1054`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3672-3677`, the text at `:966-971`), because a silent drop looks identical to a
+(`cli/entry.py:3732-3737`, the text at `:966-971`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

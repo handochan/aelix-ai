@@ -186,7 +186,11 @@ def build_installed_lines(extensions: Any, mcp_conns: Any, errors: Any = None) -
             lines.append("")
         lines.append("Refused (found, not loaded):")
         lines.extend(error_rows)
-        lines.append("  Run `aelix extension verify` for the full diagnosis.")
+        # ``verify`` reads installed endpoints only; under an ``-e`` refusal
+        # alone (#638) it has nothing to say, and the row already says what to
+        # type. getattr-guarded: an error of another shape keeps the pointer.
+        if any(getattr(err, "verify_applies", True) for err in list(errors or [])):
+            lines.append("  Run `aelix extension verify` for the full diagnosis.")
     if conns:
         if lines:
             lines.append("")
