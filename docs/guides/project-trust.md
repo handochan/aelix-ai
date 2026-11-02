@@ -255,9 +255,17 @@ loads unasked. (`yolo`, and a plain `-p` run, which have no one to ask, write
 it as they write anything.) The rule goes by a `.agents` folder anywhere in
 the path, as the `.aelix` one does, so it also asks about files that are not
 skills (`.agents/plans/x.md`) and about every write in a project that itself
-sits inside a `.agents` folder (`/work/.agents/proj/src/main.py`). It goes by
-the names in the path you write to: a write to the real folder that a symlink
-named `.agents` points at is not caught.
+sits inside a `.agents` folder (`/work/.agents/proj/src/main.py`).
+
+It also goes by where a write lands, not only by its name (#646). A write into
+a folder that aelix reads skills, extensions, settings, agent profiles or
+prompt templates from is asked about the same way when that folder is behind a
+link: the folder a `.agents`, `.agents/skills` or `.aelix` symlink points at,
+the folder your `~/.agents/skills` or `~/.aelix` points at when you work inside
+it (a dotfiles repository, say — you are asked when editing those folders
+there, not elsewhere in it), and the folders the `skills` and `prompts` paths
+in your global or this project's `settings.json` name. A `--skill` path is not
+one of them: you named it for that run.
 
 | Option | Effect |
 | --- | --- |

@@ -1695,37 +1695,7 @@
    "# The mis-permissioning is real but it is elsewhere, and it is the opposite",
    "# shape — not an unknown destructive NAME, but a KNOWN read-only name whose"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:437-454": [
-   "_SENSITIVE_BASENAMES = frozenset(",
-   "{",
-   "\".bashrc\",",
-   "\".bash_profile\",",
-   "\".profile\",",
-   "\".zshrc\",",
-   "\".zprofile\",",
-   "\".zshenv\","
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:481-483": [
-   "_SENSITIVE_DIR_COMPONENTS = frozenset(",
-   "{\".aelix\", \".agents\", \".ssh\", \".gnupg\", \"cron.d\", \"cron.daily\"}",
-   ")"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:513-513": [
-   "if basename == \".env\" or basename.startswith(\".env.\"):"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:599-600": [
-   "if mode == PermissionMode.YOLO:",
-   "return \"allow\""
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:616-621": [
-   "if (",
-   "mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)",
-   "and provenance == \"write\"",
-   "and _is_auto_allowable_write(_path_from_args(args), cwd())",
-   "):",
-   "return \"allow\""
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:763-771": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1022-1030": [
    "# (b) PLAN mode blocks ALL mutating tools — even on the headless / print /",
    "# rpc path (this check is placed ABOVE the read-only short-circuit and",
    "# the ``not has_ui`` ALLOW branch so the plan-mode guarantee holds on",
@@ -1735,26 +1705,26 @@
    "return ToolCallResult(",
    "block=True, reason=_plan_block_reason(event.tool_name, provenance)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:768-771": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1027-1030": [
    "if mode == PermissionMode.PLAN and is_mutating:",
    "return ToolCallResult(",
    "block=True, reason=_plan_block_reason(event.tool_name, provenance)",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:773-777": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1032-1036": [
    "# (a) aelix's own read-only tools (and the bundled ``agent`` tool, whose",
    "# consent is ``aelix_agents``') are silently allowed in every mode; PLAN",
    "# handled above.",
    "if not is_mutating:",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:813-816": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1077-1080": [
    "if not _has_approval_ui(ctx):",
    "if self.headless_default == \"block\":",
    "return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:818-826": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1082-1090": [
    "# (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash / any tool aelix did",
    "# not build, outside YOLO) → the 4-option prompt.",
    "# Serialize prompts so parallel tool calls never race two modals.",
@@ -1764,10 +1734,10 @@
    "if self._is_session_allowed(rule_key):",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:821-821": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1085-1085": [
    "async with self._lock:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:880-906": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1144-1170": [
    "shell = _resolve_shell(get_shell_env())",
    "dialect = dialect_for_shell(shell.path)",
    "",
@@ -1776,6 +1746,36 @@
    "# ceiling (#204 criterion 4). Measured on c6d424c, ``classify``",
    "# DENYs ``find . -delete``, ``chmod -R 777 /``,",
    "# ``mkfs.ext4 /dev/sda``, ``curl http://x | sh``,"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:444-461": [
+   "_SENSITIVE_BASENAMES = frozenset(",
+   "{",
+   "\".bashrc\",",
+   "\".bash_profile\",",
+   "\".profile\",",
+   "\".zshrc\",",
+   "\".zprofile\",",
+   "\".zshenv\","
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:491-493": [
+   "_SENSITIVE_DIR_COMPONENTS = frozenset(",
+   "{\".aelix\", \".agents\", \".ssh\", \".gnupg\", \"cron.d\", \"cron.daily\"}",
+   ")"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:523-523": [
+   "if basename == \".env\" or basename.startswith(\".env.\"):"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:844-845": [
+   "if mode == PermissionMode.YOLO:",
+   "return \"allow\""
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:861-866": [
+   "if (",
+   "mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)",
+   "and provenance == \"write\"",
+   "and _is_auto_allowable_write(_path_from_args(args), cwd(), settings)",
+   "):",
+   "return \"allow\""
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission_mode.py:75-81": [
    "CYCLE_ORDER: tuple[PermissionMode, ...] = (",

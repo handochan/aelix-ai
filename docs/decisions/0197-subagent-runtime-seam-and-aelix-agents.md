@@ -7,6 +7,10 @@ wait after both pipes close has its own 30 s bound instead of the deadline — s
 the dated notes there.**
 **Amended 2026-11-01 (ADR-0285, #641): the child's command line starts
 `[sys.executable, "-P", "-m", "aelix_coding_agent", …]` — see §(l).**
+**Amended 2026-11-03 (#646, ADR-0281 D10): §(i)'s `.aelix` prerequisite now
+also covers the folder BEHIND a link named `.aelix` and every other folder the
+loader reads — see the dated note after "This is a user-visible behaviour
+change" in §(i).**
 **Amended 2026-10-11 (#407): `/agents run` sanitises child-influenced display
 text through the shared terminal helper — see §(l).**
 **Amended 2026-10-08 (#399): R2's 300-character task cut is removed — see R2.**
@@ -977,6 +981,25 @@ agent profiles under AUTO_ACCEPT will see a prompt they did not see before. That
 is the intended trade, and it carries a CHANGELOG line. The blast radius is
 bounded by a test asserting that ordinary in-cwd writes (`src/app.py`) are still
 auto-allowable.
+
+**Note (2026-11-03, #646): the prerequisite held for a NAME, not for the folder
+behind one.** The component rule (and its symlink-resolved twin, P2 review HIGH
+#1) refuses `docs -> .aelix` from the inside, but a link NAMED `.aelix` that
+points at an ordinary folder (`.aelix -> config`) let an `auto-accept-edits`
+child with no UI write `config/agents/*.md`, `config/extensions/*.py` and
+`config/settings.json` — measured on `758276ff` and again on `74f9214c` through
+this gate — which is the self-perpetuating write-to-exec this section names as
+the hard prerequisite. A write whose resolved path is under the resolved
+`<cwd>/.aelix`, the agent directory, or any other folder or file the loader
+reads (the `.agents/skills` walk, `~/.agents/skills`, the settings `skills` and
+`prompts` paths) is now not auto-allowable either: interactive AUTO_ACCEPT and
+AUTO ask, a delegated child is refused (`builtin/permission.py`
+`_loader_resource_roots`; the list and its measurements are in ADR-0281 D10's
+dated note). The behaviour change widens with it: a user whose `~/.aelix` or
+`~/.agents/skills` is a link into a dotfiles repository is asked when editing
+those folders there. Measured end to end with a real child (`/agents run
+general-purpose` from the TUI under `auto-accept-edits`, OpenRouter
+`anthropic/claude-haiku-4.5`): see ADR-0281 D10.
 
 ### (j) The reaper, and why `killpg` is the wrong instrument
 

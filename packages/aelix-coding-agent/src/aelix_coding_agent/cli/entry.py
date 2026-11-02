@@ -2978,7 +2978,7 @@ async def _async_main(argv: list[str]) -> int:
     # ``/fork``. The same ``posture`` object is also passed to ``run_tui`` so a
     # shift+tab cycle and the gate read/write the SAME holder.
     permission_posture = PermissionPosture()
-    permission_ext = PermissionExtension(posture=permission_posture)
+    permission_ext = PermissionExtension(posture=permission_posture, settings=settings_manager)
 
     # ADR-0197 §(e) — CHILD-ONLY headless floor. A delegated child has no TUI, so
     # ``builtin/permission.py``'s ``not ctx.has_ui`` branch auto-ALLOWS every
