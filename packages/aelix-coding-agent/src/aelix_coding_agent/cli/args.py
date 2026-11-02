@@ -66,6 +66,8 @@ REQUIRED_VALUE_FLAGS = frozenset(
         "--session-dir",
         "--tools",
         "-t",
+        "--exclude-tools",
+        "-xt",
         "--thinking",
         "--permission-mode",
         "--extension",
@@ -107,6 +109,9 @@ FLAG_ONLY_FLAGS = frozenset(
         "--offline",
     }
 )
+_KNOWN_FLAGS = REQUIRED_VALUE_FLAGS | PRINT_FLAGS | OPTIONAL_VALUE_FLAGS | FLAG_ONLY_FLAGS
+"""Every registered option — a diagnostic may name one of these, never another token."""
+
 RootCommand = Literal["extension", "docs", "status", "update"]
 # #434 (ADR-0264 §4.6): ``update`` (``aelix update --models``) is the fourth; until
 # then ``aelix update`` was a one-word prompt. ``aelix -- update`` and
@@ -325,6 +330,11 @@ class Args:
     tools: list[str] = field(default_factory=list)
     """Pi parity: ``--tools <csv>``."""
 
+    exclude_tools: list[str] = field(default_factory=list)
+    """Pi ``--exclude-tools`` / ``-xt <csv>`` (#510, ADR-0283): names and ``*``
+    patterns removed from the registry for this run — built-in, extension and
+    MCP tools alike. Repeating the flag adds to the list (pi keeps the last)."""
+
     extensions: list[str] = field(default_factory=list)
     """Pi parity: ``--extension <name>`` / ``-e`` (repeatable)."""
 
@@ -353,7 +363,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:659-676``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:694-711``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -410,7 +420,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1467-1510``) resolves
+    names. ``entry._resolve_skill_tiers`` (``cli/entry.py:1476-1519``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -648,6 +658,31 @@ def parse_args(argv: list[str]) -> Args:
         elif arg in ("--no-builtin-tools", "-nbt"):
             parsed.no_builtin_tools = True
             parsed.provided.add("no_builtin_tools")
+        elif arg in ("--exclude-tools", "-xt"):
+            if takes_value:
+                value = argv[i + 1]
+                if value.startswith("-"):
+                    # pi takes the next argument whatever it is (#510 verify V7):
+                    # ``-xt --tools read`` excludes a tool named ``--tools`` —
+                    # none — and ``read`` becomes the message. A safety flag
+                    # that excludes nothing says so. Only a flag is named:
+                    # anything else may be a value nobody should see echoed.
+                    shown = f" {value}" if value in _KNOWN_FLAGS else ""
+                    parsed.diagnostics.append(
+                        {
+                            "type": "warning",
+                            "message": (
+                                f"--exclude-tools took the next argument{shown} as the "
+                                "tools to exclude; it starts with '-' and names no tool. "
+                                "Put the names right after it: --exclude-tools bash,edit"
+                            ),
+                        }
+                    )
+                for name in (s.strip() for s in value.split(",")):
+                    if name and name not in parsed.exclude_tools:
+                        parsed.exclude_tools.append(name)
+                parsed.provided.add("exclude_tools")
+                i += 1
         elif arg in ("--tools", "-t"):
             if takes_value:
                 parsed.tools = [s.strip() for s in argv[i + 1].split(",") if s.strip()]
@@ -685,7 +720,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:659-675): warn + drop, never
+                    # Mirrors --thinking (args.py:694-710): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user
@@ -803,6 +838,18 @@ def parse_args(argv: list[str]) -> Args:
             if "=" in arg:
                 key, val = arg[2:].split("=", 1)
                 parsed.unknown_flags[key] = val
+                if key == "exclude-tools":
+                    # Pi parity keeps this an extension flag, which excludes
+                    # nothing — for a safety flag, not silently (#510 verify V7).
+                    parsed.diagnostics.append(
+                        {
+                            "type": "warning",
+                            "message": (
+                                "--exclude-tools=… is not read as --exclude-tools and "
+                                "excludes nothing; write it with a space: --exclude-tools bash"
+                            ),
+                        }
+                    )
             elif takes_value:
                 parsed.unknown_flags[arg[2:]] = argv[i + 1]
                 i += 1
@@ -882,6 +929,13 @@ Tools / Extensions:
                                   Built-ins (lowercase, case-sensitive): bash,
                                   edit, find, grep, ls, read, write. Extension
                                   and MCP tool names are valid here too.
+  --exclude-tools, -xt <csv>      Remove these tools for this run: names or
+                                  patterns with * (quote them: -xt 'github__*').
+                                  Applies to all tools, MCP tools included, and
+                                  wins over --tools; repeatable. Delegated
+                                  agents get the same list. /tool cannot turn
+                                  them back on; settings "defaultTools" sets
+                                  what is on by default.
   --extension, -e <path>          Load extension (repeatable)
   --no-extensions, -ne            Disable all extensions
   --trust-extension-path <dist>   Allow an entry-point pack installed outside

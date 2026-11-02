@@ -1,11 +1,13 @@
 """The shared resource selection contract (#511, ADR-0279 D3–D7).
 
-One service behind every per-kind on/off panel (``/skill`` now, ``/tool``
-#510, ``/extension`` #25): what both settings files say about each item
-(*saved*), what this session runs with (*applied*), what cannot change for
-this run (*locked*), how a batch of panel edits is written, and how a saved
-state is applied. A kind plugs in through :class:`ResourceKind`; nothing here
-imports prompt_toolkit or knows what a skill is.
+One service behind every per-kind on/off panel (``/skill``, ``/tool`` #510,
+``/extension`` #25): what both settings files say about each item (*saved*),
+what this session runs with (*applied*), what cannot change for this run
+(*locked*), how a batch of panel edits is written, and how a saved state is
+applied. A kind plugs in through :class:`ResourceKind`, and a kind whose list
+is not D1's per-item grammar brings its own :class:`SelectionGrammar`
+(``defaultTools``, ADR-0279 D15); nothing here imports prompt_toolkit or knows
+what a skill or a tool is.
 
 States (ADR-0279 D5): *unsaved* lives only in the panel; *saved* is a fresh
 evaluation of both files on disk; *applied* is what the running session uses;
@@ -16,9 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from .resource_filter import (
     Scope,
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
 
 Effect = Literal["next_request", "reload"]
+Role = Literal["item", "placeholder", "info"]
+LockKind = Literal["", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -64,6 +68,11 @@ class ResourceItem:
     """The directory it was discovered under."""
     location: str = ""
     """Where the item lives, shortened for display."""
+    role: Role = "item"
+    """``item`` is something a list can name. A ``placeholder`` stands for what
+    cannot be listed (a server that is off, an untrusted folder) and an ``info``
+    row is read-only status (#25's MCP servers, drawn with a dot): neither is
+    counted, saved or toggled (#510)."""
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,14 @@ class Lock:
 
     value: bool
     reason: str
+    tag: str = ""
+    """The status column's word (``excluded``, ``--tools``, ``server off``…);
+    ``""`` draws ``locked`` (``shadowed`` for that kind)."""
+    kind: LockKind = ""
+    """What fixed it, which picks the state line's wording (#510, ADR-0283):
+    ``cli`` and ``profile`` "Locked on/off", ``unavailable`` "Unavailable",
+    ``shadowed`` "Not loaded", ``always_on`` "Locked on", ``""`` and
+    ``untrusted`` "Locked"."""
 
 
 @dataclass(frozen=True)
@@ -81,6 +98,12 @@ class ItemState:
     applied: bool
     decided_by: Scope | None
     lock: Lock | None = None
+    problem: str | None = None
+    """Why an item that is saved on did not load (#25's failed extension)."""
+    live: bool | None = None
+    """Whether it is in use right now, when that can differ from the applied
+    selection — a tool an extension turned off this run. ``None``: same as
+    :attr:`applied`."""
 
     @property
     def in_force(self) -> bool:
@@ -138,8 +161,103 @@ class ApplyResult:
     warning: str | None = None
 
 
+class SelectionGrammar(Protocol):
+    """How one settings list is read, evaluated and edited (ADR-0279 D15).
+
+    :class:`PerItemGrammar` is D1's: each entry is an opinion about the items
+    it names. ``defaultTools`` (#510) is set-level — a plain name replaces the
+    built-in set — so it evaluates every item against the whole list and keeps
+    an absent key apart from ``[]`` (:attr:`nullable`, Codex F04).
+    """
+
+    nullable: bool
+    """The list may be ``None`` (absent) as well as ``[]``; ``edit_list`` keeps them apart."""
+    checks_both_files: bool
+    """A GLOBAL edit is checked against this project's list too (#510 verify V1): the
+    save reads it first, refuses when it cannot, and passes it as ``project_list``."""
+
+    def validate(self, raw: object) -> tuple[list[str] | None, list[str]]:
+        """``(entries or None when absent, problems)`` for a raw settings value."""
+        ...
+
+    def evaluate_all(
+        self,
+        items: Sequence[ResourceItem],
+        global_list: ScopeList | None,
+        project_list: ScopeList | None,
+    ) -> dict[str, tuple[bool, Scope | None]]:
+        """Each item's saved value and the file that decided it, by row key."""
+        ...
+
+    def edit(
+        self,
+        entries: list[str] | None,
+        item: ResourceItem,
+        want: bool,
+        *,
+        scope: Scope,
+        global_list: ScopeList | None,
+        base_dir: str,
+        project_list: ScopeList | None = None,
+    ) -> list[str] | None:
+        """The list after the smallest change that makes *item* ``want`` in *scope*'s file.
+
+        May raise to refuse: the save then writes nothing and reports the message.
+        """
+        ...
+
+
+class PerItemGrammar:
+    """D1's grammar: :func:`~.resource_filter.effective` and :func:`~.resource_filter.edit`."""
+
+    nullable = False
+    checks_both_files = False
+
+    def validate(self, raw: object) -> tuple[list[str] | None, list[str]]:
+        entries, bad = validate_entries(raw)
+        return entries, bad
+
+    def evaluate_all(
+        self,
+        items: Sequence[ResourceItem],
+        global_list: ScopeList | None,
+        project_list: ScopeList | None,
+    ) -> dict[str, tuple[bool, Scope | None]]:
+        return {item.key: effective(item, global_list, project_list) for item in items}
+
+    def edit(
+        self,
+        entries: list[str] | None,
+        item: ResourceItem,
+        want: bool,
+        *,
+        scope: Scope,
+        global_list: ScopeList | None,
+        base_dir: str,
+        project_list: ScopeList | None = None,
+    ) -> list[str] | None:
+        inherited = True if scope == "global" else effective(item, global_list, None)[0]
+        return edit(list(entries or ()), item, want, inherited, base_dir, list_scope=scope)
+
+
+_PER_ITEM_GRAMMAR = PerItemGrammar()
+
+
+def grammar_of(kind: object) -> SelectionGrammar:
+    """The kind's own grammar, else D1's."""
+
+    grammar = getattr(kind, "grammar", None)
+    return grammar if grammar is not None else _PER_ITEM_GRAMMAR
+
+
 class ResourceKind(Protocol):
-    """One resource type a panel manages. #511 ships ``SkillKind``."""
+    """One resource type a panel manages: ``SkillKind`` (#511), ``ToolKind`` (#510).
+
+    Optional members, read with ``getattr``: ``grammar`` (a
+    :class:`SelectionGrammar`; D1's when absent), ``live()`` (the keys in use
+    right now, when an applied selection can be narrowed at run time) and
+    ``item_problems()`` (row key → why it failed to load).
+    """
 
     kind: str
     settings_key: str
@@ -246,6 +364,7 @@ class ResourceSelection:
         key: str,
         problems: list[str],
         unreadable: list[str] | None = None,
+        grammar: SelectionGrammar = _PER_ITEM_GRAMMAR,
     ) -> ScopeList | None:
         """The scope's list, or ``None`` — for an absent or untrusted scope, or a FAILED read.
 
@@ -266,10 +385,10 @@ class ResourceSelection:
             if unreadable is not None:
                 unreadable.append(detail)
             return None
-        entries, bad = validate_entries(raw)
+        entries, bad = grammar.validate(raw)
         problems.extend(f'{label}: "{key}" entry {p}; it is ignored' for p in bad)
         base = self.global_base if scope == "global" else self.project_base
-        return ScopeList(scope, tuple(entries), base)
+        return ScopeList(scope, tuple(entries or ()), base, present=entries is not None)
 
     def _path(self, scope: Scope) -> str | None:
         manager = self.settings_manager
@@ -300,15 +419,31 @@ class ResourceSelection:
         forget_resolved_paths()  # fresh paths too: a symlink may have been re-pointed (MF1)
         problems: list[str] = []
         unreadable: list[str] = []
-        global_list = self._scope_list("global", kind.settings_key, problems, unreadable)
-        project_list = self._scope_list("project", kind.settings_key, problems, unreadable)
+        grammar = grammar_of(kind)
+        key = kind.settings_key
+        global_list = self._scope_list("global", key, problems, unreadable, grammar)
+        project_list = self._scope_list("project", key, problems, unreadable, grammar)
         locks = kind.locks()
         applied = kind.applied()
+        live_of = getattr(kind, "live", None)
+        live = cast("set[str]", live_of()) if callable(live_of) else None
+        problems_of = getattr(kind, "item_problems", None)
+        failed = cast("Mapping[str, str]", problems_of()) if callable(problems_of) else {}
+        items = kind.items()
+        values = grammar.evaluate_all(items, global_list, project_list)
         states = []
-        for item in kind.items():
-            saved, decided_by = effective(item, global_list, project_list)
+        for item in items:
+            saved, decided_by = values.get(item.key, (True, None))
             states.append(
-                ItemState(item, saved, item.key in applied, decided_by, locks.get(item.key))
+                ItemState(
+                    item,
+                    saved,
+                    item.key in applied,
+                    decided_by,
+                    locks.get(item.key),
+                    problem=failed.get(item.key),
+                    live=(item.key in live) if live is not None else None,
+                )
             )
         return Snapshot(
             kind=kind.kind,
@@ -335,7 +470,10 @@ class ResourceSelection:
         One scope per save (ADR-0279 D4, C20), so a save either happened or did
         not: there is no half-written pair to explain. Refused up front —
         writing nothing — when *scope* cannot be written. A project edit's
-        inherited value is the global file's as it is on disk now.
+        inherited value is the global file's as it is on disk now; a global
+        edit under a grammar that :attr:`~SelectionGrammar.checks_both_files`
+        is checked against this project's file as it is on disk now (#510
+        verify V1). A grammar that refuses an edit writes nothing either.
         """
 
         manager = self.settings_manager
@@ -346,32 +484,51 @@ class ResourceSelection:
             return SaveResult(False, f"Cannot save to {status.path or scope}: {status.reason}")
         before = self.snapshot(kind)
         items = {s.item.key: s.item for s in before.states}
-        wanted = {k: want for k, want in edits.items() if k in items and items[k].identities}
+        wanted = {
+            k: want
+            for k, want in edits.items()
+            if k in items and items[k].identities and items[k].role == "item"
+        }
         if not wanted:
             return SaveResult(True)
         key = kind.settings_key
+        grammar = grammar_of(kind)
         problems: list[str] = []
         unreadable: list[str] = []
         global_now = (
-            self._scope_list("global", key, problems, unreadable) if scope == "project" else None
+            self._scope_list("global", key, problems, unreadable, grammar)
+            if scope == "project"
+            else None
+        )
+        project_now = (
+            self._scope_list("project", key, problems, unreadable, grammar)
+            if scope == "global" and getattr(grammar, "checks_both_files", False)
+            else None
         )
         if unreadable:
-            # A project edit's inherited value is the global file's: unknown here.
+            # A project edit's inherited value is the global file's, and a global
+            # edit's effect here depends on the project's: unknown either way.
             return SaveResult(False, f"Cannot save: {unreadable[0]}")
         base = self.global_base if scope == "global" else self.project_base
-        lists_seen: list[tuple[list[str], list[str]]] = []
+        lists_seen: list[tuple[list[str] | None, list[str] | None]] = []
 
-        def _apply_edits(entries: list[str]) -> list[str]:
-            original = list(entries)
+        def _apply_edits(entries: list[str] | None) -> list[str] | None:
+            original = list(entries) if entries is not None else None
             for item_key, want in wanted.items():
-                item = items[item_key]
-                inherited = True if scope == "global" else effective(item, global_now, None)[0]
-                entries = edit(entries, item, want, inherited, base, list_scope=scope)
-            lists_seen.append((original, list(entries)))
+                entries = grammar.edit(
+                    entries,
+                    items[item_key],
+                    want,
+                    scope=scope,
+                    global_list=global_now,
+                    base_dir=base,
+                    project_list=project_now,
+                )
+            lists_seen.append((original, list(entries) if entries is not None else None))
             return entries
 
         try:
-            await manager.edit_list(scope, key, _apply_edits)
+            await manager.edit_list(scope, key, _apply_edits, nullable=grammar.nullable)
         except Exception as exc:  # noqa: BLE001 — the panel shows it and stays open
             return SaveResult(False, f"{exc}")
         written = (
@@ -402,7 +559,9 @@ class ResourceSelection:
         """The keys a fresh *snapshot* says should be in use: locks first, then saved."""
 
         return {
-            s.item.key for s in snapshot.states if (s.lock.value if s.lock is not None else s.saved)
+            s.item.key
+            for s in snapshot.states
+            if s.item.role == "item" and (s.lock.value if s.lock is not None else s.saved)
         }
 
     async def apply(
@@ -417,7 +576,9 @@ class ResourceSelection:
         Idle: applied before this returns. Busy (a turn started by an extension
         or a background child): a task waits for idle, takes a FRESH snapshot
         and applies that — so of several saves made meanwhile the newest wins —
-        and reports through *on_deferred*. A second deferral replaces the first.
+        and reports through *on_deferred*. A second deferral replaces the first;
+        busy with nothing pending (the files say what is applied), nothing is
+        deferred and an earlier deferral is dropped.
 
         THE BOUNDARY IS EXCLUSIVE BECAUSE NOTHING YIELDS (C8). ``wait_for_idle``
         only says the harness WAS idle; another prompt may claim it before the
@@ -440,6 +601,12 @@ class ResourceSelection:
         previous = self._deferred.pop(kind.kind, None)
         if previous is not None and not previous.done():
             previous.cancel()
+        on, off = _delta(snap)
+        if not on and not off:
+            # Nothing saved differs from what is applied (#510 TUI): there is
+            # nothing to wait for, and "applies when the turn ends" would be
+            # a promise about nothing.
+            return ApplyResult(True)
 
         async def _later() -> None:
             await kind.wait_until_idle()
@@ -457,7 +624,6 @@ class ResourceSelection:
                 on_deferred(result)
 
         self._deferred[kind.kind] = asyncio.get_running_loop().create_task(_later())
-        on, off = _delta(snap)
         return ApplyResult(False, deferred=True, turned_on=on, turned_off=off)
 
 
@@ -479,17 +645,101 @@ def _delta(snapshot: Snapshot) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return on, off
 
 
+class ApplyGate:
+    """Held while a harness is being built; an apply waits for it (#511, Codex X2).
+
+    The runtime keeps its old harness pointer while the factory builds the
+    new one, and the factory reads the skills holder (and, #510, the tool
+    settings), installs them on the candidate and then AWAITS (session
+    recording, extension setup). An apply landing in that window would update
+    the outgoing harness while the candidate keeps what it read — a holder, a
+    prompt and a harness that disagree. The factory holds this gate for its
+    whole build; every kind's ``busy`` is true while it is held, and the waiter
+    re-checks the LIVE harness once it opens. The runtime swaps its pointer
+    right after the factory returns, with no ``await`` in between, so the next
+    check sees the installed harness. :attr:`generation` counts builds. ONE
+    gate for every selection (ADR-0283): the factory builds skills and tools
+    in the same pass.
+    """
+
+    def __init__(self) -> None:
+        self._depth = 0
+        self._open = asyncio.Event()
+        self._open.set()
+        self.generation = 0
+
+    @property
+    def held(self) -> bool:
+        return self._depth > 0
+
+    def __enter__(self) -> ApplyGate:
+        self._depth += 1
+        self.generation += 1
+        self._open.clear()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._depth -= 1
+        if self._depth == 0:
+            self._open.set()
+
+    async def wait_open(self) -> None:
+        await self._open.wait()
+
+
+def harness_busy(harness: Callable[[], Any], gate: ApplyGate | None) -> bool:
+    """A turn is running on the live harness, or a harness is being built (D6)."""
+
+    if gate is not None and gate.held:
+        return True
+    live = harness()
+    return live is not None and not getattr(live, "is_idle", True)
+
+
+async def wait_harness_idle(harness: Callable[[], Any], gate: ApplyGate | None) -> None:
+    """Until the LIVE harness is idle — or has been replaced (C8).
+
+    ``/reload``, ``/new`` and ``/resume`` swap the harness; a waiter parked on
+    the old one's idle event returns as soon as the swap is seen, and
+    :meth:`ResourceSelection.apply`'s loop re-checks the new one.
+    """
+
+    if gate is not None and gate.held:
+        await gate.wait_open()
+        return
+    live = harness()
+    if live is None or not harness_busy(harness, gate):
+        return
+    waiter = asyncio.ensure_future(live.wait_for_idle())
+    try:
+        while not waiter.done():
+            await asyncio.wait({waiter}, timeout=0.25)
+            if harness() is not live:
+                return
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+
+
 __all__ = [
+    "ApplyGate",
     "ApplyResult",
     "SettingsLists",
     "settings_lists",
     "Effect",
     "ItemState",
     "Lock",
+    "LockKind",
+    "PerItemGrammar",
     "ResourceItem",
     "ResourceKind",
     "ResourceSelection",
+    "Role",
     "SaveResult",
     "ScopeStatus",
+    "SelectionGrammar",
     "Snapshot",
+    "grammar_of",
+    "harness_busy",
+    "wait_harness_idle",
 ]

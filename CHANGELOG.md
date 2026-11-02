@@ -23,6 +23,39 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Tools can be turned off one at a time: `--exclude-tools` for a run, and the
+  `/tool` panel for good (#510, ADR-0283).** Turning `bash` off used to mean
+  naming every other tool, extension and MCP tools included, in `--tools`.
+  - `--exclude-tools` / `-xt bash,'github__*'` removes tools for this run:
+    names, or patterns where `*` matches anything (quote them). The model is not
+    told about an excluded tool, a call to it fails as an unknown tool, and
+    nothing brings it back — no extension, `/reload` or MCP connection. It wins
+    over `--tools`; repeating the flag adds to the list; a name that matches no
+    tool is a warning, not an error, and so are `--exclude-tools=bash` and a
+    value starting with `-`, which exclude nothing. Delegated agents get the
+    same list.
+  - `/tool` (or `/tools`, which used to only list the active tools) lists every
+    tool by source — built-in, each extension, each MCP server — on or off.
+    Space toggles, Enter saves to the global or this project's
+    `settings.json` and applies from your next message (after a running turn,
+    if one is), Esc discards. A tool a flag or an agent profile fixes for the
+    run is shown locked with the flag (`excluded`, `--tools`, `--no-tools`,
+    `profile`); a server that is off and an extension that failed to load are
+    shown with where to change them, and are never turned on from here.
+  - The panel writes `defaultTools`, pi's setting: `-name` / `+name` turn a
+    tool off / on, plain names choose the built-ins, `[]` on its own turns the
+    built-ins off (in the project file next to a global list it changes
+    nothing). Every tool is on unless the list says otherwise; extension and
+    MCP tools can be named too. A tool turned off there stays off even if an
+    extension asks for it, and a delegated agent is started without it, even
+    one that does not read this project's settings. Saving one tool moves no
+    other; when a global save cannot do that here, the panel says to save to
+    This project instead and writes nothing.
+  - In `--mode rpc`, `tools/set_active` refuses a tool the run removes or
+    locks off, with the reason, and turns on one `defaultTools` turns off, for
+    this run.
+  - New guide: `aelix docs tools`.
+
 - **An MCP server can be turned off without deleting it: `"enabled": false` in
   `mcp.json` (#512, ADR-0282).** The key used to be ignored — a server written
   with `"enabled": false` was started anyway.
@@ -518,6 +551,13 @@ unwritten. Add them with the next release.
   offer `max` there) it sends `xhigh`'s 32768 budget.
 
 ### Changed
+
+- **`--no-tools`, `--no-builtin-tools` and `--tools` hold for the whole run
+  (#510, ADR-0283).** `/reload` under `--no-tools` turned the extension tools
+  back on, `/reload` under `--tools` added every extension tool, and an
+  extension could switch on any tool the flags left off. None of them can now;
+  an extension can still turn tools off. An agent profile's `tools:` and
+  `builtin_tools: false` hold the same way until `/agents use --none`.
 
 - **When two skills share a name, `--skill` beats the project, which beats your
   global skills, which beat the bundled ones (#511, ADR-0279 D9).** Before, all

@@ -141,6 +141,13 @@ failed on its first request with `Reasoning is mandatory for this endpoint`.
 **`tools: []` is not `tools: ""`.** An empty list means *no tools*. It is not the
 same as the `--tools ''` command-line form, which inverts to *every* tool.
 
+**`tools:` and `builtin_tools: false` are locks**, like the `--tools` and
+`--no-builtin-tools` flags they become: no extension and no `/reload` can turn
+on a tool they leave out, and `/tool` shows those rows locked as `profile` until
+`/agents use --none`. A delegated agent also gets its parent's
+`--exclude-tools`, as typed, and every tool the parent's `defaultTools` keeps
+off; `/agents show` lists them among the flags ([tools](tools.md)).
+
 **`skills:` and `extensions:` take paths, not names**, and they resolve against
 the directory the profile file is in. This differs from pi. A missing path is a
 hard error, so a profile that names a file you later moved will refuse to load

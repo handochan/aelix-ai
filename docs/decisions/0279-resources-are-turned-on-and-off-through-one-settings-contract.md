@@ -23,7 +23,11 @@ refuses an unreadable file; the warning names it once), D8 (the refusal is one
 of its warnings), D11 (a panel too small for one row refuses typing too).
 Amended 2026-10-31 by ADR-0281 (#509): D9 (the order inside a tier, with the
 `.agents/skills` directories) and D11 (one group per directory in PROJECT too,
-each drawn once).
+each drawn once). Amended 2026-11-01 by ADR-0283 (#510): D15 is implemented
+(the set-level `defaultTools` grammar plugs into `ResourceSelection` through a
+`SelectionGrammar`), D16's tool half is done (one policy boundary, C7 tools,
+C11, C13), D11's window never leaves a header alone at the bottom, and D13's
+locks gain the tool flags.
 Date: 2026-10-31
 Issue: #511 (absorbs #595). Design (owner-approved layout A and §7 decisions
 2–11 and 13) and its triage: `.omc/specs/511-design-2026-10-31.md`; the review
@@ -482,6 +486,11 @@ Plain tool names in pi's `defaultTools` REPLACE the default set, which is a
 set-level rule, not the per-item opinion of D1 (C13). #510 writes a set-level
 evaluator and editor and adapts its result into `ResourceSelection`.
 
+*2026-11-01 (ADR-0283 D4, D10):* done. A kind may bring a `SelectionGrammar`
+(`validate`, `evaluate_all`, `edit`, `nullable`); D1's per-item grammar is the
+default. `ScopeList.present` tells an absent key from `[]`, and
+`SettingsManager.edit_list(nullable=True)` keeps them apart on disk (Codex F04).
+
 ### D16. What #511 does not own
 
 - **#25 `/extension`:** the extension filter — not in `_discover_entries` alone:
@@ -498,7 +507,11 @@ evaluator and editor and adapts its result into `ResourceSelection`.
   (`set_active_tools` callers, `_refresh_extension_tools`, `set_tools`, the
   profile rollback's active-set assignment) behind one policy boundary (C7's
   tool half); `/reload`'s restoration of the previous active set unioned with
-  every extension tool (C11); `defaultTools` (D15, C13).
+  every extension tool (C11); `defaultTools` (D15, C13). *2026-11-01:* done in
+  ADR-0283 — `AgentHarness._commit_tools` is the one writer (the constructor
+  seed included, Codex F02), the tool flags are locks `/reload` keeps, and the
+  panel pieces #25 reuses (lock tags and kinds, row roles, the panel body) are
+  built.
 - **Separate issue (pre-existing, security, C6):** `-e <module>` resolves to a
   same-named directory under an untrusted cwd (`extensions/loader.py`).
   *Note 2026-11-01: #638, closed by [ADR-0285](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md) D5 — such an `-e` loads only in

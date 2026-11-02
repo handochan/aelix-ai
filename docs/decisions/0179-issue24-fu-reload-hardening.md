@@ -41,3 +41,14 @@ Use the careful pattern (recon → design → implement → gate → multi-lens 
 - `HarnessFactory` is now the permissive `Callable[..., …]`; a factory reachable by `reload()` MUST accept `*, reload_seed=None` (documented on the type). The 3 production factories (`cli/entry.py`, `rpc_ws`, the rpc noop) + the reload test factory comply; `rpc_ws`/noop accept-and-ignore.
 - **Gate:** `pytest` 4539 pass / 1 skip (+7 vs the 4532 baseline) · `ruff` clean · whole-project `pyright` 8 pre-existing `scripts/pyright_spike.py` errors only (0 new).
 - **Follow-ups:** none from #24-FU. FU3 = WONT-FIX (pi-parity — pi doesn't clean up removed-ext providers on reload either; see the Decision note); FU5 = wont-fix (no production caller). #24-FU is complete. Next roadmap items are independent: #21 (declarative `contributes.*`, deferred ADR-0174), #19 (install), #32 (marketplace), #36-anthropic (thinking-block replay).
+
+## Note 2026-11-01 — ADR-0283 (#510)
+
+FU2's union is clamped by the run's tool policy. Step 6 restores
+`(before ∩ registry) ∪ extension tools ∪ tools the reloaded defaultTools no
+longer turns off` through `AgentHarness.restore_active_tools`, and the policy
+the factory installed drops what `--no-tools`, `--no-builtin-tools`, `--tools`
+(owner decision 1) or `defaultTools` keeps off. So under `--tools` a
+just-written extension tool is NOT made usable by `/reload` any more (the #53
+moat now holds where no flag locks the set), and `--no-tools` stays toolless
+across a reload (the design's M1).

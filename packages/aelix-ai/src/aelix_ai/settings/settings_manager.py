@@ -912,7 +912,9 @@ class SettingsManager:
         self,
         scope: SettingsScope,
         key: str,
-        fn: Callable[[list[str]], list[str]],
+        fn: Callable[[list[str]], list[str]] | Callable[[list[str] | None], list[str] | None],
+        *,
+        nullable: bool = False,
     ) -> list[str]:
         """Apply *fn* to the list under JSON *key* as it is ON DISK now, and write the result.
 
@@ -931,7 +933,11 @@ class SettingsManager:
         happen.
 
         An unchanged list writes nothing, so the file stays byte-identical. An
-        empty result removes the key. Every other key is written back exactly
+        empty result removes the key — unless *nullable* (#510, ``defaultTools``,
+        Codex F04): then *fn* is given ``None`` for an absent key and an
+        explicit ``[]`` as ``[]``, its ``None`` removes the key and its ``[]``
+        is written as ``[]``, because there an empty list is not the same
+        setting as none. Every other key is written back exactly
         as it was read — not migrated — and the text is ``indent=2`` like every
         other settings write. On success the in-memory scope takes exactly the
         list written and forgets a pending setter change to the same key, so a
@@ -951,7 +957,7 @@ class SettingsManager:
         # A setter's write already queued lands first, so this edit builds on it
         # instead of being overwritten by its older snapshot afterwards.
         await self.flush()
-        written: list[list[str]] = []
+        written: list[list[str] | None] = []
         abandoned = threading.Event()
 
         def _builder(current: str | None) -> str | None:
@@ -963,8 +969,9 @@ class SettingsManager:
                 self._assert_project_trusted_for_write()
             data = self._parse_scope_text(scope, current)
             raw = self._list_under(scope, data, key)
+            old: list[str] | None
             if raw is None:
-                old: list[str] = []
+                old = None if nullable else []
             elif isinstance(raw, list) and all(isinstance(e, str) for e in raw):
                 old = list(raw)
             else:
@@ -972,7 +979,8 @@ class SettingsManager:
                     f'"{key}" in {self._scope_label(scope)} is not a list of strings; '
                     "fix it by hand before saving here"
                 )
-            new = list(fn(list(old)))
+            result = fn(list(old) if old is not None else None)  # pyright: ignore[reportArgumentType]
+            new = list(result) if result is not None else ([] if not nullable else None)
             written.append(new)
             if new == old:
                 # Unchanged — also over a legacy ``skills`` object, which is left
@@ -984,7 +992,7 @@ class SettingsManager:
                 enable = data[key].get("enableSkillCommands")
                 if enable is not None and data.get("enableSkillCommands") is None:
                     data["enableSkillCommands"] = enable
-            if new:
+            if new or (nullable and new is not None):
                 data[key] = new
             else:
                 data.pop(key, None)
@@ -995,13 +1003,14 @@ class SettingsManager:
             py_field = SETTINGS_JSON_TO_PY.get(key, key)
             target = self._global_settings if scope == "global" else self._project_settings
             if hasattr(target, py_field):
-                setattr(target, py_field, list(new) if new else None)
+                kept = new is not None and (bool(new) or nullable)
+                setattr(target, py_field, list(new) if kept and new is not None else None)
             modified = (
                 self._modified_fields if scope == "global" else self._modified_project_fields
             )
             modified.discard(py_field)
             self._settings = deep_merge_settings(self._global_settings, self._project_settings)
-            return list(new)
+            return list(new) if new is not None else []
 
         def _late(work: asyncio.Future[None]) -> None:
             if not work.cancelled() and work.exception() is None and written:

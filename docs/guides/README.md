@@ -25,6 +25,9 @@ prints one. That is why every cross-directory link here is an absolute URL —
 - [skills-and-prompts.md](skills-and-prompts.md) — turning skills and prompt
   templates on and off: the `/skill` panel, the `skills` / `prompts` settings
   lists, which same-name skill wins, and when a change takes effect.
+- [tools.md](tools.md) — turning tools on and off: `--exclude-tools`, the tool
+  flags as locks, the `/tool` panel, the `defaultTools` setting, and what a
+  delegated agent gets.
 - [mcp-servers.md](mcp-servers.md) — `mcp.json`: which file is read, the
   entry fields, `"enabled": false`, the server states `/mcp`, `/extension` and
   `aelix status` show, and how an extension's servers relate.

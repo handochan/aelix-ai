@@ -323,6 +323,8 @@ aelix --thinking medium          # off | minimal | low | medium | high | xhigh |
                                  #  and --resume come back at the level you left)
 aelix --append-system-prompt "Be terse."
 aelix --no-context-files         # skip auto-discovered AGENTS.md context (-nc)
+aelix -xt bash                   # run without the bash tool (--exclude-tools;
+                                 #  names or quoted '*' patterns, see tools.md)
 aelix --export session.jsonl out.html   # render a saved session file to HTML
 aelix --offline                  # skip the rg/fd download + catalog fetch (= PI_OFFLINE=1 / AELIX_OFFLINE=1)
 aelix @path/to/file.py "explain this"   # inline a file into the first message
@@ -426,7 +428,7 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
 - `/clear` — clear the transcript.
 - `/compact` — summarise and compact the context.
 - `/cost` — show token usage and cost so far.
-- `/tools` — list active tools.
+- `/tool` (or `/tools`) — turn tools on and off; see [tools](tools.md).
 - `/resume` — switch to another session.
 - `/name <text>` (or `/rename <text>`) — set the current session name. Both
   `/resume` and `aelix --resume` show the latest saved name, falling back to the

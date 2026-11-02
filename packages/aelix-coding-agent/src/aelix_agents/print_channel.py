@@ -307,6 +307,13 @@ class SpawnPlan:
     one. That was every child before #354 — on a reasoning-mandatory model it
     started at ``off`` and its first request died with ``400 Reasoning is
     mandatory for this endpoint and cannot be disabled``."""
+    parent_exclude_tools: tuple[str, ...] = ()
+    """The parent's ``--exclude-tools`` patterns when the spawn was admitted
+    (#510, ADR-0283), read off :attr:`~aelix_agents.runtime.SubagentHost
+    .exclude_tools`. Both channels hand them to :func:`narrow_tools`, so the
+    child removes the same tools from its registry — the print channel through
+    :attr:`limits`, the rpc channel, which never reads ``limits``, from here
+    (Codex F07)."""
     output_cap: int | None = None
     session_path: str | None = None
     """The ABSOLUTE path of the session file the parent allocated for this child
@@ -437,7 +444,9 @@ class StderrRing:
 
 
 def narrow_tools(
-    profile: AgentProfile, parent_grant: Iterable[str] | None
+    profile: AgentProfile,
+    parent_grant: Iterable[str] | None,
+    parent_exclude: Iterable[str] = (),
 ) -> ToolNarrowing:
     """Intersect the profile's request with the parent's LIVE grant — §(l).
 
@@ -460,6 +469,12 @@ def narrow_tools(
     ``--no-tools`` for it, whereas ``--tools ''`` parses to ``[]`` which
     ``_resolve_active_tools`` reads as falsy → ``None`` → EVERY tool active
     (``agents/profile.py:172-182`` documents the inversion).
+
+    ``parent_exclude`` (#510) — the parent's ``--exclude-tools`` patterns, put
+    on the child's profile as they are (owner decision 6), so the child's own
+    registry lacks them too: ``--tools`` (a lock since #510) already keeps a
+    withheld built-in off, and this keeps it out of the registry, MCP tools
+    included.
     """
 
     grant = set(parent_grant) if parent_grant is not None else set(ALL_TOOL_NAMES)
@@ -467,7 +482,11 @@ def narrow_tools(
     allowed = (requested & grant & set(ALL_TOOL_NAMES)) - {AGENT_TOOL_NAME}
     dropped = tuple(sorted(requested - allowed))
     return ToolNarrowing(
-        profile=dataclasses.replace(profile, tools=tuple(sorted(allowed))),
+        profile=dataclasses.replace(
+            profile,
+            tools=tuple(sorted(allowed)),
+            exclude_tools=tuple(dict.fromkeys(parent_exclude)),
+        ),
         dropped=dropped,
     )
 
@@ -494,7 +513,7 @@ def narrow_context_files(
 
     WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
     ``resolver.profile_to_flags`` already owns the single place a profile
-    becomes ``--no-context-files`` (``resolver.py:556-557``), and that emission
+    becomes ``--no-context-files`` (``resolver.py:560-561``), and that emission
     table is what keeps the argv channel and the in-process overlay from
     drifting. A second emission site would also put the flag on the argv TWICE
     whenever the profile itself declared ``context_files: false``.
@@ -685,6 +704,7 @@ def fresh_limits(
     parent_thinking: str | None,
     parent_model: Any | None,
     model_registry: Any | None,
+    parent_exclude_tools: Iterable[str] = (),
 ) -> ComputedLimits:
     """THE ONE COMPUTATION of what bounds a NEW delegation's child (#610 D8).
 
@@ -709,7 +729,7 @@ def fresh_limits(
     """
 
     profile = resolved.profile
-    narrowing = narrow_tools(profile, parent_tools)
+    narrowing = narrow_tools(profile, parent_tools, parent_exclude_tools)
     child_profile = inherit_thinking(
         narrow_context_files(narrowing.profile, parent_context_files),
         parent_thinking,
@@ -719,6 +739,7 @@ def fresh_limits(
             granted_mode=PermissionMode(granted_mode),
             # Always a tuple here: ``narrow_tools`` never leaves ``None``.
             tools=tuple(child_profile.tools or ()),
+            exclude_tools=child_profile.exclude_tools,
             context_files=child_profile.context_files,
             thinking=child_profile.thinking,
             model=child_model_pin(profile, parent_model, model_registry),
@@ -774,6 +795,8 @@ def resume_limits(
       grant and the one given now;
     * tools — the recorded list, in its order, without the ones a new
       delegation would not get now; none left is ``--no-tools``;
+    * exclusions (#510) — the recorded patterns and the parent's now, both:
+      a resume never runs with a tool either run removed;
     * context files — on only if both say on;
     * thinking and the model — the recorded ones, PINNED rather than
       intersected: neither is an authority, and re-deriving the model from a
@@ -794,6 +817,7 @@ def resume_limits(
         limits=ChildLimits(
             granted_mode=resume_clamp(stored.granted_mode, fresh.granted_mode),
             tools=tuple(tool for tool in stored.tools if tool in allowed),
+            exclude_tools=tuple(dict.fromkeys((*stored.exclude_tools, *fresh.exclude_tools))),
             context_files=stored.context_files and fresh.context_files,
             thinking=stored.thinking,
             model=stored.model,
@@ -819,6 +843,7 @@ def limited_profile(profile: AgentProfile, limits: ChildLimits) -> AgentProfile:
     return dataclasses.replace(
         profile,
         tools=limits.tools,
+        exclude_tools=limits.exclude_tools,
         context_files=limits.context_files,
         thinking=limits.thinking,
     )
@@ -933,7 +958,7 @@ def build_child_env(
     env = dict(os.environ if base is None else base)
 
     # The depth gate. INERT at MAX_SUBAGENT_DEPTH == 1 — both branches yield 1,
-    # and ``agents/profile.py:225`` defaults ``role`` to ``"leaf"`` — but wired
+    # and ``agents/profile.py:232`` defaults ``role`` to ``"leaf"`` — but wired
     # now so P3 only has to raise the cap. Computed from the INHERITED value
     # before the key is overwritten.
     depth = (
@@ -944,7 +969,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:339-348``), and a child that waits forever on a
+    # forever" (``cli/entry.py:348-357``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that never ends on its
     # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -1342,6 +1367,7 @@ class PrintChannel:
                 parent_tools=plan.parent_tools,
                 parent_context_files=plan.parent_context_files,
                 parent_thinking=plan.parent_thinking,
+                parent_exclude_tools=plan.parent_exclude_tools,
                 parent_model=self._parent_model() if self._parent_model else None,
                 # #344 — the route a user-defined provider needs, see
                 # ``build_child_argv``. Read LIVE: ``/reload`` rebinds it.
@@ -1422,7 +1448,7 @@ class PrintChannel:
                     cwd=plan.cwd,
                     env=env,
                     # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:337-392``) and any
+                    # (``_read_piped_stdin``, ``cli/entry.py:346-401``) and any
                     # bytes that do arrive are PREPENDED to the task message.
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -1432,7 +1458,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2114-2131``) nor child
+                    # neither parent (``tui/shell.py:2137-2154``) nor child
                     # (``modes/print_mode.py:234-293``) installs a SIGINT
                     # handler to convert that into a result.
                     #

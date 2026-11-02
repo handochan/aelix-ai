@@ -81,6 +81,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from aelix_agent_core.harness.tool_policy import carriable_pattern
 from aelix_agent_core.session.entries import CustomEntry
 from aelix_agent_core.session.fs import LocalFileSystem
 
@@ -197,6 +198,10 @@ _LIMIT_FIELDS = (
     "profile_scope",
 )
 
+_OPTIONAL_LIMIT_FIELDS = ("exclude_tools",)
+"""Read when present (#510): a record written before the field reads as ``[]``."""
+_EXCLUDE_MAX_ENTRIES = 256
+
 _PIN_FIELDS = ("model", "provider", "route")
 
 
@@ -237,11 +242,21 @@ class ChildLimits:
     """The profile file the identity came from (``ResolvedProfile.source_path``).
     A resume refuses a profile that now resolves to another file."""
     profile_scope: str
+    exclude_tools: tuple[str, ...] = ()
+    """The child's ``--exclude-tools`` — the parent's patterns (#510,
+    ADR-0283). Optional in a record: one written before #510 has none, and
+    reading it as none is what that child ran with."""
 
     def to_record(self) -> dict[str, Any]:
         """The JSON value the receipt carries: lists, not tuples (ADR-0242 rule 1.7)."""
 
         pin = self.model
+        # #510 — written only when there are exclusions, so a record without
+        # them is the one an earlier aelix wrote and reads, and one with them
+        # is refused by an aelix that would resume the child without them.
+        extra: dict[str, Any] = (
+            {"exclude_tools": list(self.exclude_tools)} if self.exclude_tools else {}
+        )
         return {
             "granted_mode": self.granted_mode.value,
             "tools": list(self.tools),
@@ -255,6 +270,7 @@ class ChildLimits:
             "cwd": self.cwd,
             "profile_source": self.profile_source,
             "profile_scope": self.profile_scope,
+            **extra,
         }
 
     @classmethod
@@ -267,6 +283,9 @@ class ChildLimits:
         * ``granted_mode`` — a :class:`PermissionMode` value;
         * ``tools`` — distinct built-in tool names (``ALL_TOOL_NAMES``), never
           ``agent``;
+        * ``exclude_tools`` (#510, optional: absent reads as none) — distinct
+          names or ``*`` patterns, none starting with ``-``, with no whitespace,
+          comma or control character;
         * ``context_files`` — a bool;
         * ``thinking`` — one of ``VALID_THINKING_LEVELS``, or null;
         * ``model`` — null, or ``{model, provider, route}`` where a name does not
@@ -284,7 +303,7 @@ class ChildLimits:
         if not isinstance(record, dict):
             raise LimitsError("limits is not an object")
         for name in record:
-            if name not in _LIMIT_FIELDS:
+            if name not in _LIMIT_FIELDS and name not in _OPTIONAL_LIMIT_FIELDS:
                 raise LimitsError("limits holds a field this aelix does not know")
         for name in _LIMIT_FIELDS:
             if name not in record:
@@ -304,6 +323,9 @@ class ChildLimits:
             or len(set(tools)) != len(tools)
         ):
             raise LimitsError("tools is not a set of built-in tool names")
+        exclude = record.get("exclude_tools", [])
+        if not isinstance(exclude, list) or exclude_tools_refusal(exclude) is not None:
+            raise LimitsError("exclude_tools is not a list of tool names or patterns")
         if not isinstance(record["context_files"], bool):
             raise LimitsError("context_files is not a boolean")
         thinking = record["thinking"]
@@ -328,6 +350,7 @@ class ChildLimits:
         return cls(
             granted_mode=granted,
             tools=tuple(tools),
+            exclude_tools=tuple(exclude),
             context_files=record["context_files"],
             thinking=thinking,
             model=_pin_from_record(record["model"]),
@@ -335,6 +358,48 @@ class ChildLimits:
             profile_source=source,
             profile_scope=scope,
         )
+
+
+def exclude_tools_refusal(patterns: Sequence[object]) -> str | None:
+    """Why *patterns* cannot be a delegated child's ``--exclude-tools``, or ``None``.
+
+    #510, Codex F03. The bound :meth:`ChildLimits.from_record` reads a record
+    with, checked BEFORE a child is admitted or recorded — fresh, and after a
+    resume's union — so no run writes limits its own resume would refuse. A
+    list over the bound is refused, never cut short: an entry left out would
+    be a tool the child has. So is an entry no flag can carry — one the run
+    typed, or a tool name ``defaultTools`` turns off (#510 r2: an MCP name is
+    the server's own, verbatim).
+    """
+
+    way_out = "turn a server off in mcp.json, or use a pattern in --exclude-tools, to delegate"
+    if len(patterns) > _EXCLUDE_MAX_ENTRIES:
+        return (
+            f"the agent would be started with {len(patterns)} --exclude-tools entries "
+            f"(this run's and the tools its settings turn off); at most "
+            f"{_EXCLUDE_MAX_ENTRIES} can be passed to a delegated agent; {way_out}"
+        )
+    for pattern in patterns:
+        if not _is_tool_pattern(pattern):
+            shown = repr(pattern)[:60]
+            return (
+                f"{shown} cannot be passed to a delegated agent as an --exclude-tools entry, "
+                "and the agent would have that tool (this run's --exclude-tools or the "
+                "tools its settings turn off): an entry has no whitespace, comma or control "
+                f"character, does not start with '-', and is at most 256 characters; {way_out}"
+            )
+    if len(set(patterns)) != len(patterns):
+        return "the --exclude-tools entries for the agent repeat a name"
+    return None
+
+
+def _is_tool_pattern(value: object) -> bool:
+    """One ``--exclude-tools`` entry a record may carry: no whitespace, comma or
+    control character, not starting with ``-`` (a forged entry must not read as
+    a flag), at most 256 characters (critique B2) —
+    :func:`~aelix_agent_core.harness.tool_policy.carriable_pattern`."""
+
+    return carriable_pattern(value)
 
 
 def _is_path(value: object) -> bool:
@@ -1741,6 +1806,7 @@ __all__ = [
     "append_records",
     "CUT_BY_THE_PARENT",
     "cost_is_known",
+    "exclude_tools_refusal",
     "find_resume_target",
     "resumable_agents",
     "resume_damaged",

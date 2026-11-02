@@ -220,7 +220,7 @@ def _escape_text(value: str) -> str:
 #
 # Pi's leading ``"\n\n"`` is deliberately NOT reproduced: this function returns
 # an append CHUNK and the harness already joins chunks with ``"\n\n"``
-# (``harness/core.py:677-678``). Emitting it here would double the gap.
+# (``harness/core.py:707-708``). Emitting it here would double the gap.
 _FENCE_OPEN = "<project_context>\n\nProject-specific instructions and guidelines:\n\n"
 _FENCE_CLOSE = "</project_context>\n"
 _INSTRUCTIONS_CLOSE = "\n</project_instructions>\n\n"
@@ -543,14 +543,14 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:2079`` passes
+    exists to kill. ``cli/entry.py:2127`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
     (``loader.py:815-817``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:2086``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:2134``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
@@ -820,12 +820,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3851``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3875``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
-    # (0/false/no/off, ``shell.py:141-157``) /reload routes to
+    # (0/false/no/off, ``shell.py:142-158``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:3879-3886``) and never re-scans the extension dirs.
+    # (``harness/core.py:4054-4061``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

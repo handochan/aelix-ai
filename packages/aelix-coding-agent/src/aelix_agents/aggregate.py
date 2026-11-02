@@ -10,12 +10,12 @@ byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
 THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
-``tui/commands.py:1374-1375`` → ``_render_subagent_result``, the human-facing
+``tui/commands.py:1418-1419`` → ``_render_subagent_result``, the human-facing
 ``/agents run`` door. That door stays single-task under decision S2, so it needs
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:737-742``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:744-749``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates

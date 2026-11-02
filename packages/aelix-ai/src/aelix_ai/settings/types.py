@@ -318,6 +318,14 @@ class Settings:
     skills: list[str] | None = None
     prompts: list[str] | None = None
     themes: list[str] | None = None
+    # pi's ``defaultTools`` (``settings-manager.ts``), with the aelix base of
+    # every tool on (#510, ADR-0283): plain names replace the BUILT-IN set,
+    # ``+name`` / ``-name`` turn any tool on or off, in order; a project list
+    # with a plain name replaces the global one, one of only ``±`` entries
+    # adds to it. ``None`` (absent) is every tool on; ``[]`` is pi's "no
+    # built-ins" and is kept distinct — the evaluator is
+    # ``aelix_coding_agent.core.tool_selection``.
+    default_tools: list[str] | None = None
     enable_skill_commands: bool | None = None
     terminal: TerminalSettings | None = None
     images: ImageSettings | None = None
@@ -417,6 +425,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "skills": "skills",
     "prompts": "prompts",
     "themes": "themes",
+    "default_tools": "defaultTools",
     "enable_skill_commands": "enableSkillCommands",
     "terminal": "terminal",
     "images": "images",

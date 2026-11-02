@@ -11,7 +11,7 @@ ADR-0078 (Sprint 6h₄c wires them when the 3 DEFERRED RPC handlers move).
 Architectural decision (P-302): Aelix adopts **harness-rebuild** instead
 of session-swap. Pi can swap ``_session`` directly because
 ``AgentSession`` is a stateless wrapper; Aelix ``AgentHarness`` captures
-``_state.session_id`` at ``__init__`` (``harness/core.py:707``) and binds
+``_state.session_id`` at ``__init__`` (``harness/core.py:744``) and binds
 runtime actions / merges tools / caches session_name during construction.
 The harness factory pattern preserves all of these invariants.
 
@@ -1132,6 +1132,11 @@ class AgentSessionRuntime:
         # live reference disposed in step 3.
         active_before = self._harness.state.active_tool_names
         active_before = list(active_before) if active_before is not None else None
+        # #510 — what the old policy kept off by setting, so step 6 can turn on
+        # what the reloaded settings no longer do.
+        saved_off_before = getattr(
+            getattr(self._harness, "tool_policy", None), "saved_off", frozenset()
+        )
         settings_manager = self._harness.settings_manager
 
         # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
@@ -1167,21 +1172,31 @@ class AgentSessionRuntime:
             reload_seed=ReloadSeed(flag_values=previous_flag_values, model=previous_model),
         )
 
-        # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU). Restore the user's pre-reload active
-        #    filter over the REBUILT registry, unioned with the current extension
-        #    tools — pi ``reload`` passes ``includeAllExtensionTools: true`` so a
-        #    just-written extension's tool is usable even under an explicit
-        #    ``--tools`` filter (the #53 moat). Names are intersected with the fresh
-        #    registry so a REMOVED extension's tools drop out cleanly (aelix
-        #    ``set_active_tools`` validates names and would otherwise raise). A
-        #    ``None`` snapshot ("all tools were active") is preserved when the
-        #    rebuild is already unfiltered, else expanded to the full current set.
+        # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).
+        #    Restore the user's pre-reload active filter over the rebuilt
+        #    registry, unioned with the current extension tools — pi ``reload``
+        #    passes ``includeAllExtensionTools: true`` so a just-written
+        #    extension's tool is usable (the #53 moat) — and with the tools the
+        #    reloaded ``defaultTools`` no longer turns off. Names the rebuilt
+        #    registry lacks (a REMOVED extension's) drop out, and the factory
+        #    installed a fresh policy, so the commit clamps the union: under
+        #    ``--no-tools`` nothing comes back (M1), under ``--tools`` only what
+        #    it names (owner decision 1 ends ADR-0179's union for that flag),
+        #    and a saved-off or excluded tool stays off. A ``None`` snapshot
+        #    ("all tools were active") restores every tool the policy allows.
         rebuilt = self._harness
+        policy_now = getattr(rebuilt, "tool_policy", None)
+        newly_on = [
+            name
+            for name in sorted(saved_off_before)
+            if policy_now is not None and name not in policy_now.saved_off
+        ]
+        restore = getattr(rebuilt, "restore_active_tools", None)
         if active_before is None:
-            if rebuilt.state.active_tool_names is not None:
-                await rebuilt.set_active_tools(
-                    [t.name for t in rebuilt.state.tools]
-                )
+            if callable(restore):
+                restore(None)
+            elif rebuilt.state.active_tool_names is not None:
+                await rebuilt.set_active_tools([t.name for t in rebuilt.state.tools])
         else:
             current_set = {t.name for t in rebuilt.state.tools}
             ext_names = [
@@ -1189,21 +1204,20 @@ class AgentSessionRuntime:
                 for ext in rebuilt.extension_runner.extensions
                 for name in ext.tools
             ]
-            # (active_before ∩ current) ∪ (ext ∩ current), order-preserving
-            # (kept-first, ext-second) and fully de-duplicated with ONE running
-            # ``seen`` — mirrors pi ``_refreshToolRegistry``'s
+            # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on,
+            # order-preserving and fully de-duplicated with ONE running ``seen``
+            # — mirrors pi ``_refreshToolRegistry``'s
             # ``[...activeToolNames].filter(...)`` + push-ext + ``new Set(...)``.
-            # Intersecting BOTH lists with the rebuilt registry keeps
-            # ``set_active_tools`` from raising on a name absent from ``state.tools``
-            # (a removed-ext tool in the snapshot, or an ext tool shadowed by a
-            # same-named app tool that now owns the registry entry).
             target_active: list[str] = []
             seen: set[str] = set()
-            for name in (*active_before, *ext_names):
+            for name in (*active_before, *ext_names, *newly_on):
                 if name in current_set and name not in seen:
                     seen.add(name)
                     target_active.append(name)
-            await rebuilt.set_active_tools(target_active)
+            if callable(restore):
+                restore(target_active)
+            else:
+                await rebuilt.set_active_tools(target_active)
 
         # 7. FLAG ROUND-TRIP (belt-and-braces). The ReloadSeed already pre-seeded
         #    the fresh runtime's flag_values before ``setup()`` re-ran (#24-FU), so
