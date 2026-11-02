@@ -161,3 +161,16 @@ enable/disable API" D5 waited for is now the shared selection contract — the
 Wiring Space on the Installed tab, the filter inside `_discover_entries` and
 the always-on locks is #25's (ADR-0279 D16); until then the tab stays read-only
 and a non-empty `extensions` key is warned about at launch.
+
+
+## Note (2026-11-03) — D5's Installed tab turns extensions on and off
+
+*Amended 2026-11-03 by [ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md)
+([#25](https://github.com/handochan/aelix-ai/issues/25)).* The Installed tab is
+no longer read-only: it is ADR-0279 D11's on/off panel over every extension
+found — on or off, listed without importing an off one — embedded in the tabbed
+viewer (layout A: the tab row is the panel's title row; Tab / Shift-Tab switch
+tabs, ←/→ is "Save to" on Installed only). Enter saves the `extensions` list;
+`/reload` or a restart applies it. Guardrail, Permission and Status stay always
+on (locked rows); MCP servers are read-only rows in #512's words. Discover and
+Sources are unchanged.

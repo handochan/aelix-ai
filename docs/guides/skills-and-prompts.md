@@ -166,8 +166,11 @@ than treating the unreadable file as empty.
 
 Mistakes are reported once, on stderr, when Aelix starts: an entry that matches
 nothing, a path that is not a directory, a value that is not a list of strings.
-The `themes`, `packages` and `extensions` keys are not read yet; a non-empty one
-is reported rather than silently ignored (`-e <path>` adds an extension).
+The `themes` and `packages` keys are not read yet; a non-empty one is reported
+rather than silently ignored. `extensions` uses this grammar to turn extensions
+on and off (`/extension`, see
+[extension-authoring](extension-authoring.md#turning-one-extension-off)); a plain
+path there is not supported yet and is reported (`-e <path>` adds an extension).
 
 ## Prompt templates
 

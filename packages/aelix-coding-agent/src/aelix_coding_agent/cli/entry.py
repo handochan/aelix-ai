@@ -87,8 +87,24 @@ from aelix_coding_agent.cli.session_labels import (
     session_choice_label,
     short_field,
 )
+from aelix_coding_agent.core.extension_selection import (
+    ExtensionControl,
+    ExtensionKind,
+    McpLaunch,
+    build_inventory,
+    extension_filter,
+    list_warnings,
+    listing_inventory,
+    mcp_launch,
+    tool_rows,
+    without_hidden,
+)
 from aelix_coding_agent.core.prompt_selection import PromptCatalog, load_prompt_catalog
-from aelix_coding_agent.core.resource_selection import ResourceSelection, settings_lists
+from aelix_coding_agent.core.resource_selection import (
+    ResourceSelection,
+    SettingsLists,
+    settings_lists,
+)
 from aelix_coding_agent.core.runnable_models import (
     is_runnable,
     turn_refusal,
@@ -114,6 +130,7 @@ from aelix_coding_agent.core.tool_selection import (
 )
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
+    discover_extension_records,
     gate_manifest_mcp_contribs,
     scan_extension_manifests,
 )
@@ -1612,11 +1629,31 @@ def _load_prompt_catalog(
     )
 
 
+def _extension_lists(
+    settings_manager: SettingsManager | None, cwd: str, project_trusted: bool
+) -> SettingsLists:
+    """Both ``extensions`` lists as this process loaded them (#25, ADR-0284).
+
+    ``project_trusted`` false reads the global file only — the vote load's
+    phase G, before trust is decided (the project file is not read then).
+    """
+
+    global_base, project_base = _settings_bases(settings_manager, cwd)
+    return settings_lists(
+        settings_manager,
+        "extensions",
+        global_base=global_base,
+        project_base=project_base,
+        project_trusted=project_trusted,
+    )
+
+
 def _unsupported_settings_warnings(settings_manager: SettingsManager | None) -> list[str]:
     """Keys with no consumer yet are said, not silently accepted (#511, ADR-0279 D8, #84).
 
-    ``themes`` and ``packages`` have none; ``extensions`` gets its filter with
-    ``/extension``'s panel (#25) — until then ``-e`` adds an extension path.
+    ``themes`` and ``packages`` have none. ``extensions`` has its filter since
+    #25 (ADR-0284): its warnings are :func:`list_warnings`', said after the
+    first build, when discovery has run.
     """
 
     if settings_manager is None:
@@ -1629,7 +1666,7 @@ def _unsupported_settings_warnings(settings_manager: SettingsManager | None) -> 
             else settings_manager.get_project_settings()
         )
         path = settings_manager.scope_path(scope) or f"the {scope} settings"
-        for key in ("themes", "packages", "extensions"):
+        for key in ("themes", "packages"):
             value = getattr(settings, key, None)
             if value:
                 out.append(
@@ -1970,6 +2007,9 @@ async def _build_harness_options(
     agents_ext: Any | None = None,
     captured_extensions: list[Any] | None = None,
     captured_extension_errors: list[Any] | None = None,
+    # #25 (ADR-0284) — filled with ``{"inventory": …, "records": …}``: every
+    # extension this build discovered, on or off, and what became of it.
+    captured_inventory: dict[str, Any] | None = None,
     settings_manager: SettingsManager | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
     on_reload: bool = False,
@@ -2163,9 +2203,20 @@ async def _build_harness_options(
         # on first build / /new / /fork / /resume, where fresh defaults are
         # correct). See :class:`ReloadSeed`.
         flag_values=flag_values,
+        # #25 (ADR-0284, phase P) — the ``extensions`` settings filter, both
+        # files by ADR-0279 D2 (``/reload`` re-read them first): an extension
+        # turned off there is listed by ``/extension`` and never imported.
+        # ``-e`` and the built-ins above are never filtered.
+        entry_filter=extension_filter(
+            _extension_lists(settings_manager, cwd, project_trusted), phase="P"
+        ),
     )
-    for err in loaded.errors:
-        print(f"Warning: extension load: {err}", file=sys.stderr)
+    if not (on_reload and app_mode == "interactive"):
+        # #25 (the design's M3): under the TUI a ``/reload`` commits one
+        # transcript line naming each failure instead — this print landed raw
+        # on the input row, inside an open panel.
+        for err in loaded.errors:
+            print(f"Warning: extension load: {err}", file=sys.stderr)
     # #344 / ADR-0249 (X1) — bind the registry to THIS build's runtime before the
     # model is resolved, so an extension ``register_provider`` made during
     # ``setup()`` is already a registry provider when ``resolve_model`` looks.
@@ -2263,6 +2314,11 @@ async def _build_harness_options(
     if captured_extension_errors is not None:
         captured_extension_errors.clear()
         captured_extension_errors.extend(loaded.errors)
+    if captured_inventory is not None:
+        captured_inventory["inventory"] = build_inventory(
+            loaded, no_extensions=bool(parsed.no_extensions)
+        )
+        captured_inventory["records"] = list(loaded.discovered)
     # Seed the message-queue modes from persisted settings so a ``/settings``
     # steering / follow-up change SURVIVES restart (and reaches /new / /fork /
     # /resume). Both had get/set pairs on SettingsManager but no startup
@@ -3144,6 +3200,14 @@ async def _async_main(argv: list[str]) -> int:
                 no_project_local=True,  # SECURITY: never the project-local tier
                 # Issue #91 provenance gate — honour the same override here.
                 trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+                # #25 (ADR-0284, phase G) — the GLOBAL file's ``extensions``
+                # list only: the manager is untrusted here, so the project's
+                # file is not read and cannot keep an extension from voting.
+                # One the global file turns off is never imported and never
+                # votes; ``-e`` is never filtered.
+                entry_filter=extension_filter(
+                    _extension_lists(settings_manager, cwd, False), phase="G"
+                ),
             )
             trust_vote_extensions = list(_vote_loaded.extensions)
             for _err in _vote_loaded.errors:
@@ -3683,6 +3747,7 @@ async def _async_main(argv: list[str]) -> int:
     # because a disabled entry has no connection to win with. W1 limitation
     # (documented, ADR-0181): MCP connects once at startup — a manifest written
     # later takes effect on the next process start, not on /reload.
+    _scan_records: list[Any] = []
     try:
         _scanned_manifests = scan_extension_manifests(
             [str(p) for p in parsed.extensions],
@@ -3694,6 +3759,12 @@ async def _async_main(argv: list[str]) -> int:
             # Issue #91 provenance gate — the scan path is what reaches
             # contributes.mcp_servers, so it MUST honour the same gate + override.
             trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+            # #25 (ADR-0284, phase P) — a pack the ``extensions`` settings turn
+            # off contributes nothing: its MCP servers are never dialled.
+            entry_filter=extension_filter(
+                _extension_lists(settings_manager, cwd, project_trusted), phase="P"
+            ),
+            records=_scan_records,
         )
     except Exception as exc:  # noqa: BLE001 — scan is additive, never fatal
         print(f"Warning: manifest scan: {exc}", file=sys.stderr)
@@ -3762,6 +3833,13 @@ async def _async_main(argv: list[str]) -> int:
         )
     for _refusal in _mcp_refusals:
         print(f"Warning: MCP server refused: {_refusal}", file=sys.stderr)
+    # #25 (Codex F11) — who declared each manifest server, and which the launch
+    # started: fixed for the process. ``/reload`` hides the tools of a started
+    # server whose plugin is off now (its connection stays until restart), and
+    # ``/extension`` says a plugin turned on connects its servers next launch.
+    mcp_launch_record: McpLaunch = mcp_launch(
+        _scan_records, {c.name for c in _manifest_kept}, set(mcp_declared)
+    )
     if _manifest_kept:
         mcp_contribs = _manifest_kept + mcp_contribs
     mcp_manager: McpClientManager | None = None
@@ -3802,6 +3880,13 @@ async def _async_main(argv: list[str]) -> int:
     discovered_extensions: list[Any] = []
     # #126 — its sibling for the refusals, filled by the same build.
     discovered_extension_errors: list[Any] = []
+    # #25 (ADR-0284) — every extension the latest build found, on or off, and
+    # what became of it (``inventory``), its discovery records (``records``),
+    # and why the latest ``/reload`` failed, if it did (``reload_failure``).
+    # The three holders are published together when a build is COMMITTED — the
+    # end of the factory, after which the runtime installs the harness with no
+    # ``await`` in between (Codex F08) — never by a build that then raises.
+    extension_holder: dict[str, Any] = {"inventory": None, "records": [], "reload_failure": None}
 
     # Issue #12: load skills ONCE (the dirs are stable for the process) and
     # re-apply them on every harness build below, so ``harness.skills`` is never
@@ -3959,13 +4044,25 @@ async def _async_main(argv: list[str]) -> int:
                 parsed, cwd, project_trusted, settings_manager
             )
         restore_report: dict[str, Any] = {}
+        # #25 — this build's extension holders, published at the end (F08).
+        staged_extensions: list[Any] = []
+        staged_errors: list[Any] = []
+        staged_inventory: dict[str, Any] = {}
         opts = await _build_harness_options(
             parsed,
             new_session,
             restore_selection=restore_selection,
             restore_report=restore_report,
             keep_model=getattr(reload_seed, "model", None),
-            mcp_tools=mcp_tools,
+            # #25 (owner decision 10) — a server whose plugin the settings turn
+            # off now keeps its connection and loses its tools; the wrappers
+            # made at launch are never changed (Codex F11).
+            mcp_tools=without_hidden(
+                mcp_tools,
+                mcp_launch_record.hidden(
+                    _extension_lists(settings_manager, cwd, project_trusted)
+                ),
+            ),
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
             project_explicitly_trusted=project_explicitly_trusted,
@@ -3978,8 +4075,9 @@ async def _async_main(argv: list[str]) -> int:
             # #101 — the RESOLVED app mode, so the status tool reports the
             # mode this process acted on rather than re-deriving one.
             app_mode=app_mode,
-            captured_extensions=discovered_extensions,
-            captured_extension_errors=discovered_extension_errors,
+            captured_extensions=staged_extensions,
+            captured_extension_errors=staged_errors,
+            captured_inventory=staged_inventory,
             model_registry=model_registry,
             # #98 — settings.json ``defaultProvider``, resolved ONCE above and
             # passed as a value so every (re)built harness resolves the turn model
@@ -4199,6 +4297,13 @@ async def _async_main(argv: list[str]) -> int:
         # registry gains between here and the after-``session_start`` check is
         # what that handler registered (``LateRoute``).
         late_rule.before_session_start()
+        # #25 (Codex F08) — the commit point: the runtime installs this harness
+        # as soon as the factory returns. A build that raised above published
+        # nothing, so ``/extension`` never shows a set no harness runs.
+        discovered_extensions[:] = staged_extensions
+        discovered_extension_errors[:] = staged_errors
+        extension_holder.update(staged_inventory)
+        extension_holder["reload_failure"] = None
         return harness
 
     async def _harness_factory(
@@ -4463,6 +4568,16 @@ async def _async_main(argv: list[str]) -> int:
         default_tools_lists(settings_manager, project_trusted=project_trusted),
     ):
         print(f"Warning: {warning}", file=sys.stderr)
+    # #25 (ADR-0279 D8, ADR-0284) — the ``extensions`` lists' problems, a plain
+    # path entry (an extension source: not supported yet) and an entry naming
+    # no extension the first build found. Under ``--no-extensions`` nothing was
+    # discovered, so names are not checked.
+    for warning in list_warnings(
+        _extension_lists(settings_manager, cwd, project_trusted),
+        extension_holder.get("records") or [],
+        check_names=not parsed.no_extensions,
+    ):
+        print(f"Warning: settings: {warning}", file=sys.stderr)
 
     # === Unrunnable-startup-model gate (#98) ===
     # Placed AFTER the harness build so ``bind_model_registry`` has replayed the
@@ -4789,13 +4904,58 @@ async def _async_main(argv: list[str]) -> int:
                     gate=selection_apply_gate,
                     mcp_statuses=lambda: runtime_statuses(mcp_manager),
                     extension_errors=lambda: list(discovered_extension_errors),
+                    # #25 — an extension the settings turn off: one locked
+                    # placeholder in its own group, pointing at /extension.
+                    extra_rows=lambda: tool_rows(extension_holder.get("inventory")),
                 ),
+            )
+            # #25 (ADR-0284) — /extension's Installed tab: the same service
+            # over the ``extensions`` lists, and the extensions kind over the
+            # latest committed build's inventory. Under ``--no-extensions``
+            # nothing was discovered; the carriers discovery would find are
+            # listed (locked off), read once here, before the TUI draws, so a
+            # manifest warning cannot land on its screen.
+            no_extensions_listing = (
+                listing_inventory(
+                    discover_extension_records(
+                        [],
+                        cwd=Path(cwd),
+                        agent_dir=Path(get_agent_dir()),
+                        no_project_local=not project_trusted,
+                        trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+                    )
+                )
+                if parsed.no_extensions
+                else None
+            )
+            extension_control = ExtensionControl(
+                selection=ResourceSelection(
+                    settings_manager,
+                    global_base=global_base,
+                    project_base=project_base,
+                    project_trusted=project_trusted,
+                ),
+                kind=ExtensionKind(
+                    inventory=lambda: extension_holder.get("inventory"),
+                    harness=lambda: runtime.harness,
+                    gate=selection_apply_gate,
+                    mcp_statuses=lambda: runtime_statuses(mcp_manager),
+                    mcp_launch=lambda: mcp_launch_record,
+                    cwd=cwd,
+                    project_trusted=project_trusted,
+                    agent_dir=str(get_agent_dir()),
+                    listing=lambda: no_extensions_listing,
+                    last_reload_failure=lambda: extension_holder.get("reload_failure"),
+                ),
+                holder=extension_holder,
+                launch=mcp_launch_record,
             )
             return await run_tui(
                 runtime,
                 cwd=str(Path.cwd()),
                 skill_control=skill_control,
                 tool_control=tool_control,
+                extension_control=extension_control,
                 prompt_file_paths=lambda: [
                     path
                     for path in (

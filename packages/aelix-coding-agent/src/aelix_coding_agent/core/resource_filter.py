@@ -46,6 +46,8 @@ Scope = Literal["global", "project"]
 
 _PREFIXES = ("!", "+", "-")
 _GLOB_CHARS = re.compile(r"[*?\[{]")
+#: Read per call so a test can stand in for Windows (#25, ADR-0284 D1).
+_OS_NAME = os.name
 
 
 class FilterTarget(Protocol):
@@ -782,6 +784,12 @@ def matches_exact(
     stripped = body[2:] if body.startswith(("./", ".\\")) else body
     normalized = _posix(_expand(stripped))
     _globs, exact = _forms(target, base_dir, paths=reaches(target, list_scope))
+    if _OS_NAME == "nt":
+        # #25 (ADR-0284 D1): NTFS names are case-insensitive, so a path entry
+        # is too — ``-C:\Users\Me\…\Weather.py`` names ``weather.py``. The
+        # backslashes were made ``/`` above, on both sides.
+        wanted = normalized.casefold()
+        return any(form.casefold() == wanted for form in exact)
     return normalized in exact
 
 

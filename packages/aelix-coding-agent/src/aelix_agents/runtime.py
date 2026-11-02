@@ -721,7 +721,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:720``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:729``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a

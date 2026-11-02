@@ -140,8 +140,16 @@ Disabled servers are listed last.
 An extension can declare servers in its manifest (`[[contributes.mcp_servers]]`,
 see [extension-authoring](extension-authoring.md)). They start next to the
 `mcp.json` servers, behind the capability flags that guide describes, and are
-listed by `/mcp` and `/extension` the same way. `aelix status` does not list
-them yet.
+listed by `/mcp` and `/extension` the same way — `/extension` also names the
+extension that declared each. `aelix status` does not list them yet.
+
+Turning the extension off in `/extension` (#25) turns its servers off too, at
+the next launch: an extension that is off at launch has nothing started. After
+`/reload` turns it off, its servers' tools are hidden from the model and the
+connection stays until restart (`connected · hidden` in `/extension`); turned
+back on, they connect at the next launch if they were never started. The servers
+themselves are turned on and off only in `mcp.json` — `/extension` lists them,
+it does not toggle them.
 
 They have no `enabled` key — a manifest that sets one does not validate. What
 you can do:

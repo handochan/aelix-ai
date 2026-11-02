@@ -85,7 +85,8 @@ Round brackets — `( )` — mark a row Space cannot change, and the right-hand
 column says why: `excluded`, `--no-tools`, `--no-builtin-tools`, `--tools`,
 `profile`. A server that is off has one row in its group, `server off` (its
 `"enabled": false` in `mcp.json`) or `failed` (its connect at launch failed),
-and an extension that failed to load has one too; neither is counted as a tool
+and an extension that failed to load has one too, as does one turned off in
+`/extension` (`ext off`); none is counted as a tool
 or a search match, and the line under the list starts with where to look
 (`/mcp`, `/extension`). This panel never turns a server or an extension on.
 

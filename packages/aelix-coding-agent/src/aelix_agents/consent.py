@@ -77,7 +77,7 @@ holding every option but ``Cancel`` until the title has been drawn, so the task
 and the directory are no longer cut before they reach it.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1217-1218`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1226-1227`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and

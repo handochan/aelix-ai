@@ -37,6 +37,7 @@ from aelix_coding_agent.extensions.always_on import (
     is_builtin_always_on,
 )
 from aelix_coding_agent.tui.picker_text import _PickerText
+from aelix_coding_agent.tui.selection_panel import SelectionPanelBody, flat
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -371,8 +372,11 @@ async def run_extension_manager(
     sources_getter: Callable[[], Any] | None = None,
     catalog_getter: Callable[[], Any] | None = None,
     default_catalog_getter: Callable[[], tuple[str, bool] | None] | None = None,
+    control: Any = None,
+    width: Callable[[], int] | None = None,
+    invalidate: Callable[[], None] | None = None,
 ) -> None:
-    """Drive the ``/extension`` read-only tabbed viewer (Sprint WP-8, Feature 3).
+    """Drive the ``/extension`` tabbed viewer (Sprint WP-8, Feature 3; #25).
 
     Module-level + dependency-injected (duck-typed ``extensions`` list +
     ``mcp_manager`` + the ``tabbed`` viewer + ``commit`` + a
@@ -404,6 +408,13 @@ async def run_extension_manager(
     marked built-in row reflects an env repoint / a CLI opt-out live on the next open.
     :data:`None` (or a getter that raises) simply omits the built-in row — the
     stored sources still render.
+
+    ``control`` (#25, ADR-0284) — the session's
+    :class:`~aelix_coding_agent.core.extension_selection.ExtensionControl`. With
+    it the Installed tab is the shared on/off panel (:class:`ExtensionPanelBody`)
+    embedded in ``tabbed`` (layout A: the tab row is the panel's title row);
+    ``width`` is each frame's width and ``invalidate`` repaints. Without it the
+    tab is the read-only list below.
 
     Degrades to a committed message when no ``tabbed`` viewer is available
     (headless / not wired) and surfaces any viewer exception as a red line —
@@ -473,12 +484,63 @@ async def run_extension_manager(
     discover_idx = next((i for i, (name, _) in enumerate(tabs) if name == "Discover"), 1)
 
     try:
-        await tabbed("Extensions", tabs, filter_tabs={discover_idx})
+        if control is not None:
+            body = ExtensionPanelBody(
+                control.selection,
+                control.kind,
+                title="Extensions",
+                noun=("extension", "extensions"),
+                effect_note=EFFECT_NOTE,
+                width=width or (lambda: 80),
+                commit=commit,
+                invalidate=invalidate or (lambda: None),
+            )
+            await tabbed(
+                "Extensions",
+                tabs,
+                filter_tabs={discover_idx},
+                interactive={0: body},
+                width=width,
+            )
+        else:
+            await tabbed("Extensions", tabs, filter_tabs={discover_idx})
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ extension manager failed: {exc}", style="bold red"))
 
 
+#: What Enter's summary says after the file is written (ADR-0284 D5): nothing
+#: changes until ``/reload`` or a restart. What waits for a restart even then
+#: (MCP servers, providers) is said per extension below it (Codex F10).
+EFFECT_NOTE = "Not applied yet: /reload (or a restart) loads the new set."
+
+
+class ExtensionPanelBody(SelectionPanelBody):
+    """The Installed tab's panel (#25): the shared body, plus what waits for a restart.
+
+    After a save, a changed extension whose MCP servers or providers outlive a
+    ``/reload`` gets one line saying so (Codex F10) — the summary's own note
+    covers the rest.
+    """
+
+    async def save(self) -> list[object] | None:
+        from rich.text import Text  # noqa: PLC0415
+
+        edited = dict(self.model.edits)
+        lines = await super().save()
+        if lines is None:
+            return None
+        detail = getattr(self.kind, "detail", None)
+        labels = {s.item.key: s.item.label for s in self.model.states}
+        for key in edited:
+            note = detail(key) if callable(detail) else None
+            if note:
+                lines.append(Text(flat(f"  {labels.get(key, key)}: {note}."), style="yellow"))
+        return lines
+
+
 __all__ = [
+    "EFFECT_NOTE",
+    "ExtensionPanelBody",
     "build_discover_lines",
     "build_installed_lines",
     "build_sources_lines",

@@ -36,7 +36,9 @@ if TYPE_CHECKING:
 
 Effect = Literal["next_request", "reload"]
 Role = Literal["item", "placeholder", "info"]
-LockKind = Literal["", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted"]
+LockKind = Literal[
+    "", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted", "status"
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -88,7 +90,10 @@ class Lock:
     """What fixed it, which picks the state line's wording (#510, ADR-0283):
     ``cli`` and ``profile`` "Locked on/off", ``unavailable`` "Unavailable",
     ``shadowed`` "Not loaded", ``always_on`` "Locked on", ``""`` and
-    ``untrusted`` "Locked"."""
+    ``untrusted`` "Locked"; ``status`` (#25's MCP rows) is the reason itself."""
+    refusal: str = ""
+    """What Space says on this row, when it is not the reason (#25: an MCP row
+    names where servers are turned on and off)."""
 
 
 @dataclass(frozen=True)

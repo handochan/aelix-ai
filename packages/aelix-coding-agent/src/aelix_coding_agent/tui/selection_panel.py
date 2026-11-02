@@ -204,6 +204,8 @@ class SelectionModel:
     effect: str = "next_request"
     """The kind's :data:`~.resource_selection.Effect`: ``reload`` words a pending
     row "/reload applies it", and Enter saves without applying (#25)."""
+    tabbed: bool = False
+    """Embedded in ``tabbed`` (#25): the key hint names Tab."""
 
     # --- reading -----------------------------------------------------------
 
@@ -249,10 +251,11 @@ class SelectionModel:
                 return lock.tag, _DIM
             shadowed = lock.kind == "shadowed" or lock.reason.startswith("shadowed")
             return ("shadowed" if shadowed else "locked"), _DIM
+        if state.item.key in self.edits:
+            # Before "failed" (#25): turning a failed extension off is an edit.
+            return "* unsaved", _CYAN
         if state.problem is not None:
             return "failed", _RED
-        if state.item.key in self.edits:
-            return "* unsaved", _CYAN
         if state.pending:
             after = "/reload" if self.effect == "reload" else "pending"
             return f"{'on' if state.saved else 'off'} · {after}", _YELLOW
@@ -318,7 +321,7 @@ class SelectionModel:
         self.confirm_create = False
         if state.item.role == "info":
             refusal = (
-                state.lock.reason
+                (state.lock.refusal or state.lock.reason)
                 if state.lock is not None
                 else f"{state.item.label} is status only"
             )
@@ -678,6 +681,8 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
             text = f"Not loaded: {lock.reason}"
         elif kind == "unavailable":
             text = f"Unavailable: {lock.reason}"
+        elif kind == "status":
+            text = lock.reason
         else:
             new_kind = kind in ("cli", "profile", "always_on")
             word = f" {_word(lock.value)}" if new_kind else ""
@@ -693,7 +698,7 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
                 # A run lock lets an extension narrow, never widen (ADR-0283).
                 text += " · off now (turned off this run)"
         return f"{_DIM} {fit(flat(text), width - 1)}{_RST}"
-    if state.problem is not None:
+    if state.problem is not None and state.item.key not in model.edits:
         text = f"Saved {_word(state.saved)} · failed to load: {state.problem}"
         return f"{_RED} {fit(flat(text), width - 1)}{_RST}"
     decided = " (this project's file)" if state.decided_by == "project" else ""
@@ -720,11 +725,111 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
 def _hint(model: SelectionModel, width: int) -> str:
     if model.confirm_create:
         text = "Enter create and save · Esc back · next launch may ask; -p may need --approve"
+    elif model.tabbed and width < _NARROW:
+        text = "Tab ↑↓ Space ←→scope Enter save Esc"
+    elif model.tabbed:
+        text = "Tab tabs · ↑↓ · Space toggle · ←→ save to · Enter save · Esc cancel · search"
     elif width < _NARROW:
         text = "↑↓ Space ←→scope Enter save Esc cancel"
     else:
         text = "↑↓ move · Space toggle · ←→ save to · Enter save · Esc cancel · type to search"
     return f"{_DIM} {fit(text, width - 1)}{_RST}"
+
+
+def tab_title_row(
+    title: str,
+    names: list[str],
+    active: int,
+    width: int,
+    model: SelectionModel | None = None,
+) -> str:
+    """``── Extensions  [Installed] Discover Sources ── Save to [Global]  This project ──``.
+
+    #25 (layout A): ``tabbed``'s tab row merged into the panel's title row, so
+    the list keeps the row. Without *model* (a read-only tab) only the tabs.
+    What does not fit goes in order: the "Save to" label and the title, then
+    "This project" shortens to "Project"; the tabs themselves always stay.
+    """
+
+    tabs_plain: list[str] = []
+    tabs_styled: list[str] = []
+    for index, name in enumerate(names):
+        word = flat(name)
+        if index == active:
+            tabs_plain.append(f"[{word}]")
+            tabs_styled.append(f"{_SEL}[{word}]{_RST}")
+        else:
+            tabs_plain.append(word)
+            tabs_styled.append(word)
+    tabs_p = " ".join(tabs_plain)
+    tabs_s = " ".join(tabs_styled)
+
+    def _right(label: str, sep: str, project: str, tail: bool) -> tuple[str, str]:
+        if model is None:
+            return "", ""
+        plain: list[str] = []
+        styled: list[str] = []
+        for scope in ("global", "project"):
+            word = "Global" if scope == "global" else project
+            if model.target == scope:
+                plain.append(f"[{word}]")
+                styled.append(f"{_BOLD}[{word}]{_RST}")
+            elif not model.scope_writable(scope)[0]:
+                plain.append(word)
+                styled.append(f"{_DIM}{word}{_RST}")
+            else:
+                plain.append(word)
+                styled.append(word)
+        end = f" {_RULE * 2}" if tail else ""
+        return (
+            f" {label}{sep.join(plain)}{end}",
+            f" {label}{sep.join(styled)}{_CYAN}{end}{_RST}",
+        )
+
+    shapes = (
+        (True, "Save to ", "  ", "This project", True),
+        (False, "Save to ", "  ", "This project", True),
+        (False, "", " ", "Project", True),
+        (False, "", " ", "Project", False),
+    )
+    for show_title, label, sep, project, tail in shapes[2 if width < _NARROW else 0 :]:
+        lead = _RULE * (2 if show_title else 1)
+        head_plain = f"{lead} " + (f"{flat(title)}  " if show_title else "") + tabs_p + " "
+        head = (
+            f"{_CYAN}{lead} {_RST}"
+            + (f"{_BOLD}{flat(title)}{_RST}  " if show_title else "")
+            + tabs_s
+            + " "
+        )
+        right_plain, right = _right(label, sep, project, tail)
+        fill = width - cells(head_plain) - cells(right_plain)
+        if fill >= 1:
+            return f"{head}{_CYAN}{_RULE * fill}{_RST}{right}"
+    # Not even the tabs and the scope fit: the tabs alone, cut.
+    return fit_ansi(f"{_CYAN}{_RULE} {_RST}{tabs_s}", width)
+
+
+def fit_ansi(line: str, width: int) -> str:
+    """*line* (owned SGR only) cut to *width* cells with ``…``, its escapes kept (#25)."""
+
+    import re  # noqa: PLC0415
+
+    pieces = re.split(r"(\x1b\[[0-9;]*m)", line)
+    if sum(cells(p) for p in pieces if not p.startswith("\x1b[")) <= width:
+        return line
+    out: list[str] = []
+    used = 0
+    for piece in pieces:
+        if piece.startswith("\x1b["):
+            out.append(piece)
+            continue
+        for cluster in graphemes(piece):
+            w = cluster_cells(cluster)
+            if used + w > width - 1:
+                return "".join(out) + "…" + _RST
+            out.append(cluster)
+            used += w
+    return "".join(out)
 
 
 TitleRow = Callable[[SelectionModel, int], str]
@@ -1230,6 +1335,8 @@ async def run_selection_panel(
 __all__ = [
     "Layout",
     "PanelOutcome",
+    "fit_ansi",
+    "tab_title_row",
     "SelectionList",
     "SelectionModel",
     "SelectionPanelBody",
