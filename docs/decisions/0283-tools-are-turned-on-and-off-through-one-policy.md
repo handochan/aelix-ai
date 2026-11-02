@@ -121,12 +121,16 @@ match by their stripped form, and refused entries stay in the file. "Moves that
 tool alone" covers every way the file is read (verify V1): a project edit, the
 two files together; a global edit, the global file alone (every folder without
 a project list) AND, when this project has a list, the two together — a
-project list of only `±` entries, `[]` included, builds on the global one. The
-target is the edited file's own view; a project list that overrides it is the
-save's reported mismatch. When no candidate holds both — global absent, project
-`[]`, `weather` off on Global — the editor raises `EditRefused` inside the
-`edit_list` transaction, nothing is written, and the panel says to save to This
-project instead. `SelectionGrammar.checks_both_files` asks the save to read the
+project list of only `±` entries, `[]` included, builds on a global one that
+exists. The target is the edited file's own view; a project list that
+overrides it is the save's reported mismatch. When no candidate holds both —
+global absent, project `[]`, `weather` off on Global — the editor raises
+`EditRefused` inside the `edit_list` transaction, nothing is written, and the
+panel says to save to This project instead, which other tools would turn on or
+off, and that a project `[]` means no built-ins only while the global file has
+no list (verify r1 R1); a reason one row would cut is wrapped over the detail
+rows, and below 60 columns it says "Project", as the title row does.
+`SelectionGrammar.checks_both_files` asks the save to read the
 project file for a global edit and to refuse when it cannot; D1's grammar does
 not. A property test drives 3 × 4,000 random pairs of raw lists (refused and
 unstripped entries mixed in) in both scopes: the target, every other tool in
@@ -187,8 +191,12 @@ The parent's FINAL saved-off set rides the same path (owner decision B,
 2026-11-01): `delegated_exclusions(policy)` is the run's patterns, then — sorted
 — every name `defaultTools` keeps off now (`ToolPolicy.saved_off_in_force`: a
 `--tools` that names one keeps it on, and one `/tool` or RPC turned back on is
-on), less a name a pattern already covers and a name no entry can carry
-(`carriable_pattern`, the record reader's own rule). `cli/entry.py` reads it
+on), less a name a pattern already covers. A name no entry can carry
+(`carriable_pattern`, the record reader's own rule) stays in, and the check
+below refuses the spawn — left out, the child would have that tool, and an MCP
+tool's name is its server's key and tool name verbatim (verify r1 R3,
+2026-11-02; MCP asks for `[A-Za-z0-9_.-]` names, so a real server rarely
+meets it). `cli/entry.py` reads it
 live off the runtime host's harness for `SubagentHost.exclude_tools`, and
 `/agents show` shows it. A child reads its own settings — an untrusted one
 never the project's — so a tool turned off only in the parent's project file,
@@ -199,7 +207,9 @@ The list is checked against the record reader's bound BEFORE a child is
 admitted or recorded, fresh and after a resume's union
 (`exclude_tools_refusal`; Codex F03): more than 256 entries, or one the reader
 would refuse, is an error result with the reason — never a truncated list,
-never a record its own resume refuses.
+never a record its own resume refuses. The reason ends with the way out: turn
+a server off in `mcp.json`, or use a pattern in `--exclude-tools` (verify r1
+R5: saved-off names count toward the 256 too).
 
 ### D9. The prompt (pi #10635; Codex F05)
 

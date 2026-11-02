@@ -315,6 +315,9 @@ async def test_the_childs_own_launch_leaves_the_tool_out_of_its_registry(
 # --- the bound (Codex F03): refused before admission, never truncated -------------------
 
 
+_WAY_OUT = "turn a server off in mcp.json, or use a pattern in --exclude-tools, to delegate"
+
+
 def _patterns(prefix: str, count: int) -> tuple[str, ...]:
     return tuple(f"{prefix}{i}" for i in range(count))
 
@@ -349,6 +352,9 @@ async def test_a_fresh_spawn_over_the_records_bound_is_refused_before_admission(
     result = await runtime.spawn(_resolved(), "go")
     assert not result.ok and result.status == "error" and result.error is not None
     assert "257 --exclude-tools entries" in result.error and "at most 256" in result.error
+    # The way out (verify r1 R5): saved-off names count too, so a long list is
+    # not only something the user typed.
+    assert result.error.endswith(_WAY_OUT), result.error
     assert seen == [] and runtime._children == {}  # no process, no row
     # 256 is the bound itself: started, and every pattern reaches the argv.
     ok = _SubagentRuntimeImpl(
@@ -411,3 +417,63 @@ def test_an_entry_the_record_would_refuse_is_refused_with_its_reason(bad: str) -
 
     reason = exclude_tools_refusal(("bash", bad))
     assert reason is not None and "cannot be passed to a delegated agent" in reason
+
+
+@pytest.mark.parametrize(
+    ("server", "tool", "pattern"),
+    [("web", "fetch page", "web__fetch*"), ("-web", "fetch", "*web__fetch")],
+)
+async def test_a_saved_off_tool_no_entry_can_carry_refuses_the_spawn(
+    tmp_path: Path, server: str, tool: str, pattern: str
+) -> None:
+    """Verify r1 R3: such a name was left out of the child's list, and the child had the tool.
+
+    An MCP tool's name is its server's key and the server's own tool name,
+    verbatim (``mcp/adapter.py``), so a space in either, or a key that starts
+    with ``-``, makes a name no ``--exclude-tools`` entry can carry. Read
+    through the parent's own getter (``cli/entry.py``) off a live policy.
+    """
+
+    from types import SimpleNamespace
+
+    import mcp.types as mcp_types
+    from aelix_agent_core.harness.tool_policy import ToolPolicy
+    from aelix_coding_agent.cli.entry import _live_child_exclusions
+    from aelix_coding_agent.mcp.adapter import mcp_tool_to_agent_tool
+
+    name = mcp_tool_to_agent_tool(
+        conn=None,  # pyright: ignore[reportArgumentType]
+        tool=mcp_types.Tool(name=tool, inputSchema={"type": "object"}),
+        name_prefix=server,
+    ).name
+    assert name == f"{server}__{tool}"
+
+    def _runtime(policy: ToolPolicy, seen: list[list[str]]) -> _SubagentRuntimeImpl:
+        host: dict[str, Any] = {
+            "runtime": SimpleNamespace(harness=SimpleNamespace(tool_policy=policy))
+        }
+        parsed = parse_args([])
+        runtime = _SubagentRuntimeImpl(
+            host=SubagentHost(
+                cwd=lambda: str(tmp_path),
+                exclude_tools=lambda: _live_child_exclusions(host, parsed),
+            )
+        )
+        assert runtime.channel is not None
+        runtime.channel._argv_builder = _capture(  # pyright: ignore[reportAttributeAccessIssue]
+            build_child_argv, _PRINT_STUB, seen, "Task: t"
+        )
+        return runtime
+
+    seen: list[list[str]] = []
+    policy = ToolPolicy(saved_off=frozenset({name, "weather"}))
+    refused = _runtime(policy, seen)
+    result = await refused.spawn(_resolved(), "go")
+    assert not result.ok and result.status == "error" and result.error is not None
+    assert result.error.startswith(f"{name!r} cannot be passed to a delegated agent"), result.error
+    assert result.error.endswith(_WAY_OUT)
+    assert seen == [] and refused._children == {}  # no process, no row
+    # A pattern that covers it carries it: the child starts, and the name is not on its argv.
+    covered = _runtime(ToolPolicy(exclude=(pattern,), saved_off=policy.saved_off), seen)
+    await covered.spawn(_resolved(), "go")
+    assert len(seen) == 1 and _child(seen[0]).exclude_tools == [pattern, "weather"]

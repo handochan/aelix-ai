@@ -137,9 +137,11 @@ it removes that tool's `+`/`-` entries and adds one only if the list still
 says otherwise, and it never turns a list of plain names into a list of `+`/`-`
 entries (that would turn the other built-ins back on). Entries it ignores stay
 where they are. A save to the global file also keeps every other tool where it
-is in this project, when the project's list builds on the global one; if no
-change of the global file can do both, the panel saves nothing and says to
-save to This project instead.
+is in this project, when the project's list is only `+`/`-` entries or `[]`.
+A project `[]` means no built-ins only while the global file has no list, so
+there turning a tool off on Global would turn the built-ins on here; no change
+of the global file can do both, and the panel saves nothing, says to save it
+to This project instead and names the tools that would have turned on.
 
 ## Delegated agents
 
@@ -151,9 +153,12 @@ as `--exclude-tools` too: a tool turned off only in this project's file stays
 off in an untrusted child, extension and MCP tools included. This only ever
 removes tools; one you turned back on in the parent is not passed. `/agents
 show` shows the `--exclude-tools` a child would get. A child that would need
-more than 256 entries, or one of your `--exclude-tools` entries that cannot be
-passed on (whitespace or a comma in it, or a leading `-`), is not started, and
-the reason is said.
+more than 256 entries, or a name that cannot be passed on (whitespace, a comma
+or a control character in it, or a leading `-`) — one of your `--exclude-tools`
+entries, or a tool `defaultTools` turns off, such as an MCP tool whose server
+or tool name has a space — is not started, and the reason says so: turn the
+server off in `mcp.json`, or cover the names with a `*` pattern in
+`--exclude-tools`.
 
 ## Without the TUI
 

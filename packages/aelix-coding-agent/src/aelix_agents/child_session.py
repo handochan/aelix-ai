@@ -367,22 +367,26 @@ def exclude_tools_refusal(patterns: Sequence[object]) -> str | None:
     with, checked BEFORE a child is admitted or recorded — fresh, and after a
     resume's union — so no run writes limits its own resume would refuse. A
     list over the bound is refused, never cut short: an entry left out would
-    be a tool the child has.
+    be a tool the child has. So is an entry no flag can carry — one the run
+    typed, or a tool name ``defaultTools`` turns off (#510 r2: an MCP name is
+    the server's own, verbatim).
     """
 
+    way_out = "turn a server off in mcp.json, or use a pattern in --exclude-tools, to delegate"
     if len(patterns) > _EXCLUDE_MAX_ENTRIES:
         return (
             f"the agent would be started with {len(patterns)} --exclude-tools entries "
             f"(this run's and the tools its settings turn off); at most "
-            f"{_EXCLUDE_MAX_ENTRIES} can be passed to a delegated agent"
+            f"{_EXCLUDE_MAX_ENTRIES} can be passed to a delegated agent; {way_out}"
         )
     for pattern in patterns:
         if not _is_tool_pattern(pattern):
             shown = repr(pattern)[:60]
             return (
-                f"--exclude-tools entry {shown} cannot be passed to a delegated agent: an "
-                "entry has no whitespace, comma or control character, does not start with "
-                "'-', and is at most 256 characters"
+                f"{shown} cannot be passed to a delegated agent as an --exclude-tools entry, "
+                "and the agent would have that tool (this run's --exclude-tools or the "
+                "tools its settings turn off): an entry has no whitespace, comma or control "
+                f"character, does not start with '-', and is at most 256 characters; {way_out}"
             )
     if len(set(patterns)) != len(patterns):
         return "the --exclude-tools entries for the agent repeat a name"

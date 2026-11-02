@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Any, cast, get_args
 from aelix_agent_core.harness.tool_policy import (
     ToolLock,
     ToolPolicy,
-    carriable_pattern,
     tool_name_matcher,
     tool_pattern_matches,
 )
@@ -303,21 +302,30 @@ class DefaultToolsGrammar:
         lists = [lst for view in views for lst in view]
         universe = self.builtin | mentioned_names(*lists) | {name, _UNNAMED}
         before = [self._values(view, universe) for view in views]
-        first_moved: list[set[str]] | None = None
+        first_moved: list[dict[str, bool]] | None = None
         for candidate in candidates:
             after_views = self._views(candidate, scope, global_list, project_list, base_dir)
             after = [self._values(view, universe) for view in after_views]
             if after[0][name] != want:
                 continue
             moved = [
-                {n for n in universe if n != name and a[n] != b[n]}
+                {n: a[n] for n in universe if n != name and a[n] != b[n]}
                 for a, b in zip(after, before, strict=True)
             ]
             if not any(moved):
                 return candidate
             if first_moved is None:
                 first_moved = moved
-        raise EditRefused(self._refusal(name, want, scope, first_moved or []))
+        # A project ``[]`` stands alone only while the global file has no list
+        # (verify r1 R1): the setup a global save is refused in.
+        bare = (
+            scope == "global"
+            and project_list is not None
+            and project_list.present
+            and not project_list.entries
+            and not self._read(entries, scope, base_dir).present
+        )
+        raise EditRefused(self._refusal(name, want, scope, first_moved or [], bare_project=bare))
 
     def _normal(self, entry: object) -> str | None:
         """*entry* as the read path keeps it (stripped), or ``None`` when it refuses it."""
@@ -356,28 +364,46 @@ class DefaultToolsGrammar:
         merged = merge_default_tools(*lists)
         return {n: default_tool_value(n, merged, self.builtin)[0] for n in universe}
 
-    def _refusal(self, name: str, want: bool, scope: Scope, moved: list[set[str]]) -> str:
-        """Why no edit was written, naming what the smallest one would also have moved."""
+    def _refusal(
+        self,
+        name: str,
+        want: bool,
+        scope: Scope,
+        moved: list[dict[str, bool]],
+        *,
+        bare_project: bool = False,
+    ) -> str:
+        """Why no edit was written, naming what the smallest one would also turn on or off."""
 
-        def _names(names: set[str]) -> str:
-            shown = sorted(n for n in names if n != _UNNAMED)
-            if _UNNAMED in names:
-                shown.append("the tools no list names")
-            return ", ".join(shown)
+        def _turns(changed: dict[str, bool]) -> str:
+            parts: list[str] = []
+            for value in (True, False):
+                shown = sorted(n for n, v in changed.items() if v is value and n != _UNNAMED)
+                if changed.get(_UNNAMED) is value:
+                    shown.append("the tools no list names")
+                if shown:
+                    parts.append(f"{', '.join(shown)} {'on' if value else 'off'}")
+            return " and ".join(parts)
 
-        here = moved[1] if len(moved) > 1 else set()
-        alone = moved[0] if moved else set()
+        here = moved[1] if len(moved) > 1 else {}
+        alone = moved[0] if moved else {}
         word = "on" if want else "off"
-        # What to do first: a panel line is cut at its right edge.
+        # What to do first: the panel wraps the reason, a narrow one cuts its end.
+        # "Global" and "This project" are the panel's own words for the files.
         if scope == "global" and here:
-            return (
-                f"{name}: save it to This project instead — turning it {word} in the global "
-                f"file would also change {_names(here)} here, where this project's "
-                f'"{_SETTINGS_KEY}" builds on the global list'
+            why = (
+                " (a project [] means no built-ins only while Global has no list)"
+                if bare_project
+                else ""
             )
+            return (
+                f"{name}: save it to This project instead — on Global it would also turn "
+                f"{_turns(here)} here{why}"
+            )
+        also = _turns(alone)
         return (
             f'{name}: edit "{_SETTINGS_KEY}" by hand — turning it {word} in the {scope} file '
-            f"would also change {_names(alone) or 'other tools'}"
+            f"would also {f'turn {also}' if also else 'change other tools'}"
         )
 
 
@@ -460,14 +486,15 @@ def delegated_exclusions(policy: ToolPolicy) -> tuple[str, ...]:
     reads its own settings, and an untrusted one never reads the project's,
     so a tool turned off only there would otherwise come back in it.
     Suppress-only, like #512's MCP names: this only ever removes. Left out: a
-    name one of the patterns already removes, and one no ``--exclude-tools``
-    entry can carry (:func:`carriable_pattern` — no tool is named so).
+    name one of the patterns already removes. A name no ``--exclude-tools``
+    entry can carry (``tool_policy.carriable_pattern``) stays in, and the
+    spawn is refused with the reason (``exclude_tools_refusal``): an MCP
+    tool's name is its server's, verbatim, and leaving it out would give the
+    child that tool (verify r1 R3).
     """
 
     covered = tool_name_matcher(policy.exclude)
-    names = sorted(
-        n for n in policy.saved_off_in_force() if carriable_pattern(n) and not covered(n)
-    )
+    names = sorted(n for n in policy.saved_off_in_force() if not covered(n))
     return (*policy.exclude, *names)
 
 

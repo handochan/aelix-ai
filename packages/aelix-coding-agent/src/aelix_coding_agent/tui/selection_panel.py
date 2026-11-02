@@ -622,11 +622,37 @@ def _detail_rows(model: SelectionModel, layout: Layout) -> list[str]:
         where = flat(item.location or item.path or "")
         head = f" {flat(item.label)}" + (f" · {where}" if where else "")
         rows.append(f"{_BOLD}{fit(head, width)}{_RST}")
+        refused = _refusal_rows(model, width, layout.description_rows + 1)
+        if refused:
+            return rows + refused
         described = wrap(flat(item.description), width - 1, layout.description_rows)
         rows.extend(f" {line}" for line in described)
         rows.extend([""] * (layout.description_rows - len(described)))
     rows.append(_state_line(model, state, width))
     return rows
+
+
+def _target_words(text: str, width: int) -> str:
+    """*text* with the title row's word for this project's file at *width* (#510 r2)."""
+
+    return text.replace(_SCOPE_WORD["project"], "Project") if width < _NARROW else text
+
+
+def _refusal_rows(model: SelectionModel, width: int, rows: int) -> list[str]:
+    """A refused save's reason over the description rows and the state line (#510 r2).
+
+    Only when one row would cut it: the reason says what to do first and
+    then why, and the why was never on screen (verify r1 R1). Exactly *rows*
+    rows, so the panel's height does not change.
+    """
+
+    if model.message is None or model.message[0] != "error":
+        return []
+    text = flat(_target_words(model.message[1], width))
+    if cells(text) <= width - 1:
+        return []
+    lines = wrap(text, width - 1, rows)
+    return [f"{_RED} {line}{_RST}" for line in lines] + [""] * (rows - len(lines))
 
 
 def _word(value: bool) -> str:
@@ -640,7 +666,7 @@ def _state_line(model: SelectionModel, state: ItemState | None, width: int) -> s
     if model.message is not None:
         style, text = model.message
         colour = {"error": _RED, "warn": _YELLOW}.get(style, _DIM)
-        return f"{colour} {fit(flat(text), width - 1)}{_RST}"
+        return f"{colour} {fit(flat(_target_words(text, width)), width - 1)}{_RST}"
     if state is None:
         return ""
     lock = state.lock
@@ -857,8 +883,13 @@ def _home_short(path: str) -> str:
     """*path* with ``~`` for the home directory, as the settings files are named elsewhere."""
 
     home = os.path.expanduser("~")
-    if home and home != "~" and (path == home or path.startswith(home + os.sep)):
-        return "~" + path[len(home) :]
+    if not home or home == "~":
+        return path
+    # Resolved too (verify r1 R4): the project file's path is resolved, and a
+    # HOME under a symlink (macOS /tmp is /private/tmp) did not match it.
+    for base in dict.fromkeys((home, os.path.realpath(home))):
+        if path == base or path.startswith(base + os.sep):
+            return "~" + path[len(base) :]
     return path
 
 

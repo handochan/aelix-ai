@@ -264,12 +264,36 @@ def test_a_global_save_keeps_a_project_list_that_builds_on_it() -> None:
     g = DefaultToolsGrammar(B)
     with pytest.raises(EditRefused, match="save it to This project instead") as info:
         _apply(g, "global", None, [], "weather", False)
-    assert "bash, edit, find, grep, ls, read, write here" in str(info.value)
+    # Which way the others would go, and why the project's [] lets them (verify r1 R1).
+    assert str(info.value) == (
+        "weather: save it to This project instead — on Global it would also turn bash, edit, "
+        "find, grep, ls, read, write on here (a project [] means no built-ins only while "
+        "Global has no list)"
+    )
     # The other way round there is one: ``+weather`` keeps the global list
     # modifier-only, so the project's ``[]`` still builds on every built-in.
     assert _apply(g, "global", ["-weather"], [], "weather", True) == (["+weather"], [])
     # Without the project list the same global edit is the plain one.
     assert _apply(g, "global", None, None, "weather", False) == (["-weather"], None)
+
+
+def test_a_refusal_says_which_way_each_other_tool_would_go() -> None:
+    """Verify r1 R1: "would also change" did not say on or off; the ``[]`` reason is one setup's."""
+
+    from aelix_coding_agent.core.tool_selection import _UNNAMED
+
+    g = DefaultToolsGrammar(B)
+    moved = {"bash": True, "ls": False, _UNNAMED: True}
+    assert g._refusal("weather", False, "project", [moved]) == (
+        'weather: edit "defaultTools" by hand — turning it off in the project file would '
+        "also turn bash, the tools no list names on and ls off"
+    )
+    assert g._refusal("weather", True, "project", []).endswith("would also change other tools")
+    # Global, moving others only here, in a setup other than project [] alone: no reason.
+    here = g._refusal("weather", False, "global", [{}, {"read": False}])
+    assert here == (
+        "weather: save it to This project instead — on Global it would also turn read off here"
+    )
 
 
 @pytest.mark.parametrize(
@@ -612,7 +636,8 @@ async def test_a_refused_global_save_writes_nothing_and_says_why() -> None:
     before = selection.snapshot(kind)
     result = await selection.save(kind, "global", {"weather": False})
     assert not result.ok and result.error is not None
-    assert "save it to This project instead" in result.error
+    # The action first: a narrow panel cuts the end of the line (verify r1 R2).
+    assert result.error.startswith("weather: save it to This project instead"), result.error
     assert _global(storage) == {"other": 1}  # not written
     after = selection.snapshot(kind)
     assert [s.saved for s in after.states] == [s.saved for s in before.states]
@@ -632,8 +657,18 @@ def test_a_child_gets_the_runs_patterns_and_the_names_the_setting_keeps_off() ->
         saved_off=frozenset({"weather", "read", "gh__x", "ls", "a b", "-x", "x,y"}),
     )
     # read: ``--tools`` names it, so it is on — not forwarded. gh__x: the
-    # pattern already removes it. "a b", "-x", "x,y": no entry can carry them.
-    assert delegated_exclusions(policy) == ("bash", "gh__*", "ls", "weather")
+    # pattern already removes it. "a b", "-x", "x,y": no entry can carry them,
+    # and they stay in for the spawn to refuse — left out, the child would
+    # have them (verify r1 R3).
+    assert delegated_exclusions(policy) == (
+        "bash",
+        "gh__*",
+        "-x",
+        "a b",
+        "ls",
+        "weather",
+        "x,y",
+    )
     assert delegated_exclusions(ToolPolicy()) == ()
     # Turned back on (a /tool apply, RPC): it leaves the saved-off set, and the child has it.
     assert delegated_exclusions(replace(policy, saved_off=frozenset({"ls"}))) == (

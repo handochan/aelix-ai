@@ -440,6 +440,67 @@ def test_the_scope_word_on_the_state_line_fits_a_narrow_panel(width: int, word: 
     assert state.rstrip().endswith(f"off after Enter {word}"), state
 
 
+def test_the_summary_shortens_a_path_under_a_symlinked_home(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify r1 R4: HOME under macOS /tmp (/private/tmp) left the resolved project path long."""
+
+    import os
+
+    from aelix_coding_agent.tui.selection_panel import _home_short
+
+    from tests.env_sandbox import sandbox_home
+
+    real = tmp_path / "real"
+    (real / "home").mkdir(parents=True)
+    try:
+        os.symlink(real, tmp_path / "link", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot make a directory symlink here")
+    home = str(sandbox_home(monkeypatch, tmp_path / "link" / "home"))
+    resolved = os.path.join(os.path.realpath(home), "work", ".aelix", "settings.json")
+    assert resolved != os.path.join(home, "work", ".aelix", "settings.json")
+    assert _home_short(resolved) == os.path.join("~", "work", ".aelix", "settings.json")
+    assert _home_short(os.path.join(home, "s.json")) == os.path.join("~", "s.json")
+    assert _home_short(str(tmp_path / "elsewhere.json")) == str(tmp_path / "elsewhere.json")
+
+
+def _target(text: str, word: str) -> str:
+    return text.replace("This project", word)
+
+
+_REFUSED = (
+    "✖ Not saved: weather: save it to This project instead — on Global it would also turn "
+    "bash, edit, find, grep, ls, read, write on here (a project [] means no built-ins only "
+    "while Global has no list)"
+)
+
+
+@pytest.mark.parametrize("width", [50, 80, 120])
+def test_a_refused_saves_reason_is_wrapped_in_the_detail_rows(width: int) -> None:
+    """Verify r1 R1: the reason was cut at every size; "This project" is "Project" below 60."""
+
+    model = _model()
+    _select(model, "grep")
+    plain = _frame(model, width, 24)
+    model.message = ("error", _REFUSED)
+    frame = _frame(model, width, 24)
+    assert len(frame) == len(plain)  # the height does not change
+    assert all(cells(r) <= width for r in frame)
+    rule = max(i for i, r in enumerate(frame) if r and set(r) == {"─"})
+    detail = frame[rule + 1 : -1]
+    assert detail[0].startswith(" grep")  # the row's name stays
+    shown = " ".join(r.strip() for r in detail[1:] if r.strip())
+    word = "Project" if width < 60 else "This project"
+    assert shown.startswith(f"✖ Not saved: weather: save it to {word} instead — "), shown
+    assert shown == _target(_REFUSED, word)  # every word of it, at 50 columns too
+    # A reason that fits one row stays on the state line, below the description.
+    model.message = ("error", "✖ Not saved: weather: save it to This project instead")
+    short = _frame(model, width, 24)
+    assert short[:-2] == plain[:-2]
+    assert short[-2].strip() == f"✖ Not saved: weather: save it to {word} instead"
+
+
 async def test_a_deferred_apply_that_moved_nothing_leaves_no_line(tmp_path: Any) -> None:
     """V10: a save during a turn the files undo before it ends left a bare "applied after the turn"."""
 
