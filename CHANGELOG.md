@@ -3083,17 +3083,22 @@ unwritten. Add them with the next release.
   `skills` or `prompts` path of either settings file, or the global settings
   file itself; a `skills:` or `extensions:` path of one of your or the
   project's agent profiles; the `$AELIX_MCP_CONFIG` file; or a folder a link
-  in any of these points at — the project's a delegated agent was started
-  from included. It is decided again for every write, so a link re-pointed
-  during a session counts. Not covered: a `--skill`, `--prompt-template` or
+  in any of these points at (`~/.aelix/agent/bin`, whose programs bash runs,
+  included) — the project's a delegated agent was started from included. It
+  is decided again for every write, so a link re-pointed during a session
+  counts. Not covered: a `--skill`, `--prompt-template` or
   `--agent-file` path (you named it for that run); the session folder; a hard
   link to a skill file (git cannot check one out, and making one with `ln`
   asks); and a link made after the check and before the write (every command
   that makes one asks under `auto`). If your `~/.agents/skills` links into a
   dotfiles repository, or `AELIX_CODING_AGENT_DIR` points inside the folder you
   work in, editing there now asks. A repository can make every write ask — a
-  link to itself, `"skills": ["/"]`, a list or a folder tree too long to check
-  — which is the safe side. `yolo`, and a plain `-p` run, still write.
+  link to itself, `"skills": ["/"]`, a list or a folder tree too long to check,
+  agent profiles with more YAML than one write may parse — which is the safe
+  side. So can a tree of your own under one of these folders that holds more
+  than one write may check (8,192 entries and links): linking a large
+  checkout as your `~/.agents/skills` makes every write ask, in every project.
+  `yolo`, and a plain `-p` run, still write.
 - **A delegated agent no longer imports a project file in place of one of
   your extensions (#641, ADR-0285).** Delegated agents ran as `python -m
   aelix_coding_agent` in the project folder, and `python -m` puts that folder

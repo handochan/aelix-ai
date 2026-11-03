@@ -134,7 +134,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   applied after a link), a child the `agent` tool starts in a subfolder is held to the parent's
   folders (`AELIX_PARENT_LOADER_ROOTS`), and one decision's cost is bounded (past it, ask);
   `--skill`/`--prompt-template`/`--agent-file` paths, hard links and the session folder are not
-  taken (Limits).
+  taken (Limits). Round 2: the project profiles' frontmatter is bounded too (12 KiB in all, 16
+  `[`/`{` each), JSON or YAML nested past the parser asks instead of raising, on Windows every link
+  is judged against the cwd's machine before anything follows it (`\??\` included), and links in
+  `~/.aelix/agent/bin` are followed.
 - [0285 — A module name the user chose is never answered by the project folder](0285-a-module-name-the-user-chose-is-never-answered-by-the-project-folder.md)
   (Accepted 2026-11-01; #641, #638). Every delegated child — print and rpc channel — and the RPC client's
   default server start as `python -P -m …`, so the child's cwd, the project, is not on `sys.path`;

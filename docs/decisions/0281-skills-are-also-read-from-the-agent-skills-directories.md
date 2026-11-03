@@ -14,6 +14,8 @@ item it left open as far as D10's dated note says; its review round 1 judged
 the file the tools open (`@`, `..` after a link), held a child in a subfolder
 to the parent's folders, followed the links inside a root, added the agent
 profiles' paths and `$AELIX_MCP_CONFIG`, and bounded what one decision costs;
+its round 2 bounded the project profiles' YAML, made nesting past a parser
+ask, judged every link on Windows before following it and followed `bin`;
 see the dated notes in D10 and Limits.**
 Date: 2026-10-31
 Issue: #509. Live runs, pty grids and drivers were kept locally under
@@ -356,10 +358,11 @@ The owner chose the whole class, not the skills folders alone:
   follows a linked folder or `SKILL.md` (`harness/skills.py`
   `_load_skills_from_dir_internal`), the extension loader a linked `.py` or
   package. Each existing root is listed for links — below a config dir only its
-  own entries and `skills/`, `extensions/`, `agents/`, `prompt-templates/`, so
-  `~/.aelix/sessions` is never listed from a cwd of `~`; a hidden folder,
-  `node_modules` and `__pycache__` are not entered — and each target is a root
-  in turn, listed the same way.
+  own entries and `skills/`, `extensions/`, `agents/`, `prompt-templates/` and
+  `bin/` (the bash tool runs `~/.aelix/agent/bin` from the front of `PATH`;
+  round 2, R4), so `~/.aelix/sessions` is never listed from a cwd of `~`; a
+  hidden folder, `node_modules` and `__pycache__` are not entered — and each
+  target is a root in turn, listed the same way.
 - For a delegated child, the same project roots of every cwd above it, and the
   parent's `$AELIX_MCP_CONFIG` (the child's environment drops that variable). A
   child the `agent` tool starts in a subfolder computed its roots from that
@@ -408,12 +411,41 @@ path at most 64 links (no kernel opens a path through more: Linux stops at 40,
 macOS at 32, Windows at 63), and one decision lists and follows at most 8,192
 folder entries and links (`_Budget`); past any of them the write asks.
 
+Round 2 (verify R2): within those caps the project profiles still cost the
+first decision of every process — and so of every delegated child — 5.1 s to
+26.5 s on `d937442a` (64 profiles of 63 KiB; `yaml.safe_load` is pure Python),
+and nesting costs the square of its depth: one profile of 4,000 `[` took
+0.43 s whatever its size. Now the project profiles one decision reads hold at
+most 12 KiB of frontmatter in all, counted before any of it is parsed, cached
+or not, so the answer does not depend on what the process parsed before, and
+each profile at most 16 `[` and `{` (`_PROJECT_PROFILE_TEXT_LIMIT`,
+`_PROJECT_PROFILE_FLOW_LIMIT`); past either, the write asks. A body is not
+YAML and costs nothing. Measured after: the verify's five shapes ask in
+0.3–9 ms (the 9 ms is the first `yaml` import), and the worst found inside
+the caps — the text limit filled by 1 KiB profiles that open 16 each, then
+list — takes 52 ms once, then under 1 ms. `CSafeLoader` is not used: libyaml
+crashed the process on the deep profile (exit 139).
+
 A PATH ON ANOTHER MACHINE (verify V5, Windows; measured with `ntpath` rules on
 POSIX, no Windows run). `stat` of `\\host\share\x` (or `//host/share/x`) opens
 an SMB session that sends the user's NTLM hash, and the gate now reads paths a
-project wrote. A project settings or profile path, a link inside a root and a
-record entry on a UNC or device drive (`\\?\`, `\\.\`) other than the one the
-cwd is on is refused before anything resolves it: the write asks.
+project wrote. A project settings or profile path and a record entry on a UNC
+or device drive (`\\?\`, `\\.\`) other than the one the cwd is on, or in the
+NT object namespace (`\??\`, which `ntpath` before 3.13 takes for a rooted
+path, not a drive), is refused before anything resolves it: the write asks.
+Round 2 (verify R3): `ntpath.realpath` follows a whole chain inside one
+`CreateFileW`, and `stat`, `scandir` and a listed entry's `is_dir()` follow
+one too, so a link whose SECOND hop is a share, a root that is such a link, a
+profile file linked to one and a link at the top of a config dir reached the
+share before anything looked at it. Now on Windows the gate resolves every
+path it opens one link at a time — the write itself, each root, the
+`.aelix/agents` folder and each profile in it, the project's
+`.aelix/settings.json`, a link inside a root — and refuses a link whose target
+is on another machine before following it (`_realpath_nt`, `_link_target`).
+`os.readlink` gives a junction and an absolute link as `\\?\C:\…`; that prefix
+comes off first, as `ntpath.realpath` takes it off, so a link to a local
+drive is followed, not refused as a device path. The link-free result goes
+through `os.path.realpath` only for its spelling (case, 8.3 names).
 
 How a write is placed: each root is resolved and anchored at its deepest
 existing folder, and the write's folders are walked up to the filesystem root —
@@ -426,7 +458,15 @@ case-insensitive volume is caught, and a cwd inside a root (the dotfiles repo's
 link can be re-pointed mid-session. An `OSError` while resolving the write or a
 root, listing a root or reading a settings file or profile asks, as does a
 project settings file over 1 MiB; a settings file or profile that does not
-parse names nothing, as the loader reads nothing from it.
+parse names nothing, as the loader reads nothing from it. JSON or YAML nested
+past the parser asks instead (round 2, verify R1): whether the parser gives up
+depends on how deep the stack already is, so it is no proof that the loader,
+with a shallower stack, reads nothing. On `d937442a` a project settings file
+of `"[" * 100000`, or that value in `AELIX_PARENT_LOADER_ROOTS`, raised
+`RecursionError` out of the hook — which the harness turns into an error
+that ends the turn, by a reading of `harness/core.py`, not a run — and the
+spawner raised too. Now the write asks, and the spawner starts the
+child with the record as it got it.
 
 Measured before (`74f9214c`) and after (the first #646 commit) through the real
 gate (`GuardrailExtension` + `PermissionExtension`, interactive with an approval
@@ -572,16 +612,33 @@ narrowing it to `.agents` followed by `skills` was not taken.
     sensitive.
   - A repository can make every write ask, the safe side (round 1, V10): a
     self-link `.agents -> .agents`, `"skills": ["/"]` or `"prompts": [".."]`,
-    a list of more than 64 entries, more than 64 profiles, or a tree under a
-    root past 8,192 entries and links. So can a user's own large tree under a
-    root (a `~/.agents/skills` clone that big), and an `AELIX_CODING_AGENT_DIR`
-    inside the cwd now asks for the writes under it (round 1, V12).
+    a list of more than 64 entries, more than 64 profiles, profiles holding
+    more than 12 KiB of frontmatter in all or more than 16 `[` and `{` in one
+    (round 2), or a tree under a root past 8,192 entries and links. So can a
+    user's own large tree under a root (a `~/.agents/skills` clone that big —
+    linking `~/dev/aelix-studio`, 54k entries, made every write ask in the
+    round-1 verify), and an `AELIX_CODING_AGENT_DIR` inside the cwd now asks
+    for the writes under it (round 1, V12).
   - `--skill`, `--prompt-template` and `--agent-file` paths, the packaged
     skills and the session folder (D10's note says why).
-  - On Windows, a link a repository checked out (which needs `core.symlinks`
-    and the privilege to make links) to another machine is refused only below
-    a root; the trust check at launch already looks at `.aelix` and
-    `.agents/skills` themselves.
+  - Windows (inferred from `ntpath` rules and a mocked `_NT` on POSIX; no
+    Windows run): the gate judges every link before following it (D10's note),
+    but the trust check at launch already looks at `.aelix` and
+    `.agents/skills` themselves, and a link re-pointed between the gate's walk
+    and its final `realpath` is followed (the decide-then-link race above). A
+    root the user's own files link to another machine (a `~/.agents/skills` on
+    a share) makes every write ask. On Python 3.11 a junction inside a root is
+    listed as a folder and its target never becomes a root
+    (`DirEntry.is_junction` is 3.12+); git cannot check out a junction, so it
+    takes one made by hand (round 2, R5).
+  - Out of scope, older than #646, for a follow-up issue (verify V11, round 2
+    R7): a trusted `"skills": ["/"]` scans the filesystem for about 23 s and
+    then crashes the skill catalog with a `PermissionError`
+    (`harness/skills.py:280`, `entry.is_dir()` in
+    `_load_skills_from_dir_internal`) — the gate asks for every write there;
+    and a valid project settings file nested 5,000 deep makes
+    `SettingsManager.create` for a trusted project raise `RecursionError`
+    (the gate's own read parses it).
 - `/skill` orders a tier's groups by their first row, so a directory whose rows
   are all shadowed is drawn after the next directory's winners (a cwd's
   `.agents/skills/` holding only a copy that `.aelix/skills` beats sits below

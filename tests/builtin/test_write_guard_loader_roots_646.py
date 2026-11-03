@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -756,28 +757,95 @@ def test_a_project_list_past_the_cap_asks(repo: Path) -> None:
 
 
 class _Looked:
-    """Every path ``stat`` / ``lstat`` / ``scandir`` / ``readlink`` / ``open`` was handed."""
+    """Every path ``stat`` / ``lstat`` / ``scandir`` / ``readlink`` / ``open`` was handed.
+
+    For a call that follows links — those but ``lstat`` and ``readlink``, and a
+    listed link's ``is_dir()`` / ``is_file()`` — also where it landed: on
+    Windows that call is the one that opens a share a link points at (fix
+    round 2, verify R3).
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.paths: list[str] = []
-        for name in ("stat", "lstat", "scandir", "readlink", "open"):
-            real = getattr(os, name)
+        self._real = {name: getattr(os, name) for name in ("stat", "lstat", "scandir", "readlink", "open")}
+        for name, real in self._real.items():
 
-            def spy(path: Any, *args: Any, _real: Any = real, **kwargs: Any) -> Any:
-                self.paths.append(os.fspath(path) if not isinstance(path, int) else "")
-                return _real(path, *args, **kwargs)
+            def spy(path: Any, *args: Any, _name: str = name, _real: Any = real, **kwargs: Any) -> Any:
+                if not isinstance(path, int):
+                    self.paths.append(os.fspath(path))
+                    if _name not in ("lstat", "readlink") and kwargs.get("follow_symlinks", True):
+                        self.paths.append(self.landed(path))
+                result = _real(path, *args, **kwargs)
+                return _Listing(result, self) if _name == "scandir" else result
 
             monkeypatch.setattr(os, name, spy)
 
+    def landed(self, path: Any) -> str:
+        """Where the OS opens ``path``, found with the real calls so nothing is recorded."""
+
+        spies = {name: getattr(os, name) for name in self._real}
+        for name, real in self._real.items():
+            setattr(os, name, real)
+        try:
+            return os.path.realpath(path)
+        finally:
+            for name, spy in spies.items():
+                setattr(os, name, spy)
+
     def touched(self, word: str) -> list[str]:
         return [p for p in self.paths if word in p]
+
+
+class _Listing:
+    """A ``scandir`` iterator whose entries tell :class:`_Looked` where a followed link landed."""
+
+    def __init__(self, listing: Any, looked: _Looked) -> None:
+        self._listing = listing
+        self._looked = looked
+
+    def __enter__(self) -> _Listing:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._listing.close()
+
+    def __iter__(self) -> Iterator[Any]:
+        return (_Entry(entry, self._looked) for entry in self._listing)
+
+
+class _Entry:
+    def __init__(self, entry: os.DirEntry[str], looked: _Looked) -> None:
+        self._entry = entry
+        self._looked = looked
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._entry, name)
+
+    def _follows(self, follow_symlinks: bool) -> None:
+        if follow_symlinks and self._entry.is_symlink():
+            self._looked.paths.append(self._looked.landed(self._entry.path))
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        self._follows(follow_symlinks)
+        return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        self._follows(follow_symlinks)
+        return self._entry.is_file(follow_symlinks=follow_symlinks)
 
 
 @pytest.mark.parametrize(
     "entry",
     # A backslashed ``\\\\attacker\\share`` is relative to ``posixpath`` and so
     # cannot be measured here; :func:`test_what_counts_as_another_machine` has it.
-    ["//attacker/share/skills", "//?/UNC/attacker/share", "//./pipe/attacker"],
+    [
+        "//attacker/share/skills",
+        "//?/UNC/attacker/share",
+        "//./pipe/attacker",
+        # Verify R3 (c): before 3.13 ``ntpath`` calls this rooted, not a drive,
+        # so it was kept as written, and Win32 opens the share it names.
+        "/??/UNC/attacker/share",
+    ],
 )
 def test_a_project_settings_path_on_another_machine_is_never_looked_at(
     repo: Path, monkeypatch: pytest.MonkeyPatch, entry: str
@@ -841,6 +909,10 @@ def test_a_link_in_a_root_to_another_machine_is_never_followed(
         ("\\\\?\\C:\\x", "C:\\work", True),
         ("\\\\.\\pipe\\x", "C:\\work", True),
         ("\\\\?\\UNC\\attacker\\share\\x", "C:\\work", True),
+        ("\\??\\UNC\\attacker\\share\\x", "C:\\work", True),
+        ("/??/UNC/attacker/share/x", "C:\\work", True),
+        ("\\??\\C:\\x", "C:\\work", True),
+        ("C:\\??\\UNC\\attacker\\share", "C:\\work", False),
         ("C:\\x", "C:\\work", False),
         ("D:\\x", "C:\\work", False),
         ("\\x", "C:\\work", False),
@@ -1091,12 +1163,16 @@ def test_a_project_with_too_many_profiles_or_entries_asks(repo: Path) -> None:
 
 
 def test_a_profile_that_does_not_parse_names_nothing(repo: Path) -> None:
+    """The loader fails on each of these whatever the stack, so it reads nothing from them."""
+
     agents = repo / ".aelix" / "agents"
     agents.mkdir(parents=True)
-    (agents / "deep.md").write_text("---\nskills: " + "[" * 5000 + "\n---\nb\n")
+    (agents / "broken.md").write_text("---\nskills: [a\n---\nb\n")
+    (agents / "month13.md").write_text("---\nskills: [../../docs/s]\nwhen: 2026-13-45\n---\nb\n")
     (agents / "binary.md").write_bytes(b"---\nskills: \xff\xfe\n---\n")
 
     assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+    assert _is_auto_allowable_write("docs/s/x/SKILL.md", str(repo)) is True
 
 
 @_POSIX_LINKS
@@ -1162,3 +1238,291 @@ async def test_verify_v13_a_link_inside_a_root_pointing_out_guards_its_target(
         (repo / target).write_text(f"---\nname: {name}\ndescription: PC1\n---\nbody\n")
         names = {s.name for s in _load_skill_catalog(Args(), str(repo), True, _manager(repo)).skills}
         assert name in names
+
+
+# ============================================================
+# Fix round 2 (verify R1-R4)
+# ============================================================
+
+
+async def _verdicts(repo: Path, mode: PermissionMode, path: str = "src/x.py") -> tuple[bool, int]:
+    """``(headless child blocked, prompts an interactive run showed)`` for one write, through ``_on_tool_call``."""
+
+    manager = _manager(repo)
+    event = ToolCallHookEvent(
+        tool_call_id="t",
+        tool_name="write",
+        args={"path": path, "content": "x"},
+        context=AgentContext(tools=[create_write_tool(str(repo))]),
+    )
+    child = PermissionExtension(
+        posture=PermissionPosture(mode=mode), headless_default="block", settings=manager
+    )
+    verdict = await child._on_tool_call(event, _ctx(cwd=str(repo), has_ui=False))
+    runner = _Runner()
+    interactive = PermissionExtension(
+        posture=PermissionPosture(mode=mode), approval_runner=runner, settings=manager
+    )
+    await interactive._on_tool_call(event, _ctx(cwd=str(repo), has_ui=True, ui=SimpleNamespace()))
+    return verdict is not None and verdict.block is True, len(runner.requests)
+
+
+@pytest.mark.parametrize("source", ["settings", "record"])
+@pytest.mark.parametrize("mode", [PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO])
+async def test_json_nested_past_the_parser_asks_instead_of_raising(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, source: str, mode: PermissionMode
+) -> None:
+    """Verify R1: ``"[" * 100000`` raised ``RecursionError`` out of ``_on_tool_call``.
+
+    A project ships the settings file; the record needs the user's own
+    environment. The harness turns a raising hook into an error that ends the
+    turn (``harness/core.py``, read, not run), so no write asked. Whether ``json`` gives up
+    depends on how deep the stack already is, so it is no proof that the
+    loader reads nothing: the write asks. The spawner still starts the child,
+    and hands the record on as it got it.
+    """
+
+    nested = "[" * 100_000
+    if source == "settings":
+        (repo / ".aelix").mkdir()
+        (repo / ".aelix" / "settings.json").write_text(nested)
+    else:
+        monkeypatch.setenv(permission.PARENT_ROOTS_ENV, nested)
+
+    assert await _verdicts(repo, mode) == (True, 1)
+    env = {permission.PARENT_ROOTS_ENV: nested}
+    assert permission.pass_loader_roots_to_child(env, str(repo)) == {permission.PARENT_ROOTS_ENV: nested}
+
+
+def test_yaml_nested_past_the_parser_at_this_depth_asks(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same for a profile: the loader, with a shallower stack, may parse it."""
+
+    from aelix_agent_core.harness import _frontmatter
+
+    (repo / ".aelix" / "agents").mkdir(parents=True)
+    (repo / ".aelix" / "agents" / "p.md").write_text("---\nskills: [../../docs/s]\n---\nb\n")
+    permission._profile_lists.clear()
+
+    def too_deep(content: str) -> object:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(_frontmatter, "parse_frontmatter", too_deep)
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+def _profile(agents: Path, name: str, frontmatter: str) -> None:
+    (agents / f"{name}.md").write_text(f"---\n{frontmatter}\n---\nbody\n")
+
+
+def test_project_profiles_past_the_yaml_budget_ask(repo: Path) -> None:
+    """Verify R2: 64 profiles of 63 KiB stalled the first decision of every process for up to 26 s.
+
+    What the project's profiles hold in frontmatter is counted before any of
+    it is parsed, cached or not, so the answer does not depend on what the
+    process parsed before.
+    """
+
+    agents = repo / ".aelix" / "agents"
+    agents.mkdir(parents=True)
+    limit = permission._PROJECT_PROFILE_TEXT_LIMIT
+    pad = "#" * (limit // 2 - 20)
+    _profile(agents, "a", f"name: a\n{pad}")
+    _profile(agents, "b", f"name: b\n{pad}")
+    permission._profile_lists.clear()
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+    _profile(agents, "c", "name: c\n" + "#" * 64)
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+    (agents / "c.md").unlink()
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+    # A body is not YAML: it costs nothing.
+    (agents / "d.md").write_text("---\nname: d\n---\n" + "x" * limit)
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+
+def test_a_project_profile_nesting_past_the_budget_asks(repo: Path) -> None:
+    """Nesting costs the square of its depth: one profile of 4,000 ``[`` cost 0.43 s.
+
+    Counted in each profile, as the scanner's cost grows in each; each ``[``
+    and ``{`` counts, so no ``]`` written inside quotes can hide one.
+    """
+
+    agents = repo / ".aelix" / "agents"
+    agents.mkdir(parents=True)
+    flow = permission._PROJECT_PROFILE_FLOW_LIMIT
+    _profile(agents, "a", "x: " + "[" * flow + "]" * flow)
+    _profile(agents, "b", "x: " + "{a: " * flow + "}" * flow)
+    permission._profile_lists.clear()
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+    _profile(agents, "c", "x: " + '["]", ' * (flow + 1) + "]" * (flow + 1))
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+    for path in agents.iterdir():
+        path.unlink()
+    _profile(agents, "deep", "skills: " + "[" * 5000)
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+def test_a_users_own_profiles_are_not_held_to_the_yaml_budget(home: Path) -> None:
+    from aelix_coding_agent.cli.config import get_agent_dir
+
+    agents = Path(get_agent_dir()) / "agents"
+    agents.mkdir(parents=True)
+    _profile(agents, "big", "name: big\n" + "#" * (permission._PROJECT_PROFILE_TEXT_LIMIT + 1))
+    (home / "work").mkdir()
+
+    assert _is_auto_allowable_write("x.py", str(home / "work")) is True
+
+
+_MOCKED_NT = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows rules measured on POSIX (permission._NT); a real run would reach the share",
+)
+
+
+@_MOCKED_NT
+@pytest.mark.parametrize(
+    ("links", "write"),
+    [
+        # Verify R3 (a): the second hop of a chain, and a root that is a link itself.
+        ({".agents/skills/x": "../../y", "y": "//attacker/share/y"}, "src/x.py"),
+        ({".agents": "//attacker/share/agents"}, "src/x.py"),
+        # A link at the top of a config dir, whose folder-or-file test followed the chain.
+        ({".aelix/notes": "../hop", "hop": "//attacker/share/n"}, "src/x.py"),
+        # Verify R3 (b): a profile file, and the folders and file the gate reads itself.
+        ({".aelix/agents/p.md": "//attacker/share/p.md"}, "src/x.py"),
+        ({".aelix/agents": "//attacker/share/agents"}, "src/x.py"),
+        ({".aelix/settings.json": "//attacker/share/settings.json"}, "src/x.py"),
+        # The write's own path.
+        ({"lnk": "//attacker/share"}, "lnk/x.py"),
+        ({}, "//attacker/share/x.py"),
+    ],
+)
+def test_no_link_to_another_machine_is_followed_before_it_is_judged(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, links: dict[str, str], write: str
+) -> None:
+    """Verify R3 (Windows; ``ntpath`` rules on POSIX): every link is judged before anything follows it.
+
+    ``ntpath.realpath`` resolves a whole chain inside one ``CreateFileW``, and
+    ``stat``, ``scandir``, ``open`` and a listed entry's ``is_dir()`` follow
+    one too — on Windows each of those opens the share at the end. Measured
+    on ``d937442a`` with the verify's mock: the first two were allowed and
+    reached ``//host/share``; the profile link was followed by ``stat``.
+    """
+
+    for link, target in links.items():
+        (repo / link).parent.mkdir(parents=True, exist_ok=True)
+        (repo / link).symlink_to(target)
+    permission._profile_lists.clear()
+    monkeypatch.setattr(permission, "_NT", True)
+    looked = _Looked(monkeypatch)
+
+    allowed = _is_auto_allowable_write(write, str(repo))
+    monkeypatch.undo()
+
+    assert allowed is False
+    assert looked.touched("attacker") == []
+
+
+@_MOCKED_NT
+def test_the_windows_resolver_agrees_with_realpath_through_local_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One link at a time, and still the path ``realpath`` gives when nothing is remote."""
+
+    root = tmp_path / "r"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "rel").symlink_to("a/b")
+    (root / "abs").symlink_to(root / "a")
+    (root / "chain1").symlink_to("chain2")
+    (root / "chain2").symlink_to("rel")
+    (root / "dangling").symlink_to("nowhere/deeper")
+    (root / "a" / "b" / "back").symlink_to("../../abs/b")
+    (root / "loop1").symlink_to("loop2")
+    (root / "loop2").symlink_to("loop1")
+    monkeypatch.setattr(permission, "_NT", True)
+
+    for spelling in ["rel/x", "abs/b/y", "chain1/z", "dangling/q", "a/b/back/back/back", "a//b/./x", ""]:
+        full = f"{root}/{spelling}"
+        assert permission._realpath(full, permission._Budget(), str(root)) == os.path.realpath(full), spelling
+    with pytest.raises(OSError, match="links"):
+        permission._realpath(f"{root}/loop1/x", permission._Budget(), str(root))
+
+
+@pytest.mark.parametrize(
+    ("target", "plain"),
+    [
+        ("\\\\?\\C:\\shared\\x", "C:\\shared\\x"),
+        ("\\\\?\\c:\\x", "c:\\x"),
+        ("..\\y", "..\\y"),
+        ("C:\\x", "C:\\x"),
+        ("\\\\?\\UNC\\srv\\share\\x", "\\\\srv\\share\\x"),
+    ],
+)
+def test_a_junction_or_absolute_link_to_a_local_drive_is_followed(
+    monkeypatch: pytest.MonkeyPatch, target: str, plain: str
+) -> None:
+    """``os.readlink`` gives both as ``\\\\?\\C:\\…``: judged by that drive, not as a device path."""
+
+    monkeypatch.setattr(permission, "_NT", True)
+    monkeypatch.setattr(permission.os, "readlink", lambda path: target)
+
+    assert permission._link_target("link", "\\\\srv\\share\\repo") == plain
+
+
+@pytest.mark.parametrize(
+    "target", ["\\\\?\\UNC\\attacker\\share\\x", "//attacker/share", "\\\\?\\GLOBALROOT\\Device\\Mup\\a"]
+)
+def test_a_link_read_as_another_machine_is_refused(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
+    monkeypatch.setattr(permission, "_NT", True)
+    monkeypatch.setattr(permission.os, "readlink", lambda path: target)
+
+    with pytest.raises(OSError, match="another machine"):
+        permission._link_target("link", "C:\\work")
+
+
+@_POSIX_LINKS
+def test_a_link_named_bin_in_the_agent_dir_guards_its_target(home: Path) -> None:
+    """Verify R4: ``~/.aelix/agent/bin`` comes first on the bash ``PATH``; ``rg`` and ``fd`` run from it."""
+
+    from aelix_coding_agent.cli.config import get_agent_dir, get_bin_dir
+    from aelix_coding_agent.util.shell_env import get_shell_env
+
+    dots = home / "dotfiles"
+    (dots / ".git").mkdir(parents=True)
+    (dots / "aelix-bin").mkdir()
+    Path(get_agent_dir()).mkdir(parents=True)
+    Path(get_bin_dir()).symlink_to(dots / "aelix-bin")
+    assert get_shell_env()["PATH"].split(os.pathsep)[0] == get_bin_dir()
+
+    assert _is_auto_allowable_write("aelix-bin/rg", str(dots)) is False
+    assert _is_auto_allowable_write("README.md", str(dots)) is True
+
+
+@_MOCKED_NT
+def test_a_junction_inside_a_root_does_not_make_every_write_ask(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A junction reads back as ``\\\\?\\C:\\…``: it is followed, not refused as another machine."""
+
+    (repo / ".agents" / "skills").mkdir(parents=True)
+    (repo / ".agents" / "skills" / "j").symlink_to("//?/C:/team-skills")
+    monkeypatch.setattr(permission, "_NT", True)
+
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+
+def test_a_junction_is_a_link() -> None:
+    """``lstat`` of a junction is a folder whose ``st_reparse_tag`` is ``IO_REPARSE_TAG_MOUNT_POINT``."""
+
+    import stat as stat_module
+
+    junction: Any = SimpleNamespace(st_mode=stat_module.S_IFDIR, st_reparse_tag=0xA0000003)
+    folder: Any = SimpleNamespace(st_mode=stat_module.S_IFDIR, st_reparse_tag=0)
+    posix_folder: Any = SimpleNamespace(st_mode=stat_module.S_IFDIR)
+
+    assert permission._is_link(junction) is True
+    assert permission._is_link(folder) is False
+    assert permission._is_link(posix_folder) is False

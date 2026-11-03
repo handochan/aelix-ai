@@ -544,6 +544,22 @@ _PROJECT_PROFILE_LIMIT = 64
 _PROFILE_READ_LIMIT = 1 << 16
 """Bytes of one agent profile the gate reads; a longer profile asks."""
 
+_PROJECT_PROFILE_TEXT_LIMIT = 12 << 10
+"""Characters of frontmatter the project profiles ONE decision reads may hold in
+all; past it, the write asks (#646 verify R2). ``yaml.safe_load`` is pure
+Python and the decision runs on the event loop: measured on ``d937442a``, 64
+profiles of 63 KiB cost the first decision of every process 5.1–26.5 s, and a
+flow list costs 3.7 ms a KiB. Counted whether a profile was parsed before or
+not, so the answer does not depend on what this process saw."""
+
+_PROJECT_PROFILE_FLOW_LIMIT = 16
+"""``[`` and ``{`` one project profile's frontmatter may hold; more asks (verify
+R2). The scanner looks at every one it has open again for each token near it:
+one profile of 4,000 ``[`` cost 0.43 s whatever its size, and the text limit
+filled with 1 KiB profiles that open this many each, then list, cost 65 ms at
+32 and 50 ms at 16. Each is counted, so no ``]`` written inside quotes can
+hide one."""
+
 _DECISION_BUDGET = 8192
 """Folder entries listed plus links followed for ONE write decision; past it the
 write asks (#646 verify V4). A hostile repo can ship any number of links and
@@ -558,13 +574,19 @@ at 63 — and ``os.path.realpath`` follows any number (a 300-link chain cost
 _RECORD_LIMIT = 16
 """Folders or files one :data:`PARENT_ROOTS_ENV` record may list; more asks."""
 
-_LOADER_FAMILIES = ("skills", "extensions", "agents", "prompt-templates")
+_LOADER_FAMILIES = ("skills", "extensions", "agents", "prompt-templates", "bin")
 """The folders of a ``.aelix`` / agent directory a load lists, and so the ones
-whose links it follows (``cli/project_trust.py``, ``agents/discovery.py``)."""
+whose links it follows (``cli/project_trust.py``, ``agents/discovery.py``) —
+and ``bin``, whose programs the bash tool runs from the front of ``PATH``
+(``util/shell_env.py``; #646 verify R4)."""
 
 _PROFILE_PATH_KEYS = ("skills", "extensions")
 
 _NT = os.name == "nt"
+
+_MOUNT_POINT = 0xA0000003
+"""``IO_REPARSE_TAG_MOUNT_POINT``, a junction's ``st_reparse_tag`` (``stat`` has
+the name only on Windows)."""
 
 PARENT_ROOTS_ENV = "AELIX_PARENT_LOADER_ROOTS"
 """What a delegating parent's loader reads, for its children's write gate (#646 V3).
@@ -583,20 +605,28 @@ settings name were never roots for it. Written by
 
 
 class _Budget:
-    """What one write decision may spend on the filesystem (#646 verify V4)."""
+    """What one write decision may spend on the filesystem (#646 verify V4) and on YAML (R2)."""
 
-    __slots__ = ("left",)
+    __slots__ = ("left", "text")
 
     def __init__(self) -> None:
         self.left = _DECISION_BUDGET
+        self.text = _PROJECT_PROFILE_TEXT_LIMIT
 
     def spend(self, cost: int = 1) -> None:
         self.left -= cost
         if self.left < 0:
             raise OSError("more folders and links than one write decision may look at")
 
+    def parse(self, cost: tuple[int, int]) -> None:
+        """Charge one project profile's :func:`_frontmatter_cost`, before it is parsed."""
 
-def _realpath(path: str, budget: _Budget) -> str:
+        self.text -= cost[0]
+        if self.text < 0 or cost[1] > _PROJECT_PROFILE_FLOW_LIMIT:
+            raise OSError("the project's agent profiles hold more YAML than one write decision may parse")
+
+
+def _realpath(path: str, budget: _Budget, cwd: str = "") -> str:
     """``os.path.realpath`` of an absolute ``path``, as the OS opens it, at a bounded cost.
 
     The ``..`` in ``lnk/../x`` is applied to the folder ``lnk`` POINTS AT: the
@@ -606,12 +636,13 @@ def _realpath(path: str, budget: _Budget) -> str:
     POSIX this is ``posixpath.realpath``'s walk with a count: past
     :data:`_LINKS_PER_PATH` links, or past the decision's budget, it raises.
     Windows resolves ``..`` by name before it opens anything, which
-    ``ntpath.realpath`` does too, and making a link there takes a privilege.
+    ``ntpath.realpath`` does too, and making a link there takes a privilege;
+    there each link is judged against ``cwd`` before it is followed
+    (:func:`_realpath_nt`).
     """
 
     if _NT:
-        budget.spend()
-        return os.path.realpath(path)
+        return _realpath_nt(path, budget, cwd)
     if not path.startswith("/"):
         path = os.getcwd() + "/" + path
     rest: list[str | None] = list(reversed(path.split("/")))
@@ -657,6 +688,75 @@ def _realpath(path: str, budget: _Budget) -> str:
     return current
 
 
+def _realpath_nt(path: str, budget: _Budget, cwd: str) -> str:
+    """:func:`_realpath` on Windows: one link at a time, none followed before it is judged (#646 verify R3).
+
+    ``ntpath.realpath`` follows a whole chain inside one ``CreateFileW``, so a
+    link a repository ships whose SECOND hop is ``\\\\host\\share`` — or a
+    root that is itself such a link — reached the share before anything
+    looked at it. Here ``..`` is applied by name first, as Windows applies it;
+    then each name is ``lstat``-ed from the drive down, a link or junction is
+    read by :func:`_link_target`, which refuses one on another machine than
+    ``cwd``, and the walk starts again on the path it makes. The link-free
+    result goes through ``os.path.realpath`` only for its spelling (case,
+    8.3 names); there is nothing left for it to follow.
+    """
+
+    if _is_remote(path, cwd):
+        raise OSError(f"{path} is on another machine")
+    path = os.path.abspath(path)
+    links = 0
+    while True:
+        drive, rest = os.path.splitdrive(path)
+        names = [name for name in rest.replace(os.altsep or os.sep, os.sep).split(os.sep) if name]
+        current = drive + os.sep
+        for index, name in enumerate(names):
+            candidate = os.path.join(current, name)
+            try:
+                if not _is_link(os.lstat(candidate)):
+                    current = candidate
+                    continue
+            except (FileNotFoundError, NotADirectoryError):
+                # Nothing below it exists: ``realpath`` follows nothing more.
+                return os.path.realpath(path)
+            links += 1
+            if links > _LINKS_PER_PATH:
+                raise OSError(f"{path} goes through more than {_LINKS_PER_PATH} links")
+            budget.spend()
+            path = os.path.normpath(os.path.join(current, _link_target(candidate, cwd), *names[index + 1 :]))
+            break
+        else:
+            return os.path.realpath(current)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    """Whether an ``lstat`` result is a link the OS follows — a symlink, or a Windows junction."""
+
+    return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) == _MOUNT_POINT
+
+
+def _link_target(link: str, cwd: str) -> str:
+    """What ``link`` points at; ``OSError`` if that is on another machine than ``cwd`` (:func:`_is_remote`).
+
+    ``os.readlink`` gives a junction, and an absolute link, on Windows as
+    ``\\\\?\\C:\\…`` or ``\\\\?\\UNC\\host\\share\\…``; that prefix comes off
+    first, as ``ntpath.realpath`` takes it off, so a link to a local drive is
+    not taken for a device path.
+    """
+
+    target = os.readlink(link)
+    if not _NT:
+        return target
+    spelled = target.replace("/", "\\")
+    if spelled[:8].upper() == "\\\\?\\UNC\\":
+        target = "\\\\" + target[8:]
+    elif spelled[:4] == "\\\\?\\" and target[5:6] == ":":
+        target = target[4:]
+    if _is_remote(target, cwd):
+        raise OSError(f"{link} points at another machine")
+    return target
+
+
 def _is_remote(path: str, cwd: str) -> bool:
     """Whether looking at ``path`` would reach a machine the ``cwd`` is not on (#646 verify V5).
 
@@ -664,12 +764,16 @@ def _is_remote(path: str, cwd: str) -> bool:
     same path — opens an SMB session to ``host``, and the session sends the
     user's NTLM hash, so a project file that names one must not be looked at.
     A device path (``\\\\?\\``, ``\\\\.\\``) goes with them: it can spell a UNC
-    path too. A share the cwd is on itself is not remote: the process already
-    reads it.
+    path too, and so does the NT object namespace (``\\??\\UNC\\host\\share``),
+    which Win32 hands on unparsed and which ``ntpath`` before 3.13 takes for a
+    rooted path, not a drive (verify R3). A share the cwd is on itself is not
+    remote: the process already reads it.
     """
 
     if not _NT:
         return False
+    if path.replace("/", "\\").startswith("\\??\\"):
+        return True
     drive = ntpath.splitdrive(path)[0].replace("/", "\\")
     if not drive.startswith("\\\\"):
         return False
@@ -715,7 +819,7 @@ def _read_regular(path: str, limit: int) -> bytes | None:
     return b"".join(chunks)
 
 
-def _project_settings_lists(abs_cwd: str) -> dict[str, object]:
+def _project_settings_lists(abs_cwd: str, budget: _Budget) -> dict[str, object]:
     """The ``skills`` and ``prompts`` values of ``<cwd>/.aelix/settings.json``, WHATEVER THE TRUST.
 
     Read here, not through the manager, because a delegated child runs with
@@ -724,14 +828,18 @@ def _project_settings_lists(abs_cwd: str) -> dict[str, object]:
     it (ADR-0252 §A), while the trusted parent loads the paths it names on the
     next ``/reload``. Nothing is applied and nothing is reported, and it can
     only make the gate ask more. Read by :func:`_read_regular`, up to
-    :data:`_PROJECT_SETTINGS_READ_LIMIT` bytes. Text that does not parse names
-    nothing — the loader reads nothing from it either.
+    :data:`_PROJECT_SETTINGS_READ_LIMIT` bytes, at the path :func:`_realpath`
+    gives it. Text that does not parse names nothing — the loader reads
+    nothing from it either. Text nested past the parser is no proof of that:
+    whether ``json`` gives up depends on how deep the stack already is, so its
+    ``RecursionError`` reaches the caller and the write asks (verify R1).
     """
 
     from aelix_coding_agent.cli.config import CONFIG_DIR_NAME
 
     data = _read_regular(
-        os.path.join(abs_cwd, CONFIG_DIR_NAME, "settings.json"), _PROJECT_SETTINGS_READ_LIMIT
+        _realpath(os.path.join(abs_cwd, CONFIG_DIR_NAME, "settings.json"), budget, abs_cwd),
+        _PROJECT_SETTINGS_READ_LIMIT,
     )
     if data is None:
         return {}
@@ -771,14 +879,14 @@ def _plain_paths(raw: object, base: str, *, project_cwd: str | None = None) -> l
     return paths if project_cwd is None else _refuse_remote(paths, project_cwd)
 
 
-def _project_settings_paths(abs_cwd: str) -> list[str]:
+def _project_settings_paths(abs_cwd: str, budget: _Budget) -> list[str]:
     """The plain ``skills`` / ``prompts`` paths of ``<cwd>/.aelix/settings.json``, read from disk."""
 
     from aelix_coding_agent.cli.config import CONFIG_DIR_NAME
 
     base = os.path.join(abs_cwd, CONFIG_DIR_NAME)
     paths: list[str] = []
-    for raw in _project_settings_lists(abs_cwd).values():
+    for raw in _project_settings_lists(abs_cwd, budget).values():
         paths += _plain_paths(raw, base, project_cwd=abs_cwd)
     return paths
 
@@ -812,12 +920,26 @@ def _manager_resource_paths(abs_cwd: str, settings: SettingsManager | None) -> l
     return paths
 
 
-_profile_lists: dict[tuple[str, int, int, int, int], tuple[str, ...]] = {}
-"""A profile's ``skills:`` / ``extensions:`` values by its path and ``stat``, so
-an unchanged profile is parsed once and not on every write decision."""
+_profile_lists: dict[tuple[str, int, int, int, int], tuple[tuple[int, int], tuple[str, ...]]] = {}
+"""A profile's :func:`_frontmatter_cost` and ``skills:`` / ``extensions:`` values by
+its path and ``stat``, so an unchanged profile is parsed once and not on every
+write decision."""
 
 
-def _profile_paths(directory: str, budget: _Budget, *, project_cwd: str | None = None) -> list[str]:
+def _frontmatter_cost(text: str) -> tuple[int, int]:
+    """The length, and the ``[`` and ``{``, of the YAML ``parse_frontmatter`` would parse in ``text``.
+
+    The same split as ``aelix_agent_core/harness/_frontmatter.py``: between a
+    leading ``---`` and the next ``\\n---``, after CR/CRLF become LF.
+    """
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    end = normalized.find("\n---", 3) if normalized.startswith("---") else -1
+    yaml_text = normalized[4:end] if end != -1 else ""
+    return len(yaml_text), yaml_text.count("[") + yaml_text.count("{")
+
+
+def _profile_paths(directory: str, budget: _Budget, cwd: str, *, project: bool = False) -> list[str]:
     """The ``skills:`` and ``extensions:`` paths the agent profiles in ``directory`` name.
 
     A run of that profile loads them (``agents/profile.py`` ``_parse_path_list``:
@@ -825,53 +947,74 @@ def _profile_paths(directory: str, budget: _Budget, *, project_cwd: str | None =
     here and not by ``discover_profiles``, which reads the project's
     profiles only in a trusted project — the parent loads them while its child
     runs ``--no-approve`` — and checks each path exists, which on Windows is
-    the lookup :func:`_is_remote` keeps from a project's file. A project's
-    folder (``project_cwd``) is bounded by :data:`_PROJECT_PROFILE_LIMIT`
-    profiles, :data:`_PROFILE_READ_LIMIT` bytes each and
-    :data:`_PROJECT_LIST_LIMIT` entries a list; past any of them, the write asks.
+    the lookup :func:`_is_remote` keeps from a project's file. The folder, and
+    a profile that is a link, are opened where :func:`_realpath` puts them, so
+    on Windows no link is followed before it is judged against ``cwd``. A
+    project's folder (``project``) is bounded by :data:`_PROJECT_PROFILE_LIMIT`
+    profiles, :data:`_PROFILE_READ_LIMIT` bytes each,
+    :data:`_PROJECT_PROFILE_TEXT_LIMIT` characters of frontmatter in all (the
+    decision's :class:`_Budget`), :data:`_PROJECT_PROFILE_FLOW_LIMIT` ``[`` and
+    ``{`` each and :data:`_PROJECT_LIST_LIMIT` entries a list; past any of
+    them, the write asks.
     """
 
     from aelix_agent_core.harness._frontmatter import parse_frontmatter
 
     try:
-        with os.scandir(directory) as listing:
+        with os.scandir(_realpath(directory, budget, cwd)) as listing:
             files = [e.path for e in listing if e.name.endswith(".md") and not e.name.startswith(".")]
     except (FileNotFoundError, NotADirectoryError):
         return []
     budget.spend(len(files) + 1)
-    if project_cwd is not None and len(files) > _PROJECT_PROFILE_LIMIT:
+    if project and len(files) > _PROJECT_PROFILE_LIMIT:
         raise OSError(f"{directory} holds more than {_PROJECT_PROFILE_LIMIT} agent profiles")
     paths: list[str] = []
     for file in files:
         try:
+            if _is_link(os.lstat(file)):
+                file = _realpath(file, budget, cwd)
             st = os.stat(file)
         except (FileNotFoundError, NotADirectoryError):
             continue
         key = (file, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
-        values = _profile_lists.get(key)
-        if values is None:
+        cached = _profile_lists.get(key)
+        if cached is not None:
+            if project:
+                budget.parse(cached[0])
+            values = cached[1]
+        else:
             data = _read_regular(file, _PROFILE_READ_LIMIT)
             try:
-                frontmatter = parse_frontmatter(data.decode("utf-8"))[0] if data else None
-            except (ValueError, RecursionError):
-                # Not UTF-8, or YAML nested past the parser: the profile does
-                # not load, so it names nothing.
+                text = data.decode("utf-8") if data else ""
+            except ValueError:
+                text = ""  # not UTF-8: the profile does not load, so it names nothing
+            cost = _frontmatter_cost(text)
+            if project:
+                budget.parse(cost)
+            try:
+                frontmatter = parse_frontmatter(text)[0] if text else None
+            except ValueError:
+                # A value YAML cannot build (``2026-13-45``): the profile does
+                # not load, so it names nothing. A ``RecursionError`` is no
+                # proof of that — whether the parser gives up depends on how
+                # deep the stack already is — so it reaches the caller and
+                # the write asks (verify R1).
                 frontmatter = None
             found: list[str] = []
             for name in _PROFILE_PATH_KEYS:
                 raw = (frontmatter or {}).get(name)
                 items = raw.split(",") if isinstance(raw, str) else raw if isinstance(raw, list) else []
-                if project_cwd is not None and len(items) > _PROJECT_LIST_LIMIT:
+                if project and len(items) > _PROJECT_LIST_LIMIT:
                     raise OSError(f"{file} names more than {_PROJECT_LIST_LIMIT} {name}")
                 found += [item.strip() for item in items if isinstance(item, str) and item.strip()]
             values = tuple(found)
             if len(_profile_lists) > 512:
                 _profile_lists.clear()
-            _profile_lists[key] = values
+            _profile_lists[key] = (cost, values)
         for value in values:
             expanded = os.path.expanduser(value)
             paths.append(expanded if os.path.isabs(expanded) else os.path.join(directory, expanded))
-    return paths if project_cwd is None else _refuse_remote(paths, project_cwd)
+    return _refuse_remote(paths, cwd) if project else paths
 
 
 def _parent_record(environ: Mapping[str, str] | None = None) -> tuple[list[str], list[str]]:
@@ -880,7 +1023,11 @@ def _parent_record(environ: Mapping[str, str] | None = None) -> tuple[list[str],
     raw = (os.environ if environ is None else environ).get(PARENT_ROOTS_ENV)
     if not raw:
         return [], []
-    record = json.loads(raw)
+    try:
+        record = json.loads(raw)
+    except RecursionError as exc:
+        # Nested past the parser (verify R1): not a record aelix wrote either.
+        raise ValueError(f"{PARENT_ROOTS_ENV} is not a record aelix wrote") from exc
     if not isinstance(record, dict):
         raise ValueError(f"{PARENT_ROOTS_ENV} is not a record aelix wrote")
     lists: list[list[str]] = []
@@ -971,7 +1118,7 @@ def _loader_resource_roots(
         str(user_agents_skills_dir()),
         *parent_files,
         *_manager_resource_paths(abs_cwd, settings),
-        *_profile_paths(os.path.join(agent_dir, "agents"), budget),
+        *_profile_paths(os.path.join(agent_dir, "agents"), budget, abs_cwd),
     ]
     mcp_config = os.environ.get(ENV_MCP_CONFIG)
     if mcp_config:
@@ -981,8 +1128,8 @@ def _loader_resource_roots(
         config_dir = os.path.join(cwd, CONFIG_DIR_NAME)
         roots.append((config_dir, True))
         paths += [str(d) for d in agents_skill_walk(cwd)]
-        paths += _project_settings_paths(cwd)
-        paths += _profile_paths(os.path.join(config_dir, "agents"), budget, project_cwd=cwd)
+        paths += _project_settings_paths(cwd, budget)
+        paths += _profile_paths(os.path.join(config_dir, "agents"), budget, cwd, project=True)
     return roots + [(path, False) for path in paths]
 
 
@@ -1059,9 +1206,13 @@ def _links_below(folder: str, cwd: str, *, config_dir: bool, budget: _Budget) ->
         budget.spend(len(entries) + 1)
         for entry in entries:
             if entry.is_symlink() or (_NT and getattr(entry, "is_junction", bool)()):
-                if _is_remote(os.readlink(entry.path), cwd):
-                    raise OSError(f"{entry.path} points at another machine")
-                if not top or entry.name in _LOADER_FAMILIES or not entry.is_dir():
+                _link_target(entry.path, cwd)
+                # Not ``entry.is_dir()``: it follows the whole chain at once.
+                if (
+                    not top
+                    or entry.name in _LOADER_FAMILIES
+                    or not os.path.isdir(_realpath(entry.path, budget, cwd))
+                ):
                     links.append(entry.path)
             elif (
                 entry.is_dir(follow_symlinks=False)
@@ -1098,7 +1249,7 @@ def _under_loader_resource(
     pending = _loader_resource_roots(abs_cwd, settings, budget)
     while pending:
         root, config_dir = pending.pop()
-        real = _realpath(root, budget)
+        real = _realpath(root, budget, abs_cwd)
         key, missing = _anchored(real)
         anchors.setdefault(key, []).append(missing)
         if missing or key in walked:
@@ -1140,7 +1291,7 @@ def _write_spellings(path: str, cwd: str, budget: _Budget) -> tuple[str, str, st
 
     abs_cwd = os.path.abspath(cwd) if cwd else os.path.abspath(".")
     target = resolve_to_cwd(path, abs_cwd)
-    return abs_cwd, os.path.normpath(target), _realpath(target, budget)
+    return abs_cwd, os.path.normpath(target), _realpath(target, budget, abs_cwd)
 
 
 def _is_auto_allowable_write(path: str, cwd: str, settings: SettingsManager | None = None) -> bool:
@@ -1221,13 +1372,15 @@ def _is_auto_allowable_write(path: str, cwd: str, settings: SettingsManager | No
     try:
         budget = _Budget()
         abs_cwd, lexical, real_path = _write_spellings(path, cwd, budget)
-        real_cwd = _realpath(abs_cwd, budget)
+        real_cwd = _realpath(abs_cwd, budget, abs_cwd)
         if not (_write_guard_passes(lexical, abs_cwd) and _write_guard_passes(real_path, real_cwd)):
             return False
         return not _under_loader_resource(real_path, abs_cwd, settings, budget)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         # No evidence about where the write lands, or about where the loader
-        # reads, is not a licence to allow it. (``ValueError``: a NUL in a path.)
+        # reads, is not a licence to allow it. (``ValueError``: a NUL in a path.
+        # ``RecursionError``: JSON or YAML a project wrote nested past the
+        # parser at the depth this call runs at — verify R1.)
         return False
 
 

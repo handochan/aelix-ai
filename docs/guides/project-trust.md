@@ -267,13 +267,18 @@ when you work inside it (a dotfiles repository, say — you are asked when
 editing those folders there, not elsewhere in it), the folder a link inside
 one of these points at, the folders the `skills` and `prompts` paths in your
 global or this project's `settings.json` name, the `skills:` and
-`extensions:` paths of your and this project's agent profiles, and the file
-`AELIX_MCP_CONFIG` names. A delegated agent started in a subfolder is held to
-the folders of the project it was started from too. A `--skill`,
+`extensions:` paths of your and this project's agent profiles, the file
+`AELIX_MCP_CONFIG` names, and the folder your `~/.aelix/agent/bin` points at
+(bash runs the programs in it). A delegated agent started in a subfolder is
+held to the folders of the project it was started from too. A `--skill`,
 `--prompt-template` or `--agent-file` path is not one of them: you named it
 for that run. Nor are a hard link to a skill file and the session folder. A
-repository can make every write ask (a link to itself, `"skills": ["/"]`, or
-more entries and folders than one write may check), which is the safe side.
+repository can make every write ask (a link to itself, `"skills": ["/"]`, more
+entries and folders than one write may check, or agent profiles with more YAML
+than one write may parse), which is the safe side. So can a tree of your own:
+if one of these folders, or the folder it links to, holds more than 8,192
+entries and links — a large checkout linked as your `~/.agents/skills`, say —
+every write asks, in every project.
 
 | Option | Effect |
 | --- | --- |
