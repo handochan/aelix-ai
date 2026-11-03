@@ -536,11 +536,12 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     sites = _getter_call_sites()
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
-    # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:4270 is a docstring; a substring scan would report 2.
+    # ...and it finds ONLY the calls in the file that also mentions the name in
+    # prose: the input loop's gate and, since #508, the ``/`` menu's. The
+    # docstring above ``_input_loop`` names it too; a substring scan would add it.
     skill_sites = sites["get_enable_skill_commands"]
-    assert len(skill_sites) == 1, skill_sites
-    assert "tui/shell.py" in skill_sites[0]
+    assert len(skill_sites) == 2, skill_sites
+    assert all("tui/shell.py" in site for site in skill_sites), skill_sites
 
 
 async def test_the_wired_row_says_something_true_about_being_off() -> None:
@@ -954,11 +955,16 @@ async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
     """⑥ What makes ⑤'s ``live=True`` true, derived from ``shell.py``.
 
     Three things together: the ONE production call to
-    ``get_enable_skill_commands`` sits inside ``_input_loop``'s ``while`` body
-    (re-read per turn, not hoisted); ``run_tui`` hands ``_input_loop`` its own
-    ``settings_manager`` parameter as a bare Name; and ``run_tui`` never rebinds
-    that name, so the nested ``_open_settings`` writes the object the loop reads.
-    Hoist the read above the loop, or rebind the manager, and ⑤ becomes a lie.
+    ``get_enable_skill_commands`` that gates the line sits inside
+    ``_input_loop``'s ``while`` body (re-read per turn, not hoisted); ``run_tui``
+    hands ``_input_loop`` its own ``settings_manager`` parameter as a bare Name;
+    and ``run_tui`` never rebinds that name, so the nested ``_open_settings``
+    writes the object the loop reads. Hoist the read above the loop, or rebind
+    the manager, and ⑤ becomes a lie.
+
+    #508 adds the one other call: the ``/`` menu's, inside ``run_tui``'s nested
+    ``_resource_commands``, which the completer calls on every keystroke. It is
+    pinned to that def, so a read hoisted out of it is red too.
     """
 
     import ast
@@ -980,6 +986,10 @@ async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
     assert len(whiles) == 1, [w.lineno for w in whiles]
     per_turn = set(map(id, ast.walk(whiles[0])))
 
+    run_tui = next(n for n in ast.walk(tree) if _named(n, "run_tui"))
+    menu = next(n for n in ast.walk(run_tui) if _named(n, "_resource_commands"))
+    per_key = set(map(id, ast.walk(menu)))
+
     gate_calls = [
         n
         for n in ast.walk(tree)
@@ -987,13 +997,18 @@ async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "get_enable_skill_commands"
     ]
-    assert len(gate_calls) == 1, [c.lineno for c in gate_calls]
-    assert id(gate_calls[0]) in per_turn, (
-        f"shell.py:{gate_calls[0].lineno} reads the gate outside the per-turn "
-        "while body — the row is no longer live"
+    assert len(gate_calls) == 2, [c.lineno for c in gate_calls]
+    loop_gate = [c for c in gate_calls if id(c) in per_turn]
+    assert len(loop_gate) == 1, (
+        f"shell.py:{[c.lineno for c in gate_calls]} — no read of the gate in the "
+        "per-turn while body; the row is no longer live"
+    )
+    menu_gate = [c for c in gate_calls if id(c) in per_key]
+    assert len(menu_gate) == 1, (
+        f"shell.py:{[c.lineno for c in gate_calls]} — the / menu's read is not in "
+        "_resource_commands, which runs per keystroke"
     )
 
-    run_tui = next(n for n in ast.walk(tree) if _named(n, "run_tui"))
     assert "settings_manager" in {
         a.arg for a in [*run_tui.args.args, *run_tui.args.kwonlyargs]
     }

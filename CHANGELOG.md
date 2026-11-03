@@ -1239,6 +1239,30 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **The `/` menu lists your skills and prompt templates (#508, ADR-0279 D12).**
+  `/skill:<name>` and `/<template>` ran, but typing `/` never offered them:
+  `/sk` showed only `/skill`, and `/skill:` and `/zz` showed nothing, so skills
+  looked like they did not work. The menu now lists every enabled skill as
+  `skill:<name>`, its description led by where it came from (`[project]`,
+  `[global]`, `[bundled]`, `[--skill]`), and every prompt template as `<name>`,
+  in pi's order: built-in commands, templates, extension commands, skills. A
+  skill is found by its name alone too (`/pdf` offers `skill:pdf-tools`). The
+  list is read at every key, so `/reload` and the `/skill` panel show at once.
+  A skill that is off is not offered (it would only say it is off), none is
+  while `enableSkillCommands` is off, and a template is not offered under a name
+  a command or an extension's panel takes, since that runs instead; an
+  extension's command route no longer stands in for the template or command
+  that runs under its name, so a row's description is what Enter runs (a
+  command route with nothing behind it still says Unknown command).
+  Descriptions are one row, control characters shown by name, cut to the menu's
+  width, and a long name is cut at 30 cells as pi's is (a third of the width
+  under 90 columns), so one long skill name no longer leaves every
+  description a few cells wide. `/tools`, `/skills`, `/exit` and `/rename` are
+  offered as rows of their own ("Same as /tool"), and `/help` lists them beside
+  their commands (`/tool, /tools`); before, neither said they existed. The
+  `/skill` panel says how to run a skill (`/skill:<name>`), and so does the
+  plain skill list shown where there is no panel.
+
 - **`/reload` no longer prints an extension's load error over the input, and
   `/extension` no longer shows the extensions of the launch after it (#25,
   ADR-0284).** A `setup()` that raised printed `Warning: extension load: …` raw

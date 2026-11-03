@@ -429,6 +429,10 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
 - `/compact` — summarise and compact the context.
 - `/cost` — show token usage and cost so far.
 - `/tool` (or `/tools`) — turn tools on and off; see [tools](tools.md).
+- `/skill` (or `/skills`) — turn skills on and off. A skill runs as
+  `/skill:<name>` and a prompt template as `/<name>`; the `/` menu lists both
+  (typing a skill's name alone finds it too). See
+  [skills-and-prompts](skills-and-prompts.md).
 - `/resume` — switch to another session.
 - `/name <text>` (or `/rename <text>`) — set the current session name. Both
   `/resume` and `aelix --resume` show the latest saved name, falling back to the
