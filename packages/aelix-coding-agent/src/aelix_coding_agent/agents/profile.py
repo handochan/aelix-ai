@@ -20,7 +20,7 @@ One-way pi compat: a pi ``agents/<name>.md`` role loads here unchanged; an
 aelix profile using ``extensions:``/``role:`` does not run on pi.
 
 Scope note (the RCE cut): ``extensions:`` names ``.py`` files that
-``extensions/loader.py:947-1041`` ``exec_module``s **outside** both the
+``extensions/loader.py:978-1072`` ``exec_module``s **outside** both the
 ``no_discovery`` and the ``no_project_local`` guards, i.e. an explicit
 extension path is ungated by Project Trust. A project-scoped profile is
 therefore forbidden from declaring ``extensions:`` at all
@@ -93,7 +93,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:4766-4783``."""
+``cli/entry.py:4809-4826``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {
@@ -193,7 +193,7 @@ class AgentProfile:
 
     skills: tuple[str, ...] = ()
     """ABSOLUTE paths after parse. aelix's ``--skill`` takes a PATH, not a name
-    (``cli/entry.py:1493-1536``) — unlike pi. Relative entries resolve against the
+    (``cli/entry.py:1496-1539``) — unlike pi. Relative entries resolve against the
     PROFILE's own directory, never cwd, so a profile is portable across cwds."""
 
     inherit_skills: bool = True
@@ -212,7 +212,7 @@ class AgentProfile:
     """Default ``False`` (spec §2.3) — extensions execute arbitrary code, so a
     profile does not silently inherit the ambient set. Emits
     ``--no-extensions``, which suppresses *discovery* only; explicit ``-e``
-    paths still load (``cli/entry.py:2121-2123``)."""
+    paths still load (``cli/entry.py:2129-2131``)."""
 
     system_prompt: Literal["append", "replace"] = "append"
     """``append`` puts :attr:`body` FIRST among the appends (ahead of the user's
@@ -401,7 +401,7 @@ def parse_profile(
     skills = _parse_path_list(frontmatter, "skills", profile_dir, _err, _warn)
     extensions = _parse_path_list(frontmatter, "extensions", profile_dir, _err, _warn)
 
-    # THE RCE CUT. ``extensions/loader.py:947-1041`` exec_module's explicit
+    # THE RCE CUT. ``extensions/loader.py:978-1072`` exec_module's explicit
     # extension paths OUTSIDE both the ``no_discovery`` and ``no_project_local``
     # guards, so a project-scoped profile declaring ``extensions:`` would be a
     # checked-in file that runs arbitrary code the Project Trust gate never sees.
@@ -636,11 +636,11 @@ def _parse_path_list(
     """Resolve ``skills:`` / ``extensions:`` entries to ABSOLUTE paths.
 
     aelix's ``--skill`` and ``--extension``/``-e`` take PATHS, not names
-    (``cli/entry.py:1493-1536``, ``args.py``) — a divergence from pi that the spec
+    (``cli/entry.py:1496-1539``, ``args.py``) — a divergence from pi that the spec
     originally got wrong. Relative entries resolve against ``profile_dir``, NOT
     cwd: a profile must mean the same thing from any working directory, and an
     absolute result round-trips unchanged through ``_resolve_skill_tiers``'
-    cwd-relative logic (``entry.py:1533-1539``).
+    cwd-relative logic (``entry.py:1536-1542``).
 
     A non-existent path is a WARNING here — ``/agents list`` must never break —
     and ``discovery.resolve_profile`` escalates it to fatal, because running

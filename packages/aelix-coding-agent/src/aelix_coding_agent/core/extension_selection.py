@@ -21,27 +21,41 @@ What lives here:
 * :func:`reload_lines` — the one transcript entry ``/reload`` leaves: what
   changed, what failed, and what waits for a restart (MCP servers, providers,
   new shortcut keys — Codex F10).
+* :class:`ExtensionGrammar` — the panel's save: ADR-0279 D1's edit, except that
+  a row whose name another row shares is written by a form only it answers to
+  (#25 verify V2), and no other row's saved value moves.
+* :class:`ExtensionOffRecord` — what a delegated child inherits: the carriers
+  its parent's settings turned off, to suppress only (#25 verify V5, the
+  owner's "a child never gets more than its parent").
 
 Identities (ADR-0284 D1): a manifest pack is named by its ``plugin.id``, then
-its entry-point name and PEP 503 distribution name; a manifest-less entry
-point by its name and distribution; a legacy file by its stem, a package
-directory by its name; a built-in by ``builtin:<name>``. The first is what the
-panel writes.
+its entry-point name and PEP 503 distribution name (kept when the directory
+tier found the same pack first — review R01); a manifest-less entry point by
+its name and distribution; a legacy file by its stem, a package directory by
+its name, a file a ``pyproject.toml`` package declares by the package's name
+and then its own stem (review R02); a built-in by ``builtin:<name>``. The
+first is what the panel writes, unless another row shares it.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .resource_filter import (
+    Scope,
+    ScopeList,
     Target,
+    edit,
     effective,
     matches_any,
+    reaches,
     source_entries,
     split_entry,
 )
@@ -50,6 +64,7 @@ from .resource_selection import (
     ApplyResult,
     Effect,
     Lock,
+    PerItemGrammar,
     ResourceItem,
     ResourceSelection,
     SettingsLists,
@@ -109,11 +124,35 @@ class EntryInfo:
     declared_commands: int | None = None
     declared_hooks: int | None = None
     mcp_servers: tuple[str, ...] = ()
+    package_path: str | None = None
+    """The ``pyproject.toml`` package directory that declared this file (review R02):
+    a path entry naming the directory names it too."""
 
 
-def describe(entry: Any, tier: str) -> EntryInfo:
+def describe_record(record: Any) -> EntryInfo:
+    """A discovery record's facts: its carrier's, plus the package that declared
+    it and the names of a duplicate discovery dropped (reviews R01, R02)."""
+
+    return describe(
+        record.entry,
+        record.tier,
+        package=getattr(record, "package", None),
+        aliases=getattr(record, "aliases", ()) or (),
+    )
+
+
+def describe(
+    entry: Any, tier: str, *, package: Path | None = None, aliases: Sequence[str] = ()
+) -> EntryInfo:
     """*entry* (a discovery carrier) as a row's facts, from metadata alone."""
 
+    info = _describe(entry, tier, package)
+    if aliases:
+        info = replace(info, identities=_unique([*info.identities, *aliases]))
+    return info
+
+
+def _describe(entry: Any, tier: str, package: Path | None) -> EntryInfo:
     from aelix_coding_agent.extensions.loader import (  # noqa: PLC0415
         _EntryPointEntry,
         _ManifestEntry,
@@ -160,6 +199,17 @@ def describe(entry: Any, tier: str) -> EntryInfo:
         return EntryInfo(label=entry, identities=(entry,), path=None, scope=scope)
     if isinstance(entry, Path):
         path = entry
+        if package is not None:
+            # A file a ``pyproject.toml`` package declares (review R02, V7): the
+            # package is what a user names, and each declared file by its stem.
+            return EntryInfo(
+                label=f"{package.name}/{path.name}",
+                identities=_unique([package.name, path.stem]),
+                path=str(path),
+                scope=scope,
+                description="(no manifest) · declared by its pyproject.toml",
+                package_path=str(package),
+            )
         if path.name == "__init__.py":
             directory = path.parent
             return EntryInfo(
@@ -204,7 +254,12 @@ def _dist_summary(dist: str | None) -> str:
 
 
 def target_of(info: EntryInfo) -> Target:
-    return Target(identities=info.identities, path=info.path, scope=info.scope)
+    return Target(
+        identities=info.identities,
+        path=info.path,
+        scope=info.scope,
+        package_path=info.package_path,
+    )
 
 
 def is_filtered_tier(record: DiscoveredEntry) -> bool:
@@ -214,13 +269,20 @@ def is_filtered_tier(record: DiscoveredEntry) -> bool:
 
 
 def extension_filter(
-    lists: SettingsLists, *, phase: Phase
+    lists: SettingsLists,
+    *,
+    phase: Phase,
+    inherited: ExtensionOffRecord | None = None,
 ) -> Callable[[Sequence[Any]], list[bool]]:
     """The loader's ``entry_filter`` for *phase* (ADR-0284 D2; ADR-0279 D16, C5).
 
     ``G``: the global file only — the project's is not read before trust, so it
     cannot keep an extension from voting. ``P``: both, by ADR-0279 D2. Never
     raises: an entry whose evaluation fails loads, as it did before the filter.
+
+    *inherited* (a delegated child, #25 verify V5): what its parent's settings
+    turned off stays off here, in both phases, whatever this process's files
+    say — it can only turn an extension off, never on.
     """
 
     global_list = lists.global_list
@@ -233,9 +295,12 @@ def extension_filter(
                 out.append(True)
                 continue
             try:
-                value, _scope = effective(
-                    target_of(describe(record.entry, record.tier)), global_list, project_list
-                )
+                if inherited is not None and inherited.covers(record):
+                    value = False
+                else:
+                    value, _scope = effective(
+                        target_of(describe_record(record)), global_list, project_list
+                    )
             except Exception:  # noqa: BLE001 — the filter never takes a build down
                 value = True
             out.append(value)
@@ -248,13 +313,15 @@ def list_warnings(lists: SettingsLists, records: Sequence[Any], *, check_names: 
     """ADR-0279 D8 for ``extensions``, said once per launch.
 
     A plain entry — a path that would ADD an extension source, pi's grammar — is
-    not supported yet (owner decision 8, ADR-0284 D9) and is ignored. With
-    *check_names* (discovery ran: not ``--no-extensions``), an ``!`` / ``+`` /
-    ``-`` entry that names no extension found at launch.
+    not supported yet (owner decision 8, ADR-0284 D9) and is ignored. An entry
+    naming a built-in is ignored too, and said (verify V8: pi's
+    ``-builtin:<name>`` turns its built-ins off; aelix's are locked, ADR-0284
+    D4). With *check_names* (discovery ran: not ``--no-extensions``), an ``!`` /
+    ``+`` / ``-`` entry that names no extension found at launch.
     """
 
     out = list(lists.problems)
-    targets = [target_of(describe(r.entry, r.tier)) for r in records]
+    targets = [target_of(describe_record(r)) for r in records]
     for scope_list in (lists.global_list, lists.project_list):
         if scope_list is None:
             continue
@@ -264,16 +331,177 @@ def list_warnings(lists: SettingsLists, records: Sequence[Any], *, check_names: 
                 f'{label}: "extensions" entry {entry!r} would add an extension source by '
                 "path, which is not supported yet; it is ignored"
             )
+        builtin: list[str] = []
+        for entry in scope_list.entries:
+            prefix, body = split_entry(entry)
+            if prefix and body.startswith("builtin:"):
+                builtin.append(entry)
+                out.append(
+                    f'{label}: "extensions" entry {entry!r} is ignored: Guardrail, Permission '
+                    "and Status are always on, and agents follows [features] agents (/settings)"
+                )
         if not check_names:
             continue
         for entry in scope_list.entries:
-            if not split_entry(entry)[0]:
+            if not split_entry(entry)[0] or entry in builtin:
                 continue
             if not matches_any(entry, targets, scope_list.base_dir, list_scope=scope_list.scope):
                 out.append(
                     f'{label}: "extensions" entry {entry!r} names no extension found at launch'
                 )
     return out
+
+
+# --- what a delegated child inherits (#25 verify V5) ---------------------------
+
+EXTENSIONS_PARENT_OFF_ENV = "AELIX_EXTENSIONS_PARENT_OFF"
+"""The environment variable a delegated child reads its parent's off-set from.
+
+``AELIX_``: a cwd ``.env`` cannot set it (``runtime_bootstrap._DOTENV_NEVER``)
+unless the user's own ``AELIX_DOTENV_ALLOW`` lists it, so a cloned repo cannot
+inject it — and it could only turn the user's extensions off anyway. The
+launch reads it and removes it from ``os.environ`` (``cli/entry.py``), so the
+child's bash and ``api.exec`` do not hand it on; the child's own children get
+:data:`_launch_off` instead (as ADR-0282 D9's MCP record)."""
+
+_OFF_RECORD_MAX_BYTES = 16 * 1024
+"""The most :meth:`ExtensionOffRecord.to_env` writes: an environment string has
+a ceiling (ADR-0282 D9 measured it). Past it the record says ``every``: the child
+loads no discovered extension, which is less than its parent, never more."""
+
+
+def carrier_key(entry: Any) -> str | None:
+    """What names one carrier in another process: its resolved path, or its entry point.
+
+    ``None`` for what the settings never filter (a module ``-e`` named, a built-in).
+    """
+
+    from aelix_coding_agent.extensions.loader import (  # noqa: PLC0415
+        _EntryPointEntry,
+        _ManifestEntry,
+    )
+
+    if isinstance(entry, _EntryPointEntry):
+        return f"ep:{entry.name}"
+    if isinstance(entry, _ManifestEntry):
+        path: Path = entry.pkg_dir
+    elif isinstance(entry, Path):
+        path = entry
+    else:
+        return None
+    try:
+        return "path:" + os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        return "path:" + os.path.normcase(os.path.abspath(path))
+
+
+@dataclass(frozen=True)
+class ExtensionOffRecord:
+    """The extensions a parent's launch kept off, as a delegated child inherits them.
+
+    ``keys`` are :func:`carrier_key` values; ``every`` says every discovered
+    extension was off (the parent ran ``--no-extensions``, or the record did not
+    fit). SUPPRESS ONLY: a child turns off what it covers and reads nothing
+    else from it — it names no file to load and cannot turn anything on.
+    ``-e`` and the built-ins are never covered (:func:`is_filtered_tier`).
+    """
+
+    keys: frozenset[str] = frozenset()
+    every: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.keys or self.every)
+
+    def __or__(self, other: ExtensionOffRecord) -> ExtensionOffRecord:
+        return ExtensionOffRecord(self.keys | other.keys, self.every or other.every)
+
+    def covers(self, record: Any) -> bool:
+        if not is_filtered_tier(record):
+            return False
+        if self.every:
+            return True
+        key = carrier_key(record.entry)
+        return key is not None and key in self.keys
+
+    def to_env(self) -> str:
+        """JSON, ASCII-only, at most :data:`_OFF_RECORD_MAX_BYTES`."""
+
+        raw = json.dumps(
+            {"off": sorted(self.keys), "all": self.every}, ensure_ascii=True, separators=(",", ":")
+        )
+        if len(raw) > _OFF_RECORD_MAX_BYTES:
+            return json.dumps({"off": [], "all": True}, separators=(",", ":"))
+        return raw
+
+    @classmethod
+    def from_env(cls, raw: str | None) -> ExtensionOffRecord:
+        """The record in *raw*; empty for anything malformed (it can then suppress less)."""
+
+        if not raw:
+            return cls()
+        try:
+            data = json.loads(raw)
+        except (ValueError, RecursionError):
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+        keys = data.get("off")
+        return cls(
+            frozenset(k for k in keys if isinstance(k, str))
+            if isinstance(keys, list)
+            else frozenset(),
+            data.get("all") is True,
+        )
+
+    @classmethod
+    def of(cls, records: Sequence[Any], *, no_extensions: bool = False) -> ExtensionOffRecord:
+        """What a build's discovery *records* left off (``--no-extensions``: everything)."""
+
+        if no_extensions:
+            return cls(every=True)
+        keys = {
+            key
+            for record in records
+            if is_filtered_tier(record) and not record.selected
+            for key in (carrier_key(record.entry),)
+            if key is not None
+        }
+        return cls(frozenset(keys))
+
+
+_launch_off: ExtensionOffRecord | None = None
+"""What THIS process's latest committed build kept off, with what it inherited
+(``cli/entry.py`` sets it); ``None`` in a process that never built one."""
+
+
+def inherited_extension_off(environ: Mapping[str, str] | None = None) -> ExtensionOffRecord:
+    """The record a delegating aelix left in this process's environment."""
+
+    source = os.environ if environ is None else environ
+    return ExtensionOffRecord.from_env(source.get(EXTENSIONS_PARENT_OFF_ENV))
+
+
+def set_launch_extension_off(record: ExtensionOffRecord | None) -> None:
+    """Record what this process keeps off, for the children it delegates to."""
+
+    global _launch_off
+    _launch_off = record
+
+
+def pass_extension_off_to_child(env: MutableMapping[str, str]) -> None:
+    """Put this process's off-set into a delegated child's environment.
+
+    Called by ``aelix_agents.print_channel.build_child_env``, the one builder both
+    channels (and a resume) use. A process that recorded nothing leaves ``env``
+    as inherited — a record from further up still passes through.
+    """
+
+    if _launch_off is None:
+        return
+    if _launch_off:
+        env[EXTENSIONS_PARENT_OFF_ENV] = _launch_off.to_env()
+    else:
+        env.pop(EXTENSIONS_PARENT_OFF_ENV, None)
 
 
 # --- the inventory ------------------------------------------------------------
@@ -299,6 +527,8 @@ class ExtensionRow:
     hooks: int | None = None
     providers: tuple[str, ...] = ()
     shortcuts: tuple[str, ...] = ()
+    carrier: str | None = None
+    """:func:`carrier_key` — what ties a row to the MCP servers its pack declared."""
 
 
 @dataclass(frozen=True)
@@ -308,6 +538,7 @@ class RefusedRow:
     key: str
     label: str
     reason: str
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,6 +549,9 @@ class ExtensionInventory:
     refused: tuple[RefusedRow, ...] = ()
     runtime: Any = None
     no_extensions: bool = False
+    mcp_hidden: frozenset[str] = frozenset()
+    """The started MCP servers whose tools this build left out (owner decision 10) —
+    the decision the factory APPLIED, which is what every surface reports (verify V1)."""
 
     def row(self, key: str) -> ExtensionRow | None:
         return next((r for r in self.rows if r.key == key), None)
@@ -349,7 +583,7 @@ def build_inventory(
     rows: list[ExtensionRow] = []
     seen: set[str] = set()
     for record in loaded.discovered:
-        info = describe(record.entry, record.tier)
+        info = describe_record(record)
         key = _row_key(record.tier, info)
         while key in seen:
             key += "'"
@@ -374,7 +608,11 @@ def build_inventory(
                 selected=record.selected,
                 loaded=ext is not None,
                 deferred=bool(outcome is not None and outcome.deferred),
-                error=f"{error.error}" if error is not None else None,
+                error=(
+                    _error_text(error.error, getattr(outcome, "error_type", None))
+                    if error is not None
+                    else None
+                ),
                 note=note,
                 extension_name=getattr(ext, "name", None),
                 tools=len(ext.tools) if live and ext is not None else None,
@@ -388,6 +626,7 @@ def build_inventory(
                     )
                 ),
                 shortcuts=tuple(sorted(ext.shortcuts)) if ext is not None else (),
+                carrier=carrier_key(record.entry),
             )
         )
     refused: list[RefusedRow] = []
@@ -396,8 +635,18 @@ def build_inventory(
             continue
         path = str(getattr(err, "path", "") or "?")
         label = os.path.basename(path.rstrip("/" + os.sep)) or path
-        refused.append(RefusedRow(f"refused:{index}:{path}", label, str(getattr(err, "error", ""))))
+        refused.append(
+            RefusedRow(f"refused:{index}:{path}", label, str(getattr(err, "error", "")), path)
+        )
     return ExtensionInventory(tuple(rows), tuple(refused), loaded.runtime, no_extensions)
+
+
+def _error_text(message: str, error_type: str | None) -> str:
+    """``RuntimeError: boom`` — the type first, as the guide shows it (verify V7)."""
+
+    if not error_type:
+        return message
+    return f"{error_type}: {message}" if message else error_type
 
 
 def listing_inventory(records: Sequence[Any]) -> ExtensionInventory:
@@ -408,13 +657,34 @@ def listing_inventory(records: Sequence[Any]) -> ExtensionInventory:
     for record in records:
         if record.tier in ("builtin", "cli"):
             continue
-        info = describe(record.entry, record.tier)
+        info = describe_record(record)
         key = _row_key(record.tier, info)
         if key in seen:
             continue
         seen.add(key)
-        rows.append(ExtensionRow(key, info, record.tier, record.explicit, False, False))
+        rows.append(
+            ExtensionRow(
+                key,
+                info,
+                record.tier,
+                record.explicit,
+                False,
+                False,
+                carrier=carrier_key(record.entry),
+            )
+        )
     return ExtensionInventory(tuple(rows), (), None, True)
+
+
+def display_labels(rows: Sequence[ExtensionRow]) -> dict[str, str]:
+    """Each row's label, with its tier when another row has the same one (verify V2):
+    ``weather.py (project)`` and ``weather.py (global)`` in a summary and a reload line."""
+
+    counts = Counter(r.info.label for r in rows if r.tier != "builtin")
+    return {
+        r.key: f"{r.info.label} ({r.tier})" if counts[r.info.label] > 1 else r.info.label
+        for r in rows
+    }
 
 
 def count_untrusted_extensions(directory: str) -> int:
@@ -457,6 +727,8 @@ class McpOwner:
     filtered: bool
     """Whether the settings may turn the plugin off (not ``-e``)."""
     started: bool
+    carrier: str | None = None
+    """:func:`carrier_key` of the declaring pack — its inventory row."""
 
 
 @dataclass(frozen=True)
@@ -466,9 +738,13 @@ class McpLaunch:
     The connections and their tool wrappers are made once; ``/reload`` only
     hides the tools of a server whose plugin is off now (owner decision 10).
     A server ``mcp.json`` names is the file's (#512), whatever a plugin says.
+    ``tools`` holds each started server's wrappers as the launch made them, so
+    hiding a server removes exactly its own (review R07: a server may be named
+    ``jira__admin``, and ``jira__`` is no prefix to hide ``jira`` by).
     """
 
     owners: Mapping[str, McpOwner] = field(default_factory=dict)
+    tools: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 
     def hidden(self, lists: SettingsLists) -> frozenset[str]:
         """Started servers whose plugin the settings turn off now."""
@@ -485,18 +761,52 @@ class McpLaunch:
                 out.add(server)
         return frozenset(out)
 
+    def visible(self, tools: Sequence[Any], hidden: frozenset[str]) -> list[Any]:
+        """*tools* minus the wrappers of *hidden* servers."""
 
-def mcp_launch(records: Sequence[Any], started: set[str], mcp_json: set[str]) -> McpLaunch:
-    """Who declared each manifest server, from the launch scan's records."""
+        return without_hidden(tools, hidden, self.tools)
+
+
+def mcp_launch(
+    records: Sequence[Any],
+    started: Sequence[Any],
+    mcp_json: set[str],
+    tools: Mapping[str, Sequence[Any]] | None = None,
+) -> McpLaunch:
+    """Who declared each manifest server, from the launch scan's records.
+
+    *started* are the manifest contributions the launch handed the MCP manager,
+    in its order: the manager keeps the LAST of a name, so that one's pack owns
+    the connection (review R03 — the owner was the first pack found, which a
+    project/global clash made the losing one). A server no started contribution
+    names is listed under the pack that declared it, the scan's project tier first.
+    """
 
     from aelix_coding_agent.extensions.loader import _ManifestEntry  # noqa: PLC0415
 
+    manifests = [r for r in records if isinstance(r.entry, _ManifestEntry)]
+    declared_by = {
+        id(contrib): record
+        for record in manifests
+        for contrib in record.entry.manifest.contributes.mcp_servers
+    }
+    winners: dict[str, Any] = {}
+    for contrib in started:
+        record = declared_by.get(id(contrib))
+        if record is not None:
+            winners[str(contrib.name)] = record
     owners: dict[str, McpOwner] = {}
-    # Reversed: the scan's project tier wins a manifest-vs-manifest name clash.
-    for record in reversed(list(records)):
-        if not isinstance(record.entry, _ManifestEntry):
-            continue
-        info = describe(record.entry, record.tier)
+    for server, record in winners.items():
+        info = describe_record(record)
+        owners[server] = McpOwner(
+            plugin=info.label,
+            target=target_of(info),
+            filtered=is_filtered_tier(record),
+            started=True,
+            carrier=carrier_key(record.entry),
+        )
+    for record in reversed(manifests):
+        info = describe_record(record)
         for server in info.mcp_servers:
             if server in mcp_json or server in owners:
                 continue
@@ -504,21 +814,22 @@ def mcp_launch(records: Sequence[Any], started: set[str], mcp_json: set[str]) ->
                 plugin=info.label,
                 target=target_of(info),
                 filtered=is_filtered_tier(record),
-                started=server in started and record.selected,
+                started=False,
+                carrier=carrier_key(record.entry),
             )
-    return McpLaunch(owners)
+    wrappers = {name: tuple(ts) for name, ts in (tools or {}).items() if name in winners}
+    return McpLaunch(owners, wrappers)
 
 
-def without_hidden(tools: Sequence[Any], hidden: frozenset[str]) -> list[Any]:
-    """*tools* minus the wrappers of *hidden* servers (``<server>__<tool>``)."""
+def without_hidden(
+    tools: Sequence[Any], hidden: frozenset[str], wrappers: Mapping[str, Sequence[Any]]
+) -> list[Any]:
+    """*tools* minus the *wrappers* of *hidden* servers, by identity (review R07)."""
 
     if not hidden:
         return list(tools)
-    return [
-        t
-        for t in tools
-        if not any(str(getattr(t, "name", "")).startswith(f"{s}__") for s in hidden)
-    ]
+    drop = {id(t) for server in hidden for t in wrappers.get(server, ())}
+    return [t for t in tools if id(t) not in drop]
 
 
 # --- the panel -----------------------------------------------------------------
@@ -588,7 +899,11 @@ class ExtensionKind:
             except Exception:  # noqa: BLE001
                 listed = None
             if listed is not None:
-                inventory = replace(inventory, rows=inventory.rows + listed.rows)
+                # Review R09: a file ``-e`` loaded this run is its committed row,
+                # not also a second, locked-off one from the listing.
+                committed = {r.carrier for r in inventory.rows if r.carrier is not None}
+                extra = tuple(r for r in listed.rows if r.carrier not in committed)
+                inventory = replace(inventory, rows=inventory.rows + extra)
         return inventory
 
     def _group(self, row: ExtensionRow) -> tuple[str, str]:
@@ -612,10 +927,17 @@ class ExtensionKind:
             return _short(info.path, self._home, self.cwd)
         return ""
 
+    @property
+    def grammar(self) -> ExtensionGrammar:
+        """ADR-0279 D1's grammar, writing a form only the edited row answers to (V2)."""
+
+        return ExtensionGrammar(self)
+
     def items(self) -> list[ResourceItem]:
         inventory = self._inventory()
         rows: list[tuple[tuple[int, int], ResourceItem]] = []
         has_agents = False
+        labels = display_labels(inventory.rows)
         for index, row in enumerate(inventory.rows):
             info = row.info
             has_agents = has_agents or info.builtin == "agents"
@@ -640,7 +962,7 @@ class ExtensionKind:
                     ResourceItem(
                         kind="extension",
                         key=row.key,
-                        label=info.label,
+                        label=labels.get(row.key, info.label),
                         identities=info.identities,
                         description=description,
                         group=group,
@@ -648,6 +970,7 @@ class ExtensionKind:
                         path=info.path,
                         scope=info.scope,
                         location=self._location(row),
+                        package_path=info.package_path,
                     ),
                 )
             )
@@ -709,7 +1032,12 @@ class ExtensionKind:
         return count_untrusted_extensions(os.path.join(self.cwd, ".aelix", "extensions"))
 
     def _mcp_rows(self, inventory: ExtensionInventory) -> list[tuple[ResourceItem, Lock]]:
-        """Read-only rows (ADR-0284 D7): #512's state word and the declaring plugin."""
+        """Read-only rows (ADR-0284 D7): #512's state word and the declaring plugin.
+
+        "hidden" is the decision the last build APPLIED (``mcp_hidden``), never
+        inferred from the plugin's load (verify V1): a pack that is on but failed
+        to load leaves the server it declared connected AND its tools in use.
+        """
 
         try:
             statuses = list(self.mcp_statuses() or ())
@@ -719,7 +1047,7 @@ class ExtensionKind:
             launch = self.mcp_launch() or McpLaunch()
         except Exception:  # noqa: BLE001
             launch = McpLaunch()
-        loaded = {r.info.label for r in inventory.rows if r.loaded}
+        by_carrier = {r.carrier: r for r in inventory.rows if r.carrier is not None}
         refusal = "MCP servers are turned on and off in mcp.json · /mcp"
         out: list[tuple[ResourceItem, Lock]] = []
         listed: set[str] = set()
@@ -732,11 +1060,30 @@ class ExtensionKind:
             source = f"declared by {owner.plugin}" if owner is not None else "mcp.json"
             line = state.capitalize()
             tag = state
-            if owner is not None and owner.started and owner.plugin not in loaded:
-                line = (
-                    f"{line} · {owner.plugin} is off: its tools are hidden; disconnects at restart"
-                )
+            # The why goes in the description, which wraps; the state line is
+            # one row and cut at the width (verify V10).
+            why = ""
+            owner_row = (
+                by_carrier.get(owner.carrier)
+                if owner is not None and owner.carrier is not None
+                else None
+            )
+            if owner is not None and owner.started and name in inventory.mcp_hidden:
+                line = f"{line} · tools hidden"
                 tag = f"{state} · hidden" if state == "connected" else state
+                why = f"{owner.plugin} is off: its tools are hidden; it disconnects at restart"
+            elif (
+                owner is not None
+                and owner.started
+                and owner_row is not None
+                and owner_row.selected
+                and not owner_row.loaded
+            ):
+                line = f"{line} · tools in use"
+                why = (
+                    f"{owner.plugin} failed to load, but this server started at launch: "
+                    "its tools stay in use"
+                )
             elif state == "disabled":
                 config = getattr(status, "config", None)
                 # The pointer before the path (#510 verify V5): a narrow line
@@ -746,7 +1093,7 @@ class ExtensionKind:
                 kind="extension",
                 key=f"mcp:{name}",
                 label=name,
-                description=f"{transport} · {source}",
+                description=f"{transport} · {source}" + (f" · {why}" if why else ""),
                 group="mcp",
                 group_label="MCP SERVERS  status only · /mcp manages them",
                 location=source,
@@ -764,17 +1111,19 @@ class ExtensionKind:
                 if owner is not None and owner.started:
                     continue
                 listed.add(name)
+                why = ""
                 if inventory.no_extensions:
                     line = "Not started · --no-extensions"
                 elif row.selected:
-                    line = f"Not started · {row.info.label} was off at launch: connects at the next launch"
+                    line = "Not started · connects at the next launch"
+                    why = f"{row.info.label} was off at launch, so nothing was started for it"
                 else:
                     line = f"Not started · {row.info.label} is off"
                 item = ResourceItem(
                     kind="extension",
                     key=f"mcp:{name}",
                     label=name,
-                    description=f"declared by {row.info.label}",
+                    description=f"declared by {row.info.label}" + (f" · {why}" if why else ""),
                     group="mcp",
                     group_label="MCP SERVERS  status only · /mcp manages them",
                     location=f"declared by {row.info.label}",
@@ -856,7 +1205,12 @@ class ExtensionKind:
         if failure:
             notes.append(failure)
         if self._inventory().no_extensions:
-            notes.append("--no-extensions: only -e extensions load this run; choices still save.")
+            # Verify V4: every row is locked this run, as every panel's lock is,
+            # so the notice no longer says a choice saves.
+            notes.append(
+                "--no-extensions: only -e extensions load this run; "
+                "run without it to turn the others on and off."
+            )
         return notes
 
     def detail(self, key: str) -> str | None:
@@ -879,6 +1233,114 @@ class ExtensionKind:
         """Nothing is applied in place: ``/reload`` (or a restart) loads the saved set."""
 
         return ApplyResult(False, warning="/reload applies extension changes")
+
+
+class ExtensionGrammar(PerItemGrammar):
+    """ADR-0279 D1's grammar for the Installed tab, with one difference (verify V2).
+
+    D1's edit writes an item's FIRST identity. Two extensions can share it — a
+    global and a project ``weather.py`` are both ``weather`` — and ``-weather``
+    then turned both off when one row was toggled. Here the edit writes the
+    first identity no other row has; failing that, the row's path form, which
+    reaches only its own file's scope (ADR-0279 D2); failing that, it refuses,
+    and says which file can name it. When the edit drops an entry that also
+    named another row (``-weather``, turning one of them back on) and that
+    row's value would move, an entry naming that row alone is added to keep
+    it; when this file cannot name it alone, the save is refused and says so.
+    A global edit is checked against this project's file too, which is where a
+    row's value is decided first.
+    """
+
+    checks_both_files = True
+
+    def __init__(self, kind: ExtensionKind) -> None:
+        self._kind = kind
+
+    def edit(
+        self,
+        entries: list[str] | None,
+        item: ResourceItem,
+        want: bool,
+        *,
+        scope: Scope,
+        global_list: ScopeList | None,
+        base_dir: str,
+        project_list: ScopeList | None = None,
+    ) -> list[str] | None:
+        rows = [
+            i
+            for i in self._kind.items()
+            if i.role == "item" and i.identities and i.group not in ("builtin", "cli")
+        ]
+        others = [i for i in rows if i.key != item.key]
+
+        def value(other: ResourceItem, listed: Sequence[str]) -> bool:
+            own = ScopeList(scope, tuple(listed), base_dir)
+            if scope == "project":
+                return effective(other, global_list, own)[0]
+            return effective(other, own, project_list)[0]
+
+        current = list(entries or ())
+        before = {o.key: value(o, current) for o in others}
+        inherited = True if scope == "global" else effective(item, global_list, None)[0]
+        target = _naming_target(item, others, scope, base_dir)
+        out = edit(current, target, want, inherited, base_dir, list_scope=scope)
+        for other in others:
+            was = before[other.key]
+            if value(other, out) == was:
+                continue
+            try:
+                restore = _naming_target(
+                    other, [i for i in rows if i.key != other.key], scope, base_dir
+                )
+            except ValueError:
+                elsewhere = "Global" if scope == "project" else "This project"
+                raise ValueError(
+                    f"turning {item.label} {'on' if want else 'off'} here would also turn "
+                    f"{other.label} {'off' if was else 'on'}, which this file cannot name on "
+                    f"its own: keep it {'on' if was else 'off'} in {elsewhere} first"
+                ) from None
+            out.append(("+" if was else "-") + restore.identities[0])
+        return out
+
+
+def _naming_target(
+    item: ResourceItem, others: Sequence[ResourceItem], scope: Scope, base_dir: str
+) -> Target:
+    """*item* as a target whose first identity only it answers to (verify V2); raises to refuse."""
+
+    taken = {name for other in others for name in other.identities}
+    first = next((name for name in item.identities if name not in taken), None)
+    if first is None and item.path and reaches(item, scope):
+        first = _path_form(item.path, base_dir)
+    if first is None:
+        own = "This project" if item.scope == "project" else "Global"
+        raise ValueError(
+            f"{item.label} shares its name with another extension, and a path in "
+            f"{'this project' if scope == 'project' else 'the global'} file cannot name it: "
+            f"save it to {own}"
+        )
+    return Target(
+        identities=(first, *item.identities),
+        path=item.path,
+        scope=item.scope,
+        package_path=item.package_path,
+    )
+
+
+def _path_form(path: str, base_dir: str) -> str:
+    """The path entry D1 writes for *path*: relative to the list's directory when
+    it lies under it, absolute otherwise, ``/`` on every platform."""
+
+    for base in dict.fromkeys((base_dir, os.path.realpath(base_dir))):
+        for spelling in dict.fromkeys((path, os.path.realpath(path))):
+            try:
+                rel = os.path.relpath(spelling, base)
+            except ValueError:  # another drive on Windows
+                continue
+            if not rel.startswith(".."):
+                return rel.replace("\\", "/")
+    return path.replace("\\", "/")
 
 
 def restart_note(row: ExtensionRow) -> str | None:
@@ -907,69 +1369,128 @@ def reload_lines(
 ) -> list[tuple[str, str]]:
     """``(style, text)`` lines for the one transcript entry ``/reload`` leaves (ADR-0284 D6).
 
-    Empty when nothing changed and nothing failed. The first line names what
-    changed; then one line per failure, per MCP server whose tools are hidden
-    or wait for the next launch, per provider that stays until restart and per
-    new shortcut key that binds at the next launch.
+    Empty when nothing changed, nothing failed and nothing waits. The first line
+    names what changed; then one line per failure — a pack that failed to load
+    and one discovery refused (a malformed manifest, review R06) — per MCP
+    server whose tools this build hid, or whose failed pack leaves them in use
+    (verify V1), or that waits for the next launch, per provider that stays
+    until restart and per shortcut key that binds at the next launch — a new
+    one on an extension that was already on too (review R08).
     """
 
     if after is None:
         return []
-    old = {r.key: r for r in (before.rows if before is not None else ())}
+    prior_rows = before.rows if before is not None else ()
+    old = {r.key: r for r in prior_rows}
+    names = display_labels(after.rows)
+    old_names = display_labels(prior_rows)
+    refused_paths = {_real(r.path) for r in after.refused if r.path}
     changes: list[str] = []
-    turned_off: list[ExtensionRow] = []
+    dropped: list[ExtensionRow] = []
     turned_on: list[ExtensionRow] = []
     for row in after.rows:
         if row.tier == "builtin":
             continue
         prior = old.get(row.key)
         was = prior.loaded if prior is not None else False
+        name = names.get(row.key, row.info.label)
         if row.loaded and not was:
-            changes.append(f"{row.info.label} on" + ("" if prior is not None else " (new)"))
+            changes.append(f"{name} on" + ("" if prior is not None else " (new)"))
             turned_on.append(row)
         elif was and not row.loaded and prior is not None:
-            changes.append(f"{row.info.label} off")
-            turned_off.append(prior)
+            # Saved on and not loaded is a failure, never "off" (verify V1).
+            changes.append(f"{name} {'failed' if row.selected else 'off'}")
+            dropped.append(prior)
+        elif prior is not None and prior.selected and not row.selected and not row.loaded:
+            # It was failing; now the settings turn it off.
+            changes.append(f"{name} off")
     for key, prior in old.items():
         if prior.tier != "builtin" and prior.loaded and after.row(key) is None:
-            changes.append(f"{prior.info.label} removed")
-            turned_off.append(prior)
+            gone = prior.info.path is not None and _real(prior.info.path) in refused_paths
+            changes.append(
+                f"{old_names.get(key, prior.info.label)} {'failed' if gone else 'removed'}"
+            )
+            dropped.append(prior)
     failures = [r for r in after.rows if r.selected and r.error is not None]
-    lines: list[tuple[str, str]] = []
-    if changes:
-        lines.append(("", f"Extensions after /reload: {' · '.join(changes)}"))
-    elif failures:
-        lines.append(("", "Extensions after /reload: no change"))
-    for row in failures:
-        lines.append(("red", f"✖ {row.info.label} failed to load: {row.error} (see /extension)"))
     owners = launch.owners if launch is not None else {}
-    for row in turned_off:
+    notes: list[tuple[str, str]] = []
+    for row in failures:
+        name = names.get(row.key, row.info.label)
+        notes.append(("red", f"✖ {name} failed to load: {row.error} (see /extension)"))
         for server in row.info.mcp_servers:
             owner = owners.get(server)
-            if owner is not None and owner.started:
-                lines.append(
-                    (
-                        "yellow",
-                        f"{server} (MCP) stays connected until restart; its tools are hidden",
-                    )
-                )
+            if (
+                owner is not None
+                and owner.started
+                and owner.carrier == row.carrier
+                and server not in after.mcp_hidden
+            ):
+                notes.append(("yellow", f"{server} (MCP) stays connected; its tools stay in use"))
+    for refused in after.refused:
+        notes.append(
+            ("red", f"✖ {refused.label} was not loaded: {refused.reason} (see /extension)")
+        )
+    hidden_before = before.mcp_hidden if before is not None else frozenset()
+    for server in sorted(after.mcp_hidden - hidden_before):
+        notes.append(
+            ("yellow", f"{server} (MCP) stays connected until restart; its tools are hidden")
+        )
+    for row in dropped:
         for provider in row.providers:
-            lines.append(("yellow", f"{provider} (provider) stays in /model until restart"))
+            notes.append(("yellow", f"{provider} (provider) stays in /model until restart"))
     for row in turned_on:
         for server in row.info.mcp_servers:
             owner = owners.get(server)
             if owner is None or not owner.started:
-                lines.append(("yellow", f"{server} (MCP) connects at the next launch"))
-        if bound_shortcuts is not None:
-            new_keys = [k for k in row.shortcuts if k not in bound_shortcuts]
+                notes.append(("yellow", f"{server} (MCP) connects at the next launch"))
+    if bound_shortcuts is not None:
+        for row in after.rows:
+            if not row.loaded or row.tier == "builtin":
+                continue
+            prior = old.get(row.key)
+            known = set(prior.shortcuts) if prior is not None and prior.loaded else set()
+            new_keys = [k for k in row.shortcuts if k not in bound_shortcuts and k not in known]
             if new_keys:
-                lines.append(
+                notes.append(
                     (
                         "yellow",
-                        f"{row.info.label}'s shortcut keys ({', '.join(new_keys)}) bind at the next launch",
+                        f"{names.get(row.key, row.info.label)}'s shortcut keys "
+                        f"({', '.join(new_keys)}) bind at the next launch",
                     )
                 )
-    return lines if (changes or failures) else []
+    if not changes and not notes:
+        return []
+    head = f"Extensions after /reload: {' · '.join(changes) if changes else 'no change'}"
+    return [("", head), *notes]
+
+
+def _real(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        return path
+
+
+def failure_lines(inventory: ExtensionInventory | None) -> list[tuple[str, str]]:
+    """What a ``/new``, ``/fork`` or ``/resume`` build failed to load (verify V11).
+
+    Under the TUI those builds no longer print ``Warning: extension load:`` over
+    the input; this is committed below the new session's banner instead.
+    """
+
+    if inventory is None:
+        return []
+    names = display_labels(inventory.rows)
+    out = [
+        ("red", f"✖ {names.get(r.key, r.info.label)} failed to load: {r.error} (see /extension)")
+        for r in inventory.rows
+        if r.selected and r.error is not None
+    ]
+    out += [
+        ("red", f"✖ {r.label} was not loaded: {r.reason} (see /extension)")
+        for r in inventory.refused
+    ]
+    return out
 
 
 def reload_failure_text(phase: str | None, exc: BaseException, applied: bool) -> str:
@@ -992,17 +1513,19 @@ def tool_rows(inventory: ExtensionInventory | None) -> list[tuple[ResourceItem, 
     if inventory is None:
         return []
     out: list[tuple[ResourceItem, Lock]] = []
+    labels = display_labels(inventory.rows)
     for row in inventory.rows:
         if row.selected or row.loaded:
             continue
         key = f"ext-off:{row.key}"
+        label = labels.get(row.key, row.info.label)
         item = ResourceItem(
             kind="tool",
             key=key,
-            label=row.info.label,
+            label=label,
             description="extension off: its tools are not loaded",
             group=key,
-            group_label=f"EXTENSION  {row.info.label}",
+            group_label=f"EXTENSION  {label}",
             role="placeholder",
         )
         out.append(
@@ -1030,27 +1553,37 @@ class ExtensionControl:
 
 __all__ = [
     "BUILTINS",
+    "EXTENSIONS_PARENT_OFF_ENV",
+    "SETTINGS_KEY",
     "EntryInfo",
     "ExtensionControl",
+    "ExtensionGrammar",
     "ExtensionInventory",
     "ExtensionKind",
+    "ExtensionOffRecord",
     "ExtensionRow",
     "McpLaunch",
     "McpOwner",
     "Phase",
     "RefusedRow",
-    "SETTINGS_KEY",
     "build_inventory",
+    "carrier_key",
     "count_untrusted_extensions",
     "describe",
+    "describe_record",
+    "display_labels",
     "extension_filter",
+    "failure_lines",
+    "inherited_extension_off",
     "is_filtered_tier",
     "list_warnings",
     "listing_inventory",
     "mcp_launch",
+    "pass_extension_off_to_child",
     "reload_failure_text",
     "reload_lines",
     "restart_note",
+    "set_launch_extension_off",
     "target_of",
     "tool_rows",
     "without_hidden",

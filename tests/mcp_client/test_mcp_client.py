@@ -283,6 +283,12 @@ async def test_manager_collect_agent_tools_namespaced(
         names = {t.name for t in tools}
         assert "alpha__echo" in names
         assert "beta__echo" in names
+        # #25 review R07: which server made each wrapper, by identity — a name
+        # cannot say it (a server may be called ``alpha__x``).
+        by_server = manager.tools_by_server
+        assert set(by_server) == {"alpha", "beta"}
+        assert all(t.name.startswith("alpha__") for t in by_server["alpha"])
+        assert {id(t) for ts in by_server.values() for t in ts} == {id(t) for t in tools}
     finally:
         await manager.disconnect_all()
 

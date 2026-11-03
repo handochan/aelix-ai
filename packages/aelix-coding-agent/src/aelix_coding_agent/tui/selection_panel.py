@@ -404,11 +404,26 @@ def _banners(model: SelectionModel) -> list[tuple[str, str]]:
     return rows
 
 
+#: The most rows one banner wraps to (#25 verify V10: a reload failure's reason
+#: was cut at 50 and 80 columns); a longer one ends in ``…``.
+BANNER_ROWS = 4
+
+
+def _banner_lines(model: SelectionModel, width: int) -> list[tuple[str, str]]:
+    """Each banner wrapped to *width* (less the one-cell margin), with its style."""
+
+    out: list[tuple[str, str]] = []
+    for text, style in _banners(model):
+        for line in wrap(flat(text), max(1, width - 1), BANNER_ROWS) or [""]:
+            out.append((line, style))
+    return out
+
+
 def plan_layout(model: SelectionModel, width: int, rows_available: int) -> Layout:
     """The panel's size when it opens: ``min(rows available, content)`` (ADR-0279 D11)."""
 
     description_rows = 2 if width >= 70 else 3
-    banner_rows = len(_banners(model))
+    banner_rows = len(_banner_lines(model, width))
     groups = {s.item.group for s in model.states}
     list_rows = len(model.states) + len(groups)
     # Fixed while the panel is open (ADR-0194): searching or a refresh never
@@ -546,8 +561,9 @@ def _search_row(model: SelectionModel, width: int, viewport: int) -> str:
     display, _where = _display(model)
     position = f"({model.cursor + 1}/{len(visible)})" if len(display) > viewport and visible else ""
     noun = model.noun[0] if total == 1 else model.noun[1]
-    # Matches are counted as items are (#510): a placeholder row is not one.
-    matched = sum(1 for s in visible if s.item.role == "item")
+    # A placeholder row is not a match (#510); a read-only status row the
+    # search shows is (#25 verify V12: "0 matches" over a listed MCP server).
+    matched = sum(1 for s in visible if s.item.role != "placeholder")
     # Most important first; whole parts are dropped from the end, never cut.
     parts = [
         p
@@ -853,8 +869,12 @@ def render_panel(
         ]
         return (small + [""] * layout.height)[: layout.height]
     rows = [draw_title(model, width), _search_row(model, width, viewport)]
-    for text, style in _banners(model):
-        rows.append(f"{style} {fit(flat(text), width - 1)}{_RST}")
+    # Exactly the planned banner rows, wrapped (verify V10): the height is fixed
+    # while the panel is open, whatever the banners say now.
+    banners = _banner_lines(model, width)[: layout.banner_rows]
+    banners += [("", _DIM)] * (layout.banner_rows - len(banners))
+    for text, style in banners:
+        rows.append(f"{style} {fit(text, width - 1)}{_RST}")
     cols = _columns(model, width)
     visible = model.visible()
     window = _window(model, viewport)

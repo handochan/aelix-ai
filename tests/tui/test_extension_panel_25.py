@@ -91,8 +91,10 @@ async def _open(
     rows: int = 24,
     width: int = 80,
     project_trusted: bool = True,
+    inventory: Any = None,
+    **kind_kw: Any,
 ) -> tuple[_Chrome, asyncio.Task[None], InMemorySettingsStorage, list[Any]]:
-    inventory = await _inventory(home)
+    inventory = inventory if inventory is not None else await _inventory(home)
     storage = InMemorySettingsStorage()
     storage.with_lock("global", lambda _c: global_text)
     manager = SettingsManager.from_storage(storage)
@@ -103,7 +105,7 @@ async def _open(
             project_base=str(home / ".aelix"),
             project_trusted=project_trusted,
         ),
-        kind=ExtensionKind(inventory=lambda: inventory, agent_dir=str(home / "agent")),
+        kind=ExtensionKind(inventory=lambda: inventory, agent_dir=str(home / "agent"), **kind_kw),
         holder={"inventory": inventory},
     )
     chrome = _Chrome(rows=rows, columns=width)
@@ -238,5 +240,77 @@ async def test_every_tab_draws_the_same_height_never_wider(
         assert all(cells_by_cluster(line) <= width for line in frame), frame
         await _press(chrome, "tab")
     assert len(heights) == 1
+    await _press(chrome, "escape")
+    await asyncio.wait_for(task, timeout=2)
+
+
+# --- review round 1 (V9, V10, V12) ------------------------------------------------------
+
+
+async def _mcp_inventory(home: Path) -> Any:
+    from tests.extensions.test_extension_selection_25 import _pack
+
+    ext = home / "agent" / "extensions"
+    _pack(ext, "jira-tools-with-a-long-plugin-id", mcp="jira", hooks=True)
+    loaded = await discover_and_load_extensions([], cwd=home, agent_dir=home / "agent")
+    return build_inventory(loaded)
+
+
+async def test_a_restart_note_wraps_under_its_own_indent_at_50_columns(home: Path) -> None:
+    """Verify V9: the note's rest started at column 0 at 50 columns."""
+
+    inventory = await _mcp_inventory(home)
+    chrome, task, _storage, _c = await _open(home, width=50, inventory=inventory)
+    await _press(chrome, "end")  # the MCP row, read-only
+    await _press(chrome, "up")  # the pack
+    await _press(chrome, "space")
+    await _press(chrome, "enter")
+    await asyncio.wait_for(task, timeout=2)
+    (printed,) = [e for e in chrome.events if isinstance(e, tuple)]
+    lines = "\n".join(printed[1]).split("\n")
+    start = next(i for i, line in enumerate(lines) if "jira-tools-with-a-long-plugin-id:" in line)
+    note = lines[start:]
+    assert len(note) >= 2, note
+    assert note[0].startswith("  jira-tools") and all(n.startswith("    ") for n in note[1:])
+    assert all(cells_by_cluster(line) <= 50 for line in lines), lines
+
+
+@pytest.mark.parametrize("width", [50, 80])
+async def test_a_reload_failure_banner_wraps_instead_of_being_cut(home: Path, width: int) -> None:
+    """Verify V10: the banner's reason was cut at 50 and 80 columns."""
+
+    failure = (
+        "✖ /reload failed during the rebuild: RuntimeError: a factory error with a long "
+        "message — nothing applied; /reload again or restart"
+    )
+    chrome, task, _storage, _c = await _open(
+        home, width=width, last_reload_failure=lambda: failure
+    )
+    heights = set()
+    for _ in range(3):
+        frame = _frame(chrome)
+        heights.add(len(frame))
+        assert all(cells_by_cluster(line) <= width for line in frame), frame
+        await _press(chrome, "tab")
+    assert len(heights) == 1
+    joined = " ".join(" ".join(_frame(chrome)).split())
+    assert "nothing applied; /reload again or restart" in joined
+    await _press(chrome, "escape")
+    await asyncio.wait_for(task, timeout=2)
+
+
+async def test_a_search_counts_the_mcp_row_it_shows(home: Path) -> None:
+    """Verify V12: "0 matches" over a listed MCP server."""
+
+    inventory = await _mcp_inventory(home)
+    statuses = [SimpleNamespace(name="demo-srv", transport="stdio", state="connected")]
+    chrome, task, _storage, _c = await _open(
+        home, inventory=inventory, mcp_statuses=lambda: statuses
+    )
+    for char in "demo-srv":
+        await _press(chrome, "<any>", char)
+    frame = _frame(chrome)
+    assert "1 match" in frame[1] and "0 matches" not in frame[1], frame[1]
+    assert any("demo-srv" in line for line in frame[2:])
     await _press(chrome, "escape")
     await asyncio.wait_for(task, timeout=2)

@@ -40,18 +40,26 @@ unwritten. Add them with the next release.
   - The panel writes the `extensions` list, pi's grammar: `-name` / `+name`,
     `!glob`, a path; the project's file decides over the global one. A name is
     the manifest's `plugin.id`, an installed pack's entry-point or distribution
-    name, a file's name without `.py`, or a directory's name. An entry that
-    names nothing found is warned about at launch.
+    name (also when a symlink in the extensions folder found it first), a
+    file's name without `.py`, or a directory's name — a `pyproject.toml`
+    package's directory included. When two extensions share a name the panel
+    writes the one you toggled by its path, so the other keeps its value. A
+    path entry works under a symlinked `~/.aelix` too. An entry that names
+    nothing found, or a built-in, is warned about at launch.
   - Guardrail, Permission and Status stay always on, the Agents extension
     follows `[features] agents`, an extension named with `-e` stays on for the
     run, and `--no-extensions` keeps everything else off; each row says so. An
     untrusted project's extensions are one row with a count; nothing there is
     read.
   - An MCP server an extension declared keeps its connection when `/reload`
-    turns the extension off — its tools are hidden from the model at once — and
-    one whose extension was off at launch connects at the next launch. A
-    provider an extension registered stays in `/model`, and a new shortcut key
+    turns the extension off — its tools, and only its own, are hidden from the
+    model at once, and come back usable when it is turned on again — and one
+    whose extension was off at launch connects at the next launch. An extension
+    that is on but fails to load keeps its servers' tools in use, and says so.
+    A provider an extension registered stays in `/model`, and a new shortcut key
     binds, at the next launch; the save and `/reload` say so.
+  - A delegated agent never loads an extension the session that delegated to it
+    turned off, nor starts that extension's MCP servers.
   - `/tool` shows an extension turned off as one `ext off` row.
 
 - **Tools can be turned off one at a time: `--exclude-tools` for a run, and the
@@ -1204,8 +1212,9 @@ unwritten. Add them with the next release.
   ADR-0284).** A `setup()` that raised printed `Warning: extension load: …` raw
   onto the input row, inside an open panel, and `/extension` kept showing the
   extension with `✓` because it read a copy taken at start. `/reload` now leaves
-  one transcript line naming what failed, and `/extension` reads what the latest
-  build loaded. A `/reload` that raises no longer escapes: it says whether
+  one transcript line naming what failed — a manifest that no longer parses
+  included — and `/extension` reads what the latest build loaded; `/new`,
+  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says whether
   anything was applied ("nothing applied; /reload again or restart", or which
   later step failed), and `/extension` shows it until a build succeeds. A
   manifest pack that waits for its first command and then fails to start is

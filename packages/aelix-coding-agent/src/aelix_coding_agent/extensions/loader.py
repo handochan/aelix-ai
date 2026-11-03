@@ -75,6 +75,7 @@ from aelix_coding_agent.extensions.ep_manifest import (
     EpApiLevelRefusal,
     EpOutcome,
     EpResolution,
+    _canonical_dist,
     entry_point_provenance,
     environment_site_dirs,
     redact_manifest_error,
@@ -104,11 +105,17 @@ class ExtensionLoadError:
 @dataclass
 class EntryOutcome:
     """What :func:`load_extensions` made of one entry (#25): the extension, the
-    error, or a deferred shell (``deferred``; its ``extension`` is the shell)."""
+    error, or a deferred shell (``deferred``; its ``extension`` is the shell).
+
+    ``error_type`` is the raised exception's class name (``RuntimeError``):
+    ``/extension`` and ``/reload`` show it before the message, as the guide's
+    examples do (#25 verify V7); the load error's own text stays as it was.
+    """
 
     extension: Extension | None = None
     error: ExtensionLoadError | None = None
     deferred: bool = False
+    error_type: str | None = None
 
 
 EntryTier = str
@@ -128,6 +135,13 @@ class DiscoveredEntry:
     ``outcome`` is the load's. ``discovery_error`` is an error discovery
     reported about this very carrier (an entry point loaded without its
     manifest): dropped from the run's errors when the entry is not selected.
+
+    ``package`` (#25 review R02): the directory whose ``pyproject.toml``
+    ``[tool.aelix] extensions`` declared this file — the package a user names
+    it by (``-bundle``, ``-extensions/bundle``); ``None`` for every other shape.
+    ``aliases`` (R01): the names of a copy discovery dropped as a duplicate of
+    this one — an installed pack the directory tier found first keeps its
+    entry-point and distribution names, so ``-ep-alias`` still turns it off.
     """
 
     entry: Any
@@ -136,6 +150,8 @@ class DiscoveredEntry:
     selected: bool = True
     outcome: EntryOutcome | None = None
     discovery_error: ExtensionLoadError | None = None
+    package: Path | None = None
+    aliases: tuple[str, ...] = ()
 
 
 EntryFilter = Callable[[Sequence[DiscoveredEntry]], Sequence[bool]]
@@ -323,7 +339,7 @@ async def load_extensions(
             )
             failure = ExtensionLoadError(path=label, error=str(exc))
             result.errors.append(failure)
-            result.outcomes.append(EntryOutcome(error=failure))
+            result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         try:
             extension = await _invoke_factory(
@@ -332,7 +348,7 @@ async def load_extensions(
         except Exception as exc:  # noqa: BLE001 — surface as load error
             failure = ExtensionLoadError(path=name, error=str(exc))
             result.errors.append(failure)
-            result.outcomes.append(EntryOutcome(error=failure))
+            result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         # Issue #21 themes (ADR-0184) — record the plugin directory so the
         # manifest theme adapter can resolve a ``ThemeContrib.path`` (a
@@ -526,7 +542,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2190`` and ``:3186``) pass
+       (``cli/entry.py:2198`` and ``:3204``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
@@ -885,6 +901,8 @@ def _discover_entries(
     seen_paths: dict[Path, int] = {}
     seen_ep: set[str] = set()
     errors: list[ExtensionLoadError] = []
+    # #25 review R02: a file a ``pyproject.toml`` package declared -> that package.
+    packages: dict[Path, Path] = {}
 
     def _add(entry: Any, tier: EntryTier, *, discovery_error: ExtensionLoadError | None = None) -> None:
         all_entries.append(entry)
@@ -911,14 +929,27 @@ def _discover_entries(
             resolved = path
         seen = seen_paths.get(resolved)
         if seen is not None:
+            survivor = tiers[seen]
             if tier == "cli":
                 # Codex F06: ``-e`` named a path another tier found first. The
                 # survivor is that tier's carrier; it is the user's choice now,
                 # and the settings filter must not turn it off.
-                tiers[seen].explicit = True
+                survivor.explicit = True
+            if isinstance(entry, _ManifestEntry) and entry.ep_ref is not None:
+                # #25 review R01: an installed pack the directory tier found
+                # first (a symlink into site-packages) keeps the names it was
+                # installed under, so ``-ep-alias`` / ``-ep-pack`` still turn it
+                # off. The survivor keeps its own tier and provenance.
+                ep = entry.ep_ref
+                names = (ep.name, _canonical_dist(ep.dist) if ep.dist else "")
+                survivor.aliases = tuple(
+                    dict.fromkeys([*survivor.aliases, *(n for n in names if n)])
+                )
             return
         seen_paths[resolved] = len(all_entries)
         _add(entry, tier)
+        if isinstance(entry, Path):
+            tiers[-1].package = packages.get(entry)
 
     # 1+2: directory auto-discovery (skipped under ``no_discovery`` — Pi
     # ``noExtensions`` keeps only explicit ``configured_paths``).
@@ -931,7 +962,7 @@ def _discover_entries(
         # below still load (they are user-chosen, not project-local).
         if not no_project_local:
             local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
-            for discovered in _discover_in_dir(local_dir, errors=errors):
+            for discovered in _discover_in_dir(local_dir, errors=errors, packages=packages):
                 _push_entry(discovered, "project")
 
         # 2. Global: <agent_dir>/extensions/ — i.e. ~/.aelix/agent/extensions/
@@ -941,7 +972,7 @@ def _discover_entries(
         # as the user's global extension directory.
         home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
         global_dir = (home_aelix / "extensions").resolve(strict=False)
-        for discovered in _discover_in_dir(global_dir, errors=errors):
+        for discovered in _discover_in_dir(global_dir, errors=errors, packages=packages):
             _push_entry(discovered, "global")
 
     # 3. Explicit configured paths.
@@ -1027,7 +1058,7 @@ def _discover_entries(
             p = Path(entry) if isinstance(entry, str) else entry
             resolved_path = p if p.is_absolute() else (cwd / p)
             if resolved_path.is_dir():
-                expanded = _discover_in_dir(resolved_path, errors=errors)
+                expanded = _discover_in_dir(resolved_path, errors=errors, packages=packages)
                 if expanded:
                     for discovered in expanded:
                         _push_entry(discovered, "cli")
@@ -1341,6 +1372,7 @@ def _discover_in_dir(
     dir_path: Path,
     *,
     errors: list[ExtensionLoadError] | None = None,
+    packages: dict[Path, Path] | None = None,
 ) -> list[Path | _ManifestEntry]:
     """Pi-parity ``discoverExtensionsInDir`` (``loader.ts:481-518``).
 
@@ -1359,6 +1391,10 @@ def _discover_in_dir(
     :class:`ExtensionManifestError` failures so the wave continues when
     one plugin's manifest fails to parse (per-plugin try/except, Pi
     parity ``loader.ts:437``).
+
+    #25 (review R02): ``packages``, when given, maps each file a subdirectory's
+    ``pyproject.toml`` declared to that subdirectory — the expansion returns the
+    files alone, and the package is what the ``extensions`` settings name.
     """
 
     if not dir_path.exists() or not dir_path.is_dir():
@@ -1386,6 +1422,10 @@ def _discover_in_dir(
                     continue
                 if declared is not None:
                     discovered.extend(declared)
+                    if packages is not None:
+                        for item in declared:
+                            if isinstance(item, Path) and item != child / "__init__.py":
+                                packages.setdefault(item, child)
                 # else: skip — no manifest, no __init__.py.
         except OSError:
             continue

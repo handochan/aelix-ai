@@ -678,7 +678,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:311-421``), which blocks for the whole
+    (``cli/entry.py:314-424``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -701,7 +701,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:2191-2208``) nor child (``modes/print_mode.py:234-293``)
+    (``tui/shell.py:2210-2227``) nor child (``modes/print_mode.py:234-293``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -2176,7 +2176,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:1285-1289``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:1292-1296``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -2228,7 +2228,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:1423``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:1430``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
@@ -2784,7 +2784,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:366-374``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:369-377``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"

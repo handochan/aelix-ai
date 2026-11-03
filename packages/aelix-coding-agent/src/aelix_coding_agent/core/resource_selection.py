@@ -70,6 +70,9 @@ class ResourceItem:
     """The directory it was discovered under."""
     location: str = ""
     """Where the item lives, shortened for display."""
+    package_path: str | None = None
+    """#25 (review R02): a directory whose path forms name this item too — the
+    ``pyproject.toml`` package that declared an extension file."""
     role: Role = "item"
     """``item`` is something a list can name. A ``placeholder`` stands for what
     cannot be listed (a server that is off, an untrusted folder) and an ``info``

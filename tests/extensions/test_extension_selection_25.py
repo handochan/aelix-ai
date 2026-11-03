@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,7 +31,9 @@ from aelix_coding_agent.core.extension_selection import (
     McpLaunch,
     McpOwner,
     build_inventory,
+    carrier_key,
     describe,
+    describe_record,
     extension_filter,
     list_warnings,
     mcp_launch,
@@ -276,7 +279,7 @@ async def test_the_sentinel_is_never_imported_by_any_loader(
         records=records,
     )
     assert manifests == [] and not mark.exists()
-    assert mcp_launch(records, set(), set()).owners["sentinel-srv"].started is False
+    assert mcp_launch(records, [], set()).owners["sentinel-srv"].started is False
 
     # 3. The factory — the real ``_build_harness_options`` every build runs.
     from aelix_agent_core.session import MemorySessionStorage, Session
@@ -377,7 +380,8 @@ async def test_off_on_and_failed_reach_the_reload_line(home: Path) -> None:
     after = await _load(home, ["-weather"])
     lines = reload_lines(before, after)
     assert lines[0] == ("", "Extensions after /reload: lint.py on · weather.py off")
-    assert ("red", "✖ broken.py failed to load: boom (see /extension)") in lines
+    # The exception's type first, as the guide shows it (verify V7).
+    assert ("red", "✖ broken.py failed to load: RuntimeError: boom (see /extension)") in lines
     # Nothing changed and nothing failed: no line at all.
     (ext / "broken.py").unlink()
     quiet = await _load(home, [])
@@ -385,7 +389,7 @@ async def test_off_on_and_failed_reach_the_reload_line(home: Path) -> None:
     # The panel: failed is its own state, never "pending".
     kind = ExtensionKind(inventory=lambda: after)
     problems = kind.item_problems()
-    assert list(problems.values()) == ["boom"]
+    assert list(problems.values()) == ["RuntimeError: boom"]
 
 
 async def test_a_lazy_packs_failed_activation_is_a_problem(home: Path) -> None:
@@ -437,7 +441,8 @@ def test_a_started_server_whose_plugin_is_off_loses_its_tools_not_its_connection
     assert launch.hidden(_lists(["-jira-tools", "-pinned", "-other-pack"])) == {"jira"}
     assert launch.hidden(_lists([])) == frozenset()
     tools = [SimpleNamespace(name=n) for n in ("jira__search", "jira__get", "demo__add")]
-    assert [t.name for t in without_hidden(tools, frozenset({"jira"}))] == ["demo__add"]
+    wrappers = {"jira": tuple(tools[:2]), "demo": (tools[2],)}
+    assert [t.name for t in without_hidden(tools, frozenset({"jira"}), wrappers)] == ["demo__add"]
 
 
 async def test_mcp_rows_say_hidden_and_connects_next_launch(home: Path) -> None:
@@ -453,17 +458,28 @@ async def test_mcp_rows_say_hidden_and_connects_next_launch(home: Path) -> None:
             _lists(["-jira-tools"], global_base=str(home / "agent")), phase="P"
         ),
     )
-    inventory = build_inventory(loaded)
     launch = McpLaunch(
         {
             "jira": McpOwner(
-                "jira-tools", target_of(inventory.rows[0].info), filtered=True, started=True
+                "jira-tools",
+                target_of(describe_record(loaded.discovered[0])),
+                filtered=True,
+                started=True,
+                carrier=carrier_key(loaded.discovered[0].entry),
             ),
             "late": McpOwner(
-                "late-pack", target_of(inventory.rows[1].info), filtered=True, started=False
+                "late-pack",
+                target_of(describe_record(loaded.discovered[1])),
+                filtered=True,
+                started=False,
+                carrier=carrier_key(loaded.discovered[1].entry),
             ),
         }
     )
+    # The hidden set is the one the factory applied (verify V1), recorded with the build.
+    hidden = launch.hidden(_lists(["-jira-tools"], global_base=str(home / "agent")))
+    assert hidden == {"jira"}
+    inventory = replace(build_inventory(loaded), mcp_hidden=hidden)
     statuses = [
         SimpleNamespace(name="jira", transport="stdio", state="connected"),
         SimpleNamespace(name="demo", transport="stdio", state="disabled", config="mcp.json"),
@@ -473,9 +489,10 @@ async def test_mcp_rows_say_hidden_and_connects_next_launch(home: Path) -> None:
     )
     locks = kind.locks()
     assert locks["mcp:jira"].tag == "connected · hidden"
-    assert (
-        "jira-tools is off: its tools are hidden; disconnects at restart"
-        in locks["mcp:jira"].reason
+    assert locks["mcp:jira"].reason == "Connected · tools hidden"
+    items = {i.key: i for i in kind.items()}
+    assert "jira-tools is off: its tools are hidden; it disconnects at restart" in (
+        items["mcp:jira"].description
     )
     assert locks["mcp:jira"].refusal == "MCP servers are turned on and off in mcp.json · /mcp"
     assert locks["mcp:late"].tag == "not started"

@@ -1150,6 +1150,10 @@ class AgentSessionRuntime:
         # live reference disposed in step 3.
         active_before = self._harness.state.active_tool_names
         active_before = list(active_before) if active_before is not None else None
+        # #25 (review R04) — the registry too: a tool the rebuild newly REGISTERS
+        # (an MCP server's wrappers coming back when the extension that declared
+        # it is turned on again) is unioned into step 6 like an extension tool.
+        registered_before = {t.name for t in self._harness.state.tools}
         # #510 — what the old policy kept off by setting, so step 6 can turn on
         # what the reloaded settings no longer do.
         saved_off_before = getattr(
@@ -1225,13 +1229,21 @@ class AgentSessionRuntime:
                 for ext in rebuilt.extension_runner.extensions
                 for name in ext.tools
             ]
-            # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on,
-            # order-preserving and fully de-duplicated with ONE running ``seen``
-            # — mirrors pi ``_refreshToolRegistry``'s
+            # #25 (review R04): the tools this rebuild registers that the old
+            # registry did not hold — re-exposed MCP wrappers above all (an
+            # extension turned off, then on again, hid and then returned its
+            # server's tools). Without this an explicit filter left them
+            # registered and inactive. The policy clamps them like the rest.
+            newly_registered = [
+                t.name for t in rebuilt.state.tools if t.name not in registered_before
+            ]
+            # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on ∪
+            # newly-registered, order-preserving and fully de-duplicated with
+            # ONE running ``seen`` — mirrors pi ``_refreshToolRegistry``'s
             # ``[...activeToolNames].filter(...)`` + push-ext + ``new Set(...)``.
             target_active: list[str] = []
             seen: set[str] = set()
-            for name in (*active_before, *ext_names, *newly_on):
+            for name in (*active_before, *ext_names, *newly_on, *newly_registered):
                 if name in current_set and name not in seen:
                     seen.add(name)
                     target_active.append(name)

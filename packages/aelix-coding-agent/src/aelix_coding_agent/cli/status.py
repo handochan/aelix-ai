@@ -478,7 +478,7 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         report["discovered_extensions"] = None
         return report
 
-    from aelix_coding_agent.core.extension_selection import describe, extension_filter
+    from aelix_coding_agent.core.extension_selection import describe_record, extension_filter
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
     loaded = await discover_and_load_extensions(
@@ -496,7 +496,7 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         {"name": bounded_emitted_value(info.label), "scope": record.tier}
         for record in loaded.discovered
         if not record.selected
-        for info in (describe(record.entry, record.tier),)
+        for info in (describe_record(record),)
     ]
     summaries: tuple[ExtensionSnapshot, ...] = summarise_extensions(
         loaded.extensions, cwd=str(cwd), agent_dir=agent_dir

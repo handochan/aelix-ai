@@ -147,9 +147,11 @@ Turning the extension off in `/extension` (#25) turns its servers off too, at
 the next launch: an extension that is off at launch has nothing started. After
 `/reload` turns it off, its servers' tools are hidden from the model and the
 connection stays until restart (`connected · hidden` in `/extension`); turned
-back on, they connect at the next launch if they were never started. The servers
-themselves are turned on and off only in `mcp.json` — `/extension` lists them,
-it does not toggle them.
+back on, their tools come back (or, if they were never started, they connect at
+the next launch). An extension that is on but fails to load keeps its servers
+and their tools: `/extension` says `tools in use`. The servers themselves are
+turned on and off only in `mcp.json` — `/extension` lists them, it does not
+toggle them.
 
 They have no `enabled` key — a manifest that sets one does not validate. What
 you can do:

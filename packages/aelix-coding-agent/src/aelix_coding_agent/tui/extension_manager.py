@@ -37,7 +37,7 @@ from aelix_coding_agent.extensions.always_on import (
     is_builtin_always_on,
 )
 from aelix_coding_agent.tui.picker_text import _PickerText
-from aelix_coding_agent.tui.selection_panel import SelectionPanelBody, flat
+from aelix_coding_agent.tui.selection_panel import SelectionPanelBody, flat, wrap
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -531,10 +531,19 @@ class ExtensionPanelBody(SelectionPanelBody):
             return None
         detail = getattr(self.kind, "detail", None)
         labels = {s.item.key: s.item.label for s in self.model.states}
+        width = self._width()
         for key in edited:
             note = detail(key) if callable(detail) else None
             if note:
-                lines.append(Text(flat(f"  {labels.get(key, key)}: {note}."), style="yellow"))
+                # Wrapped under its own indent at the panel's width (verify V9):
+                # the terminal's own wrap put the rest of it at column 0.
+                text = Text()
+                rows = wrap(flat(f"{labels.get(key, key)}: {note}."), max(10, width - 4), 1_000)
+                for index, row in enumerate(rows or [""]):
+                    if index:
+                        text.append("\n")
+                    text.append(("  " if index == 0 else "    ") + row, style="yellow")
+                lines.append(text)
         return lines
 
 

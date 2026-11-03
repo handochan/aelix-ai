@@ -28,6 +28,7 @@ from tests.tui.test_run_tui_smoke import (
     FakeHarness,
     FakeRuntime,
     _harness_chrome,
+    _NewRuntime,
     _quit_within,
     _spy_commits,
     _wait,
@@ -192,3 +193,89 @@ async def test_nothing_is_said_when_nothing_changed() -> None:
         pipe.send_text("/quit\n")
         await _quit_within(task)
     assert not any("Extensions after /reload" in c or "/reload failed" in c for c in commits)
+
+
+# --- review round 1 -------------------------------------------------------------------
+
+
+async def test_a_new_session_says_what_failed_to_load_below_its_banner() -> None:
+    """Verify V11: ``/new`` printed ``Warning: extension load:`` raw over the input."""
+
+    holder: dict[str, Any] = {
+        "inventory": ExtensionInventory(
+            (_row("broken.py", loaded=False, error="RuntimeError: boom"),)
+        )
+    }
+    async with _harness_chrome() as (base, chrome, pipe):
+        runtime = _NewRuntime(base.harness)
+        commits = _spy_commits(chrome)
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+                model_registry=_Registry(),  # type: ignore[arg-type]
+                extension_control=_control(holder),
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/new\n")
+        await _wait(lambda: any("failed to load" in c for c in commits))
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+    [entry] = [c for c in commits if "failed to load" in c]
+    assert entry.startswith("Extensions in this session:")
+    assert "✖ broken.py failed to load: RuntimeError: boom (see /extension)" in entry
+
+
+async def test_extension_opens_over_the_live_lists_not_copies(
+    monkeypatch: Any,
+) -> None:
+    """The design's M3 (verify V6): ``run_tui`` copied the lists the factory refills."""
+
+    import aelix_coding_agent.tui.extension_manager as manager
+
+    seen: dict[str, Any] = {}
+
+    async def _capture(**kw: Any) -> None:
+        seen.update(kw)
+
+    monkeypatch.setattr(manager, "run_extension_manager", _capture)
+    extensions: list[Any] = []
+    errors: list[Any] = []
+    async with _harness_chrome() as (base, chrome, pipe):
+        task = asyncio.ensure_future(
+            run_tui(
+                base,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+                model_registry=_Registry(),  # type: ignore[arg-type]
+                extensions=extensions,
+                extension_errors=errors,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/extension\n")
+        await _wait(lambda: "extensions" in seen)
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+    assert seen["extensions"] is extensions and seen["errors"] is errors
+
+
+def test_a_wrapped_first_line_never_reads_as_the_next_line() -> None:
+    """Verify V9: at 50 columns the first line's rest and the next line shared an indent."""
+
+    from aelix_coding_agent.tui.shell import _reload_text
+
+    lines = [
+        ("bold red", "✖ /reload failed during the rebuild: RuntimeError: boom — nothing applied; /reload again or restart"),
+        ("red", "✖ broken.py failed to load: RuntimeError: a long reason that wraps (see /extension)"),
+    ]
+    rows = _reload_text(lines, 50).plain.split("\n")
+    assert all(len(r) <= 50 for r in rows), rows
+    second = next(i for i, r in enumerate(rows) if "broken.py" in r)
+    assert all(r.startswith("  ") and not r.startswith("   ") for r in rows[1:second])
+    assert rows[second].startswith("    ✖ broken.py")
+    assert all(r.startswith("      ") for r in rows[second + 1 :])

@@ -1,7 +1,8 @@
 # 0283. Tools are turned on and off through one policy: `--exclude-tools`, the tool flags as locks, `defaultTools` and the `/tool` panel
 
 Status: Accepted (2026-11-01, #510). Amended 2026-11-03 by ADR-0284 (#25): two Limits
-closed (dated notes there).
+closed and D3's `/reload` union widened by the tools a rebuild newly registers
+(dated notes there).
 Date: 2026-11-01
 Issue: #510. Design, owner decisions (2026-10-31: 1–6, 12, 13) and the Codex
 design review's triage: `.omc/specs/510-25-design-2026-10-31.md`; the review:
@@ -92,7 +93,10 @@ value only when it is a registered flag.
 `tools:` / `builtin_tools: false`, tagged `profile` — hold for the whole run.
 Nothing widens them: an extension may narrow, never widen; `/reload` restores
 `(before ∩ registry) ∪ extension tools ∪ tools newly saved on` and the policy
-clamps it, so M1 and M2 are gone. ADR-0179's union survives where no flag
+clamps it, so M1 and M2 are gone. *2026-11-03
+([ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) D7, review R04):* `∪ tools the rebuild newly registers` too — an
+MCP server's wrappers coming back when its extension is turned on again were
+registered and left inactive; the same clamp applies. ADR-0179's union survives where no flag
 locks the set. Locked tools stay registered: the panel lists them and
 `--tools` may still name any loaded tool (`UnknownToolNamesError` is
 unchanged).

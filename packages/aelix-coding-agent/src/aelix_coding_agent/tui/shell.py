@@ -50,7 +50,11 @@ from aelix_coding_agent.cli.session_labels import (
     session_detail_lines,
     short_field,
 )
-from aelix_coding_agent.core.extension_selection import reload_failure_text, reload_lines
+from aelix_coding_agent.core.extension_selection import (
+    failure_lines,
+    reload_failure_text,
+    reload_lines,
+)
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import ContextUsage, MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
@@ -160,14 +164,16 @@ def _reload_text(lines: list[tuple[str, str]], width: int = 80) -> Text:
 
     An extension's error text is its own (a name, a message): control
     characters are shown by name, as every panel row is (#179). Each line is
-    wrapped at *width* under its own indent, as the panels' summaries are.
+    wrapped at *width* under its own indent, as the panels' summaries are: the
+    first line's continuation at 2, every later line at 4 and its continuation
+    at 6, so a wrapped first line never reads as the next line (verify V9).
     """
 
     from aelix_coding_agent.tui.selection_panel import flat, wrap  # noqa: PLC0415
 
     out = Text()
     for index, (style, line) in enumerate(lines):
-        lead = "" if index == 0 else "  "
+        lead = "" if index == 0 else "    "
         hang = " " * (len(lead) + 2)
         rows = wrap(flat(line), max(10, width - len(hang)), 1_000) or [""]
         for row_index, row in enumerate(rows):
@@ -801,6 +807,17 @@ async def run_tui(
     def _commit(renderable: object) -> None:
         output_queue.put_nowait(("commit", renderable))
 
+    def _commit_extension_failures() -> None:
+        # #25 (verify V11) — a ``/new``, ``/fork`` or ``/resume`` build that
+        # failed to load an extension no longer prints over the input; what
+        # failed is said below the new session's banner instead.
+        if extension_control is None:
+            return
+        lines = failure_lines(extension_control.inventory())
+        if lines:
+            width = terminal_columns(out_chrome, max_width=render_width_cap["value"])
+            _commit(_reload_text([("", "Extensions in this session:"), *lines], width))
+
     def _commit_model_fallback() -> None:
         # #376 — the runtime's ``model_fallback_message`` (pi parity), refreshed
         # by entry.py's harness factory on every build: set when the session
@@ -1149,6 +1166,7 @@ async def run_tui(
                 prompt_file_paths=prompt_file_paths() if prompt_file_paths is not None else None,
             )
         )
+        _commit_extension_failures()
         context._refresh_footer()
 
     async def _replay_after_swap(banner: str) -> None:
@@ -1162,6 +1180,7 @@ async def run_tui(
         renderer.replay(messages)
         _commit(Text(banner, style="green"))
         _commit_model_fallback()
+        _commit_extension_failures()
         context._refresh_footer()
 
     async def _import_session(path: str) -> None:
@@ -1974,7 +1993,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4848``) always passes one, so this is
+            # production caller (``entry.py:4891``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -3936,11 +3955,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1971``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1974``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1954`` already printed at startup, and one that
+    #       what ``entry.py:1957`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4491,7 +4510,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4779-4795 and
+            # Two audiences, discriminated exactly as entry.py:4822-4838 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

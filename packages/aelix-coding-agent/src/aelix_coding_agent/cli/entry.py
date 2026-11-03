@@ -88,16 +88,19 @@ from aelix_coding_agent.cli.session_labels import (
     short_field,
 )
 from aelix_coding_agent.core.extension_selection import (
+    EXTENSIONS_PARENT_OFF_ENV,
     ExtensionControl,
     ExtensionKind,
+    ExtensionOffRecord,
     McpLaunch,
     build_inventory,
     extension_filter,
+    inherited_extension_off,
     list_warnings,
     listing_inventory,
     mcp_launch,
+    set_launch_extension_off,
     tool_rows,
-    without_hidden,
 )
 from aelix_coding_agent.core.prompt_selection import PromptCatalog, load_prompt_catalog
 from aelix_coding_agent.core.resource_selection import (
@@ -2010,6 +2013,11 @@ async def _build_harness_options(
     # #25 (ADR-0284) — filled with ``{"inventory": …, "records": …}``: every
     # extension this build discovered, on or off, and what became of it.
     captured_inventory: dict[str, Any] | None = None,
+    # #25 (verify V5) — what a delegating parent kept off: off here too.
+    inherited_extension_off: ExtensionOffRecord | None = None,
+    # #25 (verify V11) — the TUI is up: a load error is committed to its
+    # transcript (``/new``, ``/fork``, ``/resume``), not printed over the input.
+    quiet_load_errors: bool = False,
     settings_manager: SettingsManager | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
     on_reload: bool = False,
@@ -2208,13 +2216,16 @@ async def _build_harness_options(
         # turned off there is listed by ``/extension`` and never imported.
         # ``-e`` and the built-ins above are never filtered.
         entry_filter=extension_filter(
-            _extension_lists(settings_manager, cwd, project_trusted), phase="P"
+            _extension_lists(settings_manager, cwd, project_trusted),
+            phase="P",
+            inherited=inherited_extension_off,
         ),
     )
-    if not (on_reload and app_mode == "interactive"):
+    if not (quiet_load_errors or (on_reload and app_mode == "interactive")):
         # #25 (the design's M3): under the TUI a ``/reload`` commits one
         # transcript line naming each failure instead — this print landed raw
-        # on the input row, inside an open panel.
+        # on the input row, inside an open panel; ``/new``, ``/fork`` and
+        # ``/resume`` commit theirs below the new banner (verify V11).
         for err in loaded.errors:
             print(f"Warning: extension load: {err}", file=sys.stderr)
     # #344 / ADR-0249 (X1) — bind the registry to THIS build's runtime before the
@@ -3180,6 +3191,13 @@ async def _async_main(argv: list[str]) -> int:
     # and is never applied — the factory re-discovers + binds the real set later.
     # Cost: user/global ``setup()`` side-effects run twice (documented; OPTION A
     # reuse is a deferred efficiency refinement that would collide with the factory).
+    # #25 (verify V5) — the extensions a delegating parent's settings kept off
+    # (``$AELIX_EXTENSIONS_PARENT_OFF``): off here too, in the vote load and in
+    # every build, whatever this process's files say. Suppress only. Read once
+    # and removed, so the bash tool and ``api.exec`` do not hand it on; this
+    # process's own children get what it keeps off (``set_launch_extension_off``).
+    extension_off_inherited = inherited_extension_off()
+    os.environ.pop(EXTENSIONS_PARENT_OFF_ENV, None)
     trust_vote_extensions: list[Any] = []
     # Only pay for the (expensive) vote-load when the orchestrator will actually
     # consult it — the ``project_trust`` event (step 3) is UNREACHABLE when an
@@ -3206,7 +3224,9 @@ async def _async_main(argv: list[str]) -> int:
                 # One the global file turns off is never imported and never
                 # votes; ``-e`` is never filtered.
                 entry_filter=extension_filter(
-                    _extension_lists(settings_manager, cwd, False), phase="G"
+                    _extension_lists(settings_manager, cwd, False),
+                    phase="G",
+                    inherited=extension_off_inherited,
                 ),
             )
             trust_vote_extensions = list(_vote_loaded.extensions)
@@ -3762,7 +3782,9 @@ async def _async_main(argv: list[str]) -> int:
             # #25 (ADR-0284, phase P) — a pack the ``extensions`` settings turn
             # off contributes nothing: its MCP servers are never dialled.
             entry_filter=extension_filter(
-                _extension_lists(settings_manager, cwd, project_trusted), phase="P"
+                _extension_lists(settings_manager, cwd, project_trusted),
+                phase="P",
+                inherited=extension_off_inherited,
             ),
             records=_scan_records,
         )
@@ -3833,13 +3855,7 @@ async def _async_main(argv: list[str]) -> int:
         )
     for _refusal in _mcp_refusals:
         print(f"Warning: MCP server refused: {_refusal}", file=sys.stderr)
-    # #25 (Codex F11) — who declared each manifest server, and which the launch
-    # started: fixed for the process. ``/reload`` hides the tools of a started
-    # server whose plugin is off now (its connection stays until restart), and
-    # ``/extension`` says a plugin turned on connects its servers next launch.
-    mcp_launch_record: McpLaunch = mcp_launch(
-        _scan_records, {c.name for c in _manifest_kept}, set(mcp_declared)
-    )
+    _started_manifest_mcp = list(_manifest_kept)
     if _manifest_kept:
         mcp_contribs = _manifest_kept + mcp_contribs
     mcp_manager: McpClientManager | None = None
@@ -3851,6 +3867,19 @@ async def _async_main(argv: list[str]) -> int:
         for conn_err in await mcp_manager.connect_all():
             print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
         mcp_tools = await mcp_manager.collect_agent_tools()
+    # #25 (Codex F11) — who declared each manifest server, and which the launch
+    # started: fixed for the process. ``/reload`` hides the tools of a started
+    # server whose plugin is off now (its connection stays until restart), and
+    # ``/extension`` says a plugin turned on connects its servers next launch.
+    # The owner is the pack whose contribution the manager kept — the LAST of a
+    # name (review R03) — and a server's tools are its own wrappers, not every
+    # name its name prefixes (R07).
+    mcp_launch_record: McpLaunch = mcp_launch(
+        _scan_records,
+        _started_manifest_mcp,
+        set(mcp_declared),
+        getattr(mcp_manager, "tools_by_server", None),
+    )
 
     # Non-interactive untrusted notice for the surfaces the gate suppresses
     # SILENTLY — extensions (inside the factory via ``no_project_local``), skills
@@ -4048,21 +4077,20 @@ async def _async_main(argv: list[str]) -> int:
         staged_extensions: list[Any] = []
         staged_errors: list[Any] = []
         staged_inventory: dict[str, Any] = {}
+        # #25 (owner decision 10) — a server whose plugin the settings turn off
+        # now keeps its connection and loses its tools; the wrappers made at
+        # launch are never changed (Codex F11). What is hidden is recorded with
+        # the inventory: it is what every surface reports (verify V1).
+        mcp_hidden = mcp_launch_record.hidden(
+            _extension_lists(settings_manager, cwd, project_trusted)
+        )
         opts = await _build_harness_options(
             parsed,
             new_session,
             restore_selection=restore_selection,
             restore_report=restore_report,
             keep_model=getattr(reload_seed, "model", None),
-            # #25 (owner decision 10) — a server whose plugin the settings turn
-            # off now keeps its connection and loses its tools; the wrappers
-            # made at launch are never changed (Codex F11).
-            mcp_tools=without_hidden(
-                mcp_tools,
-                mcp_launch_record.hidden(
-                    _extension_lists(settings_manager, cwd, project_trusted)
-                ),
-            ),
+            mcp_tools=mcp_launch_record.visible(mcp_tools, mcp_hidden),
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
             project_explicitly_trusted=project_explicitly_trusted,
@@ -4078,6 +4106,8 @@ async def _async_main(argv: list[str]) -> int:
             captured_extensions=staged_extensions,
             captured_extension_errors=staged_errors,
             captured_inventory=staged_inventory,
+            inherited_extension_off=extension_off_inherited,
+            quiet_load_errors=app_mode == "interactive" and extension_holder["inventory"] is not None,
             model_registry=model_registry,
             # #98 — settings.json ``defaultProvider``, resolved ONCE above and
             # passed as a value so every (re)built harness resolves the turn model
@@ -4302,8 +4332,21 @@ async def _async_main(argv: list[str]) -> int:
         # nothing, so ``/extension`` never shows a set no harness runs.
         discovered_extensions[:] = staged_extensions
         discovered_extension_errors[:] = staged_errors
+        if staged_inventory.get("inventory") is not None:
+            staged_inventory["inventory"] = dataclasses.replace(
+                staged_inventory["inventory"], mcp_hidden=mcp_hidden
+            )
         extension_holder.update(staged_inventory)
         extension_holder["reload_failure"] = None
+        # #25 (verify V5) — what a delegated child must keep off: what this
+        # build's settings turned off (everything under ``--no-extensions``),
+        # with what this process inherited. Suppress only.
+        set_launch_extension_off(
+            ExtensionOffRecord.of(
+                staged_inventory.get("records") or (), no_extensions=bool(parsed.no_extensions)
+            )
+            | extension_off_inherited
+        )
         return harness
 
     async def _harness_factory(
@@ -5165,6 +5208,7 @@ async def _async_main(argv: list[str]) -> int:
                 await mcp_manager.disconnect_all()
         # The launch is over; no child of it can still be built (D9).
         set_launch_mcp_names(None)
+        set_launch_extension_off(None)
 
 
 def _stdout_to_devnull() -> None:
