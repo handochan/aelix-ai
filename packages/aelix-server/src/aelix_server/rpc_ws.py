@@ -57,7 +57,7 @@ async def rpc_websocket(websocket: WebSocket) -> None:
     """Full-duplex JSONL RPC bridge for one WebSocket connection.
 
     Lifecycle: single-flight guard → ``accept`` → per-connection harness +
-    runtime (mirrors ``cli/entry.py:4453-4474``) → anyio task group with a
+    runtime (mirrors ``cli/entry.py:4462-4483``) → anyio task group with a
     ws→reader pump, a queue→ws drain (the SOLE sender), and ``run_rpc_mode``
     → ``finally`` resets ``rpc_active``.
     """
@@ -72,7 +72,7 @@ async def rpc_websocket(websocket: WebSocket) -> None:
     websocket.app.state.rpc_active = True
     await websocket.accept()
     try:
-        # --- per-connection harness + runtime (mirror cli/entry.py:4453-4474) --
+        # --- per-connection harness + runtime (mirror cli/entry.py:4462-4483) --
         fs = LocalFileSystem()
         repo = JsonlSessionRepo(fs=fs)
         session = await repo.create(JsonlSessionCreateOptions(cwd=config.cwd))

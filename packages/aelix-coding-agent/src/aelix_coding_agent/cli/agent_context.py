@@ -517,7 +517,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     ``$AELIX_CODING_AGENT_DIR`` set after import is still honoured — and so the
     emitted path is the directory the loader actually scans
     (``get_agent_dir()/extensions`` → ``~/.aelix/agent/extensions``, see
-    ``extensions/loader.py:1020-1022``), never the plausible-but-wrong
+    ``extensions/loader.py:1027-1029``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
     WHO CHOOSES (issue #161). Ordering alone did not settle it: the global
@@ -546,7 +546,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     exists to kill. ``cli/entry.py:2182`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
-    (``loader.py:1020-1022``) is not trust-gated at all, so it is the target that
+    (``loader.py:1027-1029``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets

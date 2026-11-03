@@ -148,11 +148,21 @@ def _run(tmp_path: Path, server: _Scripted, ext_body: str) -> subprocess.Complet
     )
 
 
-def test_print_mode_runs_past_an_extension_that_exits(tmp_path: Path, scripted: _Scripted) -> None:
-    done = _run(tmp_path, scripted, "import sys\n\ndef setup(aelix):\n    sys.exit(1)\n")
+@pytest.mark.parametrize(
+    ("raised", "said"),
+    [
+        ("sys.exit(1)", "error='SystemExit: sys.exit(1)'"),
+        # Verify V9: this read error='bye: setup gave up', as a RuntimeError's would.
+        ("raise SystemExit('bye: setup gave up')", "error='SystemExit: bye: setup gave up'"),
+    ],
+)
+def test_print_mode_runs_past_an_extension_that_exits(
+    tmp_path: Path, scripted: _Scripted, raised: str, said: str
+) -> None:
+    done = _run(tmp_path, scripted, f"import sys\n\ndef setup(aelix):\n    {raised}\n")
     assert done.returncode == 0, done.stderr
     assert "OK" in done.stdout
-    assert "Warning: extension load:" in done.stderr and "error='sys.exit(1)'" in done.stderr
+    assert "Warning: extension load:" in done.stderr and said in done.stderr
     assert scripted.requests == 1
 
 

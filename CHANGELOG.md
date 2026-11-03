@@ -1287,12 +1287,14 @@ unwritten. Add them with the next release.
   `setup()` (or the import of an extension's module) that raised `SystemExit`
   went past the loader: `aelix -p` ended with no output at all and exit 1, the
   TUI never drew, and a `/reload` closed it. It is now that extension's load
-  error like any other — `Warning: extension load: … error='sys.exit(1)'` at
-  launch, "✖ flip.py failed to load: SystemExit: sys.exit(1) (see /extension)"
-  after `/reload`, `/new`, `/resume` or `/fork` — and the other extensions load.
-  A `KeyboardInterrupt` there (Ctrl+C during a slow `setup()`, or the extension
+  error like any other — `Warning: extension load: … error='SystemExit:
+  sys.exit(1)'` at launch (a `sys.exit("message")` says `SystemExit: message`),
+  "✖ flip.py failed to load: SystemExit: sys.exit(1) (see /extension)" after
+  `/reload`, `/new`, `/resume` or `/fork` — and the other extensions load. A
+  `KeyboardInterrupt` there (Ctrl+C during a slow `setup()`, or the extension
   raising one) still ends aelix, but with one line naming the extension instead
-  of a traceback.
+  of a traceback — the extension that was interrupted, also when another
+  extension's `setup()` was loading it.
 
 - **A `/reload` that fails no longer leaves aelix running without its safety
   checks (#663, ADR-0289).** `/reload` takes the running session apart before it

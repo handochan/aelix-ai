@@ -367,9 +367,14 @@ async def load_extensions(
         # #664 — ``SystemExit`` (an extension calling ``sys.exit``) is a load
         # error like any other: that extension is skipped and the rest load. A
         # ``KeyboardInterrupt`` still ends the run, naming the extension; an
-        # ``asyncio.CancelledError`` passes through unchanged.
+        # ``asyncio.CancelledError`` and any other ``BaseException`` pass through
+        # unchanged. An ``ExtensionInterrupted`` already names the extension it
+        # interrupted — one this one loads in turn (Codex R10) — and stays as it is,
+        # as in :func:`activate_pending_extension`.
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
+        except ExtensionInterrupted:
+            raise
         except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
             failure = ExtensionLoadError(path=label, error=_load_error_text(exc))
             result.errors.append(failure)
@@ -381,6 +386,8 @@ async def load_extensions(
             extension = await _invoke_factory(
                 factory, runtime, name=name, manifest=manifest
             )
+        except ExtensionInterrupted:
+            raise
         except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
             failure = ExtensionLoadError(path=name, error=_load_error_text(exc))
             result.errors.append(failure)
@@ -589,7 +596,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2205`` and ``:3216``) pass
+       (``cli/entry.py:2205`` and ``:3225``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to

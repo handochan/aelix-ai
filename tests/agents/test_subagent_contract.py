@@ -393,7 +393,7 @@ def test_bind_subagents_none_on_an_empty_slot_is_a_noop() -> None:
 def test_bind_subagents_refused_at_max_depth(monkeypatch: pytest.MonkeyPatch) -> None:
     """I4 — the fork-bomb guard lives in the SEAM, not in one constructor.
 
-    ``extensions/loader.py:1122-1125`` drops tier-4 entry points under
+    ``extensions/loader.py:1129-1132`` drops tier-4 entry points under
     ``--no-extensions`` and ``agents/profile.py:408-413`` bans ``extensions:``
     at project scope, but a user-scope tier-1 extension still loads inside a
     child with ``inherit_extensions: true``. Product-core refuses to HOLD it.

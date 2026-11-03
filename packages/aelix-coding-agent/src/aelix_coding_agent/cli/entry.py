@@ -2233,7 +2233,16 @@ async def _build_harness_options(
         # transcript line naming each failure instead — this print landed raw
         # on the input row, inside an open panel; ``/new``, ``/fork`` and
         # ``/resume`` commit theirs below the new banner (verify V11).
+        exits = {
+            id(o.error)
+            for o in loaded.outcomes
+            if o.error is not None and o.error_type == "SystemExit"
+        }
         for err in loaded.errors:
+            if id(err) in exits:
+                # #664 (verify V9) — named, as /extension names it: a
+                # ``sys.exit("msg")`` read as a bare "msg", a RuntimeError's text.
+                err = dataclasses.replace(err, error=f"SystemExit: {err.error}")
             print(f"Warning: extension load: {err}", file=sys.stderr)
     # #344 / ADR-0249 (X1) — bind the registry to THIS build's runtime before the
     # model is resolved, so an extension ``register_provider`` made during

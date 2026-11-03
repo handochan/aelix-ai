@@ -234,3 +234,63 @@ async def test_a_keyboard_interrupt_in_a_reload_names_the_extension_and_stops(
         await rig.runtime.reload()
     assert caught.value.during == "setup()"
     assert rig.runtime.stopped is not None
+
+
+@pytest.mark.parametrize(
+    ("inner_body", "during"),
+    [("raise KeyboardInterrupt\n", "import"), ("def setup(aelix):\n    raise KeyboardInterrupt\n", "setup()")],
+)
+async def test_a_nested_interrupt_names_the_inner_extension(
+    tmp_path: Path, inner_body: str, during: str
+) -> None:
+    """Codex R10: an outer ``setup()`` that loads an inner extension in turn.
+
+    The inner loader made the right :class:`ExtensionInterrupted`; the outer one
+    wrapped it again as its own, so the line named the outer extension's setup.
+    """
+
+    inner = _ext(tmp_path / "inner", "inner_ext", inner_body)
+    outer = _ext(
+        tmp_path,
+        "outer_ext",
+        "from pathlib import Path\n\n"
+        "from aelix_coding_agent.extensions.loader import load_extensions\n\n\n"
+        "async def setup(aelix):\n"
+        f"    await load_extensions([Path({str(inner)!r})])\n",
+    )
+    with pytest.raises(ExtensionInterrupted) as caught:
+        await load_extensions([outer, _ext(tmp_path, "good_ext", GOOD)])
+    assert (caught.value.extension, caught.value.during) == (str(inner), during)
+
+
+async def test_an_interrupt_raised_already_named_at_import_is_kept(tmp_path: Path) -> None:
+    """Codex R10, the import catch: an ``ExtensionInterrupted`` that names another extension."""
+
+    outer = _ext(
+        tmp_path,
+        "outer_ext",
+        "from aelix_coding_agent.extensions.loader import ExtensionInterrupted\n\n"
+        "raise ExtensionInterrupted('elsewhere.py', 'setup()')\n",
+    )
+    with pytest.raises(ExtensionInterrupted) as caught:
+        await load_extensions([outer])
+    assert (caught.value.extension, caught.value.during) == ("elsewhere.py", "setup()")
+
+
+async def test_another_base_exception_passes_through_unchanged(tmp_path: Path) -> None:
+    """Verify V9 — decided: only ``SystemExit`` and ``KeyboardInterrupt`` are the loader's.
+
+    A ``BaseException`` that is not an ``Exception`` is a control-flow signal
+    (``GeneratorExit``, a framework's cancel) the loader cannot interpret, as
+    ``asyncio.CancelledError`` is; it goes on unchanged, not as a load error.
+    """
+
+    bad = _ext(
+        tmp_path,
+        "odd_ext",
+        "class OddSignal(BaseException):\n    pass\n\n\ndef setup(aelix):\n    raise OddSignal('odd')\n",
+    )
+    with pytest.raises(BaseException) as caught:
+        await load_extensions([bad, _ext(tmp_path, "good_ext", GOOD)])
+    assert type(caught.value).__name__ == "OddSignal"
+    assert not isinstance(caught.value, (Exception, KeyboardInterrupt))

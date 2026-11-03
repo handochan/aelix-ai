@@ -252,7 +252,7 @@ def test_symlink_inside_cwd_still_classifies_project(
     the per-identity confirmation in ``cli/entry.py``, and — the one that matters
     — ``parse_profile``'s ban on ``extensions:`` at project scope, which is the
     cut that keeps an untrusted repo from naming a tier-3 extension path
-    (ungated by BOTH discovery kill switches, ``extensions/loader.py:1025-1119``).
+    (ungated by BOTH discovery kill switches, ``extensions/loader.py:1032-1126``).
 
     Nothing here is written outside the fixture tree, and a git clone can carry
     symlinks, so the whole setup is something a repository can ship.

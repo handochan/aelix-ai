@@ -437,7 +437,8 @@ load below the new session's banner instead of printing it over the input.
 An extension that raises in its import or `setup()` — `sys.exit()` included —
 is skipped with that line, and the rest load. A `KeyboardInterrupt` there (or
 Ctrl+C while a slow `setup()` runs) ends aelix with one line naming the
-extension.
+extension. Any other `BaseException` that is not an `Exception` is not caught:
+raise an `Exception` for a failure.
 
 One extension failing is never a failed `/reload`. When the reload itself fails
 — re-reading `settings.json` or building the session raised — aelix builds the
