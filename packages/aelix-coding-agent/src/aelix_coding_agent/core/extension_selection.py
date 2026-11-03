@@ -1539,15 +1539,56 @@ def failure_lines(inventory: ExtensionInventory | None) -> list[tuple[str, str]]
     return out
 
 
-def reload_failure_text(phase: str | None, exc: BaseException, applied: bool) -> str:
-    """The banner and transcript line for a ``/reload`` that raised (Codex F08)."""
+ReloadOutcome = Literal["applied", "kept", "stopped"]
 
-    what = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-    if applied:
+
+def reload_outcome(exc: BaseException, *, replaced: bool) -> ReloadOutcome:
+    """What runs after a ``/reload`` raised ``exc`` (#663, ADR-0289).
+
+    ``kept`` / ``stopped`` are what :class:`RebuildFailedError` says (the old
+    harness was torn down; the session was built again on its previous
+    settings, or stopped). Any other exception: ``applied`` when the new
+    harness was installed (``replaced``) and a later step failed, ``kept`` when
+    it raised before anything was torn down.
+    """
+
+    from aelix_agent_core.runtime import RebuildFailedError
+
+    if isinstance(exc, RebuildFailedError):
+        return exc.state
+    return "applied" if replaced else "kept"
+
+
+def _what(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+
+
+def reload_failure_text(phase: str | None, exc: BaseException, outcome: ReloadOutcome) -> str:
+    """The banner and transcript line for a ``/reload`` that raised (Codex F08, #663).
+
+    It states what runs now (ADR-0289): the new build (``applied``), the
+    previous settings (``kept``), or nothing until a ``/reload`` succeeds
+    (``stopped``).
+    """
+
+    from aelix_agent_core.runtime import STOPPED_MESSAGE, RebuildFailedError
+
+    if outcome == "applied":
         step = phase or "a later step"
-        return f"⚠ /reload applied the new extensions, but {step} failed: {what}"
+        return f"⚠ /reload applied the new extensions, but {step} failed: {_what(exc)}"
     step = phase or "the rebuild"
-    return f"✖ /reload failed during {step}: {what} — nothing applied; /reload again or restart"
+    cause = exc.cause if isinstance(exc, RebuildFailedError) else exc
+    if outcome == "stopped":
+        again = exc.restore_error if isinstance(exc, RebuildFailedError) else None
+        also = f" ({_what(again)})" if again is not None and _what(again) != _what(cause) else ""
+        return (
+            f"✖ /reload failed during {step}: {_what(cause)}; rebuilding with the previous "
+            f"settings failed too{also} — {STOPPED_MESSAGE}"
+        )
+    return (
+        f"✖ /reload failed during {step}: {_what(cause)} — kept the previous settings; "
+        "fix the cause, then /reload again"
+    )
 
 
 # --- /tool's placeholders (ADR-0283 D6 seam) -----------------------------------
@@ -1627,6 +1668,7 @@ __all__ = [
     "McpOwner",
     "Phase",
     "RefusedRow",
+    "ReloadOutcome",
     "build_inventory",
     "carrier_key",
     "count_untrusted_extensions",
@@ -1643,6 +1685,7 @@ __all__ = [
     "pass_extension_off_to_child",
     "reload_failure_text",
     "reload_lines",
+    "reload_outcome",
     "restart_note",
     "set_launch_extension_off",
     "target_of",

@@ -4,8 +4,9 @@ Through the real ``run_tui`` input loop over a scripted runtime:
 
 * a reload that changed the extension set commits ONE entry naming the change
   and the failure;
-* a reload that raised in the rebuild says nothing was applied, and the panel's
-  banner says so until a build succeeds;
+* a reload that raised before anything was torn down says the previous settings
+  are kept, and the panel's banner says so until a build succeeds (#663: one
+  that raised past the teardown is ``test_failed_reload_tui_663``);
 * a reload that raised AFTER the new harness was installed says it applied;
 * nothing is printed when nothing changed.
 """
@@ -128,12 +129,14 @@ async def test_a_reload_that_changed_the_set_commits_one_entry() -> None:
     assert not any("Warning: extension load" in c for c in commits)
 
 
-async def test_a_reload_that_raised_in_the_rebuild_applied_nothing() -> None:
+async def test_a_reload_that_raised_before_the_teardown_kept_the_previous_settings() -> None:
     before = ExtensionInventory((_row("weather.py", loaded=True),))
     holder: dict[str, Any] = {"inventory": before}
 
     async def script(runtime: _ScriptedRuntime) -> None:
-        runtime.reload_phase = "build"
+        # #663: past the teardown the runtime raises ``RebuildFailedError``; a
+        # plain exception with the harness unchanged was raised before it.
+        runtime.reload_phase = "teardown"
         raise RuntimeError("factory boom")
 
     async with _harness_chrome() as (base, chrome, pipe):
@@ -142,8 +145,8 @@ async def test_a_reload_that_raised_in_the_rebuild_applied_nothing() -> None:
         commits = await _drive(runtime, chrome, pipe, control, "/reload failed")
     [entry] = [c for c in commits if "/reload failed" in c]
     line = " ".join(entry.split())  # wrapped at the terminal width
-    assert "during the rebuild: RuntimeError: factory boom" in line
-    assert "nothing applied" in line
+    assert "during the old session's shutdown: RuntimeError: factory boom" in line
+    assert "kept the previous settings" in line and "nothing applied" not in line
     # The holders still say what the running build loaded; the panel says why.
     assert holder["inventory"] is before
     assert control.kind.notices()[0] == line
@@ -322,7 +325,7 @@ def test_a_wrapped_first_line_never_reads_as_the_next_line() -> None:
     from aelix_coding_agent.tui.shell import _reload_text
 
     lines = [
-        ("bold red", "✖ /reload failed during the rebuild: RuntimeError: boom — nothing applied; /reload again or restart"),
+        ("bold red", "✖ /reload failed during the rebuild: RuntimeError: boom — kept the previous settings; fix the cause, then /reload again"),
         ("red", "✖ broken.py failed to load: RuntimeError: a long reason that wraps (see /extension)"),
     ]
     rows = _reload_text(lines, 50).plain.split("\n")

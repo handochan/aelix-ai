@@ -434,6 +434,22 @@ A pack whose manifest no longer parses is said there too (`✖ broken was not
 loaded: Invalid manifest …`). `/new`, `/fork` and `/resume` say what failed to
 load below the new session's banner instead of printing it over the input.
 
+One extension failing is never a failed `/reload`. When the reload itself fails
+— re-reading `settings.json` or building the session raised — aelix builds the
+session again on the settings it was running with, with Guardrail, Permission
+and every extension's hooks, and says so:
+
+```
+✖ /reload failed during the rebuild: PermissionError: … — kept the previous settings; fix the cause, then /reload again
+```
+
+If that fails too, aelix stops rather than run anything without its checks:
+prompts, `!` lines and tool calls are refused with "aelix is stopped until
+/reload succeeds" until a `/reload` (or `/new`) works; `/`-commands still run.
+An extension's `ctx.reload()`, RPC `resources/reload` and a failed `/new`,
+`/resume`, `/fork` or `/import` raise `RebuildFailedError` with the same words
+(ADR-0289).
+
 The panel writes the `extensions` list of `settings.json`, the same grammar as
 `skills` (see [skills-and-prompts](skills-and-prompts.md)): `-name` turns an
 extension off, `+name` back on, `!glob` turns off what matches, and the

@@ -73,17 +73,21 @@ Pi event line citations (W5 P-344 corrections — verified at SHA
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import logging
 import os
-from collections.abc import Awaitable, Callable
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from aelix_agent_core.harness.hooks import SessionStartHookEvent
 from aelix_agent_core.runtime._types import (
     PI_STALENESS_MESSAGE,
+    STOPPED_MESSAGE,
     AgentSessionRuntimeDiagnostic,
     HarnessFactory,
+    RebuildFailedError,
     ReloadSeed,
     ReplacedSessionContext,
     RuntimeReplaceResult,
@@ -155,6 +159,28 @@ async def _emit_session_shutdown_event(
         )
     )
     return True
+
+
+@dataclass(frozen=True)
+class _RestorePoint:
+    """What a failed rebuild puts back (#663, ADR-0289), read before the teardown.
+
+    The session the harness was on, the inputs :meth:`AgentSessionRuntime.reload`
+    already carried into its rebuild (flags, model, the active-tool filter and
+    what the registry and the tool policy held), the thinking level, and the
+    settings in memory (``SettingsManager.snapshot``; ``None`` for a manager
+    without one).
+    """
+
+    session: Session | None
+    flag_values: Mapping[str, bool | str]
+    model: Any
+    active_tools: list[str] | None
+    registered: frozenset[str]
+    saved_off: frozenset[str]
+    thinking_level: Any
+    settings_manager: Any
+    settings: Any
 
 
 def _extract_user_message_text(content: Any) -> str:
@@ -256,9 +282,14 @@ class AgentSessionRuntime:
             Callable[[str], Awaitable[SessionContendedChoice]] | None
         ) = None
         # #25 (ADR-0284, Codex F08) — the step :meth:`reload` was on; read when
-        # it raises, so a caller can tell "nothing applied" from "applied, then
-        # a later step failed". ``None`` before any reload.
+        # it raises, so a caller can name the step that failed (#663: what runs
+        # after it is :class:`RebuildFailedError`'s ``state``). ``None`` before
+        # any reload.
         self._reload_phase: str | None = None
+        # #663 (ADR-0289) — set when a rebuild and the restore after it both
+        # failed: the torn-down harness stays installed, holding its turns, until
+        # the next build succeeds (``_apply``). ``None`` otherwise.
+        self._stopped: str | None = None
 
     # === Public getters (Pi `:79-97`) ===========================================
 
@@ -269,11 +300,29 @@ class AgentSessionRuntime:
 
         Aelix-additive (#25, Codex F08). The new harness is installed when
         ``build`` ends: a reload that raised in ``build`` or before it applied
-        nothing (and the old harness is already torn down); one that raised
-        after it runs the new harness.
+        nothing; one that raised after it runs the new harness. Since #663
+        (ADR-0289) a raise in ``settings`` or ``build`` — the old harness already
+        torn down — is a :class:`RebuildFailedError` saying whether the session
+        was built again on its previous settings or stopped; the phase stays
+        the one that failed.
         """
 
         return self._reload_phase
+
+    @property
+    def stopped(self) -> str | None:
+        """Why this runtime refuses every turn and tool call, or ``None`` (#663).
+
+        Aelix-additive (ADR-0289). Set when a rebuild — ``/reload``, ``/new``,
+        ``/resume``, ``/fork``, ``/import`` — failed after the old harness was
+        torn down AND the build that puts the session back on the settings it
+        was running with failed too (:class:`RebuildFailedError` ``"stopped"``).
+        The torn-down harness then holds its turns (``hold_turns``) and blocks
+        every tool call, so nothing runs without the gates its extensions had
+        installed; the next build that succeeds clears it.
+        """
+
+        return self._stopped
 
     @property
     def harness(self) -> AgentHarness:
@@ -707,6 +756,110 @@ class AgentSessionRuntime:
         else:
             new_harness = await self._create_harness(new_session)
         self._harness = new_harness
+        # #663 — a build that succeeded ends a stop: the gates are installed again.
+        self._stopped = None
+
+    def _restore_point(self) -> _RestorePoint:
+        """#663 (ADR-0289) — what :meth:`_restore_after` puts back, read before the teardown."""
+
+        harness = self._harness
+        active = harness.state.active_tool_names
+        settings_manager = harness.settings_manager
+        snapshot = getattr(settings_manager, "snapshot", None)
+        return _RestorePoint(
+            session=harness.session,
+            # A shallow copy: it survives the dispose. pi :2384.
+            flag_values=harness.extension_runner.get_flag_values(),
+            # #434 — the model this session is on now (``ReloadSeed.model``).
+            model=harness.current_model,
+            # ``None`` => "all tools active"; a list => an explicit filter.
+            active_tools=list(active) if active is not None else None,
+            registered=frozenset(t.name for t in harness.state.tools),
+            # #510 — what the policy kept off by setting.
+            saved_off=frozenset(
+                getattr(getattr(harness, "tool_policy", None), "saved_off", frozenset())
+            ),
+            thinking_level=harness.state.thinking_level,
+            settings_manager=settings_manager,
+            settings=snapshot() if callable(snapshot) else None,
+        )
+
+    def _factory_takes_seed(self) -> bool:
+        try:
+            params = inspect.signature(self._create_harness).parameters.values()
+        except (TypeError, ValueError):
+            return True
+        return any(
+            p.name == "reload_seed" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+        )
+
+    def _stop(self) -> None:
+        """#663 (ADR-0289) — fail closed on the torn-down harness that is still installed.
+
+        Its HookBus was cleared by the dispose, so Guardrail, Permission and every
+        extension's ``tool_call`` handler are gone from it: it holds its turns
+        (every ``prompt``, ``compact``, summarising ``navigate_tree`` and an
+        extension's ``trigger_turn`` is refused with :data:`STOPPED_MESSAGE`), and
+        a disposed harness blocks every tool call (``AgentHarness.disposed``).
+        """
+
+        self._stopped = STOPPED_MESSAGE
+        with contextlib.suppress(Exception):
+            self._harness.hold_turns(STOPPED_MESSAGE)
+
+    async def _restore_after(
+        self, exc: Exception, *, operation: str, phase: str, point: _RestorePoint
+    ) -> NoReturn:
+        """#663 (ADR-0289, owner decision b) — the step between a teardown and an install raised.
+
+        The order stays pi's: the old harness is already torn down, its hooks
+        cleared. Put the settings back as the session was running with them
+        (``SettingsManager.restore``), build a harness again on the session it
+        was on — a ``reload``-shaped build, its seed marked ``restore`` — and
+        settle it as :meth:`reload` settles its own; raise
+        :class:`RebuildFailedError` ``"kept"``. When that build fails too, stop
+        (:meth:`_stop`) and raise it ``"stopped"``.
+        """
+
+        manager, snapshot = point.settings_manager, point.settings
+        restore = getattr(manager, "restore", None)
+        if snapshot is not None and callable(restore):
+            restore(snapshot)
+        # A factory that never declared ``reload_seed`` is never handed it (the
+        # :data:`HarnessFactory` contract): a swap's restore is then built as
+        # the swap would have built it.
+        seed = (
+            ReloadSeed(flag_values=point.flag_values, model=point.model, restore=True)
+            if self._factory_takes_seed()
+            else None
+        )
+        try:
+            if point.session is None:
+                raise RuntimeError("there is no session to rebuild")
+            await self._apply(point.session, reload_seed=seed)
+        except Exception as again:
+            self._stop()
+            raise RebuildFailedError(
+                operation=operation, phase=phase, cause=exc, state="stopped", restore_error=again
+            ) from exc
+        except BaseException:
+            self._stop()
+            raise
+        try:
+            from aelix_agent_core.session.context import build_session_context
+
+            # A fresh harness never seeds its transcript (#122), and the swap
+            # that failed would have rebuilt it; the level is the one it ran at.
+            entries = await point.session.get_branch()
+            self._harness._state.messages = list(build_session_context(entries).messages)
+            if point.thinking_level is not None:
+                self._harness._state.thinking_level = point.thinking_level
+            await self._settle_rebuilt(point, track_phase=False)
+        except Exception:
+            _log.exception("AgentSessionRuntime: settling the restored harness raised")
+        raise RebuildFailedError(
+            operation=operation, phase=phase, cause=exc, state="kept"
+        ) from exc
 
     async def _finish_session_replacement(
         self,
@@ -729,7 +882,9 @@ class AgentSessionRuntime:
           1. ``_teardown_current(reason, target_session_file)`` (Sprint
              6h₅a: emits ``session_shutdown`` FIRST per Pi, then
              ``before_session_invalidate``, then disposes OLD harness).
-          2. ``_apply`` (construct NEW harness from factory).
+          2. ``_apply`` (construct NEW harness from factory). #663 (ADR-0289):
+             when it raises, :meth:`_restore_after` builds the session this one
+             is leaving again and raises :class:`RebuildFailedError`.
           3. Sprint 6h₅b (Phase 4.15, ADR-0083, P-359) — ``setup`` callback
              AFTER ``_apply`` BEFORE rebind. Pi parity ``:226-229``: the
              optional setup runs against the NEW harness's
@@ -765,9 +920,21 @@ class AgentSessionRuntime:
         # the NEW one from options alone, with no idea what level the user was
         # working at.
         previous_level = self._harness._state.thinking_level
+        # #663 (ADR-0289) — and what a failed build puts back: the session this
+        # one is leaving, with the settings it ran on.
+        point = self._restore_point()
 
         await self._teardown_current(reason, target_session_file)
-        await self._apply(new_session)
+        try:
+            await self._apply(new_session)
+        except Exception as exc:
+            # The old harness is torn down and the new one was never installed:
+            # the session goes back to the one it left, as a reload of it, or
+            # stops. The caller's ``_release_unadopted`` drops the target's lock.
+            await self._restore_after(exc, operation=reason, phase="build", point=point)
+        except BaseException:
+            self._stop()
+            raise
 
         # #137 / ADR-0244 — ownership moves in the same breath as the harness,
         # and here rather than at the four call sites. ``_apply`` has just put
@@ -1106,6 +1273,10 @@ class AgentSessionRuntime:
           5. ``_apply(session, reload_seed=ReloadSeed(flag_values=...))`` — factory
              re-discovers + rebuilds (pi :2391+:2393); the seed pre-seeds the fresh
              runtime's ``flag_values`` BEFORE each ``setup()`` re-runs (#24-FU).
+             When step 4 or 5 raises (#663, ADR-0289), :meth:`_restore_after`
+             builds the session again on the settings it was running with and
+             raises :class:`RebuildFailedError` — ``"kept"``, or ``"stopped"``
+             when that build fails too (:attr:`stopped`).
           6. ACTIVE-TOOL ROUND-TRIP — restore the pre-teardown active-tool filter,
              unioned with the rebuilt extension tools (pi ``reload`` passes
              ``includeAllExtensionTools: true``), intersected with the fresh registry
@@ -1124,8 +1295,6 @@ class AgentSessionRuntime:
         with the other replace APIs; reload never cancels (no before-switch veto).
         """
 
-        from aelix_agent_core.harness.hooks import SessionStartHookEvent
-
         session = self._harness.session
         if session is None:
             raise RuntimeError(
@@ -1137,29 +1306,13 @@ class AgentSessionRuntime:
         await self._harness.wait_for_idle()
         self._reload_phase = "teardown"
 
-        # 2. Snapshot the OLD runtime's flag values + the shared SettingsManager
-        #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
-        #    survives the subsequent dispose. pi :2384.
-        previous_flag_values = self._harness.extension_runner.get_flag_values()
-        # #434 — the model this session is on now, which the rebuild keeps when a
-        # hold removed its id from the published catalog (``ReloadSeed.model``).
-        previous_model = self._harness.current_model
-        # Snapshot the LIVE active-tool filter BEFORE teardown so a user's runtime
-        # tool selection survives the rebuild (#24-FU). ``None`` => "all tools
-        # active"; a list => an explicit filter. Copied because ``state`` is a
-        # live reference disposed in step 3.
-        active_before = self._harness.state.active_tool_names
-        active_before = list(active_before) if active_before is not None else None
-        # #25 (review R04) — the registry too: a tool the rebuild newly REGISTERS
-        # (an MCP server's wrappers coming back when the extension that declared
-        # it is turned on again) is unioned into step 6 like an extension tool.
-        registered_before = {t.name for t in self._harness.state.tools}
-        # #510 — what the old policy kept off by setting, so step 6 can turn on
-        # what the reloaded settings no longer do.
-        saved_off_before = getattr(
-            getattr(self._harness, "tool_policy", None), "saved_off", frozenset()
-        )
-        settings_manager = self._harness.settings_manager
+        # 2. Snapshot BEFORE teardown what the rebuild carries over — the flag
+        #    values (pi :2384), the model (#434, ``ReloadSeed.model``), the LIVE
+        #    active-tool filter (#24-FU), the registry (#25 review R04) and the
+        #    policy's saved-off set (#510) — and, for a rebuild that fails, the
+        #    settings in memory (#663).
+        point = self._restore_point()
+        settings_manager = point.settings_manager
 
         # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
         #    handlers still observe the OLD settings — then invalidate the old runner
@@ -1178,10 +1331,7 @@ class AgentSessionRuntime:
         #    /new /fork /resume rebuild the harness without touching it either;
         #    credential/setting changes are picked up via ``settings_manager.reload()``
         #    + the rebuilt harness's per-stream ``get_api_key_and_headers`` resolve.
-        self._reload_phase = "settings"
-        if settings_manager is not None:
-            await settings_manager.reload()
-
+        #
         # 5. Rebuild via the factory over the SAME session — re-discovers on-disk
         #    extensions, fresh _ExtensionRuntime + HookBus + tool registry. The
         #    ReloadSeed (#24-FU) pre-seeds the fresh runtime's ``flag_values``
@@ -1190,12 +1340,43 @@ class AgentSessionRuntime:
         #    ``_buildRuntime`` which seeds ``runtime.flagValues`` before the new
         #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
         #    then skips the default).
-        self._reload_phase = "build"
-        await self._apply(
-            session,
-            reload_seed=ReloadSeed(flag_values=previous_flag_values, model=previous_model),
-        )
-        self._reload_phase = "tools"
+        #
+        #    #663 (ADR-0289) — either step raising leaves no harness with hooks:
+        #    the old one is torn down and the new one never installed. The session
+        #    is built again on the settings it was running with, or stops.
+        try:
+            self._reload_phase = "settings"
+            if settings_manager is not None:
+                await settings_manager.reload()
+            self._reload_phase = "build"
+            await self._apply(
+                session,
+                reload_seed=ReloadSeed(flag_values=point.flag_values, model=point.model),
+            )
+        except Exception as exc:
+            await self._restore_after(
+                exc, operation="reload", phase=self._reload_phase, point=point
+            )
+        except BaseException:
+            self._stop()
+            raise
+        await self._settle_rebuilt(point, track_phase=True)
+        self._reload_phase = "done"
+        return RuntimeReplaceResult(cancelled=False)
+
+    async def _settle_rebuilt(self, point: _RestorePoint, *, track_phase: bool) -> None:
+        """Steps 6-10 of :meth:`reload` on the harness :meth:`_apply` just installed.
+
+        Shared with the build that puts a session back after a failed rebuild
+        (#663, :meth:`_restore_after`), which passes ``track_phase=False`` so
+        :attr:`reload_phase` keeps naming the step that failed.
+        """
+
+        from aelix_agent_core.harness.hooks import SessionStartHookEvent
+
+        if track_phase:
+            self._reload_phase = "tools"
+        active_before = point.active_tools
 
         # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).
         #    Restore the user's pre-reload active filter over the rebuilt
@@ -1213,7 +1394,7 @@ class AgentSessionRuntime:
         policy_now = getattr(rebuilt, "tool_policy", None)
         newly_on = [
             name
-            for name in sorted(saved_off_before)
+            for name in sorted(point.saved_off)
             if policy_now is not None and name not in policy_now.saved_off
         ]
         restore = getattr(rebuilt, "restore_active_tools", None)
@@ -1235,7 +1416,7 @@ class AgentSessionRuntime:
             # server's tools). Without this an explicit filter left them
             # registered and inactive. The policy clamps them like the rest.
             newly_registered = [
-                t.name for t in rebuilt.state.tools if t.name not in registered_before
+                t.name for t in rebuilt.state.tools if t.name not in point.registered
             ]
             # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on ∪
             # newly-registered, order-preserving and fully de-duplicated with
@@ -1259,15 +1440,17 @@ class AgentSessionRuntime:
         #    AFTER ``_apply`` and BEFORE the session_start emit so a handler
         #    reacting to session_start/reload reads the restored state.
         new_runner = self._harness.extension_runner
-        for name, value in previous_flag_values.items():
+        for name, value in point.flag_values.items():
             new_runner.set_flag_value(name, value)
 
         # 8. Swap subscribers / UI / command context onto the NEW harness. The TUI
         #    rebind skips its session-swap-only transcript + /stats resets on "reload".
-        self._reload_phase = "rebind"
+        if track_phase:
+            self._reload_phase = "rebind"
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, "reload")
-        self._reload_phase = "session_start"
+        if track_phase:
+            self._reload_phase = "session_start"
 
         # 9. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
         #    was disposed in step 4). pi :2407.
@@ -1285,10 +1468,9 @@ class AgentSessionRuntime:
 
         # 10. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
         #    :2411). Re-emits the resources_discover hook on the rebuilt harness.
-        self._reload_phase = "resources"
+        if track_phase:
+            self._reload_phase = "resources"
         await self._harness.reload_resources()
-        self._reload_phase = "done"
-        return RuntimeReplaceResult(cancelled=False)
 
     async def fork(
         self,

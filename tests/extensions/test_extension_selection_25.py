@@ -39,6 +39,7 @@ from aelix_coding_agent.core.extension_selection import (
     mcp_launch,
     reload_failure_text,
     reload_lines,
+    reload_outcome,
     target_of,
     tool_rows,
     without_hidden,
@@ -533,17 +534,47 @@ async def test_providers_and_new_shortcut_keys_wait_for_a_restart(home: Path) ->
     )
 
 
-def test_reload_failure_text_tells_applied_from_nothing_applied() -> None:
-    failed = reload_failure_text("the rebuild", RuntimeError("boom"), applied=False)
-    assert failed.startswith("✖ /reload failed during the rebuild: RuntimeError: boom")
-    assert "nothing applied" in failed
-    later = reload_failure_text("session_start", RuntimeError("late"), applied=True)
+def test_reload_failure_text_says_what_runs_after_the_failure() -> None:
+    """#663 (ADR-0289): never "nothing applied" — the old harness was torn down."""
+
+    from aelix_agent_core.runtime import STOPPED_MESSAGE, RebuildFailedError
+
+    kept = RebuildFailedError(
+        operation="reload", phase="build", cause=RuntimeError("boom"), state="kept"
+    )
+    assert reload_outcome(kept, replaced=True) == "kept"
+    failed = reload_failure_text("the rebuild", kept, "kept")
+    assert failed == (
+        "✖ /reload failed during the rebuild: RuntimeError: boom — kept the previous "
+        "settings; fix the cause, then /reload again"
+    )
+    stopped = RebuildFailedError(
+        operation="reload",
+        phase="settings",
+        cause=RuntimeError("boom"),
+        state="stopped",
+        restore_error=OSError("again"),
+    )
+    assert reload_outcome(stopped, replaced=False) == "stopped"
+    text = reload_failure_text("re-reading the settings", stopped, "stopped")
+    assert text.startswith(
+        "✖ /reload failed during re-reading the settings: RuntimeError: boom; rebuilding "
+        "with the previous settings failed too (OSError: again) — "
+    )
+    assert text.endswith(STOPPED_MESSAGE)
+    late = RuntimeError("late")
+    assert reload_outcome(late, replaced=True) == "applied"
+    assert reload_outcome(late, replaced=False) == "kept"
+    later = reload_failure_text("session_start", late, "applied")
     assert later.startswith("⚠ /reload applied the new extensions, but session_start failed")
-    assert "nothing applied" not in later
+    for line in (failed, text, later):
+        assert "nothing applied" not in line
 
 
 async def test_the_runtime_names_the_step_a_reload_failed_in(tmp_path: Path) -> None:
-    """Codex F08: a factory failure is ``build`` and leaves the old harness pointer."""
+    """Codex F08: a factory failure is ``build``. Every build fails here, so the
+    one after it on the previous settings does too: the runtime stops on the old
+    (torn-down) harness pointer (#663)."""
 
     from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
     from aelix_agent_core.runtime import AgentSessionRuntime
@@ -570,8 +601,9 @@ async def test_the_runtime_names_the_step_a_reload_failed_in(tmp_path: Path) -> 
     harness = await factory(session)
     runtime = AgentSessionRuntime(harness, factory, repo=repo, fs=fs)
     assert runtime.reload_phase is None
-    with pytest.raises(RuntimeError, match="factory boom"):
+    with pytest.raises(RuntimeError, match="factory boom") as caught:
         await runtime.reload()
+    assert getattr(caught.value, "state", None) == "stopped"
     assert runtime.reload_phase == "build"
     assert runtime.harness is harness
 

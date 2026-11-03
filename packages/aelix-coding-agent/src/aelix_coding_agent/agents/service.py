@@ -15,7 +15,7 @@ The three rejected alternatives and why they fail:
   provider/stream bindings and silently reverts an in-session ``/model`` or
   ``/thinking`` choice the user made deliberately.
 * **B — mutate the private ``_state`` only**: ``_current_system_prompt``
-  (``core.py:4776-4781``) already reads ``_state`` as its fallback, but a
+  (``core.py:4790-4795``) already reads ``_state`` as its fallback, but a
   rebuild (``/new``, ``/fork``, ``/resume``) re-derives everything from
   ``parsed`` — so the swap would evaporate on the next session action.
 * **C — a kernel ``set_system_prompt``**: the kernel is read-only for P1
@@ -82,7 +82,7 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4353-4355``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4355-4357``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
@@ -91,7 +91,7 @@ class AgentProfileService:
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:3921`` / ``:4280``).
+        reads on every (re)build (``cli/entry.py:3921`` / ``:4282``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -262,13 +262,13 @@ class AgentProfileService:
         1b. **Snapshot, and roll back on ANY failure.** Refusing first is not
            sufficient, because step 4 talks to the kernel and the kernel can say
            no: ``harness.set_active_tools`` validates every name against
-           ``state.tools`` and raises (``core.py:4791-4805``) for a typo, for an
+           ``state.tools`` and raises (``core.py:4805-4819``) for a typo, for an
            MCP tool whose server never connected, or for an extension tool under
            ``inherit_extensions: false`` — none of which profile PARSING can
            check. Without the rollback that raise left ``parsed.tools`` poisoned
            and the prompt already swapped, so the failure was reported in red
            while the next ``/new`` — which disposes the live harness BEFORE
-           rebuilding (``agent_session_runtime.py:769``) — died in
+           rebuilding (``agent_session_runtime.py:927``) — died in
            ``AgentHarness.__init__`` against the same validator and left the REPL
            with a disposed harness. Proven end to end.
         2. **Reset to the pristine baseline.** Mandatory, not hygiene:
@@ -475,7 +475,7 @@ class AgentProfileService:
             # pre-build and one post-build; the emission rules are identical.
             #
             # THIS is the call that raises on a profile naming a tool the running
-            # process does not have (``core.py:4791-4805``), which is why
+            # process does not have (``core.py:4805-4819``), which is why
             # everything from step 2 down sits inside the try.
             # #510 (ADR-0283) — the profile's ``tools:`` / ``builtin_tools:``
             # are LOCKS, as the flags are: the policy is rebuilt from the

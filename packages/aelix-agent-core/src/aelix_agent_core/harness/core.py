@@ -889,6 +889,8 @@ class AgentHarness:
         self._pending_tasks: set[asyncio.Task[Any]] = set()
         # #367 (Aelix-additive) — the turn gate, see :meth:`hold_turns`.
         self._turn_gate: str | None = None
+        # #663 (Aelix-additive) — set by :meth:`dispose`, see :attr:`disposed`.
+        self._disposed = False
         # #376 (Aelix-additive) — can a turn run on the model? See
         # :meth:`set_prompt_check`. ``None``: nothing to ask (an embedder).
         self._prompt_check: Callable[[Model], str | None] | None = None
@@ -1145,6 +1147,17 @@ class AgentHarness:
     @property
     def is_idle(self) -> bool:
         return self._phase == "idle"
+
+    @property
+    def disposed(self) -> bool:
+        """Aelix-additive (#663, ADR-0289): :meth:`dispose` has run.
+
+        Its HookBus is cleared then — Guardrail, Permission and every
+        extension's ``tool_call`` handler with it — so a disposed harness blocks
+        every tool call instead of running it ungated (:meth:`_before_tool_call_bridge`).
+        """
+
+        return self._disposed
 
     def hold_turns(self, reason: str | None) -> None:
         """Aelix-additive (#367): while ``reason`` is set, no turn starts; ``None`` lifts it.
@@ -4145,6 +4158,7 @@ class AgentHarness:
     async def dispose(self) -> None:
         """Tear down the harness — abort + wait + cleanups LIFO (D.1.13 M-4)."""
 
+        self._disposed = True
         if self._phase != "idle":
             await self.abort()
             with contextlib.suppress(Exception):
@@ -5058,6 +5072,13 @@ class AgentHarness:
         mutation reach ``tool.execute`` and the after-callback.
         """
 
+        if self._disposed:
+            # #663 (ADR-0289) — the bus holds no gate any more: refuse, never run
+            # ungated. The reason is the turn gate's when there is one (a stopped
+            # runtime's, ``AgentSessionRuntime.stopped``).
+            return BeforeToolCallResult(
+                block=True, reason=self._turn_gate or "AgentHarness has been disposed"
+            )
         # Sprint 5b (ADR-0043 §C.2): dispatch to the tool-typed variant so
         # ``match event:`` narrowing works in handler bodies. Base
         # ``ToolCallHookEvent`` instances are still type-compatible (subclasses).

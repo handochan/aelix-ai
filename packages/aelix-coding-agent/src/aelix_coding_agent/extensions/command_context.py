@@ -160,7 +160,10 @@ class ExtensionCommandContext(ExtensionContext):
         from (staleness). The reload completes before this handler returns, but
         any *further* use of this ``ctx`` (or the ``_harness`` slot) after
         ``reload()`` hits the invalidated runtime and raises ``stale`` — this is
-        the same tear-down the other lifecycle methods incur.
+        the same tear-down the other lifecycle methods incur. A rebuild that
+        fails raises :class:`RebuildFailedError`, saying whether the session
+        was built again on its previous settings or aelix stopped (#663,
+        ADR-0289).
         """
 
         session_runtime = object.__getattribute__(self, "_runtime_session")

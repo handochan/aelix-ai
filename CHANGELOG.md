@@ -1283,6 +1283,21 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A `/reload` that fails no longer leaves aelix running without its safety
+  checks (#663, ADR-0289).** `/reload` takes the running session apart before it
+  builds the new one. When re-reading the settings or the build then failed, the
+  session kept running on the taken-apart harness: the model's commands ran with
+  no approval dialog and no Guardrail (an `rm -rf` was not refused), while the
+  line said "nothing applied". RPC `resources/reload`, an extension's
+  `ctx.reload()`, and a `/new`, `/resume`, `/fork`, `/clone` or `/import` whose
+  build failed did the same. aelix now builds the session again on the settings
+  it was running with and says "kept the previous settings". If that fails too,
+  it stops: prompts, `!` lines and tool calls are refused with "aelix is stopped
+  until /reload succeeds" until a `/reload` (or `/new`) works. A failed
+  `/reload` no longer leaves half-read settings behind, so `/new` after it works,
+  and with `AELIX_RELOAD_REBUILD=0` a `/reload` that raises says so instead of
+  closing the TUI.
+
 - **The `/` menu lists your skills and prompt templates (#508, ADR-0279 D12).**
   `/skill:<name>` and `/<template>` ran, but typing `/` never offered them:
   `/sk` showed only `/skill`, and `/skill:` and `/zz` showed nothing, so skills
@@ -1314,9 +1329,10 @@ unwritten. Add them with the next release.
   extension with `✓` because it read a copy taken at start. `/reload` now leaves
   one transcript line naming what failed — a manifest that no longer parses
   included — and `/extension` reads what the latest build loaded; `/new`,
-  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says whether
-  anything was applied ("nothing applied; /reload again or restart", or which
-  later step failed), and `/extension` shows it until a build succeeds. A
+  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says what
+  runs after it (which later step failed, or — since #663 — that the previous
+  settings were kept or that aelix stopped), and `/extension` shows it until a
+  build succeeds. A
   manifest pack that waits for its first command and then fails to start is
   shown as failed instead of loaded.
 

@@ -370,7 +370,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:5056-5058``
+    smuggled through ``event.args`` even though ``harness/core.py:5070-5072``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -725,7 +725,7 @@ class AgentsExtension:
         the value was "re-read every time a context is built … the model the
         parent's own next turn would use". Only the first half holds:
         ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
-        (``core.py:4567``) and ``ExtensionContext.model`` hands back
+        (``core.py:4581``) and ``ExtensionContext.model`` hands back
         ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
         hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
         are slash commands that fire none, so the parent's next turn could
@@ -874,7 +874,7 @@ class AgentsExtension:
         """Refresh the roster, reset the delegation budget, drop stale grants,
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
-        ``before_agent_start`` (``harness/core.py:1594``) runs BEFORE the
+        ``before_agent_start`` (``harness/core.py:1607``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
@@ -886,7 +886,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1052-1118``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1054-1120``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -1413,7 +1413,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:5056-5058``
+        security property rather than a style rule. ``harness/core.py:5070-5072``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``

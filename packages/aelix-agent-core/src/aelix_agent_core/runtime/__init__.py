@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from aelix_agent_core.runtime._types import (
     PI_STALENESS_MESSAGE,
+    STOPPED_MESSAGE,
     AgentSessionRuntimeDiagnostic,
     HarnessFactory,
+    RebuildFailedError,
+    RebuildState,
     ReloadSeed,
     ReplacedSessionContext,
     RuntimeReplaceResult,
@@ -21,9 +24,12 @@ from aelix_agent_core.runtime.agent_session_runtime import (
 
 __all__ = [
     "PI_STALENESS_MESSAGE",
+    "STOPPED_MESSAGE",
     "AgentSessionRuntime",
     "AgentSessionRuntimeDiagnostic",
     "HarnessFactory",
+    "RebuildFailedError",
+    "RebuildState",
     "ReloadSeed",
     "ReplacedSessionContext",
     "RuntimeReplaceResult",

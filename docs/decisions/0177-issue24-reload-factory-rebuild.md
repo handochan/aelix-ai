@@ -5,6 +5,7 @@
 - **Sprint:** Moat chain — keystone. `#24` is the named BLOCKER for `#53` (self-extensible epic): "agent writes `.aelix/extensions/foo.py` → `/reload` → `/foo` + its tool work, no process restart".
 - **Pi pin:** `earendil-works/pi@734e08e`. Ported from `agent-session.ts:reload` (`:2382-2413`) + `_buildRuntime` (`:2329-2381`).
 - **Relates:** ADR-0093/0087 (P-380 reload primitives — the 2 steps this completes), ADR-0091 (SettingsManager), ADR-0174 (#44 settings_manager seam — makes `reload()` reachable), P-302 (harness-rebuild pattern), ADR-0100 (ExtensionUIContext / `_rebind`). GitHub `#24`; unblocks `#53` / `#21`.
+- **2026-11-03 note (#663, ADR-0289):** a `reload()` whose settings re-read or rebuild raises no longer leaves the disposed harness installed (its HookBus — Guardrail and Permission included — was cleared, and tool calls ran ungated). The runtime restores the in-memory settings, builds the session again on them (`ReloadSeed.restore`), and raises `RebuildFailedError("kept")`; if that build fails too it raises `"stopped"` and the disposed harness refuses every turn and tool call until a build succeeds. `/new`, `/resume`, `/fork`, `/import` share the path.
 
 ## Context
 

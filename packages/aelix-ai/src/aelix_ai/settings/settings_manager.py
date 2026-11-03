@@ -47,8 +47,8 @@ import math
 import os
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
-from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -324,6 +324,28 @@ class SettingsFileError(Exception):
     Raised for a file that did not load, does not parse, or holds a value of
     the wrong shape under the key being edited. The message names the file.
     """
+
+
+@dataclass(frozen=True)
+class SettingsSnapshot:
+    """The in-memory settings of one moment, for :meth:`SettingsManager.restore` (#663).
+
+    Aelix-additive (ADR-0289). Opaque: references, not copies — :meth:`reload`
+    and :meth:`set_project_trusted` replace these objects rather than change
+    them, so a snapshot taken before a reload still holds what the session was
+    running with after it.
+    """
+
+    global_settings: Settings
+    project_settings: Settings
+    settings: Settings
+    global_load_error: BaseException | None
+    project_load_error: BaseException | None
+    project_trusted: bool
+    modified_fields: frozenset[str]
+    modified_nested_fields: tuple[tuple[str, frozenset[str]], ...]
+    modified_project_fields: frozenset[str]
+    modified_project_nested_fields: tuple[tuple[str, frozenset[str]], ...]
 
 
 class SettingsManager:
@@ -748,37 +770,79 @@ class SettingsManager:
            An untrusted project stays empty (#369, pi @ ``b223082bb``
            ``:623`` keeps ``projectTrusted`` across a reload).
         5. Re-merge via :func:`deep_merge_settings`.
+
+        All or nothing (#663, ADR-0289; pi assigns as it goes): the two loads
+        and the merge are computed first and committed together, so a reload
+        that raises — the merge's ``copy.deepcopy`` on a deeply nested value
+        (#658) — leaves every field as it was, the load errors unrecorded.
         """
 
         await self.flush()
         global_settings, global_err = SettingsManager._try_load(
             self._storage, "global"
         )
-        if global_err is None:
-            self._global_settings = global_settings
-            self._global_load_error = None
-        else:
-            self._global_load_error = global_err
-            self._record_error("global", global_err)
+        project_settings, project_err = SettingsManager._try_load(
+            self._storage, "project", self._project_trusted
+        )
+        next_global = global_settings if global_err is None else self._global_settings
+        next_project = project_settings if project_err is None else self._project_settings
+        merged = deep_merge_settings(next_global, next_project)
 
+        self._global_settings = next_global
+        self._global_load_error = global_err
+        self._project_settings = next_project
+        self._project_load_error = project_err
         self._modified_fields.clear()
         self._modified_nested_fields.clear()
         self._modified_project_fields.clear()
         self._modified_project_nested_fields.clear()
-
-        project_settings, project_err = SettingsManager._try_load(
-            self._storage, "project", self._project_trusted
-        )
-        if project_err is None:
-            self._project_settings = project_settings
-            self._project_load_error = None
-        else:
-            self._project_load_error = project_err
+        self._settings = merged
+        if global_err is not None:
+            self._record_error("global", global_err)
+        if project_err is not None:
             self._record_error("project", project_err)
 
-        self._settings = deep_merge_settings(
-            self._global_settings, self._project_settings
+    def snapshot(self) -> SettingsSnapshot:
+        """What :meth:`restore` puts back: the settings in memory now (#663, ADR-0289).
+
+        Aelix-additive. A ``/reload`` takes one before it reads the files again
+        and restores it when the rebuild fails, so the harness rebuilt after the
+        failure runs the settings the session was running with — the files may
+        still hold whatever made the rebuild fail.
+        """
+
+        return SettingsSnapshot(
+            global_settings=self._global_settings,
+            project_settings=self._project_settings,
+            settings=self._settings,
+            global_load_error=self._global_load_error,
+            project_load_error=self._project_load_error,
+            project_trusted=self._project_trusted,
+            modified_fields=frozenset(self._modified_fields),
+            modified_nested_fields=tuple(
+                (k, frozenset(v)) for k, v in self._modified_nested_fields.items()
+            ),
+            modified_project_fields=frozenset(self._modified_project_fields),
+            modified_project_nested_fields=tuple(
+                (k, frozenset(v)) for k, v in self._modified_project_nested_fields.items()
+            ),
         )
+
+    def restore(self, snapshot: SettingsSnapshot) -> None:
+        """Put back the settings :meth:`snapshot` took (#663, ADR-0289). Nothing is written."""
+
+        self._global_settings = snapshot.global_settings
+        self._project_settings = snapshot.project_settings
+        self._settings = snapshot.settings
+        self._global_load_error = snapshot.global_load_error
+        self._project_load_error = snapshot.project_load_error
+        self._project_trusted = snapshot.project_trusted
+        self._modified_fields = set(snapshot.modified_fields)
+        self._modified_nested_fields = {k: set(v) for k, v in snapshot.modified_nested_fields}
+        self._modified_project_fields = set(snapshot.modified_project_fields)
+        self._modified_project_nested_fields = {
+            k: set(v) for k, v in snapshot.modified_project_nested_fields
+        }
 
     def apply_overrides(self, overrides: Settings) -> None:
         """Pi parity: ``settings-manager.ts:432-434`` ``applyOverrides``."""

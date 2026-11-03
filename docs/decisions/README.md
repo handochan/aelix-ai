@@ -36,6 +36,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0289 — A rebuild that fails after the teardown puts the session back on its previous settings, or stops](0289-a-rebuild-that-fails-after-the-teardown-puts-the-session-back-or-stops.md)
+  (Accepted 2026-11-03; #663, owner decision (b)). `/reload`, `/new`, `/resume`, `/fork`,
+  `/clone`, `/import`, RPC `resources/reload` / `new_session` / `fork` / `switch_session` and an
+  extension's `ctx.reload()` tear the old harness down first (pi's order) and its HookBus with it;
+  a settings re-read or build that then raised left that harness installed and tool calls ran
+  with no Guardrail or Permission (measured: no approval asked, `rm -rf` run). Now the runtime
+  restores the settings in memory (`SettingsManager.snapshot` / `restore`; `reload` is all or
+  nothing), builds the session it was on again (`ReloadSeed.restore`: the CLI factory keeps the
+  catalogs the session ran with) and raises `RebuildFailedError("kept")`; when that build fails
+  too it raises `"stopped"`: the disposed harness holds its turns (`STOPPED_MESSAGE`) and blocks
+  every tool call, the TUI refuses prompts and `!` lines, until a build succeeds. The lines say
+  "kept the previous settings" or "aelix is stopped until /reload succeeds", never "nothing
+  applied"; the kill-switch `/reload` no longer escapes. Amends ADR-0284 D6/Limits, ADR-0177.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the
@@ -63,7 +76,8 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   the run, an untrusted project one summary row, MCP servers read-only rows in #512's words.
   Enter saves; `/reload` applies and leaves one line naming what changed and what failed (the raw
   stderr print is gone); a `/reload` that raises says whether anything applied
-  (`AgentSessionRuntime.reload_phase`, Codex F08). Failed and deferred-then-failed packs are their
+  (`AgentSessionRuntime.reload_phase`, Codex F08) — 2026-11-03 note (ADR-0289, #663): past the
+  teardown it says "kept the previous settings" or "aelix is stopped until /reload succeeds". Failed and deferred-then-failed packs are their
   own state (F09). A pack turned off at `/reload` keeps its MCP connections until restart with
   their tools hidden; one off at launch connects at the next launch (F11); providers and new
   shortcut keys wait for a restart and say so (F10). `/tool` gets an `ext off` placeholder. A

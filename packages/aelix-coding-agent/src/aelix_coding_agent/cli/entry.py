@@ -4060,13 +4060,15 @@ async def _async_main(argv: list[str]) -> int:
             entries = await new_session.get_branch()
             if build_session_context(entries).messages:
                 restore_selection = resolve_resumed_model(entries)
-        if reload_seed is not None:
+        if reload_seed is not None and not reload_seed.restore:
             # #511 (ADR-0279 D10) — ``/reload`` rescans the skill and prompt
             # directories as pi does; the runtime reloaded the settings files
             # just before this build. Before #511 an edited SKILL.md or a new
             # skill directory needed a restart, while ``resource_commands``
             # said ``/reload`` was enough. Load warnings are not reprinted: this
-            # runs under the TUI, and they were said once at launch.
+            # runs under the TUI, and they were said once at launch. Not for the
+            # build that puts a session back after a failed one (#663): that one
+            # keeps the catalogs the session ran with (``_harness_factory``).
             skills_holder["result"] = _load_skill_catalog(
                 parsed, cwd, project_trusted, settings_manager
             )
@@ -4364,7 +4366,16 @@ async def _async_main(argv: list[str]) -> int:
         """
 
         with selection_apply_gate:
-            return await _build_harness(new_session, reload_seed=reload_seed)
+            # #663 (ADR-0289) — a build that raises leaves the catalogs as the
+            # running session has them: a reload's rescan above is undone, so
+            # the build that puts the session back (``ReloadSeed.restore``) and
+            # every later one read what the session was running with.
+            catalogs = (skills_holder["result"], prompt_holder["result"])
+            try:
+                return await _build_harness(new_session, reload_seed=reload_seed)
+            except BaseException:
+                skills_holder["result"], prompt_holder["result"] = catalogs
+                raise
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
     # harness so it shares the SAME ``parsed`` object the factory closes over: a

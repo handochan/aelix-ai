@@ -24,6 +24,7 @@ Public surface:
 from aelix_ai.settings.settings_manager import (
     SettingsFileError,
     SettingsManager,
+    SettingsSnapshot,
     deep_merge_settings,
 )
 from aelix_ai.settings.storage import (
@@ -82,6 +83,7 @@ __all__ = [
     "SettingsFileError",
     "SettingsManager",
     "SettingsScope",
+    "SettingsSnapshot",
     "SettingsStorage",
     "SteeringMode",
     "TerminalSettings",
