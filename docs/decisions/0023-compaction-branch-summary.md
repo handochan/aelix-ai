@@ -9,7 +9,11 @@ directly. It holds the drain lock through `AgentHarness.idle_write()` (entered
 only while idle), so a turn that starts while it writes — an extension's
 `send_message(..., trigger_turn=True)` — waits at its entry drain and chains its
 user message after the record; before, it read the same leaf and forked away
-from it. The REPL's record still appends directly.
+from it. The REPL's record still appends directly. Three hazards (its
+docstring): an `abort()` made while a turn waits at its entry drain is lost
+(`_run` clears the flag on entry — #336's window), a drainer called from inside
+the write on the same task deadlocks (the lock is not re-entrant), and a write
+that never returns blocks every drainer, `dispose()` included.
 Supersedes (partial): ADR-0016 deferred (Phase machine expansion)
 Pi pin (ADR-0034): `badlogic/pi-mono@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 

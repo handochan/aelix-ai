@@ -466,9 +466,11 @@ the row under the input says why. `Alt+Enter` on a `!` line while the model
 answers runs it after the turn instead. `Esc` during a turn still interrupts the
 turn; it does not stop a `!` command.
 
-A pasted text that starts with `!` is not a shell command: a long paste is shown
-as `[Pasted text #1 +6 lines]` and is sent to the model as text, as it is drawn.
-Type the `!` yourself to run a paste in the shell.
+A long paste that starts with `!` is not a shell command. A paste of 6 or more
+lines, or of 1000 or more characters, is shown as `[Pasted text #1 +6 lines]` and
+is sent to the model as text, as it is drawn. A shorter paste is inserted as if
+you typed it, so one that starts with `!` is drawn as a shell line and runs in
+the shell. Type the `!` yourself to run a long paste in the shell.
 
 A file reference such as `@src/main.py` or `@"my notes.md"` is drawn in the
 theme's `accent` colour as you type it. Under `NO_COLOR` it is underlined instead.

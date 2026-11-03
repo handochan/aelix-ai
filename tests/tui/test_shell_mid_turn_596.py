@@ -286,11 +286,28 @@ async def test_close_records_what_finished_unless_a_turn_holds_the_harness(
     await t.lane.close()
     assert t.commands() == ["held"]
 
-    t2 = _Lane(SimpleNamespace(session=object(), is_idle=False))
+    # Verify R1V1: a harness with ``wait_for_idle``, as the real one has. Closed
+    # during an extension's turn, the lane left a waiter that wrote the record
+    # once the teardown's dispose aborted the turn (Ctrl+D did; ``/quit`` not).
+    idle = asyncio.Event()
+
+    class _Turn:
+        session = object()
+
+        @property
+        def is_idle(self) -> bool:
+            return idle.is_set()
+
+        async def wait_for_idle(self) -> None:
+            await idle.wait()
+
+    t2 = _Lane(_Turn())
     t2.patch(monkeypatch)
     await t2.lane.run(t2.lane.begin("!", "mid", pending=True), cwd=".")
     await t2.lane.close()
-    assert t2.recorded == []  # a turn still holds the harness: not written into it
+    idle.set()  # the teardown's dispose aborts the turn
+    await asyncio.sleep(0.05)
+    assert t2.recorded == []  # a turn still held the harness: not written into it
 
 
 async def test_one_shell_command_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,10 +354,35 @@ async def test_the_pending_area_draws_each_block_and_fits_the_width(
     for row in rows:
         plain = Text.from_ansi(row).plain
         assert get_cwidth(plain) <= 40, plain
-    assert "… 2 rows above" in t.shown  # capped: the newest rows kept
+    assert "… 1 more command above" in t.shown  # capped: the newest blocks kept
     assert "more lines, in full" in t.shown
     assert "line 5" in t.shown  # the tail of the output
     assert queued.state == "queued"
+
+
+async def test_the_pending_area_cap_drops_whole_blocks_never_a_command_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Verify R1V5: five blocks of four output lines are 20 rows. Cut by rows, the
+    # area showed "… 2 more lines", d3 and d4 under no command line at all.
+    t = _Lane()
+
+    async def _four(
+        harness: Any, command: str, *, exclude_from_context: bool, cwd: str
+    ) -> UserBashRun:
+        return _run(command, output="".join(f"{command}{i}\n" for i in range(1, 5)))
+
+    monkeypatch.setattr(lane_mod, "run_user_bash", _four)
+    t.turn["on"] = True
+    for name in "abcde":
+        await t.lane.run(t.lane.begin("!", name, pending=True), cwd=".")
+    lines = [Text.from_ansi(r).plain for r in t.rows[-1]]
+    assert len(lines) <= _PENDING_MAX_ROWS
+    assert lines[0].startswith("… 4 more commands above, in full")  # cut to 40 columns
+    assert [line[:6] for line in lines[1:] if line.startswith("! ")] == ["! e  ("]
+    for name in "abcd":
+        assert not any(line.startswith(name) for line in lines[1:]), lines
+    assert lines[-2:] == ["e3", "e4"]
 
 
 async def test_a_queued_block_that_ran_settles_in_the_order_it_ran(
@@ -690,6 +732,35 @@ async def test_a_bang_during_compact_runs_at_once_and_survives_ctrl_d(
         pipe.send_text("\x04")  # Ctrl+D
         await _quit_within(task)
     assert bash.recorded == [("echo NOW", False)]
+
+
+@pytest.mark.parametrize("exit_key", ["\x04", "/quit\n"], ids=["ctrl-d", "quit"])
+async def test_exit_during_an_extension_turn_does_not_record_what_it_held(
+    monkeypatch: pytest.MonkeyPatch, exit_key: str
+) -> None:
+    # Verify R1V1: Ctrl+D recorded the block once the teardown's dispose ended
+    # the extension's turn; ``/quit`` did not. ADR-0287 Limits: neither does.
+    harness = _PhaseHarness()
+    chrome_ref: dict[str, Any] = {}
+    bash = _Bash(monkeypatch, chrome_ref)
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        chrome_ref["chrome"] = chrome
+
+        async def _dispose() -> None:
+            runtime.disposed += 1
+            harness.let_go()  # the real dispose aborts the turn and waits for it
+
+        monkeypatch.setattr(runtime, "dispose", _dispose)
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running, what="the TUI to start")
+        harness.hold()  # send_message(..., trigger_turn=True) started a turn
+        pipe.send_text("!echo EXIT_HELD\n")
+        await _wait(lambda: "EXIT_HELD output" in _pending_text(chrome), what="its pending block")
+        pipe.send_text(exit_key)
+        await _quit_within(task)
+        await asyncio.sleep(0.1)
+    assert runtime.disposed == 1 and harness.is_idle
+    assert bash.recorded == []
 
 
 async def test_a_bang_still_running_when_the_tui_closes_is_stopped_with_it(

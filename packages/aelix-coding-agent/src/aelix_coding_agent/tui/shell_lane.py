@@ -49,7 +49,7 @@ _log = logging.getLogger(__name__)
 #: Rows of a finished block's output the pending area shows — its last ones. All
 #: of it reaches the transcript when the block is settled.
 _PENDING_OUTPUT_ROWS = 3
-#: The pending area never takes more rows than this; the newest rows are kept.
+#: The pending area never takes more rows than this; the newest blocks are kept, whole.
 _PENDING_MAX_ROWS = 8
 
 BlockState = Literal["queued", "running", "done"]
@@ -99,6 +99,8 @@ class ShellLane:
         self._quiet = asyncio.Event()
         self._quiet.set()
         self._waiter: asyncio.Task[None] | None = None
+        #: The TUI is closing: nothing waits for the harness any more (``close``).
+        self._closed = False
         #: Set by the input loop while it handles a line other than a ``!`` one.
         self.command_running = False
 
@@ -223,8 +225,14 @@ class ShellLane:
                     _log.warning("could not record a ! command", exc_info=True)
 
     async def close(self) -> None:
-        """The TUI is closing: record what finished, if the harness lets it."""
+        """The TUI is closing: record what finished, if the harness lets it.
 
+        A turn still holding the harness keeps what it holds unrecorded: the
+        teardown aborts that turn next, and no waiter is left to write into the
+        session once it has (verify R1V1 — Ctrl+D recorded it, ``/quit`` did not).
+        """
+
+        self._closed = True
         waiter, self._waiter = self._waiter, None
         if waiter is not None:
             waiter.cancel()
@@ -255,7 +263,7 @@ class ShellLane:
         compaction it ran ends with no one there to do it (Codex 596-04).
         """
 
-        if self._waiter is not None or self.command_running:
+        if self._closed or self._waiter is not None or self.command_running:
             return
         with contextlib.suppress(Exception):
             if self._busy_fn():
@@ -290,15 +298,27 @@ class ShellLane:
         if not shown:
             return []
         theme = self._theme_now()
-        rows: list[Text] = []
-        for block in shown:
-            rows.append(_command_line(block, _pending_note(block), theme, first_line_only=True))
-            rows.extend(self._preview(block))
+        groups = [
+            [_command_line(block, _pending_note(block), theme, first_line_only=True)]
+            + self._preview(block)
+            for block in shown
+        ]
+        rows = [row for group in groups for row in group]
         if len(rows) > _PENDING_MAX_ROWS:
-            over = len(rows) - (_PENDING_MAX_ROWS - 1)
-            rows = [Text(f"… {over} rows above, in full once the turn is over", style="dim")] + rows[
-                -(_PENDING_MAX_ROWS - 1) :
-            ]
+            # Whole blocks, the oldest first, so no output is shown without its
+            # command line (verify R1V5). The newest block always fits: it is at
+            # most its command line and ``_PENDING_OUTPUT_ROWS`` rows.
+            kept: list[list[Text]] = []
+            room = _PENDING_MAX_ROWS - 1
+            for group in reversed(groups):
+                if len(group) > room:
+                    break
+                kept.insert(0, group)
+                room -= len(group)
+            over = len(groups) - len(kept)
+            noun = "command" if over == 1 else "commands"
+            rows = [Text(f"… {over} more {noun} above, in full once the turn is over", style="dim")]
+            rows += [row for group in kept for row in group]
         width = self._width_now()
         return [_ansi_row(row, width) for row in rows]
 

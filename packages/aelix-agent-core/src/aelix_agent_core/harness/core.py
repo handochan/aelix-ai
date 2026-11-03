@@ -4005,6 +4005,19 @@ class AgentHarness:
         same ``parent_id`` as that turn's user message, so the turn forked
         away from it and the model never saw it. pi has no such window: its
         ``recordBashResult`` appends synchronously.
+
+        Three hazards (measured by the #596 verify, R1V3):
+
+        - An :meth:`abort` made while a turn waits at its entry drain is lost:
+          :meth:`_run` clears the flag on entry (the pre-``_run`` window #336
+          owns), so the turn still sends its request, and a :meth:`dispose`
+          made then waits for that whole turn.
+        - The body must not call a drainer on its own task (an idle
+          :meth:`set_thinking_level`, a nested ``idle_write``, :meth:`prompt`
+          …): the lock is not re-entrant, so that deadlocks. A turn the body
+          starts on another task — an extension's ``trigger_turn`` — waits.
+        - A write that never returns blocks every drainer, :meth:`dispose`
+          included.
         """
 
         if self._phase != "idle":

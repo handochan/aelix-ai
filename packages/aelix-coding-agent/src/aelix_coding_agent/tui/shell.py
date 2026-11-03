@@ -2496,7 +2496,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5715`` and the hook-fail one ``:5715``)
+    # the abort close-out ``core.py:5728`` and the hook-fail one ``:5728``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -3039,7 +3039,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5775-5776`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5788-5789`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -4107,7 +4107,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4744-4745``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4757-4758``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

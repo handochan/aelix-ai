@@ -40,9 +40,12 @@ unwritten. Add them with the next release.
     turn, never a `!!` one's. One `!` command runs at a time: Enter on a second
     keeps it in the input and says why. `Alt+Enter` on a `!` line during a turn
     runs it after the turn.
-  - A pasted text that starts with `!` is drawn as a prompt and sent to the model
-    as text, during a turn and idle; it used to run every pasted line in the
-    shell during a turn. `!` typed before such a paste runs it as a `!` command.
+  - A long paste that starts with `!` (6 or more lines, or 1000 or more
+    characters, shown as `[Pasted text #1 +N lines]`) is drawn as a prompt and
+    sent to the model as text, during a turn and idle; it used to run every
+    pasted line in the shell during a turn. A shorter paste is inserted as
+    typed, so one that starts with `!` is a shell line. `!` typed before a long
+    paste runs it as a `!` command.
   - A `!` command's output reaches the model reliably: a turn an extension starts
     while it is being recorded waits for it instead of leaving it off the
     session's branch, and a record held through `/compact` is no longer lost

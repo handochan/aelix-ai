@@ -71,12 +71,15 @@ prompt has a line above and below it.
    inside it is moved past it. Backspace right after the marker deletes the sigil's
    last `!`: `!!` steps down to `!`, `!` leaves shell mode with the text kept.
    A collapsed paste is expanded only after the line is classified, so a pasted
-   `!` stays literal text: a paste that begins with `!` at the start of the input is
-   drawn as a prompt and goes to the model as text, mid-turn (steered) and idle
-   (verify V1, the blocker — mid-turn it ran every pasted line in the shell, which a
-   markdown `![image](…)` would trigger), and `!` typed before a paste that begins
-   with `!` runs the paste as a `!` command, recorded as drawn, not as `!!` (Codex
-   596-06). The classification travels to the input loop with the expanded text
+   `!` stays literal text: a collapsed paste (6 or more lines, or 1000 or more
+   characters, drawn `[Pasted text #1 +N lines]`) that begins with `!` at the start
+   of the input is drawn as a prompt and goes to the model as text, mid-turn
+   (steered) and idle (verify V1, the blocker — mid-turn it ran every pasted line in
+   the shell, which a markdown `![image](…)` would trigger), and `!` typed before a
+   paste that begins with `!` runs the paste as a `!` command, recorded as drawn,
+   not as `!!` (Codex 596-06). A shorter paste is inserted as typed text, so one
+   that begins with `!` is a shell line, drawn and run as one (verify r1 R1V2). The
+   classification travels to the input loop with the expanded text
    (`SubmittedLine`), so the loop does not re-read it; a steer re-routed because the
    turn ended first is a prompt for the same reason.
 
@@ -110,12 +113,16 @@ prompt has a line above and below it.
    (`is_idle`) as well as the chrome (`ShellLane.busy`).
    - It runs as an idle `!` does (the `user_bash` hook, then the bash operations),
      concurrently with the turn. Its block — the command line in the shell
-     colour, `(running…)`, then the last three lines of its output — is drawn in
-     a **pending area** under the stream and above the input chrome, pi's
+     colour, `(running…)`, then its output: up to three lines, or past that
+     "… N more lines, in full once the turn is over" and its last two — is drawn
+     in a **pending area** under the stream and above the input chrome, pi's
      `pendingMessagesContainer` (`interactive-mode.ts:7138-7148`), at most eight
-     rows, each cut to the width. Nothing of it is committed among the answer's
-     lines: committed, a block split a streamed sentence and a tool call from its
-     output (verify V4, measured with a real model and scripted).
+     rows, each cut to the width. Past eight rows the oldest blocks are dropped
+     whole, under "… N more commands above, in full once the turn is over", so no
+     output is shown without its command line (verify r1 R1V5). Nothing of it is
+     committed among the answer's lines: committed, a block split a streamed
+     sentence and a tool call from its output (verify V4, measured with a real
+     model and scripted).
    - **When nothing holds the session any more, the finished blocks move into the
      transcript and their records are written, at one settle point**, oldest
      first: the command line over all of its output, then what the model gets of
@@ -249,14 +256,18 @@ prompt has a line above and below it.
   name.
 - History stores the expanded line, so a recalled paste is classified as its text
   reads (and drawn so): a paste that began with `!` comes back as a shell line.
-- The pending area shows the last three lines of a finished block's output and at
-  most eight rows in all; the rest is in the transcript once the turn is over. It
-  is hidden while a modal (an approval dialog) is open, which needs the rows. A
-  steering echo is still committed among the answer's lines, as before #596.
+- The pending area shows up to three lines of a finished block's output (past
+  three, "… N more lines, in full once the turn is over" and the last two) and at
+  most eight rows in all, the oldest blocks dropped whole; the rest is in the
+  transcript once the turn is over. It is hidden while a modal (an approval
+  dialog) is open, which needs the rows. A steering echo is still committed among
+  the answer's lines, as before #596.
 - Esc during a turn interrupts the turn, not a `!` command running in it; such a
   command cannot be cancelled, as an idle `!` cannot. Quitting the TUI cancels it:
   it neither prints nor records then. A finished block still held when the TUI
-  closes is recorded, unless a turn an extension started still holds the harness.
+  closes is recorded, unless a turn an extension started still holds the harness:
+  then it is not, after Ctrl+D as after `/quit` (verify r1 R1V1 — Ctrl+D left a
+  waiter that wrote it once the teardown had aborted that turn).
 - Idle Esc in shell mode clears the input about a second after the key: Alt+Enter
   and Alt+Up begin with Esc, so prompt-toolkit waits that long for a second key
   (verify V9). The Esc interrupt during a turn waits the same way.
