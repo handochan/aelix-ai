@@ -506,8 +506,14 @@ async def test_a_refused_shared_name_names_the_entry_and_file_to_add_by_hand(
     mine = f"weather.py ({scope})"
     theirs = "weather.py (project)" if scope == "global" else "weather.py (global)"
     refused = await selection.save(kind, scope, {keys[mine]: True})
-    # The other file as the panel shows a path: from this folder, else from ~.
-    where = ".aelix/settings.json" if scope == "global" else "agent/settings.json"
+    # The other file as the panel shows a path: from this folder, else from ~,
+    # in the platform's separators (the entry itself is ``/`` everywhere, and
+    # windows-latest read ``.aelix\settings.json`` here, PR #659).
+    where = (
+        os.path.join(".aelix", "settings.json")
+        if scope == "global"
+        else os.path.join("agent", "settings.json")
+    )
     assert refused.error == (
         f'add "-extensions/weather.py" to {where}, then save again — turning '
         f"{mine} on would also turn {theirs} on, which only that file can name"
