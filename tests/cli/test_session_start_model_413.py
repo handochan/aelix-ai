@@ -1598,30 +1598,62 @@ async def test_clone_of_a_session_with_no_conversation_is_refused_as_before(
 
 
 @pytest.mark.parametrize("surface", ["rpc", "tui"])
-@pytest.mark.parametrize("leaf", ["tip", "rewound"])
-async def test_clone_of_a_session_with_a_conversation_still_clones(
+async def test_clone_with_nothing_on_the_path_is_refused(
     env: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     surface: str,
-    leaf: str,
 ) -> None:
-    """The control for the refusal above: one turn (that failed before the request)
-    is a conversation, and ``/clone`` / RPC ``clone`` copy it into a second file.
-    ``rewound``: the leaf moved back onto the start record, so the branch holds no
-    message but the file does. The conversation is asked of the file, as pi's
-    ``_hasConversation`` reads ``fileEntries``: pi clones a branch with a leaf once
-    its file exists, 7d163232's guard asked only for a leaf, and this clones it."""
+    """#654 (ADR-0286, narrows ADR-0239 decision 8): the conversation is asked of the
+    branch. An Esc on a session's first message takes the leaf back onto the start
+    record, and the message stays in the file. Asked of the file, as pi's
+    ``_hasConversation`` reads ``fileEntries``, that cloned an empty session and
+    switched to it. A leaf moved back by hand is the same state, and is refused too."""
 
     _block_network(monkeypatch)
     seen: dict[str, Any] = {}
 
     async def _clone(runtime: Any) -> None:
         await _fail_one_turn(runtime)
-        if leaf == "rewound":
-            session = runtime.harness.session
-            start = next(e for e in await session.get_entries() if e.type == "model_change")
-            await session.move_to(start.id)
+        session = runtime.harness.session
+        start = next(e for e in await session.get_entries() if e.type == "model_change")
+        await session.withdraw_tail(start.id, lambda _entry: True)
+        seen["session"] = runtime.harness.session
+        if surface == "rpc":
+            seen["answer"] = await _clone_rpc(runtime)
+        else:
+            seen["answer"] = await _clone_tui(runtime, monkeypatch)
+        seen["after"] = runtime.harness.session
+
+    _drive(monkeypatch, _clone)
+    code = await entry_mod._async_main(["--session-dir", _sessions(env), "--mode", "rpc", *_LAUNCH])
+
+    assert code == 0, capsys.readouterr().err
+    assert seen["after"] is seen["session"]
+    if surface == "rpc":
+        assert seen["answer"].success is False
+        assert seen["answer"].error == "Cannot clone session: no current entry selected"
+    else:
+        assert "Nothing to clone (session is empty)." in seen["answer"]
+        assert not any("Cloned session" in c or "clone failed" in c for c in seen["answer"])
+    assert len(_files(env)) == 1
+
+
+@pytest.mark.parametrize("surface", ["rpc", "tui"])
+async def test_clone_of_a_session_with_a_conversation_still_clones(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    surface: str,
+) -> None:
+    """The control for the refusals above: one turn (that failed before the request)
+    is a conversation, and ``/clone`` / RPC ``clone`` copy it into a second file."""
+
+    _block_network(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    async def _clone(runtime: Any) -> None:
+        await _fail_one_turn(runtime)
         seen["before"] = str(runtime.harness.session.session_file)
         if surface == "rpc":
             seen["answer"] = await _clone_rpc(runtime)
@@ -1639,7 +1671,4 @@ async def test_clone_of_a_session_with_a_conversation_still_clones(
         assert any(c.startswith("⎇ Cloned session") for c in seen["answer"])
     assert seen["after"] != seen["before"]
     assert len(_files(env)) == 2
-    if leaf == "tip":
-        assert _shape(seen["after"]) == ["model_change", "user", "assistant"]
-    else:
-        assert _shape(seen["after"]) == ["model_change"]
+    assert _shape(seen["after"]) == ["model_change", "user", "assistant"]

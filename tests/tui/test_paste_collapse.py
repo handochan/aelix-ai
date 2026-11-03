@@ -165,7 +165,7 @@ def test_three_consecutive_pastes_real_flow() -> None:
 
 
 def test_get_editor_text_expands_placeholder() -> None:
-    # Issue #81 review (MEDIUM): the external-editor / dequeue snapshot must see
+    # Issue #81 review (MEDIUM): the external-editor snapshot must see
     # the REAL content, not the opaque placeholder token.
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
         chrome = _make_chrome()

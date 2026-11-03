@@ -773,6 +773,9 @@ class AelixChrome:
         # (via ``self._time``); a second press within ``_CTRL_C_EXIT_WINDOW``
         # requests EOF. ``None`` = not armed. Reset on line-clear / exit / expiry.
         self._last_ctrl_c: float | None = None
+        # #654 — when an abort last gave input back (:meth:`note_abort_gave_back`). A
+        # Ctrl+C within ``_CTRL_C_EXIT_WINDOW`` of it does not clear what just came back.
+        self._gave_back_at: float | None = None
         self._footer_line: str = ""
         self._header_line: str = ""
         self._breadcrumb_line: str = ""
@@ -828,6 +831,10 @@ class AelixChrome:
         # repeated identical paste REPLACES that placeholder with the raw text
         # (a true "reveal") instead of appending a second, still-expandable copy.
         self._last_placeholder: str | None = None
+        # #654 — the line last submitted from idle, until its turn ends: the text
+        # sent, the box as it read, and the paste entries that reading names. Apart
+        # from the registry, which submit empties (:meth:`give_back_text`).
+        self._submitted_line: tuple[str, str, dict[str, str]] | None = None
 
         # Modal overlays (dialogs / custom components) live as Floats over the
         # main content; the overlay manager appends/removes from this list. The
@@ -1240,6 +1247,11 @@ class AelixChrome:
             if submit_text.strip():
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(submit_text)
+                self._submitted_line = (
+                    submit_text,
+                    text,
+                    {p: d for p, d in self._paste_registry.items() if p in text},
+                )
             self._reset_paste_state()
             # #596 — the classification travels with the text, so the input loop
             # runs what was drawn rather than re-reading the expanded line.
@@ -1358,7 +1370,8 @@ class AelixChrome:
             # #66 item 2 — Ctrl+C behaviour by state:
             #  · running turn → abort (unchanged); never arms the exit timer.
             #  · idle, NON-empty buffer → clear the line (conventional REPL);
-            #    never arms the exit timer.
+            #    never arms the exit timer. #654: not within the window after an
+            #    abort gave input back, or a double Ctrl+C wipes what just came back.
             #  · idle, EMPTY buffer → first press arms a short window + shows a
             #    transient status hint; a second press within the window requests
             #    EOF (the exact Ctrl+D teardown), never exit() directly.
@@ -1367,6 +1380,8 @@ class AelixChrome:
                     self.on_interrupt()
                 return
             if self.buffer.text:
+                if self._gave_back_just_now():
+                    return
                 self.buffer.reset()
                 self._reset_paste_state()  # Issue #81 — drop dangling paste entries.
                 self._last_ctrl_c = None
@@ -1429,6 +1444,10 @@ class AelixChrome:
             & ~has_completions,
         )
         def _escape_clear_shell(event: object) -> None:
+            # #654 — the Esc that stopped the turn is often pressed twice, and a
+            # queued ``!`` line it just gave back would go with the second press.
+            if self._gave_back_just_now():
+                return
             self.buffer.reset()
             self._reset_paste_state()
             self._last_ctrl_c = None
@@ -2020,6 +2039,8 @@ class AelixChrome:
         # so a fast turn can't let a stale first-press count as the "second press".
         if running:
             self._last_ctrl_c = None
+        else:
+            self._submitted_line = None  # #654: its turn is over, nothing can withdraw it
         self.invalidate()
 
     def set_footer_line(self, text: str) -> None:
@@ -2113,14 +2134,14 @@ class AelixChrome:
 
     def get_editor_text(self) -> str:
         # Issue #81 — expand collapsed-paste placeholders so consumers that
-        # snapshot the editor (Ctrl+G external editor, Alt+Up dequeue) see and
-        # can edit the REAL content, never an opaque ``[Pasted text …]`` token
+        # snapshot the editor (Ctrl+G external editor) see and can edit the
+        # REAL content, never an opaque ``[Pasted text …]`` token
         # (editing/deleting which would otherwise silently drop the paste). The
         # registry is left intact; it is reconciled at submit / on set_editor_text.
         return self._expand_pastes(self.buffer.text)
 
     def set_editor_text(self, text: str) -> None:
-        # Replaces the whole buffer (external-editor result, dequeue restore),
+        # Replaces the whole buffer (external-editor result),
         # which already carries expanded text (see get_editor_text), so any
         # previously-registered placeholders are gone from the buffer — drop the
         # now-orphaned registry so a stale entry can't re-expand at submit.
@@ -2130,6 +2151,41 @@ class AelixChrome:
 
     def paste_to_editor(self, text: str) -> None:
         self.buffer.insert_text(text)
+
+    def give_back_text(self, texts: list[str]) -> None:
+        """#654 (ADR-0286) — ``texts`` come back ahead of what the box holds.
+
+        The submitted line reads as it did when Enter went down, its words and placeholders
+        in place, or a long typed line as text. Any other text as large as a collapsed paste
+        (a queued line, whose box reading is gone) shows as one, so 200 lines do not scroll
+        the box away. Submit expands both byte for byte. What the box held keeps its
+        placeholders, which :meth:`set_editor_text` would drop.
+        """
+
+        submitted = self._submitted_line
+        shown: list[str] = []
+        for t in texts:
+            if submitted is not None and t == submitted[0]:
+                self._paste_registry.update(submitted[2])
+                shown.append(submitted[1])
+            else:
+                shown.append(self._register_paste(t) if _should_collapse_paste(t) else t)
+        draft = self.buffer.text
+        text = "\n\n".join([*shown, draft] if draft.strip() else shown)
+        self.buffer.text = text
+        self.buffer.cursor_position = len(text)
+
+    def note_abort_gave_back(self) -> None:
+        """#654 — an abort just gave input back; see the Ctrl+C and idle Esc bindings. Alt+Up
+        does not call this: it is a key pressed on purpose, and Ctrl+C after it clears as ever."""
+
+        self._gave_back_at = self._time()
+
+    def _gave_back_just_now(self) -> bool:
+        return (
+            self._gave_back_at is not None
+            and self._time() - self._gave_back_at <= _CTRL_C_EXIT_WINDOW
+        )
 
     # === pasted-text collapse (Issue #81) ==================================
 

@@ -29,8 +29,8 @@ WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 ``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:526-547``, driven
 from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
 (``loop.py:905``) with ``tool_execution = "parallel"`` by default
-(``harness/core.py:297``). Two modals from one batch would collide on
-``tui/chrome.py:864``'s single ``_modal`` slot — ``mount_modal`` overwrites
+(``harness/core.py:305``). Two modals from one batch would collide on
+``tui/chrome.py:871``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
 tool's ``execution_mode="sequential"`` are the belt and braces.
@@ -77,7 +77,7 @@ holding every option but ``Cancel`` until the title has been drawn, so the task
 and the directory are no longer cut before they reach it.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1226-1227`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1227-1228`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and

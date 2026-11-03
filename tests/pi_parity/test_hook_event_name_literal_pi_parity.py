@@ -57,6 +57,7 @@ def test_hook_event_name_literal_matches_pi_734e08e() -> None:
     pi_since_pin = set(fixture["since_pin_event_names"])
     # #434 (ADR-0264 §4.7): aelix's first event pi lacks, ``model_catalog_refresh``,
     # sits in its own aelix-only bucket so the pi buckets above still pin pi.
+    # #654 (ADR-0286) added ``input_withdrawn`` to it.
     aelix_only = set(fixture["aelix_only_event_names"])
     aelix = set(get_args(HookEventName))
 
@@ -64,7 +65,7 @@ def test_hook_event_name_literal_matches_pi_734e08e() -> None:
     missing = expected - aelix
     extra = aelix - expected
     assert aelix == expected, f"missing={missing}, extra={extra}"
-    assert len(aelix) == 37, f"expected 37 names, got {len(aelix)}"
+    assert len(aelix) == 38, f"expected 38 names, got {len(aelix)}"
     assert not aelix_only & (pi_loop | pi_own | pi_coding | pi_ext_session | pi_since_pin)
 
 
@@ -101,8 +102,8 @@ def test_agent_harness_event_name_matches_pi_own_set() -> None:
         f"missing={expected - aelix_own}, extra={aelix_own - expected}"
     )
     # 18 harness-own + 3 coding-agent (Sprint 5a) + 4 ext-session (Sprint 6h₅a)
-    # + 1 since-pin (Issue #5 Lane C — project_trust) + 1 aelix-only (#434)
-    assert len(aelix_own) == 27
+    # + 1 since-pin (Issue #5 Lane C — project_trust) + 2 aelix-only (#434, #654)
+    assert len(aelix_own) == 28
 
 
 def test_loop_and_harness_name_sets_disjoint() -> None:

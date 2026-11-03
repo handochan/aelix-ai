@@ -52,7 +52,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
 #: ``tools/bash.py:64``; ad-hoc RPC bash tighter at 256 lines / 32KB,
-#: ``rpc/rpc_mode.py:658``). Uncapped, one ``!cat server.log`` is re-sent on
+#: ``rpc/rpc_mode.py:663``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
 #: ``UserMessage`` and a 2,000,455-byte session file.
@@ -288,7 +288,7 @@ async def handle_user_bash(
       is what the next ``prompt()`` sends, this turn and on every later
       resume, because ``AgentHarness._run`` derives the turn's messages from
       ``session.build_context()`` whenever a session is attached
-      (``harness/core.py:5417-5420``, pinned by
+      (``harness/core.py:5519-5522``, pinned by
       ``tests/test_state_messages_derived.py``);
     * ``harness.messages`` gets the same ``UserMessage`` now, which is what
       carries the output on the ``--no-session`` path — there ``_state.messages``
@@ -419,7 +419,7 @@ async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
     )
     # NOT the output: ``content`` above already carries it, and nothing reads
     # this key back — ``bash_execution`` has no registered renderer, so
-    # ``tui/render.py:1903-1919`` draws the ``[bash_execution]`` label and
+    # ``tui/render.py:1939-1955`` draws the ``[bash_execution]`` label and
     # ``content``. Storing it twice cost a 2,000,455-byte session file for
     # 1,000,001 bytes of output before #299's fix pass. What stays is what a
     # future renderer could not recover from ``content``: the command, the
@@ -442,7 +442,7 @@ async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
         # attached the turn's messages come from ``build_context()``, so a
         # failed write costs THIS turn as well as the next resume — the live
         # append below keeps the output in ``_state.messages``, which
-        # ``_run`` then does not read (``harness/core.py:5417-5420``). Measured
+        # ``_run`` then does not read (``harness/core.py:5519-5522``). Measured
         # with ``append_custom_message_entry`` raising:
         # ``in _state.messages=True reached provider=False``.
         with contextlib.suppress(Exception):

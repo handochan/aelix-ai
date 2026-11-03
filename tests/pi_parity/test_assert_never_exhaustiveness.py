@@ -53,6 +53,7 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
         AutoRetryStartEvent,
         CompactionEndEvent,
         CompactionStartEvent,
+        InputWithdrawnEvent,
     )
 
     am = _stub_assistant_message()
@@ -75,6 +76,7 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
         ToolExecutionEndEvent(tool_call_id="t1", result=_stub_tool_result()),
         TurnEndEvent(message=am, tool_results=[]),
         AgentEndEvent(messages=[]),
+        InputWithdrawnEvent(messages=[], prompt_withdrawn=True),  # #654
     ]
     # Listener-only variants — must not reach ``_to_hook_event``; documented by
     # an explicit raise inside the match. auto_retry (ADR-0128) + compaction

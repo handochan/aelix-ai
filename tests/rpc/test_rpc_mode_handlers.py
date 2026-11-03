@@ -7,6 +7,8 @@ contract.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,6 +17,7 @@ from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
     AssistantEndEvent,
+    AssistantErrorEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
     Context,
@@ -22,26 +25,33 @@ from aelix_ai.streaming import (
     SimpleStreamOptions,
 )
 from aelix_coding_agent.rpc.rpc_mode import (
+    _event_to_dict,
     _handle_abort,
+    _handle_abort_retry,
     _handle_bash,
     _handle_compact,
+    _handle_follow_up,
     _handle_get_messages,
     _handle_get_state,
     _handle_new_session,
     _handle_prompt,
     _handle_set_session_name,
     _handle_set_thinking_level,
+    _handle_steer,
 )
 from aelix_coding_agent.rpc.rpc_types import (
     RpcCommandAbort,
+    RpcCommandAbortRetry,
     RpcCommandBash,
     RpcCommandCompact,
+    RpcCommandFollowUp,
     RpcCommandGetMessages,
     RpcCommandGetState,
     RpcCommandNewSession,
     RpcCommandPrompt,
     RpcCommandSetSessionName,
     RpcCommandSetThinkingLevel,
+    RpcCommandSteer,
     RpcErrorResponse,
     RpcSuccessResponse,
 )
@@ -91,6 +101,129 @@ async def test_handle_abort_returns_success_envelope() -> None:
     assert isinstance(response, RpcSuccessResponse)
     assert response.command == "abort"
     assert response.id == "r2"
+    await harness.dispose()
+
+
+async def test_abort_gives_unanswered_input_back_on_the_wire() -> None:
+    """#654 (ADR-0286) — a host's abort is a user's Esc."""
+
+    reached = asyncio.Event()
+
+    async def hang(
+        _model: Model, _context: Context, _options: SimpleStreamOptions
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        reached.set()
+        await asyncio.Event().wait()
+        yield AssistantEndEvent(message=AssistantMessage())
+
+    harness = AgentHarness(
+        AgentHarnessOptions(model=Model(id="mock", provider="mock"), stream_fn=hang)
+    )
+    wire: list[dict[str, Any]] = []
+    harness.subscribe(lambda event: wire.append(_event_to_dict(event)))
+    assert isinstance(await _handle_prompt(harness, RpcCommandPrompt(message="hi", id="p")), RpcSuccessResponse)
+    await asyncio.wait_for(reached.wait(), timeout=5)
+    await asyncio.sleep(0)
+
+    await _handle_abort(harness, RpcCommandAbort(id="a"))
+    await harness.wait_for_idle()
+
+    withdrawn = [event for event in wire if event["type"] == "input_withdrawn"]
+    assert len(withdrawn) == 1
+    assert withdrawn[0]["prompt_withdrawn"] is True
+    assert withdrawn[0]["messages"][0]["content"][0]["text"] == "hi"
+    json.dumps(withdrawn[0])
+    types = [event["type"] for event in wire]
+    assert types.index("input_withdrawn") < types.index("agent_end")
+    answer = await _handle_get_messages(harness, RpcCommandGetMessages(id="m"))
+    assert isinstance(answer, RpcSuccessResponse)
+    assert answer.data is not None
+    assert [m["role"] for m in answer.data["messages"]] == ["assistant"]
+    assert answer.data["messages"][0]["stop_reason"] == "aborted"
+    await harness.dispose()
+
+
+async def test_abort_names_the_queued_lines_on_the_wire() -> None:
+    """#654 review round 1 — they were lost with no word to the host."""
+
+    reached = asyncio.Event()
+
+    async def hang(
+        _model: Model, _context: Context, _options: SimpleStreamOptions
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        reached.set()
+        await asyncio.Event().wait()
+        yield AssistantEndEvent(message=AssistantMessage())
+
+    harness = AgentHarness(
+        AgentHarnessOptions(model=Model(id="mock", provider="mock"), stream_fn=hang)
+    )
+    wire: list[dict[str, Any]] = []
+    harness.subscribe(lambda event: wire.append(_event_to_dict(event)))
+    assert isinstance(await _handle_prompt(harness, RpcCommandPrompt(message="hi", id="p")), RpcSuccessResponse)
+    await asyncio.wait_for(reached.wait(), timeout=5)
+    await asyncio.sleep(0)
+    assert isinstance(await _handle_steer(harness, RpcCommandSteer(message="steered", id="s")), RpcSuccessResponse)
+    assert isinstance(
+        await _handle_follow_up(harness, RpcCommandFollowUp(message="followed", id="f")),
+        RpcSuccessResponse,
+    )
+
+    await _handle_abort(harness, RpcCommandAbort(id="a"))
+    await harness.wait_for_idle()
+
+    withdrawn = [event for event in wire if event["type"] == "input_withdrawn"]
+    assert [[m["content"][0]["text"] for m in e["messages"]] for e in withdrawn] == [
+        ["hi", "steered", "followed"]
+    ]
+    assert withdrawn[0]["prompt_withdrawn"] is True
+    json.dumps(withdrawn[0])
+
+    # Idle, with nothing but a queued line: the abort itself says so.
+    wire.clear()
+    assert isinstance(await _handle_steer(harness, RpcCommandSteer(message="idle line", id="s2")), RpcSuccessResponse)
+    await _handle_abort(harness, RpcCommandAbort(id="a2"))
+    withdrawn = [event for event in wire if event["type"] == "input_withdrawn"]
+    assert [[m["content"][0]["text"] for m in e["messages"]] for e in withdrawn] == [["idle line"]]
+    assert withdrawn[0]["prompt_withdrawn"] is False
+    await harness.dispose()
+
+
+async def test_abort_retry_only_stops_retrying() -> None:
+    """#654 — "stop retrying" keeps the input (#571 owns what that path should do)."""
+
+    async def failing(
+        _model: Model, _context: Context, _options: SimpleStreamOptions
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        yield AssistantErrorEvent(
+            reason="error",
+            error=AssistantMessage(
+                stop_reason="error", error_message="overloaded_error: provider returned error"
+            ),
+        )
+
+    harness = AgentHarness(
+        AgentHarnessOptions(model=Model(id="mock", provider="mock"), stream_fn=failing)
+    )
+    harness.state.auto_retry_enabled = True
+    waiting = asyncio.Event()
+    types: list[str] = []
+
+    def listen(event: Any) -> None:
+        types.append(event.type)
+        if event.type == "auto_retry_start":
+            waiting.set()
+
+    harness.subscribe(listen)
+    assert isinstance(await _handle_prompt(harness, RpcCommandPrompt(message="hi", id="p")), RpcSuccessResponse)
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    await asyncio.sleep(0)
+
+    await _handle_abort_retry(harness, RpcCommandAbortRetry(id="r"))
+    await harness.wait_for_idle()
+
+    assert "input_withdrawn" not in types
+    assert harness.messages[0].role == "user"
     await harness.dispose()
 
 

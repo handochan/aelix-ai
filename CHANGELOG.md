@@ -639,6 +639,34 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A message you cancel with Esc before the model answers leaves the context and
+  comes back to the input box (#654, ADR-0286).** It used to stay: the next request,
+  and every one after it, carried what you had just cancelled, reopening the session
+  included, and the input box was empty. Now Esc or Ctrl+C takes every input that
+  prompt sent since its last answer out of the context and the session's path, and puts
+  your text back in the input box as you typed it (a `/skill:` or template line
+  unexpanded, a large paste as `[Pasted text #N +M lines]`, which submits byte for byte),
+  ahead of anything you were typing. Lines you queued during the turn come back behind
+  it; `Esc` used to lose them. The abort line says `Your message is back in the input;
+  the model will not see it.` A second Ctrl+C within two seconds leaves that text alone.
+  - What already ran stays. Once a tool has run, its call and result, and the message
+    that led to them, stay in context; so does an answer you stopped the turn after.
+    Only a steer or follow-up sent after them is taken back.
+  - An earlier prompt that ended in an error you saw, or that a plain abort kept, stays.
+  - Esc in the retry countdown does the same, queued lines included, and the failed
+    answer goes with it.
+  - RPC `abort` does the same and emits a new `input_withdrawn` event (`messages`,
+    `prompt_withdrawn`), which an extension can also hook: a host has to give the text
+    back to its user itself. `messages` also names the queued steer and follow-up lines
+    the abort cleared, on an idle harness too. `abort_retry` still only stops retrying.
+  - A SIGTERM, quitting, a plain `harness.abort()` and a stopped delegated agent keep
+    the input, as an outer task cancel does.
+  - After a compaction inside the same prompt has committed nothing is taken back; an Esc
+    while its summary is still being written stops it before it commits. The text also
+    stays in the session file on the branch left behind, so the `/resume` list's preview
+    and `last:` line can still show it and RPC `get_fork_messages` lists it. Forking there
+    gives you the text back and leaves it out of the context. `/clone` and RPC `clone`
+    refuse a session with nothing left on its path.
 - **`--no-tools`, `--no-builtin-tools` and `--tools` hold for the whole run
   (#510, ADR-0283).** `/reload` under `--no-tools` turned the extension tools
   back on, `/reload` under `--tools` added every extension tool, and an

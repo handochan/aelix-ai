@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted — amended 2026-11-03 (#654, ADR-0286): decision 8's conversation is asked of the branch, not the file
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -540,7 +540,8 @@ at a local mock; driver and outputs in `.omc/probes/413-live/impl/`):
    refused a fresh session before #413 because it had no leaf; the start record
    gives it one. They now ask for a conversation — a user or assistant message
    anywhere in the file, pi's `SessionManager._hasConversation`
-   (`session-manager.ts:1166-1170`) — as well as a leaf, and refuse without one
+   (`session-manager.ts:1166-1170`; since ADR-0286, #654, on the branch instead,
+   because a withdrawn first message stays in the file) — as well as a leaf, and refuse without one
    in the words `7d163232` used: `Nothing to clone (session is empty).` and
    `Cannot clone session: no current entry selected`, on disk and under
    `--no-session`. pi's interactive guard is a leaf check

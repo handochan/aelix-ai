@@ -13,7 +13,7 @@ the child stream produces out to two places:
   panel (a ``set_widget`` block above the input, one per call, for one child or
   eight; ADR-0278, layouts in :mod:`aelix_agents.panel`) and NO statusline row
   (D2); for a child nobody grouped — a ``/agents run`` child — ONE height-1
-  statusline row (``tui/chrome.py:1580-1603`` renders ``set_status`` into a
+  statusline row (``tui/chrome.py:1599-1622`` renders ``set_status`` into a
   single line), exactly as before.
 
 THE PANEL IS NOT DRAWN FROM THE PUBLISH PATH (ADR-0278 D6). Every snapshot is
@@ -46,7 +46,7 @@ papers over with an ``aelix_agents``-private channel.
 
 THREE MEASURED CAVEATS, all of which shape this file.
 
-1. ``EventBus.emit`` (``extensions/api.py:331-337``) calls handlers
+1. ``EventBus.emit`` (``extensions/api.py:332-338``) calls handlers
    SYNCHRONOUSLY, DISCARDS the return value — so an ``async def`` subscriber's
    body never runs — and swallows every handler exception under
    ``contextlib.suppress(Exception)`` with NO logging. A broken subscriber
@@ -233,7 +233,7 @@ The statusline is one segment on a shared height-1 row and the model is
 child-authored (read off the child's own ``message_end``), so the term is
 sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
 strips newlines from this row but bounds neither its width nor its ESC content
-(``chrome.py:1580-1603``), so this field is defended at the source, the posture
+(``chrome.py:1599-1622``), so this field is defended at the source, the posture
 the panel already takes. ``current_tool`` and ``profile`` were left to that far
 end until #178 and are now defended the same way — see
 :func:`format_status_row`."""
@@ -392,7 +392,7 @@ class SubagentProgressBridge:
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
-        ``invalidate()`` unconditionally (``chrome.py:2072-2078``), so an
+        ``invalidate()`` unconditionally (``chrome.py:2093-2099``), so an
         unchanged panel re-written on every redraw would be a full repaint for
         nothing."""
 
@@ -846,7 +846,7 @@ class SubagentProgressBridge:
         Read through ``api.runtime`` rather than a captured ``ctx.ui`` for the
         reason in caveat 2, and compared by IDENTITY against the headless
         singleton — the same test ``ExtensionContext.has_ui`` itself performs
-        (``extensions/api.py:1247-1248``).
+        (``extensions/api.py:1248-1249``).
         """
 
         try:

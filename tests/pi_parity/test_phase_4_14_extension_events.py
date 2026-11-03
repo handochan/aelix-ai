@@ -77,9 +77,9 @@ def test_hook_event_name_includes_4_new_extension_events() -> None:
     assert "session_before_switch" in names
     assert "session_before_fork" in names
     assert "session_shutdown" in names
-    # 37 = 35 (Phase 4.14 closure) + 1 (Issue #5 Lane C — project_trust)
-    # + 1 (#434 — the aelix-only model_catalog_refresh).
-    assert len(names) == 37
+    # 38 = 35 (Phase 4.14 closure) + 1 (Issue #5 Lane C — project_trust)
+    # + 2 (the aelix-only #434 model_catalog_refresh and #654 input_withdrawn).
+    assert len(names) == 38
 
 
 # === Closure invariant 2 — HOOK_RESULT_TYPES registry ============================
@@ -118,19 +118,20 @@ def test_reducers_session_start_and_shutdown_are_observational() -> None:
 # === Closure invariant 4 — overload counts ======================================
 
 
-def test_extension_api_on_has_37_overloads() -> None:
-    """Pyright runtime introspection: ``ExtensionAPI.on`` carries 37
+def test_extension_api_on_has_38_overloads() -> None:
+    """Pyright runtime introspection: ``ExtensionAPI.on`` carries 38
     ``@overload`` decls (28 baseline + 3 Sprint 5a + 4 Sprint 6h₅a +
-    1 Issue #5 Lane C ``project_trust`` + 1 #434 ``model_catalog_refresh``).
+    1 Issue #5 Lane C ``project_trust`` + 1 #434 ``model_catalog_refresh`` +
+    1 #654 ``input_withdrawn``).
     """
 
     overloads = typing.get_overloads(ExtensionAPI.on)
-    assert len(overloads) == 37
+    assert len(overloads) == 38
 
 
-def test_hook_bus_on_has_37_overloads() -> None:
+def test_hook_bus_on_has_38_overloads() -> None:
     overloads = typing.get_overloads(HookBus.on)
-    assert len(overloads) == 37
+    assert len(overloads) == 38
 
 
 # === Closure invariant 5 — Pi line citation drift detector =====================

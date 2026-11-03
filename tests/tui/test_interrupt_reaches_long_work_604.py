@@ -119,7 +119,7 @@ class _DelegatingHarness(FakeHarness):
             self.in_prompt = False
         return []
 
-    async def abort(self) -> None:
+    async def abort(self, *, withdraw_unanswered: bool = False) -> None:
         self.aborts += 1
         self._released.set()
 

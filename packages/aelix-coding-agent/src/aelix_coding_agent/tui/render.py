@@ -624,6 +624,9 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
 #: style hid this — ``1;30;46`` at every depth — and a pinned one does not.
 _USER_ECHO_STYLE = "#04171a on #83b0b4"
 
+# #654 (ADR-0286) — what an Esc that took the user's text back says about it.
+INPUT_RETURNED_NOTICE = "Your message is back in the input; the model will not see it."
+
 # Sprint 6h₃₂ — the tool-call header marker. A bold filled ``●`` (replacing the
 # thin ``⚙`` gear) reads at a glance against the dim result card below it; the
 # tool NAME is bolded so it stands out from its argument summary. Shared by the
@@ -893,6 +896,12 @@ class EventRenderer:
         # message_start AND consumed by ``_render_turn_abort``. See that method
         # for why it is a bool rather than the message object.
         self._outcome_reported: bool = False
+        # #654 — between ``agent_start`` and ``agent_end``; whether the abort line
+        # of that span has to say the input came back; and whether this run has
+        # said so (:meth:`note_input_returned`).
+        self._agent_running: bool = False
+        self._input_returned: bool = False
+        self._input_return_said: bool = False
         # #189 — the TEXT of the terminal-outcome line this renderer has already
         # committed for the message that just ended. Distinct from
         # ``_outcome_reported`` on purpose: that flag is CONSUMED by
@@ -999,7 +1008,12 @@ class EventRenderer:
             self._clear_thinking_tail()
 
     def on_agent_event(self, event: AgentEvent) -> None:
-        if event.type == "message_start":
+        if event.type == "agent_start":
+            self._agent_running = True
+            self._input_return_said = False
+        elif event.type == "agent_end":
+            self._agent_running = False
+        elif event.type == "message_start":
             self._reset_message_state()
         elif event.type == "message_update":
             self._on_stream_event(event.assistant_message_event)
@@ -1030,7 +1044,7 @@ class EventRenderer:
             self._render_tool_start(event.tool_name, event.args)
         elif event.type == "tool_execution_end":
             self._render_tool_end(event.tool_name, event.result, event.is_error)
-        # tool_execution_update / turn_start / agent_* / unknown → no-op.
+        # tool_execution_update / turn_start / unknown → no-op.
 
     def finalize(self) -> None:
         """Close any open streamed-text OR reasoning window (e.g. turn error)."""
@@ -1320,7 +1334,7 @@ class EventRenderer:
         (interactive-mode.ts:2752-2757) because pi's abort is signal-based: the
         stream returns a message with stopReason "aborted" and ``message_end``
         fires normally on the way out (agent-loop.ts:195-199). Aelix aborts by
-        CANCELLING the turn task, and the close-out (harness/core.py:5721-5737)
+        CANCELLING the turn task, and the close-out (harness/core.py:5839-5855)
         deliberately emits ONLY ``turn_end`` + ``agent_end`` — no
         ``message_start``/``message_end`` pair, so that abort stays off the
         session write path. ``_render_message_error`` is message_end-only and
@@ -1329,7 +1343,7 @@ class EventRenderer:
 
         ``stop_reason == "aborted"`` on ``turn_end`` is produced by that close-out
         and, today, by nothing else — the harness never threads ``signal`` into
-        ``agent_loop`` (core.py:5677-5683, loop.py:107), so no adapter can raise
+        ``agent_loop`` (core.py:5791-5797, loop.py:107), so no adapter can raise
         it. Normal turns carry "end_turn"/"tool_use"; provider failures carry
         "error" and already print via ``_render_message_error``. Cancelling the
         retry COUNTDOWN goes through ``abort_retry`` and prints its own line;
@@ -1378,11 +1392,33 @@ class EventRenderer:
         # way, so a flag set by this turn must never outlive it.
         already_reported = self._outcome_reported
         self._outcome_reported = False
+        returned = self._input_returned
+        self._input_returned = False
         if getattr(message, "stop_reason", None) != "aborted":
             return
         if already_reported:
             return
-        self._commit(Text("✖ Operation aborted", style="yellow"))
+        if returned:
+            self._input_return_said = True
+        notice = f"✖ Operation aborted. {INPUT_RETURNED_NOTICE}" if returned else "✖ Operation aborted"
+        self._commit(Text(notice, style="yellow"))
+
+    def note_input_returned(self) -> None:
+        """#654 (ADR-0286) — what the user sent is back in the input box. Say so once.
+
+        While the turn is open the abort line below says it, as one line. A withdraw
+        after ``agent_end`` (the retry countdown, whose line is already out) has no
+        such line left to join. Once per run: an Esc during the overflow summary comes
+        here for the queued lines and again for the withdrawn prompt.
+        """
+
+        if self._input_return_said:
+            return
+        if self._agent_running:
+            self._input_returned = True
+        else:
+            self._input_return_said = True
+            self._commit(Text(INPUT_RETURNED_NOTICE, style="yellow"))
 
     def _thinking_tail_source(self, width: int) -> str:
         """The suffix of the accumulator that can still reach the visible window.
@@ -1391,7 +1427,7 @@ class EventRenderer:
         frame grows with the block while the frames keep coming at the throttle
         floor, so a 150KB chain of thought spent tens of seconds inside
         ``plain_lines`` — on the prompt-toolkit loop, since the harness calls the
-        subscriber synchronously (harness/core.py:2433-2437). At 50KB, 98% of the
+        subscriber synchronously (harness/core.py:2527-2531). At 50KB, 98% of the
         rendered lines were discarded unread.
 
         Rich wraps each newline-separated line independently, so a slice that
@@ -1427,7 +1463,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3977). A provider
+            # write the same last-writer-wins sink (shell.py:4028). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

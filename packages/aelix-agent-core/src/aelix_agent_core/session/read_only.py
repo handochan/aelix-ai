@@ -19,9 +19,9 @@ already skips a torn tail (ADR-0208). The viewer sees the session as of the
 moment it opened.
 
 **Why the two private passthroughs.** ``Session.session_file``
-(``session/session.py:121-126``), ``AgentSessionRuntime.cwd``
+(``session/session.py:123-128``), ``AgentSessionRuntime.cwd``
 (``runtime/agent_session_runtime.py:306-308``) and
-``AgentHarness.session_id``/``session_path`` (``harness/core.py:742,1017``) all
+``AgentHarness.session_id``/``session_path`` (``harness/core.py:785,1017``) all
 read ``_metadata`` / ``_file_path`` off the storage object directly rather than
 through the Protocol, because ``get_metadata`` is async and those are
 synchronous properties. A wrapper that implemented only the Protocol would make

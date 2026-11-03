@@ -361,7 +361,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1417-1422``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1460-1465``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -369,7 +369,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1405-1407``).
+        # enqueue-only regardless of phase (``core.py:1448-1450``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -466,9 +466,14 @@ async def _handle_abort(
     harness: AgentHarness,
     cmd: Any,
 ) -> RpcResponse:
-    """Pi parity: ``rpc-mode.ts:272-275`` (abort handler)."""
+    """Pi parity: ``rpc-mode.ts:272-275`` (abort handler).
 
-    await harness.abort()
+    #654 (ADR-0286, not pi): a host's abort is a user's Esc. Input the model has not
+    answered leaves context, and ``input_withdrawn`` gives it back to the host, with
+    the queued steer and follow-up lines the abort cleared, on an idle harness too.
+    """
+
+    await harness.abort(withdraw_unanswered=True)
     return RpcSuccessResponse(id=cmd.id, command="abort")
 
 
@@ -1349,7 +1354,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
     ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
     (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
     aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
-    at ``extensions/api.py:152-165`` whose snake_case fields
+    at ``extensions/api.py:153-166`` whose snake_case fields
     (``tokens`` / ``context_window`` / ``percent``) map directly into
     the Pi camelCase wire keys.
     """
@@ -1376,7 +1381,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
         cu = stats.context_usage
         # Pi parity: extensions/types.ts ContextUsage = { tokens,
         # contextWindow, percent }. Aelix ContextUsage at
-        # extensions/api.py:152-165 already matches Pi field names
+        # extensions/api.py:153-166 already matches Pi field names
         # (tokens / context_window / percent → snake_case ↔ camelCase
         # mapping).
         out["contextUsage"] = {
@@ -1650,14 +1655,15 @@ async def _has_conversation(session: Any) -> bool:
     (``agent-session-runtime.ts:312-313``, "This session has not been saved
     yet"). aelix refuses ``clone`` of such a session with the message it gave
     before #413, when a new session had no entry and so no leaf; #413's start
-    record (``cli.entry._record_session_start_model``) gives it one. Read over
-    every entry of the file, not the branch, as pi reads ``fileEntries``.
+    record (``cli.entry._record_session_start_model``) gives it one. #654 (not pi,
+    which reads ``fileEntries``): read over the branch, since a clone holds the path
+    and a withdrawn first message is in the file behind it.
     """
 
     return any(
         entry.type == "message"
         and getattr(entry.message, "role", None) in ("user", "assistant")
-        for entry in await session.get_entries()
+        for entry in await session.get_branch()
     )
 
 
