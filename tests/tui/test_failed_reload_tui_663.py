@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import aelix_coding_agent.core.runnable_models as runnable_models
@@ -25,6 +26,7 @@ import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.runtime import (
     STOPPED_MESSAGE,
+    TRANSITION_RUNNING_MESSAGE,
     RebuildFailedError,
     ReloadSeed,
     create_agent_session_runtime,
@@ -49,6 +51,7 @@ from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.core.extension_selection import ExtensionInventory
 from aelix_coding_agent.extensions.loader import load_extensions
 from aelix_coding_agent.tools import create_all_tools
+from aelix_coding_agent.tui.commands import BUILTIN_COMMANDS, CommandContext, match_command
 from aelix_coding_agent.tui.shell import run_tui
 
 from tests.tui.test_reload_extensions_25 import (
@@ -379,3 +382,37 @@ async def test_a_stop_ended_by_a_kept_reload_says_aelix_runs_again(
 
         pipe.send_text("/quit\n")
         await _quit_within(task)
+
+
+@pytest.mark.parametrize("state", ["stopped", "replaced"])
+async def test_agents_run_on_a_disposed_harness_says_why_under_a_hanging_indent(
+    tmp_path: Path, state: str
+) -> None:
+    """Verify R1V2: a harness a reload or session change is replacing is not
+    stopped, and ``/agents run`` said it was. The rebase lane: the stop's line
+    wrapped back to column 0."""
+
+    harness = AgentHarness(AgentHarnessOptions(model=MODEL, system_prompt="x"))
+    if state == "stopped":
+        harness.stop(STOPPED_MESSAGE)
+        reason = STOPPED_MESSAGE
+    else:
+        await harness.dispose()  # torn down, the next one not yet installed
+        reason = TRANSITION_RUNNING_MESSAGE
+    committed: list[object] = []
+    ctx = CommandContext(
+        chrome=SimpleNamespace(),  # type: ignore[arg-type]  # no terminal: 80 columns
+        harness=harness,
+        commit=committed.append,
+        cwd=str(tmp_path),
+        commands=list(BUILTIN_COMMANDS),
+    )
+    command = match_command("/agents run helper do the thing", ctx.commands)
+    assert command is not None and command.handler is not None
+    await command.handler(ctx, "run helper do the thing")
+    [line] = committed
+    assert " ".join(str(line).split()) == f"✖ {reason}"
+    first, *rest = str(line).split("\n")
+    assert len(first) <= 80 and all(row.startswith("  ") for row in rest)
+    if state == "stopped":
+        assert rest  # wider than 80 columns: wrapped, under the hang

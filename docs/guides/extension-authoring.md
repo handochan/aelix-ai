@@ -459,9 +459,10 @@ works; `/`-commands still run. An extension's `ctx.reload()`, RPC
 One reload or session change runs at a time. A `ctx.reload()`,
 `ctx.new_session()`, `ctx.fork()` or `ctx.switch_session()` asked for while
 another runs waits for it — but one asked for from inside it (a
-`session_shutdown`, `session_start` or `resources_discover` handler, or
-`setup()`) raises `RuntimeError` instead, since it would wait on itself. A
-`with_session` callback runs after the change is done, so it may start another.
+`session_before_switch`, `session_shutdown`, `session_start` or
+`resources_discover` handler, or `setup()`) raises `RuntimeError` instead, since
+it would wait on itself. A `with_session` callback runs after the change is
+done, so it may start another.
 
 The panel writes the `extensions` list of `settings.json`, the same grammar as
 `skills` (see [skills-and-prompts](skills-and-prompts.md)): `-name` turns an

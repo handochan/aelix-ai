@@ -1355,11 +1355,16 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
     if sub == "run":
         if getattr(ctx.harness, "disposed", False) is True:
             # #663 (verify V7) — a stopped runtime's harness unbound the
-            # delegation seam: say the stop, not "Relaunch with --agents".
-            from aelix_agent_core.runtime import STOPPED_MESSAGE
+            # delegation seam: say the stop, not "Relaunch with --agents". One a
+            # reload or session change is replacing holds no turns and is not
+            # stopped (verify R1V2).
+            from aelix_agent_core.runtime import TRANSITION_RUNNING_MESSAGE
 
-            reason = getattr(ctx.harness, "turns_held", None) or STOPPED_MESSAGE
-            ctx.commit(Text(f"✖ {reason}", style="bold red"))
+            from aelix_coding_agent.tui.shell import _reload_text
+            from aelix_coding_agent.tui.width import terminal_columns
+
+            reason = getattr(ctx.harness, "turns_held", None) or TRANSITION_RUNNING_MESSAGE
+            ctx.commit(_reload_text([("bold red", f"✖ {reason}")], terminal_columns(ctx.chrome)))
             return
         runtime = _subagent_runtime(ctx)
         if runtime is None:

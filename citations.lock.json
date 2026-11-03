@@ -2912,17 +2912,17 @@
    "if gate_visible:",
    "cond = cond & Condition(lambda: self._working_visible or self._running)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1444-1445": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1449-1450": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1845-1845": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1850-1850": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2394-2394": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2399-2399": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2395-2395": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2400-2400": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1000-1003": [

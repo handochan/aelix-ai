@@ -1312,7 +1312,9 @@ unwritten. Add them with the next release.
   line then says "aelix is running again". A `!` typed during a turn or a
   command, or queued with Alt+Enter, is refused in its own block, and the output
   of one that ran before the stop reaches the model after the `/reload` that
-  ends it. Two reloads or session changes no
+  ends it (the pending area says it is held; quitting first loses it). A `!` or
+  `/agents run` while a reload or session change is still running says that,
+  not "aelix is stopped". Two reloads or session changes no
   longer run at once — the second waits for the first, and one started from
   inside the first is refused — and an RPC `prompt` sent while `new_session`
   rebuilds is refused instead of running on the session being taken apart. A

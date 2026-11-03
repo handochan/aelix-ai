@@ -270,6 +270,12 @@ STOPPED_MESSAGE = (
     "aelix is stopped until /reload succeeds. Fix the cause, then /reload, or restart."
 )
 
+#: What a surface says when it refuses a ``!`` or ``/agents run`` on a harness a
+#: reload or session change has torn down and not yet replaced (#663, verify
+#: R1V2): nothing is stopped, and the change installs the next harness when it
+#: ends. Such a harness reads ``disposed`` and holds no turns.
+TRANSITION_RUNNING_MESSAGE = "a reload or session change is running — run it again when it ends"
+
 #: What a reload or session change started from inside another one is refused
 #: with (#663, ADR-0289 D7): one waiting on the other would never start.
 NESTED_TRANSITION_MESSAGE = (

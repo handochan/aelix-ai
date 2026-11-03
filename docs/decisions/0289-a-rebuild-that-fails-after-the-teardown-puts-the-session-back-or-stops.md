@@ -30,6 +30,8 @@ Tests: `tests/runtime/test_failed_rebuild_663.py`,
 Review round 1 (2026-11-03, Codex R01–R09 and verify V1–V8): D2, D3, D4 and D5
 amended in place, D7 added; the measured inputs are in
 `.omc/specs/663-impl-codex-review.md` and `.omc/specs/663-verify-report.md`.
+Review round 2 (2026-11-04, verify R1V1–R1V4): D4 and D7 amended in place
+(`.omc/specs/663-verify-r1-report.md`).
 
 ## Context
 
@@ -169,6 +171,20 @@ everything that would run without its gates:
   build that replaces it — the `/reload` that ends the stop, which writes it —
   or is dropped with a session the user leaves. `AgentHarness.idle_write`
   refuses a disposed harness, before it waits and again once it holds the lock.
+  While stopped, the pending area says a held block is "held until aelix runs
+  again" and a queued one "refused while aelix is stopped", not "the model sees
+  the output next turn" or "runs after the turn". Quitting while stopped loses
+  a held record: `ShellLane.close` commits the block as "not recorded: aelix
+  was stopped" (verify R1V3: it left no trace). The TUI has exited its chrome
+  by then, so that commit is not printed either; what stays on the terminal is
+  the chrome's last frame, the block's command and its last rows (measured,
+  fix round 2).
+
+A harness a reload or session change has torn down and not yet replaced reads
+`disposed` too, but holds no turns: nothing is stopped. A `!` refused on it, and
+`/agents run`, say `TRANSITION_RUNNING_MESSAGE` — "a reload or session change is
+running — run it again when it ends" (verify R1V2: they said "aelix is stopped"
+before a reload that then succeeded).
 
 `AgentSessionRuntime.stopped` is the sentence while this lasts; the next build
 that succeeds — a `/reload` once the cause is fixed, or a `/new` — clears it,
@@ -242,10 +258,15 @@ The lock order is `_transition`, then the harness's drain lock, never the
 reverse (2026-11-03, the rebase onto #596). A `!` record written under
 `AgentHarness.idle_write` (ADR-0287) holds the drain lock; a transition's
 teardown — and `dispose()` at quit — waits for it in `dispose()`'s drain, so a
-record that began before the teardown lands first. Nothing under
-`idle_write` waits for a transition, so neither waits for the other in a
-cycle; a settle that runs while a transition is between its teardown and its
-install finds the harness disposed and holds the record (D4).
+record that holds the lock when the teardown begins lands first. One still
+waiting for the lock then — behind another drainer, an extension's idle
+`set_model` say — gets it only after `dispose()` has marked the harness, and
+`idle_write` refuses it. Its block is in the transcript by then; the lane puts
+it back first in line, and writes its record through the harness that replaces
+this one, or drops it with a session the user leaves (verify R1V1: it was
+lost). Nothing under `idle_write` waits for a transition, so neither waits for
+the other in a cycle; a settle that runs while a transition is between its
+teardown and its install finds the harness disposed and holds the record (D4).
 
 RPC's classic `new_session`, `switch_session`, `fork` and `clone` now count as a
 lifecycle transition for the control plane while they run (`classic_gate`): a

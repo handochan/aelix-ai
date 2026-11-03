@@ -20,6 +20,12 @@ The second half pins #596's guarantees through #663's lifecycle lock
 (``AgentSessionRuntime._transition``) on a REAL runtime: a held record for a
 session the user left is dropped, a ``/reload`` (kept or not) delivers it, and
 ``idle_write`` deadlocks neither against a transition nor against ``dispose()``.
+
+Round 2 (verify R1V1–R1V4): a record that was waiting for the drain lock when a
+reload began its teardown was lost; a ``!`` run during a reload that then
+succeeded said "aelix is stopped"; quitting while stopped left a held block's
+output nowhere; and while stopped the pending area said a held block's output
+reaches the model next turn and a queued one runs after the turn.
 """
 
 from __future__ import annotations
@@ -29,7 +35,12 @@ from typing import Any
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessError
-from aelix_agent_core.runtime import STOPPED_MESSAGE, RebuildFailedError, ReloadSeed
+from aelix_agent_core.runtime import (
+    STOPPED_MESSAGE,
+    TRANSITION_RUNNING_MESSAGE,
+    RebuildFailedError,
+    ReloadSeed,
+)
 from aelix_agent_core.session import CustomMessageEntry, Session
 from aelix_coding_agent.cli.repl import BASH_EXECUTION_TYPE, UserBashRun, record_user_bash
 from aelix_coding_agent.tui import shell_lane as lane_mod
@@ -293,6 +304,128 @@ async def test_a_record_held_across_a_reload_lands_through_the_rebuilt_harness(
     [record] = await _bash_records(rig.session)
     assert "echo ACROSS_RELOAD" in record
     assert any("echo ACROSS_RELOAD" in str(m) for m in rig.runtime.harness.messages)
+
+
+@pytest.mark.parametrize("outcome", ["applied", "kept"])
+async def test_a_record_waiting_for_the_drain_lock_when_a_reload_begins_lands_after_it(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Verify R1V1: the settle had moved the block into the transcript and was
+    waiting inside ``idle_write`` when the reload's ``dispose()`` marked the
+    harness; ``idle_write``'s check once it held the lock refused the write, and
+    the record was gone — from the session, the messages and the lane."""
+
+    rig = await _Rig.create(tmp_path)
+    t = _RealLane(rig, monkeypatch)
+    await t.held("echo RACE")
+    harness = rig.runtime.harness
+    # Another drainer holds the lock while the harness is idle (an extension's
+    # ``set_model`` or ``set_thinking_level``).
+    await harness._drain_lock.acquire()
+    settle = asyncio.create_task(t.lane.settle())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not settle.done()  # inside ``idle_write``, waiting for the lock
+    if outcome == "kept":
+        rig.fail = _once(RuntimeError("build boom"))
+    reload = asyncio.create_task(rig.runtime.reload())
+    await _wait(lambda: harness.disposed, what="the teardown to reach dispose()")
+    harness._drain_lock.release()
+    await asyncio.wait_for(settle, 5)
+    if outcome == "kept":
+        with pytest.raises(RebuildFailedError) as caught:
+            await asyncio.wait_for(reload, 5)
+        assert caught.value.state == "kept"
+    else:
+        await asyncio.wait_for(reload, 5)
+    assert rig.runtime.harness is not harness and rig.runtime.stopped is None
+    assert await _bash_records(rig.session) == []  # nothing written into the torn-down one
+
+    await t.lane.settle(from_loop=True)
+    [record] = await _bash_records(rig.session)
+    assert "echo RACE" in record
+    assert any("echo RACE" in str(m) for m in rig.runtime.harness.messages)
+    [moved] = t.commits  # moved once; the second settle wrote the record alone
+    assert "! echo RACE  (the model sees the output next turn)" in moved
+    assert t.rows[-1] == [] and t.lane._blocks == []
+
+
+async def test_a_bang_run_while_a_reload_is_between_its_teardown_and_its_install_says_so(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify R1V2: it said "aelix is stopped", and the reload then succeeded."""
+
+    rig = await _Rig.create(tmp_path)
+    t = _RealLane(rig, monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def factory(session: Session, *, reload_seed: ReloadSeed | None = None) -> AgentHarness:
+        entered.set()
+        await release.wait()
+        return rig.harness(session)
+
+    rig.runtime._create_harness = factory
+    reload = asyncio.create_task(rig.runtime.reload())
+    await entered.wait()
+    t.lane.command_running = True  # the input loop runs the /reload
+    block = t.lane.begin("!", "echo DURING", pending=True)
+    await t.lane.run(block, cwd=".")
+    assert block.failure == f"✖ {TRANSITION_RUNNING_MESSAGE}"
+    # The pending area cuts a row at the width: the refusal's head is enough.
+    assert "✖ a reload or session change is running" in t.shown
+    assert "stopped" not in t.shown
+    release.set()
+    await asyncio.wait_for(reload, 5)
+    assert rig.runtime.stopped is None
+    t.lane.command_running = False
+    await t.lane.settle(from_loop=True)
+    [moved] = t.commits
+    assert TRANSITION_RUNNING_MESSAGE in " ".join(moved.split())
+    assert await _bash_records(rig.session) == []
+
+
+async def test_while_stopped_the_pending_area_says_a_record_is_held_and_a_queued_line_refused(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify R1V4: "the model sees the output next turn" and "runs after the
+    turn", neither of which happens while aelix is stopped."""
+
+    rig = await _Rig.create(tmp_path)
+    t = _RealLane(rig, monkeypatch)
+    await t.held("echo HELD")
+    assert t.shown == "! echo HELD  (the model sees the output next turn)\necho HELD output"
+    await _stop(rig)
+    # The settle the input loop runs after the failed /reload redraws the area.
+    await t.lane.settle(from_loop=True)
+    assert t.shown == "! echo HELD  (held until aelix runs again)\necho HELD output"
+    t.lane.begin("!", "echo LATER", state="queued", pending=True, after_turn=True)
+    assert "! echo LATER  (refused while aelix is stopped)" in t.shown
+    assert "next turn" not in t.shown and "runs after the turn" not in t.shown
+
+    rig.fail = _works
+    await rig.runtime.reload()
+    await t.lane.settle(from_loop=True)
+    assert t.shown == "! echo LATER  (runs after the turn)"
+    [moved] = t.commits
+    assert "! echo HELD  (the model sees the output next turn)" in moved
+
+
+async def test_quitting_while_stopped_moves_a_held_block_into_the_transcript_unrecorded(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify R1V3: the record was dropped, and its output with it — 0 records,
+    0 commits, the block left in the lane."""
+
+    rig = await _Rig.create(tmp_path)
+    t = _RealLane(rig, monkeypatch)
+    await t.held("echo BEFORE_QUIT")
+    await _stop(rig)
+    await t.lane.close()
+    assert await _bash_records(rig.session) == []
+    [moved] = t.commits
+    assert "! echo BEFORE_QUIT  (not recorded: aelix was stopped)" in moved
+    assert "echo BEFORE_QUIT output" in moved
+    assert t.lane._blocks == []
 
 
 # === run_tui end to end =========================================================
