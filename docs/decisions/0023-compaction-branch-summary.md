@@ -4,6 +4,16 @@ Status: **Accepted (Sprint 4b / Phase 2.2.2 shipped)** — **AMENDED 2026-09-24 
 #321** (`## Amendment (2026-09-24, #321)` below): a cancelled call gives the
 phase back, and only a turn it set — **and 2026-09-25 by #334**
 (`## Amendment (2026-09-25, #334)` below): the claim spans the whole prompt.
+2026-11-03 note (ADR-0287, #596): the TUI's user-bash record no longer appends
+directly. It holds the drain lock through `AgentHarness.idle_write()` (entered
+only while idle), so a turn that starts while it writes — an extension's
+`send_message(..., trigger_turn=True)` — waits at its entry drain and chains its
+user message after the record; before, it read the same leaf and forked away
+from it. The REPL's record still appends directly. Three hazards (its
+docstring): an `abort()` made while a turn waits at its entry drain is lost
+(`_run` clears the flag on entry — #336's window), a drainer called from inside
+the write on the same task deadlocks (the lock is not re-entrant), and a write
+that never returns blocks every drainer, `dispose()` included.
 Supersedes (partial): ADR-0016 deferred (Phase machine expansion)
 Pi pin (ADR-0034): `badlogic/pi-mono@734e08edf82ff315bc3d96472a6ebfa69a1d8016`
 
@@ -595,7 +605,9 @@ at all. All of them need a second `prompt()` let in during the first one's tail.
    runtime's session replace). Session writers that never used the queue are
    unchanged and do not wait for it: the extension actions `set_session_name`,
    `set_label` and `append_entry`, the REPL/TUI user-bash record, the TUI
-   `/name` and RPC `set_session_name` append directly, as before.
+   `/name` and RPC `set_session_name` append directly, as before. (2026-11-03,
+   ADR-0287: the TUI's user-bash record now holds the drain lock, see the note
+   at the top.)
    The drain holds a lock, because the flush detaches the queue before it
    appends: an empty queue does not mean nothing is in flight. It returns
    without awaiting only when nothing is queued AND no drain runs — a prompt

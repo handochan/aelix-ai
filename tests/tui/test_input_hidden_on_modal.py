@@ -39,14 +39,21 @@ from rich.console import Console
 def _find_input_and_spacer(
     chrome: AelixChrome,
 ) -> tuple[ConditionalContainer, ConditionalContainer]:
-    """Locate the input ``ConditionalContainer`` (content is the raw input Window)
-    and the working spacer (the ``ConditionalContainer`` immediately above it)."""
+    """Locate the input ``ConditionalContainer`` and the working spacer (the
+    ``ConditionalContainer`` drawn immediately above it).
+
+    #596 — the row's content is the framed input (a line, the input Window, a
+    line), so it is found by the chrome's own handle for the row rather than by
+    ``content is _input_window``. Between the spacer and the row sits the
+    completion menu's reserve above the input, which takes no row unless the
+    menu shows on a pinned chrome; the spacer is the child above that."""
 
     body = chrome.app.layout.container.content  # type: ignore[attr-defined]  # FloatContainer.content == HSplit
     kids = body.children
-    idx = next(i for i, c in enumerate(kids) if getattr(c, "content", None) is chrome._input_window)
+    idx = next(i for i, c in enumerate(kids) if c is chrome._input_row)
     input_cc = kids[idx]
-    spacer_cc = kids[idx - 1]
+    assert getattr(kids[idx - 1], "content", None) is chrome._menu_above
+    spacer_cc = kids[idx - 2]
     assert isinstance(input_cc, ConditionalContainer)
     assert isinstance(spacer_cc, ConditionalContainer)
     return input_cc, spacer_cc
@@ -77,8 +84,9 @@ async def test_input_row_visible_without_modal() -> None:
 
 
 async def test_working_spacer_sits_between_working_and_input() -> None:
-    # While working, a blank spacer row separates the working row and the input:
-    # input_row == working_row + 2, and the row between them is blank.
+    # While working, a blank spacer row separates the working row and the input.
+    # #596 — the input's top frame line sits between the spacer and the input, so
+    # input_row == working_row + 3: blank spacer, then the line, then the input.
     def build(chrome: AelixChrome) -> None:
         chrome.set_working_visible(True)
         chrome.set_working_message("Crunching")
@@ -87,11 +95,12 @@ async def test_working_spacer_sits_between_working_and_input() -> None:
     display = await render_chrome_to_screen(build_state=build)
     working_row = assert_row_contains(display, "Crunching")
     input_row = assert_row_contains(display, _INPUT_PLACEHOLDER)
-    assert input_row == working_row + 2, (
-        f"expected a 1-row spacer between working ({working_row}) and input "
-        f"({input_row})"
+    assert input_row == working_row + 3, (
+        f"expected a 1-row spacer and the frame line between working ({working_row}) "
+        f"and input ({input_row})"
     )
     assert display[working_row + 1].strip() == "", "the spacer row must be blank"
+    assert set(display[working_row + 2].strip()) == {"─"}, "the frame line sits above the input"
 
 
 # === filter-level — ConditionalContainer filters toggle =================

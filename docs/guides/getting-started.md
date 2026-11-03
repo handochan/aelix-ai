@@ -451,9 +451,47 @@ stays: once a tool has run, its call and result and the message behind them are 
 context, and only a steer or follow-up sent after them comes back. A large paste comes
 back as its `[Pasted text #N +M lines]` placeholder, in its place among your words, and
 submits byte for byte; a large queued line comes back as one placeholder. A second
-`Ctrl+C` within two seconds leaves the text alone; after that it clears the box as usual.
+`Ctrl+C` within two seconds leaves the text alone, as does `Esc` on a `!` line; after that
+they clear the box as usual.
 The text stays in the session file on the branch left behind, so the `/resume` list's
 preview and `last:` line can still show it.
+
+A line that starts with `!` runs in your shell instead of going to the model:
+
+- `!cmd` runs `cmd` and prints its output; the model sees the output too, from
+  its next turn on.
+- `!!cmd` runs it the same way, but the model never sees the output.
+
+As soon as you type the `!`, the input shows it is in shell mode: the `!` (or
+`!!`) takes the place of `❯`, the lines above and below the input turn magenta,
+and the row under the input says what Enter will do. Backspace right after the
+`!` leaves shell mode with your command kept; `Esc` clears the whole input.
+
+You can run a `!` command while the model is answering, or while a command such
+as `/compact` runs. Enter runs it at once and the answer goes on. The command,
+whether it is still running, and the last lines of its output are shown under
+the answer, above the input; when the turn is over they move into the
+transcript, with all of the output, and a `!cmd` output reaches the model on its
+next turn. (Before, such a line was sent to the model as text.) One command runs
+at a time: Enter on a second `!` line while one runs keeps it in the input, and
+the row under the input says why. `Alt+Enter` on a `!` line while the model
+answers runs it after the turn instead. `Esc` during a turn still interrupts the
+turn; it does not stop a `!` command.
+
+A long paste that starts with `!` is not a shell command. A paste of 6 or more
+lines, or of 1000 or more characters, is shown as `[Pasted text #1 +6 lines]` and
+is sent to the model as text, as it is drawn. A shorter paste is inserted as if
+you typed it, so one that starts with `!` is drawn as a shell line and runs in
+the shell. Type the `!` yourself to run a long paste in the shell.
+
+A file reference such as `@src/main.py` or `@"my notes.md"` is drawn in the
+theme's `accent` colour as you type it. Under `NO_COLOR` it is underlined instead.
+The status line under the input is drawn a little dimmer than your text, so it
+reads as a layer under the input. Your theme sets both colours (the `accent` and
+`statusline` roles, and `shell` for shell mode; see
+[extension-authoring](extension-authoring.md#themes)). The default theme's
+dimmer status line is meant for a dark terminal; on a light one, pick the
+`light` theme in `/settings` → Theme.
 
 The `read` tool uses 1-based line offsets. Its totals count a final newline as
 the end of a line, and include an unterminated last line. For a three-line file,

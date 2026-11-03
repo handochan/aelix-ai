@@ -230,6 +230,10 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
 14. **The countdown with nothing withdrawn says nothing.** Queued lines given back there print
     no sentence; they just appear in the box.
 15. **A Ctrl+C on text typed within the 2 s window does nothing,** and shows nothing.
+16. **ADR-0287's idle Esc honours the same window for a `!` line** (`_gave_back_just_now`,
+    `tui/chrome.py`), so the Esc that stopped a turn, pressed twice, does not wipe a queued `!`
+    line it just gave back. A `!` draft that was never given back still clears on a second
+    Esc: it opens no window, and ADR-0287 says Esc clears a `!` line.
 
 ## Verification
 

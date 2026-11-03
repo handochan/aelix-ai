@@ -42,7 +42,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.cli.resource_commands import expand_resource_command
 from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
@@ -96,7 +95,8 @@ from aelix_coding_agent.tui.descriptors import (
 )
 from aelix_coding_agent.tui.ext_widgets import apply_manifest_widgets
 from aelix_coding_agent.tui.footer_data import AelixFooterData
-from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.input import ParsedInput, parse_input_line
+from aelix_coding_agent.tui.input_marks import SubmittedLine, classify_submitted
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.overlay import show_modal
@@ -106,6 +106,7 @@ from aelix_coding_agent.tui.render import (
     component_to_text,
     render_user_message,
 )
+from aelix_coding_agent.tui.shell_lane import ShellLane
 from aelix_coding_agent.tui.thinking_picker import run_thinking_picker
 from aelix_coding_agent.tui.width import terminal_columns
 
@@ -543,6 +544,14 @@ def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
         return at_startup
 
 
+#: #137 — what a ``!`` line or a prompt gets on a read-only session.
+_READ_ONLY_REFUSAL = (
+    "This session is open in another terminal, so this one "
+    "is read-only. /fork makes a writable copy of it; "
+    "/resume and /new switch to another session."
+)
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -757,6 +766,11 @@ async def run_tui(
         mode="default",
         statusline_store=statusline_store,
     )
+    # #596 (ADR-0287) — the input's ``@`` references and shell mode take the live
+    # theme's colours, and the footer its ``statusline`` colour, so ``/settings``
+    # → Theme recolours them too.
+    out_chrome.input_theme = lambda: context.theme
+    out_chrome.footer_style_provider = context.footer_style
 
     # Issue #21 tui_widgets (ADR-0182) — paint manifest-declared widgets through
     # the same ctx.ui path imperative extensions use. Re-applied on every
@@ -839,6 +853,10 @@ async def run_tui(
     # second copy of that number. Seeded from settings below and re-pushed by
     # ``_apply_live_setting``.
     render_width_cap: dict[str, int | None] = {"value": None}
+    # #596 — the input frame stops at the same ceiling as the transcript.
+    out_chrome.render_width = lambda: terminal_columns(
+        out_chrome, max_width=render_width_cap["value"]
+    )
 
     # Issue #166 — the READER, not a number. ``EventRenderer`` resolves it in
     # ``_new_stream``, which already ran once per assistant message before this
@@ -851,6 +869,22 @@ async def run_tui(
         set_tail=_set_tail,
         width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
     )
+
+    # #596 (ADR-0287) — every ``!`` command, from Enter to the transcript and the
+    # model. Its pending area goes through the output queue like the stream
+    # tail, so a block leaves it in the same frame it lands in the transcript.
+    shell_lane = ShellLane(
+        busy=lambda: out_chrome.running,
+        current_harness=lambda: runtime_host.harness,
+        commit=_commit,
+        show=lambda rows: output_queue.put_nowait(("pending", rows)),
+        theme=lambda: context.theme,
+        width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
+        output_text=renderer.user_bash_output,
+    )
+    out_chrome.busy_provider = shell_lane.busy
+    out_chrome.shell_running = shell_lane.running
+    shell_tasks: set[asyncio.Task[None]] = set()
 
     def _render_custom_message(msg: Any) -> object | None:
         # Issue #62 (ADR-0183) — pi CustomMessageComponent parity: look up the
@@ -2464,7 +2498,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5799`` and the hook-fail one ``:5799``)
+    # the abort close-out ``core.py:5846`` and the hook-fail one ``:5846``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -3040,7 +3074,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5859-5860`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5906-5907`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3270,7 +3304,12 @@ async def run_tui(
             # no turn to steer: the line is queued as the next input, which is
             # what Enter did while a handler blocked the loop before D15.
             if not out_chrome.running or running_command["cancel"] is not None:
-                out_chrome.submit_line(text)
+                # #596 — a line steered is not a shell line, whatever its text
+                # starts with (a collapsed paste can begin with ``!``, verify V1).
+                parsed = parse_input_line(text)
+                if parsed.kind in ("bash", "bash_transient"):
+                    parsed = ParsedInput("prompt", text.strip())
+                out_chrome.submit_line(SubmittedLine(text, parsed))
                 return
             # ``renderer.render_width()`` rather than a second ``terminal_columns``
             # call: the echo has to land at the same measure as the transcript it
@@ -3299,6 +3338,39 @@ async def run_tui(
 
     out_chrome.on_steer = lambda t: _enqueue("steer", t)
     out_chrome.on_follow_up = lambda t: _enqueue("follow_up", t)
+
+    # #596 (ADR-0287) — Enter on a ``!`` / ``!!`` line while something holds the
+    # session (a turn, an extension's turn, a compaction, a command still
+    # running): the command runs now, as pi's does, and the turn goes on. Before
+    # #596 the line was steered to the model as text. Its block waits in the
+    # pending area under the stream and reaches the transcript, and the model,
+    # once nothing holds the session (``ShellLane``). Alt+Enter queues it to run
+    # after the turn instead (the owner's choice; pi queues the text).
+    def _run_shell_now(parsed: ParsedInput, *, after_turn: bool = False) -> None:
+        sigil = "!!" if parsed.kind == "bash_transient" else "!"
+        block = shell_lane.begin(
+            sigil,
+            parsed.text,
+            state="queued" if after_turn else "running",
+            pending=True,
+            after_turn=after_turn,
+        )
+        if _session_refuses_writes(runtime_host, at_startup=read_only):
+            shell_lane.refuse(block, _READ_ONLY_REFUSAL)
+            task = loop.create_task(shell_lane.settle())
+        elif after_turn:
+            # The input loop runs it once it reads the line, i.e. after the turn,
+            # and after anything else already queued.
+            out_chrome.submit_line(
+                SubmittedLine(f"{sigil}{parsed.text}", parsed, after_turn=True)
+            )
+            return
+        else:
+            task = loop.create_task(shell_lane.run(block, cwd=cwd))
+        shell_tasks.add(task)
+        task.add_done_callback(shell_tasks.discard)
+
+    out_chrome.on_shell = _run_shell_now
 
     # Sprint 6h₁₅ (ADR-0123) — Ctrl+T toggles thinking visibility on the live
     # renderer (collapsed → /expand-recoverable placeholder, vs full inline).
@@ -3739,6 +3811,7 @@ async def run_tui(
             skill_off_reason=skill_control.kind.off_reason if skill_control is not None else None,
             extension_control=extension_control,
             bound_shortcuts=bound_shortcut_keys,
+            shell_lane=shell_lane,
             typed_prompt=typed_prompt,
         )
     finally:
@@ -3792,6 +3865,18 @@ async def run_tui(
                 ext_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await ext_task
+        # #596 — a ``!`` command run during a turn and still running is stopped
+        # with the TUI: cancelled, so it neither prints nor records into a
+        # session being torn down, and the bash operations kill its process
+        # tree. Then what already finished is recorded, unless an extension's
+        # turn still holds the harness (``ShellLane.close``).
+        for stask in list(shell_tasks):
+            if not stask.done():
+                stask.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stask
+        with contextlib.suppress(Exception):
+            await shell_lane.close()
         # D3 (ADR-0168) — cancel any in-flight /stats history-append task. A
         # dropped final row is acceptable (best-effort persistence); tagging the
         # task cancelled avoids a "Task exception was never retrieved" warning.
@@ -4073,7 +4158,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4811-4812``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4858-4859``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4260,23 +4345,40 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
         pending: list[object] = []
         tail_seen = False
         tail_ansi = ""
+        # #596 (ADR-0287) — the ``!`` pending area is a full replacement too,
+        # applied in the same frame as the batch: a block that settles leaves it
+        # in the frame that lands it in the transcript.
+        rows_seen = False
+        pending_rows: list[str] = []
         for kind, payload in items:
             if kind == "commit":
                 pending.append(payload)
             elif kind == "tail":
                 tail_seen = True
                 tail_ansi = payload if isinstance(payload, str) else ""
+            elif kind == "pending":
+                rows_seen = True
+                pending_rows = list(payload) if isinstance(payload, list) else []
 
-        def _apply_tail(ansi: str = tail_ansi) -> None:
+        def _apply_tail(
+            ansi: str = tail_ansi,
+            rows: list[str] = pending_rows,
+            tail: bool = tail_seen,
+            pending_area: bool = rows_seen,
+        ) -> None:
             # Default-arg binding: freezes THIS drain's tail for the callback
             # (a bare closure over the loop variable would be a B023 hazard).
-            chrome.set_widget("__stream__", ansi.split("\n") if ansi else None, above=True)
+            if tail:
+                chrome.set_widget("__stream__", ansi.split("\n") if ansi else None, above=True)
+            if pending_area:
+                chrome.set_pending_rows(rows)
 
+        live_seen = tail_seen or rows_seen
         if pending:
             try:
                 await chrome.print_above_many(
                     pending,
-                    apply_before_redraw=_apply_tail if tail_seen else None,
+                    apply_before_redraw=_apply_tail if live_seen else None,
                 )
             except Exception:  # noqa: BLE001 — the pump must never die, and a
                 # failed flush must not strand a stale live window: the hook
@@ -4284,9 +4386,9 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
                 # there means the tail was not applied. Re-apply it here —
                 # set_widget is an idempotent full replacement, so even a
                 # double apply is harmless.
-                if tail_seen:
+                if live_seen:
                     _apply_tail()
-        elif tail_seen:
+        elif live_seen:
             _apply_tail()
 
 
@@ -4307,6 +4409,7 @@ async def _input_loop(
     skill_off_reason: Callable[[str], str | None] | None = None,
     extension_control: ExtensionControl | None = None,
     bound_shortcuts: frozenset[str] | None = None,
+    shell_lane: ShellLane | None = None,
     typed_prompt: dict[str, str | None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
@@ -4342,7 +4445,26 @@ async def _input_loop(
         unsupported_message,
     )
 
+    # #596 (ADR-0287) — every ``!`` record goes through a lane, this loop's own
+    # included (Codex 596-01); ``run_tui`` hands its own in.
+    lane = shell_lane
+    if lane is None:
+        lane = ShellLane(
+            busy=lambda: chrome.running,
+            current_harness=lambda: runtime_host.harness,
+            commit=lambda r: output_queue.put_nowait(("commit", r)),
+            show=lambda rows: output_queue.put_nowait(("pending", rows)),
+            theme=lambda: None,
+            width=lambda: terminal_columns(chrome),
+            output_text=renderer.user_bash_output,
+        )
+
     while True:
+        # #596 — the ``!`` blocks a command (``/compact``, ``/reload``, …) or a
+        # turn held reach the transcript and the model now, before the next
+        # line — before Ctrl+D too (Codex 596-04).
+        lane.command_running = False
+        await lane.settle(from_loop=True)
         try:
             line = await chrome.get_input()
         except EOFError:
@@ -4358,8 +4480,15 @@ async def _input_loop(
         if command_ctx.is_editor_open is not None and command_ctx.is_editor_open():
             continue
 
-        parsed = parse_input_line(line)
+        # #596 — classified as the input drew it (``SubmittedLine``), not by
+        # re-reading the expanded text (verify V1).
+        parsed = classify_submitted(line)
         harness = runtime_host.harness
+        # While this line is handled, a ``!`` Entered meanwhile runs at once and
+        # its record waits (ADR-0287 D6, Codex 596-05) — except for a ``!`` line,
+        # whose own record is written as soon as it ends.
+        lane.command_running = parsed.kind not in ("bash", "bash_transient", "empty")
+        after_turn = lane.next_after_turn() if getattr(line, "after_turn", False) else None
         # #115 — the text that reaches the model. Identical to what was typed
         # for every line except an expanded ``/skill:<name>`` / ``/<template>``,
         # which rewrites this while the ECHO below still shows the typed line.
@@ -4563,29 +4692,33 @@ async def _input_loop(
             "bash_transient",
             "prompt",
         ) and _session_refuses_writes(runtime_host, at_startup=read_only):
-            output_queue.put_nowait(
-                (
-                    "commit",
-                    Text(
-                        "This session is open in another terminal, so this one "
-                        "is read-only. /fork makes a writable copy of it; "
-                        "/resume and /new switch to another session.",
-                        style="yellow",
-                    ),
-                )
-            )
+            if after_turn is not None:
+                lane.refuse(after_turn, _READ_ONLY_REFUSAL)
+            else:
+                output_queue.put_nowait(("commit", Text(_READ_ONLY_REFUSAL, style="yellow")))
             continue
 
         if parsed.kind in ("bash", "bash_transient"):
             if parsed.text:
-                output = await handle_user_bash(
-                    harness,
+                # #596 — through the lane, so its record is held when something
+                # started while it ran, and written under the harness's
+                # ``idle_write`` otherwise (Codex 596-01/02). An Alt+Enter line
+                # (``after_turn``) waits for a turn an extension runs; any line
+                # waits for a ``!`` command still running (one at a time, V10).
+                block = after_turn or lane.begin(
+                    "!!" if parsed.kind == "bash_transient" else "!",
                     parsed.text,
-                    exclude_from_context=(parsed.kind == "bash_transient"),
-                    cwd=cwd,
+                    state="queued",
                 )
-                if output.strip():
-                    output_queue.put_nowait(("commit", renderer.user_bash_output(output)))
+                if after_turn is not None:
+                    wait_for_idle = cast(
+                        "Callable[[], Awaitable[None]] | None",
+                        getattr(harness, "wait_for_idle", None),
+                    )
+                    if wait_for_idle is not None:
+                        await wait_for_idle()
+                await lane.wait_until_quiet()
+                await lane.run(block, cwd=cwd)
             continue
 
         # prompt — drive a full turn while the chrome stays live (spinner on).
@@ -4646,6 +4779,10 @@ async def _input_loop(
         # #189 gate above keeps structural advice. Auth is checked only after
         # input handling, so InputHandled needs no credential (#416).
 
+        # #596 — no await between this and ``set_running(True)``: a ``!``
+        # record still being written finishes first, and one that finishes
+        # later sees the turn running and waits for the settle after it.
+        await lane.settle(from_loop=True)
         chrome.set_running(True)
         turn_raised = False
         if typed_prompt is not None:
@@ -4669,6 +4806,11 @@ async def _input_loop(
             chrome.set_running(False)
             if typed_prompt is not None:
                 typed_prompt["line"] = None
+
+        # #596 — the ``!`` commands run during the turn reach the transcript and
+        # the model now, after the turn's last message and before the next
+        # request (pi flushes ``_pendingBashMessages`` when its run ends).
+        await lane.settle(from_loop=True)
         # #240 — a turn that failed may have failed on a stale credential, so
         # drop the resolved ``!command`` values and let the next request re-fork.
         #

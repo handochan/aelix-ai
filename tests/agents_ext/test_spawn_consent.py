@@ -141,7 +141,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:1158-1160``).
+    (``tui/context.py:1159-1161``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -394,7 +394,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:1158-1160``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:1159-1161``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -1072,7 +1072,7 @@ async def test_a_decline_does_not_poison_the_next_spawn() -> None:
 async def test_concurrent_requests_are_serialized() -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:608``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:871``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn
     hangs until Ctrl+C. The kernel already serialises the ``tool_call`` hook
     (``loop.py:834-844``), and the tool additionally declares
@@ -1314,7 +1314,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # hole. ``build_consent_title`` interpolated ``cwd``, ``resolved.name`` and
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
-# (``tui/context.py:149-227``); and ``resolve_child_cwd``
+# (``tui/context.py:150-228``); and ``resolve_child_cwd``
 # (``print_channel.py:610``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a

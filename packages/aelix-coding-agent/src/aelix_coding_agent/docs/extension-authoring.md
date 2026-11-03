@@ -553,16 +553,18 @@ themes = [{ path = "themes/solarized.toml" }]
 ```
 
 ```toml
-# themes/solarized.toml — only these six roles are styled; unknown keys are ignored
+# themes/solarized.toml — only these eight roles are styled; unknown keys are ignored
 name = "solarized"
 
 [roles]
-assistant = "cyan"
-tool      = "yellow"
+assistant  = "cyan"
+tool       = "yellow"
 error      = "red"
 dim        = "bright_black"
 accent     = "blue"
 thinking   = "magenta"
+shell      = "magenta"
+statusline = "grey70"
 ```
 
 The theme is registered on TUI start (and re-reconciled on `/resume` · `/fork` ·
@@ -570,6 +572,14 @@ The theme is registered on TUI start (and re-reconciled on `/resume` · `/fork` 
 user's selected theme is never changed for them. A color Rich cannot parse is
 dropped (that role renders unstyled); the file must live inside the plugin
 directory. Colors are Rich color names or hex (`#89b4fa`). See ADR-0184.
+
+`dim` also colours the lines above and below the input, and `accent` an `@file`
+reference typed in it. `shell` colours the input's shell mode — a line starting
+with `!`: the `!` marker, those lines and the hint under the input. A theme
+without `shell` gets magenta there, so the mode still shows. `statusline` is the
+footer's text, which the built-in themes draw a little dimmer than the input
+(`grey70`; `grey30` in `light`). A theme without `statusline` leaves the footer in
+the terminal's own colour. See ADR-0287.
 
 ### Descriptors (runtime-emitted, not manifest)
 

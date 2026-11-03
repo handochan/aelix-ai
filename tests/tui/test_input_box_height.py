@@ -26,7 +26,7 @@ import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from aelix_coding_agent.tui.chrome import AelixChrome
+from aelix_coding_agent.tui.chrome import _FRAME_ROWS, AelixChrome
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.document import Document
@@ -56,15 +56,19 @@ def _set_text(chrome: AelixChrome, text: str) -> None:
 
 def _input_assigned_rows(chrome: AelixChrome, reserved_floor: int) -> int:
     """Divide the REAL body HSplit under a tall reserved floor and return the
-    rows handed to the input window — the exact path the creep travelled."""
+    rows handed to the input window — the exact path the creep travelled.
+
+    #596 — the input row is the framed input: a line, the input Window, a line.
+    The two lines are one row each whatever the floor, so the input gets what the
+    row gets less those two."""
     body = chrome.app.layout.container.content  # FloatContainer -> body HSplit
     sizes = body._divide_heights(
         WritePosition(xpos=0, ypos=0, width=_WIDTH, height=reserved_floor)
     )
     assert sizes is not None, "body did not fit in the reserved floor"
     for child, size in zip(body._all_children, sizes, strict=True):
-        if isinstance(child, ConditionalContainer) and child.content is chrome._input_window:
-            return size
+        if isinstance(child, ConditionalContainer) and child is chrome._input_row:
+            return size - _FRAME_ROWS
     raise AssertionError("input conditional not found among body children")
 
 
@@ -179,8 +183,12 @@ async def test_input_does_not_absorb_reserved_floor() -> None:
         for floor in (8, 20, 30):
             assert _input_assigned_rows(chrome, floor) == 1, floor
 
+        # #596 — 9, not 8: the frame's two lines cost two rows, so a 3-line draft
+        # plus the four always-present one-row children (widgets above and below,
+        # status, footer) needs 1 + 2 + 3 + 3 = 9. At 8 the draft gets 2 rows and
+        # scrolls; that is the frame's real price, not a creep.
         _set_text(chrome, "a\nb\nc")
-        for floor in (8, 20, 30):
+        for floor in (9, 20, 30):
             assert _input_assigned_rows(chrome, floor) == 3, floor
 
         # A 15-line draft is capped at the max of 10 and scrolls internally,

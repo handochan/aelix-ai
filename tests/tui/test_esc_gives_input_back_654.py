@@ -351,6 +351,27 @@ async def test_a_second_ctrl_c_after_the_countdown_keeps_what_came_back(
         await tui.editor_reads("")
 
 
+async def test_a_second_esc_keeps_a_shell_line_that_just_came_back_until_the_window_ends() -> None:
+    """Idle Esc clears a ``!`` line (#596), and the Esc that stopped the turn is often pressed twice."""
+
+    provider = _Provider("answer", "hang")
+    async with _Tui(provider) as tui:
+        await tui.harness.follow_up("!echo QUEUED")
+        tui.pipe.send_text("first\n")
+        await asyncio.wait_for(provider.reached.wait(), timeout=10)
+        await asyncio.sleep(0)
+        tui.pipe.send_text("\x1b")
+        await tui.editor_reads("!echo QUEUED")
+        await _wait(tui.idle)
+
+        tui.pipe.send_text("\x1b" + _CTRL_C + "z")  # "z" says the two were read
+        await tui.editor_reads("!echo QUEUEDz")
+
+        tui.now += 2.1  # past the window: Esc clears a ``!`` line, as ever
+        tui.pipe.send_text("\x1b")
+        await tui.editor_reads("")
+
+
 async def test_a_queued_line_alone_coming_back_is_kept_from_a_second_ctrl_c_too() -> None:
     """The prompt was answered, so no event comes: the queue's give-back stamps it."""
 

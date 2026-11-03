@@ -1019,16 +1019,20 @@ async def test_live_bang_output_is_inert(monkeypatch: pytest.MonkeyPatch) -> Non
     ``bash_execution`` custom message) was stripped; the live line was
     committed by ``tui/shell.py`` as ``Text(output)``, raw."""
 
-    from aelix_coding_agent.tui import shell as tui_shell
-
-    from tests.tui.test_run_tui_smoke import _harness_chrome, _launch, _quit_within, _wait
+    from tests.tui.test_run_tui_smoke import (
+        _harness_chrome,
+        _launch,
+        _patch_bash,
+        _quit_within,
+        _wait,
+    )
 
     async def _fake_bash(
         harness: Any, command: str, *, exclude_from_context: bool, cwd: str
     ) -> str:
         return f"\x1b[31mFAILED\x1b[0m {HOSTILE}\n\tindented\n"
 
-    monkeypatch.setattr(tui_shell, "handle_user_bash", _fake_bash)
+    _patch_bash(monkeypatch, _fake_bash)
     captured: list[object] = []
     async with _harness_chrome() as (runtime, chrome, pipe):
         orig_many = chrome.print_above_many

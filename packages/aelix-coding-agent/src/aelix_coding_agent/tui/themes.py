@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 # The semantic roles a theme file may color (issue #21 themes, ADR-0184). Only
 # these keys are honored by ``_make_fg``; unknown keys are inert. Kept as the
 # single source so the file loader and the built-ins agree.
+#
+# #596 (ADR-0287) added the last two. ``shell`` colours the input's shell mode
+# (the ``!`` marker, the lines around the input, the status hint); a theme file
+# without it gets magenta there, because the mode must show. ``statusline`` is
+# the footer's text, a little dimmer than the input so it reads as the layer
+# under it; a theme file without it keeps its footer as it was.
 THEME_ROLES: tuple[str, ...] = (
     "assistant",
     "tool",
@@ -31,6 +37,8 @@ THEME_ROLES: tuple[str, ...] = (
     "dim",
     "accent",
     "thinking",
+    "shell",
+    "statusline",
 )
 
 # ---------------------------------------------------------------------------
@@ -39,6 +47,14 @@ THEME_ROLES: tuple[str, ...] = (
 
 # Role → color maps per theme.  Only the keys listed here receive styling;
 # unknown roles fall through to the identity branch in _make_fg().
+#
+# ``statusline`` (#596) is a fixed grey, the one role here that cannot follow the
+# terminal's palette: "a little dimmer than the text" has no ANSI name, and the
+# faint attribute (SGR 2) halves the text, which is pi's and Claude Code's footer
+# and more than the owner asked for. grey70 (#b2b2b2) sits about 9 L* under a
+# #cccccc terminal foreground and 19 under #e5e5e5; on a light terminal it is
+# too faint for the default theme (2.1:1 on white), which is what ``light`` is
+# for (grey30, #4e4e4e: 8.6:1 on white, a little lighter than its text).
 _DEFAULT_ROLES: dict[str, str] = {
     "assistant": "cyan",
     "tool": "yellow",
@@ -46,6 +62,8 @@ _DEFAULT_ROLES: dict[str, str] = {
     "dim": "bright_black",
     "accent": "blue",
     "thinking": "magenta",
+    "shell": "magenta",
+    "statusline": "grey70",
 }
 
 _DARK_ROLES: dict[str, str] = {
@@ -55,6 +73,8 @@ _DARK_ROLES: dict[str, str] = {
     "dim": "bright_black",
     "accent": "bright_blue",
     "thinking": "bright_magenta",
+    "shell": "bright_magenta",
+    "statusline": "grey70",
 }
 
 _LIGHT_ROLES: dict[str, str] = {
@@ -64,6 +84,8 @@ _LIGHT_ROLES: dict[str, str] = {
     "dim": "grey50",
     "accent": "navy_blue",
     "thinking": "purple",
+    "shell": "medium_violet_red",
+    "statusline": "grey30",
 }
 
 

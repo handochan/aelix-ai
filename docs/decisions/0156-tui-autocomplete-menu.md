@@ -73,3 +73,14 @@ slash command, no new `CommandContext` field, no `_open_X` flow.
   `_get_menu_item_meta_fragments`). This is the documented/stable shape of the 3.0.x menu control; the
   marker swap is guarded (`frags[0][1] == " "`) so a future change to the leading-fragment shape degrades
   to "no marker" rather than a crash. Pinned via the regression tests.
+
+## Note (2026-11-03, #596): the menu has rows of its own
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D10.* The menu is still the marked control in a Float, but the
+Float is no longer anchored under the cursor: the layout reserves the menu's height while it shows
+(`_MenuReserve`) and the Float is drawn exactly over those rows (`_ReservedMenuFloat`), still under
+the token being completed. Once the chrome is pinned (ADR-0280) the reserve is above the input, so
+the menu opens upward; before that it is below, a dropdown that moves the status row and footer down.
+Anchored under the cursor, a Float adds no height to the inline app, and on a pinned 24-row screen it
+covered the four rows under the input — the frame line, the status row, the footer — with three or
+four entries and no counter (#508 verify V5).
