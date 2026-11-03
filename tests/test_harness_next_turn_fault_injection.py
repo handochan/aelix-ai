@@ -26,7 +26,7 @@ every other test here fills the queue through ``next_turn()``, so a push site
 that stopped pushing would leave this file green.
 
 What this file does NOT cover, because the fix does not reach it: ``_run``
-awaits ``self._session.build_context()`` (``core.py:5585``) before
+awaits ``self._session.build_context()`` (``core.py:5596``) before
 ``agent_loop`` is handed the list, and a session raising there loses the
 drained messages the same three ways. That window is measured in
 ``.omc/specs/311-next-turn-drain.py`` ARM 6 and reported as its own issue;
@@ -204,7 +204,7 @@ async def test_a_cancelled_drain_hands_the_messages_back() -> None:
     """A cancel landing on the emit is the same loss in ``CancelledError``.
 
     ``abort()`` clears the steer and follow_up queues and deliberately leaves
-    ``_next_turn_queue`` alone (``core.py:2000-2001``), so a cancellation that
+    ``_next_turn_queue`` alone (``core.py:2001-2002``), so a cancellation that
     ate the drained messages would contradict that design. The guard catches
     ``BaseException`` for this arm.
 
@@ -296,8 +296,8 @@ async def test_a_turn_that_fails_after_the_drain_does_not_requeue() -> None:
 async def test_both_push_sites_reach_the_guarded_queue() -> None:
     """There are exactly two pushes onto ``_next_turn_queue``.
 
-    ``next_turn()`` (``core.py:3900``) and ``_action_send_message()``
-    (``core.py:5058``), the latter reached by ``ExtensionAPI.send_message`` /
+    ``next_turn()`` (``core.py:3901``) and ``_action_send_message()``
+    (``core.py:5069``), the latter reached by ``ExtensionAPI.send_message`` /
     ``send_user_message`` and by the ``ReplacedSessionContext`` handle. Every
     other test in this file uses the first, so without this one a change that
     stopped the extension route from queueing would not redden anything here.

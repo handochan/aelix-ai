@@ -1953,7 +1953,8 @@ class AgentHarness:
 
         Enqueued there, a steer or follow-up was answered ``success: true`` over
         RPC and then lost when the next build replaced the harness. Refused
-        instead, with the stopped runtime's reason when there is one.
+        instead, with the stopped runtime's reason when there is one. An
+        :meth:`idle_write` is refused the same way.
         """
 
         if self._disposed:
@@ -4171,13 +4172,23 @@ class AgentHarness:
           starts on another task — an extension's ``trigger_turn`` — waits.
         - A write that never returns blocks every drainer, :meth:`dispose`
           included.
+
+        #663 (ADR-0289): a :attr:`disposed` harness — torn down, or stopped
+        (:meth:`stop`) — takes no outside write. :class:`AgentHarnessError`
+        ``("invalid_state")`` with the stop's reason, raised before any await,
+        and again once the lock is held: a write that waited behind
+        :meth:`dispose`'s drain finds the harness torn down and writes nothing.
+        Nothing here waits for an ``AgentSessionRuntime`` transition, so a
+        teardown that waits for a held write is never waited on by it.
         """
 
+        self._refuse_queue_if_disposed()
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy", f"idle_write() requires idle harness (phase={self._phase!r})"
             )
         async with self._drain_lock:
+            self._refuse_queue_if_disposed()
             yield
 
     async def wait_for_idle(self) -> None:

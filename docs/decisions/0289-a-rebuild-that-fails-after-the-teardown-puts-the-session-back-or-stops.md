@@ -5,7 +5,8 @@ Date: 2026-11-03
 Issue: #663 (a #25 follow-up). One lane, one commit.
 Amends: ADR-0284 D6 (the failure line — dated note) and Limits (the torn-down
 harness — dated note); ADR-0177 (a failed `/reload` no longer leaves the
-disposed harness installed — dated note).
+disposed harness installed — dated note); ADR-0287 (a stop holds on its `!`
+paths — dated note).
 Relates: ADR-0093 (P-380, `AgentHarness.reload`, untouched: it tears nothing
 down), ADR-0081 (`_teardown_current`'s emit → invalidate → dispose order, kept),
 ADR-0244 (#137, the writer lock a swap moves — unchanged by a restore),
@@ -24,6 +25,7 @@ Tests: `tests/runtime/test_failed_rebuild_663.py`,
 `tests/settings_manager/test_reload_transaction_663.py`,
 `tests/rpc/test_failed_reload_gate_663.py`,
 `tests/tui/test_failed_reload_tui_663.py`,
+`tests/tui/test_stopped_shell_lane_663.py`,
 `tests/cli/test_failed_reload_factory_663.py`.
 Review round 1 (2026-11-03, Codex R01–R09 and verify V1–V8): D2, D3, D4 and D5
 amended in place, D7 added; the measured inputs are in
@@ -157,7 +159,16 @@ everything that would run without its gates:
   `agents/run` say the sentence instead of "Delegation is unavailable" /
   "Subagents are disabled" (verify V7);
 - the TUI refuses a prompt, a `!` and a `!!` line with the same sentence; its
-  `/`-commands keep working.
+  `/`-commands keep working. So does every `!` path ADR-0287 added (2026-11-03,
+  the rebase onto #596): a `!` / `!!` Entered while a turn or a command holds
+  the session is refused in its block (`ShellLane.run` reads `disposed`, before
+  the `user_bash` emit the torn-down HookBus would have answered with nothing),
+  an Alt+Enter `!` queued before the stop is refused in its block when its line
+  is read, and a collapsed paste beginning with `!` is a refused prompt. A `!`
+  record the lane holds is not written into a disposed harness: it waits for the
+  build that replaces it — the `/reload` that ends the stop, which writes it —
+  or is dropped with a session the user leaves. `AgentHarness.idle_write`
+  refuses a disposed harness, before it waits and again once it holds the lock.
 
 `AgentSessionRuntime.stopped` is the sentence while this lasts; the next build
 that succeeds — a `/reload` once the cause is fixed, or a `/new` — clears it,
@@ -226,6 +237,15 @@ runs (a context variable carries the transition's marker). Waiting there would
 wait on its own caller. A `with_session` callback is not inside: it runs once
 the lock is released, so its `ctx.reload()` or `ctx.new_session()` is a
 transition of its own. `dispose()` at quit is not a transition.
+
+The lock order is `_transition`, then the harness's drain lock, never the
+reverse (2026-11-03, the rebase onto #596). A `!` record written under
+`AgentHarness.idle_write` (ADR-0287) holds the drain lock; a transition's
+teardown — and `dispose()` at quit — waits for it in `dispose()`'s drain, so a
+record that began before the teardown lands first. Nothing under
+`idle_write` waits for a transition, so neither waits for the other in a
+cycle; a settle that runs while a transition is between its teardown and its
+install finds the harness disposed and holds the record (D4).
 
 RPC's classic `new_session`, `switch_session`, `fork` and `clone` now count as a
 lifecycle transition for the control plane while they run (`classic_gate`): a

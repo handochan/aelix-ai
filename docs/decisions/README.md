@@ -53,7 +53,10 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   stopped); the settings snapshot is a copy whose restore keeps later writes; a stop refuses
   steer, follow-up, RPC `bash` and `agents/run` too, and an interrupted teardown stops; D7 runs
   one transition at a time (`AgentSessionRuntime._transition`; a nested one is refused) and
-  counts RPC's classic swaps as transitions. Amends ADR-0284 D6/Limits, ADR-0177.
+  counts RPC's classic swaps as transitions. Rebased onto #596: a `!` Entered during a turn or a
+  command, or queued with Alt+Enter, is refused in its block while stopped; a `!` record held then
+  waits for the `/reload` that ends the stop; `idle_write` refuses a disposed harness, and the
+  lock order is transition → drain lock. Amends ADR-0284 D6/Limits, ADR-0177, ADR-0287.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the
@@ -242,6 +245,8 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   for it — above the input once pinned (it opens upward; the transcript scrolls as for a modal), below
   it before — instead of covering the frame line, status row and footer (#508 verify V5). Amends
   ADR-0184, ADR-0119, ADR-0153, ADR-0280, ADR-0219, ADR-0156 and ADR-0023 by dated notes.
+  2026-11-03 note (ADR-0289, #663): while aelix is stopped no `!` runs and a held record waits for
+  the build that ends the stop.
 - [0278 — One delegation panel for every `agent` call, two rows per child](0278-one-delegation-panel-for-every-agent-call.md)
   (Accepted 2026-10-30; #132, absorbs #26). Every call of the model's `agent` tool — a single
   delegation and a resume included — draws one `set_widget` panel above the input (layout A,

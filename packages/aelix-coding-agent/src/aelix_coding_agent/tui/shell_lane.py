@@ -20,7 +20,9 @@ idle one included (Codex 596-01), and is written under the harness's
 starts meanwhile waits for it instead of forking the session away from it
 (Codex 596-02). A record for a session the user left (``/new``, ``/resume``,
 ``/fork``, ``/clone``, ``/import``) is dropped; one for the session a ``/reload``
-kept goes through the rebuilt harness (Codex 596-03, verify V2).
+kept goes through the rebuilt harness (Codex 596-03, verify V2). While aelix is
+stopped (#663, ADR-0289) no ``!`` runs, and a record waits for the ``/reload``
+that ends the stop.
 
 One ``!`` command runs at a time, as in pi ("A bash command is already
 running"): the chrome refuses Enter on another while one runs (verify V10), and
@@ -37,6 +39,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from aelix_agent_core.runtime import STOPPED_MESSAGE
 from rich.console import Console, Group
 from rich.text import Text
 
@@ -164,13 +167,22 @@ class ShellLane:
         self._blocks.append(block)
         block.state = "running"
         self._redraw()
+        harness = self._current_harness()
+        stopped = _stopped_reason(harness)
         try:
-            block.run = await run_user_bash(
-                self._current_harness(),
-                block.command,
-                exclude_from_context=block.sigil == "!!",
-                cwd=cwd,
-            )
+            if stopped is not None:
+                # #663 (ADR-0289) — a stopped (or torn-down) harness has no
+                # ``user_bash`` handler left to run a ``!`` through: refused here,
+                # on every path that runs one — Enter during a turn or a command,
+                # Alt+Enter after the turn, an idle line.
+                block.failure = f"✖ {stopped}"
+            else:
+                block.run = await run_user_bash(
+                    harness,
+                    block.command,
+                    exclude_from_context=block.sigil == "!!",
+                    cwd=cwd,
+                )
         except asyncio.CancelledError:
             # Stopped with the TUI: nothing to show, nothing to record.
             self._blocks.remove(block)
@@ -209,9 +221,16 @@ class ShellLane:
                 if self._held(from_loop=from_loop, final=final):
                     self._watch()
                     return
-                self._blocks.remove(block)
                 harness = self._current_harness()
                 left = getattr(harness, "session", None) is not block.session
+                if not left and _records(block) and _stopped_reason(harness) is not None:
+                    # #663 (ADR-0289) — a stopped (or torn-down) harness takes no
+                    # record: it waits for the build that replaces it (/reload),
+                    # or is dropped with a session the user leaves. No watcher:
+                    # only a command the input loop runs ends a stop, and the loop
+                    # settles after each one.
+                    return
+                self._blocks.remove(block)
                 renderable = self._transcript(block, left=left)
                 if renderable is not None:
                     self._commit(renderable)
@@ -361,6 +380,20 @@ class ShellLane:
 
 def _is_idle(harness: Any) -> bool:
     return bool(getattr(harness, "is_idle", True))
+
+
+def _stopped_reason(harness: Any) -> str | None:
+    """#663 — why *harness* runs and records no ``!`` (it is disposed), or ``None``."""
+
+    if getattr(harness, "disposed", False) is not True:
+        return None
+    return getattr(harness, "turns_held", None) or STOPPED_MESSAGE
+
+
+def _records(block: ShellBlock) -> bool:
+    """*block* has a record to write: a ``!`` command that ran."""
+
+    return block.run is not None and not block.run.exclude_from_context
 
 
 def _idle_write(harness: Any) -> contextlib.AbstractAsyncContextManager[Any]:
