@@ -59,7 +59,12 @@ from prompt_toolkit.layout import (
     Layout,
     Window,
 )
-from prompt_toolkit.layout.containers import AnyContainer, Container, ScrollOffsets
+from prompt_toolkit.layout.containers import (
+    AnyContainer,
+    Container,
+    ScrollOffsets,
+    to_container,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
@@ -70,17 +75,33 @@ from prompt_toolkit.layout.processors import (
     Transformation,
     TransformationInput,
 )
+from prompt_toolkit.layout.screen import WritePosition
+from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
+
+from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.input_marks import (
+    InputLexer,
+    InputStyles,
+    input_styles,
+    no_color,
+    paint_shell,
+    shell_hint,
+    shell_sigil,
+)
 
 if TYPE_CHECKING:
     from prompt_toolkit.completion import Completer
     from prompt_toolkit.formatted_text import StyleAndTextTuples
     from prompt_toolkit.input.base import Input
+    from prompt_toolkit.key_binding import KeyBindingsBase
     from prompt_toolkit.layout.controls import GetLinePrefixCallable
     from prompt_toolkit.layout.mouse_handlers import MouseHandlers
-    from prompt_toolkit.layout.screen import Screen, WritePosition
+    from prompt_toolkit.layout.screen import Screen
     from prompt_toolkit.output.base import Output
+
+    from aelix_coding_agent.extensions.widget_protocols import Theme
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +170,14 @@ _EOF = _Eof()
 # Sprint 6h₂₅ (ADR-0153, WP-3) — live input affordances.
 _INPUT_PREFIX = "❯ "
 _INPUT_PLACEHOLDER = "Type your message or @path/to/file"
+# #596 — what a bare ``!`` / ``!!`` waits for, after the marker it became.
+_SHELL_PLACEHOLDER = "a shell command"
+# #596 — the lines above and below the input: the frame pi's editor and Claude
+# Code's prompt both draw. Heavy in shell mode under NO_COLOR, where the shell
+# colour that otherwise marks the mode is dropped.
+_FRAME_LINE = "─"
+_FRAME_LINE_HEAVY = "━"
+_FRAME_ROWS = 2
 # #66 item 6b — the neutral (DEFAULT-mode) style for the ``❯ `` input prefix.
 # Non-default permission modes recolor it via ``prompt_style_provider`` (single
 # source: ``permission_mode.MODE_META[...].badge_style``); DEFAULT keeps this.
@@ -230,7 +259,39 @@ class _PlaceholderProcessor(Processor):
             # a keystroke. Concatenating keeps the prefix and the placeholder
             # together: ``❯ Type your message or @path/to/file``.
             return Transformation(ti.fragments + [(self._style, self._text)])
+        # #596 — a bare ``!`` / ``!!``: the sigil became the marker, so say what
+        # the empty line waits for.
+        text = ti.document.text
+        if ti.lineno == 0 and shell_sigil(text) and not parse_input_line(text).text:
+            return Transformation(ti.fragments + [(self._style, _SHELL_PLACEHOLDER)])
         return Transformation(ti.fragments)
+
+
+class _HideShellSigil(Processor):
+    """#596 (ADR-0287) — the typed ``!`` / ``!!`` is drawn AS the prompt marker
+    (Claude Code's ``!`` prompt), so it is taken out of the line here.
+
+    The text keeps its sigil — history, ``!!``, paste and the submit path read
+    the buffer and are unchanged — and only the drawing moves it: positions past
+    it shift left, and the chrome keeps the cursor from standing in front of it
+    (two buffer positions would otherwise share one cell). A click on the marker
+    maps to a position inside the sigil, which the same clamp moves past it.
+    Backspace right after the marker deletes the sigil's last ``!``: that is how
+    shell mode is left without Esc, and how ``!!`` steps down to ``!``.
+    """
+
+    def apply_transformation(
+        self, transformation_input: TransformationInput
+    ) -> Transformation:
+        ti = transformation_input
+        n = len(shell_sigil(ti.document.text)) if ti.lineno == 0 else 0
+        if not n:
+            return Transformation(ti.fragments)
+        return Transformation(
+            explode_text_fragments(ti.fragments)[n:],
+            source_to_display=lambda i: max(0, i - n),
+            display_to_source=lambda i: i + n,
+        )
 
 
 class _ModePrompt(BeforeInput):
@@ -250,7 +311,22 @@ class _ModePrompt(BeforeInput):
         super().__init__(text)  # sets self.text=text, self.style="" (ignored)
 
     @property
+    def text(self) -> str:  # type: ignore[override]
+        # #596 (ADR-0287) — in shell mode the marker IS the sigil (``! `` /
+        # ``!! ``); ``_HideShellSigil`` takes it out of the line.
+        sigil = self._chrome._shell_sigil_now()
+        return f"{sigil} " if sigil else self._text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        self._text = value
+
+    @property
     def style(self) -> str:  # type: ignore[override]
+        # #596 — shell mode wins over the permission colour: a ``!`` line runs in
+        # the user's shell directly, and the permission gate never sees it.
+        if self._chrome._shell_sigil_now():
+            return f"{self._chrome._input_styles().shell} bold"
         provider = self._chrome.prompt_style_provider
         if provider is not None:
             try:
@@ -444,6 +520,158 @@ class _BottomPad(Container):
         return []
 
 
+class _CappedWidth(Container):
+    """Lays ``content`` out no wider than ``width()`` cells, from the left (#596).
+
+    The input and the lines around it stop at the render ceiling (ADR-0219), as
+    the transcript's user echo does, so the frame and the text inside it agree on
+    a wide terminal. The obvious ``VSplit`` with a filler hung prompt-toolkit's
+    width division in the #596 prototype; this hands the child a narrower
+    ``WritePosition`` instead and leaves the rest of the row empty. Heights are
+    measured at the same narrower width, so a draft wraps where it is drawn.
+    """
+
+    def __init__(self, content: AnyContainer, width: Callable[[], int]) -> None:
+        self.content = to_container(content)
+        self._width = width
+
+    def _cap(self, width: int) -> int:
+        try:
+            return max(1, min(width, int(self._width())))
+        except Exception:  # noqa: BLE001 — a faulty reader must not break the layout
+            return width
+
+    def reset(self) -> None:
+        self.content.reset()
+
+    def preferred_width(self, max_available_width: int) -> Dimension:
+        return self.content.preferred_width(self._cap(max_available_width))
+
+    def preferred_height(self, width: int, max_available_height: int) -> Dimension:
+        return self.content.preferred_height(self._cap(width), max_available_height)
+
+    def write_to_screen(
+        self,
+        screen: Screen,
+        mouse_handlers: MouseHandlers,
+        write_position: WritePosition,
+        parent_style: str,
+        erase_bg: bool,
+        z_index: int | None,
+    ) -> None:
+        wp = write_position
+        self.content.write_to_screen(
+            screen,
+            mouse_handlers,
+            WritePosition(xpos=wp.xpos, ypos=wp.ypos, width=self._cap(wp.width), height=wp.height),
+            parent_style,
+            erase_bg,
+            z_index,
+        )
+
+    def is_modal(self) -> bool:
+        return self.content.is_modal()
+
+    def get_key_bindings(self) -> KeyBindingsBase | None:
+        return self.content.get_key_bindings()
+
+    def get_children(self) -> list[Container]:
+        return [self.content]
+
+
+# #596 — the most rows the completion menu takes (``_MarkedCompletionsMenu``'s
+# ``max_height``); its reserve is never taller.
+_MENU_MAX_ROWS = 8
+
+
+class _MenuReserve(Container):
+    """Empty rows in the layout for the completion menu to be drawn over (#596).
+
+    The menu is a Float, and a Float adds no height to the inline app, so it
+    could only cover what lay under the cursor: on a pinned 24-row screen the
+    four rows under the input — the frame line, the status row with the shell
+    hint, the footer — with three or four of its entries (#508 verify V5).
+    While the menu shows, this takes its height in the layout, the way a modal
+    does (ADR-0159): above the input once the chrome is pinned, so the menu
+    opens upward and the input keeps its row while the transcript scrolls up;
+    below it otherwise, a dropdown that moves only the status row and footer.
+    ``preferred=min=0`` lets a terminal too short for it shrink it, and the
+    menu then takes the rows it got (``_ReservedMenuFloat``).
+    """
+
+    def __init__(self, rows: Callable[[], int]) -> None:
+        self._rows = rows
+        self.drawn: tuple[int, int, int] | None = None  # (render, ypos, rows)
+
+    def reset(self) -> None:
+        pass
+
+    def preferred_width(self, max_available_width: int) -> Dimension:
+        return Dimension()
+
+    def preferred_height(self, width: int, max_available_height: int) -> Dimension:
+        rows = max(0, self._rows())
+        return Dimension(min=0, preferred=rows, max=rows)
+
+    def write_to_screen(
+        self,
+        screen: Screen,
+        mouse_handlers: MouseHandlers,
+        write_position: WritePosition,
+        parent_style: str,
+        erase_bg: bool,
+        z_index: int | None,
+    ) -> None:
+        if write_position.height > 0:
+            render = get_app().render_counter
+            self.drawn = (render, write_position.ypos, write_position.height)
+
+    def get_children(self) -> list[Container]:
+        return []
+
+
+class _ReservedMenuFloat(Float):
+    """The completion menu's Float, drawn exactly over a :class:`_MenuReserve` (#596).
+
+    ``top`` and ``height`` are read by prompt-toolkit's ``_draw_float`` after the
+    body is written, so they are the rows the reserve got in THIS render; with
+    none (no menu, a modal, the CPR hold) the height is 0 and nothing is drawn.
+    ``xcursor`` still puts it under the token being completed.
+    """
+
+    def __init__(self, content: AnyContainer, reserves: Sequence[_MenuReserve]) -> None:
+        self._reserves = tuple(reserves)
+        super().__init__(content=content, xcursor=True)
+
+    def _drawn(self) -> tuple[int, int] | None:
+        try:
+            render = get_app().render_counter
+        except Exception:  # noqa: BLE001 — no app → nothing reserved
+            return None
+        for reserve in self._reserves:
+            if reserve.drawn is not None and reserve.drawn[0] == render:
+                return reserve.drawn[1], reserve.drawn[2]
+        return None
+
+    @property  # type: ignore[override]
+    def top(self) -> int | None:
+        drawn = self._drawn()
+        return drawn[0] if drawn is not None else 0
+
+    @top.setter
+    def top(self, value: int | None) -> None:
+        pass  # ``Float.__init__`` assigns it; the property computes it per render
+
+    @property  # type: ignore[override]
+    def height(self) -> int:
+        drawn = self._drawn()
+        return drawn[1] if drawn is not None else 0
+
+    @height.setter
+    def height(self, value: object) -> None:
+        pass
+
+
 class AelixChrome:
     """The persistent prompt-toolkit Application + live bottom regions.
 
@@ -514,6 +742,21 @@ class AelixChrome:
         # source: ``MODE_META[...].badge_style``). ``None`` (headless / no
         # posture) → the neutral bold-cyan default (:data:`_DEFAULT_PROMPT_STYLE`).
         self.prompt_style_provider: Callable[[], str] | None = None
+        # #596 (ADR-0287) — Enter on a ``!`` / ``!!`` line while a turn runs: the
+        # host runs the command at once instead of steering the line to the model
+        # (pi checks for ``!`` before its streaming-steer branch). ``None``
+        # (headless) → the line steers, as before.
+        self.on_shell: Callable[[str], None] | None = None
+        # #596 — the live theme the input marks are coloured from (``@`` references
+        # take ``accent``, shell mode takes ``shell``), the width under the user's
+        # render ceiling (ADR-0219) the input frame stops at, and the footer's base
+        # style (the theme's ``statusline`` role). ``None`` (headless) → the
+        # default colours, the terminal's columns and an undimmed footer.
+        self.input_theme: Callable[[], Theme | None] | None = None
+        self.render_width: Callable[[], int] | None = None
+        self.footer_style_provider: Callable[[], str] | None = None
+        self._styles_key: tuple[object, bool] | None = None
+        self._styles: InputStyles | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -551,6 +794,9 @@ class AelixChrome:
         # sequence to plain c-m, indistinguishable from Enter, so Ctrl+J is the
         # achievable explicit-newline key.)
         self.buffer = Buffer(name="input", multiline=True, history=history)
+        # #596 — the cursor never stands in front of a sigil drawn as the marker.
+        self.buffer.on_cursor_position_changed += self._keep_cursor_after_sigil
+        self.buffer.on_text_changed += self._keep_cursor_after_sigil
         # Submitted lines flow through a queue (loop-agnostic at construction;
         # robust to input arriving before/after a get_input() call).
         self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
@@ -576,13 +822,17 @@ class AelixChrome:
         # — inert until ``set_command_completer`` installs a completer (no
         # completions → nothing renders); kept first so transient overlays
         # (``add_float``) draw above it.
-        self._completions_float = Float(
-            xcursor=True,
-            ycursor=True,
+        # #596 — drawn over rows the layout reserves for it while it shows
+        # (``_MenuReserve``): above the input once the chrome is pinned, below it
+        # otherwise. It used to hang under the cursor and cover what was there.
+        self._menu_above = _MenuReserve(lambda: self._menu_rows() if self._pinned else 0)
+        self._menu_below = _MenuReserve(lambda: 0 if self._pinned else self._menu_rows())
+        self._completions_float = _ReservedMenuFloat(
             # Sprint 6h₂₆ (ADR-0156): the marked menu adds a selected-row marker
             # and a (current/total) match counter; otherwise identical to the
             # stock CompletionsMenu(max_height=8, scroll_offset=1).
-            content=_MarkedCompletionsMenu(max_height=8, scroll_offset=1),
+            content=_MarkedCompletionsMenu(max_height=_MENU_MAX_ROWS, scroll_offset=1),
+            reserves=(self._menu_above, self._menu_below),
         )
         self._floats: list[Float] = [self._completions_float]
         # Sprint 6h₂₈ (ADR-0159) — the in-flow modal slot. A captured modal
@@ -657,13 +907,18 @@ class AelixChrome:
         # breadcrumb / status stay single-line (they still use ``_ansi_row`` and
         # their setters strip ``\n``). ``dont_extend_height`` keeps it as tall as
         # its content (1 row in the default single-line mode).
+        #
+        # #596 — the Window's style carries the theme's ``statusline`` colour, so
+        # the footer reads as a layer under the input. On the Window rather than
+        # around the text: a segment's own colour wins over it, and its trailing
+        # ``\x1b[0m`` falls back to it instead of to full-strength default.
         def _footer_row() -> ConditionalContainer:
             return ConditionalContainer(
                 Window(
                     FormattedTextControl(lambda: ANSI(self._footer_line)),
                     height=Dimension(min=1),
                     dont_extend_height=True,
-                    style="class:aelix.chrome",
+                    style=self._footer_style,
                 ),
                 filter=renderer_height_is_known,
             )
@@ -722,17 +977,38 @@ class AelixChrome:
             BufferControl(
                 self.buffer,
                 input_processors=[
+                    # #596 — first, so the marker below lands where the sigil was.
+                    _HideShellSigil(),
                     # #66 item 6b — the ❯ prefix color follows the permission mode
                     # (``_ModePrompt`` reads ``self.prompt_style_provider`` live).
                     _ModePrompt(self, _INPUT_PREFIX),
                     _PlaceholderProcessor(_INPUT_PLACEHOLDER),
                 ],
+                # #596 — ``@`` references coloured as typed.
+                lexer=InputLexer(self._input_styles),
             ),
             wrap_lines=True,
             height=Dimension(min=1, max=10),
             dont_extend_height=True,
         )
         self._input_window = input_window
+
+        # #596 (ADR-0287) — a line above and below the input, as pi's editor and
+        # Claude Code's prompt draw them: the theme's ``dim``, or its ``shell``
+        # colour in shell mode. ``char`` fills the row, so the line is as wide as
+        # the frame it sits in. The frame (both lines and the input) stops at the
+        # render ceiling, as the transcript does.
+        def _frame_line() -> Window:
+            return Window(
+                height=height1,
+                char=self._frame_line_char,
+                style=self._frame_line_style,
+                dont_extend_height=True,
+            )
+
+        input_frame = _CappedWidth(
+            HSplit([_frame_line(), input_window, _frame_line()]), self._chrome_width
+        )
         # Sprint 6h₂₈ (ADR-0159) — the in-flow modal slot. A DynamicContainer
         # re-resolves its child every render via ``_render_modal_slot`` (a plain
         # ConditionalContainer can't SWAP which container it shows — it only
@@ -756,8 +1032,9 @@ class AelixChrome:
         # the printed lines and jump to the bottom one round trip later
         # (``_hold_for_cpr``). The other rows are gated on the CPR already.
         hold = Condition(self._hold_for_cpr)
+        # #596 — the row holds the framed input; the frame hides with it.
         input_conditional = ConditionalContainer(
-            input_window, filter=Condition(lambda: not self.is_modal_open()) & ~hold
+            input_frame, filter=Condition(lambda: not self.is_modal_open()) & ~hold
         )
         self._input_row = input_conditional
         # #66 item 5 — the "Working…" row sits ABOVE the input (was below).
@@ -806,7 +1083,9 @@ class AelixChrome:
                 ConditionalContainer(modal_slot, filter=~hold),
                 working_row,
                 working_spacer,
+                ConditionalContainer(self._menu_above, filter=~hold),
                 input_conditional,
+                ConditionalContainer(self._menu_below, filter=~hold),
                 ConditionalContainer(
                     Window(
                         FormattedTextControl(self._render_widgets_below),
@@ -897,6 +1176,21 @@ class AelixChrome:
             # History stores the EXPANDED text so an Up-arrow recall is
             # self-contained even after the registry is cleared on submit.
             submit_text = self._expand_pastes(text)
+            # #596 (ADR-0287) — mid-turn Enter on a ``!`` / ``!!`` line runs it now,
+            # as pi does (its ``!`` branch precedes the streaming-steer one); the
+            # turn goes on. Before #596 the line was steered to the model as text.
+            if (
+                self._running
+                and submit_text.strip()
+                and self.on_shell is not None
+                and shell_sigil(submit_text)
+            ):
+                self.buffer.reset()
+                with contextlib.suppress(Exception):
+                    self.buffer.history.append_string(submit_text)
+                self._reset_paste_state()
+                self.on_shell(submit_text)
+                return
             # Mid-turn Enter steers (injects into the running turn) instead of
             # feeding the serialized input queue — bypasses _input_loop, which is
             # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
@@ -1038,7 +1332,7 @@ class AelixChrome:
             self._last_ctrl_c = now
             self.invalidate()
 
-        # Esc is TWO bindings with MUTUALLY EXCLUSIVE filters, so their relative
+        # Esc is THREE bindings with MUTUALLY EXCLUSIVE filters, so their relative
         # order does not matter (prompt-toolkit runs the last binding whose filter
         # passes, and at most one of these ever passes).
         #
@@ -1068,6 +1362,25 @@ class AelixChrome:
             # editing), and menu-gated so it never steals the menu's dismiss key.
             if self.on_interrupt is not None:
                 self.on_interrupt()
+
+        # #596 (ADR-0287) — idle Esc in shell mode clears the whole input, as pi's
+        # does (``interactive-mode.ts`` ``onEscape``: streaming first, then bash
+        # mode). The same clear idle Ctrl+C gives a non-empty line. Not while a
+        # turn runs or a countdown is armed (Esc interrupts those, above), not
+        # over the menu, and not while a modal owns the keys.
+        @kb.add(
+            "escape",
+            filter=Condition(
+                lambda: not (self._running or self.interrupt_armed)
+                and self._input_has_focus()
+                and bool(shell_sigil(self.buffer.text))
+            )
+            & ~has_completions,
+        )
+        def _escape_clear_shell(event: object) -> None:
+            self.buffer.reset()
+            self._reset_paste_state()
+            self._last_ctrl_c = None
 
         # shift+tab cycles the permission posture (WP-0, ADR-0157). prompt-toolkit
         # maps the shift+tab / backtab escape sequence (CSI Z) to the single key
@@ -1216,6 +1529,12 @@ class AelixChrome:
     def _render_status(self) -> str:
         # Strip newlines: this is a fixed height=1 chrome row.
         parts = [v.replace("\n", " ") for v in self._status.values()]
+        # #596 — shell mode says what Enter will do. The status row is always one
+        # row, so the hint costs no height (no shift, nothing for the bottom pin).
+        sigil = self._shell_sigil_now()
+        if sigil and not self.is_modal_open():
+            hint = shell_hint(sigil, running=self._running, width=self._terminal_width())
+            parts.insert(0, paint_shell(self._theme_now(), hint))
         # #66 item 2 — the transient "Press Ctrl+C again to exit" hint. Rendered
         # (not stored in ``_status``) so it self-clears once the arm window
         # elapses — the app's ``refresh_interval`` repaints drop it with no timer.
@@ -1240,6 +1559,80 @@ class AelixChrome:
         if self._time() - self._last_ctrl_c > _CTRL_C_EXIT_WINDOW:
             return ""
         return _CTRL_C_EXIT_HINT
+
+    # === #596 — input marks, the input frame and the footer layer ===========
+
+    def _theme_now(self) -> Theme | None:
+        if self.input_theme is None:
+            return None
+        try:
+            return self.input_theme()
+        except Exception:  # noqa: BLE001 — a faulty provider must not break the chrome
+            return None
+
+    def _input_styles(self) -> InputStyles:
+        """The input marks' styles for the live theme, rebuilt only when it changes."""
+
+        theme = self._theme_now()
+        colorless = no_color()
+        key = self._styles_key
+        if self._styles is None or key is None or key[0] is not theme or key[1] != colorless:
+            self._styles = input_styles(theme, colorless=colorless)
+            self._styles_key = (theme, colorless)
+        return self._styles
+
+    def _shell_sigil_now(self) -> str:
+        return shell_sigil(self.buffer.text)
+
+    def _frame_line_style(self) -> str:
+        styles = self._input_styles()
+        return styles.shell if self._shell_sigil_now() else styles.rule
+
+    def _frame_line_char(self) -> str:
+        if self._shell_sigil_now() and self._input_styles().no_color:
+            return _FRAME_LINE_HEAVY
+        return _FRAME_LINE
+
+    def _footer_style(self) -> str:
+        provider = self.footer_style_provider
+        extra = ""
+        if provider is not None:
+            try:
+                extra = provider()
+            except Exception:  # noqa: BLE001 — a faulty provider must not break the footer
+                extra = ""
+        return f"class:aelix.chrome {extra}".rstrip()
+
+    def _menu_rows(self) -> int:
+        """Rows the completion menu takes now: its entries and counter, at most
+        :data:`_MENU_MAX_ROWS`; 0 when it does not show (as ``has_completions``
+        decides it), or while a modal owns the keys and the input is hidden."""
+
+        state = self.buffer.complete_state
+        if state is None or not state.completions or self.is_modal_open():
+            return 0
+        return min(len(state.completions) + 1, _MENU_MAX_ROWS)
+
+    def _keep_cursor_after_sigil(self, buf: Buffer) -> None:
+        n = len(shell_sigil(buf.text))
+        if n and buf.cursor_position < n:
+            buf.cursor_position = n
+
+    def _terminal_width(self) -> int:
+        try:
+            return max(1, self.app.output.get_size().columns)
+        except Exception:  # noqa: BLE001 — size unavailable (pre-run)
+            return 80
+
+    def _chrome_width(self) -> int:
+        """The input frame's width: the render width under the user's ceiling."""
+
+        if self.render_width is not None:
+            try:
+                return max(1, int(self.render_width()))
+            except Exception:  # noqa: BLE001 — fall back to the terminal's columns
+                pass
+        return self._terminal_width()
 
     def _render_working(self) -> str:
         if not (self._working_visible or self._running):
@@ -1842,7 +2235,12 @@ class AelixChrome:
             draft = 0
             if self._input_row is not None:
                 rows = self._input_row.preferred_height(size.columns, size.rows).preferred
-                draft = max(0, rows - 1)
+                # #596 — the row is the framed input: its two lines are chrome,
+                # always drawn, so only the draft's rows past the first are left out.
+                draft = max(0, rows - _FRAME_ROWS - 1)
+            # #596 — the completion menu's reserve is left out as a modal is: an
+            # open menu alone must not pin a screen the transcript has not filled.
+            draft += self._menu_rows()
         except Exception:  # noqa: BLE001 — height unknown / torn down → not pinned
             return
         if above + content.preferred - draft >= size.rows:

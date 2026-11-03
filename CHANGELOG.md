@@ -23,6 +23,33 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **The input shows what Enter will do with a line, and a `!` line runs while the
+  model is answering (#596, ADR-0287).**
+  - Type `!` and the input is in shell mode: the `!` (or `!!`) takes the place of
+    the `❯`, the lines above and below the input turn magenta, and the row under
+    it says what Enter will do and whether the model sees the output. Backspace
+    right after the `!` leaves shell mode with the command kept; `Esc` clears the
+    whole input. The `!` stays in what you typed, so history, `!!` and Ctrl+G are
+    as before.
+  - A `!` or `!!` line Entered while the model is answering now runs at once, and
+    the answer goes on. Before, it was sent to the model as text. The command and
+    its output are printed together when it finishes; the model sees a `!`
+    command's output on its next turn, never a `!!` one's.
+  - `@path` file references are drawn in the theme's accent colour as you type
+    (underlined under `NO_COLOR`). Nothing is looked up on disk while you type.
+  - The status line under the input is a little dimmer, so it reads as a layer
+    under the input. Colours that segments set themselves (the permission badge)
+    are kept, and `NO_COLOR` leaves it as it was.
+  - Themes gain two roles: `shell` (default `magenta`, `dark` `bright_magenta`,
+    `light` `medium_violet_red`) and `statusline` (`grey70`; `light` `grey30`).
+    A theme file without them gets magenta for shell mode and an undimmed footer.
+  - The input and its lines stop at the render width (`render_max_width`, 120 by
+    default), as the transcript does. The input area is two rows taller.
+  - The completion menu no longer covers the status line and footer. Once the
+    screen is full it opens upward, above the input, at its full height (on a
+    24-row terminal it used to show three or four entries over the footer);
+    before that it drops down and moves the status line and footer down.
+
 - **Extensions can be turned off one at a time, in `/extension`'s Installed tab
   (#25, ADR-0284).** The tab used to be a read-only list; turning one extension
   off meant deleting its file or uninstalling it.

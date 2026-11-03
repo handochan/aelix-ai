@@ -42,7 +42,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from aelix_coding_agent.cli.repl import handle_user_bash
+from aelix_coding_agent.cli.repl import (
+    UserBashRun,
+    handle_user_bash,
+    record_user_bash,
+    run_user_bash,
+)
 from aelix_coding_agent.cli.resource_commands import expand_resource_command
 from aelix_coding_agent.cli.session_labels import (
     by_recent_activity,
@@ -97,12 +102,14 @@ from aelix_coding_agent.tui.descriptors import (
 from aelix_coding_agent.tui.ext_widgets import apply_manifest_widgets
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.input_marks import paint_shell
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.overlay import show_modal
 from aelix_coding_agent.tui.render import (
     EventRenderer,
     _render_diff,
+    _safe_tool_output,
     component_to_text,
     render_user_message,
 )
@@ -543,6 +550,81 @@ def _session_refuses_writes(runtime_host: Any, *, at_startup: bool) -> bool:
         return at_startup
 
 
+#: #137 — what a ``!`` line or a prompt gets on a read-only session.
+_READ_ONLY_REFUSAL = (
+    "This session is open in another terminal, so this one "
+    "is read-only. /fork makes a writable copy of it; "
+    "/resume and /new switch to another session."
+)
+
+
+class _HeldShellRecords:
+    """#596 (ADR-0287) — what the model gets of a ``!`` command run during a turn.
+
+    Enter on a ``!`` line while a turn runs runs the command at once and prints
+    its output at once (pi's ``!`` branch precedes its streaming-steer one). Its
+    record (:func:`record_user_bash`) is written only while nothing runs: it is
+    a plain append to the live message list and to the session, and written
+    mid-turn it could land between a tool call and its result. That is pi's
+    ``_pendingBashMessages``, flushed when its run ends; the model sees the
+    output on its next turn. ``!!`` records nothing, here as at idle.
+
+    The lock makes "nothing runs" hold for the whole write. The input loop
+    calls :meth:`settle` right before it marks a turn running, with no await in
+    between, so a record either finishes before the turn starts or sees the
+    turn and waits for the :meth:`settle` after it.
+    """
+
+    def __init__(self, running: Callable[[], bool]) -> None:
+        self._running = running
+        self._held: list[tuple[Any, Any, UserBashRun]] = []
+        self._lock = asyncio.Lock()
+
+    def _busy(self, harness: Any) -> bool:
+        return self._running() or not getattr(harness, "is_idle", True)
+
+    async def record_or_hold(self, harness: Any, run: UserBashRun) -> None:
+        if run.exclude_from_context:
+            return
+        self._held.append((harness, getattr(harness, "session", None), run))
+        await self.settle()
+
+    async def settle(self) -> None:
+        """Write every held record, oldest first, unless something runs."""
+
+        async with self._lock:
+            while self._held:
+                harness, session, run = self._held[0]
+                if self._busy(harness):
+                    return
+                self._held.pop(0)
+                # Written into the session the command ran in, or not at all:
+                # after /new or /resume it would be a stranger's output.
+                if getattr(harness, "session", None) is not session:
+                    continue
+                try:
+                    await record_user_bash(harness, run)
+                except Exception:  # noqa: BLE001 — never take the input loop down
+                    _log.warning("could not record a ! command run during a turn", exc_info=True)
+
+
+def _shell_echo(sigil: str, command: str, theme: Any) -> Text:
+    """#596 — the line a ``!`` command run during a turn is committed under.
+
+    An idle ``!`` prints its output alone, right under the line it was typed
+    on. During a turn the output lands among the answer's lines, so it is
+    headed by the command, in the shell colour, and when the model will see it;
+    the caller commits the two as one renderable.
+    """
+
+    note = "the model sees the output next turn" if sigil == "!" else "the model won't see it"
+    line = Text.from_ansi(paint_shell(theme, f"{sigil} "))
+    line.stylize("bold")
+    line.append(_safe_tool_output(command))
+    line.append(f"  ({note})", style="dim")
+    return line
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -757,6 +839,11 @@ async def run_tui(
         mode="default",
         statusline_store=statusline_store,
     )
+    # #596 (ADR-0287) — the input's ``@`` references and shell mode take the live
+    # theme's colours, and the footer its ``statusline`` colour, so ``/settings``
+    # → Theme recolours them too.
+    out_chrome.input_theme = lambda: context.theme
+    out_chrome.footer_style_provider = context.footer_style
 
     # Issue #21 tui_widgets (ADR-0182) — paint manifest-declared widgets through
     # the same ctx.ui path imperative extensions use. Re-applied on every
@@ -839,6 +926,10 @@ async def run_tui(
     # second copy of that number. Seeded from settings below and re-pushed by
     # ``_apply_live_setting``.
     render_width_cap: dict[str, int | None] = {"value": None}
+    # #596 — the input frame stops at the same ceiling as the transcript.
+    out_chrome.render_width = lambda: terminal_columns(
+        out_chrome, max_width=render_width_cap["value"]
+    )
 
     # Issue #166 — the READER, not a number. ``EventRenderer`` resolves it in
     # ``_new_stream``, which already ran once per assistant message before this
@@ -3232,6 +3323,60 @@ async def run_tui(
     out_chrome.on_steer = lambda t: _enqueue("steer", t)
     out_chrome.on_follow_up = lambda t: _enqueue("follow_up", t)
 
+    # #596 (ADR-0287) — Enter on a ``!`` / ``!!`` line while a turn (or a
+    # command) runs: the command runs now, as pi's does, and the turn goes on.
+    # Before #596 the line was steered to the model as text. Its output is
+    # printed when it ends; the model gets a ``!`` command's output on its next
+    # turn (``_HeldShellRecords``), and never a ``!!`` one's.
+    shell_records = _HeldShellRecords(running=lambda: out_chrome.running)
+    shell_tasks: set[asyncio.Task[None]] = set()
+    shell_seq = {"n": 0}
+
+    def _run_shell_now(line: str) -> None:
+        from rich.console import Group
+
+        parsed = parse_input_line(line)
+        if not parsed.text:
+            return  # a bare ``!``, as at idle
+        if _session_refuses_writes(runtime_host, at_startup=read_only):
+            _commit(Text(_READ_ONLY_REFUSAL, style="yellow"))
+            return
+        harness = runtime_host.harness
+        transient = parsed.kind == "bash_transient"
+        sigil = "!!" if transient else "!"
+        # While it runs, the status row says so (one row, no height change).
+        # The command line and its output are committed TOGETHER when it ends:
+        # committed apart, the answer streaming meanwhile landed between them
+        # (measured with a real model: 1.4 KB of story between the two).
+        shell_seq["n"] += 1
+        status_key = f"__shell_{shell_seq['n']}"
+        out_chrome.set_status(
+            status_key, paint_shell(context.theme, f"{sigil} ") + f"{parsed.text}  (running…)"
+        )
+
+        async def _run() -> None:
+            try:
+                run = await run_user_bash(
+                    harness, parsed.text, exclude_from_context=transient, cwd=cwd
+                )
+            except Exception as exc:  # noqa: BLE001 — surface, never crash the chrome
+                _commit(Text(f"✖ {exc}", style="bold red"))
+                return
+            finally:
+                out_chrome.set_status(status_key, None)
+            echo = _shell_echo(sigil, parsed.text, context.theme)
+            if run.output.strip():
+                _commit(Group(echo, renderer.user_bash_output(run.output)))
+            else:
+                _commit(echo)
+            await shell_records.record_or_hold(harness, run)
+
+        task = loop.create_task(_run())
+        shell_tasks.add(task)
+        task.add_done_callback(shell_tasks.discard)
+
+    out_chrome.on_shell = _run_shell_now
+
     # Sprint 6h₁₅ (ADR-0123) — Ctrl+T toggles thinking visibility on the live
     # renderer (collapsed → /expand-recoverable placeholder, vs full inline).
     def _toggle_thinking() -> None:
@@ -3689,6 +3834,7 @@ async def run_tui(
             skill_off_reason=skill_control.kind.off_reason if skill_control is not None else None,
             extension_control=extension_control,
             bound_shortcuts=bound_shortcut_keys,
+            shell_records=shell_records,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -3741,6 +3887,13 @@ async def run_tui(
                 ext_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await ext_task
+        # #596 — a ``!`` command run during a turn and still running is stopped
+        # with the TUI (the bash operations kill its process tree on cancel).
+        for stask in list(shell_tasks):
+            if not stask.done():
+                stask.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stask
         # D3 (ADR-0168) — cancel any in-flight /stats history-append task. A
         # dropped final row is acceptable (best-effort persistence); tagging the
         # task cancelled avoids a "Task exception was never retrieved" warning.
@@ -4256,6 +4409,7 @@ async def _input_loop(
     skill_off_reason: Callable[[str], str | None] | None = None,
     extension_control: ExtensionControl | None = None,
     bound_shortcuts: frozenset[str] | None = None,
+    shell_records: _HeldShellRecords | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -4295,6 +4449,10 @@ async def _input_loop(
             line = await chrome.get_input()
         except EOFError:
             return  # Ctrl+D exits
+        # #596 — a ``!`` command run during a command (``/compact``) or an
+        # extension's turn is recorded before this line does anything.
+        if shell_records is not None:
+            await shell_records.settle()
 
         # W-review HIGH-1 (Sprint 6h₂₃, ADR-0131): if the external editor is
         # still applying its result, any line that was buffered/pasted into
@@ -4511,17 +4669,7 @@ async def _input_loop(
             "bash_transient",
             "prompt",
         ) and _session_refuses_writes(runtime_host, at_startup=read_only):
-            output_queue.put_nowait(
-                (
-                    "commit",
-                    Text(
-                        "This session is open in another terminal, so this one "
-                        "is read-only. /fork makes a writable copy of it; "
-                        "/resume and /new switch to another session.",
-                        style="yellow",
-                    ),
-                )
-            )
+            output_queue.put_nowait(("commit", Text(_READ_ONLY_REFUSAL, style="yellow")))
             continue
 
         if parsed.kind in ("bash", "bash_transient"):
@@ -4594,6 +4742,11 @@ async def _input_loop(
         # #189 gate above keeps structural advice. Auth is checked only after
         # input handling, so InputHandled needs no credential (#416).
 
+        # #596 — no await between this and ``set_running(True)``: a ``!``
+        # record still being written finishes first, and one that finishes
+        # later sees the turn running and waits for the settle after it.
+        if shell_records is not None:
+            await shell_records.settle()
         chrome.set_running(True)
         turn_raised = False
         try:
@@ -4613,6 +4766,11 @@ async def _input_loop(
                 )
         finally:
             chrome.set_running(False)
+        # #596 — the ``!`` commands run during the turn reach the model now,
+        # after the turn's last message and before the next request (pi flushes
+        # ``_pendingBashMessages`` when its run ends).
+        if shell_records is not None:
+            await shell_records.settle()
         # #240 — a turn that failed may have failed on a stale credential, so
         # drop the resolved ``!command`` values and let the next request re-fork.
         #

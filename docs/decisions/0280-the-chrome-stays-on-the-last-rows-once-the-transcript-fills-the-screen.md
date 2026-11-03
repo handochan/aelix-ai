@@ -370,3 +370,15 @@ what a CSI 2026 terminal paints.
 - **The alternate screen for a modal.** The transcript would disappear while
   an approval asks about it, and output printed while the modal is open would
   be lost when the main screen comes back.
+
+## Note (2026-11-03, #596): the chrome is two rows taller
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D9.* The input row now holds the input between a line above and a line
+below it. Pinned on 24 rows the input sits on row 19, its lines on 18 and 20 (it was row 20). D1's
+"a draft counts as one row" counts the input only: the two lines are always drawn and stay in the
+chrome's height. The tests' row numbers are derived in `tests/tui/test_bottom_pin_632.py`.
+
+The completion menu now takes rows in the layout while it shows (ADR-0287 D10), above the input once
+pinned. It is left out of pin detection as a modal is, and it behaves like one: opening it on a
+pinned screen scrolls the transcript up by its height, and after it closes those rows are the band
+above the chrome, filled by the next print.

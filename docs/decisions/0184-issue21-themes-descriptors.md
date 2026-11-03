@@ -58,3 +58,10 @@ A 4-lens adversarial review (correctness / security / pi-parity+design / test-ad
 **Test-adequacy gaps closed (13 new tests):** oversize-file skip, absolute-path & symlink escape, control-char name rejection, good-sibling-survives-bad-sibling, non-string color drop, roles-not-a-table degrade, raising-runner clears, `list_theme_infos` resolved path, first-wins asserted by rendered color (not just count), descriptors-warn-when-lazy, the persisted-plugin-theme relaunch regression, **the `/settings` Theme picker driven end-to-end to select a manifest theme** (MEDIUM — the picker's `all_theme_names()` read was untested, so a revert to `THEMES.keys()` would drop plugin themes yet pass every unit test), and **an autouse registry-clear fixture in `test_themes.py`** (its built-in-count invariants are coupled to the process-global `_REGISTERED`). These directly target this repo's documented false-green failure mode (named safety fences with no regression-catching test).
 
 **One rationale-precision fix (LOW):** the "NO trust gate" justification originally read "a theme is pure DATA — no plugin code executes", which overstated the case (a theme-declaring plugin may still run an `entry.python` factory for its other contributions). Reworded to scope the "data, not code" claim to the theme *file/contribution* specifically — the axis that actually governs the no-gate decision — with the plugin's normal Project-Trust load path called out as orthogonal.
+
+## Note (2026-11-03, #596): two more roles
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D7.* `THEME_ROLES` holds eight roles: `shell` (the input's shell mode:
+the marker, the lines around the input, the status hint) and `statusline` (the footer's text) join
+the six above. A theme file written before them still loads unchanged: without `shell` it gets
+magenta there, because the mode must show; without `statusline` its footer is not dimmed.

@@ -444,6 +444,29 @@ Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to
 edit the current input in `$VISUAL` / `$EDITOR`.
 
+A line that starts with `!` runs in your shell instead of going to the model:
+
+- `!cmd` runs `cmd` and prints its output; the model sees the output too, from
+  its next turn on.
+- `!!cmd` runs it the same way, but the model never sees the output.
+
+As soon as you type the `!`, the input shows it is in shell mode: the `!` (or
+`!!`) takes the place of `❯`, the lines above and below the input turn magenta,
+and the row under the input says what Enter will do. Backspace right after the
+`!` leaves shell mode with your command kept; `Esc` clears the whole input.
+
+You can run a `!` command while the model is answering. Enter runs it at once,
+the answer goes on, and the command and its output are printed together when it
+finishes. A `!cmd` output reaches the model when the turn is over, on its next
+turn. (Before, such a line was sent to the model as text.) `Esc` during a turn
+still interrupts the turn.
+
+A file reference such as `@src/main.py` or `@"my notes.md"` is drawn in the
+theme's accent colour as you type it. Under `NO_COLOR` it is underlined instead.
+The status line under the input is drawn a little dimmer than your text, so it
+reads as a layer under the input. Your theme sets both colours (the `shell` and
+`statusline` roles, see [extension-authoring](extension-authoring.md#themes)).
+
 The `read` tool uses 1-based line offsets. Its totals count a final newline as
 the end of a line, and include an unterminated last line. For a three-line file,
 `offset=3` reads the last line and `offset=4` reports end of file. For a full-file
