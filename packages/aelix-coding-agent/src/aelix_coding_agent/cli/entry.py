@@ -2048,6 +2048,10 @@ async def _build_harness_options(
     # #434 — ``/reload``'s current model (``ReloadSeed.model``): kept when a hold
     # removed its id, where the restore below would fall back (ADR-0264 §4.4).
     keep_model: Model | None = None,
+    # #663 (ADR-0289 D3, Codex R06) — the build that puts a session back after a
+    # failed rebuild (``ReloadSeed.restore``): ``keep_model`` is then the model
+    # the session ran on, kept as it is, whatever the launch inputs say.
+    keep_exactly: bool = False,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -2277,9 +2281,14 @@ async def _build_harness_options(
     # decides as it always has: that is the fallback.
     route = (
         restore_session_route(restore_selection, model_registry)
-        if restore_selection is not None
+        if restore_selection is not None and not (keep_exactly and keep_model is not None)
         else None
     )
+    if keep_exactly and keep_model is not None:
+        # #663 (Codex R06) — a ``set_model`` choice is no session record and no
+        # launch input: without this the restore came back on ``--model``. A
+        # restored route, so no late-provider hold is applied after it either.
+        route = ResolvedRoute(keep_model, "session")
     if (
         route is None
         and keep_model is not None
@@ -4095,6 +4104,7 @@ async def _async_main(argv: list[str]) -> int:
             restore_selection=restore_selection,
             restore_report=restore_report,
             keep_model=getattr(reload_seed, "model", None),
+            keep_exactly=bool(getattr(reload_seed, "restore", False)),
             mcp_tools=mcp_launch_record.visible(mcp_tools, mcp_hidden),
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,

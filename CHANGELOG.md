@@ -1302,12 +1302,18 @@ unwritten. Add them with the next release.
   line said "nothing applied". RPC `resources/reload`, an extension's
   `ctx.reload()`, and a `/new`, `/resume`, `/fork`, `/clone` or `/import` whose
   build failed did the same. aelix now builds the session again on the settings
-  it was running with and says "kept the previous settings". If that fails too,
-  it stops: prompts, `!` lines and tool calls are refused with "aelix is stopped
-  until /reload succeeds" until a `/reload` (or `/new`) works. A failed
-  `/reload` no longer leaves half-read settings behind, so `/new` after it works,
-  and with `AELIX_RELOAD_REBUILD=0` a `/reload` that raises says so instead of
-  closing the TUI.
+  it was running with — on the model, tools and thinking level it ran with,
+  keeping any setting changed meanwhile — and says "kept the previous settings".
+  If that fails too, it stops: prompts, `!` lines, tool calls, steering and
+  follow-up messages, RPC `bash` and `/agents run` are refused with "aelix is
+  stopped until /reload succeeds" until a `/reload` (or `/new`) works, and the
+  line then says "aelix is running again". Two reloads or session changes no
+  longer run at once — the second waits for the first, and one started from
+  inside the first is refused — and an RPC `prompt` sent while `new_session`
+  rebuilds is refused instead of running on the session being taken apart. A
+  failed `/reload` no longer leaves half-read settings behind, so `/new` after
+  it works, and with `AELIX_RELOAD_REBUILD=0` a `/reload` that raises says so
+  instead of closing the TUI.
 
 - **The `/` menu lists your skills and prompt templates (#508, ADR-0279 D12).**
   `/skill:<name>` and `/<template>` ran, but typing `/` never offered them:

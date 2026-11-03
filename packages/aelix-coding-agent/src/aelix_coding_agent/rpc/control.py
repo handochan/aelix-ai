@@ -143,6 +143,10 @@ CLASSIC_READ_ONLY = frozenset(
 CLASSIC_TRANSITIONS = frozenset(
     {"prompt", "new_session", "switch_session", "fork", "clone", "compact"}
 )
+# The classic commands that replace the session (#663, verify V2): while one runs
+# it counts as a lifecycle transition, so a ``prompt`` (or any other mutator) is
+# refused instead of running on the harness it is tearing down.
+CLASSIC_SWAPS = frozenset({"new_session", "switch_session", "fork", "clone"})
 
 
 @dataclass
@@ -238,6 +242,7 @@ class RpcControlPlane:
         self.operations: list[_Operation] = []
         self.classic_inflight = 0
         self.transitioning = 0
+        self.classic_swapping = 0
         self.closing = False
         self.bind_progress(self.harness)
 
@@ -349,10 +354,10 @@ class RpcControlPlane:
         if not isinstance(command_type, str) or command_type in CLASSIC_READ_ONLY:
             return None, False
         running = next((op.method for op in self.operations if op.active), None)
-        if self.transitioning:
+        if self.transitioning or self.classic_swapping:
             return (
                 f"{command_type} is unavailable while a session lifecycle transition runs"
-                f" (runtime control operation {running})",
+                + (f" (runtime control operation {running})" if running else ""),
                 False,
             )
         if command_type in CLASSIC_TRANSITIONS and self.lock.locked():
@@ -362,10 +367,14 @@ class RpcControlPlane:
                 False,
             )
         self.classic_inflight += 1
+        if command_type in CLASSIC_SWAPS:
+            self.classic_swapping += 1
         return None, True
 
-    def classic_done(self) -> None:
+    def classic_done(self, command_type: object = None) -> None:
         self.classic_inflight = max(0, self.classic_inflight - 1)
+        if command_type in CLASSIC_SWAPS:
+            self.classic_swapping = max(0, self.classic_swapping - 1)
 
     # === Methods ==============================================================
 
@@ -857,6 +866,11 @@ class RpcControlPlane:
         refusal = unsendable_refusal(task, where="The task", resend="the task")
         if refusal is not None:
             raise ValueError(refusal)
+        stopped = getattr(self.runtime, "stopped", None)
+        if isinstance(stopped, str):
+            # #663 (verify V7) — the stopped harness unbound its delegation seam;
+            # what is wrong is the stop, not the --agents setting.
+            raise ValueError(stopped)
         runtime = self.harness.runtime.subagents
         if runtime is None:
             raise ValueError("Subagents are disabled; explicitly enable agent delegation")

@@ -48,7 +48,12 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   too it raises `"stopped"`: the disposed harness holds its turns (`STOPPED_MESSAGE`) and blocks
   every tool call, the TUI refuses prompts and `!` lines, until a build succeeds. The lines say
   "kept the previous settings" or "aelix is stopped until /reload succeeds", never "nothing
-  applied"; the kill-switch `/reload` no longer escapes. Amends ADR-0284 D6/Limits, ADR-0177.
+  applied"; the kill-switch `/reload` no longer escapes. Review round 1: "kept" restores the
+  model, tool policy and active set exactly and only after its settlement and rebind work (else
+  stopped); the settings snapshot is a copy whose restore keeps later writes; a stop refuses
+  steer, follow-up, RPC `bash` and `agents/run` too, and an interrupted teardown stops; D7 runs
+  one transition at a time (`AgentSessionRuntime._transition`; a nested one is refused) and
+  counts RPC's classic swaps as transitions. Amends ADR-0284 D6/Limits, ADR-0177.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the

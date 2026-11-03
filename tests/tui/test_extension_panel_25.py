@@ -281,7 +281,7 @@ async def test_a_reload_failure_banner_wraps_instead_of_being_cut(home: Path, wi
 
     failure = (
         "✖ /reload failed during the rebuild: RuntimeError: a factory error with a long "
-        "message — nothing applied; /reload again or restart"
+        "message — kept the previous settings; fix the cause, then /reload again"
     )
     chrome, task, _storage, _c = await _open(
         home, width=width, last_reload_failure=lambda: failure
@@ -294,7 +294,7 @@ async def test_a_reload_failure_banner_wraps_instead_of_being_cut(home: Path, wi
         await _press(chrome, "tab")
     assert len(heights) == 1
     joined = " ".join(" ".join(_frame(chrome)).split())
-    assert "nothing applied; /reload again or restart" in joined
+    assert "kept the previous settings; fix the cause, then /reload again" in joined
     await _press(chrome, "escape")
     await asyncio.wait_for(task, timeout=2)
 

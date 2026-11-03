@@ -6,6 +6,7 @@ Pi parity: ``packages/agent/src/core/agent-session-runtime.ts:67-374``.
 from __future__ import annotations
 
 from aelix_agent_core.runtime._types import (
+    NESTED_TRANSITION_MESSAGE,
     PI_STALENESS_MESSAGE,
     STOPPED_MESSAGE,
     AgentSessionRuntimeDiagnostic,
@@ -23,6 +24,7 @@ from aelix_agent_core.runtime.agent_session_runtime import (
 )
 
 __all__ = [
+    "NESTED_TRANSITION_MESSAGE",
     "PI_STALENESS_MESSAGE",
     "STOPPED_MESSAGE",
     "AgentSessionRuntime",

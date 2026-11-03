@@ -270,6 +270,15 @@ STOPPED_MESSAGE = (
     "aelix is stopped until /reload succeeds. Fix the cause, then /reload, or restart."
 )
 
+#: What a reload or session change started from inside another one is refused
+#: with (#663, ADR-0289 D7): one waiting on the other would never start.
+NESTED_TRANSITION_MESSAGE = (
+    "a reload or session change cannot start from inside another one (a"
+    " session_before_switch, session_shutdown, session_start or resources_discover"
+    " handler, an extension's setup(), or a surface's rebind); start it after that"
+    " one returns"
+)
+
 
 def _what(exc: BaseException) -> str:
     text = str(exc)
@@ -296,10 +305,12 @@ class RebuildFailedError(RuntimeError):
 
     - ``"kept"`` — a harness was built again from the settings the session was
       running with, on the session it was on, with every gate its extensions
-      install (Guardrail and Permission among them).
-    - ``"stopped"`` — that build failed too (:attr:`restore_error`): the torn-down
-      harness stays, refusing every turn and every tool call, until a later
-      rebuild succeeds (:attr:`AgentSessionRuntime.stopped`).
+      install (Guardrail and Permission among them), its model, tool policy,
+      active tools and thinking level as they were, and was settled and bound.
+    - ``"stopped"`` — that build, or its settlement or rebind, failed too
+      (:attr:`restore_error`): every harness left behind refuses every turn and
+      every tool call, until a later rebuild succeeds
+      (:attr:`AgentSessionRuntime.stopped`).
 
     The message is a sentence a surface can print after its own prefix.
     """

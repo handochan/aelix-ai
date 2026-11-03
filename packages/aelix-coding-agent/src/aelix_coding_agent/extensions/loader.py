@@ -589,7 +589,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2201`` and ``:3207``) pass
+       (``cli/entry.py:2205`` and ``:3216``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to

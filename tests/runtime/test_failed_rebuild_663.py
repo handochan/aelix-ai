@@ -33,7 +33,7 @@ from aelix_agent_core.session import (
     LocalFileSystem,
     Session,
 )
-from aelix_agent_core.types import AgentTool
+from aelix_agent_core.types import AgentContext, AgentTool, BeforeToolCallContext
 from aelix_ai.messages import AssistantMessage, TextContent, ToolCallContent, UserMessage
 from aelix_ai.settings import SettingsManager
 from aelix_ai.settings.storage import InMemorySettingsStorage
@@ -47,7 +47,8 @@ from aelix_ai.streaming import (
 )
 from aelix_ai.tools import ToolExecutionContext, ToolResult
 
-MODEL = Model(id="fixture", provider="fixture")
+# Reasoning-capable: the restore clamps the thinking level to the model (verify V4).
+MODEL = Model(id="fixture", provider="fixture", reasoning=True)
 
 
 class _Rig:
@@ -260,18 +261,43 @@ async def test_a_cancelled_rebuild_leaves_the_runtime_stopped(tmp_path: Path) ->
 
 
 async def test_a_disposed_harness_blocks_every_tool_call(tmp_path: Path) -> None:
-    """Below the turn gate: a turn that reaches a disposed harness runs no tool."""
+    """Below the turn gate: a tool call that reaches a disposed harness is blocked."""
 
     rig = await _Rig.create(tmp_path)
     harness = rig.runtime.harness
     await harness.dispose()
-    await harness.prompt("run it")
-    assert rig.ran == []
-    results = [m for m in harness.messages if getattr(m, "role", None) == "toolResult"]
-    assert results and all(getattr(r, "is_error", False) for r in results)
-    assert "AgentHarness has been disposed" in "".join(
-        getattr(c, "text", "") for r in results for c in r.content
+    call = ToolCallContent(tool_call_id="t1", tool_name="run", input={})
+    blocked = await harness._before_tool_call_bridge(
+        BeforeToolCallContext(
+            assistant_message=AssistantMessage(content=[call], stop_reason="tool_use"),
+            tool_call=call,
+            args={},
+            context=AgentContext(tools=list(harness.state.tools)),
+        )
     )
+    assert blocked is not None and blocked.block
+    assert blocked.reason == "AgentHarness has been disposed"
+    assert rig.ran == []
+
+
+async def test_a_disposed_harness_refuses_a_prompt_a_steer_and_a_follow_up(tmp_path: Path) -> None:
+    """Verify V1 and V2: a surface still holding a torn-down harness runs nothing on it.
+
+    V2: an RPC ``prompt`` that landed between a swap's teardown and its install
+    ran on the torn-down harness. V1: a steer or follow-up there was answered
+    ``success: true`` and then lost.
+    """
+
+    rig = await _Rig.create(tmp_path)
+    harness = rig.runtime.harness
+    await harness.dispose()
+    for call in (harness.prompt, harness.steer, harness.follow_up):
+        with pytest.raises(AgentHarnessError) as refused:
+            await call("run it")
+        assert refused.value.code == "invalid_state"
+        assert str(refused.value) == "AgentHarness has been disposed"
+    assert rig.requests == 0 and rig.ran == []
+    assert harness.pending_message_count == 0
 
 
 # --- the session swaps ----------------------------------------------------------------

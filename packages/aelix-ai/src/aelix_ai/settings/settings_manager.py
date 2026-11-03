@@ -330,15 +330,15 @@ class SettingsFileError(Exception):
 class SettingsSnapshot:
     """The in-memory settings of one moment, for :meth:`SettingsManager.restore` (#663).
 
-    Aelix-additive (ADR-0289). Opaque: references, not copies — :meth:`reload`
-    and :meth:`set_project_trusted` replace these objects rather than change
-    them, so a snapshot taken before a reload still holds what the session was
-    running with after it.
+    Aelix-additive (ADR-0289 D2). Opaque. The two scopes are copies (Codex R07,
+    verify V5): a setter changes the global scope in place, so a reference
+    would follow every write made after the snapshot. ``revision`` is the
+    manager's write count when it was taken, which :meth:`SettingsManager.restore`
+    reads to keep the writes made since.
     """
 
     global_settings: Settings
     project_settings: Settings
-    settings: Settings
     global_load_error: BaseException | None
     project_load_error: BaseException | None
     project_trusted: bool
@@ -346,6 +346,18 @@ class SettingsSnapshot:
     modified_nested_fields: tuple[tuple[str, frozenset[str]], ...]
     modified_project_fields: frozenset[str]
     modified_project_nested_fields: tuple[tuple[str, frozenset[str]], ...]
+    revision: int
+
+
+def _carry_write(source: Settings, target: Settings, name: str, nested: str | None) -> None:
+    """Copy one written field — or, for a nested write, its one key — from *source* into *target*."""
+
+    value = getattr(source, name, None)
+    holder = getattr(target, name, None)
+    if nested is not None and value is not None and is_dataclass(holder):
+        setattr(holder, nested, copy.deepcopy(getattr(value, nested, None)))
+    else:
+        setattr(target, name, copy.deepcopy(value))
 
 
 class SettingsManager:
@@ -398,6 +410,14 @@ class SettingsManager:
         self._async_locks = _AsyncLockRegistry()
         # In-flight write tracking so :meth:`flush` can ``await`` them.
         self._pending_writes: set[asyncio.Task[None]] = set()
+        # #663 (ADR-0289 D2, Codex R08) — every write to a scope in memory (a
+        # setter, :meth:`edit_list`, a trust change) advances ``_revision``, and
+        # each field remembers the last revision that wrote it, so
+        # :meth:`restore` can tell a write made after its snapshot from what a
+        # :meth:`reload` brought in. Bounded: one entry per field ever written.
+        self._revision = 0
+        self._written_at: dict[tuple[SettingsScope, str, str | None], int] = {}
+        self._trust_changed_at = 0
 
     # === Static factories (Pi parity `:273-306`) ===
 
@@ -660,6 +680,7 @@ class SettingsManager:
             self._modified_nested_fields.setdefault(field_name, set()).add(
                 nested_key
             )
+        self._note_write("global", field_name, nested_key)
 
     def _mark_project_modified(
         self, field_name: str, nested_key: str | None = None
@@ -671,6 +692,15 @@ class SettingsManager:
             self._modified_project_nested_fields.setdefault(
                 field_name, set()
             ).add(nested_key)
+        self._note_write("project", field_name, nested_key)
+
+    def _note_write(
+        self, scope: SettingsScope, field_name: str, nested_key: str | None = None
+    ) -> None:
+        """#663 (ADR-0289 D2) — record that *field_name* (or its *nested_key*) was written now."""
+
+        self._revision += 1
+        self._written_at[(scope, field_name, nested_key)] = self._revision
 
     def _record_error(
         self, scope: SettingsScope, error: BaseException
@@ -715,6 +745,8 @@ class SettingsManager:
         if self._project_trusted == trusted:
             return
         self._project_trusted = trusted
+        self._revision += 1
+        self._trust_changed_at = self._revision
         self._modified_project_fields.clear()
         self._modified_project_nested_fields.clear()
         if not trusted:
@@ -808,13 +840,12 @@ class SettingsManager:
         Aelix-additive. A ``/reload`` takes one before it reads the files again
         and restores it when the rebuild fails, so the harness rebuilt after the
         failure runs the settings the session was running with — the files may
-        still hold whatever made the rebuild fail.
+        still hold whatever made the rebuild fail. The scopes are copied.
         """
 
         return SettingsSnapshot(
-            global_settings=self._global_settings,
-            project_settings=self._project_settings,
-            settings=self._settings,
+            global_settings=copy.deepcopy(self._global_settings),
+            project_settings=copy.deepcopy(self._project_settings),
             global_load_error=self._global_load_error,
             project_load_error=self._project_load_error,
             project_trusted=self._project_trusted,
@@ -826,23 +857,66 @@ class SettingsManager:
             modified_project_nested_fields=tuple(
                 (k, frozenset(v)) for k, v in self._modified_project_nested_fields.items()
             ),
+            revision=self._revision,
         )
 
     def restore(self, snapshot: SettingsSnapshot) -> None:
-        """Put back the settings :meth:`snapshot` took (#663, ADR-0289). Nothing is written."""
+        """Put back the settings :meth:`snapshot` took, keeping every write made since (#663).
 
-        self._global_settings = snapshot.global_settings
-        self._project_settings = snapshot.project_settings
-        self._settings = snapshot.settings
+        Aelix-additive (ADR-0289 D2). Nothing is written. The order (Codex R08):
+        the snapshot's scopes first; then every setter write and
+        :meth:`edit_list` made after it — each one done, so on disk or queued
+        for it — again, with the value it left in memory (a nested write, its
+        key alone); a trust decision made since is kept, with the project scope
+        it read. What a :meth:`reload` alone brought in is dropped. The merged
+        view is rebuilt from the two scopes (verify V5), and a field stays
+        marked modified when either side had it so.
+        """
+
+        global_settings = copy.deepcopy(snapshot.global_settings)
+        project_settings = copy.deepcopy(snapshot.project_settings)
+        project_load_error = snapshot.project_load_error
+        project_trusted = snapshot.project_trusted
+        keep_project = self._trust_changed_at > snapshot.revision
+        if keep_project:
+            project_settings = copy.deepcopy(self._project_settings)
+            project_load_error = self._project_load_error
+            project_trusted = self._project_trusted
+        for (scope, name, nested), at in self._written_at.items():
+            if at <= snapshot.revision or (scope == "project" and keep_project):
+                continue
+            if scope == "global":
+                _carry_write(self._global_settings, global_settings, name, nested)
+            else:
+                _carry_write(self._project_settings, project_settings, name, nested)
+
+        def _union(
+            before: tuple[tuple[str, frozenset[str]], ...], now: dict[str, set[str]]
+        ) -> dict[str, set[str]]:
+            merged = {k: set(v) for k, v in before}
+            for k, v in now.items():
+                merged.setdefault(k, set()).update(v)
+            return merged
+
+        self._global_settings = global_settings
+        self._project_settings = project_settings
+        self._settings = deep_merge_settings(global_settings, project_settings)
         self._global_load_error = snapshot.global_load_error
-        self._project_load_error = snapshot.project_load_error
-        self._project_trusted = snapshot.project_trusted
-        self._modified_fields = set(snapshot.modified_fields)
-        self._modified_nested_fields = {k: set(v) for k, v in snapshot.modified_nested_fields}
-        self._modified_project_fields = set(snapshot.modified_project_fields)
-        self._modified_project_nested_fields = {
-            k: set(v) for k, v in snapshot.modified_project_nested_fields
-        }
+        self._project_load_error = project_load_error
+        self._project_trusted = project_trusted
+        self._modified_fields = set(snapshot.modified_fields) | self._modified_fields
+        self._modified_nested_fields = _union(
+            snapshot.modified_nested_fields, self._modified_nested_fields
+        )
+        if not keep_project:
+            # A trust change clears the project's modification sets
+            # (:meth:`set_project_trusted`); kept, they stay as it left them.
+            self._modified_project_fields = (
+                set(snapshot.modified_project_fields) | self._modified_project_fields
+            )
+            self._modified_project_nested_fields = _union(
+                snapshot.modified_project_nested_fields, self._modified_project_nested_fields
+            )
 
     def apply_overrides(self, overrides: Settings) -> None:
         """Pi parity: ``settings-manager.ts:432-434`` ``applyOverrides``."""
@@ -1073,6 +1147,7 @@ class SettingsManager:
                 self._modified_fields if scope == "global" else self._modified_project_fields
             )
             modified.discard(py_field)
+            self._note_write(scope, py_field)
             self._settings = deep_merge_settings(self._global_settings, self._project_settings)
             return list(new) if new is not None else []
 

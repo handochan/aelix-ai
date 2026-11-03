@@ -5,7 +5,7 @@ Pi parity: ``AgentSession.sessionFile`` sync getter
 (``packages/agent/src/harness/session/session.ts``). Aelix reads cached
 ``_metadata.path`` from the underlying storage via the same pattern as
 :attr:`AgentSessionRuntime.cwd`
-(``runtime/agent_session_runtime.py:347-357``).
+(``runtime/agent_session_runtime.py:368-378``).
 """
 
 from __future__ import annotations

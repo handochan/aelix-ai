@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4046-4318``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:4055-4327``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -15,7 +15,7 @@ The three rejected alternatives and why they fail:
   provider/stream bindings and silently reverts an in-session ``/model`` or
   ``/thinking`` choice the user made deliberately.
 * **B — mutate the private ``_state`` only**: ``_current_system_prompt``
-  (``core.py:4790-4795``) already reads ``_state`` as its fallback, but a
+  (``core.py:4834-4839``) already reads ``_state`` as its fallback, but a
   rebuild (``/new``, ``/fork``, ``/resume``) re-derives everything from
   ``parsed`` — so the swap would evaporate on the next session action.
 * **C — a kernel ``set_system_prompt``**: the kernel is read-only for P1
@@ -82,16 +82,16 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:4357-4359``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:4367-4369``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:2906``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:2915``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": SkillCatalog}`` box (#511: a
         ``LoadSkillsResult`` whose ``skills`` are the enabled ones) the factory
-        reads on every (re)build (``cli/entry.py:3923`` / ``:4284``).
+        reads on every (re)build (``cli/entry.py:3932`` / ``:4294``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -262,13 +262,13 @@ class AgentProfileService:
         1b. **Snapshot, and roll back on ANY failure.** Refusing first is not
            sufficient, because step 4 talks to the kernel and the kernel can say
            no: ``harness.set_active_tools`` validates every name against
-           ``state.tools`` and raises (``core.py:4805-4819``) for a typo, for an
+           ``state.tools`` and raises (``core.py:4849-4863``) for a typo, for an
            MCP tool whose server never connected, or for an extension tool under
            ``inherit_extensions: false`` — none of which profile PARSING can
            check. Without the rollback that raise left ``parsed.tools`` poisoned
            and the prompt already swapped, so the failure was reported in red
            while the next ``/new`` — which disposes the live harness BEFORE
-           rebuilding (``agent_session_runtime.py:927``) — died in
+           rebuilding (``agent_session_runtime.py:1042``) — died in
            ``AgentHarness.__init__`` against the same validator and left the REPL
            with a disposed harness. Proven end to end.
         2. **Reset to the pristine baseline.** Mandatory, not hygiene:
@@ -475,7 +475,7 @@ class AgentProfileService:
             # pre-build and one post-build; the emission rules are identical.
             #
             # THIS is the call that raises on a profile naming a tool the running
-            # process does not have (``core.py:4805-4819``), which is why
+            # process does not have (``core.py:4849-4863``), which is why
             # everything from step 2 down sits inside the try.
             # #510 (ADR-0283) — the profile's ``tools:`` / ``builtin_tools:``
             # are LOCKS, as the flags are: the policy is rebuilt from the

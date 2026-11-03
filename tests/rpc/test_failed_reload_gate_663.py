@@ -230,3 +230,72 @@ async def test_an_extensions_ctx_reload_says_what_runs_after_it_failed(tmp_path:
         errors = [m["text"] for m in c2["data"]["messages"] if m["type"] == "error"]
         assert any("aelix is stopped until /reload succeeds" in e for e in errors), c2
         assert rig.runtime.stopped == STOPPED_MESSAGE
+
+
+async def test_nothing_runs_over_rpc_while_stopped(tmp_path: Path) -> None:
+    """Codex R03, verify V1 and V7: bash, steer, follow-up and agents/run say the stop.
+
+    Before: RPC ``bash`` ran the client's command on the stopped runtime (ADR-0289
+    named it an exception), ``steer`` and ``follow_up`` answered ``success: true``
+    and the messages were lost, and ``agents/run`` said "Subagents are disabled".
+    """
+
+    rig = await _GateRig.create(tmp_path)
+    async with _rpc(rig) as wire:
+        rig.fail = _always
+        wire.send(_control("r1", "resources/reload"))
+        assert "aelix is stopped" in (await wire.response("r1"))["error"]
+
+        wire.send({"type": "bash", "id": "b1", "command": "echo RPC > bypass.txt"})
+        b1 = await wire.response("b1")
+        assert b1["success"] is False and b1["error"] == STOPPED_MESSAGE
+        assert not (rig.work / "bypass.txt").exists()
+
+        for kind in ("steer", "follow_up"):
+            wire.send({"type": kind, "id": kind, "message": "later"})
+            answer = await wire.response(kind)
+            assert answer["success"] is False and STOPPED_MESSAGE in answer["error"], answer
+        wire.send({"type": "get_state", "id": "s1"})
+        assert (await wire.response("s1"))["data"]["pendingMessageCount"] == 0
+
+        wire.send(_control("a1", "agents/run", name="helper", task="do it"))
+        a1 = await wire.response("a1")
+        assert a1["success"] is False and a1["error"] == STOPPED_MESSAGE, a1
+
+        # Recovery: a reload that works runs the client's bash again.
+        rig.fail = _never
+        wire.send(_control("r2", "resources/reload"))
+        assert (await wire.response("r2"))["success"] is True
+        wire.send({"type": "bash", "id": "b2", "command": "echo RPC > after.txt"})
+        assert (await wire.response("b2"))["success"] is True
+        assert (rig.work / "after.txt").exists()
+
+
+async def test_a_prompt_during_a_classic_swap_is_refused(tmp_path: Path) -> None:
+    """Verify V2: a classic ``new_session`` never took the control lock, so a
+    ``prompt`` sent while it rebuilt ran on the harness it had torn down."""
+
+    rig = await _GateRig.create(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+    real = rig.factory
+
+    async def slow(session: Session, *, reload_seed: ReloadSeed | None = None) -> AgentHarness:
+        entered.set()
+        await release.wait()
+        return await real(session, reload_seed=reload_seed)
+
+    rig.runtime._create_harness = slow
+    async with _rpc(rig) as wire:
+        wire.send({"type": "new_session", "id": "n1"})
+        await entered.wait()
+        requests = rig.requests
+        wire.send({"type": "prompt", "id": "p1", "message": "please window"})
+        p1 = await wire.response("p1")
+        assert p1["success"] is False
+        assert "unavailable while a session lifecycle transition runs" in p1["error"]
+        release.set()
+        assert (await wire.response("n1"))["success"] is True
+        assert rig.requests == requests and not (rig.work / "window.txt").exists()
+        # Once the swap has answered, prompts run on the new harness, gated.
+        assert (await _prompt(wire, "p2", "please after")).get("success") is True
+        assert not (rig.work / "after.txt").exists()

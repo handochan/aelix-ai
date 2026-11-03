@@ -449,11 +449,18 @@ and every extension's hooks, and says so:
 ```
 
 If that fails too, aelix stops rather than run anything without its checks:
-prompts, `!` lines and tool calls are refused with "aelix is stopped until
-/reload succeeds" until a `/reload` (or `/new`) works; `/`-commands still run.
-An extension's `ctx.reload()`, RPC `resources/reload` and a failed `/new`,
-`/resume`, `/fork` or `/import` raise `RebuildFailedError` with the same words
-(ADR-0289).
+prompts, `!` lines, tool calls, steering and follow-up messages are refused
+with "aelix is stopped until /reload succeeds" until a `/reload` (or `/new`)
+works; `/`-commands still run. An extension's `ctx.reload()`, RPC
+`resources/reload` and a failed `/new`, `/resume`, `/fork` or `/import` raise
+`RebuildFailedError` with the same words (ADR-0289).
+
+One reload or session change runs at a time. A `ctx.reload()`,
+`ctx.new_session()`, `ctx.fork()` or `ctx.switch_session()` asked for while
+another runs waits for it — but one asked for from inside it (a
+`session_shutdown`, `session_start` or `resources_discover` handler, or
+`setup()`) raises `RuntimeError` instead, since it would wait on itself. A
+`with_session` callback runs after the change is done, so it may start another.
 
 The panel writes the `extensions` list of `settings.json`, the same grammar as
 `skills` (see [skills-and-prompts](skills-and-prompts.md)): `-name` turns an

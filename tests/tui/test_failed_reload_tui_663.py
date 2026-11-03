@@ -334,3 +334,48 @@ async def test_the_kill_switch_reload_says_it_failed_instead_of_escaping(
     [entry] = [c for c in _joined(commits) if "/reload failed" in c]
     assert entry.startswith("✖ /reload failed during re-discovering resources: RuntimeError:")
     assert "kept the previous settings" in entry
+
+
+async def test_a_stop_ended_by_a_kept_reload_says_aelix_runs_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify V6: the stop ended (the bash call asked again), but no line said so.
+
+    And V7: ``/agents run`` while stopped said "Delegation is unavailable.
+    Relaunch with --agents" — the stopped harness unbinds the seam.
+    """
+
+    monkeypatch.setattr(runnable_models, "turn_refusal", lambda _m: None)
+    rig = await _GateRig.create(tmp_path)
+    async with _harness_chrome() as (_base, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = asyncio.ensure_future(
+            run_tui(
+                rig.runtime,
+                cwd=str(rig.work),
+                chrome=chrome,
+                install_signal_handlers=False,
+                model_registry=_Registry(),  # type: ignore[arg-type]
+                permission_ext=rig.permission,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        rig.fail = _always
+        pipe.send_text("/reload\n")
+        await _wait(lambda: rig.runtime.stopped is not None)
+
+        pipe.send_text("/agents run helper do the thing\n")
+        await _wait(lambda: f"✖ {STOPPED_MESSAGE}" in _joined(commits))
+        assert not any("Delegation is unavailable" in c for c in _joined(commits))
+
+        # The next rebuild fails again, the build on the previous settings works.
+        rig.fail = _once
+        pipe.send_text("/reload\n")
+        await _wait(lambda: "✓ aelix is running again" in _joined(commits))
+        assert rig.runtime.stopped is None
+        lines = _joined(commits)
+        kept = next(i for i, c in enumerate(lines) if "kept the previous settings" in c)
+        assert lines.index("✓ aelix is running again") == kept + 1
+
+        pipe.send_text("/quit\n")
+        await _quit_within(task)

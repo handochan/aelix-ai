@@ -79,3 +79,67 @@ async def test_restore_puts_back_what_snapshot_took() -> None:
     assert manager._modified_fields == {"theme"}
     # Nothing was written: the file still holds what the reload read.
     assert json.loads(storage.read("global") or "{}")["theme"] == "after"
+
+
+async def test_a_snapshot_is_a_copy_a_setter_cannot_reach() -> None:
+    """Codex R07 / verify V5: a setter changes the global scope in place.
+
+    The snapshot held that object, so a write after it changed the snapshot too:
+    after ``restore`` the global scope said the write and the merged view did
+    not, and the next unrelated setter flipped the theme.
+    """
+
+    manager, _storage = _manager({"theme": "before"})
+    snap = manager.snapshot()
+    manager.set_theme("written-between")
+    assert snap.global_settings.theme == "before"
+
+    manager.restore(snap)
+    assert manager.get_global_settings().theme == manager.get_theme()
+    manager.set_quiet_startup(True)
+    assert manager.get_theme() == manager.get_global_settings().theme
+
+
+async def test_restore_keeps_the_writes_made_after_the_snapshot() -> None:
+    """Codex R08 — the order: the snapshot, then every write made since, again."""
+
+    manager, storage = _manager(
+        {"theme": "before", "defaultModel": "m-before", "retry": {"enabled": True, "maxRetries": 3}}
+    )
+    snap = manager.snapshot()
+    storage.with_lock(
+        "global",
+        lambda _cur: json.dumps(
+            {"theme": "from-file", "defaultModel": "m-file", "retry": {"enabled": True, "maxRetries": 9}}
+        ),
+    )
+    await manager.reload()
+    manager.set_theme("user-write")
+    manager.set_retry_enabled(False)
+    await manager.flush()
+
+    manager.restore(snap)
+    # The writes stand, in memory as on disk...
+    assert manager.get_theme() == "user-write"
+    on_disk = json.loads(storage.read("global") or "{}")
+    assert on_disk["theme"] == "user-write" and on_disk["retry"]["enabled"] is False
+    retry = manager.get_global_settings().retry
+    assert retry is not None and retry.enabled is False
+    # ...and what only the re-read brought in is the snapshot's again, a nested
+    # sibling of a written key included.
+    assert manager.get_default_model() == "m-before"
+    assert retry.max_retries == 3
+
+
+async def test_restore_keeps_a_trust_decision_made_after_the_snapshot() -> None:
+    storage = InMemorySettingsStorage()
+    storage.with_lock("global", lambda _cur: json.dumps({"theme": "global"}))
+    storage.with_lock("project", lambda _cur: json.dumps({"theme": "project"}))
+    manager = SettingsManager.from_storage(storage, project_trusted=False)
+    snap = manager.snapshot()
+    assert manager.get_theme() == "global"
+    manager.set_project_trusted(True)
+
+    manager.restore(snap)
+    assert manager.is_project_trusted() is True
+    assert manager.get_theme() == "project"

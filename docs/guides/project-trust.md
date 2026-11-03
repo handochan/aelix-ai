@@ -295,7 +295,7 @@ between words at your terminal's width, as pi's does (#380).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 editing `trust.json` as the only way to change your mind. `/trust` re-opens the
-selector from inside a session (`tui/commands.py:1837`, registered at `:2387`)
+selector from inside a session (`tui/commands.py:1845`, registered at `:2395`)
 and **saves** your answer — it does not change the session you are in. Restart
 aelix for it to take effect; the message says so, as pi's does. A `/reload` does
 not apply it either: the session's trust is decided once, at launch, and every
@@ -341,7 +341,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:1052-1054`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:3902-3907`, the text at `:998-1003`), because a silent drop looks identical to a
+(`cli/entry.py:3911-3916`, the text at `:998-1003`), because a silent drop looks identical to a
 misconfiguration:
 
 ```

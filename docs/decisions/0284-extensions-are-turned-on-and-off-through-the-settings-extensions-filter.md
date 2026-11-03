@@ -207,8 +207,8 @@ harness was already torn down, its Guardrail and Permission handlers cleared,
 and the session kept running on it. A raise in `settings` or `build` now builds
 the session again on the settings it was running with ("… — kept the previous
 settings; fix the cause, then /reload again"), or, when that build fails too,
-stops ("… — aelix is stopped until /reload succeeds: …"); the line never says
-"nothing applied".
+stops ("… — aelix is stopped until /reload succeeds. Fix the cause, then
+/reload, or restart."); the line never says "nothing applied".
 
 *2026-11-03 note (#664):* "caught instead of escaping" held for `Exception`
 only. An extension whose import or `setup()` raised `SystemExit` (`sys.exit(1)`)

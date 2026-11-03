@@ -445,7 +445,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2363``) and render it
+    the harness's own auto-compaction guard at ``core.py:2402``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -516,7 +516,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5600-5606`` intersects ``_state.tools`` with
+    (``harness/core.py:5644-5650`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -1353,6 +1353,14 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
         return
 
     if sub == "run":
+        if getattr(ctx.harness, "disposed", False) is True:
+            # #663 (verify V7) — a stopped runtime's harness unbound the
+            # delegation seam: say the stop, not "Relaunch with --agents".
+            from aelix_agent_core.runtime import STOPPED_MESSAGE
+
+            reason = getattr(ctx.harness, "turns_held", None) or STOPPED_MESSAGE
+            ctx.commit(Text(f"✖ {reason}", style="bold red"))
+            return
         runtime = _subagent_runtime(ctx)
         if runtime is None:
             ctx.commit(Text(_DELEGATION_UNAVAILABLE, style="yellow"))
