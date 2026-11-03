@@ -217,7 +217,7 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
    word.
 10. **An extension's turn does not arm the keys.** `trigger_turn` runs with the chrome not
     running and `interrupt_armed` false, so Esc and Ctrl+C do not reach it in the TUI
-    (`tui/chrome.py:1024`). Pre-existing (Codex finding 6).
+    (`tui/chrome.py:1033`). Pre-existing (Codex finding 6).
 11. **`withdraw_tail` is not atomic on a suspending `FileSystem`.** An append that straddles
     its leaf line can put the input back. `LocalFileSystem`, the only one shipped, has a
     synchronous `append_file` and cannot reach it (`session/session.py:330`).
