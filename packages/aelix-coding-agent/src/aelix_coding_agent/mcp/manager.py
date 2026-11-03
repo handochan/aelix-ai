@@ -60,6 +60,7 @@ class McpClientManager:
             c.name: McpServerConnection(c) for c in contribs if c.name not in off
         }
         self._failed: set[str] = set()
+        self._tools_by_server: dict[str, tuple[AgentTool, ...]] = {}
 
     @property
     def connections(self) -> dict[str, McpServerConnection]:
@@ -72,6 +73,17 @@ class McpClientManager:
     @property
     def failed(self) -> frozenset[str]:
         return frozenset(self._failed)
+
+    @property
+    def tools_by_server(self) -> dict[str, tuple[AgentTool, ...]]:
+        """The wrappers the last :meth:`collect_agent_tools` made, by server (#25 review R07).
+
+        A wrapper's name is ``<server>__<tool>`` and a server name may hold
+        ``__`` itself, so the name cannot say which server a wrapper belongs to;
+        this can, and ``/reload`` hides a server's tools by it.
+        """
+
+        return dict(self._tools_by_server)
 
     async def connect_all(self) -> list[McpConnectionError]:
         """Connect every declared server.
@@ -103,13 +115,15 @@ class McpClientManager:
         cross-server collisions. Disconnected servers are skipped.
         """
         tools: list[AgentTool] = []
+        by_server: dict[str, tuple[AgentTool, ...]] = {}
         for name, conn in self._connections.items():
             if not conn.connected:
                 continue
             mcp_tools = await conn.list_tools()
-            tools.extend(
-                mcp_tools_to_agent_tools(conn, mcp_tools, name_prefix=name)
-            )
+            wrapped = mcp_tools_to_agent_tools(conn, mcp_tools, name_prefix=name)
+            by_server[name] = tuple(wrapped)
+            tools.extend(wrapped)
+        self._tools_by_server = by_server
         return tools
 
     async def call_tool_with_retry(

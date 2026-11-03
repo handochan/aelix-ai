@@ -846,7 +846,7 @@ class SubagentProgressBridge:
         Read through ``api.runtime`` rather than a captured ``ctx.ui`` for the
         reason in caveat 2, and compared by IDENTITY against the headless
         singleton — the same test ``ExtensionContext.has_ui`` itself performs
-        (``extensions/api.py:1238-1239``).
+        (``extensions/api.py:1247-1248``).
         """
 
         try:
@@ -883,7 +883,7 @@ class SubagentProgressBridge:
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:1775-1790`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:2057-2072`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for and ADR-0278 keeps; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

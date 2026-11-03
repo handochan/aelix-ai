@@ -27,7 +27,10 @@ each drawn once). Amended 2026-11-01 by ADR-0283 (#510): D15 is implemented
 (the set-level `defaultTools` grammar plugs into `ResourceSelection` through a
 `SelectionGrammar`), D16's tool half is done (one policy boundary, C7 tools,
 C11, C13), D11's window never leaves a header alone at the bottom, and D13's
-locks gain the tool flags.
+locks gain the tool flags. Amended 2026-11-03 by ADR-0284 (#25): D1 (a plain
+path entry in `extensions` is deferred — Codex F12; a path form compares
+case-insensitively on Windows), D8 (the `extensions` warning is the list's own)
+and D16 (the extension half is done).
 Date: 2026-10-31
 Issue: #511 (absorbs #595). Design (owner-approved layout A and §7 decisions
 2–11 and 13) and its triage: `.omc/specs/511-design-2026-10-31.md`; the review
@@ -139,6 +142,16 @@ yields on, off or no opinion. `-vue*` still matches nothing. The panels write
 the identity form (`"-pdf-tools"`), so an entry survives the skill moving
 directory. A symlinked file matches by either spelling. A pi user's file keeps
 working.
+
+*Amended 2026-11-03 by [ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) (#25; Codex F12).* For the `extensions` key the
+table's first row does NOT hold yet: a plain path entry would add an extension
+source — a new loading tier, with its own trust question — and is warned about
+once per launch and ignored (ADR-0284 D9, owner decision 8, a tracked
+follow-up). D1 is therefore amended for that key, not left unchanged; `!glob`,
+`+X` and `-X` apply to extensions as written above, with the identities
+ADR-0284 D1 lists. And on Windows a path form compares case-insensitively, for
+every key: an exact `+` / `-` path names a file whatever the case of its
+spelling, as NTFS does.
 
 ### D2. Scopes: project, then global, then on; a path reaches only its own scope
 
@@ -369,6 +382,12 @@ not a list of strings or a member that is not a non-empty string (ignored), a
 entries are ignored" — extensions until #25). Under `--no-skills` nothing is
 scanned, so "matches nothing" is not checked.
 
+*Amended 2026-11-03 by [ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) (#25).* `extensions` has its filter: its
+"not supported yet" warning is gone, replaced by the list's own — a malformed
+entry, a plain path entry (not supported yet, D1's note), and an entry that
+names no extension the first build found — said once, after the first build
+(not under `--no-extensions`, where nothing was discovered).
+
 ### D9. Same-name skills: `--skill` > project > global > bundled
 
 The first tier that has a name wins; the others are listed in the panel as
@@ -502,7 +521,15 @@ default. `ScopeList.present` tells an absent key from `[]`, and
   wrappers reused on every build, refusals, live server status, per-contribution
   restart requirements (C16); and `tabbed`'s interactive-tab lifecycle (C21).
   Until then a non-empty `extensions` key is warned about (D8) rather than
-  half-applied, and `_discover_entries` is untouched.
+  half-applied, and `_discover_entries` is untouched. *2026-11-03:* done in
+  [ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) — `extension_filter` runs between discovery and the load in phase G
+  (the vote load: the global file only) and phase P (the factory on every
+  build, the manifest scan, `aelix status`); an extension turned off is never
+  imported; `-e` (including a path another tier found first, Codex F06) and
+  the built-ins are never filtered; the inventory lists every extension found
+  without importing one; a pack turned off at `/reload` keeps its MCP
+  connections until restart with their tools hidden (owner decision 10); and
+  `/extension`'s Installed tab is the D11 panel embedded in `tabbed`.
 - **#510 `/tool`:** the tool setters and the registry mutations that bypass them
   (`set_active_tools` callers, `_refresh_extension_tools`, `set_tools`, the
   profile rollback's active-set assignment) behind one policy boundary (C7's

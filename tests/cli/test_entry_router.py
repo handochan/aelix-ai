@@ -248,6 +248,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # Accepted for the same reason as the two above.
         skill_control: object = None,
         tool_control: object = None,
+        # #25 (ADR-0284) — /extension's Installed tab over the build inventory.
+        extension_control: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.

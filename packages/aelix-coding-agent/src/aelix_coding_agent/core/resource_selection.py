@@ -36,7 +36,9 @@ if TYPE_CHECKING:
 
 Effect = Literal["next_request", "reload"]
 Role = Literal["item", "placeholder", "info"]
-LockKind = Literal["", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted"]
+LockKind = Literal[
+    "", "cli", "always_on", "unavailable", "profile", "shadowed", "untrusted", "status"
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -68,6 +70,9 @@ class ResourceItem:
     """The directory it was discovered under."""
     location: str = ""
     """Where the item lives, shortened for display."""
+    package_path: str | None = None
+    """#25 (review R02): a directory whose path forms name this item too — the
+    ``pyproject.toml`` package that declared an extension file."""
     role: Role = "item"
     """``item`` is something a list can name. A ``placeholder`` stands for what
     cannot be listed (a server that is off, an untrusted folder) and an ``info``
@@ -88,7 +93,10 @@ class Lock:
     """What fixed it, which picks the state line's wording (#510, ADR-0283):
     ``cli`` and ``profile`` "Locked on/off", ``unavailable`` "Unavailable",
     ``shadowed`` "Not loaded", ``always_on`` "Locked on", ``""`` and
-    ``untrusted`` "Locked"."""
+    ``untrusted`` "Locked"; ``status`` (#25's MCP rows) is the reason itself."""
+    refusal: str = ""
+    """What Space says on this row, when it is not the reason (#25: an MCP row
+    names where servers are turned on and off)."""
 
 
 @dataclass(frozen=True)
@@ -388,7 +396,9 @@ class ResourceSelection:
         entries, bad = grammar.validate(raw)
         problems.extend(f'{label}: "{key}" entry {p}; it is ignored' for p in bad)
         base = self.global_base if scope == "global" else self.project_base
-        return ScopeList(scope, tuple(entries or ()), base, present=entries is not None)
+        return ScopeList(
+            scope, tuple(entries or ()), base, present=entries is not None, path=self._path(scope)
+        )
 
     def _path(self, scope: Scope) -> str | None:
         manager = self.settings_manager
@@ -491,6 +501,10 @@ class ResourceSelection:
         }
         if not wanted:
             return SaveResult(True)
+        # The rows of this file's own scope first (#25 review R3): an edit that
+        # can only write a name two rows share is then checked against their
+        # edits already made, in whichever order the rows were toggled.
+        wanted = dict(sorted(wanted.items(), key=lambda kv: items[kv[0]].scope != scope))
         key = kind.settings_key
         grammar = grammar_of(kind)
         problems: list[str] = []

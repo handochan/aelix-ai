@@ -33,7 +33,7 @@ prints one. That is why every cross-directory link here is an absolute URL —
   `aelix status` show, and how an extension's servers relate.
 - [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
-  (tools, slash commands, hooks, flags).
+  (tools, slash commands, hooks, flags), and turn one off in `/extension`.
 - [extension-providers.md](extension-providers.md) — a model provider from an
   extension: `register_provider`, its own `/login` method, and a custom wire
   adapter.

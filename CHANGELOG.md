@@ -23,6 +23,49 @@ unwritten. Add them with the next release.
 
 ### Added
 
+- **Extensions can be turned off one at a time, in `/extension`'s Installed tab
+  (#25, ADR-0284).** The tab used to be a read-only list; turning one extension
+  off meant deleting its file or uninstalling it.
+  - Every extension aelix found is listed, on or off — built-in, project,
+    global, installed and `-e` — with its description and what it contributes,
+    and the MCP servers (read-only, in `/mcp`'s words, with the extension that
+    declared each). Space turns one on or off, ← → picks the global or this
+    project's `settings.json`, typing searches, Enter saves, Esc discards; Tab
+    moves to Discover and Sources and back without losing unsaved changes.
+  - Nothing changes until `/reload` or a restart; the row says `off · /reload`
+    until then. An extension that is off is not imported at all — not to list
+    it, not to vote on project trust, not by `aelix status` — so its tools,
+    commands, hooks and skills are gone. `/reload` leaves one line saying what
+    changed and what failed to load.
+  - The panel writes the `extensions` list, pi's grammar: `-name` / `+name`,
+    `!glob`, a path; the project's file decides over the global one. A name is
+    the manifest's `plugin.id`, an installed pack's entry-point or distribution
+    name (also when a symlink in the extensions folder found it first), a
+    file's name without `.py`, or a directory's name — a `pyproject.toml`
+    package's directory included, and each file it declares also by its row's
+    label (`bundle/worker.py`). When two extensions share a name the panel
+    writes the one you toggled by its path, so the other keeps its value;
+    turning both off in one save writes the name, and a change only a hand
+    edit can make says which entry to add to which file. A path entry works
+    under a symlinked `~/.aelix` too. An entry that names nothing found, or a
+    built-in, is warned about at launch.
+  - Guardrail, Permission and Status stay always on, the Agents extension
+    follows `[features] agents`, an extension named with `-e` stays on for the
+    run, and `--no-extensions` keeps everything else off; each row says so. An
+    untrusted project's extensions are one row with a count; nothing there is
+    read.
+  - An MCP server an extension declared keeps its connection when `/reload`
+    turns the extension off — its tools, and only its own, are hidden from the
+    model at once, and come back usable when it is turned on again — and one
+    whose extension was off at launch connects at the next launch. An extension
+    that is on but fails to load keeps its servers' tools in use, and says so.
+    A provider an extension registered stays in `/model`, and a new shortcut key
+    binds, at the next launch; the save and `/reload` say so.
+  - A delegated agent never loads an extension the session that delegated to it
+    turned off, nor starts that extension's MCP servers.
+  - `/tool` shows an extension turned off as one `ext off` row, and two that
+    share a name with where each came from (`weather.py (global)`).
+
 - **Tools can be turned off one at a time: `--exclude-tools` for a run, and the
   `/tool` panel for good (#510, ADR-0283).** Turning `bash` off used to mean
   naming every other tool, extension and MCP tools included, in `--tools`.
@@ -193,8 +236,8 @@ unwritten. Add them with the next release.
     its folder.
   - An entry that matches nothing, a path that is not a directory and a value
     that is not a list of strings are reported once on stderr at launch, and so
-    is a non-empty `themes`, `packages` or `extensions` key, which nothing reads
-    yet (the extension filter comes with `/extension`'s panel, #25).
+    is a non-empty `themes` or `packages` key, which nothing reads yet
+    (`extensions` is read by `/extension`'s panel, #25).
   - New guide: `aelix docs skills-and-prompts`.
 
 - **A delegated agent can be resumed on its own session, inside the limits it
@@ -1167,6 +1210,19 @@ unwritten. Add them with the next release.
   draft.
 
 ### Fixed
+
+- **`/reload` no longer prints an extension's load error over the input, and
+  `/extension` no longer shows the extensions of the launch after it (#25,
+  ADR-0284).** A `setup()` that raised printed `Warning: extension load: …` raw
+  onto the input row, inside an open panel, and `/extension` kept showing the
+  extension with `✓` because it read a copy taken at start. `/reload` now leaves
+  one transcript line naming what failed — a manifest that no longer parses
+  included — and `/extension` reads what the latest build loaded; `/new`,
+  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says whether
+  anything was applied ("nothing applied; /reload again or restart", or which
+  later step failed), and `/extension` shows it until a build succeeds. A
+  manifest pack that waits for its first command and then fails to start is
+  shown as failed instead of loaded.
 
 - **The input, status line and footer go back to the bottom of the terminal
   when a dialog closes (#632, ADR-0280).** A dialog that opens above the input —

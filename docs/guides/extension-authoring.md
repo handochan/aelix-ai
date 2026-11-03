@@ -400,6 +400,88 @@ aelix --no-extensions      # disable auto-discovery (project-local + global + en
 `--no-extensions` (`-ne`) turns off the three auto-discovery channels;
 extensions you pass explicitly with `-e` still load.
 
+### Turning one extension off
+
+`/extension` opens on its **Installed** tab, a list of every extension aelix
+found — on or off — grouped by where it came from: BUILT-IN, PROJECT
+(`.aelix/extensions`), GLOBAL (`~/.aelix/agent/extensions`), INSTALLED
+(entry points), THIS RUN (`-e`), and the MCP servers. Space turns the row under
+the cursor on or off, ← → picks the file Enter saves to (**Global** or **This
+project**), typing searches, Enter saves, Esc discards; Tab moves to the
+Discover and Sources tabs and back, and unsaved changes wait for you there.
+
+Nothing changes until **`/reload`** (or a restart): the row says `off · /reload`
+until then. After `/reload` an extension that is off is not imported at all —
+its tools, commands, hooks and skills are gone — and `/reload` leaves one line
+saying what changed and what failed:
+
+```
+Extensions after /reload: weather.py off · broken-ext.py failed
+    ✖ broken-ext.py failed to load: RuntimeError: boom (see /extension)
+```
+
+A pack whose manifest no longer parses is said there too (`✖ broken was not
+loaded: Invalid manifest …`). `/new`, `/fork` and `/resume` say what failed to
+load below the new session's banner instead of printing it over the input.
+
+The panel writes the `extensions` list of `settings.json`, the same grammar as
+`skills` (see [skills-and-prompts](skills-and-prompts.md)): `-name` turns an
+extension off, `+name` back on, `!glob` turns off what matches, and the
+project's file decides over the global one. The name is the manifest's
+`plugin.id`, an installed pack's entry-point or distribution name, a `.py`
+file's name without `.py`, or a package directory's name — for a package
+whose `pyproject.toml` lists its files under `[tool.aelix] extensions`, the
+directory's name turns them all off, and each file's own name (or its row's
+label, `bundle/worker.py`) just that one:
+
+```json
+{ "extensions": ["-weather", "-jira-tools"] }
+```
+
+A path works too (`-extensions/weather.py`, relative to the file's folder; on
+Windows in any case; a symlinked `~/.aelix` is fine). A plain path with no
+`-`/`+`/`!` — which in pi adds a place to look for extensions — is not
+supported yet; aelix warns and ignores it, as it does `-builtin:…` (the
+built-ins below cannot be turned off). An entry that names no extension aelix
+found is warned about at launch.
+
+When two extensions share a name — a global and a project `weather.py` — the
+panel writes the one you toggled by its path, so the other keeps its value;
+the rows read `weather.py (global)` and `weather.py (project)`, here and in
+`/tool`. A file can name by path only its own extensions, so turning the global
+one off is saved to **Global**; the panel says so if you pick the other file.
+Turning both off in one save writes `-weather`, to either file. A hand-written
+`-weather` turns both off; turning one back on would turn the other on too,
+and the panel cannot keep that one off for you, so it says what to add by
+hand — `add "-extensions/weather.py" to .aelix/settings.json, then save
+again`.
+
+What cannot be turned off here, and says why on its row: Guardrail, Permission
+and Status (always on), the Agents extension (it follows `[features] agents` in
+`/settings`), an extension you named with `-e` (for this run), and everything
+under `--no-extensions` (run without it to turn them on and off). An untrusted
+project's extensions are one row with how many there are; nothing in that
+folder is read.
+
+Some things wait for a restart even after `/reload`, and the save and the
+`/reload` line say so per extension: an MCP server an extension declared keeps
+its connection (its tools are hidden) until restart, and one whose extension was
+off at launch connects at the next launch; a provider an extension registered
+stays in `/model`; a shortcut key an extension adds binds at the next launch.
+An extension that is on but fails to load leaves the MCP servers its manifest
+declared connected, with their tools in use — they were started at launch from
+the manifest, and the next launch starts them again — and its row and the
+`/reload` line say exactly that.
+
+A delegated agent with `inherit_extensions: true` reads its own settings, but
+never loads an extension the session that delegated to it turned off, nor
+starts the MCP servers that extension declared: the parent passes what it keeps
+off along (`$AELIX_EXTENSIONS_PARENT_OFF`, which can only turn extensions off).
+Under `--no-extensions` its agents load only their own `-e` extensions.
+
+`aelix status` lists the extensions the settings turn off, without importing
+them.
+
 ## Manifest contributions
 
 A manifest plugin (`aelix-plugin.toml`) can declare capabilities the host
@@ -692,6 +774,11 @@ session — via `aelix extension install` or `/reload` — therefore does not st
 its MCP servers, and no error is printed because nothing failed. Restart the
 process and they come up. Tools, commands and themes from the same pack do not
 need this; MCP servers specifically do.
+
+The same holds for a pack turned off or on in `/extension` (#25): a pack that is
+off at launch has its servers neither scanned nor started; turned on, they
+connect at the next launch. A pack turned off by `/reload` keeps its servers
+connected until restart, but their tools are taken away from the model at once.
 
 ## Publishing
 

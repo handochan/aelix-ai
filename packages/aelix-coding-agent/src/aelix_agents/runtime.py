@@ -632,7 +632,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:1032``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:1039``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -721,7 +721,7 @@ class _SubagentRuntimeImpl:
         ``SubagentRuntime`` Protocol: a budget is extension policy exactly as
         consent is (ADR-0197 §(i)), product-core must not learn to reason about
         one, and adding a Protocol MEMBER would make ``bind_subagents``'
-        ``isinstance`` sweep (``extensions/api.py:720``) refuse every v1
+        ``isinstance`` sweep (``extensions/api.py:729``) refuse every v1
         third-party runtime at bind time (S2).
 
         Its one caller is the extension's ``tool_call`` hook, which refuses a
@@ -1570,7 +1570,7 @@ class _SubagentRuntimeImpl:
                 # by definition — but ``RunningChild.state`` starts at ``"starting"``
                 # (``print_channel.py:224``) and ``PrintChannel.run`` can raise
                 # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-                # own ``try`` (``print_channel.py:1423-1424``) and does ``mkdtemp`` +
+                # own ``try`` (``print_channel.py:1430-1431``) and does ``mkdtemp`` +
                 # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
                 # ``TMPDIR`` comes straight out — and eight concurrent members each
                 # writing a prompt directory is precisely the load that fires it.

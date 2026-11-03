@@ -948,7 +948,7 @@ def build_child_env(
 ) -> dict[str, str]:
     """The child's environment — §(l).
 
-    Inherited wholesale and then amended in five places. What is NOT touched is
+    Inherited wholesale and then amended in six places. What is NOT touched is
     as deliberate as what is: ``AELIX_CODING_AGENT_DIR``, ``AELIX_SETTINGS_PATH``,
     ``AELIX_AUTH_PATH``, ``XDG_CONFIG_HOME``, ``PI_OFFLINE`` and every provider
     API key all pass through, because a child that cannot authenticate is a
@@ -969,7 +969,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:348-357``), and a child that waits forever on a
+    # forever" (``cli/entry.py:369-378``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that never ends on its
     # own — there is no time limit to end it (#604).
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -985,6 +985,13 @@ def build_child_env(
     from aelix_coding_agent.core.mcp_servers import pass_mcp_names_to_child
 
     pass_mcp_names_to_child(env)
+    # ...and so does what this launch's ``extensions`` settings turned off (#25
+    # verify V5): a child with ``inherit_extensions: true`` reads its own
+    # settings, usually untrusted, and must not import an extension its parent
+    # kept off. Suppress only, as the MCP names above.
+    from aelix_coding_agent.core.extension_selection import pass_extension_off_to_child
+
+    pass_extension_off_to_child(env)
 
     # Closes the worktree/venv trap deterministically: the parent may be running
     # from a source tree that is on ITS ``sys.path`` only because of how it was
@@ -1449,7 +1456,7 @@ class PrintChannel:
                     cwd=plan.cwd,
                     env=env,
                     # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:346-401``) and any
+                    # (``_read_piped_stdin``, ``cli/entry.py:367-422``) and any
                     # bytes that do arrive are PREPENDED to the task message.
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -1459,7 +1466,7 @@ class PrintChannel:
                     # ``{"start_new_session": True}`` here — without it the
                     # child joins the PARENT's process group, so one Ctrl+C
                     # SIGINTs every subagent at once with no envelope, and
-                    # neither parent (``tui/shell.py:2137-2154``) nor child
+                    # neither parent (``tui/shell.py:2211-2228``) nor child
                     # (``modes/print_mode.py:234-293``) installs a SIGINT
                     # handler to convert that into a result.
                     #
