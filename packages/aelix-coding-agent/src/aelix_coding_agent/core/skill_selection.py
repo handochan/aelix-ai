@@ -493,7 +493,19 @@ class SkillKind:
             )
         if not self._skill_commands_enabled():
             notes.append("/skill:<name> is turned off in settings (enableSkillCommands).")
+        else:
+            # #508 — the panel is where a user looks for their skills, and it
+            # never said how to run one. A banner is one row cut to the panel:
+            # this one fits the 49 cells it has at 50 columns (verify V3).
+            notes.append("Run one with /skill:<name>; /skill: lists them.")
         return notes
+
+    def source_word(self, skill: object) -> str | None:
+        """Where an enabled *skill* came from — ``project``, ``global``, ``bundled``
+        or ``--skill`` — for the ``/`` menu's tag (#508); ``None`` when unknown."""
+
+        source = self._catalog().origins.get(getattr(skill, "file_path", None) or "")
+        return _TIER_WORD[source.tier] if source is not None else None
 
     def _read_tool_on(self) -> bool:
         harness = self._harness()
