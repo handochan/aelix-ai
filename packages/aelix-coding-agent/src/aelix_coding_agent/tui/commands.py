@@ -690,7 +690,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1152-1174``).
+    made ``--tools ''`` enable everything (``entry.py:1154-1176``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -2129,11 +2129,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1975-1978``
+    # The double count was the same text twice over: ``cli/entry.py:1977-1980``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:750-756``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1975``.
+    # level up, at ``cli/entry.py:1977``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

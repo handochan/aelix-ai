@@ -77,7 +77,9 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   Enter saves; `/reload` applies and leaves one line naming what changed and what failed (the raw
   stderr print is gone); a `/reload` that raises says whether anything applied
   (`AgentSessionRuntime.reload_phase`, Codex F08) — 2026-11-03 note (ADR-0289, #663): past the
-  teardown it says "kept the previous settings" or "aelix is stopped until /reload succeeds". Failed and deferred-then-failed packs are their
+  teardown it says "kept the previous settings" or "aelix is stopped until /reload succeeds" — 2026-11-03
+  note (#664): an extension's `SystemExit` is a load error like any other, and a
+  `KeyboardInterrupt` in its import or `setup()` ends aelix with one line naming it. Failed and deferred-then-failed packs are their
   own state (F09). A pack turned off at `/reload` keeps its MCP connections until restart with
   their tools hidden; one off at launch connects at the next launch (F11); providers and new
   shortcut keys wait for a restart and say so (F10). `/tool` gets an `ext off` placeholder. A

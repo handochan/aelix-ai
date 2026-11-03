@@ -31,7 +31,7 @@ dropped, measured:
   writes ``ExtensionSourceInfo(source="entry_points")`` for the endpoint tier.
   Its ``path`` / ``base_dir`` fields are deliberately still unwritten, for the
   reason the next two bullets give.
-* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:358``,
+* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:396``,
   ``isinstance(entry, _ManifestEntry)`` — so it is ``None`` for every
   non-manifest extension.
 * For the other tiers the only path-shaped value is ``Extension.name``, which for
@@ -393,9 +393,9 @@ def classify_scope(extension: Any, *, cwd: str, agent_dir: str | None) -> str:
 
     Everything else is RECONSTRUCTED, because nothing records it:
     ``LoadExtensionsResult`` is a flat ``list[Extension]``. The path used is
-    ``resolved_path`` when set (manifest packs, ``loader.py:358``) and ``name``
+    ``resolved_path`` when set (manifest packs, ``loader.py:396``) and ``name``
     otherwise, matched against the two directory tiers documented at
-    ``loader.py:541-542``: ``<cwd>/.aelix/extensions`` and
+    ``loader.py:588-589``: ``<cwd>/.aelix/extensions`` and
     ``<agent_dir>/extensions``. Everything else path-shaped came from ``-e``.
 
     getattr-guarded throughout, like ``tui/extension_manager.py``'s builders, so

@@ -66,6 +66,7 @@ from aelix_agent_core.session.session import Session
 from aelix_agent_core.session.session_lock import SessionWriterLock
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
+from aelix_ai.utils.terminal_text import safe_for_terminal
 
 from aelix_coding_agent.agents import (
     AgentProfile,
@@ -133,6 +134,7 @@ from aelix_coding_agent.core.tool_selection import (
     resolve_saved_off,
 )
 from aelix_coding_agent.extensions.loader import (
+    ExtensionInterrupted,
     discover_and_load_extensions,
     discover_extension_records,
     gate_manifest_mcp_contribs,
@@ -5329,6 +5331,15 @@ def main_sync() -> None:
         # ``process.exit(129)``; Python pipelines conventionally use 141.)
         _stdout_to_devnull()
         sys.exit(141)
+    except ExtensionInterrupted as exc:
+        # #664 — a ``KeyboardInterrupt`` while an extension's import or
+        # ``setup()`` ran (Ctrl+C, or the extension raising one): the run ends
+        # as it always did (130, 128+SIGINT), with one line naming the extension
+        # instead of a traceback.
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+        print(f"aelix: {safe_for_terminal(str(exc))}", file=sys.stderr)
+        sys.exit(130)
     except BaseException:
         # Ctrl+C / SystemExit / crashes keep their exact semantics — but
         # flush NOW and devnull stdout on EPIPE so a dirty buffer + dead

@@ -101,7 +101,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:85``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_tiers`` (``entry.py:1550``).
+    same convention as ``_resolve_skill_tiers`` (``entry.py:1552``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"
@@ -138,7 +138,7 @@ def classify_scope(
       ``profile.parse_profile``'s ``extensions:``-at-project-scope prohibition —
       the last of which is the RCE cut (tier-3 explicit extension paths are
       ungated by BOTH ``--no-discovery`` and ``--no-project-local``,
-      ``extensions/loader.py:978-1072``). Proven end to end before the fix.
+      ``extensions/loader.py:1025-1119``). Proven end to end before the fix.
 
     ``spelled`` defaults to ``resolved`` so a caller that only has the resolved
     path keeps the old (target-only) behaviour; :func:`load_profile_file` passes

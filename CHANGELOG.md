@@ -1283,6 +1283,17 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An extension that calls `sys.exit()` no longer ends aelix (#664).** A
+  `setup()` (or the import of an extension's module) that raised `SystemExit`
+  went past the loader: `aelix -p` ended with no output at all and exit 1, the
+  TUI never drew, and a `/reload` closed it. It is now that extension's load
+  error like any other — `Warning: extension load: … error='sys.exit(1)'` at
+  launch, "✖ flip.py failed to load: SystemExit: sys.exit(1) (see /extension)"
+  after `/reload`, `/new`, `/resume` or `/fork` — and the other extensions load.
+  A `KeyboardInterrupt` there (Ctrl+C during a slow `setup()`, or the extension
+  raising one) still ends aelix, but with one line naming the extension instead
+  of a traceback.
+
 - **A `/reload` that fails no longer leaves aelix running without its safety
   checks (#663, ADR-0289).** `/reload` takes the running session apart before it
   builds the new one. When re-reading the settings or the build then failed, the
@@ -1329,7 +1340,8 @@ unwritten. Add them with the next release.
   extension with `✓` because it read a copy taken at start. `/reload` now leaves
   one transcript line naming what failed — a manifest that no longer parses
   included — and `/extension` reads what the latest build loaded; `/new`,
-  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says what
+  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes (an
+  extension's `sys.exit` or `KeyboardInterrupt` still did until #664): it says what
   runs after it (which later step failed, or — since #663 — that the previous
   settings were kept or that aelix stopped), and `/extension` shows it until a
   build succeeds. A

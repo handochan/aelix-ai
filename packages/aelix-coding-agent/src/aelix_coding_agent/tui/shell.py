@@ -2031,7 +2031,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4903``) always passes one, so this is
+            # production caller (``entry.py:4905``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -4138,11 +4138,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1975``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1977``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1958`` already printed at startup, and one that
+    #       what ``entry.py:1960`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4769,7 +4769,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4834-4850 and
+            # Two audiences, discriminated exactly as entry.py:4836-4852 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

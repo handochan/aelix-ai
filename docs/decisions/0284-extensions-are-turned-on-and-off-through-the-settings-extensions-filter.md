@@ -210,6 +210,19 @@ settings; fix the cause, then /reload again"), or, when that build fails too,
 stops ("… — aelix is stopped until /reload succeeds: …"); the line never says
 "nothing applied".
 
+*2026-11-03 note (#664):* "caught instead of escaping" held for `Exception`
+only. An extension whose import or `setup()` raised `SystemExit` (`sys.exit(1)`)
+or `KeyboardInterrupt` went past the loader's `except Exception` and ended
+aelix — `-p` with no output, the TUI on `/reload`. The loader now makes
+`SystemExit` an ordinary load error naming the extension ("✖ flip.py failed to
+load: SystemExit: sys.exit(1) (see /extension)"; a `sys.exit("message")` says its
+message) and loads the rest, at launch and on every rebuild. A
+`KeyboardInterrupt` still ends the run, since a Ctrl+C during a slow `setup()`
+looks the same, but as one line naming the extension and the step ("aelix:
+interrupted while the extension … was running its setup()", exit 130) instead
+of a traceback. `asyncio.CancelledError` passes through unchanged. A deferred
+pack's first command treats `sys.exit` the same way.
+
 ### D7. What waits for a restart (owner decision 10; Codex F10, F11)
 
 - **MCP servers a pack declares** are dialled once, at launch. Which plugin
