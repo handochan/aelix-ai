@@ -561,7 +561,7 @@ async def test_esc_during_the_overflow_summary_says_the_input_is_back_once_per_r
         await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
         tui.pipe.send_text(_CTRL_C)
         await tui.editor_reads("a queued steer")
-        assert tui.commits.count(INPUT_RETURNED_NOTICE) == 1, "the queued lines are back"
+        await _wait(lambda: tui.commits.count(INPUT_RETURNED_NOTICE) == 1)
 
         release.set()
         await tui.editor_reads("the prompt\n\na queued steer")

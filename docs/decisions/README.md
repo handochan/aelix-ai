@@ -46,7 +46,7 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   (aelix-only) carries what the caller may give back: the TUI puts it in the input box as typed,
   ahead of queued lines (which `abort()` used to lose) and any draft, and the abort line says so.
   Limits: a compaction inside the prompt is a barrier, the #336 window, the text stays in the file
-  on the branch left behind (`/tree` shows it), hosts must handle the event. Narrows ADR-0258;
+  on the branch left behind (the `/resume` list can show it), hosts must handle the event. Narrows ADR-0258;
   diverges from pi on the context, follows it on the queue.
 - [0283 — Tools are turned on and off through one policy: `--exclude-tools`, the tool flags as locks, `defaultTools` and the `/tool` panel](0283-tools-are-turned-on-and-off-through-one-policy.md)
   (Accepted 2026-11-01; #510). `ToolPolicy` holds the run's tool rules and

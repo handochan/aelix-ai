@@ -192,7 +192,9 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
 2. **The #336 window.** An abort made before `_run` (in a hook) is still discarded with
    its flag and the turn runs, as a plain abort is today. The window includes `_run`'s own
    `build_context` await, before the turn task exists (`harness/core.py:5473`, Codex finding
-   1): the request still goes out, and the input stays.
+   1): the request still goes out, and the input stays. Queued lines an Esc gives back in
+   that window can come back with no sentence if the previous run already said it, because
+   the notice's latch resets on `agent_start`.
 3. **A steer between drain and commit.** Pre-existing: a steer the loop has drained and
    not yet committed is lost on cancel. It is neither in the queue nor in the event.
 4. **The file keeps the text.** The withdrawn entry stays on the branch left behind and on
