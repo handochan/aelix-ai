@@ -722,6 +722,82 @@ def test_the_child_env_builder_passes_the_record_and_the_launch_removes_it(
     assert env[EXTENSIONS_PARENT_OFF_ENV] == record.to_env()
 
 
+async def test_a_spawned_child_gets_both_parent_records_on_both_channels_and_on_resume(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The off-set (#25) and the loader roots (#646) ride the same spawn.
+
+    ``build_child_env`` writes the first and each channel's ``run`` wraps what it
+    built in ``pass_loader_roots_to_child`` for the second, so a channel or a
+    resume that built its environment any other way would drop one of them. A
+    real child on each channel, first run and resume, echoes both back.
+    """
+
+    from aelix_agents.print_channel import PrintChannel, RunningChild
+    from aelix_agents.rpc_channel import RpcChannel
+    from aelix_coding_agent.builtin.permission import PARENT_ROOTS_ENV, _is_auto_allowable_write
+
+    from tests.agents_ext.test_rpc_channel import _plan, _print_stub, _rpc_stub
+
+    for key in (EXTENSIONS_PARENT_OFF_ENV, PARENT_ROOTS_ENV, "AELIX_MCP_CONFIG"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("AELIX_SETTINGS_PATH", raising=False)
+    # The parent's project names a skills folder the child's cwd holds.
+    repo = home / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".aelix").mkdir()
+    (repo / ".aelix" / "settings.json").write_text(json.dumps({"skills": ["../docs/skills"]}))
+    (repo / "docs").mkdir()
+    child_cwd = str(repo / "docs")
+    assert _is_auto_allowable_write("skills/v-sub/SKILL.md", child_cwd) is True
+
+    body = (
+        "def script(task):\n"
+        "    start()\n"
+        f"    say(json.dumps([os.environ.get({EXTENSIONS_PARENT_OFF_ENV!r}),"
+        f" os.environ.get({PARENT_ROOTS_ENV!r})]), input=1, output=1)\n"
+        "    done()\n"
+    )
+    print_script, rpc_script = _print_stub(body), _rpc_stub(body)
+    sessions: list[str | None] = []
+
+    def _argv(script: list[str]) -> Any:
+        def build(*_a: Any, session_path: str | None = None, **_k: Any) -> list[str]:
+            sessions.append(session_path)
+            return script
+
+        return build
+
+    resumed = str(home / "child.jsonl")
+    record = ExtensionOffRecord(frozenset({"path:/a/b.py"}))
+    results = []
+    set_launch_extension_off(record)
+    try:
+        for session_path in (None, resumed):
+            plan = _plan(home, cwd=child_cwd, parent_cwd=str(repo), session_path=session_path)
+            for channel in (
+                PrintChannel(argv_builder=_argv([sys.executable, "-c", print_script, "Task: t"])),
+                RpcChannel(argv_builder=_argv([sys.executable, "-c", rpc_script])),
+            ):
+                results.append(
+                    await channel.run(plan, child=RunningChild(id="sub-test", profile="scout"))
+                )
+    finally:
+        set_launch_extension_off(None)
+
+    assert sessions == [None, None, resumed, resumed]
+    for result in results:
+        assert result.ok is True, result
+        off, roots = json.loads(result.summary)
+        assert ExtensionOffRecord.from_env(off) == record
+        assert json.loads(roots) == {"cwds": [str(repo)], "files": []}
+        # What the child's gate makes of it: the parent's skills folder asks.
+        monkeypatch.setenv(PARENT_ROOTS_ENV, roots)
+        assert _is_auto_allowable_write("skills/v-sub/SKILL.md", child_cwd) is False
+        assert _is_auto_allowable_write("guide.md", child_cwd) is True
+        monkeypatch.delenv(PARENT_ROOTS_ENV)
+
+
 # --- V11: what a /new, /fork or /resume build failed to load --------------------------------
 
 
