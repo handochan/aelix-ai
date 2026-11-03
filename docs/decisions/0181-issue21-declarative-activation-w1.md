@@ -41,3 +41,16 @@ prints that it is not started, instead of the "starts MCP server" notice that
 used to print for it. Every name the file declares counts — an enabled, a
 disabled (`"enabled": false`) or a skipped entry's — and an untrusted project
 file's names do not. Manifests have no `enabled` key.
+
+
+## Note (2026-11-03, #25): a pack turned off is not scanned
+
+*Amended 2026-11-03 by [ADR-0284](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md) D2, D7.* The manifest scan applies the
+`extensions` settings filter (phase P): a pack the settings turn off contributes
+nothing, so its MCP servers are never dialled, and its lazy activation never
+runs. Which plugin declared each started server is fixed at launch; a pack
+turned off by `/reload` keeps its connection until restart while its tool
+wrappers are left out of every later build, and one turned on that was off at
+launch connects at the next launch. A deferred pack whose activation raises is
+recorded (`activation_failures`) and shown as failed in `/extension`.
+

@@ -1205,6 +1205,8 @@ class AelixTUIContext:
         *,
         initial: int = 0,
         filter_tabs: set[int] | None = None,
+        interactive: dict[int, Any] | None = None,
+        width: Callable[[], int] | None = None,
     ) -> None:
         """A framed tabbed viewer (WP-8, the /stats + /extension shell).
 
@@ -1234,9 +1236,25 @@ class AelixTUIContext:
             byte-identical to before (``q`` closes, every other key is a no-op).
             The filter RESETS to empty whenever the active tab changes.
             :data:`None` (the default) keeps every tab read-only.
+        :param interactive: (#25, ADR-0284 D8) tab index → a panel body
+            (:class:`~aelix_coding_agent.tui.selection_panel.SelectionPanelBody`'s
+            shape: ``plan`` / ``render`` / ``handle`` / ``save`` /
+            ``discard_lines``). See :meth:`_tabbed_interactive`.
+        :param width: with *interactive*, the width of each frame
+            (``terminal_columns`` under the render ceiling).
         """
 
         if not tabs:
+            return None
+        if interactive:
+            await self._tabbed_interactive(
+                title,
+                tabs,
+                initial=initial,
+                filter_tabs=filter_tabs or set(),
+                interactive=interactive,
+                width=width,
+            )
             return None
 
         names = [_picker_payload(name) for name, _render in tabs]
@@ -1364,6 +1382,270 @@ class AelixTUIContext:
 
         await show_modal(self.chrome, build)
         return None
+
+    async def _tabbed_interactive(
+        self,
+        title: str,
+        tabs: list[tuple[str, Callable[[], list[str]]]],
+        *,
+        initial: int,
+        filter_tabs: set[int],
+        interactive: dict[int, Any],
+        width: Callable[[], int] | None,
+    ) -> None:
+        """``tabbed`` with a panel in a tab (#25, ADR-0284 D8; Codex C21).
+
+        * The tab row is the panel's title row (layout A): ``── Extensions
+          [Installed] Discover Sources ── Save to [Global]  This project ──``.
+        * The height is fixed when it opens — the tallest tab's, under the
+          modal cap — and every tab draws exactly that many rows, so switching
+          tabs never resizes the modal (ADR-0194). A terminal that shrinks
+          takes rows off (the cap), never adds them.
+        * Tab / Shift-Tab switch tabs everywhere. On a panel tab every other
+          key is the panel's: ←/→ move "Save to", typing searches (``q``
+          too), Space toggles, Enter saves — a save that fails keeps the modal
+          open on that tab with its edits — and Esc / Ctrl+C close with its
+          one-line note. A read-only tab keeps its keys: ←/→ switch, ``q``
+          closes where it does not filter, Enter closes.
+        * Unsaved edits live in the body, so they survive switching tabs; a
+          close from another tab says they were discarded.
+        * Closing prints the lines and unmounts the modal in ONE
+          ``print_above_many`` suspend, as the standalone panel does.
+        """
+
+        from aelix_coding_agent.tui.overlay import _modal_cap  # noqa: PLC0415
+        from aelix_coding_agent.tui.selection_panel import (  # noqa: PLC0415
+            Layout,
+            fit_ansi,
+            tab_title_row,
+        )
+
+        chrome = self.chrome
+        names = [name for name, _render in tabs]
+        state: dict[str, Any] = {"idx": max(0, min(initial, len(tabs) - 1)), "filter": ""}
+        tasks: set[asyncio.Task[Any]] = set()
+
+        def _width() -> int:
+            if width is not None:
+                with contextlib.suppress(Exception):
+                    return max(20, int(width()))
+            return 80
+
+        def _rows() -> int:
+            try:
+                return int(chrome.app.output.get_size().rows)
+            except Exception:  # noqa: BLE001 — no terminal (tests) → a 24-row screen
+                return 24
+
+        def _cap() -> int:
+            try:
+                cap = _modal_cap(chrome, None)
+            except Exception:  # noqa: BLE001
+                cap = _rows()
+            return max(1, min(_rows() - 7, cap))
+
+        def _invalidate() -> None:
+            with contextlib.suppress(Exception):
+                chrome.invalidate()
+
+        def _lines(idx: int) -> list[str]:
+            try:
+                lines = [_picker_payload(line) for line in tabs[idx][1]()]
+            except Exception as exc:  # noqa: BLE001 — degrade, never crash
+                lines = [
+                    f"{_PICK_DIM}(this tab failed to render: {_picker_payload(str(exc))}){_PICK_RST}"
+                ]
+            if idx in filter_tabs and state["filter"]:
+                needle = state["filter"].lower()
+                lines = [line for line in lines if needle in _ANSI_RE.sub("", line).lower()]
+                if not lines:
+                    lines = [f"{_PICK_DIM}(no matches){_PICK_RST}"]
+            return lines
+
+        # The height, fixed now: the tallest tab under the cap at this moment.
+        available = _cap()
+        first_width = _width()
+        heights: list[int] = []
+        for index in range(len(tabs)):
+            body = interactive.get(index)
+            if body is not None:
+                body.model.tabbed = True
+                heights.append(body.plan(first_width, available).height)
+            else:
+                heights.append(1 + (1 if index in filter_tabs else 0) + max(1, len(_lines(index))) + 1)
+        height = max(1, min(available, max(heights)))
+        for index, body in interactive.items():
+            planned = body.layout
+            body.layout = Layout(first_width, height, planned.description_rows, planned.banner_rows)
+            body.title_row = (
+                lambda model, w, _i=index: tab_title_row(title, names, _i, w, model=model)
+            )
+
+        def _height() -> int:
+            return max(1, min(height, _cap()))
+
+        def _read_only_rows(idx: int, w: int, h: int) -> list[str]:
+            rows = [tab_title_row(title, names, idx, w)]
+            if idx in filter_tabs:
+                rows.append(fit_ansi(" " + _filter_line(state["filter"], "(type to filter)"), w))
+            room = max(0, h - len(rows) - 1)
+            body = _lines(idx)
+            if len(body) > room and room > 0:
+                # The height is fixed (ADR-0194): what does not fit is counted,
+                # and the filter narrows it.
+                more = len(body) - room + 1
+                body = [*body[: room - 1], f"{_PICK_DIM}… {more} more line{'s' if more != 1 else ''}{_PICK_RST}"]
+            rows.extend(fit_ansi(" " + line, w) for line in body[:room])
+            rows.extend([""] * (h - 1 - len(rows)))
+            hint = (
+                "Tab/←→ switch · type to filter · Esc close"
+                if idx in filter_tabs
+                else "Tab/←→ switch · Esc close"
+            )
+            rows.append(fit_ansi(f"{_PICK_DIM} {hint}{_PICK_RST}", w))
+            return rows[:h]
+
+        def render() -> ANSI:
+            w = _width()
+            h = _height()
+            idx = state["idx"]
+            body = interactive.get(idx)
+            rows = body.render(w, h) if body is not None else _read_only_rows(idx, w, h)
+            rows = [fit_ansi(row, w) for row in rows[:h]]
+            rows.extend([""] * (h - len(rows)))
+            return ANSI("\n".join(rows))
+
+        def build(result: asyncio.Future[Any]) -> Window:
+            kb = KeyBindings()
+
+            async def _close(lines: list[object]) -> None:
+                def _unmount() -> None:
+                    chrome.unmount_modal()
+                    with contextlib.suppress(Exception):
+                        chrome.focus_input()
+                    if not result.done():
+                        result.set_result(None)
+
+                printer = getattr(chrome, "print_above_many", None)
+                try:
+                    if printer is None:
+                        _unmount()
+                        for line in lines:
+                            await chrome.print_above(line)
+                        return
+                    await printer(lines, apply_before_redraw=_unmount)
+                except Exception:  # noqa: BLE001 — never strand an open modal
+                    _unmount()
+
+            def _spawn(coro: Any) -> None:
+                task = asyncio.get_running_loop().create_task(coro)
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+            def _busy() -> bool:
+                return any(body.busy for body in interactive.values())
+
+            def _discard() -> list[object]:
+                lines: list[object] = []
+                for body in interactive.values():
+                    lines.extend(body.discard_lines())
+                return lines
+
+            async def _save(body: Any) -> None:
+                lines = await body.save()
+                if lines is not None:
+                    await _close(lines)
+                _invalidate()
+
+            def _switch(delta: int) -> None:
+                if _busy():
+                    return
+                state["idx"] = (state["idx"] + delta) % len(tabs)
+                state["filter"] = ""
+                _invalidate()
+
+            def _too_small(body: Any) -> bool:
+                layout = body.layout
+                return _height() < layout.fixed_rows + 1
+
+            def _key(key: str) -> Callable[[Any], None]:
+                def _run(event: Any) -> None:
+                    idx = state["idx"]
+                    body = interactive.get(idx)
+                    data = getattr(event, "data", None) or ""
+                    if body is not None:
+                        if body.layout is not None:
+                            body.layout = Layout(
+                                _width(),
+                                _height(),
+                                body.layout.description_rows,
+                                body.layout.banner_rows,
+                            )
+                        outcome = body.handle(key, data, too_small=_too_small(body))
+                        if outcome == "save":
+                            _spawn(_save(body))
+                        elif outcome == "close":
+                            # The panel's own note, and any other panel's.
+                            others = [
+                                line
+                                for i, b in interactive.items()
+                                if i != idx
+                                for line in b.discard_lines()
+                            ]
+                            _spawn(_close(body.discard_lines() + others))
+                        if outcome != "ignored":
+                            _invalidate()
+                        return
+                    if _busy():
+                        return
+                    filterable = idx in filter_tabs
+                    if key in ("left", "right"):
+                        _switch(1 if key == "right" else -1)
+                    elif key in ("escape", "c-c", "enter", "c-j") or (key == "q" and not filterable):
+                        _spawn(_close(_discard()))
+                    elif key == "backspace" and filterable and state["filter"]:
+                        state["filter"] = state["filter"][:-1]
+                        _invalidate()
+                    elif filterable and key in ("<any>", "q", "space"):
+                        text = " " if key == "space" else data
+                        printable = "".join(ch for ch in text if ch.isprintable())
+                        if printable:
+                            state["filter"] += printable
+                            _invalidate()
+
+                return _run
+
+            kb.add("tab")(lambda _e: _switch(1))
+            kb.add("s-tab")(lambda _e: _switch(-1))
+            for key in (
+                "up",
+                "down",
+                "pageup",
+                "pagedown",
+                "home",
+                "end",
+                "space",
+                "left",
+                "right",
+                "backspace",
+                "enter",
+                "c-j",
+                "escape",
+                "c-c",
+                "q",
+            ):
+                kb.add(key)(_key(key))
+            kb.add("<any>")(_key("<any>"))
+            return Window(
+                FormattedTextControl(render, focusable=True, key_bindings=kb),
+                height=lambda: Dimension.exact(_height()),
+                dont_extend_height=True,
+            )
+
+        await show_modal(chrome, build)
+        for task in list(tasks):
+            with contextlib.suppress(Exception):
+                await task
 
     async def multiselect(
         self,

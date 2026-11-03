@@ -360,6 +360,11 @@ def _render_text(report: dict[str, Any], stream: TextIO) -> None:
 
     for err in report.get("extension_errors", ()):
         print(f"  ! {err}", file=stream)
+    off = report.get("off_extensions") or []
+    if off:
+        print(f"Turned off in settings ({len(off)}; not imported):", file=stream)
+        for e in off:
+            print(f"  {e['name']}  {e['scope']}", file=stream)
 
     if exts is not None:
         print(
@@ -473,6 +478,7 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         report["discovered_extensions"] = None
         return report
 
+    from aelix_coding_agent.core.extension_selection import describe_record, extension_filter
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
     loaded = await discover_and_load_extensions(
@@ -480,7 +486,18 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         cwd=cwd,
         agent_dir=Path(agent_dir) if agent_dir else None,
         no_project_local=not project_trusted,
+        # #25 (ADR-0284, phase P) — the ``extensions`` lists a launch here
+        # reads: an extension they turn off is listed, never imported.
+        entry_filter=extension_filter(
+            _extension_lists(cwd, agent_dir, project_trusted), phase="P"
+        ),
     )
+    report["off_extensions"] = [
+        {"name": bounded_emitted_value(info.label), "scope": record.tier}
+        for record in loaded.discovered
+        if not record.selected
+        for info in (describe_record(record),)
+    ]
     summaries: tuple[ExtensionSnapshot, ...] = summarise_extensions(
         loaded.extensions, cwd=str(cwd), agent_dir=agent_dir
     )
@@ -498,6 +515,35 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     # 4138-character ``plugin.version`` reaching a report unbounded.
     report["extension_errors"] = [bounded_emitted_value(str(e)) for e in loaded.errors]
     return report
+
+
+def _extension_lists(cwd: Path, agent_dir: str | None, project_trusted: bool) -> Any:
+    """Both ``extensions`` lists as a launch here reads them (#25); none if unreadable.
+
+    The project's file only when this command found the folder trusted, as the
+    launch reads it only then (ADR-0279 D3).
+    """
+
+    from aelix_ai.settings import SettingsManager
+
+    from aelix_coding_agent.core.resource_selection import SettingsLists, settings_lists
+
+    try:
+        manager = SettingsManager.create(
+            cwd=str(cwd),
+            agent_dir=Path(agent_dir) if agent_dir is not None else None,
+            project_trusted=project_trusted,
+        )
+        global_path = manager.scope_path("global")
+        return settings_lists(
+            manager,
+            "extensions",
+            global_base=str(global_path.parent) if global_path is not None else str(agent_dir),
+            project_base=str(cwd / ".aelix"),
+            project_trusted=project_trusted,
+        )
+    except Exception:  # noqa: BLE001 — an unreadable file filters nothing here
+        return SettingsLists()
 
 
 def _default_project_trust(cwd: Path, agent_dir: str | None) -> DefaultProjectTrust:

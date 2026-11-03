@@ -530,6 +530,15 @@ class _ExtensionRuntime:
         # parks entries here, the command-dispatch layer pops + activates.
         # A fresh runtime per (re)build means /reload re-defers naturally.
         self.pending_activations: dict[str, PendingActivation] = {}
+        # #25 (ADR-0284, Codex F09) — a deferred plugin whose activation
+        # raised: plugin id -> the error, so ``/extension`` says "failed"
+        # rather than "deferred" or "loaded". Fresh per (re)build, like the
+        # pending table: ``/reload`` re-defers and forgets.
+        self.activation_failures: dict[str, str] = {}
+        # #25 (Codex F10) — provider name -> the extension that registered it.
+        # A provider outlives a ``/reload`` that drops its extension (ADR-0179
+        # FU3), so ``/extension`` and the reload line say it stays until restart.
+        self.provider_owners: dict[str, str] = {}
         # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) — flag values
         # runtime state container. Pi parity: ``runner.ts:409-411``
         # ``getFlagValues`` / ``setFlagValue`` over a ``Map<string,
@@ -631,7 +640,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:591-599``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:600-608``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -651,7 +660,7 @@ class _ExtensionRuntime:
         3. DEPTH (finding I4). Product-core will not HOLD a runtime inside a
            delegated child, regardless of which extension tier produced it.
            This is the fork-bomb invariant living in the seam rather than in
-           one extension's constructor — ``extensions/loader.py:917-920`` drops
+           one extension's constructor — ``extensions/loader.py:1075-1078`` drops
            tier-4 entry points under ``--no-extensions`` and
            ``agents/profile.py:408-413`` bans ``extensions:`` at project
            scope, but a user-scope tier-1 extension still loads in a child
@@ -1972,6 +1981,7 @@ class ExtensionAPI:
         if isinstance(config, ProviderConfigInput):
             config = snapshot_provider_config(name, config)
         self._runtime.pending_provider_registrations.append((name, config))
+        self._runtime.provider_owners[name] = self._extension.name
         # Best-effort fan-out to the current in-process registry so
         # ``ctx.model_registry`` callers see the registration immediately.
         # Phase 4 (ADR-0038) replays via ``_ExtensionRuntime.bind_model_registry``.

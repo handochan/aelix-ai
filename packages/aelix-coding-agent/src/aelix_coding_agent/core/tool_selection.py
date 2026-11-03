@@ -21,7 +21,7 @@ Four things live here:
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast, get_args
 
@@ -599,6 +599,7 @@ class ToolKind:
         mcp_statuses: Callable[[], Sequence[Any]] = lambda: (),
         extension_errors: Callable[[], Sequence[Any]] = lambda: (),
         extra_rows: Callable[[], Sequence[tuple[ResourceItem, Lock]]] = lambda: (),
+        extension_tiers: Callable[[], Mapping[str, str]] = lambda: {},
     ) -> None:
         if builtin is None:
             from aelix_coding_agent.tools import ALL_TOOL_NAMES  # noqa: PLC0415
@@ -612,6 +613,9 @@ class ToolKind:
         self._extension_errors = extension_errors
         self._extra_rows = extra_rows
         """#25's seam: rows for extensions that are off, with their locks."""
+        self._extension_tiers = extension_tiers
+        """#25's seam (round-1 verify R6): by ``Extension.name``, the tier of each
+        extension whose label another one shares, for its group title."""
         self._order = _builtin_order()
 
     # --- reading -----------------------------------------------------------
@@ -646,10 +650,17 @@ class ToolKind:
         runner = getattr(harness, "extension_runner", None)
         extensions = list(getattr(runner, "extensions", None) or [])
         owner: dict[str, tuple[int, str]] = {}
+        tiers = self._tiers()
         for index, ext in enumerate(extensions):
+            ext_label = _extension_label(ext)
+            tier = tiers.get(str(getattr(ext, "name", "")))
+            if tier:
+                # Two groups both titled ``EXTENSION  weather.py`` (R6): the
+                # tier, as the off placeholder and ``/extension`` show it.
+                ext_label = f"{ext_label} ({tier})"
             for name in getattr(ext, "tools", None) or {}:
                 if name not in self.builtin and name not in owner:
-                    owner[name] = (index, _extension_label(ext))
+                    owner[name] = (index, ext_label)
         servers = self._servers()
         server_names = [str(getattr(s, "name", "")) for s in servers]
         rows: list[tuple[tuple[int, int, int], ResourceItem]] = []
@@ -744,6 +755,12 @@ class ToolKind:
             return list(self._extra_rows() or ())
         except Exception:  # noqa: BLE001
             return []
+
+    def _tiers(self) -> Mapping[str, str]:
+        try:
+            return dict(self._extension_tiers() or {})
+        except Exception:  # noqa: BLE001 — a render path never raises
+            return {}
 
     def locks(self) -> dict[str, Lock]:
         policy = self._policy()

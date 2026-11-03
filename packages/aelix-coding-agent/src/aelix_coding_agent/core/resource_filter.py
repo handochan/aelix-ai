@@ -46,6 +46,8 @@ Scope = Literal["global", "project"]
 
 _PREFIXES = ("!", "+", "-")
 _GLOB_CHARS = re.compile(r"[*?\[{]")
+#: Read per call so a test can stand in for Windows (#25, ADR-0284 D1).
+_OS_NAME = os.name
 
 
 class FilterTarget(Protocol):
@@ -70,6 +72,8 @@ class Target:
     identities: tuple[str, ...]
     path: str | None = None
     scope: str | None = None
+    package_path: str | None = None
+    """A directory whose path forms name this item too (:func:`_forms`)."""
 
 
 def reaches(target: FilterTarget, list_scope: Scope | None) -> bool:
@@ -99,6 +103,8 @@ class ScopeList:
     present: bool = True
     """Whether the file has the key at all. Only a set-level grammar (``defaultTools``,
     #510) tells an absent key from an empty list; for D1's lists both say nothing."""
+    path: str | None = None
+    """The file itself, for a refusal that asks for an entry there (#25 review R2)."""
 
 
 def split_entry(entry: str) -> tuple[str, str]:
@@ -186,7 +192,14 @@ def _forms(
     With ``paths`` false only the NAME forms (the file's and, for a
     ``SKILL.md``, its directory's basename) are returned (:func:`reaches`).
     The resolved spelling of a symlinked path is a form too, so an entry may
-    name either.
+    name either — and each is taken relative to the list's directory as given
+    AND as resolved (#25 verify V3: discovery resolves the extension
+    directories, so under a symlinked ``~/.aelix`` or macOS ``/tmp`` the
+    item's path was resolved and the base was not, and ``-extensions/x.py``
+    named nothing).
+
+    A target's ``package_path`` (#25 review R02 — the ``pyproject.toml``
+    package that declared an extension file) contributes its path forms too.
     """
 
     path = target.path
@@ -197,21 +210,35 @@ def _forms(
     names = [name] + ([os.path.basename(os.path.dirname(path))] if is_skill else [])
     if not paths:
         return [n for n in names if n], []
-    spellings = [path]
-    real = _realpath(path)
-    if real != path:
-        spellings.append(real)
+    bases = [base_dir]
+    real_base = _realpath(base_dir) if base_dir else base_dir
+    if real_base != base_dir:
+        bases.append(real_base)
+    package = getattr(target, "package_path", None)
+
+    def spelled(value: str) -> list[str]:
+        out = [value]
+        real = _realpath(value)
+        if real != value:
+            out.append(real)
+        return out
+
     globs: list[str] = []
     exact: list[str] = []
-    for spelling in spellings:
-        rel = _rel(base_dir, spelling)
-        globs += [f for f in (rel, _posix(spelling)) if f]
-        exact += [f for f in (rel, _posix(spelling)) if f]
+
+    def add(spelling: str) -> None:
+        forms = [_rel(base, spelling) for base in bases] + [_posix(spelling)]
+        kept = [f for f in dict.fromkeys(forms) if f]
+        globs.extend(kept)
+        exact.extend(kept)
+
+    for spelling in spelled(path):
+        add(spelling)
         if is_skill:
-            parent = os.path.dirname(spelling)
-            parent_rel = _rel(base_dir, parent)
-            globs += [f for f in (parent_rel, _posix(parent)) if f]
-            exact += [f for f in (parent_rel, _posix(parent)) if f]
+            add(os.path.dirname(spelling))
+    if isinstance(package, str) and package:
+        for spelling in spelled(package):
+            add(spelling)
     return globs + [n for n in names if n], exact
 
 
@@ -782,6 +809,12 @@ def matches_exact(
     stripped = body[2:] if body.startswith(("./", ".\\")) else body
     normalized = _posix(_expand(stripped))
     _globs, exact = _forms(target, base_dir, paths=reaches(target, list_scope))
+    if _OS_NAME == "nt":
+        # #25 (ADR-0284 D1): NTFS names are case-insensitive, so a path entry
+        # is too — ``-C:\Users\Me\…\Weather.py`` names ``weather.py``. The
+        # backslashes were made ``/`` above, on both sides.
+        wanted = normalized.casefold()
+        return any(form.casefold() == wanted for form in exact)
     return normalized in exact
 
 

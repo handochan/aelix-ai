@@ -75,6 +75,7 @@ from aelix_coding_agent.extensions.ep_manifest import (
     EpApiLevelRefusal,
     EpOutcome,
     EpResolution,
+    _canonical_dist,
     entry_point_provenance,
     environment_site_dirs,
     redact_manifest_error,
@@ -102,6 +103,62 @@ class ExtensionLoadError:
 
 
 @dataclass
+class EntryOutcome:
+    """What :func:`load_extensions` made of one entry (#25): the extension, the
+    error, or a deferred shell (``deferred``; its ``extension`` is the shell).
+
+    ``error_type`` is the raised exception's class name (``RuntimeError``):
+    ``/extension`` and ``/reload`` show it before the message, as the guide's
+    examples do (#25 verify V7); the load error's own text stays as it was.
+    """
+
+    extension: Extension | None = None
+    error: ExtensionLoadError | None = None
+    deferred: bool = False
+    error_type: str | None = None
+
+
+EntryTier = str
+"""``builtin`` (prepended), ``project``, ``global``, ``cli`` (``-e``) or ``installed``
+(an ``aelix.extensions`` entry point)."""
+
+
+@dataclass(eq=False)
+class DiscoveredEntry:
+    """One carrier discovery produced, with the tier that found it (#25, ADR-0284).
+
+    ``explicit`` (Codex F06): the entry was ALSO named by ``-e``. Discovery keeps
+    the first copy of a path, so ``-e ~/.aelix/agent/extensions/x.py`` dedups
+    onto the global tier's carrier; without the flag the settings filter would
+    turn off an extension the user named on the command line. ``selected`` is
+    the settings filter's answer (an unselected entry is never imported);
+    ``outcome`` is the load's. ``discovery_error`` is an error discovery
+    reported about this very carrier (an entry point loaded without its
+    manifest): dropped from the run's errors when the entry is not selected.
+
+    ``package`` (#25 review R02): the directory whose ``pyproject.toml``
+    ``[tool.aelix] extensions`` declared this file — the package a user names
+    it by (``-bundle``, ``-extensions/bundle``); ``None`` for every other shape.
+    ``aliases`` (R01): the names of a copy discovery dropped as a duplicate of
+    this one — an installed pack the directory tier found first keeps its
+    entry-point and distribution names, so ``-ep-alias`` still turns it off.
+    """
+
+    entry: Any
+    tier: EntryTier
+    explicit: bool = False
+    selected: bool = True
+    outcome: EntryOutcome | None = None
+    discovery_error: ExtensionLoadError | None = None
+    package: Path | None = None
+    aliases: tuple[str, ...] = ()
+
+
+EntryFilter = Callable[[Sequence[DiscoveredEntry]], Sequence[bool]]
+"""Which discovered entries load (#25): one answer per entry, never raising."""
+
+
+@dataclass
 class LoadExtensionsResult:
     """Aggregate result returned by :func:`load_extensions`.
 
@@ -110,11 +167,18 @@ class LoadExtensionsResult:
 
     ``runtime`` defaults to a fresh :class:`_ExtensionRuntime` if not provided;
     in normal use, :func:`load_extensions` always supplies one.
+
+    ``outcomes`` (#25) is one :class:`EntryOutcome` per entry handed to
+    :func:`load_extensions`, in order. ``discovered`` is every carrier
+    :func:`discover_and_load_extensions` found — the ones the settings filter
+    turned off included, never imported — with its tier and outcome.
     """
 
     extensions: list[Extension] = field(default_factory=list)
     errors: list[ExtensionLoadError] = field(default_factory=list)
     runtime: _ExtensionRuntime = field(default_factory=_ExtensionRuntime)
+    outcomes: list[EntryOutcome] = field(default_factory=list)
+    discovered: list[DiscoveredEntry] = field(default_factory=list)
 
 
 def _entry_point_source_info(entry: Any) -> ExtensionSourceInfo | None:
@@ -230,6 +294,7 @@ async def load_extensions(
                 PendingActivation(extension=shell, entry=entry, cwd=cwd)
             )
             result.extensions.append(shell)
+            result.outcomes.append(EntryOutcome(extension=shell, deferred=True))
             if entry.ep_ref is not None:
                 # Contract review H4 — owner decision (iii) shipped SILENTLY.
                 # An INSTALLED pure-``on_command`` pack ran its ``setup()`` at
@@ -272,18 +337,18 @@ async def load_extensions(
                 if isinstance(entry, _ManifestEntry)
                 else str(entry)
             )
-            result.errors.append(
-                ExtensionLoadError(path=label, error=str(exc))
-            )
+            failure = ExtensionLoadError(path=label, error=str(exc))
+            result.errors.append(failure)
+            result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         try:
             extension = await _invoke_factory(
                 factory, runtime, name=name, manifest=manifest
             )
         except Exception as exc:  # noqa: BLE001 — surface as load error
-            result.errors.append(
-                ExtensionLoadError(path=name, error=str(exc))
-            )
+            failure = ExtensionLoadError(path=name, error=str(exc))
+            result.errors.append(failure)
+            result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
         # Issue #21 themes (ADR-0184) — record the plugin directory so the
         # manifest theme adapter can resolve a ``ThemeContrib.path`` (a
@@ -300,6 +365,7 @@ async def load_extensions(
         # (descriptors inert-warning now emitted at the top of the loop, before
         # the lazy continue, so pure-on_command plugins are covered too.)
         result.extensions.append(extension)
+        result.outcomes.append(EntryOutcome(extension=extension))
     return result
 
 
@@ -386,7 +452,11 @@ async def activate_pending_extension(
             manifest=manifest,
             extension=shell,
         )
-    except BaseException:
+    except BaseException as exc:
+        # #25 (Codex F09): remembered, so ``/extension`` shows the pack as
+        # failed instead of deferred — one-shot, so it stays failed until the
+        # next (re)build re-defers it.
+        runtime.activation_failures[shell.name] = f"{type(exc).__name__}: {exc}"
         # ROLLBACK (adversarial-review HIGH): a factory that registered SOME
         # surfaces before raising must not leave a half-activated plugin —
         # its partial commands would execute on the next keystroke and its
@@ -452,6 +522,7 @@ async def discover_and_load_extensions(
     project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
     flag_values: Mapping[str, bool | str] | None = None,
+    entry_filter: EntryFilter | None = None,
 ) -> LoadExtensionsResult:
     """Pi-parity 3-tier discovery + Aelix-additive entry_points pass.
 
@@ -471,7 +542,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2150`` and ``:3130``) pass
+       (``cli/entry.py:2199`` and ``:3205``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
@@ -538,9 +609,17 @@ async def discover_and_load_extensions(
     ``aelix.extensions`` endpoint whose distribution resolves outside the
     interpreter's real site directories (a ``git clone`` on ``sys.path``); this
     set is the escape hatch for the legitimate ``pip install -e .`` developer.
+
+    ``entry_filter`` (#25, ADR-0284) — the ``extensions`` settings filter,
+    between discovery and the load: an entry it answers ``False`` for is never
+    imported, and stays in :attr:`LoadExtensionsResult.discovered` (unselected)
+    so ``/extension`` can list it. It must never raise; if it does, every entry
+    loads, as before the filter existed (a factory that raises on ``/reload``
+    leaves the session with no harness).
     """
 
-    all_entries, errors = _discover_entries(
+    records: list[DiscoveredEntry] = []
+    _all_entries, errors = _discover_entries(
         configured_paths,
         cwd=cwd,
         agent_dir=agent_dir,
@@ -549,12 +628,65 @@ async def discover_and_load_extensions(
         no_project_local=no_project_local,
         project_explicitly_trusted=project_explicitly_trusted,
         trusted_ep_dists=trusted_ep_dists,
+        records=records,
     )
-    result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
+    apply_entry_filter(records, entry_filter)
+    dropped = {id(r.discovery_error) for r in records if not r.selected and r.discovery_error}
+    errors = [e for e in errors if id(e) not in dropped]
+    chosen = [r for r in records if r.selected]
+    result = await load_extensions([r.entry for r in chosen], cwd=cwd, flag_values=flag_values)
+    for record, outcome in zip(chosen, result.outcomes, strict=False):
+        record.outcome = outcome
+    result.discovered = records
     # Splice discovery-time errors in front of loader-time errors so the
     # caller sees them in the order they happened.
     result.errors = errors + result.errors
     return result
+
+
+def discover_extension_records(
+    configured_paths: list[str | Path | ExtensionFactory],
+    *,
+    cwd: Path,
+    agent_dir: Path | None = None,
+    no_project_local: bool = False,
+    trusted_ep_dists: frozenset[str] = frozenset(),
+) -> list[DiscoveredEntry]:
+    """Every carrier the four tiers would yield, with its tier — nothing loaded (#25).
+
+    ``/extension`` lists what ``--no-extensions`` skipped from this. Discovery
+    imports nothing (:func:`_discover_entries`); errors are dropped, as the
+    listing is not a load.
+    """
+
+    records: list[DiscoveredEntry] = []
+    _discover_entries(
+        configured_paths,
+        cwd=cwd,
+        agent_dir=agent_dir,
+        no_project_local=no_project_local,
+        trusted_ep_dists=trusted_ep_dists,
+        records=records,
+    )
+    return records
+
+
+def apply_entry_filter(
+    records: Sequence[DiscoveredEntry], entry_filter: EntryFilter | None
+) -> None:
+    """Set each record's ``selected`` from *entry_filter* (#25); a raising filter selects all."""
+
+    if entry_filter is None:
+        return
+    try:
+        answers = list(entry_filter(records))
+    except Exception:  # noqa: BLE001 — the filter never takes the build down
+        logger.debug("extension filter raised; every entry loads", exc_info=True)
+        return
+    if len(answers) != len(records):
+        return
+    for record, keep in zip(records, answers, strict=True):
+        record.selected = bool(keep)
 
 
 # === Issue #114 — configured-entry classification (path vs dotted module) ===
@@ -730,6 +862,7 @@ def _discover_entries(
     project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
     entry_points_metadata_only: bool = False,
+    records: list[DiscoveredEntry] | None = None,
 ) -> tuple[
     list[str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry],
     list[ExtensionLoadError],
@@ -755,43 +888,68 @@ def _discover_entries(
     (:class:`_ManifestEntry`). Manifest-less endpoints are dropped because the
     scan has nothing to learn from them and returning them would hand a
     metadata-only caller a carrier whose resolution imports plugin code.
+
+    ``records`` (#25): when given, filled with one :class:`DiscoveredEntry` per
+    returned entry, in the same order — the tier that found it, and whether
+    ``-e`` named it too (Codex F06: a path dedups onto the copy found first).
     """
 
     all_entries: list[
         str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry
     ] = []
-    seen_paths: set[Path] = set()
+    tiers: list[DiscoveredEntry] = []
+    seen_paths: dict[Path, int] = {}
     seen_ep: set[str] = set()
     errors: list[ExtensionLoadError] = []
+    # #25 review R02: a file a ``pyproject.toml`` package declared -> that package.
+    packages: dict[Path, Path] = {}
+
+    def _add(entry: Any, tier: EntryTier, *, discovery_error: ExtensionLoadError | None = None) -> None:
+        all_entries.append(entry)
+        tiers.append(
+            DiscoveredEntry(
+                entry, tier, explicit=tier == "cli", discovery_error=discovery_error
+            )
+        )
 
     # Aelix-additive built-ins (``prepend``) register FIRST; load-order
     # precedence then follows Pi (resource-loader.ts) so discovered/user
     # extensions can never shadow Guardrail/Permission.
-    if prepend:
-        all_entries.extend(prepend)
+    for builtin in prepend or ():
+        _add(builtin, "builtin")
 
-    def _push_entry(entry: Path | _ManifestEntry) -> None:
+    def _push_entry(entry: Path | _ManifestEntry, tier: EntryTier) -> None:
         # Sprint 6h₉b §B: dedupe by ``pkg_dir.resolve()`` for manifest
         # carriers (one manifest = one extension); legacy ``Path``
         # entries keep their pre-existing resolve dedupe.
-        if isinstance(entry, _ManifestEntry):
-            try:
-                resolved = entry.pkg_dir.resolve()
-            except OSError:
-                resolved = entry.pkg_dir
-            if resolved in seen_paths:
-                return
-            seen_paths.add(resolved)
-            all_entries.append(entry)
-            return
+        path = entry.pkg_dir if isinstance(entry, _ManifestEntry) else entry
         try:
-            resolved = entry.resolve()
+            resolved = path.resolve()
         except OSError:
-            resolved = entry
-        if resolved in seen_paths:
+            resolved = path
+        seen = seen_paths.get(resolved)
+        if seen is not None:
+            survivor = tiers[seen]
+            if tier == "cli":
+                # Codex F06: ``-e`` named a path another tier found first. The
+                # survivor is that tier's carrier; it is the user's choice now,
+                # and the settings filter must not turn it off.
+                survivor.explicit = True
+            if isinstance(entry, _ManifestEntry) and entry.ep_ref is not None:
+                # #25 review R01: an installed pack the directory tier found
+                # first (a symlink into site-packages) keeps the names it was
+                # installed under, so ``-ep-alias`` / ``-ep-pack`` still turn it
+                # off. The survivor keeps its own tier and provenance.
+                ep = entry.ep_ref
+                names = (ep.name, _canonical_dist(ep.dist) if ep.dist else "")
+                survivor.aliases = tuple(
+                    dict.fromkeys([*survivor.aliases, *(n for n in names if n)])
+                )
             return
-        seen_paths.add(resolved)
-        all_entries.append(entry)
+        seen_paths[resolved] = len(all_entries)
+        _add(entry, tier)
+        if isinstance(entry, Path):
+            tiers[-1].package = packages.get(entry)
 
     # 1+2: directory auto-discovery (skipped under ``no_discovery`` — Pi
     # ``noExtensions`` keeps only explicit ``configured_paths``).
@@ -804,8 +962,8 @@ def _discover_entries(
         # below still load (they are user-chosen, not project-local).
         if not no_project_local:
             local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
-            for discovered in _discover_in_dir(local_dir, errors=errors):
-                _push_entry(discovered)
+            for discovered in _discover_in_dir(local_dir, errors=errors, packages=packages):
+                _push_entry(discovered, "project")
 
         # 2. Global: <agent_dir>/extensions/ — i.e. ~/.aelix/agent/extensions/
         # for both production callers, which pass agent_dir=get_agent_dir().
@@ -814,8 +972,8 @@ def _discover_entries(
         # as the user's global extension directory.
         home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
         global_dir = (home_aelix / "extensions").resolve(strict=False)
-        for discovered in _discover_in_dir(global_dir, errors=errors):
-            _push_entry(discovered)
+        for discovered in _discover_in_dir(global_dir, errors=errors, packages=packages):
+            _push_entry(discovered, "global")
 
     # 3. Explicit configured paths.
     seen_modules: set[str] = set()
@@ -824,7 +982,7 @@ def _discover_entries(
         # Callables/factories pass through (P-21 — explicit takes precedence
         # over entry_points but loses to local/global directories).
         if callable(entry) and not isinstance(entry, (str, Path)):
-            all_entries.append(entry)
+            _add(entry, "cli")
             continue
         # Issue #114: a dotted module reference ("pkg.mod", "pkg.mod:factory")
         # passes through AS A STRING so _resolve_factory reaches
@@ -840,7 +998,7 @@ def _discover_entries(
             if entry in seen_modules:
                 continue
             seen_modules.add(entry)
-            all_entries.append(entry)
+            _add(entry, "cli")
             continue
         # Issue #114 fold-in: the entry LOOKS like a module but something on
         # disk claimed it (clause 4). That is deliberate — a path that exists
@@ -900,15 +1058,15 @@ def _discover_entries(
             p = Path(entry) if isinstance(entry, str) else entry
             resolved_path = p if p.is_absolute() else (cwd / p)
             if resolved_path.is_dir():
-                expanded = _discover_in_dir(resolved_path, errors=errors)
+                expanded = _discover_in_dir(resolved_path, errors=errors, packages=packages)
                 if expanded:
                     for discovered in expanded:
-                        _push_entry(discovered)
+                        _push_entry(discovered, "cli")
                     continue
                 # Directory exists but has no extension-shaped entries; fall
                 # through to treat as a raw path (the inner loader will then
                 # report a more useful "no setup()" style error).
-            _push_entry(resolved_path)
+            _push_entry(resolved_path, "cli")
         except Exception as exc:  # noqa: BLE001
             errors.append(
                 ExtensionLoadError(path=str(entry), error=str(exc))
@@ -934,10 +1092,12 @@ def _discover_entries(
             if isinstance(ep_entry, _ManifestEntry):
                 # Cross-tier dedupe on pkg_dir: an installed pack that is ALSO
                 # visible to the directory scan now loads once.
-                _push_entry(ep_entry)
+                _push_entry(ep_entry, "installed")
             else:
-                all_entries.append(ep_entry)
+                _add(ep_entry, "installed", discovery_error=ep_error)
 
+    if records is not None:
+        records.extend(tiers)
     return all_entries, errors
 
 
@@ -985,6 +1145,8 @@ def scan_extension_manifests(
     no_project_local: bool = False,
     project_explicitly_trusted: bool = False,
     trusted_ep_dists: frozenset[str] = frozenset(),
+    entry_filter: EntryFilter | None = None,
+    records: list[DiscoveredEntry] | None = None,
 ) -> list[PluginManifest]:
     """Issue #21 — metadata-ONLY manifest scan (no plugin code execution).
 
@@ -1039,9 +1201,15 @@ def scan_extension_manifests(
     The gate is applied uniformly to both tiers: a pack that cannot load
     contributes nothing, whichever tier found it. No new gate logic — this is
     the same function ``_resolve_factory`` calls.
+
+    ``entry_filter`` (#25, ADR-0284) — the ``extensions`` settings filter the
+    load applies: a pack it turns off contributes nothing here, so its MCP
+    servers are never dialled. ``records`` is filled with every carrier found,
+    selected or not (the launch's MCP ownership inventory reads it).
     """
 
-    entries, errors = _discover_entries(
+    found: list[DiscoveredEntry] = []
+    _entries, errors = _discover_entries(
         configured_paths,
         cwd=cwd,
         agent_dir=agent_dir,
@@ -1050,13 +1218,21 @@ def scan_extension_manifests(
         project_explicitly_trusted=project_explicitly_trusted,
         trusted_ep_dists=trusted_ep_dists,
         entry_points_metadata_only=True,
+        records=found,
     )
+    apply_entry_filter(found, entry_filter)
+    if records is not None:
+        records.extend(found)
+    dropped = {id(r.discovery_error) for r in found if not r.selected and r.discovery_error}
     for err in errors:
+        if id(err) in dropped:
+            continue
         logger.warning("manifest scan: %s: %s", err.path, err.error)
 
     manifests: list[PluginManifest] = []
-    for entry in entries:
-        if not isinstance(entry, _ManifestEntry):
+    for record in found:
+        entry = record.entry
+        if not isinstance(entry, _ManifestEntry) or not record.selected:
             continue
         try:
             _enforce_declarative_capability_gates(entry.manifest)
@@ -1196,6 +1372,7 @@ def _discover_in_dir(
     dir_path: Path,
     *,
     errors: list[ExtensionLoadError] | None = None,
+    packages: dict[Path, Path] | None = None,
 ) -> list[Path | _ManifestEntry]:
     """Pi-parity ``discoverExtensionsInDir`` (``loader.ts:481-518``).
 
@@ -1214,6 +1391,10 @@ def _discover_in_dir(
     :class:`ExtensionManifestError` failures so the wave continues when
     one plugin's manifest fails to parse (per-plugin try/except, Pi
     parity ``loader.ts:437``).
+
+    #25 (review R02): ``packages``, when given, maps each file a subdirectory's
+    ``pyproject.toml`` declared to that subdirectory — the expansion returns the
+    files alone, and the package is what the ``extensions`` settings name.
     """
 
     if not dir_path.exists() or not dir_path.is_dir():
@@ -1241,6 +1422,10 @@ def _discover_in_dir(
                     continue
                 if declared is not None:
                     discovered.extend(declared)
+                    if packages is not None:
+                        for item in declared:
+                            if isinstance(item, Path) and item != child / "__init__.py":
+                                packages.setdefault(item, child)
                 # else: skip — no manifest, no __init__.py.
         except OSError:
             continue

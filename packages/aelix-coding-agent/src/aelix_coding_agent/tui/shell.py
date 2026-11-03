@@ -50,6 +50,11 @@ from aelix_coding_agent.cli.session_labels import (
     session_detail_lines,
     short_field,
 )
+from aelix_coding_agent.core.extension_selection import (
+    failure_lines,
+    reload_failure_text,
+    reload_lines,
+)
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import ContextUsage, MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
@@ -118,6 +123,7 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.cli.runtime_bootstrap import LateRoute
+    from aelix_coding_agent.core.extension_selection import ExtensionControl
     from aelix_coding_agent.core.skill_selection import SkillControl
     from aelix_coding_agent.core.tool_selection import ToolControl
     from aelix_coding_agent.extensions.api import Extension
@@ -138,6 +144,43 @@ _RETRY_WIDGET_KEY = "__auto_retry__"
 # rows reach the terminal promptly, large enough that the per-chunk overhead
 # (``replay`` re-resolves the render width once per call) stays negligible.
 _STARTUP_REPLAY_CHUNK = 25
+
+
+#: #25 (Codex F08) — ``AgentSessionRuntime.reload_phase`` in the words a reload
+#: failure line names the step with.
+_RELOAD_PHASE_WORDS = {
+    "teardown": "the old session's shutdown",
+    "settings": "re-reading the settings",
+    "build": "the rebuild",
+    "tools": "restoring the tool set",
+    "rebind": "re-attaching the screen",
+    "session_start": "session_start",
+    "resources": "re-discovering resources",
+}
+
+
+def _reload_text(lines: list[tuple[str, str]], width: int = 80) -> Text:
+    """#25 — the ``/reload`` extensions entry: one transcript commit, its lines flattened.
+
+    An extension's error text is its own (a name, a message): control
+    characters are shown by name, as every panel row is (#179). Each line is
+    wrapped at *width* under its own indent, as the panels' summaries are: the
+    first line's continuation at 2, every later line at 4 and its continuation
+    at 6, so a wrapped first line never reads as the next line (verify V9).
+    """
+
+    from aelix_coding_agent.tui.selection_panel import flat, wrap  # noqa: PLC0415
+
+    out = Text()
+    for index, (style, line) in enumerate(lines):
+        lead = "" if index == 0 else "    "
+        hang = " " * (len(lead) + 2)
+        rows = wrap(flat(line), max(10, width - len(hang)), 1_000) or [""]
+        for row_index, row in enumerate(rows):
+            if out:
+                out.append("\n")
+            out.append((lead if row_index == 0 else hang) + row, style=style or None)
+    return out
 
 
 def _reload_rebuild_enabled() -> bool:
@@ -520,6 +563,7 @@ async def run_tui(
     read_only: bool = False,
     skill_control: SkillControl | None = None,
     tool_control: ToolControl | None = None,
+    extension_control: ExtensionControl | None = None,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
@@ -594,14 +638,25 @@ async def run_tui(
     :param tool_control: #510 — the session's tool selection (entry.py builds it
         over the live harness and the held SettingsManager). Wires ``/tool`` and
         ``/tools`` to the on/off panel; ``None`` (tests) keeps the read-only list.
+    :param extension_control: #25 — the session's extension selection (entry.py
+        builds it over the latest build's inventory). Makes ``/extension``'s
+        Installed tab an on/off panel and ``/reload`` say what changed; ``None``
+        (tests) keeps the read-only tab.
     """
 
     # WP-8 — normalize the optional extensions list to a stable value so the
     # stage-B /extension flow (wired later) reads it without re-guarding None.
     # ``auth_storage`` is a parameter and threads straight into the stage-B
     # /login + /logout flows.
-    extensions = list(extensions) if extensions else []
-    extension_errors = list(extension_errors) if extension_errors else []
+    #
+    # #25 (the design's M3): the SAME list objects entry.py's factory refills
+    # on every committed build, never a copy — a copy taken here kept showing
+    # the launch's set after ``/reload`` loaded another (a broken extension
+    # read ``✓`` in /extension).
+    extensions = extensions if isinstance(extensions, list) else list(extensions or [])
+    extension_errors = (
+        extension_errors if isinstance(extension_errors, list) else list(extension_errors or [])
+    )
 
     def _live_extension_shortcuts() -> dict[str, Any]:
         # Issue #20 — LIVE read through the runtime host (never the stale
@@ -618,6 +673,11 @@ async def run_tui(
             return cast("dict[str, Any]", get()) if callable(get) else {}
         except Exception:  # noqa: BLE001 — a faulty extension must not break keys
             return {}
+
+    # #25 (Codex F10) — the shortcut keys the chrome binds at its build, once:
+    # an extension turned on by ``/reload`` whose keys are not among them is
+    # told they bind at the next launch.
+    bound_shortcut_keys = frozenset(_live_extension_shortcuts())
 
     if chrome is not None:
         out_chrome = chrome
@@ -746,6 +806,17 @@ async def run_tui(
 
     def _commit(renderable: object) -> None:
         output_queue.put_nowait(("commit", renderable))
+
+    def _commit_extension_failures() -> None:
+        # #25 (verify V11) — a ``/new``, ``/fork`` or ``/resume`` build that
+        # failed to load an extension no longer prints over the input; what
+        # failed is said below the new session's banner instead.
+        if extension_control is None:
+            return
+        lines = failure_lines(extension_control.inventory())
+        if lines:
+            width = terminal_columns(out_chrome, max_width=render_width_cap["value"])
+            _commit(_reload_text([("", "Extensions in this session:"), *lines], width))
 
     def _commit_model_fallback() -> None:
         # #376 — the runtime's ``model_fallback_message`` (pi parity), refreshed
@@ -1069,6 +1140,7 @@ async def run_tui(
         renderer.replay(messages)
         _commit(Text(f"↻ Resumed session ({len(messages)} messages)", style="green"))
         _commit_model_fallback()
+        _commit_extension_failures()
         context._refresh_footer()
 
     async def _new_session() -> None:
@@ -1095,6 +1167,7 @@ async def run_tui(
                 prompt_file_paths=prompt_file_paths() if prompt_file_paths is not None else None,
             )
         )
+        _commit_extension_failures()
         context._refresh_footer()
 
     async def _replay_after_swap(banner: str) -> None:
@@ -1108,6 +1181,7 @@ async def run_tui(
         renderer.replay(messages)
         _commit(Text(banner, style="green"))
         _commit_model_fallback()
+        _commit_extension_failures()
         context._refresh_footer()
 
     async def _import_session(path: str) -> None:
@@ -1920,7 +1994,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4733``) always passes one, so this is
+            # production caller (``entry.py:4892``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2218,6 +2292,11 @@ async def run_tui(
             # row. None when no SettingsManager, or when the user disabled the
             # built-in default via an empty AELIX_DEFAULT_CATALOG.
             default_catalog_getter=(_default_catalog if settings_manager is not None else None),
+            # #25 (ADR-0284) — the Installed tab as the on/off panel, at the
+            # width the transcript uses (ADR-0219).
+            control=extension_control,
+            width=lambda: terminal_columns(context.chrome, max_width=render_width_cap["value"]),
+            invalidate=context.chrome.invalidate,
         )
 
     async def _use_agent(name: str | None) -> str:
@@ -3639,6 +3718,8 @@ async def run_tui(
             read_only=read_only,
             late_route=late_route,
             skill_off_reason=skill_control.kind.off_reason if skill_control is not None else None,
+            extension_control=extension_control,
+            bound_shortcuts=bound_shortcut_keys,
             typed_prompt=typed_prompt,
         )
     finally:
@@ -3926,11 +4007,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1934``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1975``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1917`` already printed at startup, and one that
+    #       what ``entry.py:1958`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4179,6 +4260,8 @@ async def _input_loop(
     read_only: bool = False,
     late_route: LateRoute | None = None,
     skill_off_reason: Callable[[str], str | None] | None = None,
+    extension_control: ExtensionControl | None = None,
+    bound_shortcuts: frozenset[str] | None = None,
     typed_prompt: dict[str, str | None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
@@ -4252,7 +4335,48 @@ async def _input_loop(
             # refresh. runtime.reload() wait_for_idle()s and the input loop is
             # serialized, so no extra mid-turn guard is needed.
             if _reload_rebuild_enabled():
-                await runtime_host.reload()
+                # #25 (ADR-0284 D6) — what the extensions were before, so the
+                # line below says what this reload changed; and a reload that
+                # raises says how far it got (Codex F08) instead of escaping.
+                before_inventory = (
+                    extension_control.inventory() if extension_control is not None else None
+                )
+                before_harness = runtime_host.harness
+                try:
+                    await runtime_host.reload()
+                except Exception as exc:  # noqa: BLE001 — said, never raised into the loop
+                    applied = runtime_host.harness is not before_harness
+                    failure = reload_failure_text(
+                        _RELOAD_PHASE_WORDS.get(str(getattr(runtime_host, "reload_phase", "") or "")),
+                        exc,
+                        applied,
+                    )
+                    lines = [("yellow" if applied else "bold red", failure)]
+                    if extension_control is not None:
+                        extension_control.holder["reload_failure"] = failure
+                        if applied:
+                            # The new build was committed: what it changed is true.
+                            lines += reload_lines(
+                                before_inventory,
+                                extension_control.inventory(),
+                                launch=extension_control.launch,
+                                bound_shortcuts=bound_shortcuts,
+                            )
+                    output_queue.put_nowait(
+                        ("commit", _reload_text(lines, terminal_columns(chrome)))
+                    )
+                    continue
+                if extension_control is not None:
+                    extension_note = reload_lines(
+                        before_inventory,
+                        extension_control.inventory(),
+                        launch=extension_control.launch,
+                        bound_shortcuts=bound_shortcuts,
+                    )
+                    if extension_note:
+                        output_queue.put_nowait(
+                            ("commit", _reload_text(extension_note, terminal_columns(chrome)))
+                        )
                 # #376 — the rebuild restores the session's model from its
                 # record, and says so when it cannot, as /resume, /fork,
                 # /clone and /import do (``_commit_model_fallback``).
@@ -4439,7 +4563,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4664-4680 and
+            # Two audiences, discriminated exactly as entry.py:4823-4839 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

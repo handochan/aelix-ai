@@ -255,8 +255,25 @@ class AgentSessionRuntime:
         self._on_session_contended: (
             Callable[[str], Awaitable[SessionContendedChoice]] | None
         ) = None
+        # #25 (ADR-0284, Codex F08) — the step :meth:`reload` was on; read when
+        # it raises, so a caller can tell "nothing applied" from "applied, then
+        # a later step failed". ``None`` before any reload.
+        self._reload_phase: str | None = None
 
     # === Public getters (Pi `:79-97`) ===========================================
+
+    @property
+    def reload_phase(self) -> str | None:
+        """The step the latest :meth:`reload` reached: ``teardown``, ``settings``,
+        ``build``, ``tools``, ``rebind``, ``session_start``, ``resources`` or ``done``.
+
+        Aelix-additive (#25, Codex F08). The new harness is installed when
+        ``build`` ends: a reload that raised in ``build`` or before it applied
+        nothing (and the old harness is already torn down); one that raised
+        after it runs the new harness.
+        """
+
+        return self._reload_phase
 
     @property
     def harness(self) -> AgentHarness:
@@ -1118,6 +1135,7 @@ class AgentSessionRuntime:
         # 1. No mid-turn swap. ``dispose`` (step 4) also aborts+drains a live
         #    turn, but assert idle first so reload is a clean, serialized op.
         await self._harness.wait_for_idle()
+        self._reload_phase = "teardown"
 
         # 2. Snapshot the OLD runtime's flag values + the shared SettingsManager
         #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
@@ -1132,6 +1150,10 @@ class AgentSessionRuntime:
         # live reference disposed in step 3.
         active_before = self._harness.state.active_tool_names
         active_before = list(active_before) if active_before is not None else None
+        # #25 (review R04) — the registry too: a tool the rebuild newly REGISTERS
+        # (an MCP server's wrappers coming back when the extension that declared
+        # it is turned on again) is unioned into step 6 like an extension tool.
+        registered_before = {t.name for t in self._harness.state.tools}
         # #510 — what the old policy kept off by setting, so step 6 can turn on
         # what the reloaded settings no longer do.
         saved_off_before = getattr(
@@ -1156,6 +1178,7 @@ class AgentSessionRuntime:
         #    /new /fork /resume rebuild the harness without touching it either;
         #    credential/setting changes are picked up via ``settings_manager.reload()``
         #    + the rebuilt harness's per-stream ``get_api_key_and_headers`` resolve.
+        self._reload_phase = "settings"
         if settings_manager is not None:
             await settings_manager.reload()
 
@@ -1167,10 +1190,12 @@ class AgentSessionRuntime:
         #    ``_buildRuntime`` which seeds ``runtime.flagValues`` before the new
         #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
         #    then skips the default).
+        self._reload_phase = "build"
         await self._apply(
             session,
             reload_seed=ReloadSeed(flag_values=previous_flag_values, model=previous_model),
         )
+        self._reload_phase = "tools"
 
         # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).
         #    Restore the user's pre-reload active filter over the rebuilt
@@ -1204,13 +1229,21 @@ class AgentSessionRuntime:
                 for ext in rebuilt.extension_runner.extensions
                 for name in ext.tools
             ]
-            # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on,
-            # order-preserving and fully de-duplicated with ONE running ``seen``
-            # — mirrors pi ``_refreshToolRegistry``'s
+            # #25 (review R04): the tools this rebuild registers that the old
+            # registry did not hold — re-exposed MCP wrappers above all (an
+            # extension turned off, then on again, hid and then returned its
+            # server's tools). Without this an explicit filter left them
+            # registered and inactive. The policy clamps them like the rest.
+            newly_registered = [
+                t.name for t in rebuilt.state.tools if t.name not in registered_before
+            ]
+            # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on ∪
+            # newly-registered, order-preserving and fully de-duplicated with
+            # ONE running ``seen`` — mirrors pi ``_refreshToolRegistry``'s
             # ``[...activeToolNames].filter(...)`` + push-ext + ``new Set(...)``.
             target_active: list[str] = []
             seen: set[str] = set()
-            for name in (*active_before, *ext_names, *newly_on):
+            for name in (*active_before, *ext_names, *newly_on, *newly_registered):
                 if name in current_set and name not in seen:
                     seen.add(name)
                     target_active.append(name)
@@ -1231,8 +1264,10 @@ class AgentSessionRuntime:
 
         # 8. Swap subscribers / UI / command context onto the NEW harness. The TUI
         #    rebind skips its session-swap-only transcript + /stats resets on "reload".
+        self._reload_phase = "rebind"
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, "reload")
+        self._reload_phase = "session_start"
 
         # 9. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
         #    was disposed in step 4). pi :2407.
@@ -1250,7 +1285,9 @@ class AgentSessionRuntime:
 
         # 10. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
         #    :2411). Re-emits the resources_discover hook on the rebuilt harness.
+        self._reload_phase = "resources"
         await self._harness.reload_resources()
+        self._reload_phase = "done"
         return RuntimeReplaceResult(cancelled=False)
 
     async def fork(

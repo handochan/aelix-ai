@@ -31,7 +31,7 @@ dropped, measured:
   writes ``ExtensionSourceInfo(source="entry_points")`` for the endpoint tier.
   Its ``path`` / ``base_dir`` fields are deliberately still unwritten, for the
   reason the next two bullets give.
-* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:293``,
+* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:358``,
   ``isinstance(entry, _ManifestEntry)`` — so it is ``None`` for every
   non-manifest extension.
 * For the other tiers the only path-shaped value is ``Extension.name``, which for
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
 # ``source_info`` the loader writes for the endpoint one. An inline factory has
 # no such record, and inventing a "builtin" label for it would mean keeping a
 # hardcoded list of built-in class names — the same list
-# ``tui/extension_manager.py:58-60`` keeps. A label that is true beats a label that
+# ``tui/extension_manager.py:59-61`` keeps. A label that is true beats a label that
 # is specific and wrong.
 SCOPE_PROJECT = "project"
 SCOPE_GLOBAL = "global"
@@ -98,7 +98,7 @@ SCOPE_UNCLASSIFIED = "unclassified"
 
 #: The value ``loader._entry_point_source_info`` writes into
 #: :attr:`Extension.source_info`. Matched, never re-derived: it is
-#: ``ExtensionSourceInfo.source``'s own ``Literal`` member (``api.py:981``), so
+#: ``ExtensionSourceInfo.source``'s own ``Literal`` member (``api.py:990``), so
 #: a rename there is a type error rather than a silently wrong label here.
 _LOADER_ENTRY_POINT_SOURCE = "entry_points"
 
@@ -309,7 +309,7 @@ def resolve_project_trusted_fail_closed(
 
     * trust was resolved to ``True`` — the real answer; and
     * nothing ever bound it. ``ExtensionContext.__init__`` installs
-      ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1158``) and
+      ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1167``) and
       ``AgentHarnessOptions.project_trusted`` defaults to ``True``
       (``harness/core.py:323``), both citing pi's ``runner.ts:273`` pre-bind
       default.
@@ -393,9 +393,9 @@ def classify_scope(extension: Any, *, cwd: str, agent_dir: str | None) -> str:
 
     Everything else is RECONSTRUCTED, because nothing records it:
     ``LoadExtensionsResult`` is a flat ``list[Extension]``. The path used is
-    ``resolved_path`` when set (manifest packs, ``loader.py:293``) and ``name``
+    ``resolved_path`` when set (manifest packs, ``loader.py:358``) and ``name``
     otherwise, matched against the two directory tiers documented at
-    ``loader.py:470-471``: ``<cwd>/.aelix/extensions`` and
+    ``loader.py:541-542``: ``<cwd>/.aelix/extensions`` and
     ``<agent_dir>/extensions``. Everything else path-shaped came from ``-e``.
 
     getattr-guarded throughout, like ``tui/extension_manager.py``'s builders, so

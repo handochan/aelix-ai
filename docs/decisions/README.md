@@ -48,6 +48,28 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   Limits: a compaction inside the prompt is a barrier, the #336 window, the text stays in the file
   on the branch left behind (the `/resume` list can show it), hosts must handle the event. Narrows ADR-0258;
   diverges from pi on the context, follows it on the queue.
+- [0284 — Extensions are turned on and off through the settings `extensions` filter, in `/extension`'s Installed tab](0284-extensions-are-turned-on-and-off-through-the-settings-extensions-filter.md)
+  (Accepted 2026-11-03; #25). The `extensions` lists (ADR-0279's grammar; identities: a pack's
+  `plugin.id`, entry-point and distribution names, a file's stem, a directory's name,
+  `builtin:<name>`) filter between discovery and the load in two phases: G, the trust vote load,
+  reads the global file only; P — every harness build including `/reload`, the manifest scan and
+  `aelix status` — reads both. An extension turned off is never imported (a sentinel pins all five
+  readers); `-e`, including a path another tier found first (Codex F06), and the built-ins are
+  never filtered. Each build publishes, when it is committed, an inventory of every extension
+  found, on or off, read from carriers and manifest TOML. `/extension`'s Installed tab is the
+  ADR-0279 panel embedded in `tabbed` (layout A: the tab row is the title row; Tab switches tabs,
+  ←/→ is "Save to" on Installed only; fixed height across tabs; one-frame close): Guardrail,
+  Permission and Status locked always on, Agents following `[features] agents`, `-e` locked for
+  the run, an untrusted project one summary row, MCP servers read-only rows in #512's words.
+  Enter saves; `/reload` applies and leaves one line naming what changed and what failed (the raw
+  stderr print is gone); a `/reload` that raises says whether anything applied
+  (`AgentSessionRuntime.reload_phase`, Codex F08). Failed and deferred-then-failed packs are their
+  own state (F09). A pack turned off at `/reload` keeps its MCP connections until restart with
+  their tools hidden; one off at launch connects at the next launch (F11); providers and new
+  shortcut keys wait for a restart and say so (F10). `/tool` gets an `ext off` placeholder. A
+  plain path entry in `extensions` is deferred and warned (owner decision 8, F12 — amends ADR-0279
+  D1); path entries compare case-insensitively on Windows. Amends ADR-0279 D1/D8/D16, ADR-0165
+  D5, ADR-0181, ADR-0283 Limits.
 - [0283 — Tools are turned on and off through one policy: `--exclude-tools`, the tool flags as locks, `defaultTools` and the `/tool` panel](0283-tools-are-turned-on-and-off-through-one-policy.md)
   (Accepted 2026-11-01; #510). `ToolPolicy` holds the run's tool rules and
   `AgentHarness._commit_tools` is the one writer of the registry and the active set — the
