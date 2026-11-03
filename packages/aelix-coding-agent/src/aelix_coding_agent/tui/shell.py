@@ -1206,7 +1206,7 @@ async def run_tui(
             has_conversation = any(
                 entry.type == "message"
                 and getattr(entry.message, "role", None) in ("user", "assistant")
-                for entry in await session.get_entries()
+                for entry in await session.get_branch()  # #654: what a clone would hold
             )
         except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
             _commit(Text(f"✖ clone failed: {exc}", style="bold red"))
@@ -2383,7 +2383,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5774`` and the hook-fail one ``:5774``)
+    # the abort close-out ``core.py:5799`` and the hook-fail one ``:5799``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2521,7 +2521,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2885``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2908``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2529,7 +2529,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2931``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2954``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2606,9 +2606,15 @@ async def run_tui(
         texts = [t for t in texts if t.strip()]
         if not texts:
             return False
-        current = out_chrome.get_editor_text()
-        parts = [*texts, current] if current.strip() else texts
-        out_chrome.set_editor_text("\n\n".join(parts))
+        out_chrome.give_back_text(texts)
+        return True
+
+    def _give_back_after_abort(texts: list[str]) -> bool:
+        """:func:`_give_back_to_editor`, safe from a second press of the key that aborted."""
+
+        if not _give_back_to_editor(texts):
+            return False
+        out_chrome.note_abort_gave_back()
         return True
 
     def _on_input_withdrawn(event: object) -> None:
@@ -2619,7 +2625,7 @@ async def run_tui(
         typed = typed_prompt["line"]
         if texts and typed is not None and getattr(event, "prompt_withdrawn", False):
             texts[0] = typed
-        if _give_back_to_editor(texts):
+        if _give_back_after_abort(texts):
             renderer.note_input_returned()
 
     def _hand_back_retry_interrupt() -> None:
@@ -2871,11 +2877,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2151``), so the refresh below is
+                # ``_state.messages`` (``core.py:2174``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1780``), so this never discards a figure a running
+                # ``core.py:1783``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -2953,7 +2959,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5834-5835`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5859-5860`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2981,7 +2987,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2931``).
+        # the model is already swapped in (``core.py:2954``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3133,7 +3139,7 @@ async def run_tui(
         # withdrawn input arrives after them and goes ahead of them. Not on
         # ``_safe_abort``: SIGTERM aborts through it too, and there is nobody left
         # to give anything back to.
-        if _give_back_to_editor(_take_queued_text()):
+        if _give_back_after_abort(_take_queued_text()):
             renderer.note_input_returned()
             context._refresh_footer()  # pending count is now 0
         asyncio.ensure_future(_safe_abort(runtime_host.harness, withdraw_unanswered=True))
@@ -3145,7 +3151,12 @@ async def run_tui(
         # event) — no ``ensure_future`` needed. The countdown task observes
         # CancelledError when ``_end_retry_countdown`` cancels it from the
         # ``auto_retry_end`` event handler. #654: the model has not answered
-        # this input, so it comes back as it does for ``_on_interrupt``.
+        # this input, so it comes back as it does for ``_on_interrupt``, queued
+        # lines first, since the withdrawn prompt goes ahead of them. ``abort_retry``
+        # clears no queue, so they would reach the model on the next prompt. The
+        # notice waits for ``input_withdrawn``, to follow the retry's own line.
+        if _give_back_after_abort(_take_queued_text()):
+            context._refresh_footer()  # pending count is now 0
         harness = runtime_host.harness
         abort_retry = getattr(harness, "abort_retry", None)
         if callable(abort_retry):
@@ -3936,7 +3947,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4786-4787``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4811-4812``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

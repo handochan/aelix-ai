@@ -466,8 +466,11 @@ while `auto_retry_start` is delivered to a subscriber still cancels the retry.
 The TUI's countdown rounds up to whole seconds, as pi's does: a 500 ms wait
 shows `in 1s`. Esc in that countdown, or an rpc `abort`, also takes the message back:
 the model never answered it (see `Esc` in [getting started](getting-started.md)), and rpc
-tells the host on an `input_withdrawn` event (`messages`, `prompt_withdrawn`). An rpc
-`abort_retry` keeps it and only stops retrying.
+tells the host on an `input_withdrawn` event (`messages`, `prompt_withdrawn`). `messages`
+also holds the queued steer and follow-up lines the abort cleared, last, so a host can give
+those back too; when no prompt is running it holds only them and `prompt_withdrawn` is
+false. `get_fork_messages` still lists a withdrawn message: forking there returns its text
+and the context stays without it. An rpc `abort_retry` keeps it and only stops retrying.
 
 rpc `set_auto_retry` sets `retry.enabled` in the global `settings.json`, as pi
 does, so it outlasts the session: `set_auto_retry false` sent for one rpc

@@ -5,14 +5,16 @@ Date: 2026-11-03
 Issue: #654. Design and the owner's four decisions (2026-11-03):
 `.omc/specs/654-design-2026-11-03.md`. Batch B6, P1.
 Narrows: ADR-0258 (its D1 and "delivered inputs remain historical context" hold for
-a plain `abort()` and an outer cancel; a withdrawing abort is the exception).
+a plain `abort()` and an outer cancel; a withdrawing abort is the exception), and
+ADR-0239 decision 8 (`/clone` and RPC `clone` ask the path for a conversation, §7).
 Relates: ADR-0023 (prompt lifetime, the abort flag), ADR-0128 (the retry wait),
 ADR-0145 (`message_end` replacement), ADR-0242 (one write, every prefix a session),
 ADR-0264 §4.7 (the first aelix-only hook event), ADR-0276 (a stopped child),
 ADR-0277 (its resume), #320, #336, #545, #571, #123.
 pi: `earendil-works/pi@9c9ce8547`, deliberately not followed on the context (below).
 Tests: `tests/harness/test_withdraw_unanswered_input_654.py`,
-`tests/tui/test_esc_gives_input_back_654.py`, `tests/rpc/test_rpc_mode_handlers.py`.
+`tests/tui/test_esc_gives_input_back_654.py`, `tests/rpc/test_rpc_mode_handlers.py`,
+`tests/cli/test_session_start_model_413.py`.
 
 ## Context
 
@@ -43,9 +45,14 @@ and to RPC `abort`, and an outer task cancel keeps today's preservation.
 
 ### 1. The rule
 
-**On a withdrawing abort, every input committed since the last answer leaves context.**
-An answer is a committed `AssistantMessage` whose `stop_reason` is not `error` or
+**On a withdrawing abort, every input this prompt committed since its last answer leaves
+context.** An answer is a committed `AssistantMessage` whose `stop_reason` is not `error` or
 `aborted`, or a committed tool result. It and everything before it stay.
+
+An earlier prompt that ended in an error the user saw, or that a plain abort kept, stays.
+That is not a gap: a cross-review read the rule as reaching back over it (Codex finding 4)
+and is rejected, because this Esc cancels this prompt, and a turn the user already watched
+end is not what they are taking back.
 
 | Esc moment | Result |
 |---|---|
@@ -54,7 +61,8 @@ An answer is a committed `AssistantMessage` whose `stop_reason` is not `error` o
 | tool running, or tool done and next response pending | nothing withdrawn |
 | `[.., tool result, STEER]` pending | STEER withdrawn, the rest stays |
 | `[.., answer, FOLLOW_UP]` pending | FOLLOW_UP withdrawn, the rest stays |
-| after a compaction inside this prompt (overflow recovery) | nothing withdrawn (limit 1) |
+| after a compaction inside this prompt committed (overflow recovery) | nothing withdrawn (limit 1) |
+| during that compaction's summary, before it commits | whole prompt withdrawn, no compaction |
 
 ### 2. The API defaults to keeping
 
@@ -69,6 +77,10 @@ included), its countdown Esc (`_on_retry_interrupt`) and RPC `abort`. **Not** th
 SIGTERM/SIGHUP handler, although it aborts through the same `_safe_abort`: the editor
 goes with the process. RPC `abort_retry` means "stop retrying" and stays False (#571 owns
 that path), as does an extension's `ctx.abort()` (#545).
+
+The last `abort()` wins: it assigns the flag, so a plain abort after a stale request (an
+`abort_retry` made with no wait running) keeps the input. `abort_retry()` left False changes
+nothing, since `abort()` calls it too and "stop retrying" does not undo an earlier Esc.
 
 ### 3. A leaf move, not a new entry type
 
@@ -106,6 +118,13 @@ countdown, one that stopped overflow recovery). The tail's check sits before the
 compaction, which must not summarise it, and again at the release, for a raise or an abort
 during that check. The empty in-memory aborted marker stays: `print_mode` reads it.
 
+An Esc during the summary of a compaction inside the prompt comes before the barrier.
+`compact()` checks once the summary is back, before `append_compaction`: under the prompt's
+claim, with a withdraw requested and input still in the tracker, it raises
+`_CompactionCancelled` and commits nothing. `compaction_end` reads aborted, overflow recovery
+ends as it does for a cancelled compaction, and the tail withdraws. A threshold compaction
+after an answer has nothing in the tracker and goes on.
+
 ### 5. An event, because no context change goes unobserved
 
 `InputWithdrawnEvent(messages, prompt_withdrawn)`, `type: "input_withdrawn"`, in the
@@ -113,7 +132,14 @@ during that check. The empty in-memory aborted marker stays: `print_mode` reads 
 requires it. Emitted only when something was withdrawn. `messages` is what the caller may
 give back, in commit order and as the objects queued (before any `message_end`
 replacement): the live prompt first when `prompt_withdrawn`, then steer and follow-up user
-messages. Not injected or drained ones.
+messages that committed, then those the abort cleared from the two queues. Not injected or
+drained ones.
+
+The cleared lines go on the prompt's event, which then goes out even if nothing committed.
+With no prompt alive (idle, or a public compaction) `abort()` emits it itself, ahead of the
+`abort` hook, whose raise must not lose them. An abort made before `_run` (limit 2), or one
+that lands after the prompt's last check, leaves them for the prompt's release. Whichever
+site emits takes the list, so each line goes once. `AbortHookEvent` is unchanged.
 
 On a turn's abort it comes before that turn's `turn_end` and `agent_end`. Between runs it
 comes after them, since `agent_end` has gone out. RPC forwards it untransformed, like every
@@ -123,27 +149,49 @@ second after `model_catalog_refresh`.
 
 ### 6. The TUI gives it back
 
-`_on_interrupt` first takes the steer and follow-up queues' text into the input box (it
-shares `_dequeue`'s body, not its "No queued messages" notice), then aborts. The
-`input_withdrawn` handler puts the withdrawn text ahead of whatever the box holds, so the
-order reads prompt, steers, queued lines, draft. A `/skill:` or template prompt comes back
-as typed, not expanded: `_input_loop` keeps the raw line around `harness.prompt`.
+`_on_interrupt` and, in the countdown, `_on_retry_interrupt` first take the steer and
+follow-up queues' text into the input box (they share `_dequeue`'s body, not its "No queued
+messages" notice), then abort. The `input_withdrawn` handler puts the withdrawn text ahead of
+whatever the box holds, so the order reads prompt, steers, queued lines, draft. A `/skill:` or
+template prompt comes back as typed, not expanded: `_input_loop` keeps the raw line around
+`harness.prompt`. Since these lines left the queues first, the event carries none of them and
+nothing arrives twice.
+
+Text as large as a collapsed paste (`_should_collapse_paste`) comes back as one, through
+`_register_paste`, Alt+Up included, so a 200-line prompt does not scroll the box away; submit
+expands it byte for byte, and a draft keeps its placeholders.
+
+An abort's give-back stamps the chrome. Within `_CTRL_C_EXIT_WINDOW` (2 s) of it, Ctrl+C on an
+idle box does nothing rather than clear it, so a double press that outlasts the abort keeps
+the text; it does not arm the exit timer, and after the window Ctrl+C clears as before (#66).
+Alt+Up is a key pressed on purpose and does not stamp.
 
 The abort line gains the fact, once: `✖ Operation aborted. Your message is back in the
 input; the model will not see it.` The countdown has no such line left to join, so the same
-sentence follows `Retry failed: Retry cancelled`. The user's block stays in scrollback.
+sentence follows `Retry failed: Retry cancelled`, printed by the event. The user's block stays
+in scrollback.
+
+### 7. `/clone` asks the path
+
+`/clone` and RPC `clone` ask for a conversation on the branch, not in the file, narrowing
+ADR-0239 decision 8. A session whose only message was withdrawn has a leaf and that message
+behind it; asked of the file, it cloned an empty session and switched to it. A leaf moved back
+by hand is the same state and is refused too, where pi, reading `fileEntries`, clones it.
 
 ## Limits
 
-1. **The compaction barrier.** After a compaction inside the prompt the summary may hold
-   the input and the kept tail cannot be moved behind it, so nothing is withdrawn.
+1. **The compaction barrier.** After a compaction committed inside the prompt the summary
+   may hold the input and the kept tail cannot be moved behind it, so nothing is withdrawn.
 2. **The #336 window.** An abort made before `_run` (in a hook) is still discarded with
-   its flag and the turn runs, as a plain abort is today.
+   its flag and the turn runs, as a plain abort is today. The window includes `_run`'s own
+   `build_context` await, before the turn task exists (`harness/core.py:5473`, Codex finding
+   1): the request still goes out, and the input stays.
 3. **A steer between drain and commit.** Pre-existing: a steer the loop has drained and
    not yet committed is lost on cancel. It is neither in the queue nor in the event.
-4. **The file keeps the text.** The withdrawn entry stays on the branch left behind: `/tree`
-   shows it, the session list's preview may still show it as the first message, and it is
-   on disk. This removes it from context, not from storage.
+4. **The file keeps the text.** The withdrawn entry stays on the branch left behind and on
+   disk: the `/resume` list's preview and `last:` line can still show it, and RPC
+   `get_fork_messages` lists it. Forking there is sound: the text comes back and the context
+   lacks it. This removes it from context, not from storage.
 5. **Hosts must handle `input_withdrawn`** to give the text back. One that does not loses it
    from view, though the file keeps it (limit 4). RPC `get_messages` after an abort reads the
    aborted marker without the input.
@@ -153,19 +201,31 @@ sentence follows `Retry failed: Retry cancelled`. The user's block stays in scro
    extension's text in the input box, since no typed line exists for it.
 8. **The `abort` hook's lists on a TUI Esc.** The TUI empties the steer and follow-up queues
    before it aborts, in pi's order, so that hook's `cleared_steer` and `cleared_follow_up` are
-   empty on an Esc that gave them back. Nothing in the product reads them; RPC `abort` still
-   fills them, and those lines stay lost there: `input_withdrawn` covers what committed only.
-9. **A second Ctrl+C.** Ctrl+C on an idle, non-empty box clears it (#66). A double press that
-   outlasts the abort therefore clears the text that just came back, and exiting takes the
-   usual two more.
+   empty on an Esc that gave them back. Nothing in the product reads them. RPC `abort` still
+   fills them, and those lines also travel on `input_withdrawn`.
+9. **An adapter that turns the cancel into something else.** One that raises, or sends an
+   aborted error event, instead of letting `CancelledError` through does not reach `_run`'s
+   abort close-out, so `agent_end` goes out before `input_withdrawn` and still holds the input
+   (`harness/core.py:5813`, Codex finding 3). No shipping adapter does. The event is the final
+   word.
+10. **An extension's turn does not arm the keys.** `trigger_turn` runs with the chrome not
+    running and `interrupt_armed` false, so Esc and Ctrl+C do not reach it in the TUI
+    (`tui/chrome.py:1024`). Pre-existing (Codex finding 6).
+11. **`withdraw_tail` is not atomic on a suspending `FileSystem`.** An append that straddles
+    its leaf line can put the input back. `LocalFileSystem`, the only one shipped, has a
+    synchronous `append_file` and cannot reach it (`session/session.py:330`).
+12. **The aborted marker counts in stats.** `/session` and RPC stats count the empty in-memory
+    marker until the session is reopened, so `messages` can read one more than the path holds.
 
 ## Verification
 
-Regression: 42 cases in the harness file (every row of §1, with and without a session,
-checking next request, live state, reopened JSONL and queue), 9 in the TUI file, 2 in the RPC
-file, on Python 3.11, 3.12 and 3.14. The event-name gates went from 37 names to 38. Thirty
-mutations of the fix each fail a test; three survived the first pass and got one (a failed
-answer alone is not input, a replaced follow-up, a turn nobody typed).
+Regression: 58 cases in the harness file (every row of §1, with and without a session,
+checking next request, live state, reopened JSONL and queue), 17 in the TUI file, 3 in the RPC
+file, 2 more in `tests/cli/test_session_start_model_413.py` for §7, on Python 3.11, 3.12 and
+3.14. The event-name gates went from 37 names to 38. Thirty mutations of the first pass each
+fail a test; three survived that pass and got one (a failed answer alone is not input, a
+replaced follow-up, a turn nobody typed). Twenty-four more for review round 1 each fail a test;
+one survived (queued lines after a barrier said too late) and got one.
 
 Live on OpenRouter `openai/gpt-4o-mini`, the real TUI in a pty, a scratch cwd and an isolated
 agent dir (`/tmp/654-impl/`):
@@ -184,3 +244,20 @@ agent dir (`/tmp/654-impl/`):
   alone and the next answer was `NONE`; and against a local server answering `503` (no real
   model), Esc in the countdown printed `Retry failed: Retry cancelled`, then the sentence, with
   the line back in the box.
+
+Review round 1, the same way, under `/tmp/654-fix-r1/`:
+
+- A double Ctrl+C mid-stream on `openai/gpt-4o-mini`, 150 ms apart, and two more presses after
+  the abort had ended: the text stayed in the box, no exit hint. Past the window Ctrl+C cleared
+  it. Asked for the word, the model answered `NONE`.
+- A 200-line paste, Esc, on the same model: the box read `[Pasted text #2 +201 lines]` with the
+  footer in place, and the resubmitted message on the path was byte-equal; the model echoed its
+  first and last lines. A scripted server read the same bytes off the wire, a draft's own
+  placeholder included.
+- A real RPC process on the same model, prompt, steer, follow-up, abort: one `input_withdrawn`
+  naming all three, before `turn_end`, and `clone` refused. An idle steer and abort named the
+  line with `prompt_withdrawn` false; a second abort said nothing. The next answer was `NONE`.
+- Against a local server answering `503` (no real model), Esc in the countdown with two queued
+  lines and a draft: the box read prompt, steer, follow-up, draft, the footer lost its `2 queued`,
+  the notice printed once, and the next request held only the next line. A double press in the
+  countdown kept the text.

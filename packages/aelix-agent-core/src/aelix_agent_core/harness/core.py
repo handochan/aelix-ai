@@ -722,6 +722,9 @@ class AgentHarness:
         # what such an abort takes out of context.
         self._withdraw_requested = False
         self._unanswered: _UnansweredInputs | None = None
+        # The steer and follow-up lines such an abort cleared, on their way to
+        # ``input_withdrawn``. Whichever site emits next takes them, so each goes once.
+        self._withdrawn_queued: list[AgentMessage] = []
         # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
         self._turn_state: _TurnState | None = None
         # Sprint 3c §C.2 — track the in-flight turn task so abort() can call
@@ -1848,6 +1851,10 @@ class AgentHarness:
                 self._turn_refusal = None
                 self._phase = "idle"
                 self._idle_event.set()
+            # #654 — queued lines nothing has said yet: an abort made before ``_run``
+            # cleared its flag, or one during the drain above, which found this prompt
+            # alive. Does not suspend when there are none, so the release stays as it was.
+            await self._emit_withdrawn_queue()
 
     async def steer(
         self,
@@ -1910,6 +1917,9 @@ class AgentHarness:
         default is False because this is also how a process ends (:meth:`dispose`
         on SIGTERM or quit, and through it a stopped delegation child), and there
         nobody is left to give the input back to: it stays, so that a resume has it.
+        The last caller wins: a plain abort after a stale request keeps the input.
+        The steer and follow-up user messages it clears travel on the same event, after
+        what committed. With no prompt alive to emit that, this call emits it.
 
         Sprint 3c §C.2 (Aelix additive over Pi): when a turn task is
         in-flight, call ``task.cancel()`` on it so any tool that ignores the
@@ -1931,13 +1941,14 @@ class AgentHarness:
         """
 
         self._abort_requested = True
-        if withdraw_unanswered:
-            self._withdraw_requested = True
+        self._withdraw_requested = withdraw_unanswered
         # Capture pre-clear snapshots for AbortHookEvent (P-10 closure).
         cleared_steer = list(self._steering_queue._messages)
         cleared_follow_up = list(self._follow_up_queue._messages)
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        if withdraw_unanswered:
+            self._withdrawn_queued.extend([*cleared_steer, *cleared_follow_up])
         # Sprint 3c §C.2 — cancel in-flight turn task if any.
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
@@ -1961,6 +1972,9 @@ class AgentHarness:
         # Mirrors abort_bash() which fires the same set via the RPC path.
         for sig in list(self._active_bash_signals):
             sig.abort()
+        # #654 — ahead of the hook, whose raise must not lose these lines.
+        if self._claim is None:
+            await self._emit_withdrawn_queue()
         # Sprint 3d (P-10) — emit dedicated abort lifecycle event with the
         # cleared-queue snapshots. Closes the last Phase 2.1 emit-site gap.
         try:
@@ -2127,6 +2141,15 @@ class AgentHarness:
                     _summarizer_override=self._options._summarizer_override,
                 )
                 from_hook = False
+            # #654 (ADR-0286) — an Esc while the summary ran came before the barrier
+            # below. Ends as a cancelled compaction does, and the prompt's tail withdraws.
+            if (
+                nested
+                and self._withdraw_requested
+                and self._unanswered is not None
+                and self._unanswered.committed
+            ):
+                raise _CompactionCancelled("compaction", "Compaction cancelled by a withdrawing abort")
             entry_id = await self._session.append_compaction(
                 summary=result.summary,
                 first_kept_entry_id=result.first_kept_entry_id,
@@ -3338,6 +3361,8 @@ class AgentHarness:
 
         ``withdraw_unanswered``: as :meth:`abort` (#654). This is the TUI's Esc in
         the retry countdown; RPC ``abort_retry`` leaves it off, as "stop retrying".
+        Left off it changes nothing: :meth:`abort` calls this too, and "stop retrying"
+        is no reason to keep what an earlier Esc asked to withdraw. It clears no queue.
         """
 
         if withdraw_unanswered:
@@ -5879,16 +5904,19 @@ class AgentHarness:
         ``uncommitted_inputs`` is the running ``_run``'s list, for a cancel that
         landed before an input committed. Live state and the queue change first and
         synchronously, so a second cancel can only cost the session write. Takes the
-        tracker with it, so a later call finds nothing.
+        tracker with it, so a later call finds nothing. Lines the abort cleared go on the
+        event whether or not anything committed.
         """
 
         unanswered = self._unanswered
         if unanswered is None:
+            await self._emit_withdrawn_queue()
             return
         prompt = unanswered.prompt
         pending = uncommitted_inputs if uncommitted_inputs is not None else []
         prompt_uncommitted = any(m is prompt for m in pending)
         if not unanswered.committed and not prompt_uncommitted:
+            await self._emit_withdrawn_queue()
             return
         self._unanswered = None
         committed = unanswered.committed
@@ -5948,7 +5976,21 @@ class AgentHarness:
             for o, _ in committed
             if isinstance(o, UserMessage) and not any(o is m for m in not_the_users)
         )
-        event = InputWithdrawnEvent(messages=given_back, prompt_withdrawn=prompt_withdrawn)
+        await self._emit_input_withdrawn(given_back, prompt_withdrawn=prompt_withdrawn)
+
+    async def _emit_withdrawn_queue(self) -> None:
+        """``input_withdrawn`` for cleared queue lines alone; nothing when there are none."""
+
+        if self._withdrawn_queued:
+            await self._emit_input_withdrawn([], prompt_withdrawn=False)
+
+    async def _emit_input_withdrawn(
+        self, messages: list[AgentMessage], *, prompt_withdrawn: bool
+    ) -> None:
+        """The event, with the queued lines behind ``messages``. Takes them, so each goes once."""
+
+        queued, self._withdrawn_queued = self._withdrawn_queued, []
+        event = InputWithdrawnEvent(messages=[*messages, *queued], prompt_withdrawn=prompt_withdrawn)
         await self._emit_to_subscribers(event)
         try:
             await self._hooks.emit(_to_hook_event(event))

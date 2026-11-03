@@ -444,8 +444,11 @@ If the model had not answered yet, `Esc` also takes your message back: it leaves
 context, so the next request does not carry it, and returns to the input box as you
 typed it, ahead of any lines you queued and anything you were typing. What already ran
 stays: once a tool has run, its call and result and the message behind them are still in
-context, and only a steer or follow-up sent after them comes back. The text stays in the
-session file on the branch left behind, so `/tree` still shows it.
+context, and only a steer or follow-up sent after them comes back. A large paste comes
+back as its `[Pasted text #N +M lines]` placeholder and submits byte for byte. A second
+`Ctrl+C` within two seconds leaves the text alone; after that it clears the box as usual.
+The text stays in the session file on the branch left behind, so the `/resume` list's
+preview and `last:` line can still show it.
 
 The `read` tool uses 1-based line offsets. Its totals count a final newline as
 the end of a line, and include an unterminated last line. For a three-line file,

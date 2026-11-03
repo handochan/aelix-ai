@@ -118,6 +118,9 @@ class _SwapSession:
     async def get_entries(self) -> list[object]:
         return [_FakeEntry("u1", "message", role="user")]
 
+    async def get_branch(self) -> list[object]:
+        return await self.get_entries()
+
     async def get_leaf_id(self) -> str:
         return "u1"
 

@@ -195,11 +195,13 @@ A hook handler registered through `on(...)` receives a read-only
 
 An `input_withdrawn` handler hears that a user's Esc or an RPC `abort` took input the
 model never answered out of context. `event.messages` is what the caller may give back
-to the user, with the live prompt first when `event.prompt_withdrawn` is true; a
-`before_agent_start` message of yours is not in it, because the next prompt asks you
-again. It is observational. On a turn's abort it comes before that turn's `turn_end` and
-`agent_end`; on an abort between runs, such as in the retry countdown, it comes after them.
-An `abort` handler does not tell you this: it fires for every abort, and clears the queues.
+to the user, with the live prompt first when `event.prompt_withdrawn` is true and the
+steer and follow-up lines the abort cleared last; a `before_agent_start` message of yours
+is not in it, because the next prompt asks you again. It is observational. On a turn's
+abort it comes before that turn's `turn_end` and `agent_end`; on an abort between runs, such
+as in the retry countdown, it comes after them; with no prompt running it comes from the
+abort itself, for those lines alone. An `abort` handler does not tell you this: it fires
+for every abort, and clears the queues.
 
 A `model_select` or `thinking_level_select` handler runs after the change: the
 model or level is already in force. Raising there does not undo it. The command

@@ -91,13 +91,14 @@ class _Tui:
         self.provider = provider
         self.harness = _real_harness(provider)
         self.signals = signals
+        self.now = 0.0  # the chrome's clock: only a test moves it
 
     async def __aenter__(self) -> _Tui:
         self._pipe_cm = create_pipe_input()
         self.pipe = self._pipe_cm.__enter__()
         self._session_cm = create_app_session(input=self.pipe, output=DummyOutput())
         self._session_cm.__enter__()
-        self.chrome = AelixChrome()
+        self.chrome = AelixChrome(time_fn=lambda: self.now)
         self.commits = _spy_commits(self.chrome)
         self.task = asyncio.ensure_future(
             run_tui(
@@ -253,3 +254,158 @@ async def test_a_termination_signal_keeps_the_input(monkeypatch: pytest.MonkeyPa
         assert code == 0
         assert tui.chrome.get_editor_text() == ""
         assert [m for m in tui.harness.messages if isinstance(m, UserMessage)]
+
+
+# === Review round 1 ===========================================================
+
+_ALT_ENTER = "\x1b\r"
+_BIG = "\n".join(f"line {i:03d} 한글 of the paste" for i in range(200))
+
+
+def _paste(tui: _Tui, text: str) -> None:
+    tui.pipe.send_text(f"\x1b[200~{text}\x1b[201~")
+
+
+async def _in_the_countdown(tui: _Tui, monkeypatch: pytest.MonkeyPatch, line: str) -> None:
+    monkeypatch.setattr("aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 60_000)
+    tui.harness.state.auto_retry_enabled = True
+    tui.pipe.send_text(line + "\n")
+    await _wait(lambda: "__auto_retry__" in tui.chrome._widgets_above)
+
+
+async def test_esc_in_the_countdown_gives_queued_lines_back_and_they_never_reach_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _Provider("failed")
+    async with _Tui(provider) as tui:
+        await _in_the_countdown(tui, monkeypatch, "to be retried")
+        tui.pipe.send_text("a queued steer\n")
+        await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
+        tui.pipe.send_text("a queued follow-up" + _ALT_ENTER)
+        await _wait(lambda: len(tui.harness._follow_up_queue._messages) == 1)
+        await _wait(lambda: "2 queued" in tui.chrome._footer_line)
+        tui.chrome.set_editor_text("half a thought")
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads(
+            "to be retried\n\na queued steer\n\na queued follow-up\n\nhalf a thought"
+        )
+        await _wait(tui.idle)
+        assert tui.harness._steering_queue._messages == []
+        assert tui.harness._follow_up_queue._messages == []
+        assert "queued" not in tui.chrome._footer_line
+        await _wait(lambda: INPUT_RETURNED_NOTICE in tui.commits)
+        assert tui.commits.count(INPUT_RETURNED_NOTICE) == 1
+        failed = next(i for i, c in enumerate(tui.commits) if "Retry failed" in c)
+        assert tui.commits.index(INPUT_RETURNED_NOTICE) > failed
+
+        tui.chrome.set_editor_text("")
+        tui.pipe.send_text("NEW\n")
+        await _wait(lambda: provider.seen[-1] == ["NEW"])
+        await _wait(tui.idle)
+        assert len(provider.seen) == 2
+
+
+@pytest.mark.parametrize("first", [_CTRL_C, "\x1b"], ids=["ctrl-c", "esc"])
+async def test_a_second_ctrl_c_keeps_what_just_came_back_until_the_window_ends(first: str) -> None:
+    async with _Tui(_Provider("hang")) as tui:
+        await tui.send_until_request("the line I typed")
+        tui.pipe.send_text(first)
+        await tui.editor_reads("the line I typed")
+        await _wait(tui.idle)
+
+        tui.now += 1.9
+        tui.pipe.send_text(_CTRL_C + _CTRL_C + "z")  # "z" says the two were read
+        await tui.editor_reads("the line I typedz")
+        assert tui.chrome._last_ctrl_c is None, "the exit timer stays unarmed"
+
+        tui.now += 0.2  # past the window: Ctrl+C clears, as ever
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads("")
+        assert tui.chrome._last_ctrl_c is None
+
+
+async def test_a_second_ctrl_c_after_the_countdown_keeps_what_came_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _Tui(_Provider("failed")) as tui:
+        await _in_the_countdown(tui, monkeypatch, "to be retried")
+        tui.pipe.send_text(_CTRL_C + _CTRL_C)
+        await tui.editor_reads("to be retried")
+        await _wait(tui.idle)
+        tui.pipe.send_text(_CTRL_C + "z")
+        await tui.editor_reads("to be retriedz")
+        tui.now += 2.1
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads("")
+
+
+async def test_a_queued_line_alone_coming_back_is_kept_from_a_second_ctrl_c_too() -> None:
+    """The prompt was answered, so no event comes: the queue's give-back stamps it."""
+
+    provider = _Provider("answer", "hang")
+    async with _Tui(provider) as tui:
+        await tui.harness.follow_up("first queued")
+        tui.pipe.send_text("first\n")
+        await asyncio.wait_for(provider.reached.wait(), timeout=10)
+        await asyncio.sleep(0)
+        tui.pipe.send_text("a queued steer\n")
+        await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads("first queued\n\na queued steer")
+        await _wait(tui.idle)
+        tui.pipe.send_text(_CTRL_C + "z")
+        await tui.editor_reads("first queued\n\na queued steerz")
+
+
+async def test_a_large_paste_comes_back_collapsed_and_resubmits_byte_equal() -> None:
+    provider = _Provider("hang", "answer")
+    async with _Tui(provider) as tui:
+        _paste(tui, _BIG)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #1 +200 lines]")
+        await tui.send_until_request("")
+        assert provider.seen[-1] == [_BIG]
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #2 +200 lines]")
+        assert tui.chrome.get_editor_text() == _BIG
+        await _wait(tui.idle)
+
+        tui.pipe.send_text("\n")
+        await _wait(lambda: len(provider.seen) == 2)
+        assert provider.seen[-1] == [_BIG]
+        await _wait(tui.idle)
+        assert tui.chrome.buffer.text == ""
+
+
+async def test_every_give_back_collapses_and_the_draft_keeps_its_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    long_line = "x" * 1500
+    other = "\n".join(f"other {i}" for i in range(8))
+    provider = _Provider("failed")
+    async with _Tui(provider) as tui:
+        await _in_the_countdown(tui, monkeypatch, "short prompt")
+        _paste(tui, long_line)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #1 +1 lines]")
+        tui.pipe.send_text("\n")  # a steer
+        await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
+        _paste(tui, other)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #2 +8 lines]")
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text.startswith("short prompt"))
+        assert tui.chrome.buffer.text == (
+            "short prompt\n\n[Pasted text #3 +1 lines]\n\n[Pasted text #2 +8 lines]"
+        )
+        assert tui.chrome.get_editor_text() == f"short prompt\n\n{long_line}\n\n{other}"
+        await _wait(tui.idle)
+
+
+async def test_alt_up_brings_a_large_line_back_collapsed_and_ctrl_c_still_clears_it() -> None:
+    """A key pressed on purpose: no window after it, as before."""
+
+    async with _Tui(_Provider()) as tui:
+        await tui.harness.steer(_BIG)
+        tui.pipe.send_text(_ALT_UP)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #1 +200 lines]")
+        assert tui.chrome.get_editor_text() == _BIG
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads("")

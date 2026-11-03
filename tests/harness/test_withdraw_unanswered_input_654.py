@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.harness.core import AgentHarness, AgentHarnessError, AgentHarnessOptions
 from aelix_agent_core.harness.hooks import (
     BeforeAgentStartResult,
     InputWithdrawnHookEvent,
     MessageEndEventResult,
+    SessionBeforeCompactResult,
 )
 from aelix_agent_core.session import (
     CompactionPreparation,
@@ -825,3 +826,360 @@ async def test_withdraw_tail_refuses_a_target_off_the_path_and_writes_nothing(
             await session.withdraw_tail(first, lambda _e: True)
 
         assert len(await session.get_entries()) == before
+
+
+# === Review round 1: queued lines travel on the event =========================
+
+
+async def _queue_during_the_turn(run: _Run, text: str = "CANCELLED") -> asyncio.Task[Any]:
+    task = asyncio.create_task(run.harness.prompt(text))
+    await asyncio.wait_for(run.provider.reached.wait(), timeout=5)
+    await asyncio.sleep(0)
+    await run.harness.steer("STEER")
+    await run.harness.follow_up("FOLLOW")
+    return task
+
+
+def _said(run: _Run) -> list[tuple[list[str], bool]]:
+    return [(_shape(e.messages), e.prompt_withdrawn) for e in run.withdrawn]
+
+
+async def test_queued_lines_travel_behind_what_committed_in_one_event(tmp_path: Path) -> None:
+    run = await _start(tmp_path, _Provider("hang"), True)
+    task = await _queue_during_the_turn(run)
+    await run.harness.abort(withdraw_unanswered=True)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert _said(run) == [(["CANCELLED", "STEER", "FOLLOW"], True)]
+    types = [e.type for e in run.events]
+    assert types.index("input_withdrawn") < types.index("agent_end")
+    assert await run.next_request() == ["NEW"]
+
+
+async def test_queued_lines_are_said_even_when_nothing_committed_leaves(tmp_path: Path) -> None:
+    run = await _start(tmp_path, _Provider("tool", "hang"), True)
+    run.harness.state.tools = [_edit_tool()]
+    task = await _queue_during_the_turn(run)
+    await run.harness.abort(withdraw_unanswered=True)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert _said(run) == [(["STEER", "FOLLOW"], False)]
+    types = [e.type for e in run.events]
+    assert types.index("input_withdrawn") < types.index("agent_end")
+    assert run.state() == ["CANCELLED", "<call>", "<result>"]
+
+
+async def test_after_a_compaction_barrier_queued_lines_are_still_said(tmp_path: Path) -> None:
+    """The barrier keeps what committed. The queue never reached the model."""
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    run = await _overflow_run(tmp_path, _Provider("overflow", "hang"), summarise)
+    task = await _queue_during_the_turn(run)
+    await run.harness.abort(withdraw_unanswered=True)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert _said(run) == [(["STEER", "FOLLOW"], False)]
+    types = [e.type for e in run.events]
+    assert types.index("input_withdrawn") < len(types) - 1 - types[::-1].index("agent_end")
+    assert "CANCELLED" in await run.disk()
+
+
+async def test_an_idle_abort_says_the_queued_lines_itself_and_only_once(tmp_path: Path) -> None:
+    run = await _start(tmp_path, _Provider(), True)
+    await run.harness.steer("STEER")
+    await run.harness.follow_up("FOLLOW")
+    await run.harness.abort(withdraw_unanswered=True)
+    assert _said(run) == [(["STEER", "FOLLOW"], False)]
+
+    await run.harness.abort(withdraw_unanswered=True)
+    assert len(run.withdrawn) == 1
+    assert await run.next_request() == ["NEW"]
+    assert len(run.withdrawn) == 1
+
+
+async def test_abort_during_a_public_compaction_says_the_queued_lines(tmp_path: Path) -> None:
+    """A phase that is not idle, with no prompt alive to carry them."""
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        entered.set()
+        await release.wait()
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    run = await _start(tmp_path, _Provider(), True, _summarizer_override=summarise)
+    assert run.session is not None
+    for _ in range(6):
+        await run.session.append_message(UserMessage(content=[TextContent(text="x" * 30_000)]))
+    task = asyncio.create_task(run.harness.compact())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await run.harness.steer("STEER")
+    await run.harness.abort(withdraw_unanswered=True)
+    assert _said(run) == [(["STEER"], False)]
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+    assert len(run.withdrawn) == 1
+
+
+async def test_a_plain_abort_says_nothing_about_the_lines_and_the_hook_hears_both(
+    tmp_path: Path,
+) -> None:
+    """AbortHookEvent is as it was, for either kind of abort."""
+
+    run = await _start(tmp_path, _Provider(), True)
+    heard: list[tuple[list[str], list[str]]] = []
+
+    async def on_abort(event: Any, _ctx: Any) -> None:
+        heard.append((_shape(event.cleared_steer), _shape(event.cleared_follow_up)))
+
+    run.harness.hooks.on("abort", on_abort)
+    await run.harness.steer("LOST")
+    await run.harness.abort()
+    await run.harness.steer("STEER")
+    await run.harness.follow_up("FOLLOW")
+    await run.harness.abort(withdraw_unanswered=True)
+
+    assert heard == [(["LOST"], []), (["STEER"], ["FOLLOW"])]
+    assert _said(run) == [(["STEER", "FOLLOW"], False)]
+
+
+async def test_a_raising_abort_hook_does_not_lose_the_lines(tmp_path: Path) -> None:
+    run = await _start(tmp_path, _Provider(), True)
+
+    async def on_abort(_event: Any, _ctx: Any) -> None:
+        raise ValueError("no")
+
+    run.harness.hooks.on("abort", on_abort)
+    await run.harness.steer("STEER")
+    with pytest.raises(AgentHarnessError):
+        await run.harness.abort(withdraw_unanswered=True)
+    assert _said(run) == [(["STEER"], False)]
+
+
+async def test_an_abort_before_the_run_still_says_its_lines_at_the_release(tmp_path: Path) -> None:
+    """The #336 window: ``_run`` clears the flag and the turn runs, the input stays."""
+
+    run = await _start(tmp_path, _Provider("answer"), True)
+
+    async def before(_event: Any, _ctx: Any) -> None:
+        await run.harness.steer("STEER")
+        await run.harness.abort(withdraw_unanswered=True)
+
+    run.harness.hooks.on("before_agent_start", before)
+    await run.harness.prompt("KEPT")
+
+    assert _said(run) == [(["STEER"], False)]
+    assert await run.disk() == ["KEPT", "answer"]
+
+
+async def test_lines_cleared_while_the_event_goes_out_are_said_once_more(tmp_path: Path) -> None:
+    """An abort inside the first event finds the prompt alive and leaves them to it."""
+
+    run = await _start(tmp_path, _Provider("hang"), True)
+    again = {"done": False}
+
+    async def listen(event: Any) -> None:
+        if event.type == "input_withdrawn" and not again["done"]:
+            again["done"] = True
+            await run.harness.steer("LATE")
+            await run.harness.abort(withdraw_unanswered=True)
+
+    run.harness.subscribe(listen)
+    task = await _queue_during_the_turn(run)
+    await run.harness.abort(withdraw_unanswered=True)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert _said(run) == [(["CANCELLED", "STEER", "FOLLOW"], True), (["LATE"], False)]
+
+
+# === Review round 1: an Esc during the overflow summary =======================
+
+
+async def _overflow_run(tmp_path: Path, provider: _Provider, summarise: Any, **options: Any) -> _Run:
+    run = await _start(tmp_path, provider, True, _summarizer_override=summarise, **options)
+    assert run.session is not None
+    for _ in range(6):
+        await run.session.append_message(UserMessage(content=[TextContent(text="x" * 30_000)]))
+    run.harness.state.auto_compaction_enabled = True
+    run.harness.state.model = Model(
+        id="m", provider="p", api="unknown", context_window=200_000, max_tokens=4096
+    )
+    return run
+
+
+async def _compactions(run: _Run) -> int:
+    assert run.session is not None
+    return len([e for e in await run.session.get_entries() if e.type == "compaction"])
+
+
+@pytest.mark.parametrize("stage", ["summarizer", "hook_summary"])
+async def test_esc_during_the_overflow_summary_stops_before_the_barrier(
+    tmp_path: Path, stage: str
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        if stage == "summarizer":
+            entered.set()
+            await release.wait()
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    provider = _Provider("overflow")
+    run = await _overflow_run(tmp_path, provider, summarise)
+    if stage == "hook_summary":
+
+        async def hook(event: Any, _ctx: Any) -> SessionBeforeCompactResult:
+            entered.set()
+            await release.wait()
+            return SessionBeforeCompactResult(
+                compaction=CompactResult(
+                    summary="FROM A HOOK",
+                    first_kept_entry_id=event.preparation.first_kept_entry_id,
+                    tokens_before=99,
+                )
+            )
+
+        run.harness.hooks.on("session_before_compact", hook)
+    task = asyncio.create_task(run.harness.prompt("CANCELLED"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await run.harness.abort(withdraw_unanswered=True)
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert await _compactions(run) == 0
+    assert _said(run) == [(["CANCELLED"], True)]
+    assert "CANCELLED" not in run.state()
+    assert "<failed>" not in run.state()
+    disk = await run.disk()
+    assert "CANCELLED" not in disk
+    assert "<failed>" not in disk
+    ends = [e for e in run.events if getattr(e, "type", "") == "compaction_end"]
+    assert [(e.aborted, e.error_message) for e in ends] == [(True, None)]
+    assert len(provider.seen) == 1, "no re-run after it"
+    assert "CANCELLED" not in await run.next_request()
+
+
+async def test_a_plain_abort_during_the_overflow_summary_still_compacts_and_keeps_the_input(
+    tmp_path: Path,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        entered.set()
+        await release.wait()
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    run = await _overflow_run(tmp_path, _Provider("overflow"), summarise)
+    task = asyncio.create_task(run.harness.prompt("KEPT"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await run.harness.abort()
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert await _compactions(run) == 1
+    assert run.withdrawn == []
+    assert "KEPT" in await run.disk()
+
+
+async def test_esc_after_the_overflow_compaction_committed_stays_a_barrier(tmp_path: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    run = await _overflow_run(tmp_path, _Provider("overflow"), summarise)
+
+    async def committed(_event: Any, _ctx: Any) -> None:
+        entered.set()
+        await release.wait()
+
+    run.harness.hooks.on("session_compact", committed)
+    task = asyncio.create_task(run.harness.prompt("KEPT"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await run.harness.abort(withdraw_unanswered=True)
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert await _compactions(run) == 1
+    assert run.withdrawn == []
+    assert "KEPT" in await run.disk()
+
+
+async def test_esc_during_a_threshold_summary_after_an_answer_leaves_the_compaction_alone(
+    tmp_path: Path,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        entered.set()
+        await release.wait()
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    run = await _overflow_run(tmp_path, _Provider("big_answer"), summarise)
+    task = asyncio.create_task(run.harness.prompt("ANSWERED"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    await run.harness.abort(withdraw_unanswered=True)
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert await _compactions(run) == 1
+    assert run.withdrawn == []
+    assert "ANSWERED" in await run.disk()
+
+
+# === Review round 1: the last caller wins =====================================
+
+
+async def test_a_plain_abort_after_a_stale_withdraw_keeps_the_input(tmp_path: Path) -> None:
+    """``abort_retry`` asked to withdraw with no wait running, then SIGTERM's plain abort."""
+
+    run = await _start(tmp_path, _Provider("hang"), True)
+    task = asyncio.create_task(run.harness.prompt("KEPT"))
+    await asyncio.wait_for(run.provider.reached.wait(), timeout=5)
+    await asyncio.sleep(0)
+    run.harness.abort_retry(withdraw_unanswered=True)
+    await run.harness.abort()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert run.withdrawn == []
+    assert await run.disk() == ["KEPT"]
+
+
+async def test_a_plain_abort_retry_does_not_cancel_an_earlier_esc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 60_000)
+    run = await _start(tmp_path, _Provider("failed"), True)
+    run.harness.state.auto_retry_enabled = True
+    waiting = asyncio.Event()
+    run.harness.subscribe(
+        lambda e: waiting.set() if getattr(e, "type", "") == "auto_retry_start" else None
+    )
+    task = asyncio.create_task(run.harness.prompt("CANCELLED"))
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    await asyncio.sleep(0)
+    run.harness.abort_retry(withdraw_unanswered=True)
+    run.harness.abort_retry()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert _said(run) == [(["CANCELLED"], True)]
+    assert await run.disk() == []
