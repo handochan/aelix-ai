@@ -236,8 +236,8 @@ unwritten. Add them with the next release.
     its folder.
   - An entry that matches nothing, a path that is not a directory and a value
     that is not a list of strings are reported once on stderr at launch, and so
-    is a non-empty `themes`, `packages` or `extensions` key, which nothing reads
-    yet (the extension filter comes with `/extension`'s panel, #25).
+    is a non-empty `themes` or `packages` key, which nothing reads yet
+    (`extensions` is read by `/extension`'s panel, #25).
   - New guide: `aelix docs skills-and-prompts`.
 
 - **A delegated agent can be resumed on its own session, inside the limits it
