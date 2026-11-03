@@ -512,6 +512,60 @@ def test_a_faulty_route_source_no_longer_drops_the_rest() -> None:
     ]
 
 
+@pytest.mark.parametrize("description", [123, None, ["a"], b"text"])
+def test_an_extension_description_that_is_not_text_is_drawn_empty(description: Any) -> None:
+    # #508 R1V1 — ``register_command`` is typed ``description: str | None`` and
+    # nothing holds an extension to it. ``description=123`` raised from the
+    # menu's lazy description at every redraw, and the screen stayed on
+    # "Press ENTER to continue".
+    completer = DescriptorCommandCompleter(
+        lambda: {},
+        builtins=[],
+        get_ext_commands=lambda: [("zbad", description), ("zbok", "fine")],
+    )
+    rows, _ = completer._rows("zb")
+    assert [meta for _, _, meta in rows] == ["", "fine"]
+    out = list(completer.get_completions(Document("/zb", 3), CompleteEvent()))
+    for _ in range(2):  # read again at every redraw
+        assert [(c.display_text, c.display_meta_text) for c in out] == [
+            ("zbad", ""),
+            ("zbok", "fine"),
+        ]
+
+
+def test_no_source_description_breaks_the_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lazy description is read inside the render, where a raise repeats at
+    # every redraw: one that is not text, or that fails to draw, is drawn empty
+    # whichever source wrote it, and the rest of the menu is drawn as before.
+    real = completion_mod._menu_text
+
+    def menu_text(text: str, width: int) -> str:
+        if text.startswith("boom"):
+            raise RuntimeError(text)
+        return real(text, width)
+
+    monkeypatch.setattr(completion_mod, "_menu_text", menu_text)
+    number: Any = 123
+    listed: Any = ["not", "text"]
+    out = _menu(
+        "/z",
+        builtins=[],
+        routes={"ns:zr": SimpleNamespace(command="zr", description=number)},
+        templates=[("zt", number), ("ztboom", "boom template"), ("ztok", "fine")],
+        ext=[("ze", "boom extension")],
+        skills=[("zs", listed, "")],
+    )
+    for _ in range(2):  # read again at every redraw
+        assert [(c.display_text, c.display_meta_text) for c in out] == [
+            ("zr", ""),
+            ("zt", ""),
+            ("ztboom", ""),
+            ("ztok", "fine"),
+            ("ze", ""),
+            ("skill:zs", ""),
+        ]
+
+
 @dataclass
 class _Skill:
     name: str

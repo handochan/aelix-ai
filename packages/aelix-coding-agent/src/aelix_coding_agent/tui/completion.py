@@ -748,8 +748,23 @@ class DescriptorCommandCompleter(Completer):
                 # sizes its column from the first 200 rows and draws the rows
                 # it shows, so the first key after a /reload or a resize does
                 # not draw every description of a large catalog.
-                display_meta=functools.partial(self._draw, meta, budget) if meta else "",
+                display_meta=functools.partial(self._meta, meta, budget) if meta else "",
             )
+
+    def _meta(self, text: str, width: int) -> str:
+        """A description as the menu reads it, or nothing when it cannot be drawn
+        (one that is not text included).
+
+        The menu reads it at every redraw, from inside the render: a source's
+        description that raised there raised again at each one, and the screen
+        stayed on "Press ENTER to continue" (#508 R1V1). A faulty source must
+        not break input.
+        """
+
+        try:
+            return self._draw(text, width)
+        except Exception:  # noqa: BLE001 — a faulty source must not break input
+            return ""
 
     def _draw(self, text: str, width: int) -> str:
         """:func:`_menu_text`, kept for the catalog and width being drawn.
@@ -838,6 +853,7 @@ class DescriptorCommandCompleter(Completer):
         drawn_elsewhere = (
             {name for name, _ in ext_commands}
             | {name for name, _ in templates}
+            # Duck-typed stores only: no payload command is skill:… (descriptor.py:76-77, :100-101)
             | {full for full, _, _ in skills}
         )
 
@@ -863,7 +879,9 @@ class DescriptorCommandCompleter(Completer):
         for name, description in ext_commands:
             if not name or not name.startswith(typed) or name in seen:
                 continue
-            add(name, description or "")
+            # ``register_command`` is typed ``description: str | None``, and
+            # nothing holds an extension to it (#508 R1V1).
+            add(name, description if isinstance(description, str) else "")
 
         # #508 — skills last, by bare name first (``/zz`` finds ``skill:zzdemo``).
         by_full: list[tuple[str, str]] = []

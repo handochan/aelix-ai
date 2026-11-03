@@ -125,10 +125,11 @@ The menu offers only what runs as typed. A skill that is off is not listed;
 with `enableSkillCommands` off no skill is. A template whose name a built-in
 command (or one of its other names, such as `/tools`), an extension command or
 an extension's panel already takes is not listed either, because that runs
-instead. A description is shown on one row, its control characters by name
-(`^[`), and is cut to the width the menu has; a name longer than 30 columns —
-or than a third of a narrower terminal — is cut too (Tab still inserts all of
-it).
+instead. An extension's command route is listed as before, even with nothing
+behind it to run (Enter then says Unknown command). A description is shown on
+one row, its control characters by name (`^[`), and is cut to the width the
+menu has; a name longer than 30 columns — or, under 90 columns, than a third
+of the terminal — is cut too (Tab still inserts all of it).
 
 ## The settings lists
 

@@ -1224,10 +1224,11 @@ unwritten. Add them with the next release.
   while `enableSkillCommands` is off, and a template is not offered under a name
   a command or an extension's panel takes, since that runs instead; an
   extension's command route no longer stands in for the template or command
-  that runs under its name, so a row's description is what Enter runs.
+  that runs under its name, so a row's description is what Enter runs (a
+  command route with nothing behind it still says Unknown command).
   Descriptions are one row, control characters shown by name, cut to the menu's
-  width, and a long name is cut at 30 cells as pi's is (a third of the width on
-  a narrow terminal), so one long skill name no longer leaves every
+  width, and a long name is cut at 30 cells as pi's is (a third of the width
+  under 90 columns), so one long skill name no longer leaves every
   description a few cells wide. `/tools`, `/skills`, `/exit` and `/rename` are
   offered as rows of their own ("Same as /tool"), and `/help` lists them beside
   their commands (`/tool, /tools`); before, neither said they existed. The
