@@ -7,7 +7,7 @@ A manifest may bundle color themes as plugin-root-relative TOML files:
     [contributes]
     themes = [{ path = "themes/solarized.toml" }]
 
-Each theme file is aelix-native (the 6 :data:`~aelix_coding_agent.tui.themes.
+Each theme file is aelix-native (the 8 :data:`~aelix_coding_agent.tui.themes.
 THEME_ROLES` roles — pi's ~50-token JSON schema is the fidelity ceiling, not
 adopted here since the aelix ``Theme`` only styles those roles):
 

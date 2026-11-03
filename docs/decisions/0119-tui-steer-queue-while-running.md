@@ -58,3 +58,11 @@ existing `on_interrupt` callback pattern.
   Alt+Enter follows-up / idle Alt+Enter no-op / footer `⋯ N queued`); protected
   paths byte-unchanged (changes confined to `tui/`).
 - Live PTY: mid-turn steer injected + answered.
+
+## Note (2026-11-03, #596): a `!` line Entered during a turn runs instead of steering
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D6.* Enter while running steers every line **except** one
+`parse_input_line` would run as a shell command: `!cmd` / `!!cmd` goes to `on_shell`, which runs
+it at once and lets the turn go on (pi checks for `!` before its streaming-steer branch). What the
+model gets of a `!` command is recorded once nothing runs, so it reaches the model on its next
+turn. Alt+Enter is unchanged: it queues any line, a `!` one included, as a follow-up message.

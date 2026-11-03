@@ -44,6 +44,15 @@ from rich.text import Text
 
 _FOOTER = "FOOTER-632"
 _CPR_ASK = "\x1b[6n"
+# Pinned on 24 rows: the footer on row 23, the status row 22, the widgets-below
+# row 21, then the input. #596 framed the input with a line above and below it,
+# so the input sits on 19 (its lines on 18 and 20) where it sat on 20 before.
+_INPUT_ROW = 19
+# Drawn from the top after clear(): widgets-above, the frame line, the input, the
+# frame line, widgets-below, status, footer. The footer lands on row 6 and the
+# input on row 2 (4 and 1 before #596); the bounds keep the row of slack they had.
+_FOOTER_ROW_AFTER_CLEAR = 7
+_INPUT_ROW_AFTER_CLEAR = 3
 
 
 def _screen(rows: int, cols: int) -> pyte.HistoryScreen:
@@ -394,7 +403,7 @@ async def test_a_print_into_the_band_paints_the_chrome_once_and_only_on_the_last
             rows = [line.rstrip() for line in replay.display]
             input_row = _row_of(rows, _INPUT_PLACEHOLDER)
             # Never the input drawn up in the band, under the printed line.
-            assert input_row in (None, 20), "\n".join(rows)
+            assert input_row in (None, _INPUT_ROW), "\n".join(rows)
             if written[:cut].endswith("\x1b[?2026l"):
                 at_bracket_end.append(rows)
         assert len(cuts) >= 4, f"too few states to see a bounce: {cuts}"
@@ -402,7 +411,7 @@ async def test_a_print_into_the_band_paints_the_chrome_once_and_only_on_the_last
         # What a 2026 terminal paints: the whole chrome, on the last rows.
         for rows in at_bracket_end:
             assert _row_of(rows, _FOOTER) == 23, "\n".join(rows)
-            assert _row_of(rows, _INPUT_PLACEHOLDER) == 20, "\n".join(rows)
+            assert _row_of(rows, _INPUT_PLACEHOLDER) == _INPUT_ROW, "\n".join(rows)
 
 
 async def test_without_cpr_the_settle_step_leaves_the_repaint_to_in_terminal(
@@ -426,7 +435,7 @@ async def test_without_cpr_the_settle_step_leaves_the_repaint_to_in_terminal(
         assert waits == []
         assert term.cpr_answered == 0
         assert _row_of(grid, _FOOTER) == 23, term.dump()
-        assert _row_of(grid, _INPUT_PLACEHOLDER) == 20, term.dump()
+        assert _row_of(grid, _INPUT_PLACEHOLDER) == _INPUT_ROW, term.dump()
 
 
 async def test_a_raising_redraw_drops_the_pin_and_lays_out_as_before(
@@ -556,9 +565,9 @@ async def test_clear_unpins_and_starts_the_renderer_over_at_the_top() -> None:
         # The first frame is whole and at the top: the prefixed input row, then
         # the footer — not the old frame's tail drawn from the old cursor.
         input_row = _row_of(grid, _INPUT_PLACEHOLDER)
-        assert input_row is not None and input_row <= 2, term.dump()
+        assert input_row is not None and input_row <= _INPUT_ROW_AFTER_CLEAR, term.dump()
         assert grid[input_row].startswith("❯ "), term.dump()
-        assert (_row_of(grid, _FOOTER) or 99) <= 5, term.dump()
+        assert (_row_of(grid, _FOOTER) or 99) <= _FOOTER_ROW_AFTER_CLEAR, term.dump()
         assert not chrome._pinned  # not set again from the old screen's numbers
 
         await chrome.print_above_many([Text(f"after-clear-{i}") for i in range(3)])
@@ -585,7 +594,7 @@ async def test_the_first_frame_after_clear_is_the_whole_chrome() -> None:
         )
         grid = term.rows()
         input_row = _row_of(grid, _INPUT_PLACEHOLDER)
-        assert input_row is not None and input_row <= 2, term.dump()
+        assert input_row is not None and input_row <= _INPUT_ROW_AFTER_CLEAR, term.dump()
         assert grid[input_row].startswith("❯ "), term.dump()
         assert _row_of(grid, "before-clear-") is None, term.dump()
 
@@ -616,7 +625,7 @@ def test_the_clear_on_shrink_row_claims_no_behaviour() -> None:
 
 
 async def _band(chrome: AelixChrome, term: _Terminal) -> None:
-    """Pinned, with a band open above the chrome (24 rows: input row 20)."""
+    """Pinned, with a band open above the chrome (24 rows: input row ``_INPUT_ROW``)."""
 
     await _fill_screen(chrome, term)
     await _open_and_close(chrome, term, rows=14)
@@ -668,7 +677,7 @@ async def test_while_the_answer_is_late_no_chrome_row_is_drawn_in_the_band(
         await asyncio.wait_for(task, timeout=5)
         grid = await _settled(chrome, term, why="the late answer")
         assert _row_of(grid, _FOOTER) == 23, term.dump()
-        assert _row_of(grid, _INPUT_PLACEHOLDER) == 20, term.dump()
+        assert _row_of(grid, _INPUT_PLACEHOLDER) == _INPUT_ROW, term.dump()
         assert chrome._pinned and not chrome._pin_failed
 
 
@@ -697,7 +706,7 @@ async def test_the_hold_runs_out_and_the_chrome_is_drawn_as_before(
         await asyncio.wait_for(task, timeout=5)
         grid = await _settled(chrome, term, why="the answer")
         assert _row_of(grid, _FOOTER) == 23, term.dump()
-        assert _row_of(grid, _INPUT_PLACEHOLDER) == 20, term.dump()
+        assert _row_of(grid, _INPUT_PLACEHOLDER) == _INPUT_ROW, term.dump()
 
 
 @pytest.mark.parametrize("limit", [None, 60.0], ids=["after-the-limit", "within-a-long-limit"])
@@ -753,7 +762,7 @@ async def test_an_answer_past_the_limit_releases_the_print_and_keeps_the_pin() -
             detail=term.dump,
         )
         grid = await _settled(chrome, term, why="the answer")
-        assert _row_of(grid, _INPUT_PLACEHOLDER) == 20, term.dump()
+        assert _row_of(grid, _INPUT_PLACEHOLDER) == _INPUT_ROW, term.dump()
         assert chrome._pinned and not chrome._pin_failed
 
 
@@ -845,12 +854,14 @@ def test_the_cpr_limit_is_the_measured_tenth_of_a_second() -> None:
 
 async def test_an_answer_to_a_query_from_before_clear_does_not_pin_the_empty_screen() -> None:
     async with _running(24, 80) as (chrome, term):
-        # Pinned with no band: the print's query is asked with the cursor on
-        # the chrome's first row, near the bottom (row 20 of 24).
+        # Pinned with no band: the print's query is asked with the cursor in
+        # the chrome, near the bottom of 24 rows. Measured: answered with row 21
+        # on edcfad91 and row 19 with #596's frame, which made the chrome two
+        # rows taller; the bound keeps the one row of slack it had (20 then).
         await _fill_screen(chrome, term)
         task = await _print_with_the_answer_held(chrome, term, "before-clear line")
         stale = list(term.held)
-        assert stale and int(stale[0][2:].split(";")[0]) >= 20, stale
+        assert stale and int(stale[0][2:].split(";")[0]) >= 18, stale
 
         chrome.clear()  # asks again; the stale answer is still on its way
         await wait_until(lambda: len(term.held) > len(stale), what="clear()'s CPR query")
@@ -866,7 +877,7 @@ async def test_an_answer_to_a_query_from_before_clear_does_not_pin_the_empty_scr
 
         assert not chrome._pinned, term.dump()
         assert not chrome._pin_failed  # clear() made the settle moot, not failed
-        assert (_row_of(grid, _FOOTER) or 99) <= 5, term.dump()
+        assert (_row_of(grid, _FOOTER) or 99) <= _FOOTER_ROW_AFTER_CLEAR, term.dump()
         await chrome.print_above_many([Text(f"after-clear-{i}") for i in range(3)])
         grid = await _settled(chrome, term, why="three lines")
         assert not chrome._pinned

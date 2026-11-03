@@ -12,7 +12,7 @@ measured reasons, all of which make the hook the only correct location:
    the SEQUENTIAL prep phase (``loop.py:526-547``, driven from ``:837-872``) but
    ``execute`` under ``asyncio.gather`` (``loop.py:905``), with
    ``tool_execution = "parallel"`` by default (``harness/core.py:297``). Two
-   modals from one batch collide on ``tui/chrome.py:601``'s single ``_modal``
+   modals from one batch collide on ``tui/chrome.py:864``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C.
 2. **``execute()`` has no UI.** :class:`ToolExecutionContext`
@@ -410,7 +410,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:4908-4910`` explicitly permits a later handler to mutate
+    ``harness/core.py:4955-4957`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a

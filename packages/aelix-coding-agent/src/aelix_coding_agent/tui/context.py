@@ -54,6 +54,7 @@ from aelix_coding_agent.extensions.ext_ui import (
 )
 from aelix_coding_agent.extensions.widget_protocols import Component, Theme
 from aelix_coding_agent.tui import themes as theme_registry
+from aelix_coding_agent.tui.input_marks import statusline_style
 from aelix_coding_agent.tui.overlay import show_modal
 from aelix_coding_agent.tui.picker_text import _PickerText
 
@@ -2159,6 +2160,18 @@ class AelixTUIContext:
             self._theme = theme
         self.chrome.invalidate()
         return SetThemeResult(success=True)
+
+    def footer_style(self) -> str:
+        """#596 (ADR-0287) — the footer row's base style: the theme's ``statusline``.
+
+        ``""`` under an extension's own footer (:meth:`set_footer`): that footer
+        styles itself, and dimming its unstyled text would change a look the
+        extension chose. Read on every render, so a theme switch applies at once.
+        """
+
+        if self._footer_factory is not None:
+            return ""
+        return statusline_style(self._theme)
 
     def get_tools_expanded(self) -> bool:
         return self._tools_expanded

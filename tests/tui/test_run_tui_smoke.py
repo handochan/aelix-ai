@@ -17,8 +17,10 @@ from typing import Any
 
 import pytest
 from _polling import QUIT_CEILING, WAIT_CEILING, describe, quit_within, wait_until
+from aelix_coding_agent.cli.repl import UserBashRun
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.tui import shell as tui_shell
+from aelix_coding_agent.tui import shell_lane
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.shell import run_tui
@@ -553,6 +555,27 @@ async def test_run_tui_clear_command_runs_handler_not_prompt() -> None:
     assert runtime.harness.prompts == []
 
 
+def _patch_bash(monkeypatch: pytest.MonkeyPatch, fake: Callable[..., Any]) -> list[str]:
+    """Run ``!`` lines through *fake* (``run_user_bash``'s shape, returning the
+    output text); the records the lane writes are listed, not written (#596:
+    every ``!`` goes through ``tui.shell_lane``)."""
+
+    recorded: list[str] = []
+
+    async def _run(harness, command, *, exclude_from_context, cwd):
+        output = await fake(harness, command, exclude_from_context=exclude_from_context, cwd=cwd)
+        return UserBashRun(command, output, 0, exclude_from_context)
+
+    async def _record(harness, run):
+        recorded.append(run.command)
+
+    # Patch on the module object (not a dotted string) — robust against other
+    # tests in the full suite that perturb the aelix_coding_agent.tui attr.
+    monkeypatch.setattr(shell_lane, "run_user_bash", _run)
+    monkeypatch.setattr(shell_lane, "record_user_bash", _record)
+    return recorded
+
+
 async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, bool, str]] = []
 
@@ -560,9 +583,7 @@ async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None
         calls.append((command, exclude_from_context, cwd))
         return "bash output\n"
 
-    # Patch on the module object (not a dotted string) — robust against other
-    # tests in the full suite that perturb the aelix_coding_agent.tui attr.
-    monkeypatch.setattr(tui_shell, "handle_user_bash", _fake_bash)
+    recorded = _patch_bash(monkeypatch, _fake_bash)
     async with _harness_chrome() as (runtime, chrome, pipe):
         task = asyncio.ensure_future(
             run_tui(runtime, cwd="/work", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
@@ -570,9 +591,11 @@ async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("!ls\n")
         await _wait(lambda: calls == [("ls", False, "/work")])
+        await _wait(lambda: recorded == ["ls"], what="the idle ! record")
         pipe.send_text("/quit\n")
         await _quit_within(task)
     assert calls == [("ls", False, "/work")]
+    assert recorded == ["ls"]
 
 
 # === Sprint 6h₁₂b — user-message echo =======================================
@@ -717,7 +740,7 @@ async def test_run_tui_does_not_echo_bash_command_or_empty(
     async def _fake_bash(harness, command, *, exclude_from_context, cwd):
         return ""  # no output → nothing committed for the bash path either
 
-    monkeypatch.setattr(tui_shell, "handle_user_bash", _fake_bash)
+    _patch_bash(monkeypatch, _fake_bash)
     async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
         commits = _spy_commits(chrome)
         task = _launch(runtime, chrome)
@@ -3252,7 +3275,7 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
     (``hooks.py:1423``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:5741-5742`` swallows it in
+    instead of being swallowed at DEBUG the way ``core.py:5788-5789`` swallows it in
     production.
     """
 
@@ -4031,7 +4054,7 @@ async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
     skipping the stats walk, and on a provider that stopped reporting usage the
     meter would freeze on the last figure it ever saw. ``agent_end`` is the
     right boundary because it is emitted on EVERY exit — including the abort
-    (``core.py:5681``) and hook-failure (``core.py:5681``) close-outs, neither
+    (``core.py:5728``) and hook-failure (``core.py:5728``) close-outs, neither
     of which reaches ``settled`` at all.
 
     Asserted on the PAINTS rather than on ``get_session_stats`` calls: the

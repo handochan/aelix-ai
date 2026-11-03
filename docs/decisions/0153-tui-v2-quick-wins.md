@@ -117,3 +117,10 @@ risk, and can coexist with a future differential renderer.
   (banner sections + minimal-harness no-raise; `render_user_message` blank-line/
   chevron/cyan + steer/follow-up; spinner elapsed + `esc to cancel`; input
   prefix + placeholder; CSI 2026 bracket ordering).
+
+## Note (2026-11-03, #596): the `❯` marker in shell mode
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D1–D2.* In shell mode (a `!` / `!!` line) the typed sigil is drawn as
+the marker in place of `❯ ` — `! ` or `!! `, in the theme's `shell` colour and bold — and is taken
+out of the drawn line; the text keeps it. A bare `!` shows "a shell command" where the placeholder
+was. Outside shell mode the marker and the placeholder are as decided here.

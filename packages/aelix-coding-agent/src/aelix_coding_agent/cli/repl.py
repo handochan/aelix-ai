@@ -288,7 +288,7 @@ async def handle_user_bash(
       is what the next ``prompt()`` sends, this turn and on every later
       resume, because ``AgentHarness._run`` derives the turn's messages from
       ``session.build_context()`` whenever a session is attached
-      (``harness/core.py:5370-5373``, pinned by
+      (``harness/core.py:5417-5420``, pinned by
       ``tests/test_state_messages_derived.py``);
     * ``harness.messages`` gets the same ``UserMessage`` now, which is what
       carries the output on the ``--no-session`` path — there ``_state.messages``
@@ -320,10 +320,42 @@ async def handle_user_bash(
     message list, NOT :meth:`AgentHarness.append_message`: during a turn that
     method queues a ``PendingMessageWrite`` whose flush writes a SECOND
     session entry, and the record written here would be duplicated on replay.
-    Both call sites (``run_repl`` and the TUI input loop) read a line only
-    between turns, so pi's ``_pendingBashMessages`` deferral has no reachable
-    trigger here; a future caller that runs this mid-stream would need it, for
-    the ordering reason pi documents.
+    That is also why the record must wait for the turn: both call sites of THIS
+    function (``run_repl`` and the TUI input loop) read a line only between
+    turns. The TUI's ``!`` typed while a turn runs (#596, ADR-0287) calls the
+    two halves instead — :func:`run_user_bash` at once, :func:`record_user_bash`
+    once nothing runs — which is pi's ``_pendingBashMessages`` deferral, for the
+    ordering reason pi documents (a record must not land between a tool call
+    and its result).
+    """
+
+    run = await run_user_bash(
+        harness, command, exclude_from_context=exclude_from_context, cwd=cwd
+    )
+    await record_user_bash(harness, run)
+    return run.output
+
+
+@dataclass(frozen=True)
+class UserBashRun:
+    """One ``!`` / ``!!`` command after it ran: what :func:`record_user_bash` records."""
+
+    command: str
+    output: str
+    exit_code: int | None
+    exclude_from_context: bool
+
+
+async def run_user_bash(
+    harness: AgentHarness,
+    command: str,
+    *,
+    exclude_from_context: bool,
+    cwd: str,
+) -> UserBashRun:
+    """The first half of :func:`handle_user_bash`: emit ``user_bash`` and run it.
+
+    Writes nothing: the output is returned whole, for the caller to print.
     """
 
     event_result = await harness.hooks.emit(
@@ -358,12 +390,27 @@ async def handle_user_bash(
         # backgrounded helper may still be writing. Rarer than the abort path,
         # same repair. The head is append-only and so is not claimed.
         output = decode_child_output(b"".join(chunks), ragged_tail=True)
-    if exclude_from_context:
-        return output
+    return UserBashRun(
+        command=command,
+        output=output,
+        exit_code=exit_code,
+        exclude_from_context=exclude_from_context,
+    )
+
+
+async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
+    """The second half of :func:`handle_user_bash`: what the model gets of a ``!``.
+
+    Nothing for ``!!``. Call it only while no turn runs (see that docstring).
+    """
+
+    if run.exclude_from_context:
+        return
+    command, output, exit_code = run.command, run.output, run.exit_code
     # The OUTPUT's cap is applied here and not inside
     # ``bash_execution_to_text`` so the metadata survives into ``details``
     # (the command's is applied there, where nothing can route around it), and
-    # to the RECORDED copy only — ``output`` is returned whole below. What it
+    # to the RECORDED copy only — ``output`` was returned whole. What it
     # has to get right, and what the first cut of #299 did not, is in
     # :func:`_cap_for_the_record`.
     record = _cap_for_the_record(output)
@@ -395,7 +442,7 @@ async def handle_user_bash(
         # attached the turn's messages come from ``build_context()``, so a
         # failed write costs THIS turn as well as the next resume — the live
         # append below keeps the output in ``_state.messages``, which
-        # ``_run`` then does not read (``harness/core.py:5370-5373``). Measured
+        # ``_run`` then does not read (``harness/core.py:5417-5420``). Measured
         # with ``append_custom_message_entry`` raising:
         # ``in _state.messages=True reached provider=False``.
         with contextlib.suppress(Exception):
@@ -409,7 +456,6 @@ async def handle_user_bash(
     harness.messages.append(
         create_custom_message(BASH_EXECUTION_TYPE, text, True, details, timestamp)
     )
-    return output
 
 
 def _iso_now() -> str:
@@ -494,4 +540,10 @@ async def run_repl(harness: AgentHarness, *, cwd: str) -> None:
         await harness.prompt(line)
 
 
-__all__ = ["handle_user_bash", "run_repl"]
+__all__ = [
+    "UserBashRun",
+    "handle_user_bash",
+    "record_user_bash",
+    "run_repl",
+    "run_user_bash",
+]

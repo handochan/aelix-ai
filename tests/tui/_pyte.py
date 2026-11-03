@@ -13,7 +13,7 @@ Determinism (mirrors the ``test_chrome.py`` idioms — read it for the base patt
 - Injected clock (``time_fn``) so the working-spinner frame is stable.
 - ``enable_cpr=True`` on the output, then we *feed a synthetic CPR response*
   (``\x1b[<row>;<col>R``) on the pipe input once the app is running. The chrome
-  gates every row behind ``renderer_height_is_known`` (``chrome.py:635-651``), which
+  gates every row behind ``renderer_height_is_known`` (``chrome.py:898-914``), which
   only flips once a Cursor-Position-Report arrives; without it nothing paints.
   This is the headless analogue of a real terminal answering the CPR query.
 - No wall-clock sleeps as synchronisation points (#315). Every step waits for
@@ -119,6 +119,25 @@ async def render_chrome_to_screen(
     or scan it directly.
     """
 
+    screen = await render_chrome_to_pyte(
+        rows=rows, cols=cols, build_state=build_state, time_fn=time_fn
+    )
+    return list(screen.display)
+
+
+async def render_chrome_to_pyte(
+    *,
+    rows: int = 24,
+    cols: int = 80,
+    build_state: Callable[[AelixChrome], Awaitable[None] | None],
+    time_fn: Callable[[], float] = lambda: 0.0,
+) -> pyte.Screen:
+    """:func:`render_chrome_to_screen`, returning the ``pyte`` screen itself.
+
+    #596 — for assertions on a cell's colour and attributes
+    (``screen.buffer[row][col].fg``), which the text grid drops.
+    """
+
     capture = io.StringIO()
     output = Vt100_Output(
         capture,
@@ -154,7 +173,7 @@ async def render_chrome_to_screen(
 
     screen = pyte.Screen(cols, rows)
     pyte.Stream(screen).feed(capture.getvalue())
-    return list(screen.display)
+    return screen
 
 
 async def render_shell_to_screen(

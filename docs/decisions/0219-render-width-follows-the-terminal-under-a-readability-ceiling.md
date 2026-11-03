@@ -163,3 +163,9 @@ tail they were never shown.
 separate defect of the opposite shape — its Windows are built without `wrap_lines`, so a narrow
 terminal silently drops the model, the context meter and the git branch with no ellipsis. Both
 want their own issues.
+
+## Note (2026-11-03, #596): the input frame stops at the ceiling
+
+*Amended 2026-11-03 by [ADR-0287](0287-the-input-shows-what-enter-will-do-and-a-bang-line-runs-during-a-turn.md) D5.* The chrome's input and the lines above and below it are laid out
+at `terminal_columns(chrome, max_width=render_max_width)`, as the transcript is, so the frame and the
+text inside it agree on a wide terminal. The status row and the footer stay full-width.

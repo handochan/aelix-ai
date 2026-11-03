@@ -407,7 +407,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
     """(d) ``/reload`` does not exist outside the interactive surfaces.
 
     It is parsed ONLY in the TUI (``tui/input.py:47-48``) and the basic REPL
-    (``cli/repl.py:473``) — this test greps the tree for its dispatch sites so a
+    (``cli/repl.py:519``) — this test greps the tree for its dispatch sites so a
     third surface (or a removal) forces the wording to be revisited. Yet this
     block is emitted for ``--print`` / ``--mode json`` / ``--mode rpc`` and for
     delegated subagents, where naming ``/reload`` as something to ask for names
@@ -445,11 +445,11 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:4001-4004`` gates the factory rebuild on
+    ``tui/shell.py:4086-4089`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
-    (``harness/core.py:4054-4061``) and never re-scans the extension
+    (``harness/core.py:4101-4108``) and never re-scans the extension
     directories — so the file the agent just wrote stays dormant while the
     agent reports success.
 
