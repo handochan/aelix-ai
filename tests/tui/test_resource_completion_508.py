@@ -11,13 +11,18 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import random
+import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from _polling import quit_within as _quit_within  # sibling helper (prepend mode)
 from _polling import wait_until
+from aelix_agent_core.harness.prompt_templates import PromptTemplate
 from aelix_ai.settings import SettingsManager
 from aelix_coding_agent.core.resource_selection import ResourceSelection, SettingsLists
 from aelix_coding_agent.core.skill_selection import (
@@ -37,9 +42,16 @@ from aelix_coding_agent.tui.commands import (
 from aelix_coding_agent.tui.completion import (
     DescriptorCommandCompleter,
     ResourceCommands,
+    _one_row,
     resource_commands,
 )
-from aelix_coding_agent.tui.selection_panel import cells
+from aelix_coding_agent.tui.descriptors import DescriptorRenderer
+from aelix_coding_agent.tui.selection_panel import (
+    SelectionModel,
+    cells,
+    plan_layout,
+    render_panel,
+)
 from aelix_coding_agent.tui.shell import run_tui
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.completion import CompleteEvent
@@ -48,7 +60,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
-from tests.tui.test_run_tui_smoke import FakeHarness, FakeRuntime, _BusExtRuntime
+from tests.tui.test_run_tui_smoke import FakeHarness, FakeRuntime, _BusExtRuntime, _FakeExtRuntime
 
 _SHELL_SRC = (
     Path(__file__).resolve().parents[2]
@@ -77,6 +89,7 @@ def _menu(
     ext: list[tuple[str, str]] | None = None,
     routes: dict[str, Any] | None = None,
     builtins: list[BuiltinCommand] | None = None,
+    modals: list[str] | None = None,
 ) -> list[Any]:
     resources = ResourceCommands(templates or [], skills or [])
     completer = DescriptorCommandCompleter(
@@ -84,6 +97,7 @@ def _menu(
         builtins=_BUILTINS if builtins is None else builtins,
         get_ext_commands=lambda: list(ext or []),
         get_resources=lambda: resources,
+        get_modal_commands=lambda: list(modals or []),
     )
     doc = Document(text=text, cursor_position=len(text))
     return list(completer.get_completions(doc, CompleteEvent()))
@@ -169,19 +183,73 @@ def test_a_name_is_offered_by_what_runs_when_it_is_typed() -> None:
     out = _menu(
         "/",
         builtins=_BUILTINS,
-        templates=[("help", "t"), ("tools", "t"), ("deploy", "t"), ("route", "t"), ("ok", "t")],
+        templates=[(n, "t") for n in ("help", "tools", "deploy", "route", "panel", "ok")],
         ext=[("deploy", "ext deploy")],
         routes={"ns:route": _Route("route", "the route")},
+        modals=["panel"],
     )
     meta = {c.text: c.display_meta_text for c in out}
-    # A built-in or its alias, an extension command and a descriptor route each
-    # take the name before a template does (the input loop's order).
+    # The input loop's order: a built-in or its alias, an extension command and
+    # a management modal each take the name before a template does. A route
+    # takes none — nothing dispatches through it — so the template runs and
+    # its row says so (Codex F1, F2).
     assert meta["/help"] == "List available commands"
     assert meta["/tools"] == "Same as /tool"
     assert meta["/deploy"] == "ext deploy"
-    assert meta["/route"] == "the route"
+    assert "/panel" not in meta
+    assert meta["/route"] == "t"
     assert meta["/ok"] == "t"
-    assert _texts(out).count("/deploy") == 1
+    assert _texts(out).count("/deploy") == 1 and _texts(out).count("/route") == 1
+
+
+def test_a_modal_holds_its_name_before_a_template() -> None:
+    kw: dict[str, Any] = {
+        "builtins": [],
+        "templates": [("panel", "TEMPLATE panel"), ("plain", "TEMPLATE plain")],
+        "modals": ["panel"],
+    }
+    # Enter on /panel opens the modal (codex F1: the row said TEMPLATE).
+    assert [(c.text, c.display_meta_text) for c in _menu("/p", **kw)] == [
+        ("/plain", "TEMPLATE plain")
+    ]
+    # A route that describes the modal is its row.
+    routes = {"r": _Route("panel", "Open the panel")}
+    assert [(c.text, c.display_meta_text) for c in _menu("/pa", routes=routes, **kw)] == [
+        ("/panel", "Open the panel")
+    ]
+
+
+def test_a_route_never_hides_what_runs_under_its_name() -> None:
+    routes = {
+        "a": _Route("rt", "ROUTE rt"),
+        "b": _Route("deploy", "ROUTE deploy"),
+        "c": _Route("skill:x", "ROUTE skill:x"),
+        "d": _Route("lone", "ROUTE lone"),
+    }
+    kw: dict[str, Any] = {
+        "builtins": [],
+        "routes": routes,
+        "templates": [("rt", "TEMPLATE rt")],
+        "ext": [("deploy", "EXT deploy")],
+        "skills": [("x", "SKILL x", "global")],
+    }
+
+    def rows(typed: str) -> list[tuple[str, str]]:
+        return [(c.text, c.display_meta_text) for c in _menu(typed, **kw)]
+
+    # Codex F2 / verify V1: the template and the extension command run, so
+    # their rows stand, with their own descriptions, and the route's goes.
+    assert rows("/rt") == [("/rt", "TEMPLATE rt")]
+    assert rows("/dep") == [("/deploy", "EXT deploy")]
+    # Verify V4: a route of a skill line's name hid the skill found by its bare
+    # name, and stood in for it under /skill:. (A real route cannot be named
+    # ``skill:…`` — the payload's pattern refuses the colon — but a route
+    # store is any mapping.)
+    assert rows("/x") == [("/skill:x", "[global] SKILL x")]
+    assert rows("/skill:") == [("/skill:x", "[global] SKILL x")]
+    # A route with nothing under its name keeps its row (ADR-0107: routes are
+    # metadata); Enter on it says "Unknown command", as it did before #508.
+    assert rows("/lo") == [("/lone", "ROUTE lone")]
 
 
 def test_a_command_hides_a_template_even_when_it_does_not_match_the_typed_text() -> None:
@@ -263,14 +331,23 @@ def test_a_description_is_cut_by_cells_to_the_menu_column(
     assert (widest + 2) + (cells(long.display_meta_text) + 2) + 1 <= columns
 
 
-def test_a_long_name_does_not_squeeze_every_description() -> None:
+@pytest.mark.parametrize(("columns", "name_cells"), [(50, 16), (80, 26), (120, 30)])
+def test_a_long_name_does_not_squeeze_every_description(
+    monkeypatch: pytest.MonkeyPatch, columns: int, name_cells: int
+) -> None:
+    monkeypatch.setattr(completion_mod, "_menu_columns", lambda: columns)
     long = "a-very-long-skill-name-that-goes-on-and-on-for-sixty-chars-x"
-    out = _menu("/", builtins=_BUILTINS[:1], skills=[(long, "Long name", "global")])
+    out = _menu("/", builtins=_BUILTINS[:1], skills=[(long, "Long name " * 12, "--skill")])
     help_row, skill_row = out
-    # pi's autocomplete name column: 32 cells, the 2-cell gap included.
-    assert cells(skill_row.display_text) == 30 and skill_row.display_text.endswith("…")
+    # pi's autocomplete name column: 32 cells, the 2-cell gap included — and a
+    # third of a narrow terminal at most: at 50 columns a 30-cell name left
+    # the description 15 cells, ten of them the tag (verify V3).
+    assert cells(skill_row.display_text) == name_cells and skill_row.display_text.endswith("…")
     assert skill_row.text == f"/skill:{long}"  # Tab still inserts the whole line
     assert help_row.display_meta_text == "List available commands"
+    room = columns - (name_cells + 2) - 2 - 1
+    meta = skill_row.display_meta_text
+    assert meta.startswith("[--skill] Long name") and room - 1 <= cells(meta) <= room
 
 
 def test_only_the_head_of_a_long_description_is_read_and_a_cut_still_says_so() -> None:
@@ -291,6 +368,103 @@ def test_no_room_for_a_description_draws_none(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(completion_mod, "_menu_columns", lambda: 10)
     out = _menu("/skill:", builtins=[], skills=[("kr-long", "x" * 50, "global")])
     assert [c.display_meta_text for c in out] == [""]
+
+
+def _whole_row(text: str) -> str:
+    """The one-row rule applied to the whole text, the slow and obvious way."""
+
+    def run(m: re.Match[str]) -> str:
+        return " " if "\n" in m.group() or "\r" in m.group() else " " * len(m.group())
+
+    return re.sub(r"[ \t\r\n]+", run, text).strip(" ")
+
+
+def test_the_head_is_the_whole_text_cut() -> None:
+    # ``_one_row`` stops once the head is decided; what it returns must be what
+    # the rule over the whole text would have given, cut there.
+    rng = random.Random(508)
+    for _ in range(4000):
+        text = "".join(rng.choice("ab \t\r\n\x1f ") for _ in range(rng.randrange(0, 40)))
+        keep = rng.randrange(0, 30)
+        whole = _whole_row(text)
+        assert _one_row(text, keep) == (whole[:keep], len(whole) > keep), (text, keep)
+    # A blank line's indentation goes with its breaks: one space, not two.
+    assert _one_row("a \n \n b", 20) == ("a b", False)
+
+
+def test_a_long_run_of_spaces_costs_what_the_head_costs() -> None:
+    # Codex F3: ``[ \t]*[\r\n]+[ \t]*`` retried at every space of a run with no
+    # break in it — 5 000, 10 000 and 20 000 spaces in one valid description
+    # took 79, 287 and 1 123 ms for one key. Linear now, and only the head is
+    # read: 1 000 000 spaces take a few ms here. In this order a quadratic
+    # scan fails at 20 000 instead of never finishing the larger runs.
+    for n in (20_000, 100_000, 1_000_000):
+        description = "a" + " " * n + "b"
+        completer = DescriptorCommandCompleter(
+            lambda: {},
+            builtins=[],
+            get_resources=lambda d=description: ResourceCommands([("space", d)]),
+        )
+        start = time.perf_counter()
+        ((text, meta),) = _drive(completer, "/space")
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.5, f"{n} spaces: {elapsed:.3f} s"
+        assert text == "/space" and meta.startswith("a    ") and meta.endswith("…")
+
+
+@pytest.mark.parametrize("size", [2_500, 5_000])
+def test_a_large_catalog_is_drawn_once(monkeypatch: pytest.MonkeyPatch, size: int) -> None:
+    # Codex F4: a 4 096-entry cache took two entries a row and evicted the
+    # next scan's rows: 2 500 templates were drawn whole at every key (0 hits,
+    # ~330 ms), 5 000 at ~640 ms. Counted, not timed: every call is a row drawn.
+    drawn: list[str] = []
+    real = completion_mod._menu_text
+
+    def counting(text: str, width: int) -> str:
+        drawn.append(text)
+        return real(text, width)
+
+    monkeypatch.setattr(completion_mod, "_menu_text", counting)
+    monkeypatch.setattr(completion_mod, "_menu_columns", lambda: 80)
+    templates = [(f"tpl-{i:05d}", f"Template {i}: " + "lorem ipsum " * 80) for i in range(size)]
+    completer = DescriptorCommandCompleter(
+        lambda: {}, builtins=[], get_resources=lambda: ResourceCommands(list(templates))
+    )
+    # Cold, the names are drawn and a description only when the menu reads
+    # it (the first 200 for its column, then the rows on screen).
+    menu = list(completer.get_completions(Document("/", 1), CompleteEvent()))
+    assert len(drawn) == size
+    assert all(c.display_meta_text for c in menu[:200]) and len(drawn) == size + 200
+    first = _drive(completer, "/")
+    assert len(first) == size and len(drawn) == 2 * size
+    drawn.clear()
+    assert _drive(completer, "/") == first
+    assert drawn == []
+    # Typing on and deleting back draws nothing again either.
+    _drive(completer, "/tpl-01")
+    drawn.clear()
+    assert _drive(completer, "/") == first
+    assert drawn == []
+
+
+def test_the_drawn_rows_follow_the_catalog_and_the_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    columns = {"n": 120}
+    monkeypatch.setattr(completion_mod, "_menu_columns", lambda: columns["n"])
+    old = "old description " * 20
+    templates = [("zzreview", old)]
+    completer = DescriptorCommandCompleter(
+        lambda: {}, builtins=[], get_resources=lambda: ResourceCommands(list(templates))
+    )
+    ((_, wide),) = _drive(completer, "/zz")
+    columns["n"] = 50
+    ((_, narrow),) = _drive(completer, "/zz")
+    # The name column "zzreview" + 2, the description's 2 cells and the scrollbar.
+    assert cells(narrow) == 50 - 10 - 2 - 1 < cells(wide)
+    # A /reload that edits the description: the new one is drawn, and nothing
+    # drawn for the old catalog is kept.
+    templates[0] = ("zzreview", "new description")
+    assert _drive(completer, "/zz") == [("/zzreview", "new description")]
+    assert old not in {text for text, _ in completer._drawn}
 
 
 # --- live, and contained -----------------------------------------------------
@@ -414,12 +588,32 @@ def test_source_word_names_where_a_skill_came_from(tmp_path: Path) -> None:
     assert kind.source_word(object()) is None
 
 
+_RUN_LINE = "Run one with /skill:<name>; /skill: lists them."
+
+
 def test_the_panel_says_how_to_run_a_skill(tmp_path: Path) -> None:
     on = _kind(tmp_path).notices()
-    assert "Run an enabled skill with /skill:<name>; type /skill: to list them." in on
+    assert _RUN_LINE in on
     off = _kind(tmp_path, enabled=False).notices()
     assert "/skill:<name> is turned off in settings (enableSkillCommands)." in off
-    assert not any(n.startswith("Run an enabled skill") for n in off)
+    assert _RUN_LINE not in off
+
+
+def test_the_panel_line_fits_a_50_column_terminal(tmp_path: Path) -> None:
+    # Verify V3: the first wording was cut at 50 columns ("…; type /s…").
+    kind = _kind(tmp_path)
+    snapshot = ResourceSelection(
+        SettingsManager.in_memory({}),
+        global_base=str(tmp_path),
+        project_base=str(tmp_path / "p"),
+        project_trusted=True,
+    ).snapshot(kind)
+    model = SelectionModel(snapshot, "Skills", ("skill", "skills"))
+    rows = [
+        re.sub(r"\x1b\[[0-9;]*m", "", r) for r in render_panel(model, plan_layout(model, 50, 30))
+    ]
+    assert f" {_RUN_LINE}" in rows
+    assert all(cells(r) <= 50 for r in rows)
 
 
 # --- /help and the headless list --------------------------------------------
@@ -578,6 +772,141 @@ async def test_run_tui_tags_a_skill_with_its_source(tmp_path: Path) -> None:
         ("/skill:zzdemo", "[--skill] zzdemo does a thing."),
         ("/skill:pdf", "[global] pdf does a thing."),
     ]
+
+
+# --- Enter runs what the row says (Codex F1/F2, verify V1) -------------------
+
+
+class _DescriptorRuntime(_FakeExtRuntime):
+    """An EventBus whose probe answers with the given descriptors."""
+
+    def __init__(self, modules: list[dict[str, Any]]) -> None:
+        super().__init__()
+        from aelix_coding_agent.extensions.api import EventBus
+
+        self.event_bus = EventBus()
+        self.event_bus.on("ui:list-modules", lambda probe: probe.modules.extend(modules))
+
+
+class _ExtRunner:
+    """One extension command per name; each run is recorded."""
+
+    def __init__(self, names: list[str], ran: list[str]) -> None:
+        def handler(name: str) -> Any:
+            async def run(_args: str, _ctx: object) -> None:
+                ran.append(name)
+
+            return run
+
+        self._commands = {
+            name: SimpleNamespace(
+                invocation_name=name,
+                command=SimpleNamespace(description=f"EXT {name}", handler=handler(name)),
+            )
+            for name in names
+        }
+
+    def get_registered_commands(self) -> list[Any]:
+        return list(self._commands.values())
+
+    def get_command(self, name: str) -> Any:
+        return self._commands.get(name)
+
+
+class _CollisionHarness(FakeHarness):
+    def __init__(
+        self, *, routes: list[str], modals: list[str], ext: list[str], templates: list[str]
+    ) -> None:
+        super().__init__()
+        self.ran: list[str] = []
+        modules: list[dict[str, Any]] = [
+            {
+                "kind": "command-route",
+                "namespace": "t508",
+                "id": f"route-{name}",
+                "payload": {
+                    "kind": "command-route",
+                    "command": name,
+                    "description": f"ROUTE {name}",
+                },
+            }
+            for name in routes
+        ] + [
+            {
+                "kind": "management-modal",
+                "namespace": "t508",
+                "id": f"modal-{name}",
+                "payload": {
+                    "kind": "management-modal",
+                    "command": name,
+                    "title": f"MODAL {name}",
+                    "view": "form",
+                },
+            }
+            for name in modals
+        ]
+        self.runtime = _DescriptorRuntime(modules)
+        self.extension_runner = _ExtRunner(ext, self.ran)
+        self.prompt_templates = [
+            PromptTemplate(name, f"TEMPLATE {name}", f"TEMPLATE-BODY-{name}") for name in templates
+        ]
+        self.skills: list[Any] = []
+
+    def make_command_context(self, **_kw: Any) -> object:
+        return SimpleNamespace()
+
+
+async def test_enter_runs_what_the_row_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _CollisionHarness(
+        routes=["zrt", "zvp", "zex", "zlone"],
+        modals=["zmo", "zvp"],
+        ext=["zex"],
+        templates=["zrt", "zmo", "zvp", "zex", "zplain"],
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(
+        DescriptorRenderer, "open_modal", lambda _self, env: opened.append(env.payload.command)
+    )
+    names = ["zrt", "zmo", "zvp", "zex", "zlone", "zplain"]
+    outcome: dict[str, tuple[str | None, str | None]] = {}
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime, chrome = FakeRuntime(harness), AelixChrome()
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=str(tmp_path),
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        await wait_until(lambda: chrome.app.is_running)
+        await wait_until(lambda: _drive(chrome.buffer.completer, "/zl") != [])  # probe landed
+        menu = dict(_drive(chrome.buffer.completer, "/z"))
+        for name in names:
+            before = (len(harness.prompts), len(opened), len(harness.ran))
+            pipe.send_text(f"/{name}\n")
+            pipe.send_text(f"after {name}\n")
+            await wait_until(lambda n=name: (f"after {n}", "interactive") in harness.prompts)
+            prompts = [t for t, _ in harness.prompts[before[0] :] if not t.startswith("after ")]
+            ran = (
+                ["template"] * (prompts == [f"TEMPLATE-BODY-{name}"])
+                + ["modal"] * (opened[before[1] :] == [name])
+                + ["extension"] * (harness.ran[before[2] :] == [name])
+            )
+            assert len(ran) <= 1 and (prompts == [] or ran == ["template"]), (name, prompts, ran)
+            outcome[name] = (menu.get(f"/{name}"), ran[0] if ran else None)
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+    assert outcome == {
+        "zrt": ("TEMPLATE zrt", "template"),  # a route alone takes no name
+        "zmo": (None, "modal"),  # a modal holds its name; no row stands for it
+        "zvp": ("ROUTE zvp", "modal"),  # the route describes the modal
+        "zex": ("EXT zex", "extension"),  # the extension's own row, not the route's
+        "zlone": ("ROUTE zlone", None),  # nothing runs: "Unknown command" (ADR-0107)
+        "zplain": ("TEMPLATE zplain", "template"),
+    }
 
 
 def test_every_completer_call_site_passes_the_resources() -> None:

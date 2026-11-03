@@ -28,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.compaction import calculate_context_tokens
@@ -3780,6 +3780,7 @@ def _build_input_completer(
     *,
     respect_gitignore: Callable[[], bool] | None = None,
     get_resources: Callable[[], ResourceCommands] | None = None,
+    get_modal_commands: Callable[[], Iterable[str]] | None = None,
 ) -> Completer:
     """The merged input completer: slash commands ∪ descriptor routes ∪
     extension commands (issue #9) ∪ prompt templates and skills (#508) ∪
@@ -3795,7 +3796,9 @@ def _build_input_completer(
     the whole suite stays green).
 
     ``get_resources`` is ``run_tui``'s live read of the harness's templates
-    and enabled skills (#508); ``None`` offers neither."""
+    and enabled skills (#508); ``None`` offers neither. ``get_modal_commands``
+    names the stored management modals, which the input loop opens before it
+    expands a template of the same name (#508 F1)."""
 
     from prompt_toolkit.completion import merge_completers
 
@@ -3808,6 +3811,7 @@ def _build_input_completer(
                 builtins=builtins,
                 get_ext_commands=get_ext_commands,
                 get_resources=get_resources,
+                get_modal_commands=get_modal_commands,
             ),
             # Issue #39: the @file completer does fuzzy whole-tree enumeration
             # (fd subprocess or an os.walk of up to 20k entries) on a cache miss.
@@ -3867,6 +3871,9 @@ def _wire_descriptors(
     # completer. The completer reads ``renderer.command_routes`` by reference on
     # every keystroke (descriptors applied/removed after this point change
     # completions live); built-ins are static and win on a name clash (§B).
+    # The modal commands are read from the same registry the input loop opens
+    # them from (``_match_management_modal``), so a template a modal shadows is
+    # not offered (#508 F1).
     chrome.set_command_completer(
         _build_input_completer(
             lambda: renderer.command_routes,
@@ -3875,6 +3882,7 @@ def _wire_descriptors(
             get_ext_commands,
             respect_gitignore=respect_gitignore,
             get_resources=get_resources,
+            get_modal_commands=lambda: _management_modal_commands(registry),
         )
     )
 
@@ -3922,6 +3930,17 @@ def _match_management_modal(
         if getattr(env.payload, "command", None) == command:
             return env
     return None
+
+
+def _management_modal_commands(registry: DescriptorRegistry) -> list[str]:
+    """The commands the stored management modals open — what
+    :func:`_match_management_modal` matches a submitted line against."""
+
+    return [
+        command
+        for env in registry.by_kind("management-modal")
+        if isinstance(command := getattr(env.payload, "command", None), str)
+    ]
 
 
 def _build_banner(

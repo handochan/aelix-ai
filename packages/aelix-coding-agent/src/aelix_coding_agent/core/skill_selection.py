@@ -495,8 +495,9 @@ class SkillKind:
             notes.append("/skill:<name> is turned off in settings (enableSkillCommands).")
         else:
             # #508 — the panel is where a user looks for their skills, and it
-            # never said how to run one.
-            notes.append("Run an enabled skill with /skill:<name>; type /skill: to list them.")
+            # never said how to run one. A banner is one row cut to the panel:
+            # this one fits the 49 cells it has at 50 columns (verify V3).
+            notes.append("Run one with /skill:<name>; /skill: lists them.")
         return notes
 
     def source_word(self, skill: object) -> str | None:

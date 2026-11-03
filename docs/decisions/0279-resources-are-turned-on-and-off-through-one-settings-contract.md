@@ -485,23 +485,37 @@ it nor says "Unknown command".
 enabled skill is `skill:<name>`, its description led by its tier
 (`[project]`, `[global]`, `[bundled]`, `[--skill]`, `SkillKind.source_word`);
 a template is `<name>`; pi's order (built-ins, templates, extension commands,
-skills) with a name offered only by what runs it (built-in or alias >
-extension command > template, whether or not that command matches what is
-typed). An off skill is NOT offered — it would only lead to the refusal above,
-and the panel is where it is turned on — and with `enableSkillCommands` off no
+skills) with a name offered only by what runs it, in the input loop's order
+(built-in or alias > extension command > management modal > template or skill
+line, whether or not that command matches what is typed). A descriptor
+command-route only describes — nothing dispatches through it (ADR-0107) — so
+its row stands for a management modal of its name, or for nothing (Enter then
+says "Unknown command", as before #508), and gives way to an extension
+command, template or skill line that runs under its name; it never claims a
+name. An agent profile's `skills:` are tagged `[--skill]`: the resolver
+appends them to the `--skill` paths and both reach the catalog as one `cli`
+tier, so its origins cannot tell them apart. The descriptor store is not
+reconciled on `/reload` or a session swap (`_wire_descriptors` subscribes the
+first harness's bus once, before #508 too); the menu reads the modals from the
+store the input loop opens them from, so the two agree, and a stale route can
+no longer hide a template. An off skill is NOT offered — it would only lead to
+the refusal above, and the panel is where it is turned on — and with
+`enableSkillCommands` off no
 skill is, as pi drops them on the same setting. A skill matches by its bare name
 too (pi #8813). A name with whitespace or a steering character is not offered
 (it cannot run as typed, and is not inserted into the input from a file), and
 nor is a template named `skill:…`, which never runs. A description is one row:
 line breaks become spaces, as pi's `normalizeToSingleLine` does (a YAML block
 ends in one), unlike the panel, which names them; other controls are named
-(#179) and the row is cut by cells to the column the menu leaves; a name is cut
-at 30 cells, pi's 32-cell name column (one 60-character skill name had left
-every description in `/` nine cells at 80 columns). Aliases are rows of their
+(#179) and the row is cut by cells to the column the menu leaves, reading only
+the head it shows; a name is cut at 30 cells, pi's 32-cell name column (one
+60-character skill name had left every description in `/` nine cells at 80
+columns), or at a third of a narrower terminal. The drawn rows are kept for the
+catalog and width they were drawn for. Aliases are rows of their
 own ("Same as /tool"), and `/help` names them beside their command, so `/tools`
 and `/skills` are no longer missing from both. The panel's
-banners gain "Run an enabled skill with /skill:<name>; type /skill: to list
-them." while `enableSkillCommands` is on, and the headless list a last line.
+banners gain "Run one with /skill:<name>; /skill: lists them." while
+`enableSkillCommands` is on, and the headless list a last line.
 
 ### D13. Locks
 

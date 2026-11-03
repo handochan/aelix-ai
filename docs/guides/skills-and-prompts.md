@@ -49,7 +49,7 @@ as the trust question names it):
 ```
 ── Skills ──────────────────────────────────── Save to [Global]  This project ──
  Search: █                                          7 skills · 2 off · 1 locked
- Run an enabled skill with /skill:<name>; type /skill: to list them.
+ Run one with /skill:<name>; /skill: lists them.
  PROJECT  .aelix/skills/
    [✓] repo-conventions  This repository's commit, ADR and test …       project
  GLOBAL  ~/.aelix/agent/skills/
@@ -123,11 +123,12 @@ or turned on in the panel is there at the next key.
 
 The menu offers only what runs as typed. A skill that is off is not listed;
 with `enableSkillCommands` off no skill is. A template whose name a built-in
-command (or one of its other names, such as `/tools`) or an extension command
-already takes is not listed either, because that command runs instead. A
-description is shown on one row, its control characters by name (`^[`), and is
-cut to the width the menu has; a name longer than 30 columns is cut too (Tab
-still inserts all of it).
+command (or one of its other names, such as `/tools`), an extension command or
+an extension's panel already takes is not listed either, because that runs
+instead. A description is shown on one row, its control characters by name
+(`^[`), and is cut to the width the menu has; a name longer than 30 columns —
+or than a third of a narrower terminal — is cut too (Tab still inserts all of
+it).
 
 ## The settings lists
 

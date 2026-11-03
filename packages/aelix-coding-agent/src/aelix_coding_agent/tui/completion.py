@@ -557,44 +557,87 @@ def _typeable(name: str) -> bool:
     return bool(name) and not contains_steering_chars(name) and not any(c.isspace() for c in name)
 
 
-# A description's line breaks, with the indentation around them: a YAML ``|``
-# or ``>`` block ends in a newline, and pi shows one row too
-# (``normalizeToSingleLine`` in ``tui/src/components/select-list.ts``).
-_BREAKS = re.compile(r"[ \t]*[\r\n]+[ \t]*")
+# A run of spaces, tabs and line breaks. A run that holds a line break is one
+# space: a YAML ``|`` or ``>`` block ends in a newline, and pi shows one row
+# too (``normalizeToSingleLine`` in ``tui/src/components/select-list.ts``);
+# the indentation around the break goes with it. One maximal run per match, so
+# the scan is linear — ``[ \t]*[\r\n]+[ \t]*`` retried at every space of a run
+# with no break in it, and 20 000 spaces in one description held a key for
+# 1.1 s (#508 F3).
+_RUN = re.compile(r"[ \t\r\n]+")
 
 # The cells a shown name may take before it is cut: pi's autocomplete caps its
 # name column at 32 with a 2-cell gap (``maxPrimaryColumnWidth`` in
 # ``tui/src/components/editor.ts``). A skill name may be 64 characters, and the
 # menu's name column is as wide as its widest row, so one long name left every
 # description in ``/`` nine cells (measured at 80 columns). Tab still inserts
-# the whole name.
+# the whole name. A narrow terminal gives it a third of its columns at most:
+# at 50 columns a 30-cell name left a description 15 cells, and a skill's tag
+# took ten of them (#508 V3).
 _NAME_CELLS = 30
 
 
-@functools.lru_cache(maxsize=4096)
+def _name_cells(columns: int) -> int:
+    """The cells a shown name may take in a menu *columns* wide."""
+
+    return min(_NAME_CELLS, columns // 3)
+
+
+def _one_row(text: str, keep: int) -> tuple[str, bool]:
+    """The first *keep* characters of *text* on one row, and whether more follow.
+
+    Each run of spaces and tabs stays (a tab as a space), a run holding a line
+    break is one space, and the ends are trimmed. The scan stops as soon as the
+    head is decided, so a description of any length costs what its head costs.
+    """
+
+    out: list[str] = []
+    size = 0
+    pos = 0
+    for run in _RUN.finditer(text):
+        start, end = run.span()
+        if start > pos:
+            word = text[pos : min(start, pos + keep + 1 - size)]
+            out.append(word)
+            size += len(word)
+            if size > keep:
+                break
+        pos = end
+        if start == 0 or end == len(text):
+            continue  # leading or trailing: trimmed
+        gap = 1 if "\n" in run.group() or "\r" in run.group() else min(end - start, keep + 1)
+        out.append(" " * gap)
+        size += gap
+        if size > keep:
+            break
+    else:
+        word = text[pos : pos + keep + 1 - size]
+        out.append(word)
+        size += len(word)
+    return "".join(out)[:keep], size > keep
+
+
 def _menu_text(text: str, width: int) -> str:
     """*text* as one menu row of at most *width* cells: line breaks and tabs
     become spaces, every other character a terminal would act on is shown by
     its name (#179), and a cut ends in ``…``.
 
-    Only the first ``2 * width + 16`` characters are named and measured — no
-    row shows more characters than it has cells, short of a zero-width mark, and
-    a row cut there still ends in ``…`` — and the answer is cached, because the
-    same names and descriptions are drawn at every key on the event loop:
-    measured, 100 skills and 100 templates with 1 000-character descriptions
-    cost 110 ms a key flattened and measured whole, and 25 ms on the first key
-    and 2 ms after it this way.
+    Only the first ``2 * width + 16`` characters are read, named and measured —
+    no row shows more characters than it has cells, short of a zero-width mark,
+    and a row cut there still ends in ``…``. The completer keeps the answers
+    for the catalog it draws (:meth:`DescriptorCommandCompleter._draw`).
     """
 
     from aelix_coding_agent.tui.selection_panel import fit, flat  # noqa: PLC0415
 
     if width <= 0:
         return ""
-    # ``strip(" ")``, not ``strip()``: that would delete a leading or trailing
-    # U+001C–U+001F or U+2028 (whitespace to Python) instead of naming it.
-    one = _BREAKS.sub(" ", text).replace("\t", " ").strip(" ")
+    # Spaces only at the ends, never ``strip()``: that would delete a leading
+    # or trailing U+001C–U+001F or U+2028 (whitespace to Python) instead of
+    # naming it.
     keep = 2 * width + 16
-    return fit(flat(one[:keep]) + ("…" if len(one) > keep else ""), width)
+    head, more = _one_row(text, keep)
+    return fit(flat(head) + ("…" if more else ""), width)
 
 
 def _menu_columns() -> int:
@@ -622,22 +665,29 @@ class DescriptorCommandCompleter(Completer):
     and enabled skills (*get_resources*). The order is pi's
     (``createBaseAutocompleteProvider``): built-ins, descriptor routes,
     templates, extension commands, then ``skill:<name>``. A name is offered
-    once, by what runs when it is typed — built-in > extension command >
-    template, the input loop's order — so a template an extension command
-    shadows is not listed, although it would be drawn first. A skill matches by
-    its name too, without ``skill:`` (pi #8813), after the skills that match by
-    that name come those that match only as ``skill:…``.
+    once, by what runs when it is typed — the input loop's order: built-in or
+    alias, extension command, management modal, then template or skill line —
+    so a template an extension command or a modal shadows is not listed,
+    although it would be drawn first. A descriptor route only describes
+    (nothing dispatches through it): its row stands for a modal of its name, or
+    for nothing at all, and gives way to a command, template or skill line that
+    runs under its name. A skill matches by its name too, without ``skill:``
+    (pi #8813), after the skills that match by that name come those that match
+    only as ``skill:…``.
 
     Every name and description from outside this module is shown on one row
     with its control characters named (#179); a shown name is cut at
-    :data:`_NAME_CELLS` cells (pi's column), and each description, by terminal
-    cells, to the column the menu leaves it.
+    :func:`_name_cells` (pi's column, a third of a narrow terminal), and each
+    description, by terminal cells, to the column the menu leaves it. What is
+    drawn is kept for the catalog and width it was drawn for (:meth:`_draw`).
 
     :param get_routes: a callable returning the live route store (mapping of
         ``ns:id`` → command-route payload). Read on every keystroke so the source
         dict can be mutated in place and have new completions appear immediately.
     :param builtins: the first-party command registry (static for the session).
     :param get_resources: the templates and skills (#508), read every keystroke.
+    :param get_modal_commands: the commands the stored management modals open
+        (§C), read every keystroke; they run ahead of a template.
     """
 
     def __init__(
@@ -646,15 +696,21 @@ class DescriptorCommandCompleter(Completer):
         builtins: list[BuiltinCommand] | None = None,
         get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
         get_resources: Callable[[], ResourceCommands] | None = None,
+        get_modal_commands: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         self._get_routes = get_routes
         self._builtins = builtins or []
         # Issue #9: live ``(invocation_name, description)`` source for
         # extension-registered commands (read every keystroke so a /reload or
-        # session swap reflects immediately). Built-ins + descriptor routes win
-        # on a name collision (they are yielded first and dedup via ``seen``).
+        # session swap reflects immediately). A built-in wins a name collision
+        # (it is yielded first and dedups via ``seen``).
         self._get_ext_commands = get_ext_commands
         self._get_resources = get_resources
+        self._get_modal_commands = get_modal_commands
+        # #508 F4 — the drawn names and descriptions, ``(text, cells) → row``,
+        # for the catalog and width in ``_drawn_for``.
+        self._drawn: dict[tuple[str, int], str] = {}
+        self._drawn_for: object = None
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
@@ -666,28 +722,55 @@ class DescriptorCommandCompleter(Completer):
         # The typed command word, slash-prefixed (e.g. "/de"). Slash commands are
         # a single token, so the whole prefix up to the cursor is the word.
         typed_with_slash = text
-        rows = self._rows(typed_with_slash[1:])
+        rows, catalog = self._rows(typed_with_slash[1:])
         if not rows:
             return
         from aelix_coding_agent.tui.selection_panel import cells  # noqa: PLC0415
 
-        shown = [(value, _menu_text(name, _NAME_CELLS), meta) for value, name, meta in rows]
+        columns = _menu_columns()
+        if (columns, catalog) != self._drawn_for:
+            # A /reload, a session swap, a resize: nothing drawn for the old
+            # catalog or width is drawn again, so none of it is kept.
+            self._drawn_for, self._drawn = (columns, catalog), {}
+        name_cells = _name_cells(columns)
+        shown = [(value, self._draw(name, name_cells), meta) for value, name, meta in rows]
         # The description column prompt-toolkit's menu leaves: the widest name
         # plus its two padding cells (``CompletionsMenuControl``, at least
         # ``MIN_WIDTH``), the description's own two, and the scrollbar.
         name_column = max(7, max(cells(display) for _, display, _ in shown) + 2)
-        budget = _menu_columns() - name_column - 2 - 1
+        budget = columns - name_column - 2 - 1
         for value, display, meta in shown:
             yield Completion(
                 value,
                 start_position=-len(typed_with_slash),
                 display=display,
-                display_meta=_menu_text(meta, budget) if meta else "",
+                # Drawn when the menu reads it (prompt-toolkit's lazy meta): it
+                # sizes its column from the first 200 rows and draws the rows
+                # it shows, so the first key after a /reload or a resize does
+                # not draw every description of a large catalog.
+                display_meta=functools.partial(self._draw, meta, budget) if meta else "",
             )
 
-    def _rows(self, typed: str) -> list[tuple[str, str, str]]:
+    def _draw(self, text: str, width: int) -> str:
+        """:func:`_menu_text`, kept for the catalog and width being drawn.
+
+        Every name and description is drawn at every key on the event loop. A
+        bounded cache of 4 096 rows evicted its own entries once a catalog
+        needed more (2 500 templates: no hit at all, 330 ms a key, #508 F4);
+        this one holds whatever the catalog in ``_drawn_for`` needs and is
+        dropped with it.
+        """
+
+        key = (text, width)
+        row = self._drawn.get(key)
+        if row is None:
+            row = self._drawn[key] = _menu_text(text, width)
+        return row
+
+    def _rows(self, typed: str) -> tuple[list[tuple[str, str, str]], tuple[object, ...]]:
         """``(inserted text, name, description)`` per row, in menu order, as
-        their sources wrote them (:func:`_menu_text` draws them)."""
+        their sources wrote them (:meth:`_draw` draws them), and the catalog
+        read for them — every name and description the sources hold."""
 
         rows: list[tuple[str, str, str]] = []
         seen: set[str] = set()
@@ -706,24 +789,10 @@ class DescriptorCommandCompleter(Completer):
                 add(name, command.description if i == 0 else f"Same as /{command.name}")
 
         try:
-            routes = self._get_routes()
+            routes = list(self._get_routes().values())
         except Exception:  # noqa: BLE001 — a faulty source must not break input
-            routes = {}
+            routes = []
 
-        for payload in routes.values():
-            command = getattr(payload, "command", None)
-            # Skip empty/non-str commands and dedup same-command routes (a
-            # cross-namespace re-point can leave two keys with one command).
-            if not isinstance(command, str) or not command or not command.startswith(typed):
-                continue
-            if command in seen:
-                continue
-            description = getattr(payload, "description", "") or ""
-            keybind = getattr(payload, "keybind", None)
-            add(command, f"{description} [{keybind}]" if keybind else description)
-
-        # Issue #9: extension-registered commands (built-ins + descriptor
-        # routes win on a name collision via ``seen``).
         ext_commands: list[tuple[str, str]] = []
         if self._get_ext_commands is not None:
             try:
@@ -738,22 +807,56 @@ class DescriptorCommandCompleter(Completer):
             except Exception:  # noqa: BLE001 — a faulty source must not break input
                 resources = ResourceCommands()
 
-        # #508 — a template or skill line runs only when no command of the same
-        # name claims it first, whether or not that command matches what is
-        # typed: ``/pd`` must not offer ``skill:pdf`` with the skill's
-        # description when an extension's ``skill:pdf`` is what runs.
-        taken = {name for c in self._builtins for name in (c.name, *c.aliases)}
-        for payload in routes.values():
-            command = getattr(payload, "command", None)
-            if isinstance(command, str):
-                taken.add(command)
-        taken |= {name for name, _ in ext_commands}
+        modals: set[str] = set()
+        if self._get_modal_commands is not None:
+            try:
+                modals = {c for c in self._get_modal_commands() if isinstance(c, str)}
+            except Exception:  # noqa: BLE001 — a faulty source must not break input
+                modals = set()
 
-        # Templates, drawn before the extension commands as pi draws them. A
-        # name starting ``skill:`` is a skill line, never a template.
-        for name, description in resources.templates:
-            if not _typeable(name) or name.startswith("skill:") or name in taken:
+        # #508 — what runs a name, in the input loop's order: a built-in or
+        # alias (drawn first, so ``seen`` holds its name), an extension
+        # command, a management modal, and only then a template or a skill
+        # line. The two in between hold their names whether or not they match
+        # what is typed: ``/pd`` must not offer ``skill:pdf`` with the skill's
+        # description when an extension's ``skill:pdf`` is what runs. A
+        # template named ``skill:…`` never runs: that line is a skill's.
+        ahead = {name for name, _ in ext_commands} | modals
+        templates = [
+            (name, description)
+            for name, description in resources.templates
+            if _typeable(name) and not name.startswith("skill:") and name not in ahead
+        ]
+        skills = [
+            (f"skill:{name}", name, f"[{source}] {description}" if source else description)
+            for name, description, source in resources.skills
+            if _typeable(name) and f"skill:{name}" not in ahead
+        ]
+        # A route's own row only where no command, template or skill line that
+        # runs under its name has one: nothing dispatches through a route, so
+        # its description must not stand in for what does (Codex F2, verify V1).
+        drawn_elsewhere = (
+            {name for name, _ in ext_commands}
+            | {name for name, _ in templates}
+            | {full for full, _, _ in skills}
+        )
+
+        route_rows: list[tuple[str, str, str | None]] = []
+        for payload in routes:
+            command = getattr(payload, "command", None)
+            # Skip empty/non-str commands and dedup same-command routes (a
+            # cross-namespace re-point can leave two keys with one command).
+            if not isinstance(command, str) or not command:
                 continue
+            description = getattr(payload, "description", "") or ""
+            keybind = getattr(payload, "keybind", None)
+            route_rows.append((command, description, keybind))
+            if not command.startswith(typed) or command in seen or command in drawn_elsewhere:
+                continue
+            add(command, f"{description} [{keybind}]" if keybind else description)
+
+        # Templates, drawn before the extension commands as pi draws them.
+        for name, description in templates:
             if name.startswith(typed) and name not in seen:
                 add(name, description)
 
@@ -764,11 +867,9 @@ class DescriptorCommandCompleter(Completer):
 
         # #508 — skills last, by bare name first (``/zz`` finds ``skill:zzdemo``).
         by_full: list[tuple[str, str]] = []
-        for name, description, source in resources.skills:
-            full = f"skill:{name}"
-            if not _typeable(name) or full in taken or full in seen:
+        for full, name, meta in skills:
+            if full in seen:
                 continue
-            meta = f"[{source}] {description}" if source else description
             if name.startswith(typed):
                 add(full, meta)
             elif full.startswith(typed):
@@ -776,7 +877,8 @@ class DescriptorCommandCompleter(Completer):
         for full, meta in by_full:
             if full not in seen:
                 add(full, meta)
-        return rows
+        catalog = (tuple(route_rows), tuple(ext_commands), tuple(templates), tuple(skills))
+        return rows, catalog
 
 
 class FileMentionCompleter(Completer):
