@@ -3057,7 +3057,7 @@ unwritten. Add them with the next release.
 ### Security
 
 - **`auto-accept-edits` and `auto` now ask before writing into a folder aelix
-  loads from when that folder is behind a link, and a delegated agent is
+  loads from when a link, an `@` or a `..` hides it, and a delegated agent is
   refused it (#646, ADR-0281 D10).** The rule that keeps `.aelix/` and
   `.agents/` from being written unasked went by the folder names in the path
   being written, so it missed the folder a link of that name points at: with
@@ -3067,16 +3067,33 @@ unwritten. Add them with the next release.
   `config/settings.json` without asking, and the next `/reload` or launch
   loaded the skill or ran the extension. The same held for the folder your
   `~/.agents/skills` or `~/.aelix` links to when you work inside it (a skill
-  written there loads in every project, trusted or not), and for the folders
-  the `skills` and `prompts` paths in `settings.json` name. Now a write that
-  lands under any folder or file aelix reads skills, extensions, settings,
-  agent profiles or prompt templates from — wherever the link is and whatever
-  it is called, also for a folder the write would create — is asked about in
-  the TUI and refused to a delegated agent with no one to ask, as a write
-  under `.aelix/` is; the decision is made again for every write, so a link
-  re-pointed during a session counts. A `--skill` path is not included. If
-  your `~/.agents/skills` links into a dotfiles repository, editing skills
-  there now asks. `yolo`, and a plain `-p` run, still write.
+  written there loads in every project, trusted or not), for the folders the
+  `skills` and `prompts` paths in `settings.json` name, for the folder a link
+  inside any of these points at (`.agents/skills/x -> ../../docs/x`), and for
+  a delegated agent started in a subfolder of the project, which looked only
+  at its own folder. Two older gaps let these writes through as well, and
+  writes outside the project too: a path starting with `@` was checked as a
+  folder named `@…` and written without the `@` (`@.aelix/extensions/x.py`,
+  `@~/Library/LaunchAgents/x.plist`, `@/any/path`), and `lnk/../x` was checked
+  as `x` and written next to the folder `lnk` points at. Now the check is made
+  on the file the write and edit tools open, and a write is asked about in the
+  TUI and refused to a delegated agent with no one to ask, as a write under
+  `.aelix/` is, when it lands under: your or the project's `.aelix`; an
+  `.agents/skills` folder aelix reads (also one the write would create); a
+  `skills` or `prompts` path of either settings file, or the global settings
+  file itself; a `skills:` or `extensions:` path of one of your or the
+  project's agent profiles; the `$AELIX_MCP_CONFIG` file; or a folder a link
+  in any of these points at — the project's a delegated agent was started
+  from included. It is decided again for every write, so a link re-pointed
+  during a session counts. Not covered: a `--skill`, `--prompt-template` or
+  `--agent-file` path (you named it for that run); the session folder; a hard
+  link to a skill file (git cannot check one out, and making one with `ln`
+  asks); and a link made after the check and before the write (every command
+  that makes one asks under `auto`). If your `~/.agents/skills` links into a
+  dotfiles repository, or `AELIX_CODING_AGENT_DIR` points inside the folder you
+  work in, editing there now asks. A repository can make every write ask — a
+  link to itself, `"skills": ["/"]`, a list or a folder tree too long to check
+  — which is the safe side. `yolo`, and a plain `-p` run, still write.
 - **A delegated agent no longer imports a project file in place of one of
   your extensions (#641, ADR-0285).** Delegated agents ran as `python -m
   aelix_coding_agent` in the project folder, and `python -m` puts that folder

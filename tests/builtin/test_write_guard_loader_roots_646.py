@@ -33,6 +33,7 @@ import pytest
 from aelix_agent_core.harness.hooks import ToolCallHookEvent
 from aelix_agent_core.types import AgentContext
 from aelix_ai.settings import SettingsManager
+from aelix_ai.tools import ToolExecutionContext
 from aelix_coding_agent.builtin import permission
 from aelix_coding_agent.builtin.permission import (
     PermissionExtension,
@@ -471,3 +472,628 @@ async def test_end_to_end_the_gate_asks_blocks_a_child_and_nothing_loads(
         posture=PermissionPosture(mode=mode), headless_default="block", settings=manager
     )
     assert await child._on_tool_call(control, _ctx(cwd=str(repo), has_ui=False)) is None
+
+
+# ============================================================
+# The path the tool opens (fix round 1, verify V1 and V2)
+# ============================================================
+
+
+class _Recorder:
+    """The local write/edit operations, with the path each one was handed."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    async def mkdir(self, path: str) -> None:
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+    async def write_file(self, path: str, data: bytes) -> None:
+        self.paths.append(path)
+        Path(path).write_bytes(data)
+
+    async def read_file(self, path: str) -> bytes:
+        self.paths.append(path)
+        return Path(path).read_bytes()
+
+    async def access(self, path: str) -> bool:
+        return os.access(path, os.R_OK | os.W_OK)
+
+
+_TARGET_CORPUS = [
+    "plain.txt",
+    "@at.txt",
+    "@sub/at2.txt",
+    "~/home-file.txt",
+    "@~/at-home.txt",
+    "~",  # a folder: neither tool can write it, the gate still names it
+    "@ABS/outside.txt",
+    "ABS/outside2.txt",
+    "cafe\u0301.txt",  # NFD
+    "nb\u00a0sp.txt",
+    "ideo\u3000sp.txt",
+    "trailing/",
+    "sub/../dotdot.txt",
+    "sub/./dot.txt",
+    "~other/tilde-user.txt",
+]
+
+
+@pytest.mark.parametrize("raw", _TARGET_CORPUS)
+async def test_the_gate_judges_the_file_the_write_and_edit_tools_open(
+    repo: Path, home: Path, tmp_path: Path, raw: str
+) -> None:
+    """The gate's target IS the tools' target, for every spelling the tools rewrite.
+
+    Measured on ``98b9ea46``: the gate expanded with ``expanduser`` and joined
+    the rest itself, the tools strip a leading ``@``, normalize to NFC and map
+    unicode spaces (``tools/_path_utils.py`` ``expand_path``), so ``@x`` was
+    judged as ``<cwd>/@x`` and written to ``<cwd>/x``.
+    """
+
+    from aelix_coding_agent.tools.edit import create_edit_tool
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repo / "sub").mkdir()
+    path = raw.replace("ABS", str(outside))
+    if path == "~":
+        _cwd, lexical, real = permission._write_spellings(path, str(repo), permission._Budget())
+        assert lexical == os.path.normpath(home)
+        assert real == os.path.realpath(home)
+        return
+
+    _cwd, lexical, real = permission._write_spellings(path, str(repo), permission._Budget())
+    recorder = _Recorder()
+    write = create_write_tool(str(repo), {"operations": recorder})
+    assert write.execute is not None
+    result = await write.execute({"path": path, "content": "old"}, ToolExecutionContext(tool_call_id="w"))
+    assert not result.is_error, result.content
+    written = recorder.paths[-1]
+    assert os.path.normpath(written) == lexical
+    assert os.path.realpath(written) == real
+    assert os.path.samefile(written, real)
+
+    edit = create_edit_tool(str(repo), {"operations": recorder})
+    assert edit.execute is not None
+    result = await edit.execute(
+        {"path": path, "edits": [{"oldText": "old", "newText": "new"}]},
+        ToolExecutionContext(tool_call_id="e"),
+    )
+    assert not result.is_error, result.content
+    assert os.path.realpath(recorder.paths[-1]) == real
+    assert Path(real).read_text() == "new"
+
+
+def test_a_path_the_tools_strip_an_at_from_is_judged_where_it_lands(
+    repo: Path, home: Path, tmp_path: Path
+) -> None:
+    """Verify V1: every one of these was auto-accepted and written on ``98b9ea46``."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert _is_auto_allowable_write("@.aelix/extensions/at.py", str(repo)) is False
+    assert _is_auto_allowable_write("@.agents/skills/v-at/SKILL.md", str(repo)) is False
+    assert _is_auto_allowable_write(f"@{outside}/at-abs.txt", str(repo)) is False
+    assert _is_auto_allowable_write("@~/Library/LaunchAgents/at-home.plist", str(repo)) is False
+    assert _is_auto_allowable_write("@.ENV", str(repo)) is False
+    # Still the project, and still allowed.
+    assert _is_auto_allowable_write("@lib/z.py", str(repo)) is True
+    assert _is_auto_allowable_write(f"@{repo}/lib/z.py", str(repo)) is True
+
+
+@_POSIX_LINKS
+@pytest.mark.parametrize(
+    ("link", "points_at", "write"),
+    [
+        ("lnk", ".agents/skills/existing", "lnk/../v-dd/SKILL.md"),
+        ("lnk2", ".aelix/extensions/sub", "lnk2/../dd.py"),
+        ("lnk3", ".aelix/extensions/sub", "lnk3/../../settings.json"),
+    ],
+)
+def test_a_dot_dot_after_a_link_is_judged_in_the_links_target(
+    repo: Path, link: str, points_at: str, write: str
+) -> None:
+    """Verify V2: ``realpath(normpath(p))`` dropped the link before applying ``..``."""
+
+    (repo / points_at).mkdir(parents=True)
+    (repo / link).symlink_to(points_at)
+
+    assert _is_auto_allowable_write(write, str(repo)) is False
+
+
+@_POSIX_LINKS
+def test_a_dot_dot_after_an_ordinary_link_stays_auto_allowable(repo: Path) -> None:
+    (repo / "lib" / "sub").mkdir(parents=True)
+    (repo / "lnk").symlink_to("lib/sub")
+
+    assert _is_auto_allowable_write("lnk/../ok.py", str(repo)) is True
+
+
+@_POSIX_LINKS
+def test_the_bounded_resolver_agrees_with_realpath(tmp_path: Path) -> None:
+    """``_realpath`` is ``os.path.realpath`` with a count, on every layout but a loop."""
+
+    root = tmp_path / "r"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "rel").symlink_to("a/b")
+    (root / "abs").symlink_to(root / "a")
+    (root / "a" / "up").symlink_to("..")
+    (root / "chain1").symlink_to("chain2")
+    (root / "chain2").symlink_to("rel")
+    (root / "dangling").symlink_to("nowhere/deeper")
+    (root / "a" / "b" / "back").symlink_to("../../abs/b")
+    spellings = [
+        "rel/x",
+        "rel/../x",
+        "abs/b/../b/y",
+        "a/up/a/up/rel",
+        "chain1/../../r/chain1/z",
+        "dangling/q",
+        "dangling/../q",
+        "missing/../rel/x",
+        "a/b/back/back/back",
+        "a//b/./x",
+        "",
+    ]
+    for spelling in spellings:
+        full = f"{root}/{spelling}"
+        assert permission._realpath(full, permission._Budget()) == os.path.realpath(full), spelling
+
+
+@_POSIX_LINKS
+def test_a_chain_past_the_link_limit_asks(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify V4: ``realpath`` follows any number of links; the gate gives up and asks."""
+
+    previous = "src"
+    for n in range(permission._LINKS_PER_PATH + 1):
+        (repo / f"l{n}").symlink_to(previous)
+        previous = f"l{n}"
+
+    assert _is_auto_allowable_write(f"{previous}/x.py", str(repo)) is False
+    assert _is_auto_allowable_write("l10/x.py", str(repo)) is True
+    with pytest.raises(OSError, match="links"):
+        permission._realpath(f"{repo}/{previous}/x.py", permission._Budget())
+
+    monkeypatch.setattr(permission, "_DECISION_BUDGET", 5)
+    assert _is_auto_allowable_write("l10/x.py", str(repo)) is False
+
+
+# ============================================================
+# Links inside a root (fix round 1, Codex PC1)
+# ============================================================
+
+
+@_POSIX_LINKS
+@pytest.mark.parametrize(
+    ("link", "points_at", "write"),
+    [
+        (".agents/skills/x", "../../docs/x", "docs/x/SKILL.md"),
+        (".aelix/skills/y", "../../lib/y", "lib/y/SKILL.md"),
+        (".agents/skills/deep/inner", "../../../far", "far/z/SKILL.md"),
+        (".agents/skills/solo/SKILL.md", "../../../notes/solo.md", "notes/solo.md"),
+        (".aelix/extensions/e.py", "../../src/e.py", "src/e.py"),
+        (".aelix/extensions/pkg/helper.py", "../../../src/helper.py", "src/helper.py"),
+        (".aelix/settings.json", "../conf/settings.json", "conf/settings.json"),
+    ],
+)
+def test_a_link_inside_a_root_guards_what_it_points_at(
+    repo: Path, link: str, points_at: str, write: str
+) -> None:
+    """Measured on ``98b9ea46``: each write was auto-accepted, and the load read it through the link."""
+
+    (repo / link).parent.mkdir(parents=True, exist_ok=True)
+    (repo / link).symlink_to(points_at)
+
+    assert _is_auto_allowable_write(write, str(repo)) is False
+    # The folder next to the target is not read through anything.
+    assert _is_auto_allowable_write("other/x.md", str(repo)) is True
+
+
+@_POSIX_LINKS
+def test_a_link_inside_a_link_target_is_followed_too(repo: Path) -> None:
+    (repo / ".agents" / "skills").mkdir(parents=True)
+    (repo / "docs" / "x").mkdir(parents=True)
+    (repo / ".agents" / "skills" / "x").symlink_to("../../docs/x")
+    (repo / "docs" / "x" / "next").symlink_to("../../far")
+
+    assert _is_auto_allowable_write("far/y/SKILL.md", str(repo)) is False
+
+
+@_POSIX_LINKS
+def test_a_link_in_a_folder_the_load_does_not_list_is_not_a_root(repo: Path) -> None:
+    """A config dir's own entries and its loaded families only: ``.aelix/notes`` is not read."""
+
+    (repo / ".aelix" / "notes").mkdir(parents=True)
+    (repo / ".aelix" / "notes" / "x").symlink_to("../../docs")
+    (repo / ".agents" / "skills" / ".hidden").mkdir(parents=True)
+    (repo / ".agents" / "skills" / ".hidden" / "y").symlink_to("../../../lib")
+
+    assert _is_auto_allowable_write("docs/a.md", str(repo)) is True
+    assert _is_auto_allowable_write("lib/b.py", str(repo)) is True
+
+
+def test_a_large_folder_beside_the_loaded_ones_costs_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cwd of ``~``: ``~/.aelix/sessions`` holds thousands of files and is never listed."""
+
+    sessions = home / ".aelix" / "sessions"
+    sessions.mkdir(parents=True)
+    for n in range(200):
+        (sessions / f"s{n}.jsonl").touch()
+    monkeypatch.setattr(permission, "_DECISION_BUDGET", 150)
+
+    assert _is_auto_allowable_write("notes.txt", str(home)) is True
+
+
+def test_a_root_too_large_to_list_asks(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    skills = repo / ".agents" / "skills"
+    skills.mkdir(parents=True)
+    for n in range(20):
+        (skills / f"s{n}").mkdir()
+
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+    monkeypatch.setattr(permission, "_DECISION_BUDGET", 15)
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+# ============================================================
+# A hostile project file (fix round 1, verify V4 and V5)
+# ============================================================
+
+
+def test_a_project_list_past_the_cap_asks(repo: Path) -> None:
+    (repo / ".aelix").mkdir()
+    settings = repo / ".aelix" / "settings.json"
+    limit = permission._PROJECT_LIST_LIMIT
+    settings.write_text(json.dumps({"skills": [f"../d{n}" for n in range(limit)]}))
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+    settings.write_text(json.dumps({"prompts": [f"../d{n}" for n in range(limit + 1)]}))
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+class _Looked:
+    """Every path ``stat`` / ``lstat`` / ``scandir`` / ``readlink`` / ``open`` was handed."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.paths: list[str] = []
+        for name in ("stat", "lstat", "scandir", "readlink", "open"):
+            real = getattr(os, name)
+
+            def spy(path: Any, *args: Any, _real: Any = real, **kwargs: Any) -> Any:
+                self.paths.append(os.fspath(path) if not isinstance(path, int) else "")
+                return _real(path, *args, **kwargs)
+
+            monkeypatch.setattr(os, name, spy)
+
+    def touched(self, word: str) -> list[str]:
+        return [p for p in self.paths if word in p]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    # A backslashed ``\\\\attacker\\share`` is relative to ``posixpath`` and so
+    # cannot be measured here; :func:`test_what_counts_as_another_machine` has it.
+    ["//attacker/share/skills", "//?/UNC/attacker/share", "//./pipe/attacker"],
+)
+def test_a_project_settings_path_on_another_machine_is_never_looked_at(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    """Verify V5 (Windows): ``stat`` of a UNC path sends the user's NTLM hash to its host.
+
+    Measured with ``ntpath`` rules on a POSIX runner (``permission._NT``); the
+    entry is refused before anything resolves it.
+    """
+
+    (repo / ".aelix").mkdir()
+    (repo / ".aelix" / "settings.json").write_text(json.dumps({"skills": [entry]}))
+    monkeypatch.setattr(permission, "_NT", True)
+    looked = _Looked(monkeypatch)
+
+    allowed = _is_auto_allowable_write("src/x.py", str(repo))
+    monkeypatch.undo()
+
+    assert allowed is False
+    assert looked.touched("attacker") == []
+
+
+def test_a_project_profile_path_on_another_machine_is_never_looked_at(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / ".aelix" / "agents").mkdir(parents=True)
+    (repo / ".aelix" / "agents" / "p.md").write_text(
+        "---\nname: p\ndescription: d\nskills: //attacker/share/s\n---\nbody\n"
+    )
+    monkeypatch.setattr(permission, "_NT", True)
+    looked = _Looked(monkeypatch)
+
+    allowed = _is_auto_allowable_write("src/x.py", str(repo))
+    monkeypatch.undo()
+
+    assert allowed is False
+    assert looked.touched("attacker") == []
+
+
+@_POSIX_LINKS
+def test_a_link_in_a_root_to_another_machine_is_never_followed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / ".agents" / "skills").mkdir(parents=True)
+    (repo / ".agents" / "skills" / "x").symlink_to("//attacker/share/x")
+    monkeypatch.setattr(permission, "_NT", True)
+    looked = _Looked(monkeypatch)
+
+    allowed = _is_auto_allowable_write("src/x.py", str(repo))
+    monkeypatch.undo()
+
+    assert allowed is False
+    assert looked.touched("attacker") == []
+
+
+@pytest.mark.parametrize(
+    ("path", "cwd", "remote"),
+    [
+        ("\\\\attacker\\share\\x", "C:\\work", True),
+        ("//attacker/share/x", "C:\\work", True),
+        ("\\\\?\\C:\\x", "C:\\work", True),
+        ("\\\\.\\pipe\\x", "C:\\work", True),
+        ("\\\\?\\UNC\\attacker\\share\\x", "C:\\work", True),
+        ("C:\\x", "C:\\work", False),
+        ("D:\\x", "C:\\work", False),
+        ("\\x", "C:\\work", False),
+        ("relative\\x", "C:\\work", False),
+        ("\\\\srv\\share\\skills", "\\\\srv\\share\\repo", False),
+        ("//SRV/Share/skills", "\\\\srv\\share\\repo", False),
+        ("\\\\other\\share\\skills", "\\\\srv\\share\\repo", True),
+    ],
+)
+def test_what_counts_as_another_machine(
+    monkeypatch: pytest.MonkeyPatch, path: str, cwd: str, remote: bool
+) -> None:
+    monkeypatch.setattr(permission, "_NT", True)
+
+    assert permission._is_remote(path, cwd) is remote
+
+
+def test_nothing_is_another_machine_off_windows() -> None:
+    if permission._NT:
+        pytest.skip("POSIX rule")
+    assert permission._is_remote("//attacker/share/x", "/work") is False
+
+
+# ============================================================
+# A child in a subfolder (fix round 1, verify V3)
+# ============================================================
+
+
+@_POSIX_LINKS
+def test_a_child_in_a_subfolder_guards_its_parents_config_dir(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify V3: ``agent(cwd='pkg')`` computed its roots from ``pkg`` alone."""
+
+    (repo / "pkg" / "conf").mkdir(parents=True)
+    (repo / ".aelix").symlink_to("pkg/conf")
+    child_cwd = str(repo / "pkg")
+    assert _is_auto_allowable_write("conf/extensions/sub2.py", child_cwd) is True
+
+    env = permission.pass_loader_roots_to_child({}, str(repo))
+    monkeypatch.setenv(permission.PARENT_ROOTS_ENV, env[permission.PARENT_ROOTS_ENV])
+
+    assert _is_auto_allowable_write("conf/extensions/sub2.py", child_cwd) is False
+    assert _is_auto_allowable_write("conf/skills/x/SKILL.md", child_cwd) is False
+    assert _is_auto_allowable_write("lib/ok.py", child_cwd) is True
+
+
+def test_a_child_in_a_subfolder_guards_its_parents_settings_paths(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / ".aelix").mkdir()
+    (repo / ".aelix" / "settings.json").write_text(
+        json.dumps({"skills": ["../docs/skills"], "prompts": ["../docs/prompts"]})
+    )
+    (repo / "docs").mkdir()
+    child_cwd = str(repo / "docs")
+    assert _is_auto_allowable_write("skills/v-sub/SKILL.md", child_cwd) is True
+
+    env = permission.pass_loader_roots_to_child({}, str(repo))
+    monkeypatch.setenv(permission.PARENT_ROOTS_ENV, env[permission.PARENT_ROOTS_ENV])
+
+    assert _is_auto_allowable_write("skills/v-sub/SKILL.md", child_cwd) is False
+    assert _is_auto_allowable_write("prompts/p.md", child_cwd) is False
+    assert _is_auto_allowable_write("guide.md", child_cwd) is True
+
+
+def test_the_record_is_kept_and_extended_for_a_grandchild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp = tmp_path / "servers.json"
+    monkeypatch.setenv("AELIX_MCP_CONFIG", str(mcp))
+    first = permission.pass_loader_roots_to_child({}, str(tmp_path / "top"))
+    monkeypatch.delenv("AELIX_MCP_CONFIG")
+    second = permission.pass_loader_roots_to_child(dict(first), str(tmp_path / "top" / "mid"))
+
+    assert permission._parent_record(second) == (
+        [str(tmp_path / "top"), str(tmp_path / "top" / "mid")],
+        [str(mcp)],
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not json",
+        "[]",
+        '{"cwds": "/a"}',
+        '{"cwds": ["relative"]}',
+        '{"files": [1]}',
+        json.dumps({"cwds": [f"/d{n}" for n in range(17)]}),
+    ],
+)
+def test_a_record_aelix_did_not_write_asks_and_is_passed_on_as_it_is(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(permission.PARENT_ROOTS_ENV, value)
+
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+    env = {permission.PARENT_ROOTS_ENV: value}
+    assert permission.pass_loader_roots_to_child(env, str(repo)) == {permission.PARENT_ROOTS_ENV: value}
+
+
+def test_a_project_env_file_cannot_write_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``AELIX_`` is a prefix a cwd ``.env`` cannot set; the record is not reopened by name."""
+
+    from aelix_coding_agent.cli.runtime_bootstrap import load_dotenv
+
+    monkeypatch.delenv(permission.PARENT_ROOTS_ENV, raising=False)
+    monkeypatch.delenv("AELIX_DOTENV_ALLOW", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(f'{permission.PARENT_ROOTS_ENV}={{"cwds": ["/"]}}\nAELIX646_PROBE_API_KEY=k\n')
+    load_dotenv(str(dotenv))
+    leaked = os.environ.pop(permission.PARENT_ROOTS_ENV, None)
+    # ``load_dotenv`` writes ``os.environ`` itself; the control proves it ran.
+    control = os.environ.pop("AELIX646_PROBE_API_KEY", None)
+
+    assert leaked is None
+    assert control == "k"
+
+
+def test_a_record_naming_another_machine_asks(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(permission, "_NT", True)
+    monkeypatch.setenv(permission.PARENT_ROOTS_ENV, json.dumps({"cwds": ["//attacker/share"]}))
+
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+async def test_both_channels_hand_the_child_the_parents_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The print and rpc spawns, a first run and a resume alike, go through the same line."""
+
+    from aelix_agents.print_channel import PrintChannel, RunningChild
+    from aelix_agents.rpc_channel import RpcChannel
+
+    from tests.agents_ext.test_rpc_channel import _plan, _print_stub, _rpc_stub
+
+    body = (
+        "def script(task):\n"
+        "    start()\n"
+        f"    say(os.environ.get({permission.PARENT_ROOTS_ENV!r}, 'missing'), input=1, output=1)\n"
+        "    done()\n"
+    )
+    mcp = tmp_path / "servers.json"
+    monkeypatch.setenv("AELIX_MCP_CONFIG", str(mcp))
+    (tmp_path / "sub").mkdir()
+    plan = _plan(tmp_path, cwd=str(tmp_path / "sub"), parent_cwd=str(tmp_path))
+    print_script = _print_stub(body)
+    rpc_script = _rpc_stub(body)
+
+    results = [
+        await PrintChannel(
+            argv_builder=lambda *a, **k: [sys.executable, "-c", print_script, "Task: t"]
+        ).run(plan, child=RunningChild(id="sub-test", profile="scout")),
+        await RpcChannel(argv_builder=lambda *a, **k: [sys.executable, "-c", rpc_script]).run(
+            plan, child=RunningChild(id="sub-test", profile="scout")
+        ),
+    ]
+
+    for result in results:
+        assert result.ok is True, result
+        assert json.loads(result.summary) == {"cwds": [str(tmp_path)], "files": [str(mcp)]}
+
+
+# ============================================================
+# More files the loader reads (fix round 1, verify V6, profile paths)
+# ============================================================
+
+
+def test_the_mcp_config_the_environment_names_is_guarded(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify V6: its servers run as commands at the next launch."""
+
+    assert _is_auto_allowable_write("mcp.servers.json", str(repo)) is True
+    monkeypatch.setenv("AELIX_MCP_CONFIG", "mcp.servers.json")
+    monkeypatch.chdir(repo)
+
+    assert _is_auto_allowable_write("mcp.servers.json", str(repo)) is False
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+
+def test_a_parents_mcp_config_is_guarded_in_its_child(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child's environment drops ``AELIX_MCP_CONFIG``; the record carries the file."""
+
+    monkeypatch.setenv("AELIX_MCP_CONFIG", str(repo / "mcp.servers.json"))
+    env = permission.pass_loader_roots_to_child({}, str(repo))
+    monkeypatch.delenv("AELIX_MCP_CONFIG")
+    monkeypatch.setenv(permission.PARENT_ROOTS_ENV, env[permission.PARENT_ROOTS_ENV])
+
+    assert _is_auto_allowable_write("mcp.servers.json", str(repo)) is False
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "skills: [../../../work/team-skills]",
+        "skills: WORK/team-skills",
+        "skills: a, WORK/team-skills",
+        "extensions: [WORK/team-skills/ext.py]",
+    ],
+)
+def test_a_user_profiles_paths_are_guarded(home: Path, line: str) -> None:
+    from aelix_coding_agent.cli.config import get_agent_dir
+
+    work = home / "work"
+    (work / "team-skills").mkdir(parents=True)
+    agents = Path(get_agent_dir()) / "agents"
+    agents.mkdir(parents=True)
+    line = line.replace("WORK", str(work))
+    (agents / "p.md").write_text(f"---\nname: p\ndescription: d\n{line}\n---\nbody\n")
+
+    target = "team-skills/ext.py" if "extensions" in line else "team-skills/x/SKILL.md"
+    assert _is_auto_allowable_write(target, str(work)) is False
+    assert _is_auto_allowable_write("README.md", str(work)) is True
+
+
+def test_a_project_profiles_skills_path_is_guarded_whatever_the_trust(repo: Path) -> None:
+    (repo / ".aelix" / "agents").mkdir(parents=True)
+    (repo / ".aelix" / "agents" / "p.md").write_text(
+        "---\nname: p\ndescription: d\nskills: [../../docs/pskills]\n---\nbody\n"
+    )
+
+    assert _is_auto_allowable_write("docs/pskills/x/SKILL.md", str(repo)) is False
+    assert _is_auto_allowable_write("docs/other.md", str(repo)) is True
+
+
+def test_a_project_with_too_many_profiles_or_entries_asks(repo: Path) -> None:
+    agents = repo / ".aelix" / "agents"
+    agents.mkdir(parents=True)
+    limit = permission._PROJECT_PROFILE_LIMIT
+    for n in range(limit):
+        (agents / f"p{n}.md").write_text(f"---\nname: p{n}\ndescription: d\n---\nb\n")
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+    (agents / "over.md").write_text("---\nname: over\ndescription: d\n---\nb\n")
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+    for path in agents.iterdir():
+        path.unlink()
+    entries = ", ".join(f"d{n}" for n in range(permission._PROJECT_LIST_LIMIT + 1))
+    (agents / "wide.md").write_text(f"---\nname: wide\ndescription: d\nskills: [{entries}]\n---\nb\n")
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is False
+
+
+def test_a_profile_that_does_not_parse_names_nothing(repo: Path) -> None:
+    agents = repo / ".aelix" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "deep.md").write_text("---\nskills: " + "[" * 5000 + "\n---\nb\n")
+    (agents / "binary.md").write_bytes(b"---\nskills: \xff\xfe\n---\n")
+
+    assert _is_auto_allowable_write("src/x.py", str(repo)) is True

@@ -257,15 +257,23 @@ the path, as the `.aelix` one does, so it also asks about files that are not
 skills (`.agents/plans/x.md`) and about every write in a project that itself
 sits inside a `.agents` folder (`/work/.agents/proj/src/main.py`).
 
-It also goes by where a write lands, not only by its name (#646). A write into
-a folder that aelix reads skills, extensions, settings, agent profiles or
-prompt templates from is asked about the same way when that folder is behind a
-link: the folder a `.agents`, `.agents/skills` or `.aelix` symlink points at,
-the folder your `~/.agents/skills` or `~/.aelix` points at when you work inside
-it (a dotfiles repository, say — you are asked when editing those folders
-there, not elsewhere in it), and the folders the `skills` and `prompts` paths
-in your global or this project's `settings.json` name. A `--skill` path is not
-one of them: you named it for that run.
+It also goes by where a write lands, not only by its name (#646): the file the
+write and edit tools open, so a leading `@` or a `..` after a link changes
+nothing. A write into a folder that aelix reads skills, extensions, settings,
+agent profiles or prompt templates from is asked about the same way when that
+folder is behind a link: the folder a `.agents`, `.agents/skills` or `.aelix`
+symlink points at, the folder your `~/.agents/skills` or `~/.aelix` points at
+when you work inside it (a dotfiles repository, say — you are asked when
+editing those folders there, not elsewhere in it), the folder a link inside
+one of these points at, the folders the `skills` and `prompts` paths in your
+global or this project's `settings.json` name, the `skills:` and
+`extensions:` paths of your and this project's agent profiles, and the file
+`AELIX_MCP_CONFIG` names. A delegated agent started in a subfolder is held to
+the folders of the project it was started from too. A `--skill`,
+`--prompt-template` or `--agent-file` path is not one of them: you named it
+for that run. Nor are a hard link to a skill file and the session folder. A
+repository can make every write ask (a link to itself, `"skills": ["/"]`, or
+more entries and folders than one write may check), which is the safe side.
 
 | Option | Effect |
 | --- | --- |

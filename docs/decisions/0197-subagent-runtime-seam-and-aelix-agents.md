@@ -992,10 +992,20 @@ this gate — which is the self-perpetuating write-to-exec this section names as
 the hard prerequisite. A write whose resolved path is under the resolved
 `<cwd>/.aelix`, the agent directory, or any other folder or file the loader
 reads (the `.agents/skills` walk, `~/.agents/skills`, the settings `skills` and
-`prompts` paths) is now not auto-allowable either: interactive AUTO_ACCEPT and
-AUTO ask, a delegated child is refused (`builtin/permission.py`
-`_loader_resource_roots`; the list and its measurements are in ADR-0281 D10's
-dated note). The behaviour change widens with it: a user whose `~/.aelix` or
+`prompts` paths, the agent profiles' `skills:` and `extensions:` paths,
+`$AELIX_MCP_CONFIG`, and the targets of the links inside all of them) is now
+not auto-allowable either: interactive AUTO_ACCEPT and AUTO ask, a delegated
+child is refused (`builtin/permission.py` `_loader_resource_roots`; the list
+and its measurements are in ADR-0281 D10's dated note). "Resolved path" is the
+file the write and edit tools open: review round 1 found the gate judging a
+path of its own — `@.aelix/extensions/x.py` as a folder named `@.aelix`, and
+`lnk/../x` with the `..` applied before the link — so the prerequisite did not
+hold even for the NAME `.aelix` when the model wrote a leading `@` (older than
+#646; measured on `74f9214c` and `98b9ea46`). A child the `agent` tool starts in
+a subfolder (§(l)'s `cwd`) is held to the parent's folders as well: the spawner
+hands it the parent's cwd in `AELIX_PARENT_LOADER_ROOTS`, on both channels and
+on a resume, kept and extended for a grandchild, and the child's gate only adds
+what that record lists. The behaviour change widens with it: a user whose `~/.aelix` or
 `~/.agents/skills` is a link into a dotfiles repository is asked when editing
 those folders there. Measured end to end with a real child (`/agents run
 general-purpose` from the TUI under `auto-accept-edits`, OpenRouter

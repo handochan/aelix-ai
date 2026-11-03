@@ -440,7 +440,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1678-1685``); this channel
+            # ``_eager_abort`` (``print_channel.py:1679-1686``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -474,6 +474,7 @@ class RpcChannel:
                 row.state = "stopped"
                 return _envelope(outcome="aborted")
 
+            from aelix_coding_agent.builtin.permission import pass_loader_roots_to_child
             client = RpcClient(
                 RpcClientOptions(
                     argv=self._argv_builder(
@@ -491,7 +492,7 @@ class RpcChannel:
                         model_registry=(self._model_registry() if self._model_registry else None),
                     ),
                     cwd=plan.cwd,
-                    env_base=self._env_builder(profile),
+                    env_base=pass_loader_roots_to_child(self._env_builder(profile), plan.parent_cwd),
                     # The parent-death signal. It lives in this band, which is
                     # why product-core exposes a seam instead of a default.
                     # ``None`` on Windows: subprocess rejects a non-None

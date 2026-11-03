@@ -775,12 +775,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:844-845``) BEFORE the write check, and a headless run
+    # (``permission.py:1259-1260``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
-    # branch (d) at ``permission.py:1077-1080`` allows (or, for a delegated
+    # branch (d) at ``permission.py:1492-1495`` allows (or, for a delegated
     # child, blocks). The prompt is reached only via branch (h) at
-    # ``permission.py:1082-1090``, because ``.aelix`` is in
-    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:491-493``) so
+    # ``permission.py:1497-1505``, because ``.aelix`` is in
+    # ``_SENSITIVE_DIR_COMPONENTS`` (``permission.py:492-494``) so
     # ``_is_auto_allowable_write`` refuses to short-circuit (f)/(g).
     #
     # So the bullet asserts only the conditional ("may ask"), and spends its
@@ -795,10 +795,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:1027-1030``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:1442-1445``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
-    # (``permission.py:1077-1080``, ``headless_default == "block"``). Those are
+    # (``permission.py:1492-1495``, ``headless_default == "block"``). Those are
     # policy, not a human saying no, and retrying cannot change them — so the
     # clause names "blocked" alongside "declines" and routes both to the same
     # stop.

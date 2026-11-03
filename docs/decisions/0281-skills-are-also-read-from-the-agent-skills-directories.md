@@ -10,7 +10,11 @@ a symlink, and how long a cwd fills the question — and made each load warning
 print once (D4). **Amended 2026-11-03 (#646, owner decision): D10 now also
 refuses a write into the folder BEHIND a link — the resolved form of every
 folder or file the loader reads, not only the names — which closes the Limits
-item it left open; see the dated notes in D10 and Limits.**
+item it left open as far as D10's dated note says; its review round 1 judged
+the file the tools open (`@`, `..` after a link), held a child in a subfolder
+to the parent's folders, followed the links inside a root, added the agent
+profiles' paths and `$AELIX_MCP_CONFIG`, and bounded what one decision costs;
+see the dated notes in D10 and Limits.**
 Date: 2026-10-31
 Issue: #509. Live runs, pty grids and drivers were kept locally under
 `/tmp/509-impl/`, not in the repo.
@@ -339,12 +343,77 @@ The owner chose the whole class, not the skills folders alone:
   (`PermissionExtension.settings`, wired in `cli/entry.py`; RPC
   `permissions/evaluate` passes the same one), the copy loaded at launch and
   the file on disk both counting.
+- The `skills:` and `extensions:` paths of the agent profiles in the agent
+  directory's `agents/` and the project's `.aelix/agents/` — a run of that
+  profile loads them (`agents/profile.py` `_parse_path_list`). Read by the
+  gate itself, like the project settings file, so the project's count in an
+  untrusted project too; an unchanged profile is parsed once (cached by path and
+  `stat`).
+- The file `$AELIX_MCP_CONFIG` names: its servers run as commands at the next
+  launch.
+- The target of every link inside the folders above that a load follows
+  (Codex PC1): the skill loader lists a skills folder at every depth and
+  follows a linked folder or `SKILL.md` (`harness/skills.py`
+  `_load_skills_from_dir_internal`), the extension loader a linked `.py` or
+  package. Each existing root is listed for links — below a config dir only its
+  own entries and `skills/`, `extensions/`, `agents/`, `prompt-templates/`, so
+  `~/.aelix/sessions` is never listed from a cwd of `~`; a hidden folder,
+  `node_modules` and `__pycache__` are not entered — and each target is a root
+  in turn, listed the same way.
+- For a delegated child, the same project roots of every cwd above it, and the
+  parent's `$AELIX_MCP_CONFIG` (the child's environment drops that variable). A
+  child the `agent` tool starts in a subfolder computed its roots from that
+  subfolder alone, so the parent's `.aelix` and the paths its settings name were
+  not roots for it (verify V3). Both channels' spawns — a first run and a resume
+  alike — add the parent's cwd and MCP file to `AELIX_PARENT_LOADER_ROOTS`
+  (`pass_loader_roots_to_child`), keeping what the parent inherited, so a
+  grandchild knows every folder above it. The child's gate only adds what the
+  record lists; a record that does not parse, lists more than 16 entries, or
+  names a path on another machine than the child's cwd asks for every write. A
+  project `.env` cannot set it (`^AELIX_`, measured through `load_dotenv`).
 
-Not taken: `--skill` and `--prompt-template` paths and an agent profile's
-`skills:` (the user named them for the run), and the skills shipped inside the
-package (the program itself). A user whose `~/.agents/skills` links into a
-dotfiles repository is asked when editing skills there, not elsewhere in that
+Not taken: `--skill`, `--prompt-template` and `--agent-file` paths (the user
+named them for the run), the skills shipped inside the package (the program
+itself), and the session folder (`AELIX_CODING_AGENT_SESSION_DIR`): a session
+is read only when the user resumes one, as the transcript they pick, never at a
+launch they did not ask for, and its default lies outside the agent directory
+(`~/.aelix/sessions`). A user whose `~/.agents/skills` links into a dotfiles
+repository is asked when editing skills there, not elsewhere in that
 repository — the cost `.aelix` already pays (ADR-0197 §(i)).
+
+THE PATH THE TOOL OPENS (review round 1, verify V1 and V2; older than #646).
+The gate expanded the path with `os.path.expanduser` and joined it to the cwd
+itself; the write and edit tools resolve it with `tools/_path_utils.py`
+`resolve_to_cwd`, which strips a leading `@`, normalizes to NFC and turns
+unicode spaces into ASCII ones. `@.aelix/extensions/at.py` was judged as a
+folder named `@.aelix` and written to `.aelix/extensions/at.py`;
+`@~/Library/LaunchAgents/x.plist` and `@/anywhere/x` were judged inside the
+project and written outside it — every one auto-accepted, interactive and
+headless, on `74f9214c` and on the first #646 commit. And `realpath(normpath(p))`
+applied a `..` before the link in front of it, while the OS applies it to the
+link's target: `lnk -> .agents/skills/existing` made `lnk/../v/SKILL.md` a
+project skill. Now the gate judges `resolve_to_cwd`'s own result
+(`_write_spellings`), and resolves it one name at a time without normalizing it
+first (`_realpath`); a test writes a corpus of spellings (`@`, `~`, `~user`,
+NFD, unicode spaces, a trailing `/`, `..`, `.`, absolute, relative) through the
+real write and edit tools and holds the gate's target to the file they opened.
+
+WHAT ONE DECISION MAY COST (verify V4). A repository writes the project
+settings file and the project profiles, and can ship any number of links and
+folders under a root; the call runs on the event loop. On the first commit,
+75,684 entries in a 1 MiB settings file cost 1.13 s per write decision and
+1,000 entries through a 300-link chain 0.67 s. Now a project's list holds at
+most 64 entries, its `.aelix/agents` at most 64 profiles of at most 64 KiB, a
+path at most 64 links (no kernel opens a path through more: Linux stops at 40,
+macOS at 32, Windows at 63), and one decision lists and follows at most 8,192
+folder entries and links (`_Budget`); past any of them the write asks.
+
+A PATH ON ANOTHER MACHINE (verify V5, Windows; measured with `ntpath` rules on
+POSIX, no Windows run). `stat` of `\\host\share\x` (or `//host/share/x`) opens
+an SMB session that sends the user's NTLM hash, and the gate now reads paths a
+project wrote. A project settings or profile path, a link inside a root and a
+record entry on a UNC or device drive (`\\?\`, `\\.\`) other than the one the
+cwd is on is refused before anything resolves it: the write asks.
 
 How a write is placed: each root is resolved and anchored at its deepest
 existing folder, and the write's folders are walked up to the filesystem root —
@@ -355,12 +424,12 @@ spaces, a stream suffix) and NFC-normalised. So `Tooling/skills/…` on a
 case-insensitive volume is caught, and a cwd inside a root (the dotfiles repo's
 `skills/`) asks for every write. All of it is recomputed on every decision: a
 link can be re-pointed mid-session. An `OSError` while resolving the write or a
-root, or reading a settings file, asks, as does a project settings file over
-1 MiB; a settings file that does not parse names nothing, as the loader reads
-nothing from it.
+root, listing a root or reading a settings file or profile asks, as does a
+project settings file over 1 MiB; a settings file or profile that does not
+parse names nothing, as the loader reads nothing from it.
 
-Measured before (`74f9214c`) and after (this commit) through the real gate
-(`GuardrailExtension` + `PermissionExtension`, interactive with an approval
+Measured before (`74f9214c`) and after (the first #646 commit) through the real
+gate (`GuardrailExtension` + `PermissionExtension`, interactive with an approval
 runner and headless with `headless_default="block"`), the write and edit tools,
 RPC `permissions/evaluate` and the trusted catalog
 (`/tmp/646-impl/live/{before,after}/summary.json`, kept locally). Every row
@@ -379,9 +448,50 @@ loaded as shown:
 | none (control) | `src/x.py` | written | written |
 | `--skill myskills` (control) | `myskills/planted-cli/SKILL.md` | written, `cli` skill | written, `cli` skill |
 
-The cost is a `realpath` and a few `stat` calls per root on each write
-decision: 0.1 ms in a repository, 0.2 ms with the settings read, and 5.3 ms at
-a cwd 65 folders deep outside a repository (65 `.agents/skills` roots).
+Review round 1 measured what the first commit still let through, on that
+commit (`98b9ea46`) and after this round — in process through the same gate
+(`/tmp/646-fix-r1/probes/`, kept locally), and live with real children (the
+table after this one):
+
+| Case | Write | On `98b9ea46` | After round 1 |
+| --- | --- | --- | --- |
+| leading `@` | `@.aelix/extensions/at.py`, `@.agents/skills/v/SKILL.md` | written, the skill loaded | asks; child refused |
+| leading `@`, outside the project | `@/tmp/…/outside/at.txt`, `@~/Library/LaunchAgents/x.plist` | written outside the project | asks; child refused |
+| `lnk -> .agents/skills/existing`; `lnk2 -> .aelix/extensions/sub` | `lnk/../v/SKILL.md`; `lnk2/../dd.py` | written, project skill; `.aelix/extensions/dd.py` | asks; child refused |
+| `.aelix -> pkg/conf`, child started with `cwd: pkg` | `conf/extensions/sub2.py` | written | refused |
+| project `"skills": ["../docs/skills"]`, child with `cwd: docs` | `skills/v/SKILL.md` | written, project skill | refused |
+| `.agents/skills/x -> ../../docs/x`, two folders down, a linked `SKILL.md`, `.aelix/extensions/e.py -> ../../src/e.py` | `docs/x/SKILL.md`, `far/z/SKILL.md`, `notes/solo.md`, `src/e.py` | written, each loaded through the link | asks; child refused |
+| `AELIX_MCP_CONFIG=mcp.servers.json` | `mcp.servers.json` | written | asks |
+| profile `skills: [../../docs/pskills]` | `docs/pskills/x/SKILL.md` | written | asks; child refused |
+| none (control) | `lib/z.py`, `@lib/z.py`, `lnk3/../ok.py` | written | written |
+
+Live (rule 10): the TUI under a pty with `--permission-mode auto-accept-edits`,
+OpenRouter `anthropic/claude-haiku-4.5`, a project with `.aelix/settings.json`
+(`"skills": ["../share/skills"]`), so each child ran `--no-approve`; first
+`/agents run general-purpose`, then the parent model's own `agent` call with
+`cwd: share`, whose consent dialog read `Directory: …/repo/share`,
+`Permission: auto-accept-edits` (`/tmp/646-fix-r1/live/{before98,after}/`, kept
+locally; no `sk-or-` in any output, pty bytes or session):
+
+| Child's write | On `98b9ea46` | After round 1 |
+| --- | --- | --- |
+| `lib/ok.txt` (control) | written | written |
+| `kit/agents/skills/live-a/SKILL.md` (`.agents -> kit/agents`) | refused | refused |
+| `share/skills/live-b/SKILL.md` (settings path) | refused | refused |
+| `@.agents/skills/live-c/SKILL.md` | allowed; `mkdir` failed on the dangling link | refused |
+| `lnk/../live-d/SKILL.md` (`lnk -> share/skills/seed`) | written to `share/skills/live-d/` | refused |
+| `@.aelix/extensions/live-at.py` | written to `.aelix/extensions/` | refused |
+| `@/tmp/…/outside/live-out.txt` | written outside the project | refused |
+| `docs/linked/SKILL.md` (`.aelix/skills/linked -> ../../docs/linked`) | written | refused |
+| `cwd: share` child, `skills/live-e/SKILL.md` | written to `share/skills/` | refused |
+| `cwd: share` child, `sub-ok.txt` (control) | written | written |
+
+The cost is a resolve, a few `stat` calls and a listing per existing root on
+each write decision: 0.14 ms in a repository (0.11 ms on the first commit),
+0.48 ms with 20 project profiles, 4.2 ms with a 1,200-entry `.agents/skills`
+tree (0.11 ms before: it was not listed) and 4.8 ms at a cwd 65 folders deep
+outside a repository; the hostile settings files above now ask in 1.9 ms and
+0.2 ms.
 
 The rule asks about every write with a `.agents` segment anywhere in its path,
 as `.aelix`'s does, not only `.agents/skills` (round 2, R4): `.agents/plans/x.md`,
@@ -405,8 +515,10 @@ narrowing it to `.agents` followed by `skills` was not taken.
 - An interactive `auto-accept-edits` user writing their own `.agents/` sees the
   approval prompt instead of a silent write (D10), as for `.aelix/`. Since #646
   the same holds for the folder a link of that name points at, the folders the
-  settings `skills` and `prompts` paths name, and the agent directory when the
-  cwd holds it (2026-11-03).
+  settings `skills` and `prompts` paths and the agent profiles' `skills:` and
+  `extensions:` paths name, the `$AELIX_MCP_CONFIG` file, the target of a link
+  inside any of them, and the agent directory when the cwd holds it
+  (2026-11-03).
 
 ## Limits
 
@@ -442,19 +554,34 @@ narrowing it to `.agents` followed by `skills` was not taken.
   row 20 on `0e97bd28`, before the sentence, and at row 24 since). Shortening
   rows will not close this; the fix is to keep the options pinned and scroll
   the body above them, left to a follow-up issue.
-- **Closed 2026-11-03 by #646 (D10's dated note); kept as it stood.** The
-  write rule (D10) judges the names on the write's path, not the folders
-  the loader reads. A write to the real folder behind a symlink named
-  `.agents`, `.agents/skills` or `.aelix` is auto-accepted and loads: measured
-  through the real gate (`auto-accept-edits`, no UI, `headless_default=
-  "block"`) and the trusted catalog, `.claude/skills/planted-a/SKILL.md` under
-  `.agents/skills -> ../.claude/skills` and `config/skills/planted-c/SKILL.md`
-  under `.aelix -> config` were both written and both loaded as project skills,
-  while `.agents/skills/planted-b/SKILL.md` was refused. A #511 project settings
-  `skills` path to an ordinary folder (`docs/skills`) is the same, and was so
-  on `0e97bd28`. Closing it means refusing auto-accept for a resolved path
-  under the resolved form of every skills directory the loader reads, left to
-  a follow-up issue.
+- **Closed 2026-11-03 by #646 for what D10's dated note lists, and no
+  further.** The write rule (D10) judged the names on the write's path, not the
+  folders the loader reads: a write to the real folder behind a symlink named
+  `.agents`, `.agents/skills` or `.aelix`, or to a #511 settings `skills` path
+  (`docs/skills`), was auto-accepted and loaded (measured through the real gate
+  and the trusted catalog on `0e97bd28`). What D10's note still does not cover:
+  - A hard link: a pre-existing hard link to a skill file (`docs/s.md` and
+    `.agents/skills/x/SKILL.md` one inode) is written through its other name
+    and changes the skill (round 1, V8). Git cannot check out a hard link, and
+    `ln` asks under `auto`.
+  - Decide, then link, then write: the write tool resolves the path again when
+    it runs and does not ask again, so a link made between the decision and the
+    write lands where it points (round 1, V9). Every command that makes a link
+    asks under `auto` (`ln -s`, `git apply`, `git checkout`, `tar`, `unzip`,
+    `patch` among them), and the name rule holds for a name that is already
+    sensitive.
+  - A repository can make every write ask, the safe side (round 1, V10): a
+    self-link `.agents -> .agents`, `"skills": ["/"]` or `"prompts": [".."]`,
+    a list of more than 64 entries, more than 64 profiles, or a tree under a
+    root past 8,192 entries and links. So can a user's own large tree under a
+    root (a `~/.agents/skills` clone that big), and an `AELIX_CODING_AGENT_DIR`
+    inside the cwd now asks for the writes under it (round 1, V12).
+  - `--skill`, `--prompt-template` and `--agent-file` paths, the packaged
+    skills and the session folder (D10's note says why).
+  - On Windows, a link a repository checked out (which needs `core.symlinks`
+    and the privilege to make links) to another machine is refused only below
+    a root; the trust check at launch already looks at `.aelix` and
+    `.agents/skills` themselves.
 - `/skill` orders a tier's groups by their first row, so a directory whose rows
   are all shadowed is drawn after the next directory's winners (a cwd's
   `.agents/skills/` holding only a copy that `.aelix/skills` beats sits below

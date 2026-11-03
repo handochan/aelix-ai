@@ -21,9 +21,9 @@ Why a clamp and not a lookup table (P2 review finding B4). The obvious shape —
 map ``approval_mode`` to a posture and hand it to the child — lets a profile
 declaring ``approval_mode: auto`` lift a DEFAULT (prompt-for-everything) parent
 into a child that auto-accepts repo-wide writes with no human in the loop. The
-child cannot compensate: ``builtin/permission.py:861-866`` allows an
+child cannot compensate: ``builtin/permission.py:1276-1281`` allows an
 AUTO_ACCEPT in-cwd write in ``posture_decision``, which the gate asks BEFORE
-its headless branch at ``builtin/permission.py:1077-1080``, so the child-only
+its headless branch at ``builtin/permission.py:1492-1495``, so the child-only
 headless floor (``PermissionExtension.headless_default``) never runs for
 exactly the writes that matter. The posture the child is LAUNCHED with is
 therefore the real guarantee, and it is computed here, in the parent.

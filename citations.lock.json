@@ -1197,7 +1197,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1424-1424": [
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1678-1685": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1679-1686": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",
@@ -1207,13 +1207,13 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1791-1794": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1792-1795": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
    "only purpose was to let a cooperative child clean up."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1816-1818": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1817-1819": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
@@ -1695,7 +1695,19 @@
    "# The mis-permissioning is real but it is elsewhere, and it is the opposite",
    "# shape — not an unknown destructive NAME, but a KNOWN read-only name whose"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1022-1030": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1259-1260": [
+   "if mode == PermissionMode.YOLO:",
+   "return \"allow\""
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1276-1281": [
+   "if (",
+   "mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)",
+   "and provenance == \"write\"",
+   "and _is_auto_allowable_write(_path_from_args(args), cwd(), settings)",
+   "):",
+   "return \"allow\""
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1437-1445": [
    "# (b) PLAN mode blocks ALL mutating tools — even on the headless / print /",
    "# rpc path (this check is placed ABOVE the read-only short-circuit and",
    "# the ``not has_ui`` ALLOW branch so the plan-mode guarantee holds on",
@@ -1705,26 +1717,26 @@
    "return ToolCallResult(",
    "block=True, reason=_plan_block_reason(event.tool_name, provenance)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1027-1030": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1442-1445": [
    "if mode == PermissionMode.PLAN and is_mutating:",
    "return ToolCallResult(",
    "block=True, reason=_plan_block_reason(event.tool_name, provenance)",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1032-1036": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1447-1451": [
    "# (a) aelix's own read-only tools (and the bundled ``agent`` tool, whose",
    "# consent is ``aelix_agents``') are silently allowed in every mode; PLAN",
    "# handled above.",
    "if not is_mutating:",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1077-1080": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1492-1495": [
    "if not _has_approval_ui(ctx):",
    "if self.headless_default == \"block\":",
    "return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1082-1090": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1497-1505": [
    "# (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash / any tool aelix did",
    "# not build, outside YOLO) → the 4-option prompt.",
    "# Serialize prompts so parallel tool calls never race two modals.",
@@ -1734,10 +1746,10 @@
    "if self._is_session_allowed(rule_key):",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1085-1085": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1500-1500": [
    "async with self._lock:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1144-1170": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:1559-1585": [
    "shell = _resolve_shell(get_shell_env())",
    "dialect = dialect_for_shell(shell.path)",
    "",
@@ -1747,7 +1759,7 @@
    "# DENYs ``find . -delete``, ``chmod -R 777 /``,",
    "# ``mkfs.ext4 /dev/sda``, ``curl http://x | sh``,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:444-461": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:445-462": [
    "_SENSITIVE_BASENAMES = frozenset(",
    "{",
    "\".bashrc\",",
@@ -1757,25 +1769,13 @@
    "\".zprofile\",",
    "\".zshenv\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:491-493": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:492-494": [
    "_SENSITIVE_DIR_COMPONENTS = frozenset(",
    "{\".aelix\", \".agents\", \".ssh\", \".gnupg\", \"cron.d\", \"cron.daily\"}",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:523-523": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:524-524": [
    "if basename == \".env\" or basename.startswith(\".env.\"):"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:844-845": [
-   "if mode == PermissionMode.YOLO:",
-   "return \"allow\""
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:861-866": [
-   "if (",
-   "mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)",
-   "and provenance == \"write\"",
-   "and _is_auto_allowable_write(_path_from_args(args), cwd(), settings)",
-   "):",
-   "return \"allow\""
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission_mode.py:75-81": [
    "CYCLE_ORDER: tuple[PermissionMode, ...] = (",
