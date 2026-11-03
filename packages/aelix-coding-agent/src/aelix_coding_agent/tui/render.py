@@ -896,11 +896,12 @@ class EventRenderer:
         # message_start AND consumed by ``_render_turn_abort``. See that method
         # for why it is a bool rather than the message object.
         self._outcome_reported: bool = False
-        # #654 — between ``agent_start`` and ``agent_end``, and whether the abort
-        # line of that span has to say the input came back
-        # (:meth:`note_input_returned`).
+        # #654 — between ``agent_start`` and ``agent_end``; whether the abort line
+        # of that span has to say the input came back; and whether this run has
+        # said so (:meth:`note_input_returned`).
         self._agent_running: bool = False
         self._input_returned: bool = False
+        self._input_return_said: bool = False
         # #189 — the TEXT of the terminal-outcome line this renderer has already
         # committed for the message that just ended. Distinct from
         # ``_outcome_reported`` on purpose: that flag is CONSUMED by
@@ -1009,6 +1010,7 @@ class EventRenderer:
     def on_agent_event(self, event: AgentEvent) -> None:
         if event.type == "agent_start":
             self._agent_running = True
+            self._input_return_said = False
         elif event.type == "agent_end":
             self._agent_running = False
         elif event.type == "message_start":
@@ -1396,6 +1398,8 @@ class EventRenderer:
             return
         if already_reported:
             return
+        if returned:
+            self._input_return_said = True
         notice = f"✖ Operation aborted. {INPUT_RETURNED_NOTICE}" if returned else "✖ Operation aborted"
         self._commit(Text(notice, style="yellow"))
 
@@ -1404,12 +1408,16 @@ class EventRenderer:
 
         While the turn is open the abort line below says it, as one line. A withdraw
         after ``agent_end`` (the retry countdown, whose line is already out) has no
-        such line left to join.
+        such line left to join. Once per run: an Esc during the overflow summary comes
+        here for the queued lines and again for the withdrawn prompt.
         """
 
+        if self._input_return_said:
+            return
         if self._agent_running:
             self._input_returned = True
         else:
+            self._input_return_said = True
             self._commit(Text(INPUT_RETURNED_NOTICE, style="yellow"))
 
     def _thinking_tail_source(self, width: int) -> str:

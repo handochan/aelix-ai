@@ -572,6 +572,10 @@ class AelixChrome:
         # repeated identical paste REPLACES that placeholder with the raw text
         # (a true "reveal") instead of appending a second, still-expandable copy.
         self._last_placeholder: str | None = None
+        # #654 — the line last submitted from idle, until its turn ends: the text
+        # sent, the box as it read, and the paste entries that reading names. Apart
+        # from the registry, which submit empties (:meth:`give_back_text`).
+        self._submitted_line: tuple[str, str, dict[str, str]] | None = None
 
         # Modal overlays (dialogs / custom components) live as Floats over the
         # main content; the overlay manager appends/removes from this list. The
@@ -916,6 +920,11 @@ class AelixChrome:
             if submit_text.strip():
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(submit_text)
+                self._submitted_line = (
+                    submit_text,
+                    text,
+                    {p: d for p, d in self._paste_registry.items() if p in text},
+                )
             self._reset_paste_state()
             self._input_queue.put_nowait(submit_text)
 
@@ -1560,6 +1569,8 @@ class AelixChrome:
         # so a fast turn can't let a stale first-press count as the "second press".
         if running:
             self._last_ctrl_c = None
+        else:
+            self._submitted_line = None  # #654: its turn is over, nothing can withdraw it
         self.invalidate()
 
     def set_footer_line(self, text: str) -> None:
@@ -1668,12 +1679,21 @@ class AelixChrome:
     def give_back_text(self, texts: list[str]) -> None:
         """#654 (ADR-0286) — ``texts`` come back ahead of what the box holds.
 
-        A text as large as a collapsed paste shows as one, so a 200-line prompt does not
-        scroll the box away, and submit expands it byte for byte. What the box held keeps
-        its placeholders, which :meth:`set_editor_text` would drop.
+        The submitted line reads as it did when Enter went down, its words and placeholders
+        in place, or a long typed line as text. Any other text as large as a collapsed paste
+        (a queued line, whose box reading is gone) shows as one, so 200 lines do not scroll
+        the box away. Submit expands both byte for byte. What the box held keeps its
+        placeholders, which :meth:`set_editor_text` would drop.
         """
 
-        shown = [self._register_paste(t) if _should_collapse_paste(t) else t for t in texts]
+        submitted = self._submitted_line
+        shown: list[str] = []
+        for t in texts:
+            if submitted is not None and t == submitted[0]:
+                self._paste_registry.update(submitted[2])
+                shown.append(submitted[1])
+            else:
+                shown.append(self._register_paste(t) if _should_collapse_paste(t) else t)
         draft = self.buffer.text
         text = "\n\n".join([*shown, draft] if draft.strip() else shown)
         self.buffer.text = text

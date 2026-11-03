@@ -157,9 +157,14 @@ template prompt comes back as typed, not expanded: `_input_loop` keeps the raw l
 `harness.prompt`. Since these lines left the queues first, the event carries none of them and
 nothing arrives twice.
 
-Text as large as a collapsed paste (`_should_collapse_paste`) comes back as one, through
-`_register_paste`, Alt+Up included, so a 200-line prompt does not scroll the box away; submit
-expands it byte for byte, and a draft keeps its placeholders.
+The line submitted from the box comes back as the box read when Enter went down. `_accept`
+keeps that reading and the paste entries it names beside the registry until the turn ends,
+and `give_back_text` restores them for a text equal to the line: words typed around a paste
+stay visible with the placeholder in its place, a long typed line stays text, and a `/skill:`
+line is the same case. Any other text as large as a collapsed paste (`_should_collapse_paste`),
+a queued line, Alt+Up's or an extension's, has no such reading and comes back as one
+placeholder through `_register_paste`, typed words inside it. Submit expands both byte for
+byte, and a draft keeps its placeholders.
 
 An abort's give-back stamps the chrome. Within `_CTRL_C_EXIT_WINDOW` (2 s) of it, Ctrl+C on an
 idle box does nothing rather than clear it, so a double press that outlasts the abort keeps
@@ -168,8 +173,10 @@ Alt+Up is a key pressed on purpose and does not stamp.
 
 The abort line gains the fact, once: `✖ Operation aborted. Your message is back in the
 input; the model will not see it.` The countdown has no such line left to join, so the same
-sentence follows `Retry failed: Retry cancelled`, printed by the event. The user's block stays
-in scrollback.
+sentence follows `Retry failed: Retry cancelled`, printed by the event. A latch in
+`note_input_returned`, reset on `agent_start`, holds it to once per run: an Esc during the
+overflow summary reaches it for the queued lines and again for the withdrawn prompt. The user's
+block stays in scrollback.
 
 ### 7. `/clone` asks the path
 
@@ -216,19 +223,29 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
     synchronous `append_file` and cannot reach it (`session/session.py:330`).
 12. **The aborted marker counts in stats.** `/session` and RPC stats count the empty in-memory
     marker until the session is reopened, so `messages` can read one more than the path holds.
+13. **An Esc during an overflow summary does not interrupt it (#347).** The spinner stays and
+    the text returns when the summary does; an Esc in a hook before it still spends the call.
+14. **The countdown with nothing withdrawn says nothing.** Queued lines given back there print
+    no sentence; they just appear in the box.
+15. **A Ctrl+C on text typed within the 2 s window does nothing,** and shows nothing.
 
 ## Verification
 
 Regression: 58 cases in the harness file (every row of §1, with and without a session,
-checking next request, live state, reopened JSONL and queue), 17 in the TUI file, 3 in the RPC
+checking next request, live state, reopened JSONL and queue), 26 in the TUI file, 3 in the RPC
 file, 2 more in `tests/cli/test_session_start_model_413.py` for §7, on Python 3.11, 3.12 and
 3.14. The event-name gates went from 37 names to 38. Thirty mutations of the first pass each
 fail a test; three survived that pass and got one (a failed answer alone is not input, a
 replaced follow-up, a turn nobody typed). Twenty-four more for review round 1 each fail a test;
-one survived (queued lines after a barrier said too late) and got one.
+one survived (queued lines after a barrier said too late) and got one. Ten for round 2 each fail
+a test; one survived (the abort line not counting as having said it) and got one.
+
+The evidence stays local and untracked, as ADR-0258's `.omc/probes/320/` does, so a fresh clone
+does not have it: under `.omc/probes/654/`, `impl-evidence/`, `fix-r1/`, `verify-r1/`, `verify-r2/`
+and `fix-r2/`, with the Codex probes in `.omc/specs/654-codex-probes/`.
 
 Live on OpenRouter `openai/gpt-4o-mini`, the real TUI in a pty, a scratch cwd and an isolated
-agent dir (`/tmp/654-impl/`):
+agent dir (`.omc/probes/654/impl-evidence/`):
 
 - Esc mid-stream after `The secret word is PINEAPPLE…`: the text came back in the input and
   the notice printed. Asked `What secret word did I give you? Reply NONE if none.` the model
@@ -245,7 +262,7 @@ agent dir (`/tmp/654-impl/`):
   model), Esc in the countdown printed `Retry failed: Retry cancelled`, then the sentence, with
   the line back in the box.
 
-Review round 1, the same way, under `/tmp/654-fix-r1/`:
+Review round 1, the same way, under `.omc/probes/654/fix-r1/`:
 
 - A double Ctrl+C mid-stream on `openai/gpt-4o-mini`, 150 ms apart, and two more presses after
   the abort had ended: the text stayed in the box, no exit hint. Past the window Ctrl+C cleared
@@ -261,3 +278,13 @@ Review round 1, the same way, under `/tmp/654-fix-r1/`:
   lines and a draft: the box read prompt, steer, follow-up, draft, the footer lost its `2 queued`,
   the notice printed once, and the next request held only the next line. A double press in the
   countdown kept the text.
+
+Review round 2, the same way, under `.omc/probes/654/fix-r2/`:
+
+- Words around a 200-line paste on `openai/gpt-4o-mini`, `앞에 친 글: [Pasted text #1 +200 lines] 뒤
+  끝 …`, Esc mid-stream, the abort line about a second later with the answer still running: the
+  box read as it had, nothing stayed on the path, and the resubmitted message in the session
+  JSONL was byte-equal (6552 characters). A typed line of 1340 characters came back as text.
+- Against a local server: an overflow, the summary held, a steer and a follow-up queued, Esc, the
+  summary released. The sentence printed once, with no compaction entry, and the next run's Esc
+  printed it again for that run.

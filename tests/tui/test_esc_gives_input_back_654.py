@@ -15,7 +15,13 @@ from typing import Any
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.harness.prompt_templates import PromptTemplate
-from aelix_agent_core.session import MemorySessionStorage, Session
+from aelix_agent_core.session import (
+    CompactionPreparation,
+    CompactResult,
+    MemorySessionStorage,
+    Session,
+)
+from aelix_agent_core.types import AgentEndEvent, AgentStartEvent, TurnEndEvent
 from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 from aelix_ai.streaming import (
     AssistantEndEvent,
@@ -24,7 +30,7 @@ from aelix_ai.streaming import (
     SimpleStreamOptions,
 )
 from aelix_coding_agent.tui.chrome import AelixChrome
-from aelix_coding_agent.tui.render import INPUT_RETURNED_NOTICE
+from aelix_coding_agent.tui.render import INPUT_RETURNED_NOTICE, EventRenderer
 from aelix_coding_agent.tui.shell import run_tui
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input.defaults import create_pipe_input
@@ -39,7 +45,8 @@ _NOTICE = f"✖ Operation aborted. {INPUT_RETURNED_NOTICE}"
 
 
 class _Provider:
-    """``hang`` holds the request open, ``failed`` is a retryable error."""
+    """``hang`` holds the request open, ``failed`` is a retryable error, ``overflow`` a
+    context overflow."""
 
     def __init__(self, *script: str) -> None:
         self.script = list(script)
@@ -61,24 +68,29 @@ class _Provider:
         if step == "hang":
             self.reached.set()
             await asyncio.Event().wait()
-        if step == "failed":
+        if step in ("failed", "overflow"):
             yield AssistantErrorEvent(
                 reason="error",
                 error=AssistantMessage(
                     stop_reason="error",
-                    error_message="overloaded_error: provider returned error",
+                    error_message=(
+                        "overloaded_error: provider returned error"
+                        if step == "failed"
+                        else "prompt is too long: 213462 tokens > 200000 maximum"
+                    ),
                 ),
             )
             return
         yield AssistantEndEvent(message=AssistantMessage(content=[TextContent(text="answer")]))
 
 
-def _real_harness(provider: _Provider) -> AgentHarness:
+def _real_harness(provider: _Provider, **options: Any) -> AgentHarness:
     harness = AgentHarness(
         AgentHarnessOptions(
             stream_fn=provider,
             session=Session(MemorySessionStorage()),
             model=Model(id="mock", provider="mock", api="mock"),
+            **options,
         )
     )
     harness.state.auto_retry_enabled = False
@@ -87,9 +99,9 @@ def _real_harness(provider: _Provider) -> AgentHarness:
 
 
 class _Tui:
-    def __init__(self, provider: _Provider, *, signals: bool = False) -> None:
+    def __init__(self, provider: _Provider, *, signals: bool = False, **options: Any) -> None:
         self.provider = provider
-        self.harness = _real_harness(provider)
+        self.harness = _real_harness(provider, **options)
         self.signals = signals
         self.now = 0.0  # the chrome's clock: only a test moves it
 
@@ -365,7 +377,7 @@ async def test_a_large_paste_comes_back_collapsed_and_resubmits_byte_equal() -> 
         await tui.send_until_request("")
         assert provider.seen[-1] == [_BIG]
         tui.pipe.send_text(_CTRL_C)
-        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #2 +200 lines]")
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #1 +200 lines]")
         assert tui.chrome.get_editor_text() == _BIG
         await _wait(tui.idle)
 
@@ -409,3 +421,197 @@ async def test_alt_up_brings_a_large_line_back_collapsed_and_ctrl_c_still_clears
         assert tui.chrome.get_editor_text() == _BIG
         tui.pipe.send_text(_CTRL_C)
         await tui.editor_reads("")
+
+
+_TYPED_AROUND = "앞에 친 글: [Pasted text #1 +200 lines] 뒤 끝"
+_SENT_AROUND = f"앞에 친 글: {_BIG} 뒤 끝"
+
+
+def _type_around_the_paste(tui: _Tui) -> None:
+    tui.pipe.send_text("앞에 친 글: ")
+    _paste(tui, _BIG)
+    tui.pipe.send_text(" 뒤 끝")
+
+
+async def test_words_typed_around_a_large_paste_come_back_visible_and_resubmit_byte_equal() -> None:
+    provider = _Provider("hang", "hang", "answer")
+    async with _Tui(provider) as tui:
+        _type_around_the_paste(tui)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        await tui.send_until_request("")
+        assert provider.seen[-1] == [_SENT_AROUND]
+
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        assert tui.chrome.get_editor_text() == _SENT_AROUND
+        await _wait(tui.idle)
+
+        # And again: what came back is a submitted line like any other.
+        tui.pipe.send_text("\n")
+        await _wait(lambda: len(provider.seen) == 2)
+        assert provider.seen[-1] == [_SENT_AROUND]
+        await _wait(lambda: tui.chrome.buffer.text == "")
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        await _wait(tui.idle)
+
+        tui.pipe.send_text("\n")
+        await _wait(lambda: len(provider.seen) == 3)
+        assert provider.seen[-1] == [_SENT_AROUND]
+        await _wait(tui.idle)
+        assert tui.chrome.buffer.text == ""
+
+
+async def test_a_long_typed_line_comes_back_as_text_not_collapsed() -> None:
+    long_line = "typed by hand " * 100
+    assert len(long_line) >= 1000
+    async with _Tui(_Provider("hang")) as tui:
+        await tui.send_until_request(long_line)
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == long_line)
+        assert tui.chrome.get_editor_text() == long_line
+        await _wait(tui.idle)
+
+
+async def test_a_template_line_with_a_paste_comes_back_as_it_was_typed() -> None:
+    provider = _Provider("hang")
+    async with _Tui(provider) as tui:
+        tui.harness.set_prompt_templates([PromptTemplate(name="tpl", content="EXPANDED $1")])
+        tui.pipe.send_text("/tpl ")
+        _paste(tui, _BIG)
+        await _wait(lambda: tui.chrome.buffer.text == "/tpl [Pasted text #1 +200 lines]")
+        await tui.send_until_request("")
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == "/tpl [Pasted text #1 +200 lines]")
+        assert tui.chrome.get_editor_text() == f"/tpl {_BIG}"
+        await _wait(tui.idle)
+
+
+async def test_an_empty_enter_during_the_turn_does_not_lose_how_the_line_read() -> None:
+    async with _Tui(_Provider("hang")) as tui:
+        _type_around_the_paste(tui)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        await tui.send_until_request("")
+        tui.pipe.send_text("\n")  # an empty line: not a steer, it joins the input queue
+        await asyncio.sleep(0.05)
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        await _wait(tui.idle)
+
+
+async def test_a_turn_that_finished_leaves_nothing_behind_and_alt_up_collapses_as_ever() -> None:
+    provider = _Provider("answer")
+    async with _Tui(provider) as tui:
+        _type_around_the_paste(tui)
+        await _wait(lambda: tui.chrome.buffer.text == _TYPED_AROUND)
+        tui.pipe.send_text("\n")
+        await _wait(lambda: len(provider.seen) == 1)
+        await _wait(tui.idle)
+        assert tui.chrome._paste_registry == {}
+
+        # The same bytes, queued: how the finished line read is not theirs to take.
+        await tui.harness.steer(_SENT_AROUND)
+        tui.pipe.send_text(_ALT_UP)
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #2 +200 lines]")
+        assert tui.chrome.get_editor_text() == _SENT_AROUND
+
+
+async def test_a_cancelled_turn_restores_only_the_entries_its_line_names() -> None:
+    """A paste deleted before Enter stays gone, even with a placeholder left in the box."""
+
+    async with _Tui(_Provider("hang")) as tui:
+        _paste(tui, "\n".join(f"deleted {i}" for i in range(8)))
+        await _wait(lambda: tui.chrome.buffer.text == "[Pasted text #1 +8 lines]")
+        tui.chrome.buffer.text = "kept "
+        tui.chrome.buffer.cursor_position = len("kept ")
+        _paste(tui, _BIG)
+        await _wait(lambda: tui.chrome.buffer.text == "kept [Pasted text #2 +200 lines]")
+        await tui.send_until_request("")
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: tui.chrome.buffer.text == "kept [Pasted text #2 +200 lines]")
+        assert list(tui.chrome._paste_registry) == ["[Pasted text #2 +200 lines]"]
+        await _wait(tui.idle)
+
+
+async def test_esc_during_the_overflow_summary_says_the_input_is_back_once_per_run() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def summarise(_model: Any, prep: CompactionPreparation, _ci: Any) -> CompactResult:
+        entered.set()
+        await release.wait()
+        return CompactResult(
+            summary="SUMMARY", first_kept_entry_id=prep.first_kept_entry_id, tokens_before=99
+        )
+
+    provider = _Provider("overflow", "hang")
+    async with _Tui(provider, _summarizer_override=summarise) as tui:
+        session = tui.harness.session
+        assert session is not None
+        for _ in range(6):
+            await session.append_message(UserMessage(content=[TextContent(text="x" * 30_000)]))
+        tui.harness.state.auto_compaction_enabled = True
+        tui.harness.state.model = Model(
+            id="m", provider="p", api="unknown", context_window=200_000, max_tokens=4096
+        )
+
+        tui.pipe.send_text("the prompt\n")
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        tui.pipe.send_text("a queued steer\n")
+        await _wait(lambda: len(tui.harness._steering_queue._messages) == 1)
+        tui.pipe.send_text(_CTRL_C)
+        await tui.editor_reads("a queued steer")
+        assert tui.commits.count(INPUT_RETURNED_NOTICE) == 1, "the queued lines are back"
+
+        release.set()
+        await tui.editor_reads("the prompt\n\na queued steer")
+        await _wait(tui.idle)
+        assert tui.commits.count(INPUT_RETURNED_NOTICE) == 1, "the prompt is the same fact"
+
+        # A new run says it for itself.
+        tui.chrome.set_editor_text("")
+        await tui.send_until_request("the next line")
+        tui.pipe.send_text(_CTRL_C)
+        await _wait(lambda: _NOTICE in tui.commits)
+        await tui.editor_reads("the next line")
+        await _wait(tui.idle)
+        assert tui.commits.count(_NOTICE) == 1
+
+
+def _renderer() -> tuple[EventRenderer, list[str]]:
+    commits: list[Any] = []
+    renderer = EventRenderer(commit=commits.append, set_tail=lambda _t: None, width=100)
+    return renderer, commits
+
+
+def _said(commits: list[Any]) -> int:
+    return sum(INPUT_RETURNED_NOTICE in getattr(c, "plain", "") for c in commits)
+
+
+def test_an_abort_line_that_said_it_speaks_for_the_whole_run() -> None:
+    renderer, commits = _renderer()
+    renderer.on_agent_event(AgentStartEvent())
+    renderer.note_input_returned()
+    renderer.on_agent_event(
+        TurnEndEvent(message=AssistantMessage(stop_reason="aborted"), tool_results=[])
+    )
+    assert _said(commits) == 1
+    renderer.note_input_returned()  # still inside the run: no stale flag for the next one
+    renderer.on_agent_event(AgentEndEvent(messages=[]))
+    renderer.note_input_returned()
+    assert _said(commits) == 1
+
+
+def test_a_turn_that_ended_without_the_line_has_not_said_it() -> None:
+    """The latch stands for words on the screen, not for having been asked."""
+
+    renderer, commits = _renderer()
+    renderer.on_agent_event(AgentStartEvent())
+    renderer.note_input_returned()
+    renderer.on_agent_event(
+        TurnEndEvent(message=AssistantMessage(stop_reason="stop"), tool_results=[])
+    )
+    assert _said(commits) == 0
+    renderer.on_agent_event(AgentEndEvent(messages=[]))
+    renderer.note_input_returned()
+    assert _said(commits) == 1
