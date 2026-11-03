@@ -101,7 +101,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:85``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_tiers`` (``entry.py:1549``).
+    same convention as ``_resolve_skill_tiers`` (``entry.py:1550``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"

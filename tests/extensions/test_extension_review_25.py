@@ -47,6 +47,7 @@ from aelix_coding_agent.core.extension_selection import (
     set_launch_extension_off,
     without_hidden,
 )
+from aelix_coding_agent.core.resource_filter import Scope
 from aelix_coding_agent.core.resource_selection import ResourceSelection
 from aelix_coding_agent.extensions import loader
 
@@ -181,13 +182,22 @@ async def test_a_pyproject_package_is_named_by_its_directory(home: Path) -> None
     mark = home / "imported"
     (bundle / "pyproject.toml").write_text('[tool.aelix]\nextensions = ["worker.py"]\n')
     (bundle / "worker.py").write_text(SENTINEL_BODY.format(mark=str(mark)))
-    for entry in ("-bundle", "-extensions/bundle", "-worker", "-extensions/bundle/worker.py"):
+    spellings = (
+        "-bundle",
+        "-extensions/bundle",
+        "-worker",
+        "-extensions/bundle/worker.py",
+        # Round-1 verify R7: the label the panel shows, typed as it reads.
+        "-bundle/worker.py",
+    )
+    for entry in spellings:
         loaded = await _discover(home, agent, [entry])
         (record,) = loaded.discovered
         info = describe_record(record)
-        assert info.identities == ("bundle", "worker") and info.label == "bundle/worker.py"
+        assert info.identities == ("bundle", "worker", "bundle/worker.py")
+        assert info.label == "bundle/worker.py"
         assert not record.selected and not mark.exists(), entry
-        # No "names no extension" warning for any of the four spellings.
+        # No "names no extension" warning for any of the five spellings.
         lists = _lists([entry], global_base=str(agent))
         assert list_warnings(lists, loaded.discovered, check_names=True) == []
     on = await _discover(home, agent, [])
@@ -365,6 +375,11 @@ async def test_one_of_two_same_name_rows_is_written_by_its_path(home: Path) -> N
     labels = display_labels(inventory.rows)
     assert sorted(labels.values()) == ["weather.py (global)", "weather.py (project)"]
     keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
+    # The global row cannot be named by a path in the project's file, and
+    # ``-weather`` would turn the project row off too: refused, nothing written.
+    refused = await selection.save(kind, "project", {keys["weather.py (global)"]: False})
+    assert not refused.ok and "save it to Global" in (refused.error or "")
+    assert storage.project_content is None
     result = await selection.save(kind, "project", {keys["weather.py (project)"]: False})
     assert result.ok, result.error
     assert json.loads(storage.project_content or "{}")["extensions"] == ["-extensions/weather.py"]
@@ -372,9 +387,6 @@ async def test_one_of_two_same_name_rows_is_written_by_its_path(home: Path) -> N
     assert result.changed == (("weather.py (project)", False),)
     saved = {s.item.label: s.saved for s in selection.snapshot(kind).states}
     assert saved["weather.py (project)"] is False and saved["weather.py (global)"] is True
-    # The global row cannot be named by a path in the project's file: refused, nothing written.
-    refused = await selection.save(kind, "project", {keys["weather.py (global)"]: False})
-    assert not refused.ok and "save it to Global" in (refused.error or "")
     global_save = await selection.save(kind, "global", {keys["weather.py (global)"]: False})
     assert global_save.ok
     assert json.loads(storage.global_content or "{}")["extensions"] == ["-extensions/weather.py"]
@@ -393,26 +405,146 @@ async def test_tool_placeholders_tell_two_same_name_extensions_apart(home: Path)
     assert labels == ["weather.py (global)", "weather.py (project)"]
 
 
+_TOOL_BODY = (
+    "from aelix_agent_core.types import AgentTool\n"
+    "def setup(aelix):\n"
+    "    aelix.register_tool(AgentTool(name={name!r}, description='x'))\n"
+)
+
+
+async def test_tool_groups_tell_two_same_name_extensions_that_are_on_apart(home: Path) -> None:
+    """Round-1 verify R6: two groups were both titled ``EXTENSION  weather.py``."""
+
+    from aelix_coding_agent.core.extension_selection import tool_group_tiers
+    from aelix_coding_agent.core.tool_selection import ToolKind
+
+    agent = home / "agent"
+    (agent / "extensions").mkdir(parents=True)
+    (agent / "extensions" / "weather.py").write_text(_TOOL_BODY.format(name="forecast"))
+    (agent / "extensions" / "lint.py").write_text(_TOOL_BODY.format(name="lint"))
+    (home / ".aelix" / "extensions").mkdir(parents=True)
+    (home / ".aelix" / "extensions" / "weather.py").write_text(_TOOL_BODY.format(name="radar"))
+    loaded = await _discover(home, agent, [])
+    inventory = build_inventory(loaded)
+    tools = [t for ext in loaded.extensions for t in ext.tools.values()]
+    harness = SimpleNamespace(
+        extension_runner=SimpleNamespace(extensions=loaded.extensions),
+        state=SimpleNamespace(tools=tools),
+    )
+    kind = ToolKind(
+        harness=lambda: harness,
+        builtin=frozenset(),
+        extension_tiers=lambda: tool_group_tiers(inventory),
+    )
+    titles = {i.key: i.group_label for i in kind.items()}
+    assert titles["forecast"] == "EXTENSION  weather.py (global)"
+    assert titles["radar"] == "EXTENSION  weather.py (project)"
+    # A name no other extension has keeps its title as it was.
+    assert titles["lint"] == "EXTENSION  lint.py"
+
+
 async def test_turning_one_back_on_keeps_the_other_off(home: Path) -> None:
     _inventory, kind, selection, storage = await _shared_name(home)
     storage.with_lock("project", lambda _current: json.dumps({"extensions": ["-weather"]}))
     keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
     project, global_ = keys["weather.py (project)"], keys["weather.py (global)"]
     # Dropping ``-weather`` would turn the global one on too, and this file
-    # cannot name it alone: refused, and it says what to do.
+    # cannot name it alone: refused, and it names the entry to add by hand —
+    # the panel cannot write it, as the global row already reads off (R2).
     refused = await selection.save(kind, "project", {project: True})
     assert not refused.ok
-    assert "would also turn weather.py (global) on" in (refused.error or "")
-    assert "keep it off in Global first" in (refused.error or "")
+    assert (refused.error or "").startswith(
+        'add "-extensions/weather.py" to the global settings, then save again — '
+    )
+    assert "would also turn weather.py (global) on, which only that file" in (refused.error or "")
     assert json.loads(storage.project_content or "{}")["extensions"] == ["-weather"]
     # Done that way, each save changes its own row and nothing else.
-    first = await selection.save(kind, "global", {global_: False})
-    assert first.ok and first.changed == ()
+    storage.with_lock("global", lambda _c: json.dumps({"extensions": ["-extensions/weather.py"]}))
+    assert {s.item.key: s.saved for s in selection.snapshot(kind).states}[global_] is False
     second = await selection.save(kind, "project", {project: True})
     assert second.ok, second.error
     assert second.changed == (("weather.py (project)", True),)
     saved = {s.item.label: s.saved for s in selection.snapshot(kind).states}
     assert saved["weather.py (project)"] is True and saved["weather.py (global)"] is False
+
+
+async def _shared_name_on_disk(home: Path) -> tuple[ExtensionKind, ResourceSelection, Path]:
+    agent = home / "agent"
+    (agent / "extensions").mkdir(parents=True)
+    (agent / "extensions" / "weather.py").write_text("def setup(aelix):\n    pass\n")
+    (home / ".aelix" / "extensions").mkdir(parents=True)
+    (home / ".aelix" / "extensions" / "weather.py").write_text("def setup(aelix):\n    pass\n")
+    inventory = build_inventory(await _discover(home, agent, []))
+    manager = SettingsManager.create(cwd=str(home), agent_dir=agent, project_trusted=True)
+    kind = ExtensionKind(inventory=lambda: inventory, cwd=str(home), agent_dir=str(agent))
+    selection = ResourceSelection(
+        manager, global_base=str(agent), project_base=str(home / ".aelix"), project_trusted=True
+    )
+    return kind, selection, agent
+
+
+def _saved(kind: ExtensionKind, selection: ResourceSelection) -> dict[str, bool]:
+    return {s.item.label: s.saved for s in selection.snapshot(kind).states if s.item.path}
+
+
+@pytest.mark.parametrize("scope", ["global", "project"])
+async def test_a_refused_shared_name_names_the_entry_and_file_to_add_by_hand(
+    home: Path, scope: Scope
+) -> None:
+    """Round-1 verify R2: "keep it off in This project first" asked for what the panel cannot do.
+
+    A hand-written ``-weather`` keeps both rows off. Turning this file's row
+    back on would turn the other one on too; the other row already reads off,
+    so the panel has no edit to save there. The refusal names the entry and
+    the file, and with that entry added by hand the same save goes through.
+    """
+
+    kind, selection, agent = await _shared_name_on_disk(home)
+    own, other = (agent, home / ".aelix") if scope == "global" else (home / ".aelix", agent)
+    (own / "settings.json").write_text(json.dumps({"extensions": ["-weather"]}))
+    keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
+    mine = f"weather.py ({scope})"
+    theirs = "weather.py (project)" if scope == "global" else "weather.py (global)"
+    refused = await selection.save(kind, scope, {keys[mine]: True})
+    # The other file as the panel shows a path: from this folder, else from ~.
+    where = ".aelix/settings.json" if scope == "global" else "agent/settings.json"
+    assert refused.error == (
+        f'add "-extensions/weather.py" to {where}, then save again — turning '
+        f"{mine} on would also turn {theirs} on, which only that file can name"
+    )
+    assert not (other / "settings.json").exists()
+    # As it says: the entry by hand, then the same save.
+    (other / "settings.json").write_text(json.dumps({"extensions": ["-extensions/weather.py"]}))
+    again = await selection.save(kind, scope, {keys[mine]: True})
+    assert again.ok, again.error
+    assert again.changed == ((mine, True),)
+    assert _saved(kind, selection) == {mine: True, theirs: False}
+
+
+@pytest.mark.parametrize("scope", ["global", "project"])
+@pytest.mark.parametrize("first", ["global", "project"])
+async def test_both_same_name_rows_off_in_one_save_write_the_shared_name(
+    home: Path, scope: Scope, first: str
+) -> None:
+    """Round-1 verify R3: both rows off in one save to Global was refused; ``-weather`` is the intent.
+
+    In either toggle order: the save makes this file's own row's edit first.
+    """
+
+    kind, selection, agent = await _shared_name_on_disk(home)
+    keys = {s.item.label: s.item.key for s in selection.snapshot(kind).states}
+    second = "project" if first == "global" else "global"
+    edits = {keys[f"weather.py ({first})"]: False, keys[f"weather.py ({second})"]: False}
+    result = await selection.save(kind, scope, edits)
+    assert result.ok, result.error
+    path = agent / "settings.json" if scope == "global" else home / ".aelix" / "settings.json"
+    assert json.loads(path.read_text())["extensions"] == ["-extensions/weather.py", "-weather"]
+    assert _saved(kind, selection) == {"weather.py (global)": False, "weather.py (project)": False}
+    # The other file's row alone still moves this file's row: still refused.
+    other: Scope = "project" if scope == "global" else "global"
+    path.unlink()
+    alone = await selection.save(kind, scope, {keys[f"weather.py ({other})"]: False})
+    assert not alone.ok and "shares its name with another extension" in (alone.error or "")
 
 
 async def test_a_same_file_entry_naming_two_rows_is_replaced_by_one_naming_the_other(

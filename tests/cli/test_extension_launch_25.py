@@ -263,3 +263,70 @@ async def test_load_errors_are_not_printed_under_the_tui(
     assert "Warning: extension load:" not in await build(
         app_mode="interactive", quiet_load_errors=True
     )
+
+
+async def test_a_new_session_under_the_tui_does_not_print_load_errors(
+    agent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round-1 verify R4: the call site's ``quiet_load_errors=…`` had no test.
+
+    The launch build prints, before the TUI draws; a ``/new`` once it is up
+    rebuilds through the same factory and commits its line instead.
+    """
+
+    (agent / "extensions" / "broken.py").write_text(
+        "def setup(aelix):\n    raise RuntimeError('boom')\n"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "stdin", _TTYStdin())
+    seen: dict[str, str] = {}
+
+    async def _stub_run_tui(runtime: Any, **_kw: Any) -> int:
+        seen["launch"] = capsys.readouterr().err
+        await runtime.new_session()
+        seen["new"] = capsys.readouterr().err
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+    # A session on disk (under the sandboxed agent directory): ``/new`` needs its cwd.
+    code = await entry_mod._async_main([])
+    assert code == 0
+    assert seen["launch"].count("Warning: extension load:") == 1
+    assert "Warning: extension load:" not in seen["new"]
+
+
+async def test_tool_groups_of_two_same_name_extensions_carry_their_tier(
+    agent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-1 verify R6, where ``_async_main`` builds ``/tool``'s kind."""
+
+    body = (
+        "from aelix_agent_core.types import AgentTool\n"
+        "def setup(aelix):\n"
+        "    aelix.register_tool(AgentTool(name={name!r}, description='x'))\n"
+    )
+    (agent / "extensions" / "weather.py").write_text(body.format(name="forecast"))
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "weather.py").write_text(body.format(name="radar"))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(sys, "stdin", _TTYStdin())
+    seen: dict[str, str] = {}
+
+    async def _stub_run_tui(runtime: Any, **kw: Any) -> int:
+        seen.update({i.key: i.group_label for i in kw["tool_control"].kind.items()})
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+    code = await entry_mod._async_main(["--no-session", "-e", str(other / "weather.py")])
+    assert code == 0
+    assert seen["forecast"] == "EXTENSION  weather.py (global)"
+    assert seen["radar"] == "EXTENSION  weather.py (cli)"

@@ -229,6 +229,58 @@ async def test_a_new_session_says_what_failed_to_load_below_its_banner() -> None
     assert "✖ broken.py failed to load: RuntimeError: boom (see /extension)" in entry
 
 
+async def test_a_resumed_session_says_what_failed_to_load_below_its_banner() -> None:
+    """Round-1 verify R1: ``/resume`` committed its banner and nothing else."""
+
+    from tests.tui.test_run_tui_smoke import (
+        _ResumeMeta,
+        _ResumeRepo,
+        _ResumeRuntime,
+        _ResumeSession,
+    )
+
+    holder: dict[str, Any] = {
+        "inventory": ExtensionInventory(
+            (_row("broken.py", loaded=False, error="RuntimeError: boom"),)
+        )
+    }
+    repo = _ResumeRepo(
+        [
+            _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-11-03T15:00"),
+            _ResumeMeta("bbbbbbbb", "/s/target.jsonl", "2026-11-03T14:00"),
+        ]
+    )
+    async with _harness_chrome() as (base, chrome, pipe):
+        runtime = _ResumeRuntime(
+            base.harness,
+            repo,
+            _ResumeSession("/s/active.jsonl", []),
+            target=_ResumeSession("/s/target.jsonl", []),
+        )
+        commits = _spy_commits(chrome)
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+                model_registry=_Registry(),  # type: ignore[arg-type]
+                extension_control=_control(holder),
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/resume\n")
+        await _wait(lambda: chrome.is_modal_open(), what="the /resume picker to mount")
+        pipe.send_text("\r")
+        await _wait(lambda: any("failed to load" in c for c in commits))
+        pipe.send_text("/quit\n")
+        await _quit_within(task)
+    resumed = next(i for i, c in enumerate(commits) if c.startswith("↻ Resumed session"))
+    [entry] = [c for c in commits[resumed + 1 :] if "failed to load" in c]
+    assert entry.startswith("Extensions in this session:")
+    assert "✖ broken.py failed to load: RuntimeError: boom (see /extension)" in entry
+
+
 async def test_extension_opens_over_the_live_lists_not_copies(
     monkeypatch: Any,
 ) -> None:

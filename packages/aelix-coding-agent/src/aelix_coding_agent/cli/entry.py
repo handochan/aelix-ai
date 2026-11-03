@@ -100,6 +100,7 @@ from aelix_coding_agent.core.extension_selection import (
     listing_inventory,
     mcp_launch,
     set_launch_extension_off,
+    tool_group_tiers,
     tool_rows,
 )
 from aelix_coding_agent.core.prompt_selection import PromptCatalog, load_prompt_catalog
@@ -4948,8 +4949,10 @@ async def _async_main(argv: list[str]) -> int:
                     mcp_statuses=lambda: runtime_statuses(mcp_manager),
                     extension_errors=lambda: list(discovered_extension_errors),
                     # #25 — an extension the settings turn off: one locked
-                    # placeholder in its own group, pointing at /extension.
+                    # placeholder in its own group, pointing at /extension; and
+                    # the tier of one whose name another shares, on its title.
                     extra_rows=lambda: tool_rows(extension_holder.get("inventory")),
+                    extension_tiers=lambda: tool_group_tiers(extension_holder.get("inventory")),
                 ),
             )
             # #25 (ADR-0284) — /extension's Installed tab: the same service

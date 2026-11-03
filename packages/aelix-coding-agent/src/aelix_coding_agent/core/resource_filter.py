@@ -103,6 +103,8 @@ class ScopeList:
     present: bool = True
     """Whether the file has the key at all. Only a set-level grammar (``defaultTools``,
     #510) tells an absent key from an empty list; for D1's lists both say nothing."""
+    path: str | None = None
+    """The file itself, for a refusal that asks for an entry there (#25 review R2)."""
 
 
 def split_entry(entry: str) -> tuple[str, str]:

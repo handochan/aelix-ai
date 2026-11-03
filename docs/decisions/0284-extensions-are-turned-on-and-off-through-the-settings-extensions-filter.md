@@ -69,7 +69,7 @@ what the panel writes (`core/extension_selection.py` `describe`):
 | a manifest-less entry point | its name, its distribution name |
 | a legacy `.py` file | its stem (`weather` for `weather.py`) |
 | a package directory (`__init__.py`) | the directory name |
-| a file a `pyproject.toml` package declares (`[tool.aelix] extensions`) | the package directory's name, then the file's stem; its row reads `bundle/worker.py` |
+| a file a `pyproject.toml` package declares (`[tool.aelix] extensions`) | the package directory's name, then the file's stem, then its row's label `bundle/worker.py` (round-1 verify R7: the label as it reads named nothing) |
 | a built-in | `builtin:guardrail`, `builtin:permission`, `builtin:status`, `builtin:agents` |
 
 An installed pack that the directory tier also finds — a symlink in
@@ -91,13 +91,21 @@ was already `/` on both sides): NTFS names are, and
 The panel writes the first identity **no other row has** (verify V2:
 `ExtensionGrammar`). A global and a project `weather.py` are both `weather`,
 and writing `-weather` for one turned both off; it writes the row's path form
-then, which reaches only its own file's scope (ADR-0279 D2), and a save to the
-other file is refused with which file can name it. When an edit drops an entry
+then, which reaches only its own file's scope (ADR-0279 D2). A save to the
+other file writes the name they share when that moves no other row — both rows
+off in one save is `-weather` (round-1 verify R3; a save makes its own file's
+rows' edits first, so the order they were toggled in does not matter) — and is
+refused otherwise, with which file can name it. When an edit drops an entry
 that also named another row (`-weather`, turning one back on), an entry naming
-that row alone keeps its value, or the save is refused and says where to keep
-it first; no other row's saved value moves. Rows that share a label are shown
-with their tier (`weather.py (project)`), in the list, the save summary and
-`/reload`'s line.
+that row alone keeps its value; when only the other file can name it, the save
+is refused and names the entry to add there by hand — `add
+"-extensions/weather.py" to .aelix/settings.json, then save again — turning
+weather.py (global) on would also turn weather.py (project) on, which only
+that file can name` — because the panel cannot write it (R2): that row already
+reads off there, so it has no edit to save. Action first, as #510's refusals
+are; at 50 columns it wraps whole into the four rows a refusal gets. No other row's saved value moves. Rows that share a
+label are shown with their tier (`weather.py (project)`), in the list, the save
+summary, `/reload`'s line and `/tool`'s group titles (R6).
 
 ### D2. Two phases, every loader (ADR-0279 C5)
 
@@ -248,7 +256,7 @@ over `ExtensionKind`, embedded in `tabbed` (`AelixTUIContext._tabbed_interactive
   whose plugin is off reads `connected · hidden`. Why is in the row's
   description, which wraps; the state line is one row (verify V10). A search
   counts the MCP rows it shows (V12).
-- A banner (a failed `/reload`, `--no-extensions`) wraps to at most three rows
+- A banner (a failed `/reload`, `--no-extensions`) wraps to at most four rows
   instead of being cut (V10). Under `--no-extensions` every row is locked, so
   the notice says to run without it to turn the others on and off — not that a
   choice still saves (V4: a lock is "a value this run keeps", as on every
@@ -297,7 +305,10 @@ turning discovered extensions on and off.
   examples here show (V7).
 - **`/tool`** gets one locked placeholder per extension the settings turned
   off — `extension off: its tools are not loaded`, `ext off`, "see /extension ·
-  off in settings" — through ADR-0283's `ToolKind(extra_rows=…)`.
+  off in settings" — through ADR-0283's `ToolKind(extra_rows=…)`. When two
+  extensions that are on share a label, each group title carries its tier
+  (`EXTENSION  weather.py (global)`, `ToolKind(extension_tiers=…)`; round-1
+  verify R6), as the placeholder's does.
 - **`aelix status`** applies phase P: an extension turned off is listed under
   "Turned off in settings (N; not imported)" and in the JSON's
   `off_extensions`, and is not loaded.

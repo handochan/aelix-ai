@@ -396,7 +396,9 @@ class ResourceSelection:
         entries, bad = grammar.validate(raw)
         problems.extend(f'{label}: "{key}" entry {p}; it is ignored' for p in bad)
         base = self.global_base if scope == "global" else self.project_base
-        return ScopeList(scope, tuple(entries or ()), base, present=entries is not None)
+        return ScopeList(
+            scope, tuple(entries or ()), base, present=entries is not None, path=self._path(scope)
+        )
 
     def _path(self, scope: Scope) -> str | None:
         manager = self.settings_manager
@@ -499,6 +501,10 @@ class ResourceSelection:
         }
         if not wanted:
             return SaveResult(True)
+        # The rows of this file's own scope first (#25 review R3): an edit that
+        # can only write a name two rows share is then checked against their
+        # edits already made, in whichever order the rows were toggled.
+        wanted = dict(sorted(wanted.items(), key=lambda kv: items[kv[0]].scope != scope))
         key = kind.settings_key
         grammar = grammar_of(kind)
         problems: list[str] = []

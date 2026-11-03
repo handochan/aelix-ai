@@ -42,10 +42,13 @@ unwritten. Add them with the next release.
     the manifest's `plugin.id`, an installed pack's entry-point or distribution
     name (also when a symlink in the extensions folder found it first), a
     file's name without `.py`, or a directory's name — a `pyproject.toml`
-    package's directory included. When two extensions share a name the panel
-    writes the one you toggled by its path, so the other keeps its value. A
-    path entry works under a symlinked `~/.aelix` too. An entry that names
-    nothing found, or a built-in, is warned about at launch.
+    package's directory included, and each file it declares also by its row's
+    label (`bundle/worker.py`). When two extensions share a name the panel
+    writes the one you toggled by its path, so the other keeps its value;
+    turning both off in one save writes the name, and a change only a hand
+    edit can make says which entry to add to which file. A path entry works
+    under a symlinked `~/.aelix` too. An entry that names nothing found, or a
+    built-in, is warned about at launch.
   - Guardrail, Permission and Status stay always on, the Agents extension
     follows `[features] agents`, an extension named with `-e` stays on for the
     run, and `--no-extensions` keeps everything else off; each row says so. An
@@ -60,7 +63,8 @@ unwritten. Add them with the next release.
     binds, at the next launch; the save and `/reload` say so.
   - A delegated agent never loads an extension the session that delegated to it
     turned off, nor starts that extension's MCP servers.
-  - `/tool` shows an extension turned off as one `ext off` row.
+  - `/tool` shows an extension turned off as one `ext off` row, and two that
+    share a name with where each came from (`weather.py (global)`).
 
 - **Tools can be turned off one at a time: `--exclude-tools` for a run, and the
   `/tool` panel for good (#510, ADR-0283).** Turning `bash` off used to mean

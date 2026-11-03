@@ -431,7 +431,8 @@ project's file decides over the global one. The name is the manifest's
 `plugin.id`, an installed pack's entry-point or distribution name, a `.py`
 file's name without `.py`, or a package directory's name — for a package
 whose `pyproject.toml` lists its files under `[tool.aelix] extensions`, the
-directory's name turns them all off, and each file's own name just that one:
+directory's name turns them all off, and each file's own name (or its row's
+label, `bundle/worker.py`) just that one:
 
 ```json
 { "extensions": ["-weather", "-jira-tools"] }
@@ -446,9 +447,14 @@ found is warned about at launch.
 
 When two extensions share a name — a global and a project `weather.py` — the
 panel writes the one you toggled by its path, so the other keeps its value;
-the rows read `weather.py (global)` and `weather.py (project)`. A file can name
-by path only its own extensions, so turning the global one off is saved to
-**Global**; the panel says so if you pick the other file.
+the rows read `weather.py (global)` and `weather.py (project)`, here and in
+`/tool`. A file can name by path only its own extensions, so turning the global
+one off is saved to **Global**; the panel says so if you pick the other file.
+Turning both off in one save writes `-weather`, to either file. A hand-written
+`-weather` turns both off; turning one back on would turn the other on too,
+and the panel cannot keep that one off for you, so it says what to add by
+hand — `add "-extensions/weather.py" to .aelix/settings.json, then save
+again`.
 
 What cannot be turned off here, and says why on its row: Guardrail, Permission
 and Status (always on), the Agents extension (it follows `[features] agents` in

@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .resource_filter import (
+    FilterTarget,
     Scope,
     ScopeList,
     Target,
@@ -201,10 +202,12 @@ def _describe(entry: Any, tier: str, package: Path | None) -> EntryInfo:
         path = entry
         if package is not None:
             # A file a ``pyproject.toml`` package declares (review R02, V7): the
-            # package is what a user names, and each declared file by its stem.
+            # package is what a user names, and each declared file by its stem —
+            # or by its label, as the panel shows it (round-1 verify R7).
+            label = f"{package.name}/{path.name}"
             return EntryInfo(
-                label=f"{package.name}/{path.name}",
-                identities=_unique([package.name, path.stem]),
+                label=label,
+                identities=_unique([package.name, path.stem, label]),
                 path=str(path),
                 scope=scope,
                 description="(no manifest) · declared by its pyproject.toml",
@@ -1242,11 +1245,13 @@ class ExtensionGrammar(PerItemGrammar):
     global and a project ``weather.py`` are both ``weather`` — and ``-weather``
     then turned both off when one row was toggled. Here the edit writes the
     first identity no other row has; failing that, the row's path form, which
-    reaches only its own file's scope (ADR-0279 D2); failing that, it refuses,
-    and says which file can name it. When the edit drops an entry that also
-    named another row (``-weather``, turning one of them back on) and that
-    row's value would move, an entry naming that row alone is added to keep
-    it; when this file cannot name it alone, the save is refused and says so.
+    reaches only its own file's scope (ADR-0279 D2); failing that, the name it
+    shares when writing it moves no other row (review R3: both rows off in one
+    save), else it refuses and says which file can name it. When the edit
+    drops an entry that also named another row (``-weather``, turning one of
+    them back on) and that row's value would move, an entry naming that row
+    alone is added to keep it; when this file cannot name it alone, the save is
+    refused and names the entry to add to the other file by hand (review R2).
     A global edit is checked against this project's file too, which is where a
     row's value is decided first.
     """
@@ -1283,25 +1288,66 @@ class ExtensionGrammar(PerItemGrammar):
         current = list(entries or ())
         before = {o.key: value(o, current) for o in others}
         inherited = True if scope == "global" else effective(item, global_list, None)[0]
-        target = _naming_target(item, others, scope, base_dir)
+        target: FilterTarget = item
+        refusal: ValueError | None = None
+        try:
+            target = _naming_target(item, others, scope, base_dir)
+        except ValueError as exc:
+            # Review R3: nothing only this row answers to. The name it shares
+            # is still the edit when writing it moves no other row — both
+            # ``weather.py`` rows off in one save is ``-weather``.
+            refusal = exc
         out = edit(current, target, want, inherited, base_dir, list_scope=scope)
         for other in others:
             was = before[other.key]
             if value(other, out) == was:
                 continue
+            if refusal is not None:
+                raise refusal
             try:
                 restore = _naming_target(
                     other, [i for i in rows if i.key != other.key], scope, base_dir
                 )
             except ValueError:
-                elsewhere = "Global" if scope == "project" else "This project"
                 raise ValueError(
-                    f"turning {item.label} {'on' if want else 'off'} here would also turn "
-                    f"{other.label} {'off' if was else 'on'}, which this file cannot name on "
-                    f"its own: keep it {'on' if was else 'off'} in {elsewhere} first"
+                    self._by_hand(item, want, other, was, scope, global_list, project_list)
                 ) from None
             out.append(("+" if was else "-") + restore.identities[0])
         return out
+
+    def _by_hand(
+        self,
+        item: ResourceItem,
+        want: bool,
+        other: ResourceItem,
+        was: bool,
+        scope: Scope,
+        global_list: ScopeList | None,
+        project_list: ScopeList | None,
+    ) -> str:
+        """The refusal when *other* would move and only the other file can name it (review R2).
+
+        The panel cannot write that entry: a row there that already reads
+        *was* has no edit to save. So it names the entry and the file to add
+        it to by hand — what to do first, then why, as #510's refusals do.
+        """
+
+        turning = (
+            f"turning {item.label} {'on' if want else 'off'} would also turn "
+            f"{other.label} {'off' if was else 'on'}"
+        )
+        there: Scope = "global" if scope == "project" else "project"
+        listed = global_list if there == "global" else project_list
+        if other.path is None or listed is None or not reaches(other, there):
+            return f"{turning}, which no settings file can name on its own"
+        entry = ("+" if was else "-") + _path_form(other.path, listed.base_dir)
+        where = (
+            _short(listed.path, self._kind._home, self._kind.cwd)
+            if listed.path
+            else f"the {there} settings"
+        )
+        # Short enough to wrap whole into the four rows a refusal gets at 50 columns.
+        return f'add "{entry}" to {where}, then save again — {turning}, which only that file can name'
 
 
 def _naming_target(
@@ -1537,6 +1583,21 @@ def tool_rows(inventory: ExtensionInventory | None) -> list[tuple[ResourceItem, 
     return out
 
 
+def tool_group_tiers(inventory: ExtensionInventory | None) -> dict[str, str]:
+    """By ``Extension.name``, the tier of each loaded extension whose label another
+    row shares: ``/tool`` adds it to that extension's group title (round-1 verify
+    R6), as :func:`tool_rows` does to an off one's."""
+
+    if inventory is None:
+        return {}
+    labels = display_labels(inventory.rows)
+    return {
+        row.extension_name: row.tier
+        for row in inventory.rows
+        if row.extension_name and labels.get(row.key, row.info.label) != row.info.label
+    }
+
+
 @dataclass
 class ExtensionControl:
     """What a host needs for ``/extension``: the service, the kind and the holder."""
@@ -1585,6 +1646,7 @@ __all__ = [
     "restart_note",
     "set_launch_extension_off",
     "target_of",
+    "tool_group_tiers",
     "tool_rows",
     "without_hidden",
 ]
