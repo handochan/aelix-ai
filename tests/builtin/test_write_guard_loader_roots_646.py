@@ -1097,3 +1097,68 @@ def test_a_profile_that_does_not_parse_names_nothing(repo: Path) -> None:
     (agents / "binary.md").write_bytes(b"---\nskills: \xff\xfe\n---\n")
 
     assert _is_auto_allowable_write("src/x.py", str(repo)) is True
+
+
+@_POSIX_LINKS
+@pytest.mark.parametrize("case", ["A", "B", "C"])
+@pytest.mark.parametrize("mode", [PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO])
+async def test_verify_v13_a_link_inside_a_root_pointing_out_guards_its_target(
+    repo: Path, case: str, mode: PermissionMode
+) -> None:
+    """Verify V13 (Codex PC1), the verifier's three cases, end to end.
+
+    Measured on ``98b9ea46`` (``.omc/specs/646-verify-probes``' ``pc1.py``): a
+    headless ``auto-accept-edits`` child was allowed each write, and the trusted
+    catalog loaded A and C as project skills; B's target ran as the next
+    launch's extension. The loader half is asserted here too, with the target
+    written by the test itself, so each case is one the loader really reads.
+    """
+
+    from aelix_coding_agent.extensions.loader import _discover_in_dir
+
+    if case == "A":
+        (repo / ".agents" / "skills").mkdir(parents=True)
+        (repo / "docs" / "x").mkdir(parents=True)
+        (repo / ".agents" / "skills" / "x").symlink_to("../../docs/x")
+        target, name = "docs/x/SKILL.md", "pc1a"
+    elif case == "B":
+        (repo / ".aelix" / "extensions").mkdir(parents=True)
+        (repo / "vendor").mkdir()
+        (repo / ".aelix" / "extensions" / "ext.py").symlink_to("../../vendor/ext.py")
+        target, name = "vendor/ext.py", ""
+    else:
+        (repo / ".agents" / "skills").mkdir(parents=True)
+        (repo / "pub").mkdir()
+        (repo / ".agents" / "skills" / "y").symlink_to(str(repo / "pub"))
+        target, name = "pub/SKILL.md", "pc1c"
+    untrusted = _manager(repo, trusted=False)
+    write = create_write_tool(str(repo))
+    event = ToolCallHookEvent(
+        tool_call_id="t",
+        tool_name="write",
+        args={"path": target, "content": "x"},
+        context=AgentContext(tools=[write]),
+    )
+
+    child = PermissionExtension(
+        posture=PermissionPosture(mode=mode), headless_default="block", settings=untrusted
+    )
+    verdict = await child._on_tool_call(event, _ctx(cwd=str(repo), has_ui=False))
+    assert verdict is not None and verdict.block is True
+    runner = _Runner()
+    interactive = PermissionExtension(
+        posture=PermissionPosture(mode=mode), approval_runner=runner, settings=untrusted
+    )
+    await interactive._on_tool_call(event, _ctx(cwd=str(repo), has_ui=True, ui=SimpleNamespace()))
+    assert len(runner.requests) == 1
+    assert evaluate_tool_call(mode, "write", event.args, str(repo), settings=untrusted) == "ask"
+
+    # What the gate keeps from being written unasked IS read through the link.
+    if case == "B":
+        (repo / target).write_text("X = 1\n")
+        found = [Path(p).resolve() for p in _discover_in_dir(repo / ".aelix" / "extensions")]  # type: ignore[arg-type]
+        assert found == [(repo / target).resolve()]
+    else:
+        (repo / target).write_text(f"---\nname: {name}\ndescription: PC1\n---\nbody\n")
+        names = {s.name for s in _load_skill_catalog(Args(), str(repo), True, _manager(repo)).skills}
+        assert name in names
