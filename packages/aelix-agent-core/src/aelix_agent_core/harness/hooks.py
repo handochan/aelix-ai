@@ -152,6 +152,9 @@ AgentHarnessEventName = Literal[
     # #434 (ADR-0264 §4.7) - aelix-only, the first event pi lacks: one model
     # catalog source's refresh finished. Observational.
     "model_catalog_refresh",
+    # #654 (ADR-0286) - aelix-only: a withdrawing abort took unanswered input out
+    # of context. Pi keeps it. Observational.
+    "input_withdrawn",
 ]
 
 # Union of both (31 names total — Sprint 5a Phase 3.1 added 3 own events).
@@ -204,6 +207,9 @@ HookEventName = Literal[
     # #434 (ADR-0264 §4.7) - aelix-only, the first event pi lacks: one model
     # catalog source's refresh finished. Observational.
     "model_catalog_refresh",
+    # #654 (ADR-0286) - aelix-only: a withdrawing abort took unanswered input out
+    # of context. Pi keeps it. Observational.
+    "input_withdrawn",
 ]
 
 
@@ -929,6 +935,20 @@ class ModelCatalogRefreshHookEvent(HookEvent):
 
 
 @dataclass(frozen=True)
+class InputWithdrawnHookEvent(HookEvent):
+    """A withdrawing abort took input the model never answered out of context (#654, ADR-0286).
+
+    Aelix-only: pi keeps the input. The 1:1 projection of
+    :class:`~aelix_agent_core.types.InputWithdrawnEvent`, which says what
+    ``messages`` holds and when this fires. Observational.
+    """
+
+    messages: list[AgentMessage] = field(default_factory=list)
+    prompt_withdrawn: bool = False
+    type: Literal["input_withdrawn"] = "input_withdrawn"
+
+
+@dataclass(frozen=True)
 class SettledHookEvent(HookEvent):
     """Observational event emitted at the end of each run of a turn.
 
@@ -1387,6 +1407,7 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     # consumed by the standalone ``emit_project_trust_event`` walk, not the bus.
     "project_trust": ProjectTrustEventResult,
     "model_catalog_refresh": None,  # #434 (ADR-0264 §4.7) - aelix-only, observational
+    "input_withdrawn": None,  # #654 (ADR-0286) - aelix-only, observational
 }
 
 
@@ -1975,6 +1996,7 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     # only keeps the bus safe if a handler is wired in (it never fires there).
     "project_trust": _reducer_observational,
     "model_catalog_refresh": _reducer_observational,  # #434 - aelix-only, observational
+    "input_withdrawn": _reducer_observational,  # #654 - aelix-only, observational
 }
 
 
@@ -2098,6 +2120,10 @@ ResourcesUpdateHandler = Callable[
 ]
 ModelCatalogRefreshHandler = Callable[
     [ModelCatalogRefreshHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+InputWithdrawnHandler = Callable[
+    [InputWithdrawnHookEvent, "ExtensionContext"],
     None | Awaitable[None],
 ]
 # Sprint 5a (Phase 3.1) additions --------------------------------------------
@@ -2465,6 +2491,16 @@ class HookBus:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["input_withdrawn"],
+        handler: InputWithdrawnHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
     # --- Sprint 5a (Phase 3.1) additions ---
     @overload
     def on(
@@ -2745,6 +2781,8 @@ __all__ = [
     "InputHookEvent",
     "InputResult",
     "InputTransform",
+    "InputWithdrawnHandler",
+    "InputWithdrawnHookEvent",
     "LsToolCallHookEvent",
     "LsToolResultHookEvent",
     "MessageEndEventResult",

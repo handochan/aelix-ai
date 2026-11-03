@@ -52,7 +52,7 @@ _SPAWN_ALLOWLIST = (
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
 # six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1174``,
-# ``rpc/rpc_mode.py:1630``, ``extensions/command_context.py:116``), so a
+# ``rpc/rpc_mode.py:1634``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -676,6 +676,17 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # selection created the requirement; delegation did not —
         # ``test_kernel_has_no_subagent_surface`` still passes.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/tool_policy.py",
+        # ADR-0286, #654. ``session/session.py`` is NEW: ``Session.withdraw_tail``,
+        # a leaf move plus re-appends of what its caller keeps, so a user's Esc can
+        # take input the model never answered off the session path with no new
+        # entry type. ``harness/core.py``, ``harness/hooks.py`` and ``types.py``
+        # (listed above) changed again: ``abort``/``abort_retry`` take
+        # ``withdraw_unanswered``, a per-prompt tracker follows the commits, and one
+        # observational event says what left, because no context change goes
+        # unobserved. A user cancelling created the requirement; delegation did
+        # not, and a stopped child keeps its task because it never passes True —
+        # ``test_kernel_has_no_subagent_surface`` still passes.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/session.py",
     }
 )
 

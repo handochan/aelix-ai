@@ -3,7 +3,7 @@
 Driven against the REAL extension objects — :class:`_ExtensionRuntime`,
 :class:`ExtensionAPI`, :class:`ExtensionContext` — and not against fakes of
 them, for one reason that matters: ``ctx.has_ui`` is
-``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1238-1239``), a
+``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1239-1240``), a
 TIME-VARYING value (finding OC-7). A hand-rolled context with a boolean
 attribute cannot express "the UI was bound after this extension loaded", which
 is the state every interactive session is actually in.
@@ -413,7 +413,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:1009-1075`` materialises the ``None`` sentinel into a real list),
+    (``core.py:1049-1115`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.

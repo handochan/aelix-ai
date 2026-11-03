@@ -636,7 +636,7 @@ def test_tool_end_normal_cap_honours_configured_value() -> None:
 def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
     # Issue #66 owner decision — the separate 40-line error/diff cap stays 40
     # regardless of the configured NORMAL cap. What this case catches is
-    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1606)
+    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1634)
     # collapsing to the normal cap. The assignment below is deliberately INERT
     # for the delete-the-line mutation — measured: deleting it leaves this test
     # green, because no normal-cap value truncates a 30-line error card under
@@ -1512,7 +1512,7 @@ def test_replay_custom_wire_dict_content_renders() -> None:
 # === Issue #133 item 2 — an interrupted turn must leave a trace =============
 #
 # The harness aborts by CANCELLING the turn task; its close-out
-# (harness/core.py:5674-5691) deliberately emits only turn_end + agent_end, with
+# (harness/core.py:5767-5784) deliberately emits only turn_end + agent_end, with
 # no message_start/message_end pair, so ``_render_message_error`` (message_end
 # only) never ran and the interrupt reached scrollback as nothing at all.
 # pi prints "Operation aborted" from its message_end handler

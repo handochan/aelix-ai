@@ -87,7 +87,7 @@ class FakeHarness:
     async def reload_resources(self) -> None:
         return None
 
-    async def abort(self) -> None:
+    async def abort(self, *, withdraw_unanswered: bool = False) -> None:
         return None
 
     async def set_model(self, model: Model) -> None:

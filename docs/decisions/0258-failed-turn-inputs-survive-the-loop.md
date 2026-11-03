@@ -5,6 +5,10 @@ Date: 2026-10-09
 Issue: #320
 Relates: ADR-0023 (prompt lifetime and cancellation), ADR-0246 (pre-loop queue
 restore), ADR-0145 (message_end replacement reducer), ADR-0247 (failed-turn replay).
+Narrowed by: ADR-0286 (#654, 2026-11-03). D1 and "delivered inputs remain historical
+context" still hold for a plain `abort()`, a failed turn and an outer cancel. A user's
+Esc or an RPC `abort` passes `withdraw_unanswered` and takes input the model never
+answered out of context.
 
 ## Context
 

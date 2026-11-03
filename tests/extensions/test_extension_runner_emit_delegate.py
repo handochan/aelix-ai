@@ -4,7 +4,7 @@
 Pi parity: ``ExtensionRunner.emit`` (``runner.ts:680-712``) +
 ``ExtensionRunner.hasHandlers``. Aelix delegates both to
 :class:`HookBus` via injected callable fields wired at harness
-construction (``harness/core.py:866-874``). When the bridges are unwired
+construction (``harness/core.py:906-914``). When the bridges are unwired
 (default), ``emit`` is a no-op returning ``None`` and ``has_handlers``
 returns ``False`` — safe defaults for tests / harnesses that have not
 wired the bus.

@@ -1910,7 +1910,7 @@ def _resolve_append_chunks(
     # had it right.
     #
     # The harness joins all of these onto the base system prompt with ``"\n\n"``
-    # at ``__init__`` time (``harness/core.py:707-708``). A FRESH list, never
+    # at ``__init__`` time (``harness/core.py:747-748``). A FRESH list, never
     # ``parsed.append_system_prompt`` itself — see the docstring.
     from .system_prompt_files import discover_system_prompt_file
 
@@ -2139,7 +2139,7 @@ async def _build_harness_options(
                 # A CALLABLE over the RESOLVED decision, never
                 # ``ctx.is_project_trusted()``: that getter's unbound default is
                 # ``True`` (``extensions/api.py`` ``is_project_trusted or
-                # (lambda: True)`` / ``harness/core.py:315``), so a harness that
+                # (lambda: True)`` / ``harness/core.py:323``), so a harness that
                 # nobody told about trust reports itself trusted.
                 project_trusted=lambda: project_trusted,
                 # The SAME holder ``/extension``'s viewer reads, by reference, so
@@ -2291,7 +2291,7 @@ async def _build_harness_options(
         # writer of ``parsed.thinking`` and nothing in the product core ever
         # read it, so the flag silently did nothing on every launch. The kernel
         # seam already existed (``AgentHarnessOptions.thinking_level`` →
-        # ``AgentState.thinking_level``, core.py:276 / :750-751), so wiring it
+        # ``AgentState.thinking_level``, core.py:284 / :790-791), so wiring it
         # is this one kwarg. ``None`` leaves the ``"off"`` state default
         # (types.py:84) untouched, which is the pre-fix behaviour for everyone
         # who never passed the flag.
@@ -4056,7 +4056,7 @@ async def _async_main(argv: list[str]) -> int:
             opts = dataclasses.replace(opts, model=held.placeholder)
         # #155 — DEFER an explicit ``--tools`` allowlist past construction.
         #
-        # ``AgentHarness.__init__`` validates the seed at ``core.py:806``, AFTER
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:846``, AFTER
         # the registry merge at ``:564``, so the CHECK is already correct —
         # extension and MCP tool names are legitimately usable in ``--tools``
         # (measured: ``--tools echo,read`` with the echo extension runs). What

@@ -132,7 +132,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over a mutable flag because the real one
-    (``extensions/api.py:1218`` → ``:1238-1239``) is TIME-VARYING, not a mode
+    (``extensions/api.py:1219`` → ``:1239-1240``) is TIME-VARYING, not a mode
     (finding OC-7).
     """
 

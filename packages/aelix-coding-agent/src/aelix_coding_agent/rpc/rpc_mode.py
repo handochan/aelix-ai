@@ -361,7 +361,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1417-1422``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1457-1462``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -369,7 +369,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1405-1407``).
+        # enqueue-only regardless of phase (``core.py:1445-1447``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -466,9 +466,13 @@ async def _handle_abort(
     harness: AgentHarness,
     cmd: Any,
 ) -> RpcResponse:
-    """Pi parity: ``rpc-mode.ts:272-275`` (abort handler)."""
+    """Pi parity: ``rpc-mode.ts:272-275`` (abort handler).
 
-    await harness.abort()
+    #654 (ADR-0286, not pi): a host's abort is a user's Esc. Input the model has not
+    answered leaves context, and ``input_withdrawn`` gives it back to the host.
+    """
+
+    await harness.abort(withdraw_unanswered=True)
     return RpcSuccessResponse(id=cmd.id, command="abort")
 
 
@@ -1349,7 +1353,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
     ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
     (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
     aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
-    at ``extensions/api.py:152-165`` whose snake_case fields
+    at ``extensions/api.py:153-166`` whose snake_case fields
     (``tokens`` / ``context_window`` / ``percent``) map directly into
     the Pi camelCase wire keys.
     """
@@ -1376,7 +1380,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
         cu = stats.context_usage
         # Pi parity: extensions/types.ts ContextUsage = { tokens,
         # contextWindow, percent }. Aelix ContextUsage at
-        # extensions/api.py:152-165 already matches Pi field names
+        # extensions/api.py:153-166 already matches Pi field names
         # (tokens / context_window / percent → snake_case ↔ camelCase
         # mapping).
         out["contextUsage"] = {

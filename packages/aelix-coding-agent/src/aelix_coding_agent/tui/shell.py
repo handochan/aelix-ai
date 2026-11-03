@@ -1193,7 +1193,7 @@ async def run_tui(
             _commit(Text("Clone is unavailable (no session).", style="yellow"))
             return
         # ``Session.get_leaf_id`` is the public accessor for the session tip
-        # (Pi parity ``Session.get_leaf_id`` ``session.py:128``); degrades
+        # (Pi parity ``Session.get_leaf_id`` ``session.py:130``); degrades
         # silently when the session has no entries yet.
         # #413 — a session with no user or assistant message yet is refused
         # too, as before #413, when such a session had no entry and so no leaf:
@@ -2330,8 +2330,10 @@ async def run_tui(
             # that await is ``harness.prompt`` (or a cancellable command): with
             # no time limit on a delegation, a SIGTERM mid-delegation used to
             # wait for the child to finish. The turn is aborted through the same
-            # ``_safe_abort`` Esc uses; a command through its own interrupt, so
-            # its handler reports the stop and returns instead of unwinding.
+            # ``_safe_abort`` Esc uses, keeping its input (#654: the editor is about
+            # to go, so nothing could be given back); a command through its own
+            # interrupt, so its handler reports the stop and returns instead of
+            # unwinding.
             cancel_command = running_command["cancel"]
             if cancel_command is not None:
                 cancel_command()
@@ -2381,7 +2383,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5681`` and the hook-fail one ``:5681``)
+    # the abort close-out ``core.py:5774`` and the hook-fail one ``:5774``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2519,7 +2521,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2814``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2885``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2527,11 +2529,11 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2860``), and
+        AFTER ``_state.model`` is already replaced (``core.py:2931``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
-        ``_safe_invoke`` (``hooks.py:1423-1428``) logs and swallows exactly
+        ``_safe_invoke`` (``hooks.py:1444-1449``) logs and swallows exactly
         ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
         redundant on purpose, not a second class of failure: it catches the same
         class, and it is here so the guarantee survives a future registration
@@ -2594,6 +2596,31 @@ async def run_tui(
     # sequence that already finished cannot repaint a stale widget.
     retry_handover_ref: dict[str, tuple[int, int] | None] = {"pending": None}
     retry_waits = _RetryWaits()  # #409 review round 2: every wait a countdown stands for
+    # #654 — the line ``_input_loop`` handed to the running ``harness.prompt``, as
+    # typed: an expanded ``/skill:`` or template comes back as the user wrote it.
+    typed_prompt: dict[str, str | None] = {"line": None}
+
+    def _give_back_to_editor(texts: list[str]) -> bool:
+        """Put ``texts`` in the input box ahead of what it holds. False if none has text."""
+
+        texts = [t for t in texts if t.strip()]
+        if not texts:
+            return False
+        current = out_chrome.get_editor_text()
+        parts = [*texts, current] if current.strip() else texts
+        out_chrome.set_editor_text("\n\n".join(parts))
+        return True
+
+    def _on_input_withdrawn(event: object) -> None:
+        # #654 (ADR-0286). The figure the meter holds counted what just left.
+        live_tokens["n"] = None
+        _schedule_context_usage_refresh()
+        texts = [_message_text(m) for m in getattr(event, "messages", ())]
+        typed = typed_prompt["line"]
+        if texts and typed is not None and getattr(event, "prompt_withdrawn", False):
+            texts[0] = typed
+        if _give_back_to_editor(texts):
+            renderer.note_input_returned()
 
     def _hand_back_retry_interrupt() -> None:
         """Give the interrupt key back to the full-turn abort. Idempotent.
@@ -2813,6 +2840,8 @@ async def run_tui(
             _start_retry_countdown(_show_summary_retry_error(event, _compaction_working_state, _commit))
         elif etype == "auto_retry_end":
             _end_retry_countdown(event)
+        elif etype == "input_withdrawn":
+            _on_input_withdrawn(event)
         elif etype == "agent_start":
             # #147 round 2 — the retry attempt has actually begun, which is the
             # fact the interrupt handover was previously only GUESSING at from a
@@ -2842,11 +2871,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2080``), so the refresh below is
+                # ``_state.messages`` (``core.py:2151``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1726``), so this never discards a figure a running
+                # ``core.py:1780``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -2861,7 +2890,7 @@ async def run_tui(
             # ``getattr`` because ``event`` is typed ``object`` here, not because
             # the attribute can be missing: ``renderer.on_agent_event`` above
             # dereferences ``event.message`` unguarded on this same event
-            # (``render.py:1011``), so anything reaching this line already has it.
+            # (``render.py:1023``), so anything reaching this line already has it.
             # That is why no test can pin the default — the renderer raises first.
             _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
@@ -2920,11 +2949,11 @@ async def run_tui(
         # remains useful after releasing the direct live usage figure.
         #
         # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
-        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1423``; the
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1444``; the
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5741-5742`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5834-5835`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2952,7 +2981,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2860``).
+        # the model is already swapped in (``core.py:2931``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -3079,8 +3108,35 @@ async def run_tui(
     if callable(_install_contended):
         _install_contended(_ask_session_contended)
 
+    def _take_queued_text() -> list[str]:
+        # Safe against the harness's in-turn queue drain ONLY because this body is
+        # await-free: single-threaded asyncio can't interleave it partway through a
+        # drain. If this ever gains an `await`, gate its callers on
+        # ``not out_chrome.running``.
+        harness = runtime_host.harness
+        texts: list[str] = []
+        for qname in ("_steering_queue", "_follow_up_queue"):
+            queue = getattr(harness, qname, None)
+            if queue is None:
+                continue
+            messages = getattr(queue, "_messages", None)
+            if not messages:
+                continue
+            texts.extend(_message_text(m) for m in messages)
+            with contextlib.suppress(Exception):
+                queue.clear()
+        return texts
+
     def _on_interrupt() -> None:
-        asyncio.ensure_future(_safe_abort(runtime_host.harness))
+        # #654 (ADR-0286) — pi's ``restoreQueuedMessagesToEditor({abort: true})``:
+        # ``abort()`` clears these queues, which took the lines with it, while the
+        # withdrawn input arrives after them and goes ahead of them. Not on
+        # ``_safe_abort``: SIGTERM aborts through it too, and there is nobody left
+        # to give anything back to.
+        if _give_back_to_editor(_take_queued_text()):
+            renderer.note_input_returned()
+            context._refresh_footer()  # pending count is now 0
+        asyncio.ensure_future(_safe_abort(runtime_host.harness, withdraw_unanswered=True))
 
     def _on_retry_interrupt() -> None:
         # Sprint 6h₂₂ (ADR-0130) — Esc during the auto-retry countdown calls
@@ -3088,12 +3144,13 @@ async def run_tui(
         # ``abort_retry`` is synchronous (sets the flag + wakes the sleep
         # event) — no ``ensure_future`` needed. The countdown task observes
         # CancelledError when ``_end_retry_countdown`` cancels it from the
-        # ``auto_retry_end`` event handler.
+        # ``auto_retry_end`` event handler. #654: the model has not answered
+        # this input, so it comes back as it does for ``_on_interrupt``.
         harness = runtime_host.harness
         abort_retry = getattr(harness, "abort_retry", None)
         if callable(abort_retry):
             with contextlib.suppress(Exception):
-                abort_retry()
+                abort_retry(withdraw_unanswered=True)
 
     out_chrome.on_interrupt = _on_interrupt
 
@@ -3236,29 +3293,11 @@ async def run_tui(
     # steer messages first, then follow-up, joined by a blank line, with the
     # current editor text appended.
     def _dequeue() -> None:
-        # Ungated (fires idle OR mid-turn — pi best-effort parity). Safe against
-        # the harness's in-turn queue drain ONLY because this body is await-free:
-        # single-threaded asyncio can't interleave it partway through a drain. If
-        # this ever gains an `await`, gate it on ``not out_chrome.running``.
-        harness = runtime_host.harness
-        texts: list[str] = []
-        for qname in ("_steering_queue", "_follow_up_queue"):
-            queue = getattr(harness, qname, None)
-            if queue is None:
-                continue
-            messages = getattr(queue, "_messages", None)
-            if not messages:
-                continue
-            texts.extend(_message_text(m) for m in messages)
-            with contextlib.suppress(Exception):
-                queue.clear()
-        texts = [t for t in texts if t.strip()]
-        if not texts:
+        # Ungated (fires idle OR mid-turn — pi best-effort parity; see
+        # ``_take_queued_text`` for why that is safe).
+        if not _give_back_to_editor(_take_queued_text()):
             _commit(Text("No queued messages to restore.", style="yellow"))
             return
-        current = out_chrome.get_editor_text()
-        parts = [*texts, current] if current.strip() else texts
-        out_chrome.set_editor_text("\n\n".join(parts))
         context._refresh_footer()  # pending count is now 0
 
     out_chrome.on_dequeue = _dequeue
@@ -3589,6 +3628,7 @@ async def run_tui(
             read_only=read_only,
             late_route=late_route,
             skill_off_reason=skill_control.kind.off_reason if skill_control is not None else None,
+            typed_prompt=typed_prompt,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -3896,7 +3936,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4710-4711``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4786-4787``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4128,6 +4168,7 @@ async def _input_loop(
     read_only: bool = False,
     late_route: LateRoute | None = None,
     skill_off_reason: Callable[[str], str | None] | None = None,
+    typed_prompt: dict[str, str | None] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -4427,6 +4468,8 @@ async def _input_loop(
 
         chrome.set_running(True)
         turn_raised = False
+        if typed_prompt is not None:
+            typed_prompt["line"] = line
         try:
             await harness.prompt(prompt_text, source="interactive")
         except Exception as exc:  # noqa: BLE001 — surface + survive a failed turn
@@ -4444,6 +4487,8 @@ async def _input_loop(
                 )
         finally:
             chrome.set_running(False)
+            if typed_prompt is not None:
+                typed_prompt["line"] = None
         # #240 — a turn that failed may have failed on a stale credential, so
         # drop the resolved ``!command`` values and let the next request re-fork.
         #
@@ -4472,9 +4517,9 @@ async def _input_loop(
             )
 
 
-async def _safe_abort(harness: AgentHarness) -> None:
+async def _safe_abort(harness: AgentHarness, *, withdraw_unanswered: bool = False) -> None:
     with contextlib.suppress(Exception):
-        await harness.abort()
+        await harness.abort(withdraw_unanswered=withdraw_unanswered)
 
 
 class _RouteAuthView:

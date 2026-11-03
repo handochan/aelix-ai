@@ -68,7 +68,8 @@
   },
   "since_pin_event_added_by": "Issue #5 Lane C — adopted since-pin pi project_trust event",
   "aelix_only_event_names": [
-    "model_catalog_refresh"
+    "model_catalog_refresh",
+    "input_withdrawn"
   ],
-  "aelix_only_event_added_by": "#434 (ADR-0264 §4.7) - aelix's first event pi lacks: a model catalog source's refresh finished"
+  "aelix_only_event_added_by": "#434 (ADR-0264 §4.7) - aelix's first event pi lacks: a model catalog source's refresh finished; #654 (ADR-0286) - a withdrawing abort took unanswered input out of context"
 }

@@ -552,6 +552,26 @@ unwritten. Add them with the next release.
 
 ### Changed
 
+- **A message you cancel with Esc before the model answers leaves the context and
+  comes back to the input box (#654, ADR-0286).** It used to stay: the next request,
+  and every one after it, carried what you had just cancelled, reopening the session
+  included, and the input box was empty. Now Esc or Ctrl+C takes every input sent
+  since the last answer out of the context and the session's path, and puts your text
+  back in the input box as you typed it (a `/skill:` or template line unexpanded),
+  ahead of anything you were typing. Lines you queued during the turn come back behind
+  it; `Esc` used to lose them. The abort line says `Your message is back in the input;
+  the model will not see it.`
+  - What already ran stays. Once a tool has run, its call and result, and the message
+    that led to them, stay in context; so does an answer you stopped the turn after.
+    Only a steer or follow-up sent after them is taken back.
+  - Esc in the retry countdown does the same, and the failed answer goes with it.
+  - RPC `abort` does the same and emits a new `input_withdrawn` event (`messages`,
+    `prompt_withdrawn`), which an extension can also hook: a host has to give the text
+    back to its user itself. `abort_retry` still only stops retrying.
+  - A SIGTERM, quitting, a plain `harness.abort()` and a stopped delegated agent keep
+    the input, as an outer task cancel does.
+  - After a compaction inside the same prompt nothing is taken back. The text also stays
+    in the session file on the branch left behind, so `/tree` shows it.
 - **`--no-tools`, `--no-builtin-tools` and `--tools` hold for the whole run
   (#510, ADR-0283).** `/reload` under `--no-tools` turned the extension tools
   back on, `/reload` under `--tools` added every extension tool, and an

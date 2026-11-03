@@ -440,6 +440,13 @@ Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to
 edit the current input in `$VISUAL` / `$EDITOR`.
 
+If the model had not answered yet, `Esc` also takes your message back: it leaves the
+context, so the next request does not carry it, and returns to the input box as you
+typed it, ahead of any lines you queued and anything you were typing. What already ran
+stays: once a tool has run, its call and result and the message behind them are still in
+context, and only a steer or follow-up sent after them comes back. The text stays in the
+session file on the branch left behind, so `/tree` still shows it.
+
 The `read` tool uses 1-based line offsets. Its totals count a final newline as
 the end of a line, and include an unterminated last line. For a three-line file,
 `offset=3` reads the last line and `offset=4` reports end of file. For a full-file

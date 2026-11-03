@@ -148,7 +148,7 @@ def test_recovered_provider_error_does_not_become_the_answer() -> None:
 
     ``_reduce_message_end`` (``stream.py:1028-1036``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
-    auto-retry (``harness/core.py:544-545``, default ON) already recovered from.
+    auto-retry (``harness/core.py:578-579``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
     ``stop_reason='stop'``, exit 0.
 
@@ -1000,7 +1000,7 @@ def test_the_agent_card_footer_is_inside_the_capped_body() -> None:
     Row 1 is the common one and it is where the rendered text is
     ``summary + blank + usage``, so it truncates once ``n + 2 > cap``; a note
     costs two more rows; a failure renders on the separate 40-line error path
-    (``render.py:1606``), which #247 did not move. So the loss is not new, only
+    (``render.py:1634``), which #247 did not move. So the loss is not new, only
     common. ``/expand N`` still reprints the footer verbatim — asserted below,
     because all three shipped documents promise exactly that — which is why the
     trade was taken instead of exempting ``agent`` from the cap it most needs.

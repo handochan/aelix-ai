@@ -11,6 +11,8 @@ timestamp generation, ID generation, and leaf parenting.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -324,6 +326,42 @@ class Session:
                 from_hook=summary.get("from_hook"),
             )
         )
+
+    async def withdraw_tail(
+        self,
+        target_leaf: str | None,
+        is_withdrawn: Callable[[SessionTreeEntry], bool],
+    ) -> None:
+        """Take entries back off the path, keeping the rest of what follows ``target_leaf``.
+
+        #654 (ADR-0286). The leaf returns to ``target_leaf`` and every entry the
+        path held after it that ``is_withdrawn`` does not claim is appended again
+        with a fresh id, in order. Those entries are a turn's neighbours: a custom
+        entry or model change flushed between two attempts. What is withdrawn stays
+        in the file on the branch left behind. ``None`` starts a new root.
+
+        Raises :class:`SessionError` when ``target_leaf`` is not on the current
+        path, with nothing written.
+        """
+
+        path = await self.get_branch()
+        if target_leaf is None:
+            tail = path
+        else:
+            ids = [entry.id for entry in path]
+            if target_leaf not in ids:
+                raise SessionError("not_found", f"Entry {target_leaf} is not on the current path")
+            tail = path[ids.index(target_leaf) + 1 :]
+        survivors = [entry for entry in tail if not is_withdrawn(entry)]
+        await self.move_to(target_leaf)
+        for entry in survivors:
+            await self._append_typed_entry(
+                replace(
+                    entry,
+                    id=await self._storage.create_entry_id(),
+                    parent_id=await self._storage.get_leaf_id(),
+                )
+            )
 
 
 __all__ = ["Session", "SessionContext"]

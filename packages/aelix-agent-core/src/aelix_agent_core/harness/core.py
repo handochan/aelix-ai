@@ -32,7 +32,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from aelix_ai.api_registry import reset_api_providers
-from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
+from aelix_ai.messages import (
+    AssistantMessage,
+    ImageContent,
+    TextContent,
+    ToolResultMessage,
+    UserMessage,
+)
 from aelix_ai.streaming import (
     AssistantErrorEvent,
     AssistantMessageEvent,
@@ -68,6 +74,7 @@ from aelix_agent_core.harness.hooks import (
     InputHandled,
     InputHookEvent,
     InputTransform,
+    InputWithdrawnHookEvent,
     MessageEndHookEvent,
     MessageStartHookEvent,
     MessageUpdateHookEvent,
@@ -112,6 +119,7 @@ from aelix_agent_core.types import (
     BeforeToolCallContext,
     BeforeToolCallResult,
     ConvertToLlmFn,
+    InputWithdrawnEvent,
     MessageEndEvent,
     MessageStartEvent,
     QueueMode,
@@ -483,6 +491,32 @@ class _TurnState:
     stream_options: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _UnansweredInputs:
+    """One prompt's input the model has not answered yet (#654, ADR-0286).
+
+    Lives from just before the prompt's first ``_run`` to the end of the prompt,
+    unless a compaction inside it ends it first: the summary may hold this input
+    by then, and the path behind it cannot be moved. ``committed`` pairs each
+    input ``message_end`` committed, as queued and as stored, and empties when an
+    answer commits. ``safe_leaf`` is the session entry to return to.
+    """
+
+    prompt: AgentMessage
+    drained: list[AgentMessage]
+    injected: list[AgentMessage]
+    safe_leaf: str | None
+    committed: list[tuple[AgentMessage, AgentMessage]] = field(default_factory=list)
+
+
+def _answers_input(message: AgentMessage) -> bool:
+    """A tool result, or an assistant message that did not fail (#654, ADR-0286)."""
+
+    if isinstance(message, ToolResultMessage):
+        return True
+    return isinstance(message, AssistantMessage) and message.stop_reason not in ("error", "aborted")
+
+
 class _MessageQueue:
     """Mirror of :class:`aelix_agent_core.agent._MessageQueue` (kept independent)."""
 
@@ -682,6 +716,12 @@ class AgentHarness:
         # could be in flight at once (ADR-0023, #334 amendment 2026-09-25).
         self._claim: object | None = None
         self._abort_requested = False
+        # #654 (ADR-0286) — set by ``abort(withdraw_unanswered=True)`` and
+        # ``abort_retry(withdraw_unanswered=True)``, cleared with the flag above
+        # at ``_run`` entry so that it shares that flag's fate. The tracker is
+        # what such an abort takes out of context.
+        self._withdraw_requested = False
+        self._unanswered: _UnansweredInputs | None = None
         # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
         self._turn_state: _TurnState | None = None
         # Sprint 3c §C.2 — track the in-flight turn task so abort() can call
@@ -1519,7 +1559,7 @@ class AgentHarness:
             # convert a handler exception into a raised ``AgentHarnessError``
             # (``_emit_queue_update`` and ``_emit_before_agent_start``, each
             # method's ``except``), while a handler's ``error_mode`` defaults to ``"throw"``
-            # (``hooks.py:2552-2559``). Either raise unwound the frame and the
+            # (``hooks.py:2588-2595``). Either raise unwound the frame and the
             # user's queued text existed on no queue, in no turn and in no
             # exception. The guard covers the region, not those two calls by name,
             # so an await added to this gap later is covered too.
@@ -1561,9 +1601,18 @@ class AgentHarness:
                     if injected and injected.system_prompt is not None
                     else self._state.system_prompt
                 )
+                unanswered = _UnansweredInputs(
+                    prompt=user_msg,
+                    drained=list(drained_next),
+                    injected=list(injected.messages) if injected and injected.messages else [],
+                    safe_leaf=(
+                        await self._session.get_leaf_id() if self._session is not None else None
+                    ),
+                )
             except BaseException:
                 self._next_turn_queue = drained_next + self._next_turn_queue
                 raise
+            self._unanswered = unanswered
             result = await self._run(
                 prompts,
                 system_prompt=system_prompt,
@@ -1718,6 +1767,11 @@ class AgentHarness:
                     break
                 result = await self._run([], system_prompt=system_prompt)
 
+            # #654 (ADR-0286) — an abort made between runs (the retry wait, or one
+            # that stopped overflow recovery) has no close-out to take the input
+            # out. Before the threshold check, which must not summarise it.
+            if self._withdraw_requested:
+                await self._withdraw_unanswered_inputs()
             # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
             # pi order is retry-then-compact (``agent-session.ts:577-582``).
             # #334 — after an abort it compacts nothing, as pi's post-run loop
@@ -1775,6 +1829,11 @@ class AgentHarness:
             # — what is still queued stays queued, and the next drain writes it
             # in order: nothing lost or reordered.
             try:
+                # #654 — the exits that skipped the check above: a raise, or an
+                # abort made during the threshold check. Ahead of the drain, so
+                # that what the tail queued lands on the path the input left.
+                if self._withdraw_requested:
+                    await self._withdraw_unanswered_inputs()
                 await self._drain_pending_session_writes()
             except Exception:  # noqa: BLE001
                 _log.warning(
@@ -1783,6 +1842,7 @@ class AgentHarness:
                     exc_info=True,
                 )
             finally:
+                self._unanswered = None
                 self._claim = None
                 self._turn_state = None
                 self._turn_refusal = None
@@ -1842,8 +1902,14 @@ class AgentHarness:
         self._follow_up_queue.enqueue(UserMessage(content=content))
         await self._emit_queue_update()
 
-    async def abort(self) -> None:
+    async def abort(self, *, withdraw_unanswered: bool = False) -> None:
         """Signal a cooperative abort. Hook handlers should check the signal.
+
+        #654 (ADR-0286) — ``withdraw_unanswered`` is a user's Esc: input the model
+        has not answered leaves context and comes back on ``input_withdrawn``. The
+        default is False because this is also how a process ends (:meth:`dispose`
+        on SIGTERM or quit, and through it a stopped delegation child), and there
+        nobody is left to give the input back to: it stays, so that a resume has it.
 
         Sprint 3c §C.2 (Aelix additive over Pi): when a turn task is
         in-flight, call ``task.cancel()`` on it so any tool that ignores the
@@ -1865,6 +1931,8 @@ class AgentHarness:
         """
 
         self._abort_requested = True
+        if withdraw_unanswered:
+            self._withdraw_requested = True
         # Capture pre-clear snapshots for AbortHookEvent (P-10 closure).
         cleared_steer = list(self._steering_queue._messages)
         cleared_follow_up = list(self._follow_up_queue._messages)
@@ -2066,6 +2134,9 @@ class AgentHarness:
                 details=result.details,
                 from_hook=from_hook,
             )
+            # #654 (ADR-0286) — the barrier: an input this summary may hold, on a
+            # path whose kept tail starts behind it, cannot be withdrawn any more.
+            self._unanswered = None
             # Pi parity (agent-session.ts:1693-1695, ADR-0117): rebuild the live
             # in-memory context from the post-compaction branch so the reduction
             # takes effect on the NEXT turn — drop the summarized prefix + prepend
@@ -3255,7 +3326,7 @@ class AgentHarness:
 
         _set_retry_enabled(self._state, self._settings_manager, bool(enabled))
 
-    def abort_retry(self) -> None:
+    def abort_retry(self, *, withdraw_unanswered: bool = False) -> None:
         """Pi parity: ``session.abortRetry``
         (``rpc-mode.ts:530-533`` + ``agent-session.ts:2511-2516``).
 
@@ -3264,8 +3335,13 @@ class AgentHarness:
         :attr:`_retry_abort_event`. The pre-existing ``retry_aborted`` state
         flag is still set for any consumer still reading it. No-op when no
         retry is in flight.
+
+        ``withdraw_unanswered``: as :meth:`abort` (#654). This is the TUI's Esc in
+        the retry countdown; RPC ``abort_retry`` leaves it off, as "stop retrying".
         """
 
+        if withdraw_unanswered:
+            self._withdraw_requested = True
         self._state.retry_aborted = True
         if self._retry_abort_event is not None:
             self._retry_abort_event.set()
@@ -5359,6 +5435,7 @@ class AgentHarness:
         # before this point should do); an abort made after it survives this
         # run, which is what the tail's checks in ``prompt()`` read.
         self._abort_requested = False
+        self._withdraw_requested = False
         uncommitted_inputs = list(pending_inputs or [])
         # Sprint 4b §F — state.messages source flip: when a Session is
         # attached, derive the turn's messages list from
@@ -5494,6 +5571,16 @@ class AgentHarness:
                         if pending is event.message:
                             uncommitted_inputs.pop(input_index)
                             break
+                    # #654 (ADR-0286) — before the append's await, in which a
+                    # cancel can land: an answer already committed to state keeps
+                    # what led to it, whether or not its entry made it to the file.
+                    unanswered = self._unanswered
+                    answered = unanswered is not None and _answers_input(final_message)
+                    if unanswered is not None:
+                        if answered:
+                            unanswered.committed.clear()
+                        elif not isinstance(final_message, AssistantMessage):
+                            unanswered.committed.append((event.message, final_message))
                     # #379 review round 3: the setup failure's record follows the
                     # message the hooks leave (the loop swaps it into state).
                     failure = self._setup_failure
@@ -5514,7 +5601,9 @@ class AgentHarness:
                     #    path has already committed it to ``_state.messages``.
                     if self._session is not None:
                         try:
-                            await self._session.append_message(final_message)
+                            entry_id = await self._session.append_message(final_message)
+                            if answered and unanswered is not None:
+                                unanswered.safe_leaf = entry_id
                         except Exception as exc:  # noqa: BLE001
                             # Session failure during message_end is logged but
                             # does not break the lifecycle emit chain — the
@@ -5645,6 +5734,10 @@ class AgentHarness:
                     # abort(); just return without raising. The phase stays
                     # the prompt's until ``prompt()``'s release (#334).
                     if self._abort_requested:
+                        # #654 (ADR-0286) — first, so that the terminator's
+                        # ``agent_end`` never carries what left context.
+                        if self._withdraw_requested:
+                            await self._withdraw_unanswered_inputs(uncommitted_inputs)
                         # RPC sprint — an aborted turn MUST still produce a
                         # terminator. Previously this returned here and emitted
                         # nothing, so every automated parent (``RpcClient.
@@ -5778,6 +5871,90 @@ class AgentHarness:
                 )
             self._turn_state = None
 
+    async def _withdraw_unanswered_inputs(
+        self, uncommitted_inputs: list[AgentMessage] | None = None
+    ) -> None:
+        """Take what the model never answered out of context (#654, ADR-0286).
+
+        ``uncommitted_inputs`` is the running ``_run``'s list, for a cancel that
+        landed before an input committed. Live state and the queue change first and
+        synchronously, so a second cancel can only cost the session write. Takes the
+        tracker with it, so a later call finds nothing.
+        """
+
+        unanswered = self._unanswered
+        if unanswered is None:
+            return
+        prompt = unanswered.prompt
+        pending = uncommitted_inputs if uncommitted_inputs is not None else []
+        prompt_uncommitted = any(m is prompt for m in pending)
+        if not unanswered.committed and not prompt_uncommitted:
+            return
+        self._unanswered = None
+        committed = unanswered.committed
+        prompt_withdrawn = prompt_uncommitted or any(o is prompt for o, _ in committed)
+
+        # In commit order, so the queue keeps it: what committed went ahead of what
+        # did not. Taking both here keeps ``_run``'s ``finally`` from putting the
+        # uncommitted remainder in front of the rest.
+        requeued = [
+            o for o, _ in committed if any(o is drained for drained in unanswered.drained)
+        ]
+        requeued.extend(m for m in pending if m is not prompt)
+        pending.clear()
+        if requeued:
+            self._next_turn_queue = requeued + self._next_turn_queue
+
+        finals = [final for _, final in committed]
+
+        # A failed answer goes with its input. Nothing else behind the first input
+        # is touched: an answer would have emptied ``committed``, and what is left
+        # is a neighbour, such as a message written between two attempts.
+        def is_withdrawn(message: AgentMessage) -> bool:
+            return any(message is final for final in finals) or (
+                isinstance(message, AssistantMessage)
+                and message.stop_reason in ("error", "aborted")
+            )
+
+        if committed:
+            start = next(
+                (i for i, m in enumerate(self._state.messages) if m is finals[0]), None
+            )
+            if start is None:
+                _log.warning("withdrawn input is not in live state; state left as it is")
+            else:
+                self._state.messages[start:] = [
+                    m for m in self._state.messages[start:] if not is_withdrawn(m)
+                ]
+
+        if committed and self._session is not None:
+            # The storage policy of ``emit``: a refused write is logged.
+            try:
+                await self._session.withdraw_tail(
+                    unanswered.safe_leaf,
+                    lambda entry: entry.type == "message" and is_withdrawn(entry.message),  # type: ignore[union-attr]
+                )
+            except Exception:  # noqa: BLE001
+                _log.warning("withdrawing input from the session failed", exc_info=True)
+
+        if requeued:
+            with contextlib.suppress(AgentHarnessError):
+                await self._emit_queue_update()
+
+        given_back: list[AgentMessage] = [prompt] if prompt_withdrawn else []
+        not_the_users = [prompt, *unanswered.drained, *unanswered.injected]
+        given_back.extend(
+            o
+            for o, _ in committed
+            if isinstance(o, UserMessage) and not any(o is m for m in not_the_users)
+        )
+        event = InputWithdrawnEvent(messages=given_back, prompt_withdrawn=prompt_withdrawn)
+        await self._emit_to_subscribers(event)
+        try:
+            await self._hooks.emit(_to_hook_event(event))
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("input_withdrawn hook handler raised: %r", exc, exc_info=True)
+
     async def _drain_steering(self) -> list[AgentMessage]:
         return self._steering_queue.drain()
 
@@ -5879,6 +6056,11 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
             raise RuntimeError(
                 f"compaction event {event.type!r} reached _to_hook_event "
                 "(should have been skipped by the UI-only-events guard)"
+            )
+        case "input_withdrawn":
+            return InputWithdrawnHookEvent(
+                messages=list(event.messages),
+                prompt_withdrawn=event.prompt_withdrawn,
             )
         case _ as unreachable:
             assert_never(unreachable)
