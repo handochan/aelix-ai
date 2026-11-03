@@ -31,15 +31,29 @@ unwritten. Add them with the next release.
     right after the `!` leaves shell mode with the command kept; `Esc` clears the
     whole input. The `!` stays in what you typed, so history, `!!` and Ctrl+G are
     as before.
-  - A `!` or `!!` line Entered while the model is answering now runs at once, and
-    the answer goes on. Before, it was sent to the model as text. The command and
-    its output are printed together when it finishes; the model sees a `!`
-    command's output on its next turn, never a `!!` one's.
+  - A `!` or `!!` line Entered while the model is answering (or while `/compact`,
+    a turn an extension started, or any command runs) now runs at once, and the
+    answer goes on. Before, it was sent to the model as text. The command, then
+    the last lines of its output, wait under the answer, above the input, and
+    move into the transcript when the turn is over, so they never split the
+    answer or a tool's output; the model sees a `!` command's output on its next
+    turn, never a `!!` one's. One `!` command runs at a time: Enter on a second
+    keeps it in the input and says why. `Alt+Enter` on a `!` line during a turn
+    runs it after the turn.
+  - A pasted text that starts with `!` is drawn as a prompt and sent to the model
+    as text, during a turn and idle; it used to run every pasted line in the
+    shell during a turn. `!` typed before such a paste runs it as a `!` command.
+  - A `!` command's output reaches the model reliably: a turn an extension starts
+    while it is being recorded waits for it instead of leaving it off the
+    session's branch, and a record held through `/compact` is no longer lost
+    when you press Ctrl+D. After `/new`, `/resume`, `/fork`, `/clone` or
+    `/import` it is not written into the session you left.
   - `@path` file references are drawn in the theme's accent colour as you type
     (underlined under `NO_COLOR`). Nothing is looked up on disk while you type.
   - The status line under the input is a little dimmer, so it reads as a layer
     under the input. Colours that segments set themselves (the permission badge)
-    are kept, and `NO_COLOR` leaves it as it was.
+    are kept, and `NO_COLOR` leaves it as it was. The default theme's grey is
+    meant for dark terminals; on a light one, use the `light` theme.
   - Themes gain two roles: `shell` (default `magenta`, `dark` `bright_magenta`,
     `light` `medium_violet_red`) and `statusline` (`grey70`; `light` `grey30`).
     A theme file without them gets magenta for shell mode and an undimmed footer.

@@ -455,17 +455,29 @@ As soon as you type the `!`, the input shows it is in shell mode: the `!` (or
 and the row under the input says what Enter will do. Backspace right after the
 `!` leaves shell mode with your command kept; `Esc` clears the whole input.
 
-You can run a `!` command while the model is answering. Enter runs it at once,
-the answer goes on, and the command and its output are printed together when it
-finishes. A `!cmd` output reaches the model when the turn is over, on its next
-turn. (Before, such a line was sent to the model as text.) `Esc` during a turn
-still interrupts the turn.
+You can run a `!` command while the model is answering, or while a command such
+as `/compact` runs. Enter runs it at once and the answer goes on. The command,
+whether it is still running, and the last lines of its output are shown under
+the answer, above the input; when the turn is over they move into the
+transcript, with all of the output, and a `!cmd` output reaches the model on its
+next turn. (Before, such a line was sent to the model as text.) One command runs
+at a time: Enter on a second `!` line while one runs keeps it in the input, and
+the row under the input says why. `Alt+Enter` on a `!` line while the model
+answers runs it after the turn instead. `Esc` during a turn still interrupts the
+turn; it does not stop a `!` command.
+
+A pasted text that starts with `!` is not a shell command: a long paste is shown
+as `[Pasted text #1 +6 lines]` and is sent to the model as text, as it is drawn.
+Type the `!` yourself to run a paste in the shell.
 
 A file reference such as `@src/main.py` or `@"my notes.md"` is drawn in the
-theme's accent colour as you type it. Under `NO_COLOR` it is underlined instead.
+theme's `accent` colour as you type it. Under `NO_COLOR` it is underlined instead.
 The status line under the input is drawn a little dimmer than your text, so it
-reads as a layer under the input. Your theme sets both colours (the `shell` and
-`statusline` roles, see [extension-authoring](extension-authoring.md#themes)).
+reads as a layer under the input. Your theme sets both colours (the `accent` and
+`statusline` roles, and `shell` for shell mode; see
+[extension-authoring](extension-authoring.md#themes)). The default theme's
+dimmer status line is meant for a dark terminal; on a light one, pick the
+`light` theme in `/settings` → Theme.
 
 The `read` tool uses 1-based line offsets. Its totals count a final newline as
 the end of a line, and include an unterminated last line. For a three-line file,

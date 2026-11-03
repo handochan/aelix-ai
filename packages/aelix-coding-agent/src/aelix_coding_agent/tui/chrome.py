@@ -84,11 +84,13 @@ from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.input_marks import (
     InputLexer,
     InputStyles,
+    SubmittedLine,
     input_styles,
     no_color,
     paint_shell,
     shell_hint,
     shell_sigil,
+    submitted_input,
 )
 
 if TYPE_CHECKING:
@@ -744,9 +746,16 @@ class AelixChrome:
         self.prompt_style_provider: Callable[[], str] | None = None
         # #596 (ADR-0287) — Enter on a ``!`` / ``!!`` line while a turn runs: the
         # host runs the command at once instead of steering the line to the model
-        # (pi checks for ``!`` before its streaming-steer branch). ``None``
-        # (headless) → the line steers, as before.
-        self.on_shell: Callable[[str], None] | None = None
+        # (pi checks for ``!`` before its streaming-steer branch); Alt+Enter
+        # (``after_turn=True``) queues it to run once the turn is over. ``None``
+        # (headless) → the line steers, as before. "A turn runs" is
+        # :meth:`shell_busy`: the chrome's own turn, or whatever ``busy_provider``
+        # says holds the session — an extension's turn, a compaction, a command
+        # the input loop is still running. ``shell_running`` says a ``!`` command
+        # is running; Enter on another one is refused then, as pi refuses it.
+        self.on_shell: Callable[..., None] | None = None
+        self.busy_provider: Callable[[], bool] | None = None
+        self.shell_running: Callable[[], bool] | None = None
         # #596 — the live theme the input marks are coloured from (``@`` references
         # take ``accent``, shell mode takes ``shell``), the width under the user's
         # render ceiling (ADR-0219) the input frame stops at, and the footer's base
@@ -783,6 +792,10 @@ class AelixChrome:
         self._spinner_last: float = 0.0
         self._widgets_above: dict[str, list[str]] = {}
         self._widgets_below: dict[str, list[str]] = {}
+        # #596 (ADR-0287) — the pending area: ``!`` commands run during a turn,
+        # drawn under the stream until the turn is over (pi's
+        # ``pendingMessagesContainer``). ANSI rows, set whole by the host.
+        self._pending_rows: list[str] = []
 
         history: History = FileHistory(history_path) if history_path else InMemoryHistory()
         # multiline=True so the editor holds newlines: a bracketed multi-line
@@ -1080,6 +1093,21 @@ class AelixChrome:
                     ),
                     filter=~hold,
                 ),
+                # #596 (ADR-0287) — the pending area, under the stream tail: a
+                # ``!`` command run during a turn is drawn here, not committed
+                # among the answer's lines (verify V4: committed, it split a
+                # sentence and a tool's output). Rows only while it holds any,
+                # each already cut to the width; hidden under a modal, which
+                # needs the rows.
+                ConditionalContainer(
+                    Window(
+                        FormattedTextControl(lambda: ANSI("\n".join(self._pending_rows))),
+                        dont_extend_height=True,
+                        wrap_lines=False,
+                    ),
+                    filter=~hold
+                    & Condition(lambda: bool(self._pending_rows) and not self.is_modal_open()),
+                ),
                 ConditionalContainer(modal_slot, filter=~hold),
                 working_row,
                 working_spacer,
@@ -1176,21 +1204,26 @@ class AelixChrome:
             # History stores the EXPANDED text so an Up-arrow recall is
             # self-contained even after the registry is cleared on submit.
             submit_text = self._expand_pastes(text)
-            # #596 (ADR-0287) — mid-turn Enter on a ``!`` / ``!!`` line runs it now,
-            # as pi does (its ``!`` branch precedes the streaming-steer one); the
-            # turn goes on. Before #596 the line was steered to the model as text.
-            if (
-                self._running
-                and submit_text.strip()
-                and self.on_shell is not None
-                and shell_sigil(submit_text)
-            ):
-                self.buffer.reset()
-                with contextlib.suppress(Exception):
-                    self.buffer.history.append_string(submit_text)
-                self._reset_paste_state()
-                self.on_shell(submit_text)
-                return
+            # #596 (ADR-0287) — what Enter does is read off the TYPED buffer, as
+            # the input draws it, and the pastes are expanded after: a collapsed
+            # paste that begins with ``!`` is a prompt here as on screen (verify
+            # V1), and ``!`` typed before one stays a ``!`` command (Codex 596-06).
+            parsed = submitted_input(text, self._expand_pastes)
+            if parsed.kind in ("bash", "bash_transient") and self.on_shell is not None:
+                if parsed.text and self._shell_running_now():
+                    # pi's "A bash command is already running": refused, the draft
+                    # kept. The status row already says so (``shell_hint``).
+                    self.invalidate()
+                    return
+                if self.shell_busy():
+                    # Mid-turn (or under a command) the line runs now, as pi's
+                    # does (its ``!`` branch precedes the streaming-steer one),
+                    # and the turn goes on. Before #596 it was steered as text. A
+                    # bare sigil runs nothing, here as at idle.
+                    _consume(submit_text)
+                    if parsed.text:
+                        self.on_shell(parsed)
+                    return
             # Mid-turn Enter steers (injects into the running turn) instead of
             # feeding the serialized input queue — bypasses _input_loop, which is
             # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
@@ -1208,7 +1241,15 @@ class AelixChrome:
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(submit_text)
             self._reset_paste_state()
-            self._input_queue.put_nowait(submit_text)
+            # #596 — the classification travels with the text, so the input loop
+            # runs what was drawn rather than re-reading the expanded line.
+            self._input_queue.put_nowait(SubmittedLine(submit_text, parsed))
+
+        def _consume(submit_text: str) -> None:
+            self.buffer.reset()
+            with contextlib.suppress(Exception):
+                self.buffer.history.append_string(submit_text)
+            self._reset_paste_state()
 
         @kb.add("escape", "enter")
         def _follow_up(event: object) -> None:
@@ -1218,6 +1259,16 @@ class AelixChrome:
             # input editor is single-line so there is no newline-insert to shadow).
             # Issue #81 — expand collapsed-paste placeholders (see _accept).
             submit_text = self._expand_pastes(self.buffer.text)
+            # #596 (ADR-0287) — on a line the input draws in shell mode, Alt+Enter
+            # queues a SHELL command that runs once the turn is over (the owner's
+            # choice, 2026-11-03; pi queues the text to the model). Idle, or a
+            # bare sigil: nothing, as for any line.
+            parsed = submitted_input(self.buffer.text, self._expand_pastes)
+            if parsed.kind in ("bash", "bash_transient") and self.on_shell is not None:
+                if parsed.text and self.shell_busy():
+                    _consume(submit_text)
+                    self.on_shell(parsed, after_turn=True)
+                return
             if self._running and submit_text.strip() and self.on_follow_up is not None:
                 self.buffer.reset()
                 with contextlib.suppress(Exception):
@@ -1533,7 +1584,13 @@ class AelixChrome:
         # row, so the hint costs no height (no shift, nothing for the bottom pin).
         sigil = self._shell_sigil_now()
         if sigil and not self.is_modal_open():
-            hint = shell_hint(sigil, running=self._running, width=self._terminal_width())
+            hint = shell_hint(
+                sigil,
+                running=self.shell_busy(),
+                width=self._terminal_width(),
+                bare=not parse_input_line(self.buffer.text).text,
+                shell_busy=self._shell_running_now(),
+            )
             parts.insert(0, paint_shell(self._theme_now(), hint))
         # #66 item 2 — the transient "Press Ctrl+C again to exit" hint. Rendered
         # (not stored in ``_status``) so it self-clears once the arm window
@@ -1583,6 +1640,25 @@ class AelixChrome:
 
     def _shell_sigil_now(self) -> str:
         return shell_sigil(self.buffer.text)
+
+    def shell_busy(self) -> bool:
+        """#596 — whether a ``!`` line Entered now runs at once (see ``on_shell``)."""
+
+        if self._running:
+            return True
+        return self._ask(self.busy_provider)
+
+    def _shell_running_now(self) -> bool:
+        return self._ask(self.shell_running)
+
+    @staticmethod
+    def _ask(provider: Callable[[], bool] | None) -> bool:
+        if provider is None:
+            return False
+        try:
+            return bool(provider())
+        except Exception:  # noqa: BLE001 — a faulty provider must not break input
+            return False
 
     def _frame_line_style(self) -> str:
         styles = self._input_styles()
@@ -1985,6 +2061,12 @@ class AelixChrome:
 
     def set_breadcrumb_line(self, text: str) -> None:
         self._breadcrumb_line = text.replace("\n", " ")  # fixed height=1 row
+        self.invalidate()
+
+    def set_pending_rows(self, rows: list[str] | None) -> None:
+        """#596 — replace the pending area's rows (ANSI, one per row; ``None`` empties it)."""
+
+        self._pending_rows = list(rows or [])
         self.invalidate()
 
     def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:

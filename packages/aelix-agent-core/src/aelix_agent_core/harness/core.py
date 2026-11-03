@@ -3959,9 +3959,11 @@ class AgentHarness:
         ``set_thinking_level``, a public ``compact()`` and ``navigate_tree()``
         at their entries, and ``dispose()``. Writers that never used the queue
         are unchanged and do not wait for it: the extension actions
-        ``set_session_name`` / ``set_label`` / ``append_entry``, the REPL and
-        TUI user-bash record, the TUI ``/name`` and the RPC
-        ``set_session_name`` append directly, as before. It returns without
+        ``set_session_name`` / ``set_label`` / ``append_entry``, the REPL's
+        user-bash record, the TUI ``/name`` and the RPC
+        ``set_session_name`` append directly, as before. The TUI's user-bash
+        record holds this lock instead (:meth:`idle_write`, #596), so a turn
+        that starts while it writes waits for it here. It returns without
         awaiting when nothing is queued and no drain is running, so those
         paths gain no cancellation point in the common case. The lock:
         :meth:`flush_pending_session_writes` detaches the queue before it
@@ -3979,6 +3981,38 @@ class AgentHarness:
         async with self._drain_lock:
             while self._pending_session_writes:
                 await self.flush_pending_session_writes()
+
+    @contextlib.asynccontextmanager
+    async def idle_write(self) -> AsyncIterator[None]:
+        """Aelix-additive (#596, ADR-0287): an outside writer's turn at the session.
+
+        For a caller that appends to the session and the live message list
+        between turns and must not be overtaken while it awaits — the TUI's
+        ``!`` record. Entered only while idle: :class:`AgentHarnessError`
+        ``("busy")`` otherwise, raised before any await, so a caller that
+        checked :attr:`is_idle` and enters with no await in between cannot
+        lose that race to a turn. Held, it is the lock
+        :meth:`_drain_pending_session_writes` takes, so every entry that drains
+        first — :meth:`prompt` (an extension's ``send_message(...,
+        trigger_turn=True)`` included), a public :meth:`compact`,
+        :meth:`navigate_tree`, an idle :meth:`set_model` /
+        :meth:`set_thinking_level`, :meth:`dispose` — waits for it before it
+        writes anything, instead of refusing. A turn that claimed meanwhile
+        is queued behind it, so what it writes still comes first.
+
+        What it closes, measured by the #596 Codex review: a record whose
+        append awaited a slow write while an extension's turn started got the
+        same ``parent_id`` as that turn's user message, so the turn forked
+        away from it and the model never saw it. pi has no such window: its
+        ``recordBashResult`` appends synchronously.
+        """
+
+        if self._phase != "idle":
+            raise AgentHarnessError(
+                "busy", f"idle_write() requires idle harness (phase={self._phase!r})"
+            )
+        async with self._drain_lock:
+            yield
 
     async def wait_for_idle(self) -> None:
         """Return once no prompt, compaction or tree navigation is running.

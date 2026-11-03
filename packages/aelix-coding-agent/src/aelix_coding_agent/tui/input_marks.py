@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.lexers import Lexer
 
-from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.input import ParsedInput, parse_input_line
 
 if TYPE_CHECKING:
     from prompt_toolkit.document import Document
@@ -64,6 +64,56 @@ def shell_sigil(text: str) -> str:
     if kind == "bash":
         return "!"
     return ""
+
+
+def submitted_input(typed: str, expand: Callable[[str], str]) -> ParsedInput:
+    """What Enter does with the *typed* buffer, whose paste placeholders
+    *expand* turns back into the text they stand for.
+
+    Shell mode, and ``!`` against ``!!``, are read off the typed buffer — what
+    the input draws — and the placeholders are expanded after: a pasted ``!``
+    stays literal text. A placeholder at the start whose paste begins with
+    ``!`` is a prompt, as drawn (#596 verify V1: it ran every pasted line in
+    the shell); ``!`` typed before a paste that begins with ``!`` runs the
+    paste as a ``!`` command, not as a ``!!`` one (Codex 596-06). Everything
+    else is :func:`parse_input_line` of the expanded text, as before.
+    """
+
+    drawn = parse_input_line(typed)
+    if drawn.kind in ("bash", "bash_transient"):
+        return ParsedInput(drawn.kind, expand(drawn.text).strip())
+    expanded = expand(typed)
+    parsed = parse_input_line(expanded)
+    if parsed.kind in ("bash", "bash_transient"):
+        return ParsedInput("prompt", expanded.strip())
+    return parsed
+
+
+class SubmittedLine(str):
+    """A submitted line that carries how :func:`submitted_input` classified it.
+
+    The input queue hands lines to the input loop as text; this keeps the
+    typed buffer's classification with the expanded text, so the loop runs
+    what the input drew. ``after_turn`` marks an Alt+Enter ``!`` line queued
+    to run once the turn is over (#596).
+    """
+
+    parsed: ParsedInput
+    after_turn: bool
+
+    def __new__(cls, text: str, parsed: ParsedInput, *, after_turn: bool = False) -> SubmittedLine:
+        line = super().__new__(cls, text)
+        line.parsed = parsed
+        line.after_turn = after_turn
+        return line
+
+
+def classify_submitted(line: str) -> ParsedInput:
+    """The input loop's read of *line*: the chrome's classification when it made one."""
+
+    if isinstance(line, SubmittedLine):
+        return line.parsed
+    return parse_input_line(line)
 
 
 def mention_spans(line: str) -> list[tuple[int, int]]:
@@ -202,34 +252,65 @@ class InputLexer(Lexer):
         return self._styles().mention
 
 
-def shell_hint(sigil: str, *, running: bool, width: int) -> str:
-    """The status-row words for shell mode, dropped from the least needed until
-    they fit *width* cells (plain text; the caller colours it).
+#: #596 (ADR-0287) — what the status row says while a ``!`` command runs and
+#: Enter on another one is refused (pi's "A bash command is already running").
+SHELL_BUSY_NOTICE = "a ! command is already running"
 
-    While a turn runs, Enter runs the command at once and the turn goes on; a
-    ``!`` command's output reaches the model when the turn is over. Esc there
-    is the turn's interrupt key (the working row says so), so the hint does not
-    offer it.
+
+def shell_hint(
+    sigil: str,
+    *,
+    running: bool,
+    width: int,
+    bare: bool = False,
+    shell_busy: bool = False,
+) -> str:
+    """The status-row words for shell mode, fitted to *width* cells by
+    importance (plain text; the caller colours it).
+
+    The most needed words are kept first and each next one only if it still
+    fits, so what goes at a narrow width is the least needed: the model clause
+    outranks the Enter clause, which outranks "Esc to clear" (#596 verify V8 —
+    at 50 columns ``!!`` lost "the model won't see the output" first).
+
+    While a turn (or a command) runs, Enter runs the command at once and the
+    turn goes on; a ``!`` command's output reaches the model when the turn is
+    over, and Alt+Enter queues the line to run after it. Esc there is the
+    turn's interrupt key, so the hint does not offer it. A *bare* sigil runs
+    nothing, so it makes no promise about Enter; and while another ``!``
+    command runs (*shell_busy*), Enter is refused and the hint says why.
     """
 
     if sigil == "!":
         output = "the model sees the output next turn" if running else "the model sees the output"
     else:
         output = "the model won't see the output"
-    parts = [(0, f"{sigil} shell"), (2, "Enter runs it now" if running else "Enter runs it")]
-    parts.append((3, output))
-    if not running:
-        parts.append((1, "Esc to clear"))
-    kept = list(parts)
-    while len(kept) > 1 and len(" · ".join(p for _, p in kept)) > width:
-        kept.remove(max(kept, key=lambda item: item[0]))
+    parts: list[tuple[int, str]] = [(0, f"{sigil} shell")]
+    if shell_busy:
+        parts.append((1, SHELL_BUSY_NOTICE))
+    elif not bare:
+        parts.append((3, "Enter runs it now" if running else "Enter runs it"))
+    parts.append((2, output))
+    if running:
+        if not bare:
+            parts.append((5, "Alt+Enter runs it after the turn"))
+    else:
+        parts.append((4, "Esc to clear"))
+    kept: list[tuple[int, str]] = []
+    for part in sorted(parts, key=lambda item: item[0]):
+        trial = [p for p in parts if p in kept or p == part]
+        if not kept or len(" · ".join(p for _, p in trial)) <= width:
+            kept = trial
     text = " · ".join(p for _, p in kept)
     return text[: max(0, width)]
 
 
 __all__ = [
+    "SHELL_BUSY_NOTICE",
     "InputLexer",
     "InputStyles",
+    "SubmittedLine",
+    "classify_submitted",
     "input_styles",
     "mention_spans",
     "no_color",
@@ -238,4 +319,5 @@ __all__ = [
     "shell_hint",
     "shell_sigil",
     "statusline_style",
+    "submitted_input",
 ]

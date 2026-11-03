@@ -30,9 +30,12 @@ from aelix_coding_agent.tui.chrome import (
     _ModePrompt,
 )
 from aelix_coding_agent.tui.completion import _extract_mention
-from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.input import ParsedInput, parse_input_line
 from aelix_coding_agent.tui.input_marks import (
+    SHELL_BUSY_NOTICE,
     InputLexer,
+    SubmittedLine,
+    classify_submitted,
     input_styles,
     mention_spans,
     paint_shell,
@@ -40,6 +43,7 @@ from aelix_coding_agent.tui.input_marks import (
     shell_hint,
     shell_sigil,
     statusline_style,
+    submitted_input,
 )
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.application.current import set_app
@@ -149,8 +153,12 @@ def test_no_color_underlines_references() -> None:
 @pytest.mark.parametrize("width", [20, 30, 50, 80, 120])
 @pytest.mark.parametrize("sigil", ["!", "!!"])
 @pytest.mark.parametrize("running", [False, True])
-def test_shell_hint_fits_and_keeps_the_mode_first(width: int, sigil: str, running: bool) -> None:
-    hint = shell_hint(sigil, running=running, width=width)
+@pytest.mark.parametrize("bare", [False, True])
+@pytest.mark.parametrize("shell_busy", [False, True])
+def test_shell_hint_fits_and_keeps_the_mode_first(
+    width: int, sigil: str, running: bool, bare: bool, shell_busy: bool
+) -> None:
+    hint = shell_hint(sigil, running=running, width=width, bare=bare, shell_busy=shell_busy)
     assert len(hint) <= width
     assert hint.startswith(f"{sigil} shell"[:width])
 
@@ -163,14 +171,98 @@ def test_shell_hint_words() -> None:
         "!! shell · Enter runs it · the model won't see the output · Esc to clear"
     )
     # Mid-turn Enter runs it at once; the output reaches the model next turn,
-    # and Esc is the turn's interrupt key, so it is not offered.
+    # and Esc is the turn's interrupt key, so it is not offered. Alt+Enter
+    # queues it to run after the turn (the owner's 2026-11-03 decision).
     assert shell_hint("!", running=True, width=200) == (
+        "! shell · Enter runs it now · the model sees the output next turn"
+        " · Alt+Enter runs it after the turn"
+    )
+    assert shell_hint("!", running=True, width=80) == (
         "! shell · Enter runs it now · the model sees the output next turn"
     )
     assert "Esc" not in shell_hint("!!", running=True, width=200)
-    # Narrow: the output clause goes first, Esc last.
-    assert shell_hint("!", running=False, width=50) == "! shell · Enter runs it · Esc to clear"
-    assert shell_hint("!", running=False, width=25) == "! shell · Esc to clear"
+    # Narrow (verify V8): what the model sees outranks Enter, which outranks
+    # Esc; each clause is kept only while it still fits.
+    assert shell_hint("!", running=False, width=50) == (
+        "! shell · the model sees the output · Esc to clear"
+    )
+    assert shell_hint("!!", running=False, width=50) == "!! shell · the model won't see the output"
+    assert shell_hint("!", running=False, width=25) == "! shell · Enter runs it"
+
+
+def test_a_bare_sigil_makes_no_promise_about_enter() -> None:
+    # Verify V8: Enter on a bare ``!`` runs nothing.
+    for running in (False, True):
+        for sigil in ("!", "!!"):
+            assert "Enter" not in shell_hint(sigil, running=running, width=200, bare=True)
+    assert shell_hint("!", running=False, width=200, bare=True) == (
+        "! shell · the model sees the output · Esc to clear"
+    )
+    assert shell_hint("!", running=True, width=200, bare=True) == (
+        "! shell · the model sees the output next turn"
+    )
+
+
+def test_while_a_shell_command_runs_the_hint_says_enter_is_refused() -> None:
+    # Verify V10 — pi's "A bash command is already running".
+    hint = shell_hint("!", running=True, width=120, shell_busy=True)
+    assert hint == (
+        f"! shell · {SHELL_BUSY_NOTICE} · the model sees the output next turn"
+        " · Alt+Enter runs it after the turn"
+    )
+    assert "Enter runs it now" not in hint
+    # It is the first clause to stay, after the mode itself.
+    assert shell_hint("!", running=False, width=40, shell_busy=True) == (
+        f"! shell · {SHELL_BUSY_NOTICE}"
+    )
+
+
+# === pure: what Enter does with a paste ======================================
+
+
+def _expander(registry: dict[str, str]):  # noqa: ANN202
+    def expand(text: str) -> str:
+        for key, value in registry.items():
+            text = text.replace(key, value)
+        return text
+
+    return expand
+
+
+_PASTE = "[Pasted text #1 +6 lines]"
+
+
+@pytest.mark.parametrize(
+    ("typed", "paste", "expected"),
+    [
+        # Verify V1: a collapsed paste that begins with ``!`` is a prompt, as drawn.
+        (_PASTE, "!echo PASTED\nl1\nl2", ParsedInput("prompt", "!echo PASTED\nl1\nl2")),
+        (f"{_PASTE} and more", "![img](x.png)", ParsedInput("prompt", "![img](x.png) and more")),
+        # Codex 596-06: ``!`` typed before a paste that begins with ``!`` runs the
+        # paste as a ``!`` command (recorded), not as ``!!`` (not recorded).
+        (f"!{_PASTE}", "!echo SECRET\nl1", ParsedInput("bash", "!echo SECRET\nl1")),
+        (f"!! {_PASTE}", " ls\n", ParsedInput("bash_transient", "ls")),
+        (f"!cat {_PASTE}", "a.txt", ParsedInput("bash", "cat a.txt")),
+        # Unchanged where typed and expanded agree.
+        ("!ls", "", ParsedInput("bash", "ls")),
+        (f"hello {_PASTE}", "world", ParsedInput("prompt", "hello world")),
+        (_PASTE, "/quit\n", ParsedInput("quit")),
+    ],
+)
+def test_enter_reads_shell_mode_off_the_typed_buffer(
+    typed: str, paste: str, expected: ParsedInput
+) -> None:
+    parsed = submitted_input(typed, _expander({_PASTE: paste}))
+    assert parsed == expected
+    # And the input draws exactly that mode.
+    assert bool(shell_sigil(typed)) == (expected.kind in ("bash", "bash_transient"))
+
+
+def test_a_submitted_line_carries_its_classification_to_the_input_loop() -> None:
+    line = SubmittedLine("!echo PASTED", ParsedInput("prompt", "!echo PASTED"))
+    assert line == "!echo PASTED" and not line.after_turn
+    assert classify_submitted(line) == ParsedInput("prompt", "!echo PASTED")
+    assert classify_submitted("!echo PASTED") == ParsedInput("bash", "echo PASTED")
 
 
 # === pure: the lexer ===========================================================
@@ -329,17 +421,23 @@ async def test_esc_clears_a_shell_line_end_to_end() -> None:
 
 async def test_enter_mid_turn_runs_a_shell_line_and_steers_the_rest() -> None:
     async with _chrome(run_app=True) as (chrome, pipe):
-        shells: list[str] = []
+        shells: list[tuple[ParsedInput, bool]] = []
         steers: list[str] = []
-        chrome.on_shell = shells.append
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append((parsed, after_turn))
         chrome.on_steer = steers.append
         await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
         chrome.set_running(True)
 
         pipe.send_text("!echo hi\r")
-        await wait_until(lambda: shells == ["!echo hi"], what="Enter to run the ! line")
+        await wait_until(
+            lambda: shells == [(ParsedInput("bash", "echo hi"), False)],
+            what="Enter to run the ! line",
+        )
         pipe.send_text("!!git status\r")
-        await wait_until(lambda: shells[-1:] == ["!!git status"], what="Enter to run the !! line")
+        await wait_until(
+            lambda: shells[-1:] == [(ParsedInput("bash_transient", "git status"), False)],
+            what="Enter to run the !! line",
+        )
         pipe.send_text("keep going\r")
         await wait_until(lambda: steers == ["keep going"], what="Enter to steer prose")
         assert chrome.buffer.text == ""
@@ -348,7 +446,155 @@ async def test_enter_mid_turn_runs_a_shell_line_and_steers_the_rest() -> None:
         chrome.set_running(False)
         pipe.send_text("!pwd\r")
         assert await asyncio.wait_for(chrome.get_input(), timeout=5) == "!pwd"
-        assert shells == ["!echo hi", "!!git status"]
+        assert len(shells) == 2
+
+
+async def test_a_bare_sigil_entered_mid_turn_runs_nothing_and_steers_nothing() -> None:
+    # Verify mutation survivor ``bare-bang-midturn-runs``.
+    async with _chrome(run_app=True) as (chrome, pipe):
+        shells: list[object] = []
+        steers: list[str] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append(parsed)
+        chrome.on_steer = steers.append
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        chrome.set_running(True)
+        for bare in ("!", "!!"):
+            pipe.send_text(f"{bare}\r")
+            await wait_until(lambda: chrome.buffer.text == "", what=f"Enter on a bare {bare}")
+        pipe.send_text("barrier\r")
+        await wait_until(lambda: steers == ["barrier"], what="the barrier to steer")
+        assert shells == []
+
+
+async def test_a_paste_that_begins_with_a_bang_steers_mid_turn_as_drawn() -> None:
+    # Verify V1 (blocker): drawn ``❯ [Pasted text #1 +14 lines]``, Enter ran all
+    # fourteen lines in the shell. On the base it steered, and it does again.
+    async with _chrome(run_app=True) as (chrome, pipe):
+        shells: list[object] = []
+        steers: list[str] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append(parsed)
+        chrome.on_steer = steers.append
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        chrome.set_running(True)
+        body = "!echo PASTE_MID_RAN\n" + "\n".join(f"echo line{i}" for i in range(13))
+        pipe.send_text(f"\x1b[200~{body}\x1b[201~")
+        await wait_until(lambda: "[Pasted text" in chrome.buffer.text, what="the paste to collapse")
+        assert not shell_sigil(chrome.buffer.text)  # drawn as a prompt
+        pipe.send_text("\r")
+        await wait_until(lambda: steers == [body], what="Enter to steer the paste")
+        assert shells == []
+
+
+async def test_a_bang_typed_before_a_bang_paste_runs_as_a_recorded_bang() -> None:
+    # Codex 596-06: drawn ``!`` (recorded), it ran as ``!!`` (not recorded).
+    async with _chrome(run_app=True) as (chrome, pipe):
+        shells: list[ParsedInput] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append(parsed)
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        chrome.set_running(True)
+        body = "!echo SECRET\n" + "\n".join(f"echo l{i}" for i in range(6))
+        pipe.send_text("!")
+        await wait_until(lambda: chrome.buffer.text == "!", what="typing !")
+        pipe.send_text(f"\x1b[200~{body}\x1b[201~")
+        await wait_until(lambda: "[Pasted text" in chrome.buffer.text, what="the paste to collapse")
+        assert shell_sigil(chrome.buffer.text) == "!"
+        pipe.send_text("\r")
+        await wait_until(lambda: bool(shells), what="Enter to run the line")
+        assert shells == [ParsedInput("bash", body)]
+
+
+async def test_an_idle_paste_that_begins_with_a_bang_is_submitted_as_a_prompt() -> None:
+    async with _chrome(run_app=True) as (chrome, pipe):
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        body = "!echo IDLE_PASTE\n" + "\n".join(f"echo l{i}" for i in range(6))
+        pipe.send_text(f"\x1b[200~{body}\x1b[201~")
+        await wait_until(lambda: "[Pasted text" in chrome.buffer.text, what="the paste to collapse")
+        pipe.send_text("\r")
+        line = await asyncio.wait_for(chrome.get_input(), timeout=5)
+        assert line == body
+        assert classify_submitted(line) == ParsedInput("prompt", body)
+
+
+async def test_a_shell_line_runs_at_once_while_anything_holds_the_session() -> None:
+    # Codex 596-01/05: an extension's turn or a ``/compact`` never set
+    # ``running``, so the line went to the input queue and waited.
+    async with _chrome(run_app=True) as (chrome, pipe):
+        busy = {"on": True}
+        shells: list[ParsedInput] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append(parsed)
+        chrome.busy_provider = lambda: busy["on"]
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        assert not chrome.running
+        pipe.send_text("!echo NOW\r")
+        await wait_until(lambda: shells == [ParsedInput("bash", "echo NOW")], what="the ! to run")
+        assert chrome._input_queue.empty()
+        chrome.buffer.document = Document("!ls")
+        assert "Enter runs it now" in chrome._render_status()
+
+
+async def test_enter_on_a_second_shell_line_is_refused_and_the_draft_kept() -> None:
+    # Verify V10: pi refuses a second ``!`` while one runs.
+    async with _chrome(run_app=True) as (chrome, pipe):
+        running = {"on": True}
+        shells: list[ParsedInput] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append(parsed)
+        chrome.shell_running = lambda: running["on"]
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        chrome.set_running(True)
+        pipe.send_text("!echo TWO\r")
+        await wait_until(lambda: chrome.buffer.text == "!echo TWO", what="typing")
+        await asyncio.sleep(0.2)
+        assert shells == [] and chrome.buffer.text == "!echo TWO"
+        assert SHELL_BUSY_NOTICE in chrome._render_status()
+        # Idle too: it is not queued behind the running one.
+        chrome.set_running(False)
+        pipe.send_text("\r")
+        await asyncio.sleep(0.2)
+        assert chrome._input_queue.empty() and chrome.buffer.text == "!echo TWO"
+        running["on"] = False
+        chrome.set_running(True)
+        pipe.send_text("\r")
+        await wait_until(lambda: shells == [ParsedInput("bash", "echo TWO")], what="the ! to run")
+
+
+async def test_alt_enter_on_a_shell_line_mid_turn_queues_a_shell_command() -> None:
+    # The owner's 2026-11-03 decision (a): a shell command that runs after the
+    # turn, not the text sent to the model as a follow-up.
+    async with _chrome(run_app=True) as (chrome, pipe):
+        shells: list[tuple[ParsedInput, bool]] = []
+        follow_ups: list[str] = []
+        chrome.on_shell = lambda parsed, after_turn=False: shells.append((parsed, after_turn))
+        chrome.on_follow_up = follow_ups.append
+        await wait_until(lambda: chrome.app.is_running, what="the chrome to start")
+        pipe.send_text("!echo IDLE\x1b\r")  # idle Alt+Enter: nothing, as for any line
+        await asyncio.sleep(0.3)
+        assert shells == [] and chrome.buffer.text == "!echo IDLE"
+        chrome.buffer.reset()
+        chrome.set_running(True)
+        pipe.send_text("!\x1b\r")  # a bare sigil: nothing
+        await asyncio.sleep(0.3)
+        assert shells == []
+        chrome.buffer.reset()
+        pipe.send_text("!echo AFTER\x1b\r")
+        await wait_until(
+            lambda: shells == [(ParsedInput("bash", "echo AFTER"), True)],
+            what="Alt+Enter to queue the ! line",
+        )
+        assert chrome.buffer.text == ""
+        pipe.send_text("more prose\x1b\r")
+        await wait_until(lambda: follow_ups == ["more prose"], what="a prose follow-up")
+
+
+async def test_the_shell_hint_is_hidden_while_a_modal_is_open() -> None:
+    # Verify mutation survivor ``hint-over-modal`` (V5).
+    from prompt_toolkit.layout.containers import Window
+
+    async with _chrome() as (chrome, _pipe):
+        chrome.buffer.document = Document("!ls")
+        assert "! shell" in chrome._render_status()
+        chrome.mount_modal(Window(height=1))
+        assert chrome.is_modal_open()
+        assert "! shell" not in chrome._render_status()
 
 
 async def test_status_row_says_what_enter_does_ahead_of_extension_statuses() -> None:
