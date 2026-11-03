@@ -1286,12 +1286,40 @@ async def test_json_nested_past_the_parser_asks_instead_of_raising(
     if source == "settings":
         (repo / ".aelix").mkdir()
         (repo / ".aelix" / "settings.json").write_text(nested)
+        # Whether ``json`` raises ``RecursionError`` on this text is the
+        # platform's call: 3.14 measures the C stack, and on Linux CI's larger
+        # stack it read to the end and raised ``JSONDecodeError`` instead
+        # (PR #656, ubuntu py3.14), which names nothing, rightly — the loader
+        # cannot read that file either. So the parser's give-up is forced here.
+        def _gives_up(text: str, *args: Any, **kwargs: Any) -> Any:
+            if text.startswith("[[[["):
+                raise RecursionError("maximum recursion depth exceeded")
+            return json.loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(permission, "json", SimpleNamespace(loads=_gives_up, dumps=json.dumps))
     else:
         monkeypatch.setenv(permission.PARENT_ROOTS_ENV, nested)
 
     assert await _verdicts(repo, mode) == (True, 1)
     env = {permission.PARENT_ROOTS_ENV: nested}
     assert permission.pass_loader_roots_to_child(env, str(repo)) == {permission.PARENT_ROOTS_ENV: nested}
+
+
+@pytest.mark.parametrize("mode", [PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO])
+async def test_an_unclosed_deep_settings_file_never_raises_out_of_the_gate(
+    repo: Path, mode: PermissionMode
+) -> None:
+    """The real text, whatever the platform's parser does with it.
+
+    ``RecursionError`` (macOS, Python <= 3.13) asks; ``JSONDecodeError`` (3.14
+    on a large C stack) names nothing, as any file that does not parse — the
+    loader cannot read it either. Neither escapes ``_on_tool_call``.
+    """
+
+    (repo / ".aelix").mkdir()
+    (repo / ".aelix" / "settings.json").write_text("[" * 100_000)
+
+    assert await _verdicts(repo, mode) in {(True, 1), (False, 0)}
 
 
 def test_yaml_nested_past_the_parser_at_this_depth_asks(
