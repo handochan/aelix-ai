@@ -399,7 +399,7 @@ def _child_permission_extension(mode: PermissionMode) -> PermissionExtension:
 
 @pytest.mark.parametrize("mode", _PARENTS)
 async def test_write_authority_matches_the_real_permission_ladder(
-    mode: PermissionMode, tmp_path: object
+    mode: PermissionMode, tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """THE PREDICATE PIN — ``grants_write_authority`` is not a taste judgement.
 
@@ -421,6 +421,8 @@ async def test_write_authority_matches_the_real_permission_ladder(
     """
 
     cwd = str(tmp_path)
+    # The gate lists the agent directory for the links a load follows (#646).
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", f"{cwd}-agent")
     event = ToolCallHookEvent(
         tool_call_id="t1",
         tool_name="write",

@@ -589,7 +589,9 @@ class RpcControlPlane:
         else:
             raise ValueError("tool must be a tool name")
         mode = self.posture.get()
-        decision = evaluate_tool_call(mode, provenance, args, self.runtime.cwd or ".")
+        decision = evaluate_tool_call(
+            mode, provenance, args, self.runtime.cwd or ".", settings=self.settings
+        )
         return {"decision": decision, "provenance": provenance, "mode": mode.value}
 
     def resources(self) -> dict[str, Any]:

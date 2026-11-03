@@ -1441,7 +1441,8 @@ class PrintChannel:
                 model_pin=limits.model,
                 session_path=plan.session_path,
             )
-            env = self._env_builder(profile)
+            from aelix_coding_agent.builtin.permission import pass_loader_roots_to_child
+            env = pass_loader_roots_to_child(self._env_builder(profile), plan.parent_cwd)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,

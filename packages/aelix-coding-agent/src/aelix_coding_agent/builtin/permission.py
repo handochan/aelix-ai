@@ -38,13 +38,18 @@ the permission prompt is shown.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import ntpath
 import os.path
 import posixpath
-from collections.abc import Awaitable, Callable
+import stat
+import unicodedata
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.harness.hooks import (
     SessionShutdownHookEvent,
@@ -65,6 +70,9 @@ from aelix_coding_agent.builtin.permission_mode import (
 from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
 from aelix_coding_agent.extensions.ext_ui import select_with_cancel
 from aelix_coding_agent.tools.provenance import ToolProvenance, builtin_provenance
+
+if TYPE_CHECKING:
+    from aelix_ai.settings import SettingsManager
 
 # Shell metacharacters that introduce a NEW command / sub-command. A
 # session-approved bash prefix must NEVER auto-allow a command that contains one
@@ -478,6 +486,9 @@ _SENSITIVE_BASENAMES = frozenset(
 # ``auto-accept-edits`` child wrote ``.agents/skills/x/SKILL.md`` unasked and the
 # parent's next ``/reload`` put its text in the system prompt; started in
 # ``$HOME``, it planted a skill every later project loads, ``--no-approve`` or not.
+#
+# These are NAMES on the write's own path. The folders behind a link that has
+# one of these names are a second rule, :func:`_loader_resource_roots` (#646).
 _SENSITIVE_DIR_COMPONENTS = frozenset(
     {".aelix", ".agents", ".ssh", ".gnupg", "cron.d", "cron.daily"}
 )
@@ -515,7 +526,775 @@ def _write_guard_passes(abs_path: str, abs_cwd: str) -> bool:
     return not any(comp in _SENSITIVE_DIR_COMPONENTS for comp in components)
 
 
-def _is_auto_allowable_write(path: str, cwd: str) -> bool:
+_SETTINGS_PATH_KEYS = ("skills", "prompts")
+
+_PROJECT_SETTINGS_READ_LIMIT = 1 << 20
+"""Bytes of ``.aelix/settings.json`` the gate reads; a longer file is no proof (asks)."""
+
+_PROJECT_LIST_LIMIT = 64
+"""Entries one list a project wrote may hold — a ``skills`` / ``prompts`` value of
+its settings file, a ``skills`` / ``extensions`` value of one of its agent
+profiles — before the gate stops and asks (#646 verify V4). Measured on
+``98b9ea46``: 75,684 entries in a 1 MiB file cost 1.13 s per write decision, on
+the event loop."""
+
+_PROJECT_PROFILE_LIMIT = 64
+"""Agent profiles in one project ``.aelix/agents`` the gate reads; more asks."""
+
+_PROFILE_READ_LIMIT = 1 << 16
+"""Bytes of one agent profile the gate reads; a longer profile asks."""
+
+_PROJECT_PROFILE_TEXT_LIMIT = 12 << 10
+"""Characters of frontmatter the project profiles ONE decision reads may hold in
+all; past it, the write asks (#646 verify R2). ``yaml.safe_load`` is pure
+Python and the decision runs on the event loop: measured on ``d937442a``, 64
+profiles of 63 KiB cost the first decision of every process 5.1–26.5 s, and a
+flow list costs 3.7 ms a KiB. Counted whether a profile was parsed before or
+not, so the answer does not depend on what this process saw."""
+
+_PROJECT_PROFILE_FLOW_LIMIT = 16
+"""``[`` and ``{`` one project profile's frontmatter may hold; more asks (verify
+R2). The scanner looks at every one it has open again for each token near it:
+one profile of 4,000 ``[`` cost 0.43 s whatever its size, and the text limit
+filled with 1 KiB profiles that open this many each, then list, cost 65 ms at
+32 and 50 ms at 16. Each is counted, so no ``]`` written inside quotes can
+hide one."""
+
+_DECISION_BUDGET = 8192
+"""Folder entries listed plus links followed for ONE write decision; past it the
+write asks (#646 verify V4). A hostile repo can ship any number of links and
+folders under a root, and every decision walks them again."""
+
+_LINKS_PER_PATH = 64
+"""Links one path may go through before the gate gives up on it and asks. No
+kernel opens a path through that many — Linux stops at 40, macOS at 32, Windows
+at 63 — and ``os.path.realpath`` follows any number (a 300-link chain cost
+0.66 ms per root on ``98b9ea46``)."""
+
+_RECORD_LIMIT = 16
+"""Folders or files one :data:`PARENT_ROOTS_ENV` record may list; more asks."""
+
+_LOADER_FAMILIES = ("skills", "extensions", "agents", "prompt-templates", "bin")
+"""The folders of a ``.aelix`` / agent directory a load lists, and so the ones
+whose links it follows (``cli/project_trust.py``, ``agents/discovery.py``) —
+and ``bin``, whose programs the bash tool runs from the front of ``PATH``
+(``util/shell_env.py``; #646 verify R4)."""
+
+_PROFILE_PATH_KEYS = ("skills", "extensions")
+
+_NT = os.name == "nt"
+
+_MOUNT_POINT = 0xA0000003
+"""``IO_REPARSE_TAG_MOUNT_POINT``, a junction's ``st_reparse_tag`` (``stat`` has
+the name only on Windows)."""
+
+PARENT_ROOTS_ENV = "AELIX_PARENT_LOADER_ROOTS"
+"""What a delegating parent's loader reads, for its children's write gate (#646 V3).
+
+JSON ``{"cwds": [...], "files": [...]}``: the working directory of every
+process above this one in the delegation, and the ``$AELIX_MCP_CONFIG`` file
+each of them read — the child's environment drops that variable
+(``aelix_agents/print_channel.py`` ``build_child_env``). A child started with
+the ``agent`` tool's ``cwd`` in a subfolder computes its roots from that
+subfolder, so without this record the parent's ``.aelix`` and the paths its
+settings name were never roots for it. Written by
+:func:`pass_loader_roots_to_child`; the gate only ever ADDS what it lists.
+``AELIX_`` is a prefix a project ``.env`` cannot set
+(``cli/runtime_bootstrap.py`` ``_DOTENV_NEVER``).
+"""
+
+
+class _Budget:
+    """What one write decision may spend on the filesystem (#646 verify V4) and on YAML (R2)."""
+
+    __slots__ = ("left", "text")
+
+    def __init__(self) -> None:
+        self.left = _DECISION_BUDGET
+        self.text = _PROJECT_PROFILE_TEXT_LIMIT
+
+    def spend(self, cost: int = 1) -> None:
+        self.left -= cost
+        if self.left < 0:
+            raise OSError("more folders and links than one write decision may look at")
+
+    def parse(self, cost: tuple[int, int]) -> None:
+        """Charge one project profile's :func:`_frontmatter_cost`, before it is parsed."""
+
+        self.text -= cost[0]
+        if self.text < 0 or cost[1] > _PROJECT_PROFILE_FLOW_LIMIT:
+            raise OSError("the project's agent profiles hold more YAML than one write decision may parse")
+
+
+def _realpath(path: str, budget: _Budget, cwd: str = "") -> str:
+    """``os.path.realpath`` of an absolute ``path``, as the OS opens it, at a bounded cost.
+
+    The ``..`` in ``lnk/../x`` is applied to the folder ``lnk`` POINTS AT: the
+    path is resolved one name at a time and never normalized first, which
+    ``realpath(normpath(p))`` got wrong (#646 verify V2: ``lnk ->
+    .agents/skills/existing`` made ``lnk/../v/SKILL.md`` a project skill). On
+    POSIX this is ``posixpath.realpath``'s walk with a count: past
+    :data:`_LINKS_PER_PATH` links, or past the decision's budget, it raises.
+    Windows resolves ``..`` by name before it opens anything, which
+    ``ntpath.realpath`` does too, and making a link there takes a privilege;
+    there each link is judged against ``cwd`` before it is followed
+    (:func:`_realpath_nt`).
+    """
+
+    if _NT:
+        return _realpath_nt(path, budget, cwd)
+    if not path.startswith("/"):
+        path = os.getcwd() + "/" + path
+    rest: list[str | None] = list(reversed(path.split("/")))
+    current = "/"
+    seen: dict[str, str | None] = {}
+    links = 0
+    while rest:
+        name = rest.pop()
+        if name is None:
+            link = rest.pop()
+            if link is not None:
+                seen[link] = current
+            continue
+        if not name or name == ".":
+            continue
+        if name == "..":
+            current = current[: current.rindex("/")] or "/"
+            continue
+        candidate = current + name if current == "/" else current + "/" + name
+        if candidate in seen:
+            # A link met again. ``None``: one being resolved — a loop, which
+            # ``realpath`` leaves as it is and the OS refuses to open.
+            cached = seen[candidate]
+            current = candidate if cached is None else cached
+            continue
+        try:
+            if not stat.S_ISLNK(os.lstat(candidate).st_mode):
+                current = candidate
+                continue
+            target = os.readlink(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            current = candidate
+            continue
+        links += 1
+        if links > _LINKS_PER_PATH:
+            raise OSError(f"{path} goes through more than {_LINKS_PER_PATH} links")
+        budget.spend()
+        if target.startswith("/"):
+            current = "/"
+        seen[candidate] = None
+        rest += [candidate, None]
+        rest += reversed(target.split("/"))
+    return current
+
+
+def _realpath_nt(path: str, budget: _Budget, cwd: str) -> str:
+    """:func:`_realpath` on Windows: one link at a time, none followed before it is judged (#646 verify R3).
+
+    ``ntpath.realpath`` follows a whole chain inside one ``CreateFileW``, so a
+    link a repository ships whose SECOND hop is ``\\\\host\\share`` — or a
+    root that is itself such a link — reached the share before anything
+    looked at it. Here ``..`` is applied by name first, as Windows applies it;
+    then each name is ``lstat``-ed from the drive down, a link or junction is
+    read by :func:`_link_target`, which refuses one on another machine than
+    ``cwd``, and the walk starts again on the path it makes. The link-free
+    result goes through ``os.path.realpath`` only for its spelling (case,
+    8.3 names); there is nothing left for it to follow.
+    """
+
+    if _is_remote(path, cwd):
+        raise OSError(f"{path} is on another machine")
+    path = os.path.abspath(path)
+    links = 0
+    while True:
+        drive, rest = os.path.splitdrive(path)
+        names = [name for name in rest.replace(os.altsep or os.sep, os.sep).split(os.sep) if name]
+        current = drive + os.sep
+        for index, name in enumerate(names):
+            candidate = os.path.join(current, name)
+            try:
+                if not _is_link(os.lstat(candidate)):
+                    current = candidate
+                    continue
+            except (FileNotFoundError, NotADirectoryError):
+                # Nothing below it exists: ``realpath`` follows nothing more.
+                return os.path.realpath(path)
+            links += 1
+            if links > _LINKS_PER_PATH:
+                raise OSError(f"{path} goes through more than {_LINKS_PER_PATH} links")
+            budget.spend()
+            path = os.path.normpath(os.path.join(current, _link_target(candidate, cwd), *names[index + 1 :]))
+            break
+        else:
+            return os.path.realpath(current)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    """Whether an ``lstat`` result is a link the OS follows — a symlink, or a Windows junction."""
+
+    return stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) == _MOUNT_POINT
+
+
+def _link_target(link: str, cwd: str) -> str:
+    """What ``link`` points at; ``OSError`` if that is on another machine than ``cwd`` (:func:`_is_remote`).
+
+    ``os.readlink`` gives a junction, and an absolute link, on Windows as
+    ``\\\\?\\C:\\…`` or ``\\\\?\\UNC\\host\\share\\…``; that prefix comes off
+    first, as ``ntpath.realpath`` takes it off, so a link to a local drive is
+    not taken for a device path.
+    """
+
+    target = os.readlink(link)
+    if not _NT:
+        return target
+    spelled = target.replace("/", "\\")
+    if spelled[:8].upper() == "\\\\?\\UNC\\":
+        target = "\\\\" + target[8:]
+    elif spelled[:4] == "\\\\?\\" and target[5:6] == ":":
+        target = target[4:]
+    if _is_remote(target, cwd):
+        raise OSError(f"{link} points at another machine")
+    return target
+
+
+def _is_remote(path: str, cwd: str) -> bool:
+    """Whether looking at ``path`` would reach a machine the ``cwd`` is not on (#646 verify V5).
+
+    Windows only. ``stat`` of ``\\\\host\\share\\x`` — ``//host/share/x`` is the
+    same path — opens an SMB session to ``host``, and the session sends the
+    user's NTLM hash, so a project file that names one must not be looked at.
+    A device path (``\\\\?\\``, ``\\\\.\\``) goes with them: it can spell a UNC
+    path too, and so does the NT object namespace (``\\??\\UNC\\host\\share``),
+    which Win32 hands on unparsed and which ``ntpath`` before 3.13 takes for a
+    rooted path, not a drive (verify R3). A share the cwd is on itself is not
+    remote: the process already reads it.
+    """
+
+    if not _NT:
+        return False
+    if path.replace("/", "\\").startswith("\\??\\"):
+        return True
+    drive = ntpath.splitdrive(path)[0].replace("/", "\\")
+    if not drive.startswith("\\\\"):
+        return False
+    return ntpath.normcase(drive) != ntpath.normcase(ntpath.splitdrive(cwd)[0])
+
+
+def _refuse_remote(paths: list[str], cwd: str) -> list[str]:
+    """``paths``, unless one of them is :func:`_is_remote`: then the write asks."""
+
+    for path in paths:
+        if _is_remote(path, cwd):
+            raise OSError(f"{path} is on another machine")
+    return paths
+
+
+def _read_regular(path: str, limit: int) -> bytes | None:
+    """The bytes of ``path`` if it is a regular file, ``None`` if it is not one or is missing.
+
+    It never blocks: anything but a regular file (a FIFO, a directory) is
+    ``None``, checked before the open and again on the open descriptor, which
+    is opened non-blocking. An ``OSError``, or a file over ``limit`` bytes,
+    reaches the caller.
+    """
+
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(fd, 65536):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > limit:
+                raise OSError(f"{path} is over {limit} bytes")
+    finally:
+        os.close(fd)
+    return b"".join(chunks)
+
+
+def _project_settings_lists(abs_cwd: str, budget: _Budget) -> dict[str, object]:
+    """The ``skills`` and ``prompts`` values of ``<cwd>/.aelix/settings.json``, WHATEVER THE TRUST.
+
+    Read here, not through the manager, because a delegated child runs with
+    ``--no-approve`` in every project that has this file
+    (``aelix_agents/trust.py`` ``child_trust_argv``): its manager never opens
+    it (ADR-0252 §A), while the trusted parent loads the paths it names on the
+    next ``/reload``. Nothing is applied and nothing is reported, and it can
+    only make the gate ask more. Read by :func:`_read_regular`, up to
+    :data:`_PROJECT_SETTINGS_READ_LIMIT` bytes, at the path :func:`_realpath`
+    gives it. Text that does not parse names nothing — the loader reads
+    nothing from it either. Text nested past the parser is no proof of that:
+    whether ``json`` gives up depends on how deep the stack already is, so its
+    ``RecursionError`` reaches the caller and the write asks (verify R1).
+    """
+
+    from aelix_coding_agent.cli.config import CONFIG_DIR_NAME
+
+    data = _read_regular(
+        _realpath(os.path.join(abs_cwd, CONFIG_DIR_NAME, "settings.json"), budget, abs_cwd),
+        _PROJECT_SETTINGS_READ_LIMIT,
+    )
+    if data is None:
+        return {}
+    try:
+        parsed = json.loads(data.decode("utf-8").removeprefix("﻿"))
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    lists: dict[str, object] = {key: parsed.get(key) for key in _SETTINGS_PATH_KEYS}
+    skills = lists["skills"]
+    if isinstance(skills, dict):
+        # pi's old ``{"customDirectories": [...]}`` form, as ``SettingsManager._list_under`` reads it.
+        lists["skills"] = skills.get("customDirectories")
+    return lists
+
+
+def _plain_paths(raw: object, base: str, *, project_cwd: str | None = None) -> list[str]:
+    """The plain entries of one settings list, resolved as the loader resolves them.
+
+    ``cli/entry.py`` ``_settings_bases``, ``resource_filter.source_path``:
+    against ``base``. A list the project at ``project_cwd`` wrote is bounded by
+    :data:`_PROJECT_LIST_LIMIT` and kept on the machine that cwd is on
+    (:func:`_is_remote`); past either, the write asks.
+    """
+
+    from aelix_coding_agent.core.resource_filter import (
+        source_entries,
+        source_path,
+        validate_entries,
+    )
+
+    if project_cwd is not None and isinstance(raw, list) and len(raw) > _PROJECT_LIST_LIMIT:
+        raise OSError(f"a list in the project's settings holds more than {_PROJECT_LIST_LIMIT} entries")
+    entries, _problems = validate_entries(raw)
+    paths = [source_path(entry, base) for entry in source_entries(entries)]
+    return paths if project_cwd is None else _refuse_remote(paths, project_cwd)
+
+
+def _project_settings_paths(abs_cwd: str, budget: _Budget) -> list[str]:
+    """The plain ``skills`` / ``prompts`` paths of ``<cwd>/.aelix/settings.json``, read from disk."""
+
+    from aelix_coding_agent.cli.config import CONFIG_DIR_NAME
+
+    base = os.path.join(abs_cwd, CONFIG_DIR_NAME)
+    paths: list[str] = []
+    for raw in _project_settings_lists(abs_cwd, budget).values():
+        paths += _plain_paths(raw, base, project_cwd=abs_cwd)
+    return paths
+
+
+def _manager_resource_paths(abs_cwd: str, settings: SettingsManager | None) -> list[str]:
+    """The global settings file, and the plain ``skills`` / ``prompts`` paths the manager knows.
+
+    The global file is read only through the process's manager, which also
+    gives the copies loaded at launch — ``/reload`` and the next launch read
+    the disk, ``/agents use`` the loaded copy. A global file that does not
+    parse names nothing; one that cannot be read is no proof, and its
+    ``OSError`` reaches the caller.
+    """
+
+    from aelix_ai.settings import SettingsFileError
+
+    from aelix_coding_agent.cli.config import CONFIG_DIR_NAME, get_agent_dir
+
+    if settings is None:
+        return []
+    project_base = os.path.join(abs_cwd, CONFIG_DIR_NAME)
+    global_file = settings.scope_path("global")
+    # ``AELIX_SETTINGS_PATH`` can move it out of the agent directory.
+    paths = [str(global_file)] if global_file is not None else []
+    global_base = str(global_file.parent) if global_file is not None else get_agent_dir()
+    for key in _SETTINGS_PATH_KEYS:
+        paths += _plain_paths(getattr(settings.get_global_settings(), key, None), global_base)
+        paths += _plain_paths(getattr(settings.get_project_settings(), key, None), project_base)
+        with contextlib.suppress(SettingsFileError, ValueError):
+            paths += _plain_paths(settings.read_list("global", key), global_base)
+    return paths
+
+
+_profile_lists: dict[tuple[str, int, int, int, int], tuple[tuple[int, int], tuple[str, ...]]] = {}
+"""A profile's :func:`_frontmatter_cost` and ``skills:`` / ``extensions:`` values by
+its path and ``stat``, so an unchanged profile is parsed once and not on every
+write decision."""
+
+
+def _frontmatter_cost(text: str) -> tuple[int, int]:
+    """The length, and the ``[`` and ``{``, of the YAML ``parse_frontmatter`` would parse in ``text``.
+
+    The same split as ``aelix_agent_core/harness/_frontmatter.py``: between a
+    leading ``---`` and the next ``\\n---``, after CR/CRLF become LF.
+    """
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    end = normalized.find("\n---", 3) if normalized.startswith("---") else -1
+    yaml_text = normalized[4:end] if end != -1 else ""
+    return len(yaml_text), yaml_text.count("[") + yaml_text.count("{")
+
+
+def _profile_paths(directory: str, budget: _Budget, cwd: str, *, project: bool = False) -> list[str]:
+    """The ``skills:`` and ``extensions:`` paths the agent profiles in ``directory`` name.
+
+    A run of that profile loads them (``agents/profile.py`` ``_parse_path_list``:
+    ``~`` expanded, relative to the profile's folder, comma lists split). Read
+    here and not by ``discover_profiles``, which reads the project's
+    profiles only in a trusted project — the parent loads them while its child
+    runs ``--no-approve`` — and checks each path exists, which on Windows is
+    the lookup :func:`_is_remote` keeps from a project's file. The folder, and
+    a profile that is a link, are opened where :func:`_realpath` puts them, so
+    on Windows no link is followed before it is judged against ``cwd``. A
+    project's folder (``project``) is bounded by :data:`_PROJECT_PROFILE_LIMIT`
+    profiles, :data:`_PROFILE_READ_LIMIT` bytes each,
+    :data:`_PROJECT_PROFILE_TEXT_LIMIT` characters of frontmatter in all (the
+    decision's :class:`_Budget`), :data:`_PROJECT_PROFILE_FLOW_LIMIT` ``[`` and
+    ``{`` each and :data:`_PROJECT_LIST_LIMIT` entries a list; past any of
+    them, the write asks.
+    """
+
+    from aelix_agent_core.harness._frontmatter import parse_frontmatter
+
+    try:
+        with os.scandir(_realpath(directory, budget, cwd)) as listing:
+            files = [e.path for e in listing if e.name.endswith(".md") and not e.name.startswith(".")]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    budget.spend(len(files) + 1)
+    if project and len(files) > _PROJECT_PROFILE_LIMIT:
+        raise OSError(f"{directory} holds more than {_PROJECT_PROFILE_LIMIT} agent profiles")
+    paths: list[str] = []
+    for file in files:
+        try:
+            if _is_link(os.lstat(file)):
+                file = _realpath(file, budget, cwd)
+            st = os.stat(file)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        key = (file, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        cached = _profile_lists.get(key)
+        if cached is not None:
+            if project:
+                budget.parse(cached[0])
+            values = cached[1]
+        else:
+            data = _read_regular(file, _PROFILE_READ_LIMIT)
+            try:
+                text = data.decode("utf-8") if data else ""
+            except ValueError:
+                text = ""  # not UTF-8: the profile does not load, so it names nothing
+            cost = _frontmatter_cost(text)
+            if project:
+                budget.parse(cost)
+            try:
+                frontmatter = parse_frontmatter(text)[0] if text else None
+            except ValueError:
+                # A value YAML cannot build (``2026-13-45``): the profile does
+                # not load, so it names nothing. A ``RecursionError`` is no
+                # proof of that — whether the parser gives up depends on how
+                # deep the stack already is — so it reaches the caller and
+                # the write asks (verify R1).
+                frontmatter = None
+            found: list[str] = []
+            for name in _PROFILE_PATH_KEYS:
+                raw = (frontmatter or {}).get(name)
+                items = raw.split(",") if isinstance(raw, str) else raw if isinstance(raw, list) else []
+                if project and len(items) > _PROJECT_LIST_LIMIT:
+                    raise OSError(f"{file} names more than {_PROJECT_LIST_LIMIT} {name}")
+                found += [item.strip() for item in items if isinstance(item, str) and item.strip()]
+            values = tuple(found)
+            if len(_profile_lists) > 512:
+                _profile_lists.clear()
+            _profile_lists[key] = (cost, values)
+        for value in values:
+            expanded = os.path.expanduser(value)
+            paths.append(expanded if os.path.isabs(expanded) else os.path.join(directory, expanded))
+    return _refuse_remote(paths, cwd) if project else paths
+
+
+def _parent_record(environ: Mapping[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """The ``cwds`` and ``files`` of :data:`PARENT_ROOTS_ENV`; ``ValueError`` if it is not one aelix wrote."""
+
+    raw = (os.environ if environ is None else environ).get(PARENT_ROOTS_ENV)
+    if not raw:
+        return [], []
+    try:
+        record = json.loads(raw)
+    except RecursionError as exc:
+        # Nested past the parser (verify R1): not a record aelix wrote either.
+        raise ValueError(f"{PARENT_ROOTS_ENV} is not a record aelix wrote") from exc
+    if not isinstance(record, dict):
+        raise ValueError(f"{PARENT_ROOTS_ENV} is not a record aelix wrote")
+    lists: list[list[str]] = []
+    for key in ("cwds", "files"):
+        value = record.get(key, [])
+        if (
+            not isinstance(value, list)
+            or len(value) > _RECORD_LIMIT
+            or not all(isinstance(item, str) and os.path.isabs(item) for item in value)
+        ):
+            raise ValueError(f"{PARENT_ROOTS_ENV} is not a record aelix wrote")
+        lists.append(value)
+    return lists[0], lists[1]
+
+
+def pass_loader_roots_to_child(env: dict[str, str], parent_cwd: str) -> dict[str, str]:
+    """Add this process's cwd and ``$AELIX_MCP_CONFIG`` to a delegated child's :data:`PARENT_ROOTS_ENV`.
+
+    Called by both channels on the environment their builder made, for a first
+    run and a resume alike. The inherited record is kept and extended, so a
+    grandchild knows every folder above it. One that does not parse is left as
+    it is: the child's gate then asks for every write, as this one does.
+    """
+
+    from aelix_coding_agent.cli.config import ENV_MCP_CONFIG, expand_tilde_path
+
+    try:
+        cwds, files = _parent_record(env)
+    except ValueError:
+        return env
+    cwds.append(os.path.abspath(parent_cwd))
+    mcp_config = os.environ.get(ENV_MCP_CONFIG)
+    if mcp_config:
+        files.append(os.path.abspath(expand_tilde_path(mcp_config)))
+    env[PARENT_ROOTS_ENV] = json.dumps(
+        {"cwds": list(dict.fromkeys(cwds)), "files": list(dict.fromkeys(files))}
+    )
+    return env
+
+
+def _loader_resource_roots(
+    abs_cwd: str, settings: SettingsManager | None, budget: _Budget | None = None
+) -> list[tuple[str, bool]]:
+    """Every folder or file a later load reads code or instructions from (#646).
+
+    Each as ``(path, is_config_dir)``; a config dir's links are followed only
+    in the folders a load lists (:data:`_LOADER_FAMILIES`).
+
+    - ``<cwd>/.aelix`` and the agent directory (``~/.aelix/agent``), whole:
+      skills, extensions (run as code on the next launch), ``settings.json``,
+      agent profiles, prompt templates, ``mcp.json``, ``trust.json``. The
+      lexical rule refuses every write with a ``.aelix`` component, so the
+      folder behind a link of that name gets the same answer.
+    - ``~/.agents/skills``, and ``.agents/skills`` in the cwd and each folder
+      above it up to the git root, existing or not
+      (:func:`~aelix_coding_agent.core.skill_dirs.agents_skill_walk`).
+    - The plain ``skills`` / ``prompts`` paths of the project's settings file,
+      and — when the gate was given the process's manager — of the global one,
+      and the global file itself.
+    - The ``skills:`` / ``extensions:`` paths of the agent profiles in the
+      agent directory and the project's ``.aelix/agents``.
+    - The ``$AELIX_MCP_CONFIG`` file: its servers run as commands at the next
+      launch.
+    - The project roots of every cwd in :data:`PARENT_ROOTS_ENV`, and the files
+      it lists: what the processes that delegated this one load.
+
+    ``--skill``, ``--prompt-template`` and ``--agent-file`` paths, the skills
+    that ship inside the package and the session folder are left out: the
+    first three are what the user named for a run, the packaged skills are the
+    program, and a session is read only when the user resumes it.
+    """
+
+    from aelix_coding_agent.cli.config import (
+        CONFIG_DIR_NAME,
+        ENV_MCP_CONFIG,
+        expand_tilde_path,
+        get_agent_dir,
+    )
+    from aelix_coding_agent.core.skill_dirs import agents_skill_walk, user_agents_skills_dir
+
+    budget = budget or _Budget()
+    parent_cwds, parent_files = _parent_record()
+    # A parent's cwd holds this one's, so it is on the same machine; a record
+    # that says otherwise was not written by a parent (:func:`_is_remote`).
+    _refuse_remote(parent_cwds + parent_files, abs_cwd)
+    agent_dir = get_agent_dir()
+    paths = [
+        str(user_agents_skills_dir()),
+        *parent_files,
+        *_manager_resource_paths(abs_cwd, settings),
+        *_profile_paths(os.path.join(agent_dir, "agents"), budget, abs_cwd),
+    ]
+    mcp_config = os.environ.get(ENV_MCP_CONFIG)
+    if mcp_config:
+        paths.append(os.path.abspath(expand_tilde_path(mcp_config)))
+    roots = [(agent_dir, True)]
+    for cwd in dict.fromkeys([abs_cwd, *parent_cwds]):
+        config_dir = os.path.join(cwd, CONFIG_DIR_NAME)
+        roots.append((config_dir, True))
+        paths += [str(d) for d in agents_skill_walk(cwd)]
+        paths += _project_settings_paths(cwd, budget)
+        paths += _profile_paths(os.path.join(config_dir, "agents"), budget, cwd, project=True)
+    return roots + [(path, False) for path in paths]
+
+
+_Identity = tuple[int, int] | str
+
+
+def _identity(path: str) -> _Identity | None:
+    """What makes two spellings of one existing file equal — its device and inode.
+
+    ``None`` when nothing is there. Any other ``OSError`` reaches the caller: a
+    folder that cannot be looked at is no proof either way. Compared this way,
+    a write spelled in another case on a case-insensitive volume is still the
+    folder it lands in (``core.skill_dirs.path_key`` has the measurement).
+    """
+
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else os.path.normcase(path)
+
+
+def _fold_name(name: str) -> str:
+    """A name below the last existing folder, as the volume that creates it will compare it."""
+
+    return _guard_key(unicodedata.normalize("NFC", name))
+
+
+def _anchored(real: str) -> tuple[_Identity, tuple[str, ...]]:
+    """``real`` as its deepest existing folder's identity and the folded names below it."""
+
+    below: list[str] = []
+    current = real
+    while True:
+        key = _identity(current)
+        if key is not None:
+            return key, tuple(reversed(below))
+        parent, name = os.path.split(current)
+        if parent == current:
+            return os.path.normcase(current), tuple(reversed(below))
+        below.append(_fold_name(name))
+        current = parent
+
+
+def _links_below(folder: str, cwd: str, *, config_dir: bool, budget: _Budget) -> list[str]:
+    """The links inside ``folder`` a load follows out of it (#646, Codex PC1).
+
+    The skill loader lists a skills folder at every depth and follows a linked
+    folder or ``SKILL.md`` (``harness/skills.py``
+    ``_load_skills_from_dir_internal``); the extension loader follows a linked
+    ``.py`` or package. Measured on ``98b9ea46``: ``.agents/skills/x ->
+    ../../docs/x``, a link two folders down, a linked ``SKILL.md`` and
+    ``.aelix/extensions/e.py -> ../../src/e.py`` all left the write to the
+    link's target auto-accepted, and the load read it. Every entry listed and
+    every link is charged to ``budget``. Folders the skill loader skips — a
+    hidden one, ``node_modules`` — and ``__pycache__`` are not entered. In a
+    config dir (``config_dir``) only its own entries and the folders a load
+    lists (:data:`_LOADER_FAMILIES`) are looked at, so ``~/.aelix/sessions``
+    is never walked from a cwd of ``~``. A link that points at another machine
+    than ``cwd`` is on (:func:`_is_remote`) asks before anything follows it.
+    """
+
+    from aelix_coding_agent.core.skill_dirs import skipped_entry
+
+    links: list[str] = []
+    pending = [(folder, config_dir)]
+    while pending:
+        current, top = pending.pop()
+        try:
+            with os.scandir(current) as listing:
+                entries = list(listing)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        budget.spend(len(entries) + 1)
+        for entry in entries:
+            if entry.is_symlink() or (_NT and getattr(entry, "is_junction", bool)()):
+                _link_target(entry.path, cwd)
+                # Not ``entry.is_dir()``: it follows the whole chain at once.
+                if (
+                    not top
+                    or entry.name in _LOADER_FAMILIES
+                    or not os.path.isdir(_realpath(entry.path, budget, cwd))
+                ):
+                    links.append(entry.path)
+            elif (
+                entry.is_dir(follow_symlinks=False)
+                and not skipped_entry(entry.name)
+                and entry.name != "__pycache__"
+                and (not top or entry.name in _LOADER_FAMILIES)
+            ):
+                pending.append((entry.path, False))
+    return links
+
+
+def _under_loader_resource(
+    real_path: str, abs_cwd: str, settings: SettingsManager | None, budget: _Budget | None = None
+) -> bool:
+    """Whether the write's resolved path is, or is inside, a resolved :func:`_loader_resource_roots`.
+
+    Each root is resolved and anchored at its deepest existing folder, so a
+    root that does not exist yet — ``.agents -> tooling`` before ``tooling/``
+    is made — still catches the write that would create it. An existing root
+    folder is walked for the links a load follows out of it
+    (:func:`_links_below`), and each link's target becomes a root in turn. The
+    write's own folders are then walked up to the filesystem root: a root
+    matches when one of them IS the root's anchor (by identity) and the names
+    below it start with the root's missing names. Up to the filesystem root,
+    because a cwd inside a root (the dotfiles repo ``~/.agents/skills`` links
+    into) makes every write in it one the loader reads.
+
+    Computed on every call: a link can be re-pointed mid-session.
+    """
+
+    budget = budget or _Budget()
+    anchors: dict[_Identity, list[tuple[str, ...]]] = {}
+    walked: set[_Identity] = set()
+    pending = _loader_resource_roots(abs_cwd, settings, budget)
+    while pending:
+        root, config_dir = pending.pop()
+        real = _realpath(root, budget, abs_cwd)
+        key, missing = _anchored(real)
+        anchors.setdefault(key, []).append(missing)
+        if missing or key in walked:
+            continue
+        walked.add(key)
+        pending += [
+            (link, False) for link in _links_below(real, abs_cwd, config_dir=config_dir, budget=budget)
+        ]
+    below: list[str] = []
+    current = real_path
+    while True:
+        key = _identity(current)
+        if key is not None and key in anchors:
+            tail = tuple(reversed(below))
+            if any(tail[: len(missing)] == missing for missing in anchors[key]):
+                return True
+        parent, name = os.path.split(current)
+        if parent == current:
+            return False
+        below.append(_fold_name(name))
+        current = parent
+
+
+def _write_spellings(path: str, cwd: str, budget: _Budget) -> tuple[str, str, str]:
+    """``(abs_cwd, lexical, real)`` for a write the write/edit tools would make to ``path``.
+
+    The target is the tools' own (``tools/_path_utils.py`` ``resolve_to_cwd``):
+    a leading ``@`` stripped, NFC, unicode spaces made ASCII, ``~`` and ``~/``
+    expanded — and nothing else. The gate expanded with ``os.path.expanduser``
+    and joined the rest itself, so ``@.aelix/extensions/x.py``, ``@~/x`` and
+    ``@/abs/x`` were judged as folders named ``@...`` inside the project and
+    written to ``.aelix``, home and anywhere at all (#646 verify V1, older
+    than #646). ``lexical`` is that target normalized; ``real`` is where the OS
+    opens it (:func:`_realpath`, which applies a ``..`` after a link to the
+    link's target).
+    """
+
+    from aelix_coding_agent.tools._path_utils import resolve_to_cwd
+
+    abs_cwd = os.path.abspath(cwd) if cwd else os.path.abspath(".")
+    target = resolve_to_cwd(path, abs_cwd)
+    return abs_cwd, os.path.normpath(target), _realpath(target, budget, abs_cwd)
+
+
+def _is_auto_allowable_write(path: str, cwd: str, settings: SettingsManager | None = None) -> bool:
     """Whether a write to ``path`` may be auto-allowed without a prompt.
 
     SECURITY (finding WP-0 #4): an AUTO_ACCEPT / AUTO write is auto-allowed ONLY
@@ -551,27 +1330,58 @@ def _is_auto_allowable_write(path: str, cwd: str) -> bool:
     whatever the filesystem says, and requiring the resolved form to pass means
     a name that is innocent but POINTS somewhere sensitive is refused too.
 
-    This now touches the filesystem (``realpath`` is a ``lstat`` walk). That is
-    a deliberate trade against the previous docstring's "no filesystem access":
-    a purely lexical answer to "where does this write land" is not an answer.
-    A ``~`` is still expanded first so a home-relative path is judged against
-    its real location.
+    THE FOLDERS THE LOADER READS, NOT ONLY THEIR NAMES (#646, ADR-0281 D10).
+    Both rules above read names, so they see a link INTO ``.aelix`` from the
+    other side but not a link NAMED ``.aelix``, ``.agents`` or
+    ``.agents/skills`` pointing at an ordinary folder: a write to that folder
+    passed on its own names, and the loader read it through the link. Measured
+    on ``758276ff`` with this gate at ``auto-accept-edits`` and ``auto``, with
+    and without a UI::
+
+        .agents/skills -> ../.claude/skills   .claude/skills/x/SKILL.md   ALLOWED, project skill
+        .agents -> tooling                    tooling/skills/x/SKILL.md   ALLOWED, project skill
+        .aelix -> config                      config/extensions/x.py      ALLOWED, next launch runs it
+        ~/.agents/skills -> ~/dotfiles/skills skills/x/SKILL.md (cwd ~/dotfiles)  ALLOWED, global skill
+        settings "skills": ["../docs/skills"] docs/skills/x/SKILL.md      ALLOWED, project skill
+
+    So a write whose resolved path is under the resolved form of any of
+    :func:`_loader_resource_roots` is not auto-allowed either: it asks, and a
+    delegated child without a UI is blocked. ``--skill`` paths stay
+    auto-allowed, and a user whose ``~/.agents/skills`` links into a dotfiles
+    repo is asked when editing there — the trade ``.aelix`` already makes
+    (ADR-0197 §(i)). The TOCTOU above applies here too: a root that does not
+    exist yet resolves to its lexical spelling, which is why the name rule
+    stays.
+
+    THE PATH THE TOOL OPENS, NOT A PATH LIKE IT (#646 verify V1, V2). The
+    target is the write/edit tools' own :func:`_write_spellings`, and the
+    resolved form applies a ``..`` after a link where the OS does, so
+    ``@.aelix/x``, ``@/abs/x`` and ``lnk/../x`` are judged where they land.
+
+    This touches the filesystem (resolving is a ``lstat`` walk, the roots are
+    listed for links). That is a deliberate trade against an earlier
+    docstring's "no filesystem access": a purely lexical answer to "where does
+    this write land" is not an answer. What one decision may spend is bounded
+    (:class:`_Budget`); past it, the write asks. ``settings`` is the process's
+    :class:`~aelix_ai.settings.SettingsManager`; without one, the global
+    settings file's paths are not known and only those roots are left out.
     """
 
     if not path:
         return False
-    raw = os.path.expanduser(path)
-    abs_cwd = os.path.abspath(cwd) if cwd else os.path.abspath(".")
-    lexical = os.path.normpath(os.path.join(abs_cwd, raw))
     try:
-        real_cwd = os.path.realpath(abs_cwd)
-        real_path = os.path.realpath(lexical)
-    except OSError:
-        # No evidence about where the write lands is not a licence to allow it.
+        budget = _Budget()
+        abs_cwd, lexical, real_path = _write_spellings(path, cwd, budget)
+        real_cwd = _realpath(abs_cwd, budget, abs_cwd)
+        if not (_write_guard_passes(lexical, abs_cwd) and _write_guard_passes(real_path, real_cwd)):
+            return False
+        return not _under_loader_resource(real_path, abs_cwd, settings, budget)
+    except (OSError, ValueError, RecursionError):
+        # No evidence about where the write lands, or about where the loader
+        # reads, is not a licence to allow it. (``ValueError``: a NUL in a path.
+        # ``RecursionError``: JSON or YAML a project wrote nested past the
+        # parser at the depth this call runs at — verify R1.)
         return False
-    return _write_guard_passes(lexical, abs_cwd) and _write_guard_passes(
-        real_path, real_cwd
-    )
 
 
 def posture_decision(
@@ -580,6 +1390,8 @@ def posture_decision(
     args: dict[str, Any],
     cwd: Callable[[], str],
     classify_bash: Callable[[dict[str, Any]], str],
+    *,
+    settings: SettingsManager | None = None,
 ) -> Literal["allow", "deny"] | None:
     """What the posture alone decides for a MUTATING call: branches (e)-(g).
 
@@ -587,7 +1399,8 @@ def posture_decision(
     headless verdict when there is none). Shared by :meth:`PermissionExtension.
     _on_tool_call` and :func:`evaluate_tool_call`, so the RPC control surface's
     ``permissions/evaluate`` cannot drift from the gate (#594). ``cwd`` is a
-    callable because only the in-project write check reads it.
+    callable because only the in-project write check reads it, as is
+    ``settings`` (the settings ``skills`` / ``prompts`` paths, #646).
     """
 
     # (e) YOLO — skip the PROMPT for every mutating tool. The
@@ -616,7 +1429,7 @@ def posture_decision(
     if (
         mode in (PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO)
         and provenance == "write"
-        and _is_auto_allowable_write(_path_from_args(args), cwd())
+        and _is_auto_allowable_write(_path_from_args(args), cwd(), settings)
     ):
         return "allow"
 
@@ -640,6 +1453,8 @@ def evaluate_tool_call(
     provenance: ToolProvenance | None,
     args: dict[str, Any],
     cwd: str,
+    *,
+    settings: SettingsManager | None = None,
 ) -> Literal["allow", "deny", "ask"]:
     """The gate's verdict for one call with no session grant (#594).
 
@@ -647,6 +1462,7 @@ def evaluate_tool_call(
     headless verdict, and any other ``tool_call`` hook (an RPC host's approval
     bridge), decide such a call — this function deliberately does not, because
     which approver exists is a property of the host, not of the call.
+    ``settings`` is the host's settings manager, as the gate's own field is.
     """
 
     if provenance in _UNGATED_PROVENANCE:
@@ -654,7 +1470,12 @@ def evaluate_tool_call(
     if mode == PermissionMode.PLAN:
         return "deny"
     decision = posture_decision(
-        mode, provenance, args, lambda: cwd, PermissionExtension._auto_classify_bash
+        mode,
+        provenance,
+        args,
+        lambda: cwd,
+        PermissionExtension._auto_classify_bash,
+        settings=settings,
     )
     return decision or "ask"
 
@@ -716,6 +1537,12 @@ class PermissionExtension:
     posture the child runs under is the actual guarantee, and the spawner
     CLAMPS it (``aelix_agents.posture.child_permission_mode``). Do not mistake
     this belt for the braces."""
+    settings: SettingsManager | None = None
+    """The process's settings, read on every write decision for the plain
+    ``skills`` / ``prompts`` paths of the GLOBAL file (#646). ``cli/entry.py``
+    passes the one it builds. Without it only those paths are not protected:
+    the project file is read by the gate itself, and every other folder the
+    loader reads is known without settings (:func:`_loader_resource_roots`)."""
 
     def __call__(self, aelix: ExtensionAPI) -> None:
         """Setup: register the ``tool_call`` + ``session_shutdown`` handlers."""
@@ -787,7 +1614,12 @@ class PermissionExtension:
         # shares. ``None`` (an AUTO_ACCEPT write outside cwd, an AUTO "ask") falls
         # through to the prompt or the headless verdict below.
         decision = posture_decision(
-            mode, provenance, event.args, lambda: ctx.cwd, self._auto_classify_bash
+            mode,
+            provenance,
+            event.args,
+            lambda: ctx.cwd,
+            self._auto_classify_bash,
+            settings=self.settings,
         )
         if decision == "allow":
             return None

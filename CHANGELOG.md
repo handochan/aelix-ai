@@ -121,9 +121,9 @@ unwritten. Add them with the next release.
     `.agents/skills` holding only a `README.md` does not ask.
   - A write under `.agents/` is no longer auto-accepted, as under `.aelix/`:
     `auto-accept-edits` asks for it and a delegated agent is refused it, so
-    neither can leave a skill there that a later run loads. The rule goes by
-    the names in the written path, so a write to the real folder behind a
-    symlink named `.agents` (or `.aelix`) is still accepted.
+    neither can leave a skill there that a later run loads. A write to the
+    real folder behind a symlink named `.agents` (or `.aelix`) is asked about
+    too (#646, under Security).
   - The trust question says it also loads them and names the ones it found
     (`../.agents/skills`, and `../×5/.agents/skills` more than three folders
     up); `/trust` shows them too; the `-p` notice reads "… and .agents/skills
@@ -3056,6 +3056,49 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto-accept-edits` and `auto` now ask before writing into a folder aelix
+  loads from when a link, an `@` or a `..` hides it, and a delegated agent is
+  refused it (#646, ADR-0281 D10).** The rule that keeps `.aelix/` and
+  `.agents/` from being written unasked went by the folder names in the path
+  being written, so it missed the folder a link of that name points at: with
+  `.agents -> tooling`, `.agents/skills -> ../.claude/skills` or
+  `.aelix -> config` in a repository, a delegated agent with write tools
+  wrote `tooling/skills/x/SKILL.md`, `config/extensions/x.py` or
+  `config/settings.json` without asking, and the next `/reload` or launch
+  loaded the skill or ran the extension. The same held for the folder your
+  `~/.agents/skills` or `~/.aelix` links to when you work inside it (a skill
+  written there loads in every project, trusted or not), for the folders the
+  `skills` and `prompts` paths in `settings.json` name, for the folder a link
+  inside any of these points at (`.agents/skills/x -> ../../docs/x`), and for
+  a delegated agent started in a subfolder of the project, which looked only
+  at its own folder. Two older gaps let these writes through as well, and
+  writes outside the project too: a path starting with `@` was checked as a
+  folder named `@…` and written without the `@` (`@.aelix/extensions/x.py`,
+  `@~/Library/LaunchAgents/x.plist`, `@/any/path`), and `lnk/../x` was checked
+  as `x` and written next to the folder `lnk` points at. Now the check is made
+  on the file the write and edit tools open, and a write is asked about in the
+  TUI and refused to a delegated agent with no one to ask, as a write under
+  `.aelix/` is, when it lands under: your or the project's `.aelix`; an
+  `.agents/skills` folder aelix reads (also one the write would create); a
+  `skills` or `prompts` path of either settings file, or the global settings
+  file itself; a `skills:` or `extensions:` path of one of your or the
+  project's agent profiles; the `$AELIX_MCP_CONFIG` file; or a folder a link
+  in any of these points at (`~/.aelix/agent/bin`, whose programs bash runs,
+  included) — the project's a delegated agent was started from included. It
+  is decided again for every write, so a link re-pointed during a session
+  counts. Not covered: a `--skill`, `--prompt-template` or
+  `--agent-file` path (you named it for that run); the session folder; a hard
+  link to a skill file (git cannot check one out, and making one with `ln`
+  asks); and a link made after the check and before the write (every command
+  that makes one asks under `auto`). If your `~/.agents/skills` links into a
+  dotfiles repository, or `AELIX_CODING_AGENT_DIR` points inside the folder you
+  work in, editing there now asks. A repository can make every write ask — a
+  link to itself, `"skills": ["/"]`, a list or a folder tree too long to check,
+  agent profiles with more YAML than one write may parse — which is the safe
+  side. So can a tree of your own under one of these folders that holds more
+  than one write may check (8,192 entries and links): linking a large
+  checkout as your `~/.agents/skills` makes every write ask, in every project.
+  `yolo`, and a plain `-p` run, still write.
 - **A delegated agent no longer imports a project file in place of one of
   your extensions (#641, ADR-0285).** Delegated agents ran as `python -m
   aelix_coding_agent` in the project folder, and `python -m` puts that folder

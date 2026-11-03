@@ -91,33 +91,48 @@ def git_root(start: str | os.PathLike[str]) -> Path | None:
         current = parent
 
 
+def agents_skill_walk(cwd: str | os.PathLike[str]) -> list[Path]:
+    """``<dir>/.agents/skills`` for *cwd* and each parent, nearest first, whether or not it exists.
+
+    pi ``collectAncestorAgentsSkillDirs``'s walk: it stops after the git root,
+    or at the filesystem root outside a repository. :func:`project_agents_skill_dirs`
+    keeps the directories the scan reads; the write gate takes every one,
+    because a write can create the folder a link named ``.agents`` points at
+    (#646).
+    """
+
+    start = Path(os.path.abspath(cwd))
+    root = git_root(start)
+    walk: list[Path] = []
+    current = start
+    while True:
+        walk.append(current / AGENTS_DIR_NAME / "skills")
+        if root is not None and current == root:
+            return walk
+        parent = current.parent
+        if parent == current:
+            return walk
+        current = parent
+
+
 def project_agents_skill_dirs(cwd: str | os.PathLike[str]) -> list[Path]:
     """Every ``.agents/skills`` directory a trusted project reads, nearest first.
 
     pi ``collectAncestorAgentsSkillDirs``: ``<dir>/.agents/skills`` for *cwd*
     and each parent, stopping after the git root, or at the filesystem root
-    outside a repository. Only directories are returned (a missing one loads
-    nothing), and never the user's own :func:`user_agents_skills_dir`. The
-    walk is over *cwd*'s own spelling — the launch passes ``Path.cwd()``, whose
-    parents are real directories — and never raises: a directory that cannot
-    be checked is not one.
+    outside a repository (:func:`agents_skill_walk`). Only directories are
+    returned (a missing one loads nothing), and never the user's own
+    :func:`user_agents_skills_dir`. The walk is over *cwd*'s own spelling — the
+    launch passes ``Path.cwd()``, whose parents are real directories — and
+    never raises: a directory that cannot be checked is not one.
     """
 
-    start = Path(os.path.abspath(cwd))
-    root = git_root(start)
     user = path_key(user_agents_skills_dir())
-    found: list[Path] = []
-    current = start
-    while True:
-        candidate = current / AGENTS_DIR_NAME / "skills"
-        if os.path.isdir(candidate) and path_key(candidate) != user:
-            found.append(candidate)
-        if root is not None and current == root:
-            return found
-        parent = current.parent
-        if parent == current:
-            return found
-        current = parent
+    return [
+        candidate
+        for candidate in agents_skill_walk(cwd)
+        if os.path.isdir(candidate) and path_key(candidate) != user
+    ]
 
 
 def skipped_entry(name: str) -> bool:
@@ -203,6 +218,7 @@ def parent_relative(path: str | os.PathLike[str], cwd: str | os.PathLike[str]) -
 __all__ = [
     "AGENTS_DIR_NAME",
     "PARENTS_SPELLED",
+    "agents_skill_walk",
     "git_root",
     "parent_relative",
     "path_key",
