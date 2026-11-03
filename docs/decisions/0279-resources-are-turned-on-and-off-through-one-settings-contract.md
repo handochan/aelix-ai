@@ -479,6 +479,30 @@ list. `/skill:<name>` keeps working for an enabled skill; for a skill that exist
 but is off it says "<name> is off — /skill to turn it on", and neither expands
 it nor says "Unknown command".
 
+*2026-11-03 (#508):* the `/` menu offers what this decision runs, read from
+`harness.skills` (D6) and `harness.prompt_templates` at every key
+(`tui/completion.py` `DescriptorCommandCompleter`, `resource_commands`). An
+enabled skill is `skill:<name>`, its description led by its tier
+(`[project]`, `[global]`, `[bundled]`, `[--skill]`, `SkillKind.source_word`);
+a template is `<name>`; pi's order (built-ins, templates, extension commands,
+skills) with a name offered only by what runs it (built-in or alias >
+extension command > template, whether or not that command matches what is
+typed). An off skill is NOT offered — it would only lead to the refusal above,
+and the panel is where it is turned on — and with `enableSkillCommands` off no
+skill is, as pi drops them on the same setting. A skill matches by its bare name
+too (pi #8813). A name with whitespace or a steering character is not offered
+(it cannot run as typed, and is not inserted into the input from a file), and
+nor is a template named `skill:…`, which never runs. A description is one row:
+line breaks become spaces, as pi's `normalizeToSingleLine` does (a YAML block
+ends in one), unlike the panel, which names them; other controls are named
+(#179) and the row is cut by cells to the column the menu leaves; a name is cut
+at 30 cells, pi's 32-cell name column (one 60-character skill name had left
+every description in `/` nine cells at 80 columns). Aliases are rows of their
+own ("Same as /tool"), and `/help` names them beside their command, so `/tools`
+and `/skills` are no longer missing from both. The panel's
+banners gain "Run an enabled skill with /skill:<name>; type /skill: to list
+them." while `enableSkillCommands` is on, and the headless list a last line.
+
 ### D13. Locks
 
 `--skill` paths and an agent profile's `skills:` (they reach the run as

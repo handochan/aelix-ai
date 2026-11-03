@@ -39,12 +39,18 @@ Issue #39 upgrades that completer to pi's whole-tree behaviour:
 An empty prefix and a trailing-slash prefix (``@src/``) still use the cheap
 one-level directory listing (the fast drill-in), so those common cases skip the
 whole-tree walk entirely.
+
+Issue #508 adds the prompt templates and the enabled skills to the ``/`` menu
+(:class:`ResourceCommands`), in pi's order: built-ins, templates, extension
+commands, ``skill:<name>``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -53,10 +59,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import run_contained
+from aelix_ai.utils.terminal_text import contains_steering_chars
 from prompt_toolkit.completion import Completer, Completion
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
+    from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
@@ -483,6 +490,126 @@ def _completion_value(rel: str, is_dir: bool, quoted: bool) -> str:
     return '@"' + body + '"'
 
 
+class ResourceCommands(NamedTuple):
+    """The ``/`` menu's rows that come from files: prompt templates and skills (#508).
+
+    Read on every keystroke (:func:`resource_commands`), so a ``/reload``, a
+    ``/skill`` panel apply or a session swap shows at the next key.
+
+    :param templates: ``(name, description)`` per prompt template — ``/<name>``.
+    :param skills: ``(name, description, source)`` per ENABLED skill —
+        ``/skill:<name>``; *source* is where it came from (``project``,
+        ``global``, ``bundled``, ``--skill``) or ``""`` when unknown.
+    """
+
+    templates: Sequence[tuple[str, str]] = ()
+    skills: Sequence[tuple[str, str, str]] = ()
+
+
+def resource_commands(
+    harness: object,
+    *,
+    skill_commands_enabled: bool = True,
+    skill_source: Callable[[object], str | None] | None = None,
+) -> ResourceCommands:
+    """The templates and skills *harness* would expand right now (#508).
+
+    The same two lists, read the same way, as the input loop hands
+    ``expand_resource_command`` — ``getattr`` and ``or ()``, because a duck-typed
+    harness without them must not break a keystroke. ``harness.skills`` holds
+    the ENABLED skills only (ADR-0279 D6), so a skill that is off is not
+    offered: ``/skill:<off>`` is refused ("<name> is off — /skill to turn it
+    on", D12), and the menu does not offer a line that cannot run. With
+    ``enableSkillCommands`` off (*skill_commands_enabled*) no ``/skill:<name>``
+    runs, so none is offered either — pi drops them from its menu on the same
+    setting. *skill_source* names where a skill came from, for its tag.
+    """
+
+    templates = [
+        (getattr(t, "name", "") or "", getattr(t, "description", "") or "")
+        for t in getattr(harness, "prompt_templates", None) or ()
+    ]
+    skills: list[tuple[str, str, str]] = []
+    if skill_commands_enabled:
+        for skill in getattr(harness, "skills", None) or ():
+            source = ""
+            if skill_source is not None:
+                try:
+                    source = skill_source(skill) or ""
+                except Exception:  # noqa: BLE001 — a faulty source must not break input
+                    source = ""
+            skills.append(
+                (getattr(skill, "name", "") or "", getattr(skill, "description", "") or "", source)
+            )
+    return ResourceCommands(templates, skills)
+
+
+def _typeable(name: str) -> bool:
+    """True when ``/<name>`` typed (or inserted) as one word runs that name.
+
+    The command word ends at the first space (``slash_word``,
+    ``expand_resource_command``), so a name with whitespace in it never
+    matches what is typed; and a steering character (ESC, a BiDi override)
+    is not something to insert into the input line from a file someone else
+    wrote. The panel still lists such a skill, by its flattened name (#179).
+    """
+
+    return bool(name) and not contains_steering_chars(name) and not any(c.isspace() for c in name)
+
+
+# A description's line breaks, with the indentation around them: a YAML ``|``
+# or ``>`` block ends in a newline, and pi shows one row too
+# (``normalizeToSingleLine`` in ``tui/src/components/select-list.ts``).
+_BREAKS = re.compile(r"[ \t]*[\r\n]+[ \t]*")
+
+# The cells a shown name may take before it is cut: pi's autocomplete caps its
+# name column at 32 with a 2-cell gap (``maxPrimaryColumnWidth`` in
+# ``tui/src/components/editor.ts``). A skill name may be 64 characters, and the
+# menu's name column is as wide as its widest row, so one long name left every
+# description in ``/`` nine cells (measured at 80 columns). Tab still inserts
+# the whole name.
+_NAME_CELLS = 30
+
+
+@functools.lru_cache(maxsize=4096)
+def _menu_text(text: str, width: int) -> str:
+    """*text* as one menu row of at most *width* cells: line breaks and tabs
+    become spaces, every other character a terminal would act on is shown by
+    its name (#179), and a cut ends in ``…``.
+
+    Only the first ``2 * width + 16`` characters are named and measured — no
+    row shows more characters than it has cells, short of a zero-width mark, and
+    a row cut there still ends in ``…`` — and the answer is cached, because the
+    same names and descriptions are drawn at every key on the event loop:
+    measured, 100 skills and 100 templates with 1 000-character descriptions
+    cost 110 ms a key flattened and measured whole, and 25 ms on the first key
+    and 2 ms after it this way.
+    """
+
+    from aelix_coding_agent.tui.selection_panel import fit, flat  # noqa: PLC0415
+
+    if width <= 0:
+        return ""
+    # ``strip(" ")``, not ``strip()``: that would delete a leading or trailing
+    # U+001C–U+001F or U+2028 (whitespace to Python) instead of naming it.
+    one = _BREAKS.sub(" ", text).replace("\t", " ").strip(" ")
+    keep = 2 * width + 16
+    return fit(flat(one[:keep]) + ("…" if len(one) > keep else ""), width)
+
+
+def _menu_columns() -> int:
+    """The columns the completion menu is drawn into (the app's output, not the
+    transcript's render cap: the menu is a float over the whole terminal)."""
+
+    try:
+        from prompt_toolkit.application.current import get_app  # noqa: PLC0415
+
+        columns = get_app().output.get_size().columns
+    except Exception:  # noqa: BLE001 — size unavailable → the historical default
+        return 80
+    return columns if columns > 0 else 80
+
+
 class DescriptorCommandCompleter(Completer):
     """Offer ``/<command>`` completions: built-ins ∪ live descriptor routes.
 
@@ -490,10 +617,27 @@ class DescriptorCommandCompleter(Completer):
     with descriptor command-routes, deduped by command name (built-in wins) so a
     descriptor cannot shadow ``/help`` etc. Built-ins are listed first.
 
+    #508 adds a built-in's aliases (``/tools``, ``/skills``, ``/exit``,
+    ``/rename``) as rows of their own, "Same as /<name>", and the prompt templates
+    and enabled skills (*get_resources*). The order is pi's
+    (``createBaseAutocompleteProvider``): built-ins, descriptor routes,
+    templates, extension commands, then ``skill:<name>``. A name is offered
+    once, by what runs when it is typed — built-in > extension command >
+    template, the input loop's order — so a template an extension command
+    shadows is not listed, although it would be drawn first. A skill matches by
+    its name too, without ``skill:`` (pi #8813), after the skills that match by
+    that name come those that match only as ``skill:…``.
+
+    Every name and description from outside this module is shown on one row
+    with its control characters named (#179); a shown name is cut at
+    :data:`_NAME_CELLS` cells (pi's column), and each description, by terminal
+    cells, to the column the menu leaves it.
+
     :param get_routes: a callable returning the live route store (mapping of
         ``ns:id`` → command-route payload). Read on every keystroke so the source
         dict can be mutated in place and have new completions appear immediately.
     :param builtins: the first-party command registry (static for the session).
+    :param get_resources: the templates and skills (#508), read every keystroke.
     """
 
     def __init__(
@@ -501,6 +645,7 @@ class DescriptorCommandCompleter(Completer):
         get_routes: Callable[[], Mapping[str, Any]],
         builtins: list[BuiltinCommand] | None = None,
         get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
+        get_resources: Callable[[], ResourceCommands] | None = None,
     ) -> None:
         self._get_routes = get_routes
         self._builtins = builtins or []
@@ -509,6 +654,7 @@ class DescriptorCommandCompleter(Completer):
         # session swap reflects immediately). Built-ins + descriptor routes win
         # on a name collision (they are yielded first and dedup via ``seen``).
         self._get_ext_commands = get_ext_commands
+        self._get_resources = get_resources
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
@@ -520,27 +666,49 @@ class DescriptorCommandCompleter(Completer):
         # The typed command word, slash-prefixed (e.g. "/de"). Slash commands are
         # a single token, so the whole prefix up to the cursor is the word.
         typed_with_slash = text
-        typed = typed_with_slash[1:]
+        rows = self._rows(typed_with_slash[1:])
+        if not rows:
+            return
+        from aelix_coding_agent.tui.selection_panel import cells  # noqa: PLC0415
 
+        shown = [(value, _menu_text(name, _NAME_CELLS), meta) for value, name, meta in rows]
+        # The description column prompt-toolkit's menu leaves: the widest name
+        # plus its two padding cells (``CompletionsMenuControl``, at least
+        # ``MIN_WIDTH``), the description's own two, and the scrollbar.
+        name_column = max(7, max(cells(display) for _, display, _ in shown) + 2)
+        budget = _menu_columns() - name_column - 2 - 1
+        for value, display, meta in shown:
+            yield Completion(
+                value,
+                start_position=-len(typed_with_slash),
+                display=display,
+                display_meta=_menu_text(meta, budget) if meta else "",
+            )
+
+    def _rows(self, typed: str) -> list[tuple[str, str, str]]:
+        """``(inserted text, name, description)`` per row, in menu order, as
+        their sources wrote them (:func:`_menu_text` draws them)."""
+
+        rows: list[tuple[str, str, str]] = []
         seen: set[str] = set()
 
-        # Built-ins first; they win on a name clash with a descriptor route.
-        for command in self._builtins:
-            name = command.name
-            if not name or not name.startswith(typed) or name in seen:
-                continue
+        def add(name: str, meta: str) -> None:
             seen.add(name)
-            yield Completion(
-                "/" + name,
-                start_position=-len(typed_with_slash),
-                display=name,
-                display_meta=command.description,
-            )
+            rows.append(("/" + name, name, meta))
+
+        # Built-ins first; they win on a name clash with a descriptor route.
+        # An alias is its own row (#508): ``/tools`` runs ``/tool``, and a user
+        # who knew ``/tools`` from before never saw it offered.
+        for command in self._builtins:
+            for i, name in enumerate((command.name, *command.aliases)):
+                if not name or not name.startswith(typed) or name in seen:
+                    continue
+                add(name, command.description if i == 0 else f"Same as /{command.name}")
 
         try:
             routes = self._get_routes()
         except Exception:  # noqa: BLE001 — a faulty source must not break input
-            return
+            routes = {}
 
         for payload in routes.values():
             command = getattr(payload, "command", None)
@@ -550,34 +718,65 @@ class DescriptorCommandCompleter(Completer):
                 continue
             if command in seen:
                 continue
-            seen.add(command)
             description = getattr(payload, "description", "") or ""
             keybind = getattr(payload, "keybind", None)
-            meta = f"{description} [{keybind}]" if keybind else description
-            yield Completion(
-                "/" + command,
-                start_position=-len(typed_with_slash),
-                display=command,
-                display_meta=meta,
-            )
+            add(command, f"{description} [{keybind}]" if keybind else description)
 
-        # Issue #9: extension-registered commands, last (built-ins + descriptor
+        # Issue #9: extension-registered commands (built-ins + descriptor
         # routes win on a name collision via ``seen``).
+        ext_commands: list[tuple[str, str]] = []
         if self._get_ext_commands is not None:
             try:
-                ext_commands = self._get_ext_commands()
+                ext_commands = list(self._get_ext_commands())
             except Exception:  # noqa: BLE001 — a faulty source must not break input
                 ext_commands = []
-            for name, description in ext_commands:
-                if not name or not name.startswith(typed) or name in seen:
-                    continue
-                seen.add(name)
-                yield Completion(
-                    "/" + name,
-                    start_position=-len(typed_with_slash),
-                    display=name,
-                    display_meta=description or "",
-                )
+
+        resources = ResourceCommands()
+        if self._get_resources is not None:
+            try:
+                resources = self._get_resources()
+            except Exception:  # noqa: BLE001 — a faulty source must not break input
+                resources = ResourceCommands()
+
+        # #508 — a template or skill line runs only when no command of the same
+        # name claims it first, whether or not that command matches what is
+        # typed: ``/pd`` must not offer ``skill:pdf`` with the skill's
+        # description when an extension's ``skill:pdf`` is what runs.
+        taken = {name for c in self._builtins for name in (c.name, *c.aliases)}
+        for payload in routes.values():
+            command = getattr(payload, "command", None)
+            if isinstance(command, str):
+                taken.add(command)
+        taken |= {name for name, _ in ext_commands}
+
+        # Templates, drawn before the extension commands as pi draws them. A
+        # name starting ``skill:`` is a skill line, never a template.
+        for name, description in resources.templates:
+            if not _typeable(name) or name.startswith("skill:") or name in taken:
+                continue
+            if name.startswith(typed) and name not in seen:
+                add(name, description)
+
+        for name, description in ext_commands:
+            if not name or not name.startswith(typed) or name in seen:
+                continue
+            add(name, description or "")
+
+        # #508 — skills last, by bare name first (``/zz`` finds ``skill:zzdemo``).
+        by_full: list[tuple[str, str]] = []
+        for name, description, source in resources.skills:
+            full = f"skill:{name}"
+            if not _typeable(name) or full in taken or full in seen:
+                continue
+            meta = f"[{source}] {description}" if source else description
+            if name.startswith(typed):
+                add(full, meta)
+            elif full.startswith(typed):
+                by_full.append((full, meta))
+        for full, meta in by_full:
+            if full not in seen:
+                add(full, meta)
+        return rows
 
 
 class FileMentionCompleter(Completer):
@@ -776,5 +975,7 @@ __all__ = [
     "DescriptorCommandCompleter",
     "FileMentionCompleter",
     "OffLoopFileMentionCompleter",
+    "ResourceCommands",
+    "resource_commands",
     "wants_completion",
 ]

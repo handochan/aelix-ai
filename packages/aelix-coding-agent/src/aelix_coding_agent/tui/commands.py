@@ -55,8 +55,10 @@ class BuiltinCommand:
         command word (``""`` when none); ``/help`` ignores it.
     :param aliases: alternate command words that resolve to this SAME command
         (e.g. ``/exit`` is an alias of ``/quit``). Aliases are matched by
-        :func:`match_command` but are NOT listed separately in ``/help`` or
-        autocomplete — the command appears exactly once in both.
+        :func:`match_command`. ``/help`` names them beside the command, on its
+        one row; autocomplete offers each as a row of its own, "Same as
+        /<name>" (#508) — until then neither said ``/tools`` or ``/skills``
+        existed.
     """
 
     name: str
@@ -282,7 +284,10 @@ def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
     for command in commands:
-        table.add_row(f"/{command.name}", command.description)
+        # #508 — an alias beside its command, from the same metadata the ``/``
+        # menu reads, so the two cannot disagree about what ``/tools`` is.
+        names = ", ".join(f"/{name}" for name in (command.name, *command.aliases))
+        table.add_row(names, command.description)
     return Panel(table, title="Commands", box=ROUNDED, border_style="cyan")
 
 
@@ -600,6 +605,10 @@ async def _skills_handler(ctx: CommandContext, args: str) -> None:
     if not skills:
         ctx.commit(Text("No skills loaded.", style="yellow"))
         return
+    from rich.console import Group
+
+    from aelix_coding_agent.tui.selection_panel import flat
+
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
     table.add_column(style="white")
@@ -610,8 +619,17 @@ async def _skills_handler(ctx: CommandContext, args: str) -> None:
         # but flagged so the distinction is visible.
         if getattr(skill, "disable_model_invocation", False):
             desc = f"{desc} (model-invocation disabled)".strip()
-        table.add_row(name, desc)
-    ctx.commit(Panel(table, title="Skills", box=ROUNDED, border_style="cyan"))
+        # Text, not str (no markup), and flattened: both come from a file (#179).
+        table.add_row(Text(flat(name)), Text(flat(desc)))
+    ctx.commit(
+        Panel(
+            # #508 — the list never said how to run what it lists.
+            Group(table, Text("Run one with /skill:<name>.", style="dim")),
+            title="Skills",
+            box=ROUNDED,
+            border_style="cyan",
+        )
+    )
 
 
 async def _skill_handler(ctx: CommandContext, args: str) -> None:
@@ -2410,7 +2428,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("fork", "Fork the current session at the last user message", _fork_handler),
     BuiltinCommand("clone", "Clone the current session into a new file", _clone_handler),
     BuiltinCommand("tree", "Show the parent-session lineage", _tree_handler),
-    BuiltinCommand("quit", "Exit Aelix (alias: /exit)", None, aliases=("exit",)),
+    BuiltinCommand("quit", "Exit Aelix", None, aliases=("exit",)),
     BuiltinCommand("reload", "Reload extensions + resources", None),
 ]
 

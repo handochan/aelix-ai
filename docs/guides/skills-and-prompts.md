@@ -49,6 +49,7 @@ as the trust question names it):
 ```
 ── Skills ──────────────────────────────────── Save to [Global]  This project ──
  Search: █                                          7 skills · 2 off · 1 locked
+ Run an enabled skill with /skill:<name>; type /skill: to list them.
  PROJECT  .aelix/skills/
    [✓] repo-conventions  This repository's commit, ADR and test …       project
  GLOBAL  ~/.aelix/agent/skills/
@@ -109,6 +110,24 @@ it answers `<name> is off — /skill to turn it on` and sends nothing.
 
 If the `read` tool is off, the model is shown no skill list at all (it could not
 open one); the panel says so, and your choices still save.
+
+## Finding a skill or a template from `/`
+
+Type `/` and the menu lists every enabled skill as `skill:<name>`, its
+description led by where it came from — `[project]`, `[global]`, `[bundled]`
+or `[--skill]` (an agent profile's `skills:` arrive as `--skill`) — and every
+prompt template as `<name>`, after the built-in commands and before the
+extension commands. A skill is found by its name alone as well: `/pdf` offers
+`skill:pdf-tools`. The list is read as you type, so a skill added by `/reload`
+or turned on in the panel is there at the next key.
+
+The menu offers only what runs as typed. A skill that is off is not listed;
+with `enableSkillCommands` off no skill is. A template whose name a built-in
+command (or one of its other names, such as `/tools`) or an extension command
+already takes is not listed either, because that command runs instead. A
+description is shown on one row, its control characters by name (`^[`), and is
+cut to the width the menu has; a name longer than 30 columns is cut too (Tab
+still inserts all of it).
 
 ## The settings lists
 
@@ -175,8 +194,9 @@ path there is not supported yet and is reported (`-e <path>` adds an extension).
 ## Prompt templates
 
 Templates (`~/.aelix/agent/prompt-templates/`, `<cwd>/.aelix/prompt-templates/`,
-`--prompt-template <path>`) use the same `prompts` list and the same rules. There
-is no panel for them: edit the list, then `/reload` or restart.
+`--prompt-template <path>`) use the same `prompts` list and the same rules. Run
+one with `/<name> [arguments]`; the `/` menu lists them. There is no panel for
+them: edit the list, then `/reload` or restart.
 `--prompt-template` templates are always on; a `.md` file given there is that
 one template, not every template in its folder.
 

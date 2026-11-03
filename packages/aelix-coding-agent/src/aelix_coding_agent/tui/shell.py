@@ -81,6 +81,8 @@ from aelix_coding_agent.tui.commands import (
 from aelix_coding_agent.tui.completion import (
     DescriptorCommandCompleter,
     FileMentionCompleter,
+    ResourceCommands,
+    resource_commands,
 )
 from aelix_coding_agent.tui.context import (
     _PICK_MAX_WIDTH,
@@ -3528,6 +3530,21 @@ async def run_tui(
                 return True
             return settings_manager.get_respect_gitignore()
 
+        def _resource_commands() -> ResourceCommands:
+            # #508 — the templates and enabled skills the ``/`` menu offers, read
+            # per keystroke off the LIVE harness (a /reload, /resume or /skill
+            # apply shows at the next key) and gated by the same setting the
+            # input loop reads before it expands ``/skill:<name>``.
+            return resource_commands(
+                runtime_host.harness,
+                skill_commands_enabled=(
+                    settings_manager.get_enable_skill_commands()
+                    if settings_manager is not None
+                    else True
+                ),
+                skill_source=skill_control.kind.source_word if skill_control is not None else None,
+            )
+
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
             runtime_host,
             out_chrome,
@@ -3539,6 +3556,7 @@ async def run_tui(
             cwd,
             dispatch.list_commands,
             respect_gitignore=_respect_gitignore,
+            get_resources=_resource_commands,
         )
         # No descriptor wiring (headless fakes without an event_bus) → the palette
         # still offers built-ins + extension commands. Install the union completer.
@@ -3550,6 +3568,7 @@ async def run_tui(
                     cwd,
                     dispatch.list_commands,
                     respect_gitignore=_respect_gitignore,
+                    get_resources=_resource_commands,
                 )
             )
         chrome_task = asyncio.create_task(out_chrome.run())
@@ -3760,11 +3779,12 @@ def _build_input_completer(
     get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
     *,
     respect_gitignore: Callable[[], bool] | None = None,
+    get_resources: Callable[[], ResourceCommands] | None = None,
 ) -> Completer:
     """The merged input completer: slash commands ∪ descriptor routes ∪
-    extension commands (issue #9) ∪ ``@file`` path mentions (Sprint 6h₁₄a). Each
-    sub-completer is inert outside its own trigger (``/`` vs ``@``), so merging
-    them is safe.
+    extension commands (issue #9) ∪ prompt templates and skills (#508) ∪
+    ``@file`` path mentions (Sprint 6h₁₄a). Each sub-completer is inert outside
+    its own trigger (``/`` vs ``@``), so merging them is safe.
 
     ``respect_gitignore`` is the ``/settings`` **Gitignore in @ menu** row (#238),
     handed down as a CALLABLE so the completer re-reads it per enumeration.
@@ -3772,7 +3792,10 @@ def _build_input_completer(
     only because of the ``or (lambda: True)`` below: ``None`` reaching
     ``FileMentionCompleter`` is coerced to ``lambda: None``, which is FALSY, so
     deleting the guard flips the default OFF rather than leaving it ON (measured —
-    the whole suite stays green)."""
+    the whole suite stays green).
+
+    ``get_resources`` is ``run_tui``'s live read of the harness's templates
+    and enabled skills (#508); ``None`` offers neither."""
 
     from prompt_toolkit.completion import merge_completers
 
@@ -3784,6 +3807,7 @@ def _build_input_completer(
                 get_routes,  # type: ignore[arg-type]
                 builtins=builtins,
                 get_ext_commands=get_ext_commands,
+                get_resources=get_resources,
             ),
             # Issue #39: the @file completer does fuzzy whole-tree enumeration
             # (fd subprocess or an os.walk of up to 20k entries) on a cache miss.
@@ -3810,6 +3834,7 @@ def _wire_descriptors(
     get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
     *,
     respect_gitignore: Callable[[], bool] | None = None,
+    get_resources: Callable[[], ResourceCommands] | None = None,
 ) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
@@ -3849,6 +3874,7 @@ def _wire_descriptors(
             cwd,
             get_ext_commands,
             respect_gitignore=respect_gitignore,
+            get_resources=get_resources,
         )
     )
 
