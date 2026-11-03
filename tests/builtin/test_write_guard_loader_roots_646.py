@@ -1282,21 +1282,25 @@ async def test_json_nested_past_the_parser_asks_instead_of_raising(
     and hands the record on as it got it.
     """
 
-    nested = "[" * 100_000
+    # Whether ``json`` raises ``RecursionError`` on real deep text is the
+    # platform's call: 3.14 measures the C stack, and on Linux CI's larger
+    # stack ``"[" * 100_000`` read to the end and raised ``JSONDecodeError``
+    # instead (PR #656, ubuntu py3.14) — for the settings file that names
+    # nothing, rightly, as the loader cannot read it either. And Windows refuses
+    # an environment variable over 32,767 characters (PR #656, windows py3.13),
+    # so the record cannot carry that text at all. The parser's give-up is
+    # forced on a short text instead; the real deep text is the next test's.
+    nested = "[" * 1_000
+
+    def _gives_up(text: str, *args: Any, **kwargs: Any) -> Any:
+        if text.startswith("[[[["):
+            raise RecursionError("maximum recursion depth exceeded")
+        return json.loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(permission, "json", SimpleNamespace(loads=_gives_up, dumps=json.dumps))
     if source == "settings":
         (repo / ".aelix").mkdir()
         (repo / ".aelix" / "settings.json").write_text(nested)
-        # Whether ``json`` raises ``RecursionError`` on this text is the
-        # platform's call: 3.14 measures the C stack, and on Linux CI's larger
-        # stack it read to the end and raised ``JSONDecodeError`` instead
-        # (PR #656, ubuntu py3.14), which names nothing, rightly — the loader
-        # cannot read that file either. So the parser's give-up is forced here.
-        def _gives_up(text: str, *args: Any, **kwargs: Any) -> Any:
-            if text.startswith("[[[["):
-                raise RecursionError("maximum recursion depth exceeded")
-            return json.loads(text, *args, **kwargs)
-
-        monkeypatch.setattr(permission, "json", SimpleNamespace(loads=_gives_up, dumps=json.dumps))
     else:
         monkeypatch.setenv(permission.PARENT_ROOTS_ENV, nested)
 
