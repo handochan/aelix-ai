@@ -885,6 +885,7 @@ async def run_tui(
     )
     out_chrome.busy_provider = shell_lane.busy
     out_chrome.shell_running = shell_lane.running
+    out_chrome.stopped_provider = lambda: isinstance(getattr(runtime_host, "stopped", None), str)
     shell_tasks: set[asyncio.Task[None]] = set()
 
     def _render_custom_message(msg: Any) -> object | None:
@@ -4715,6 +4716,11 @@ async def _input_loop(
         if isinstance(stopped, str) and parsed.kind in ("bash", "bash_transient", "prompt"):
             if after_turn is not None:
                 lane.refuse(after_turn, f"✖ {stopped}")
+            elif parsed.kind != "prompt" and parsed.text:
+                # #682 — the refusal under the command it refuses, which was
+                # nowhere on screen (the input clears on Enter).
+                sigil = "!!" if parsed.kind == "bash_transient" else "!"
+                lane.refuse_line(sigil, parsed.text, f"✖ {stopped}")
             else:
                 output_queue.put_nowait(
                     (

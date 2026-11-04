@@ -270,6 +270,7 @@ def shell_hint(
     width: int,
     bare: bool = False,
     shell_busy: bool = False,
+    stopped: bool = False,
 ) -> str:
     """The status-row words for shell mode, fitted to *width* cells by
     importance (plain text; the caller colours it).
@@ -285,13 +286,29 @@ def shell_hint(
     turn's interrupt key, so the hint does not offer it. A *bare* sigil runs
     nothing, so it makes no promise about Enter; and while another ``!``
     command runs (*shell_busy*), Enter is refused and the hint says why.
+
+    While aelix is *stopped* (#682, ADR-0289 D4) Enter is refused whatever the
+    line holds, so the hint says that and nothing about running or what the
+    model sees; the stop outranks a command still running, since it is what the
+    user must act on. It outranks the mode too, which the sigil drawn as the
+    marker still shows: a row too narrow for both keeps "aelix is stopped"
+    (Codex r1: at 24 columns it kept "Esc to clear" instead).
     """
 
+    if stopped:
+        parts: list[tuple[int, str]] = [
+            (1, f"{sigil} shell"),
+            (0, "aelix is stopped"),
+            (2, "Enter is refused until /reload succeeds"),
+        ]
+        if not running:
+            parts.append((4, "Esc to clear"))
+        return _fit(parts, width)
     if sigil == "!":
         output = "the model sees the output next turn" if running else "the model sees the output"
     else:
         output = "the model won't see the output"
-    parts: list[tuple[int, str]] = [(0, f"{sigil} shell")]
+    parts = [(0, f"{sigil} shell")]
     if shell_busy:
         parts.append((1, SHELL_BUSY_NOTICE))
     elif not bare:
@@ -302,6 +319,13 @@ def shell_hint(
             parts.append((5, "Alt+Enter runs it after the turn"))
     else:
         parts.append((4, "Esc to clear"))
+    return _fit(parts, width)
+
+
+def _fit(parts: list[tuple[int, str]], width: int) -> str:
+    """*parts* (importance, words) in their order, the most important first kept
+    and each next one only while the row still fits *width*."""
+
     kept: list[tuple[int, str]] = []
     for part in sorted(parts, key=lambda item: item[0]):
         trial = [p for p in parts if p in kept or p == part]

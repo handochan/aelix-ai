@@ -756,6 +756,9 @@ class AelixChrome:
         self.on_shell: Callable[..., None] | None = None
         self.busy_provider: Callable[[], bool] | None = None
         self.shell_running: Callable[[], bool] | None = None
+        # #682 — aelix is stopped (#663, ADR-0289 D4): every ``!`` line is
+        # refused, and the shell hint says so. ``None`` (headless) → never.
+        self.stopped_provider: Callable[[], bool] | None = None
         # #596 — the live theme the input marks are coloured from (``@`` references
         # take ``accent``, shell mode takes ``shell``), the width under the user's
         # render ceiling (ADR-0219) the input frame stops at, and the footer's base
@@ -1610,6 +1613,7 @@ class AelixChrome:
                 width=self._terminal_width(),
                 bare=not parse_input_line(self.buffer.text).text,
                 shell_busy=self._shell_running_now(),
+                stopped=self._ask(self.stopped_provider),
             )
             parts.insert(0, paint_shell(self._theme_now(), hint))
         # #66 item 2 — the transient "Press Ctrl+C again to exit" hint. Rendered

@@ -22,7 +22,8 @@ starts meanwhile waits for it instead of forking the session away from it
 ``/fork``, ``/clone``, ``/import``) is dropped; one for the session a ``/reload``
 kept goes through the rebuilt harness (Codex 596-03, verify V2). While aelix is
 stopped (#663, ADR-0289) no ``!`` runs, and a record waits for the ``/reload``
-that ends the stop, saying so in the pending area.
+that ends the stop, saying so in the pending area; a block with nothing to
+record goes on past it (#682).
 
 One ``!`` command runs at a time, as in pi ("A bash command is already
 running"): the chrome refuses Enter on another while one runs (verify V10), and
@@ -151,6 +152,20 @@ class ShellLane:
         block.state = "done"
         self._redraw()
 
+    def refuse_line(self, sigil: str, command: str, reason: str) -> None:
+        """A ``!`` line the input loop refuses before it runs: its command line
+        over *reason*, into the transcript now (#682 — the refusal alone said
+        nothing of what was refused). It has nothing to record, so it waits
+        behind nothing."""
+
+        # ``pending`` heads it with its command line, as a refused pending block is.
+        block = ShellBlock(
+            sigil, command, self._session_now(), state="done", pending=True, failure=reason
+        )
+        renderable = self._transcript(block, left=False)
+        if renderable is not None:
+            self._commit(renderable)
+
     def next_after_turn(self) -> ShellBlock | None:
         return next((b for b in self._blocks if b.after_turn and b.state == "queued"), None)
 
@@ -216,9 +231,16 @@ class ShellLane:
         """
 
         async with self._lock:
+            # #682 — records held for a stop keep their place; a block behind
+            # them with nothing to record (a refused one, a ``!!``) goes on past.
+            waiting: list[ShellBlock] = []
             while True:
-                block = next((b for b in self._blocks if b.state != "queued"), None)
+                block = next(
+                    (b for b in self._blocks if b.state != "queued" and b not in waiting), None
+                )
                 if block is None or block.state != "done":
+                    if waiting:
+                        self._redraw()
                     return
                 if self._held(from_loop=from_loop, final=final):
                     self._watch()
@@ -234,8 +256,8 @@ class ShellLane:
                         # No watcher: only a command the input loop runs ends a
                         # stop, and the loop settles after each one. Redrawn, so
                         # its note says it waits (verify R1V4).
-                        self._redraw()
-                        return
+                        waiting.append(block)
+                        continue
                     # The TUI is closing: the record is lost, its output is not
                     # (verify R1V3 — it left no trace at all).
                     unrecorded = (
