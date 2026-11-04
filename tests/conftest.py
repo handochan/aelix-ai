@@ -6,7 +6,8 @@ ripgrep/fd from GitHub when the binary is absent. To keep the whole suite
 hermetic (no network, no rate-limit flakiness) and to avoid polluting
 ``~/.aelix/agent/bin``, this autouse fixture:
 
-- redirects the tool bin dir to a clean per-session temp dir, and
+- redirects the tool bin dir to a clean temp dir of the test's own, made the
+  first time code asks for it (#459), and
 - makes the network primitives raise, so any real download attempt fails fast
   (``ensure_tool`` then returns ``None`` and the caller uses its fallback).
 
@@ -18,6 +19,7 @@ function-scoped ``monkeypatch``, last write wins).
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -130,10 +132,43 @@ def _no_user_system_prompt_files(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(system_prompt_files, "get_agent_dir", agent_dir)
 
 
+_per_test_numbers = itertools.count()
+
+
+@pytest.fixture(scope="session")
+def _per_test_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The one parent of every ``_per_test_dir`` in the run, made once (#459)."""
+
+    return tmp_path_factory.mktemp("aelix_per_test")
+
+
+@pytest.fixture
+def _per_test_dir(_per_test_root: Path) -> Path:
+    """A directory of the test's own, for the autouse fixtures; not created (#459).
+
+    ``tmp_path_factory.mktemp`` (and so ``tmp_path``) lists the whole basetemp to
+    find the next free number, and the basetemp keeps every numbered directory
+    until the run ends. A fixture that called it for every test made each test
+    pay for every test before it: on Windows the fastest tenth of the tests took
+    0.003 s at the start of a run and up to 0.1 s near its end. This path is a
+    counter under one parent, so it lists nothing, and whoever needs the
+    directory creates it.
+    """
+
+    return _per_test_root / str(next(_per_test_numbers))
+
+
 @pytest.fixture(autouse=True)
-def _no_real_tool_downloads(tmp_path_factory, monkeypatch):
-    bin_dir = tmp_path_factory.mktemp("aelix_bin")
-    monkeypatch.setattr(_tm, "_bin_dir", lambda: str(bin_dir))
+def _no_real_tool_downloads(_per_test_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Created on the first call, so the many tests that never resolve a tool
+    # create nothing; one that does gets a fresh, empty dir, as before.
+    bin_dir = _per_test_dir / "bin"
+
+    def _bin_dir() -> str:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        return str(bin_dir)
+
+    monkeypatch.setattr(_tm, "_bin_dir", _bin_dir)
 
     def _blocked(*_args, **_kwargs):
         raise RuntimeError("network disabled in tests")
