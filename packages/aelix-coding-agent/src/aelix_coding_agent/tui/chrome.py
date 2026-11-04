@@ -477,6 +477,15 @@ def _writes_vt(output: object) -> bool:
     return not hasattr(output, "get_win32_screen_buffer_info") or hasattr(output, "vt100_output")
 
 
+_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _plain(ansi: str) -> str:
+    """*ansi* without its escape sequences (CSI, OSC): what a row shows."""
+
+    return _ESCAPE.sub("", ansi)
+
+
 class _BottomPad(Container):
     """Spare rows above the chrome, so a pinned chrome sits on the last rows (#632).
 
@@ -579,6 +588,41 @@ class _CappedWidth(Container):
 
     def get_children(self) -> list[Container]:
         return [self.content]
+
+
+class _RoomSplit(HSplit):
+    """The chrome's rows, with a call that settles what fits before each layout pass (#668).
+
+    ``before_layout(width, height)`` runs before the rows are measured: in the
+    renderer's first pass, *height* is the terminal's rows, and before the rows
+    are laid out, the rows the frame got. prompt-toolkit keeps a control's text
+    for the whole render once it has read it, so whatever that text depends on
+    is settled before then (``AelixChrome._settle_pending_room``).
+    """
+
+    def __init__(
+        self, children: Sequence[AnyContainer], *, before_layout: Callable[[int, int], None]
+    ) -> None:
+        super().__init__(children)
+        self._before_layout = before_layout
+
+    def preferred_height(self, width: int, max_available_height: int) -> Dimension:
+        self._before_layout(width, max_available_height)
+        return super().preferred_height(width, max_available_height)
+
+    def write_to_screen(
+        self,
+        screen: Screen,
+        mouse_handlers: MouseHandlers,
+        write_position: WritePosition,
+        parent_style: str,
+        erase_bg: bool,
+        z_index: int | None,
+    ) -> None:
+        self._before_layout(write_position.width, write_position.height)
+        super().write_to_screen(
+            screen, mouse_handlers, write_position, parent_style, erase_bg, z_index
+        )
 
 
 # #596 — the most rows the completion menu takes (``_MarkedCompletionsMenu``'s
@@ -802,6 +846,14 @@ class AelixChrome:
         # drawn under the stream until the turn is over (pi's
         # ``pendingMessagesContainer``). ANSI rows, set whole by the host.
         self._pending_rows: list[str] = []
+        # #668 — a row is free for pi's ``Spacer(1)`` above the queued lines
+        # (``QueuedMessages.compose``); drawn by ``_pending_spacer_drawn``.
+        self._pending_spacer = False
+        # #668 — which of ``_pending_rows`` is the hint under the queued lines,
+        # and whether the frame has a row spare for the spacer and for the hint
+        # (``_settle_pending_room``, before each layout pass).
+        self._pending_hint_row: int | None = None
+        self._pending_room: tuple[bool, bool] = (True, True)
 
         history: History = FileHistory(history_path) if history_path else InMemoryHistory()
         # multiline=True so the editor holds newlines: a bracketed multi-line
@@ -1091,33 +1143,35 @@ class AelixChrome:
         # shifting the input/status/footer by a row on each chunk — worse flicker
         # than the blank row it reclaimed. See the lifecycle regression test in
         # ``tests/tui/test_input_box_height.py``.
-        body = HSplit(
+        self._stream_slot = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._render_widgets_above),
+                dont_extend_height=True,
+            ),
+            filter=~hold,
+        )
+        # #596 (ADR-0287) — the pending area, under the stream tail: a ``!``
+        # command run during a turn is drawn here, not committed among the
+        # answer's lines (verify V4: committed, it split a sentence and a tool's
+        # output). Rows only while it holds any, each already cut to the width;
+        # hidden under a modal, which needs the rows.
+        self._pending_slot = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._render_pending_rows),
+                dont_extend_height=True,
+                wrap_lines=False,
+            ),
+            filter=~hold & Condition(lambda: bool(self._pending_rows) and not self.is_modal_open()),
+        )
+        # #668 — ``_RoomSplit`` settles, before each layout pass, whether the
+        # frame has a row spare for the queued lines' spacer and hint.
+        body = self._body = _RoomSplit(
             [
                 self._pad,
                 header,
                 breadcrumb,
-                ConditionalContainer(
-                    Window(
-                        FormattedTextControl(self._render_widgets_above),
-                        dont_extend_height=True,
-                    ),
-                    filter=~hold,
-                ),
-                # #596 (ADR-0287) — the pending area, under the stream tail: a
-                # ``!`` command run during a turn is drawn here, not committed
-                # among the answer's lines (verify V4: committed, it split a
-                # sentence and a tool's output). Rows only while it holds any,
-                # each already cut to the width; hidden under a modal, which
-                # needs the rows.
-                ConditionalContainer(
-                    Window(
-                        FormattedTextControl(lambda: ANSI("\n".join(self._pending_rows))),
-                        dont_extend_height=True,
-                        wrap_lines=False,
-                    ),
-                    filter=~hold
-                    & Condition(lambda: bool(self._pending_rows) and not self.is_modal_open()),
-                ),
+                self._stream_slot,
+                self._pending_slot,
                 ConditionalContainer(modal_slot, filter=~hold),
                 working_row,
                 working_spacer,
@@ -1133,7 +1187,8 @@ class AelixChrome:
                 ),
                 _ansi_row(self._render_status),
                 _footer_row(),
-            ]
+            ],
+            before_layout=self._settle_pending_room,
         )
         layout = Layout(
             FloatContainer(content=body, floats=self._floats),
@@ -1766,16 +1821,94 @@ class AelixChrome:
         return line
 
     def _render_widgets_above(self) -> ANSI:
-        return self._render_widget_lines(self._widgets_above)
+        # #668 — the spacer above the queued lines stands in for the blank rows
+        # these end with (the stream's last), so the frame keeps its height.
+        return self._render_widget_lines(
+            self._widgets_above, drop_blank_tail=self._pending_spacer_drawn()
+        )
+
+    def _render_pending_rows(self) -> ANSI:
+        return ANSI("\n".join(self._pending_rows_drawn()))
+
+    def _pending_rows_drawn(self) -> list[str]:
+        """#668 — the pending area's rows as drawn: the spacer first when it is,
+        and the hint left out while the frame has no row spare for it."""
+
+        rows = list(self._pending_rows)
+        hint = self._pending_hint_row
+        if hint is not None and not self._pending_room[1] and 0 <= hint < len(rows):
+            del rows[hint]
+        if self._pending_spacer_drawn():
+            rows.insert(0, "")
+        return rows
+
+    def _settle_pending_room(self, width: int, height: int) -> None:
+        """#668 — whether this frame has a row spare for the spacer above the
+        queued lines and for the hint under them (the owner's "only when a row
+        is spare"), before its rows are measured (``_RoomSplit``).
+
+        Each is drawn only while the frame, with it, still fits in *height*; the
+        hint goes first. A frame taller than the terminal cuts the bottom of the
+        stream's window, the tallest of its windows: drawn then, the spacer and the
+        hint pushed the newest streamed rows out of view, and a cut that landed
+        on a paragraph's blank row put two blank rows over the lines (verify r2
+        B1). A row the stream needs is not spare. How the window is cut is as
+        it was.
+        """
+
+        self._pending_room = (True, True)
+        if not self._pending_rows or not (
+            self._pending_spacer or self._pending_hint_row is not None
+        ):
+            return
+        flexible = (self._stream_slot, self._pending_slot)
+        others = sum(
+            child.preferred_height(width, height).preferred
+            for child in self._body.children
+            if not any(child is slot for slot in flexible)
+        )
+        for room in ((True, True), (True, False), (False, False)):
+            self._pending_room = room
+            stream = (
+                str(self._render_widgets_above().value).count("\n") + 1
+                if self._stream_slot.filter()
+                else 0
+            )
+            pending = len(self._pending_rows_drawn()) if self._pending_slot.filter() else 0
+            if others + stream + pending <= height:
+                return
+
+    def text_above_pending(self) -> bool:
+        """#668 — rows with text sit above the pending area (the stream, a widget),
+        not only the empty row the widgets keep: a spacer above the queued lines
+        is wanted (``QueuedMessages.compose``)."""
+
+        return any(_plain(line).strip() for slot in self._widgets_above.values() for line in slot)
+
+    def _pending_spacer_drawn(self) -> bool:
+        """#668 — pi's ``Spacer(1)`` above the queued lines, in a row the host gave
+        it (``set_pending_rows(spacer=True)``): drawn while text sits above the
+        pending area and the frame has a row spare for it. Under nothing but the
+        empty row the widgets keep, it is not."""
+
+        return (
+            self._pending_spacer
+            and self._pending_room[0]
+            and bool(self._pending_rows)
+            and not self.is_modal_open()
+            and self.text_above_pending()
+        )
 
     def _render_widgets_below(self) -> ANSI:
         return self._render_widget_lines(self._widgets_below)
 
     @staticmethod
-    def _render_widget_lines(slots: dict[str, list[str]]) -> ANSI:
+    def _render_widget_lines(slots: dict[str, list[str]], *, drop_blank_tail: bool = False) -> ANSI:
         lines: list[str] = []
         for slot in slots.values():
             lines.extend(slot)
+        while drop_blank_tail and lines and not _plain(lines[-1]).strip():
+            lines.pop()
         return ANSI("\n".join(lines))
 
     # === public output / input =============================================
@@ -2089,10 +2222,19 @@ class AelixChrome:
         self._breadcrumb_line = text.replace("\n", " ")  # fixed height=1 row
         self.invalidate()
 
-    def set_pending_rows(self, rows: list[str] | None) -> None:
-        """#596 — replace the pending area's rows (ANSI, one per row; ``None`` empties it)."""
+    def set_pending_rows(
+        self, rows: list[str] | None, *, spacer: bool = False, hint_row: int | None = None
+    ) -> None:
+        """#596 — replace the pending area's rows (ANSI, one per row; ``None`` empties it).
+
+        #668 — *spacer*: a row is free for a spacer above them (the queued lines').
+        *hint_row*: which row is the hint under the queued lines. Both are drawn
+        only while the frame has a row spare for them (``_settle_pending_room``).
+        """
 
         self._pending_rows = list(rows or [])
+        self._pending_spacer = spacer
+        self._pending_hint_row = hint_row
         self.invalidate()
 
     def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:

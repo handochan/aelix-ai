@@ -440,6 +440,14 @@ The TUI accepts slash commands (type `/` to see completion). Highlights:
   same recovery rules used when reopening the session. `/name` without arguments
   shows the current name.
 
+While the model is answering, Enter sends a line as a steer, which the model reads at
+its next step (after the text it is writing, or after a tool's result), and `Alt+Enter`
+queues it as a follow-up for after the answer. A queued line is shown under the answer as
+`Steering: …` or `Follow-up: …` — steering lines first, the order the model takes them —
+and moves into the transcript when the model takes it, so the transcript reads in the
+order the model saw things. `Alt+Up` brings the queued lines back into the input, as the
+`↳ Alt+Up to edit all queued messages` row under them says when there is room for it.
+
 Press `Esc` to interrupt a running turn (this cancels in-flight tools, including
 `bash`, `grep`, `find`, `read`, `write`, `edit`, and `ls`). Press `Ctrl+G` to
 edit the current input in `$VISUAL` / `$EDITOR`.

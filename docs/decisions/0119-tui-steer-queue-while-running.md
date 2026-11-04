@@ -66,3 +66,18 @@ existing `on_interrupt` callback pattern.
 it at once and lets the turn go on (pi checks for `!` before its streaming-steer branch). What the
 model gets of a `!` command is recorded once nothing runs, so it reaches the model on its next
 turn. Alt+Enter is unchanged: it queues any line, a `!` one included, as a follow-up message.
+
+## Note (2026-11-04, #668): the echo lands where the turn takes the line
+
+*Amended 2026-11-04 (#668, the owner's decision (a)).* `_enqueue` echoed `Steering: …` /
+`Follow-up: …` into the transcript at Enter. The harness hands a queued line to the model at the
+next turn boundary, so the echo landed in the middle of a streamed answer (between the rows
+already committed and the live tail) or above a short one, while the model got it, and the session
+recorded it, after the answer (measured: `.omc/specs/508-596-followups-evidence/i2/`). Now, as pi
+does, the line is drawn in the pending area under the stream (`Steering: …`, ADR-0287 D6) until
+its user `message_start` — the loop taking it from the queue — and its echo is committed then. A
+line Alt+Up or an interrupt gives back to the input leaves the area with it. This also closes the
+deferred "per-message list panel": each queued line is listed, steering lines first as the model
+gets them, in the rows the pending area's eight leave (at least three, then "… N more queued"),
+with pi's "↳ Alt+Up to edit all queued messages" under them when a row is free (ADR-0287 D6), and
+the footer keeps its `⋯ N queued` count.

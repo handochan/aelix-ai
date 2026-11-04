@@ -101,6 +101,7 @@ from aelix_coding_agent.tui.input_marks import SubmittedLine, classify_submitted
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.overlay import show_modal
+from aelix_coding_agent.tui.queued_messages import QueuedKind, QueuedMessages
 from aelix_coding_agent.tui.render import (
     EventRenderer,
     _render_diff,
@@ -874,14 +875,28 @@ async def run_tui(
     # #596 (ADR-0287) — every ``!`` command, from Enter to the transcript and the
     # model. Its pending area goes through the output queue like the stream
     # tail, so a block leaves it in the same frame it lands in the transcript.
+    # #668 — the queued steering and follow-up lines share the area, above the
+    # blocks: they reach the transcript first, at the turn's next boundary. The
+    # lines draw the whole area (``QueuedMessages.compose``), so a block that
+    # changes redraws it through them.
     shell_lane = ShellLane(
         busy=lambda: out_chrome.running,
         current_harness=lambda: runtime_host.harness,
         commit=_commit,
-        show=lambda rows: output_queue.put_nowait(("pending", rows)),
+        show=lambda _rows: queued_lines.redraw(),
         theme=lambda: context.theme,
         width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
         output_text=renderer.user_bash_output,
+    )
+    queued_lines = QueuedMessages(
+        current_harness=lambda: runtime_host.harness,
+        commit_echo=lambda kind, text: _commit(
+            render_user_message(text, kind=kind, width=renderer.render_width())
+        ),
+        show=lambda rows, spacer, hint: output_queue.put_nowait(("pending", (rows, spacer, hint))),
+        width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
+        blocks=shell_lane,
+        text_above=getattr(out_chrome, "text_above_pending", None),
     )
     out_chrome.busy_provider = shell_lane.busy
     out_chrome.shell_running = shell_lane.running
@@ -2966,6 +2981,15 @@ async def run_tui(
             _end_retry_countdown(event)
         elif etype == "input_withdrawn":
             _on_input_withdrawn(event)
+            # #668 — the queued lines it gives back (an abort's, a session
+            # change's) went to the input: they leave the pending area.
+            queued_lines.reconcile()
+        elif etype == "message_start":
+            # #668 — the turn takes a queued steering / follow-up line: its echo
+            # goes into the transcript here, after what the model answered so far.
+            message = getattr(event, "message", None)
+            if getattr(message, "role", None) == "user" and queued_lines.delivered(message):
+                context._refresh_footer()
         elif etype == "agent_start":
             # #147 round 2 — the retry attempt has actually begun, which is the
             # fact the interrupt handover was previously only GUESSING at from a
@@ -2981,6 +3005,11 @@ async def run_tui(
             # on the retry path the two land in the same millisecond, so this is
             # parity rather than a behaviour difference.
             _hand_back_retry_interrupt()
+            # #668 — a plain harness.abort() while idle clears the queues and
+            # emits nothing; its lines leave the pending area as the next run starts
+            # (verify r2 D14). The loop takes a line from the queue only after
+            # ``agent_start``, so every line still to be handed over is held.
+            queued_lines.reconcile()
         elif etype in ("compaction_start", "compaction_end", "turn_start"):
             # compaction_start/end drive the indicator; turn_start self-heals a
             # stranded indicator (a BaseException-cancelled compaction never emits
@@ -3065,6 +3094,9 @@ async def run_tui(
             # success path's authoritative
             # ``settled`` refresh still lands.
             live_tokens["n"] = None
+            # #668 — a line an abort cleared from the queue never reaches a
+            # ``message_start``: it leaves the pending area with the run.
+            queued_lines.reconcile()
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # Refresh the authoritative stats after a successful loop return. Before
@@ -3152,6 +3184,10 @@ async def run_tui(
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
         command_ctx.harness = new_harness
+        # #668 — what the new harness does not hold left with the old one. #681
+        # carries the queues over on /reload: those lines stay, and their echo
+        # comes on the new harness's ``message_start``.
+        queued_lines.reconcile(new_harness)
         # Issue #24 — a "reload" keeps the SAME Session and visible transcript: /expand
         # ids still point at live entries and the /stats lifetime goes on; only a real
         # session swap (new/resume/fork) clears them, below. #679: the footer, at once.
@@ -3239,6 +3275,7 @@ async def run_tui(
         # ``not out_chrome.running``.
         harness = runtime_host.harness
         texts: list[str] = []
+        queued_lines.clear()  # #668 — they leave the pending area with the queue
         for qname in ("_steering_queue", "_follow_up_queue"):
             queue = getattr(harness, qname, None)
             if queue is None:
@@ -3317,25 +3354,38 @@ async def run_tui(
                     parsed = ParsedInput("prompt", text.strip())
                 out_chrome.submit_line(SubmittedLine(text, parsed))
                 return
-            # ``renderer.render_width()`` rather than a second ``terminal_columns``
-            # call: the echo has to land at the same measure as the transcript it
-            # sits in, and one source cannot drift from itself.
-            output_queue.put_nowait(
-                (
-                    "commit",
-                    render_user_message(text, kind=kind, width=renderer.render_width()),
-                )
+            # #668 — the line waits in the pending area, and its echo is
+            # committed when the turn hands it to the model (its user
+            # ``message_start``), not here: here it landed in the middle of the
+            # answer still streaming, or above a short one.
+            harness = runtime_host.harness
+            qkind: QueuedKind = "steer" if kind == "steer" else "follow_up"
+            before = QueuedMessages.queued_now(harness, qkind)
+            call = asyncio.ensure_future(
+                harness.steer(text) if kind == "steer" else harness.follow_up(text)
             )
+            # ``steer()`` / ``follow_up()`` queue the line in their first step,
+            # before they await the ``queue_update`` hooks. The call's first step
+            # is scheduled ahead of this task's next one and nothing runs between
+            # the two, so here the line is in the queue and the turn cannot have
+            # taken it yet, however long a hook keeps the call open (Codex r1).
             try:
-                if kind == "steer":
-                    await runtime_host.harness.steer(text)
-                else:
-                    await runtime_host.harness.follow_up(text)
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                call.cancel()  # the TUI is closing: nothing is left to queue it for
+                raise
+            queued = queued_lines.taken(harness, qkind, text, before)
+            try:
+                await call
             except Exception as exc:  # noqa: BLE001 — surface, never crash chrome
-                output_queue.put_nowait(
-                    ("commit", Text(f"✖ {label} failed: {exc}", style="bold red"))
-                )
-                return
+                if queued is None:
+                    note = Text(f"✖ {label} failed: {exc}", style="bold red")
+                else:
+                    # A ``queue_update`` hook raised after the harness queued the
+                    # line: it still reaches the model, so its row stays and the
+                    # line must not be sent again (Codex r1).
+                    note = Text(f"⚠ {label} queued, but {exc}", style="yellow")
+                output_queue.put_nowait(("commit", note))
             context._refresh_footer()  # reflect the new pending count
 
         task = loop.create_task(_run())
@@ -4356,6 +4406,8 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
         # in the frame that lands it in the transcript.
         rows_seen = False
         pending_rows: list[str] = []
+        pending_spacer = False
+        pending_hint: int | None = None
         for kind, payload in items:
             if kind == "commit":
                 pending.append(payload)
@@ -4363,12 +4415,21 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
                 tail_seen = True
                 tail_ansi = payload if isinstance(payload, str) else ""
             elif kind == "pending":
+                # #668 — ``(rows, spacer, hint row)`` from the queued lines, which
+                # draw the area in ``run_tui``; the bare rows from a lane of its own.
                 rows_seen = True
-                pending_rows = list(payload) if isinstance(payload, list) else []
+                rows, spacer, hint = (
+                    payload if isinstance(payload, tuple) else (payload, False, None)
+                )
+                pending_rows = list(rows) if isinstance(rows, list) else []
+                pending_spacer = bool(spacer)
+                pending_hint = hint if isinstance(hint, int) else None
 
         def _apply_tail(
             ansi: str = tail_ansi,
             rows: list[str] = pending_rows,
+            spacer: bool = pending_spacer,
+            hint: int | None = pending_hint,
             tail: bool = tail_seen,
             pending_area: bool = rows_seen,
         ) -> None:
@@ -4377,7 +4438,7 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
             if tail:
                 chrome.set_widget("__stream__", ansi.split("\n") if ansi else None, above=True)
             if pending_area:
-                chrome.set_pending_rows(rows)
+                chrome.set_pending_rows(rows, spacer=spacer, hint_row=hint)
 
         live_seen = tail_seen or rows_seen
         if pending:

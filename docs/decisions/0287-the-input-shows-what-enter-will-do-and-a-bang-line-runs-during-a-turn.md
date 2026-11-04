@@ -11,7 +11,8 @@ a shell command that runs after it (D6), and the default theme's footer keeps
 `grey70`, a light terminal being the `light` theme's (D8).
 Amended 2026-11-04 by dated notes: #667 (D2, a paste beginning with `/`), #670
 (D4 and Limits, no `@` menu in shell mode), #682 (D1, the hint while aelix is
-stopped).
+stopped), #668 (D6 and Limits, queued steering and follow-up lines in the
+pending area).
 Date: 2026-11-03
 Issue: #596. The prototype hand-back, with what pi and Claude Code do and the
 three options: `.omc/specs/596-proto-report.md`; the grids the owner compared:
@@ -29,7 +30,7 @@ pi: `earendil-works/pi@9c9ce8547` (2026-11-03). Claude Code: the shipped 2.1.314
 binary's embedded JS, read by the prototype (nothing recalled).
 Tests: `tests/tui/test_input_marks_596.py`, `tests/tui/test_shell_mid_turn_596.py`,
 `tests/harness/test_idle_write_596.py`, `tests/tui/test_paste_is_not_a_command_667.py`,
-`tests/tui/test_no_at_menu_in_shell_mode_670.py`;
+`tests/tui/test_no_at_menu_in_shell_mode_670.py`, `tests/tui/test_queued_echo_at_handoff_668.py`;
 the rows the frame moves in `tests/tui/test_bottom_pin_632.py`,
 `tests/tui/test_input_box_height.py` and `tests/tui/test_input_hidden_on_modal.py`.
 
@@ -158,6 +159,35 @@ prompt has a line above and below it.
      committed among the answer's lines: committed, a block split a streamed
      sentence and a tool call from its output (verify V4, measured with a real
      model and scripted).
+     *2026-11-04 note (#668):* the area holds the queued steering and follow-up
+     lines too (`QueuedMessages`), above the blocks, since they reach the
+     transcript first: `Steering: …` / `Follow-up: …`, one row each, the first
+     line of a long one followed by `…`, in the order the harness hands them to
+     the model — every steering line, then every follow-up, as pi lists them
+     (verify r1: a follow-up queued first was drawn above the steer that went
+     first). They share the eight rows, by the owner's 2026-11-05 decisions:
+     the lines take `max(3, 8 - rows the blocks need)` (past that, the last row
+     is "… N more queued (Alt+Up edits them)"), and the blocks get what the
+     lines leave (`ShellLane.rows(limit)`), never fewer than the newest block
+     needs. A row nothing else takes holds pi's `Spacer(1)` above the lines,
+     while text sits above the area (the stream, a widget); the next one, pi's
+     dim "↳ Alt+Up to edit all queued messages" under them. So the hint is the
+     first row to go when the eight are full, and neither the spacer nor the
+     hint takes a row from a line or a block. The spacer counts in the eight:
+     the stream's live window ends with a blank row, which the spacer stands in
+     for (the chrome leaves that row out while it draws one), so the frame keeps
+     its height. A row spare in the eight is not enough: the chrome draws the
+     spacer and the hint only while the whole frame, with them, fits the
+     terminal (`AelixChrome._settle_pending_room`, before each layout pass),
+     the hint going first. A frame taller than the terminal cuts the bottom of
+     the stream's window (`HSplit` gives each window a share, and the stream's
+     is the tallest); drawn there, the two pushed the newest streamed rows out
+     of view, and a cut on a paragraph's blank row put two blank rows over the
+     lines (verify r2 B1, 80x24 and 50x24). In such a terminal the area is the
+     lines and the blocks alone, under whatever row of the stream the cut
+     leaves last. How that window is cut
+     did not change: with three or more lines, or tall blocks, the cut can
+     still take the newest streamed row, as it did before the spacer.
    - **When nothing holds the session any more, the finished blocks move into the
      transcript and their records are written, at one settle point**, oldest
      first: the command line over all of its output, then what the model gets of
@@ -305,7 +335,31 @@ prompt has a line above and below it.
   most eight rows in all, the oldest blocks dropped whole; the rest is in the
   transcript once the turn is over. It is hidden while a modal (an approval
   dialog) is open, which needs the rows. A steering echo is still committed among
-  the answer's lines, as before #596.
+  the answer's lines, as before #596. *2026-11-04 note (#668, the owner's
+  decision (a)):* no longer — a steering or follow-up line waits in the pending
+  area and its echo is committed on the user `message_start` the loop emits when
+  it takes the line from the queue, pi's order (`interactive-mode.ts`
+  `message_start` → `addMessageToChat`, `updatePendingMessagesDisplay`): after
+  the answer, after a tool's result, where the session records it. A line is
+  known by the message the harness queued for it, never by its words (Codex r1:
+  the prompt, or a line of the other kind with the same words, took its echo):
+  `steer()` / `follow_up()` queue it in their first step, before they await the
+  `queue_update` hooks, and the input reads the queue right after that step,
+  before the turn can take the line. A `queue_update` hook that raises after the
+  line was queued leaves it queued, so its row stays and the line reaches the
+  model; the note says `⚠ Steering queued, but …`, not "failed". A line leaves
+  the area when the harness no longer holds it — at `agent_start` and
+  `agent_end`, on `input_withdrawn`, and when `/reload` or a session change
+  installs another harness. A line the new harness holds stays: #681 (in review)
+  makes `/reload` carry the queued messages over, the same objects; without it
+  they are lost with the harness they were queued on, and their rows go with
+  them. A plain `harness.abort()` while nothing runs (code that holds the
+  harness; an extension's `ctx.abort()` only marks an abort, and RPC's abort
+  gives the lines back on `input_withdrawn`) clears the queue with no event, so
+  its rows stay while nothing runs and go when the next run starts (verify r2
+  D14: they used to stay through that whole turn, which never sent the line).
+  The loop takes a line from the queue only after `agent_start`, so a line
+  still to be handed over keeps its row there.
 - Esc during a turn interrupts the turn, not a `!` command running in it; such a
   command cannot be cancelled, as an idle `!` cannot. Quitting the TUI cancels it:
   it neither prints nor records then. A finished block still held when the TUI
