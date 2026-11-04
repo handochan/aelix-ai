@@ -981,6 +981,26 @@ class AgentSessionRuntime:
             return
         new.adopt_queued_messages(*old.take_queued_messages())
 
+    async def _settle_withdraw(self) -> None:
+        """#684 — a turn an Esc is ending gives its input back before a swap goes on.
+
+        RPC runs each command in a task of its own, so a ``new_session``,
+        ``switch_session``, ``fork`` or ``clone`` sent right after an ``abort`` can
+        start while the cancelled turn unwinds. The teardown's ``dispose`` then
+        aborted it again with the default, which keeps the input (ADR-0286 §2:
+        the last abort wins): no ``input_withdrawn``, and the session left behind
+        ended with the cancelled prompt. Waiting here lets the Esc finish — the
+        event goes out while the surfaces still listen to this harness, the leaf
+        moves — before the swap reads the session (a ``/clone`` copies it) or
+        takes it apart. A turn nobody asked to withdraw is not waited for: the
+        teardown aborts it and keeps its input, as before. ``reload`` waits for
+        idle anyway.
+        """
+
+        harness = self._harness
+        if getattr(harness, "withdraw_pending", False) is True:
+            await harness.wait_for_idle()
+
     async def _give_back_queued(self) -> None:
         """#681 — a swap gives the lines queued on the harness it replaces back, as an Esc does.
 
@@ -1303,6 +1323,7 @@ class AgentSessionRuntime:
         from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
         async with self._transition():
+            await self._settle_withdraw()  # #684
             # P-342 — snapshot BEFORE teardown (Pi line 184).
             previous_session_file = (
                 self.session.session_file if self.session is not None else None
@@ -1425,6 +1446,7 @@ class AgentSessionRuntime:
         """
 
         async with self._transition():
+            await self._settle_withdraw()  # #684
             if await self._emit_before_switch(
                 reason="new", target_session_file=None
             ):
@@ -1776,6 +1798,7 @@ class AgentSessionRuntime:
         """
 
         async with self._transition():
+            await self._settle_withdraw()  # #684 — before the fork reads the session
             if await self._emit_before_fork(
                 entry_id=entry_id, position=position
             ):
@@ -1879,6 +1902,7 @@ class AgentSessionRuntime:
         from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
         async with self._transition():
+            await self._settle_withdraw()  # #684
             # Step 1 — resolve path.
             resolved_path = await self._fs.absolute_path(path)
             # Step 2 — existence probe.

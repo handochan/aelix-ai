@@ -1,6 +1,6 @@
 # 0286. Esc withdraws the input the model never answered
 
-Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)`
+Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)` — amended 2026-11-04 (#684): a swap waits for the turn an Esc is ending (§2 note), and an abort made before a prompt's turn task exists ends that turn as it starts, nothing sent (Limits 2)
 Date: 2026-11-03
 Issue: #654. Design and the owner's four decisions (2026-11-03):
 `.omc/specs/654-design-2026-11-03.md`. Batch B6, P1.
@@ -57,6 +57,7 @@ end is not what they are taking back.
 | Esc moment | Result |
 |---|---|
 | before any output, mid-stream, during an in-flight retry attempt | whole prompt withdrawn |
+| accepted, before its turn starts (an `input` or `before_agent_start` handler running, the context read) | whole prompt withdrawn, nothing sent (#684, Limits 2) |
 | TUI Esc in the retry countdown | whole prompt withdrawn, the failed answer off the path with it |
 | tool running, or tool done and next response pending | nothing withdrawn |
 | `[.., tool result, STEER]` pending | STEER withdrawn, the rest stays |
@@ -81,6 +82,23 @@ that path), as does an extension's `ctx.abort()` (#545).
 The last `abort()` wins: it assigns the flag, so a plain abort after a stale request (an
 `abort_retry` made with no wait running) keeps the input. `abort_retry()` left False changes
 nothing, since `abort()` calls it too and "stop retrying" does not undo an earlier Esc.
+
+*(2026-11-04, #684)* A session swap's teardown is such a plain abort: `dispose()` aborts a
+running turn. RPC runs each command in a task of its own, so a `new_session`,
+`switch_session`, `fork` or `clone` sent with an `abort` began while the cancelled turn
+unwound, and its dispose overwrote the Esc — no `input_withdrawn`, and the session it
+left ended with the cancelled prompt (`.omc/specs/663-followups-evidence/out/p7_*`). The
+client is still there after a swap, so the reason above does not hold for it. A swap now
+waits for a turn an Esc is ending (`AgentHarness.withdraw_pending`,
+`AgentSessionRuntime._settle_withdraw`) before it reads the session it leaves or takes it
+apart, and RPC `clone` before it reads the leaf it clones at; the withdraw then runs, its
+event reaching the surfaces that still listen to that harness. A turn nobody asked to
+withdraw is not waited for: the teardown aborts it and keeps its input, as before.
+`reload` waits for idle anyway. The same holds for an `abort` that lands while the prompt
+is accepted but its turn has not started (Limits 2): the turn ends as it starts, so the swap
+waits for no answer and nothing is sent — and with no Esc, the teardown's own abort ends it
+the same way, keeping the input on the session left behind. Tests:
+`tests/runtime/test_abort_then_swap_684.py`, `tests/rpc/test_abort_then_swap_rpc_684.py`.
 
 ### 3. A leaf move, not a new entry type
 
@@ -189,12 +207,18 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
 
 1. **The compaction barrier.** After a compaction committed inside the prompt the summary
    may hold the input and the kept tail cannot be moved behind it, so nothing is withdrawn.
-2. **The #336 window.** An abort made before `_run` (in a hook) is still discarded with
-   its flag and the turn runs, as a plain abort is today. The window includes `_run`'s own
-   `build_context` await, before the turn task exists (`harness/core.py:5473`, Codex finding
-   1): the request still goes out, and the input stays. Queued lines an Esc gives back in
-   that window can come back with no sentence if the previous run already said it, because
-   the notice's latch resets on `agent_start`.
+2. **The #336 window — closed for a prompt's first run (2026-11-04, #684).** An abort
+   made after the prompt began and before its turn task exists — in an `input` or
+   `before_agent_start` handler, or during `_run`'s own `build_context` await (Codex
+   finding 1) — has no task to cancel, and `_run` cleared it: the request went out and the
+   input stayed, and a swap waiting for that Esc waited for the whole answer (Codex review
+   of #684; the verify lane's `p684_stale_rpc-slowext`, where a model that holds kept a
+   `new_session` waiting for ever). `prompt()` now clears the flags when it takes its claim,
+   and the first run keeps one made since: it commits its inputs and is cancelled before it
+   builds a request, so an Esc withdraws them as above, a plain abort (the teardown's, a
+   quit's) keeps them on the session, and nothing is sent. What remains is a retry's or an
+   overflow recovery's re-run: an abort during its `build_context` is still cleared, the
+   re-run is sent, and the tail stops after it.
 3. **A steer between drain and commit.** Pre-existing: a steer the loop has drained and
    not yet committed is lost on cancel. It is neither in the queue nor in the event.
 4. **The file keeps the text.** The withdrawn entry stays on the branch left behind and on

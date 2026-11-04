@@ -1711,6 +1711,12 @@ async def _handle_clone(
     ``rebind_session`` manually (see :func:`_handle_switch_session`).
     """
 
+    # #684 — an ``abort`` sent with this clone: the cancelled prompt leaves the
+    # path first, so the leaf read below is the one the Esc put back, not the
+    # prompt the runtime's own wait (``fork``) would then copy anyway.
+    harness = runtime_host.harness
+    if getattr(harness, "withdraw_pending", False) is True:
+        await harness.wait_for_idle()
     session = runtime_host.session
     if session is None:
         return RpcErrorResponse(
