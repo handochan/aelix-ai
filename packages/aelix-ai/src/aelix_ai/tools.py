@@ -17,6 +17,7 @@ re-corrects on its next turn (it is NEVER an uncaught crash).
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
@@ -97,6 +98,35 @@ class ToolResult:
     details: Any | None = None
     is_error: bool = False
     terminate: bool = False
+
+
+class ToolCancelled(asyncio.CancelledError):
+    """What a cancelled tool raises in place of the bare cancel, to say what it did.
+
+    #673 (ADR-0290). When a turn is cancelled (Esc, RPC ``abort``, a signal, an
+    outer task cancel) the cancel lands inside ``execute``. A tool that lets it
+    through gets a default error result saying it was stopped and may have partly
+    run. A tool that can say more catches the cancel, builds a :class:`ToolResult`
+    from what it has so far, and raises this::
+
+        try:
+            await work()
+        except asyncio.CancelledError as cancel:
+            raise ToolCancelled(ToolResult(content=[TextContent(text=so_far)])) from cancel
+
+    It is still a cancellation, so nothing on the way up swallows it and the turn
+    ends. The loop always records the result as an error, runs the ``tool_result``
+    hooks on it, and writes it to the session. Build it without awaiting: another
+    cancel can land in an await here. With no result, or something that is not a
+    :class:`ToolResult`, the call gets the default text.
+
+    Raised with no cancel on its task, it is not a cancel of the turn: the call gets
+    this result, as an error, and the turn goes on.
+    """
+
+    def __init__(self, result: ToolResult | None = None) -> None:
+        super().__init__()
+        self.result = result
 
 
 # An async callable that performs the tool's work.
@@ -371,6 +401,7 @@ async def validate_tool_arguments(
 __all__ = [
     "Tool",
     "ToolArgumentValidationError",
+    "ToolCancelled",
     "ToolContent",
     "ToolExecute",
     "ToolExecutionContext",

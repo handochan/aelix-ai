@@ -254,7 +254,7 @@ def test_message_end_without_message_is_ignored() -> None:
 
 def test_user_and_tool_result_message_end_do_not_inflate_per_model() -> None:
     # The loop emits message_end for the user prompt + every tool-result message
-    # too (loop.py:88-91). Those carry no ``.model`` / ``.usage`` and must NOT be
+    # too (loop.py:97-100). Those carry no ``.model`` / ``.usage`` and must NOT be
     # counted toward per-model requests (nor mis-attributed to the current model
     # via the provider fallback), or the leaderboard reqs column would over-count
     # by (1 user + N tool-results) per turn.

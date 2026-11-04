@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:744-749``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:746-751``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -758,8 +758,8 @@ def render_cancel_report(
     collector's :meth:`~aelix_agents.runtime.CallEnvelopes.lost`: members that
     had a process and whose run ended on an internal error, with no envelope to
     show. A member without a process is not reported; if no member had one,
-    there is no report (``None``): the call did nothing, and the orphaned tool
-    call's "No result provided" says as much.
+    there is no report (``None``): the call did nothing, and its cut result says
+    all there is, that it was stopped and may have partly run (#673, ADR-0290).
 
     Rendered with the renderers the model already knows, INSIDE A FENCE. The
     report is a user-role message, so :data:`CANCEL_REPORT_HEAD` comes first

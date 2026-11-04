@@ -748,6 +748,12 @@ All six built-in adapters go through the transform; a wire with an error flag
 openai family as that text, and D13's preamble covers the text-only wires. The
 transform is not changed. Limits 3 and 5 are the gaps.
 
+*Amended 2026-11-04 (ADR-0290, #673): a turn that gets to unwind now writes a cut call's
+result, so a child ended by SIGTERM with time to act (the `-p` handler aborts the turn)
+leaves `Command aborted: …` in its file. Stopping one from the parent is still a SIGKILL
+(`print_channel._eager_abort`, `abort_child`), so what this section measured is unchanged,
+and `tests/agents_ext/test_agent_resume_real_child_610.py` still pins it.*
+
 ### D15. A run is a key, and a resume is counted with its delegation
 
 Every run gets a key of its own, and `resumes` links it to the first. The stats
@@ -822,9 +828,12 @@ The numbers are the design's (§12); the code cites them.
    resumed child on such an adapter sees a tool call with no result at all.
 4. **A profile body edited in place is what a resume runs.** The identity is the
    file, and a new delegation would get the same body.
-5. **The parallel tool path drops finished siblings' results when it is
-   cancelled** (the kernel's existing behaviour), so a resumed child sees calls
-   that did run as "No result provided". The preamble tells it to check effects.
+5. **A killed child's finished siblings have no results**, so a resumed child
+   sees calls that did run as "No result provided". The preamble tells it to check
+   effects. *Amended 2026-11-04 (ADR-0290, #672): this read "the parallel tool path
+   drops finished siblings' results when it is cancelled (the kernel's existing
+   behaviour)". A cancelled turn now keeps them. Stopping a child is a SIGKILL, which
+   runs nothing, so what a resumed child sees is unchanged.*
 6. **A child's own compaction calls are in no total** (ADR-0243, as before).
 7. **The child of a parent killed with `kill -9` can outlive it on macOS and
    hold its lock** — macOS has no parent-death signal (the README's "Delegation's

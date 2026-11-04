@@ -3,7 +3,7 @@
 WHY AN EXTENSION AND NOT A ``tools/`` BUILT-IN. Every built-in coding tool
 receives a :class:`~aelix_ai.tools.ToolExecutionContext`, and that dataclass has
 exactly four fields — ``tool_call_id``, ``signal``, ``on_partial``, ``model``
-(``aelix_ai/tools.py:77-84``). None of them reaches the harness, the extension
+(``aelix_ai/tools.py:78-85``). None of them reaches the harness, the extension
 runtime, the loaded-extension list or the trust decision, so a tool under
 ``tools/`` structurally cannot see the runtime state this tool exists to report.
 An extension can: ``ExtensionAPI`` and ``ExtensionContext`` are the only objects
@@ -326,7 +326,7 @@ class StatusExtension:
         """Serialise the snapshot. ``args`` is ignored, deliberately.
 
         The tool declares no parameters, but ``validate_tool_arguments`` is
-        LENIENT by design — "unknown keys are preserved" (``aelix_ai/tools.py:317``)
+        LENIENT by design — "unknown keys are preserved" (``aelix_ai/tools.py:347``)
         — so a model that invents an argument reaches here with it. Ignoring the
         dict entirely means there is no input to this tool at all, which is what
         makes "read-only, no mutation" checkable rather than asserted.

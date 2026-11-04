@@ -2,9 +2,9 @@
 
 Pi parity: ``Promise.all`` reject path is unreachable because every tool
 exception is caught per-tool (``agent-loop.ts:609-637, 651-680``). Pi NEVER
-cancels siblings. Aelix uses ``asyncio.gather(*coros,
-return_exceptions=False)`` (NOT ``TaskGroup`` — TaskGroup's mandatory
-sibling-cancel would be Pi-divergence).
+cancels siblings. Aelix holds a task per call and waits on them (ADR-0290)
+(NOT ``TaskGroup`` — TaskGroup's mandatory sibling-cancel would be
+Pi-divergence).
 
 Proof: while tool A is raising, tools B and C are still in-flight and MUST
 complete normally. We assert by counting per-tool "completed" markers.

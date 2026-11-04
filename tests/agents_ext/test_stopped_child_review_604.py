@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.loop import _CUT_TEXT
 from aelix_agent_core.types import ToolExecutionEndEvent
 from aelix_agents.aggregate import (
     CANCEL_REPORT_FENCE_CLOSE,
@@ -59,6 +60,7 @@ from aelix_agents.runtime import (
 )
 from aelix_agents.stream import _StreamState, reduce_event, written_paths
 from aelix_agents.tool import NO_TEXT, NO_TEXT_YET
+from aelix_ai.messages import TextContent
 from aelix_ai.streaming import Model, ModelCost
 from aelix_coding_agent.extensions.api import ExtensionError
 from aelix_coding_agent.subagent_contract import SubagentResult
@@ -709,8 +711,9 @@ async def test_a_session_switched_under_a_delegation_still_ends_the_turn_as_a_ca
     """Verify probe ``probe_stale_runtime.py``. ``/new``, ``/resume`` and
     ``/fork`` invalidate the extension's runtime BEFORE ``dispose()`` aborts the
     turn, so the report's ``send_message`` raises ``ExtensionError``. The report
-    is lost (its session is gone); the cancel must not be: no tool result is
-    fed back, the model is not asked again, and nothing is queued."""
+    is lost (its session is gone); the cancel must not be: the call gets only the
+    loop's cut result (#673, ADR-0290), the model is not asked again, and nothing
+    is queued."""
 
     channel = _Parking()
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
@@ -742,9 +745,11 @@ async def test_a_session_switched_under_a_delegation_still_ends_the_turn_as_a_ca
     await asyncio.wait_for(turn, 30)
 
     assert harness._next_turn_queue == []
-    assert len(seen) == 1, "the model was asked again: the cancel became a tool result"
+    assert len(seen) == 1, "the model was asked again: the cancel did not end the turn"
     ends = [e for e in events if isinstance(e, ToolExecutionEndEvent)]
-    assert ends == [], f"the cancel became a tool result: {ends!r}"
+    assert [(e.is_error, e.result.content) for e in ends] == [
+        (True, [TextContent(text=_CUT_TEXT)])
+    ]
 
 
 def test_each_cap_is_the_number_the_adr_states() -> None:

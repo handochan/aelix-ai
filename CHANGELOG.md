@@ -1283,6 +1283,57 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A tool's result now carries the tool's name (#686).** Google's `functionResponse.name` went
+  out empty for every result a tool produced, and a Gemini model gets no id on it either, so
+  nothing said which call a response answered. An OpenAI-compatible provider marked
+  `requires_tool_result_name` got no `name` at all. Every result is now named after its call,
+  a result kept or cut by a stop included, and a session saved before this goes out named from
+  the matching call, the file left as it is. A session saved from now on also replays an
+  extension's `tool-renderer-desc` view on `--continue` and `/resume`, as it drew live. How the
+  real Gemini API took the empty name was not measured: there is no Google key here (#61).
+- **A tool you stop now gets a result that says so, with what it printed (#673, ADR-0290).**
+  `bash` killed by Esc left no result at all: the next request told the model `No result
+  provided`, exactly what a call that never began reads, so it could not know the command had
+  been stopped and may have partly run, and what it had printed was gone. Now the next request
+  says `Command aborted: the user stopped the turn while it ran, so it may have partly run.`
+  under the output so far, truncated like any other, and so does the card, unless the output is
+  long enough to fold, when the stop line folds with it and `✖ Operation aborted` still shows.
+  Any other tool reads `Cancelled: the user stopped the turn while this tool ran, so it may have
+  partly run.` `No result provided` now means that a call never began, or that a hook failed on it.
+  - Esc on an output flood stays instant. Past 4 MiB the result holds the end of the output and
+    says its lines were not counted, and the whole of it goes to the full-output file in the
+    background, as the raw bytes.
+  - A command's own `setsid` child outlives the stop, as it did.
+  - The tool's card ends and `tool_execution_end` goes out, which it never did on a stop.
+  - An extension's tool can say what it got done by raising `aelix_ai.tools.ToolCancelled`
+    in place of the cancel. See "Writing a tool that can be stopped" in the tools guide.
+  - `tool_result` handlers run on a stopped call, with `is_error` true, so redaction still
+    applies. If one raises, the model gets the plain text and none of the output, unless it was
+    registered with `error_mode="continue"`, which leaves the output as it is, as for a finished
+    call.
+  - A tool raising `CancelledError` when nothing cancelled it is now a tool error and the turn
+    goes on. It used to end the turn and exit the TUI with a traceback.
+- **Stopping a turn keeps the results of the tools that finished (#672, ADR-0290).** With
+  `read` and `ls` finished and `grep` still running, Esc used to lose all three: the file
+  had none of them and the next request told the model each had failed with `No result
+  provided`, though `read`'s output was on your screen. Now every tool of the batch that
+  finished keeps its real result, in the order the model asked for them, in the next request
+  and in the session when you reopen it. This holds for Esc, Ctrl+C, RPC `abort`, a signal
+  and quitting.
+  - A second Esc leaves even if an extension's hook is holding a result, at the cost of that
+    one result, or holding the turn's end. It also stops waiting for a tool of a parallel batch
+    that ignored the first, which reads as stopped. A sequential tool that ignores every cancel
+    still holds the turn.
+  - A tool that catches the cancel and returns no longer lets the turn go on: a later write in
+    the batch stays unstarted and no further request goes out. A tool that also calls
+    `uncancel()` takes the cancel back, and a sequential batch goes on.
+  - When an extension's `tool_result` hook fails, the batch's other tools end and keep their
+    results first.
+  - One SIGTERM still ends the process if a hook is holding a stopped tool, in about two
+    seconds, at the cost of the result it held. A tool's async cleanup gets those two seconds
+    as well, and a longer one is cut.
+  - A process that is killed outright still writes nothing.
+
 - **An RPC `abort` sent together with `new_session`, `switch_session`, `fork`
   or `clone` gives the cancelled prompt back (#684, ADR-0286).** RPC runs each
   command at once, so the session change started while the aborted turn was

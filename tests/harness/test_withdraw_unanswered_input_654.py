@@ -273,10 +273,12 @@ async def test_esc_while_a_tool_runs_withdraws_nothing(tmp_path: Path, attached:
     task = await _abort_at_reached(run, withdraw_unanswered=True)
     await task
 
-    assert run.state() == ["CANCELLED", "<call>"]
+    # The cut call's result joined them (#673, ADR-0290), ahead of the close-out.
+    kept = ["CANCELLED", "<call>", "<result>"]
+    assert run.state() == kept
     assert run.withdrawn == []
     if attached:
-        assert await run.disk() == ["CANCELLED", "<call>"]
+        assert await run.disk() == kept
 
 
 @pytest.mark.parametrize("attached", [False, True])

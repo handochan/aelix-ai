@@ -15,15 +15,16 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
-from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_ai.tools import ToolCancelled, ToolExecutionContext, ToolResult
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     DRAIN_CAP_SECONDS,
@@ -72,6 +73,17 @@ _DEFAULT_MAX_BYTES = DEFAULT_MAX_BYTES
 # Pi parity ``OutputAccumulator({ tempFilePrefix: "pi-bash" })`` →
 # ``<tmpdir>/pi-bash-<hex>.log`` where ``<hex> = randomBytes(8).toString("hex")``.
 _TEMP_FILE_PREFIX = "pi-bash"
+
+# #673 (ADR-0290): the last line of a command a cancelled turn cut. ``Command aborted``
+# alone stays on the exit path, for an ``exec`` that returned no exit code and no timeout.
+_CUT_STATUS = "Command aborted: the user stopped the turn while it ran, so it may have partly run."
+# The most output a cut command's result reads whole, and how many ``max_bytes`` of its
+# tail it reads past that (#673, ADR-0290). The cut path runs on the event loop, and Esc is
+# the way out of a flood: over this, ``yes`` for 0.25 s stalled the loop 3.5 s, nothing
+# could interrupt it, and decoding and splitting it took about 11 GB of memory per GB of
+# output. At the cap a whole read stays under 20 ms of the 4.6 ms/MB measured for ``yes``.
+_CUT_WHOLE_READ_BYTES = 4 * 1024 * 1024
+_CUT_TAIL_WINDOW_MAX_BYTES = 4
 
 # Issue #11 — Aelix-additive default + max bash timeout (pi has NEITHER, by
 # design — pi assumes a capable model that always supplies ``timeout`` and an
@@ -1013,6 +1025,46 @@ def _write_full_output(raw: str) -> str:
     return str(path)
 
 
+def _write_raw_output_in_background(chunks: list[bytes]) -> str:
+    """Persist a cut flood's bytes as they came, on a thread. Returns the path at once.
+
+    #673 (ADR-0290). Writing gigabytes on the event loop is the stall this path exists
+    to avoid, and an await is where the next cancel would land. So the file is opened
+    here, where a failure can still leave the bare cancel, and filled by a thread, which
+    holds the chunks until it is done. A daemon, since a SIGTERM must not wait for it: a
+    process that ends first leaves the file short.
+    """
+
+    path = Path(tempfile.gettempdir()) / f"{_TEMP_FILE_PREFIX}-{secrets.token_hex(8)}.log"
+    stream = path.open("wb")
+
+    def write_all() -> None:
+        try:
+            with stream:
+                for chunk in chunks:
+                    stream.write(chunk)
+        except OSError:
+            _LOG.debug("writing a cut command's full output failed", exc_info=True)
+
+    threading.Thread(target=write_all, name="aelix-bash-cut-output", daemon=True).start()
+    return str(path)
+
+
+def _format_uncounted_notice(info: TruncationInfo, *, full_output_path: str) -> str:
+    """The truncation notice of a cut flood, whose lines nobody counted (#673, ADR-0290)."""
+
+    total = format_size(info.original_bytes)
+    shown = (
+        f"the last {format_size(info.kept_bytes)} of a line"
+        if info.last_line_partial
+        else f"the last {info.kept_lines} line{'' if info.kept_lines == 1 else 's'}"
+    )
+    return (
+        f"\n\n[Showing {shown} of {total} of output, whose lines were not counted because "
+        f"the command was cut. Full output: {full_output_path}]"
+    )
+
+
 def _format_truncation_notice(
     info: TruncationInfo,
     *,
@@ -1283,48 +1335,41 @@ def create_bash_tool(
         with contextlib.suppress(Exception):
             description += _bash_shell_sentence(get_shell_env(), opts.get("shell_path"))
 
-    async def execute(
-        args: dict[str, Any], ctx: ToolExecutionContext
-    ) -> ToolResult:
-        command = args.get("command", "")
-        if not isinstance(command, str) or not command.strip():
-            return ToolResult(
-                content=[TextContent(text="bash: missing 'command'")],
-                is_error=True,
-            )
-        # Issue #11: arm the default timeout when the model omits ``timeout``
-        # (or passes ≤0); honor an explicit value, clamped to the max cap.
-        timeout, timeout_clamped = _resolve_call_timeout(
-            args.get("timeout"), default_timeout, max_timeout
-        )
-        # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
-        # a newline), then resolve the spawn context (base env = getShellEnv,
-        # optionally rewritten by ``spawnHook``).
-        resolved_command = (
-            f"{command_prefix}\n{command}" if command_prefix else command
-        )
-        spawn_context = _resolve_spawn_context(resolved_command, cwd, spawn_hook)
-        # #657: close the planted-bare-repo path for the model's own git. After
-        # the spawn hook, so a hook's own GIT_CONFIG_* entries are preserved.
-        _inject_git_bare_repository_guard(spawn_context.env)
-        if not Path(spawn_context.cwd).is_dir():
-            return ToolResult(
-                content=[
-                    TextContent(
-                        text=f"bash: cwd {spawn_context.cwd!r} is not a directory"
-                    )
-                ],
-                is_error=True,
-            )
-        chunks: list[bytes] = []
-        exit_result = await operations.exec(
-            spawn_context.command,
-            spawn_context.cwd,
-            on_data=chunks.append,
-            signal=getattr(ctx, "signal", None),
-            timeout=timeout,
-            env=spawn_context.env,
-        )
+    def _assemble_cut_output(chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
+        """The output of a cut command, without paying for a flood on the event loop.
+
+        Up to :data:`_CUT_WHOLE_READ_BYTES` this is :func:`_assemble_output`, so the body
+        is the exit path's byte for byte. Past that it reads only the tail, from which
+        the kept lines come anyway, and never splits the whole buffer, so the total
+        line count does not exist: ``original_lines`` is 0 and the notice says so.
+        The head of what it reads is a cut too, and needs no claim: it is never kept.
+        """
+
+        total = sum(map(len, chunks))
+        window = _CUT_TAIL_WINDOW_MAX_BYTES * max_bytes
+        if total <= max(_CUT_WHOLE_READ_BYTES, window):
+            return _assemble_output(chunks)
+        tail_chunks: list[bytes] = []
+        size = 0
+        for chunk in reversed(chunks):
+            tail_chunks.append(chunk)
+            size += len(chunk)
+            if size >= window:
+                break
+        tail = b"".join(reversed(tail_chunks))[-window:]
+        raw = decode_child_output(tail, ragged_tail=True)
+        body, kept = truncate_tail(raw, max_lines=max_lines, max_bytes=max_bytes)
+        info = replace(kept, truncated=True, original_lines=0, original_bytes=total)
+        full_output_path = _write_raw_output_in_background(chunks)
+        return body + _format_uncounted_notice(info, full_output_path=full_output_path), info, full_output_path
+
+    def _assemble_output(chunks: list[bytes]) -> tuple[str, TruncationInfo, str | None]:
+        """The child's output as the model reads it, on the exit path and a short cut.
+
+        Synchronous, and it has to stay so: the cut path runs in a task being
+        cancelled, where an await invites the next cancel in.
+        """
+
         # ``ragged_tail=True`` (#239 review): this buffer's TAIL is a
         # byte-exact cut whenever the timeout or an abort kills the child, or
         # #232's idle drain cap ends the read — the last chunk can stop
@@ -1384,6 +1429,74 @@ def create_bash_tool(
                 max_bytes=max_bytes,
                 last_line_bytes=last_line_bytes,
             )
+        return body, info, full_output_path
+
+    async def execute(
+        args: dict[str, Any], ctx: ToolExecutionContext
+    ) -> ToolResult:
+        command = args.get("command", "")
+        if not isinstance(command, str) or not command.strip():
+            return ToolResult(
+                content=[TextContent(text="bash: missing 'command'")],
+                is_error=True,
+            )
+        # Issue #11: arm the default timeout when the model omits ``timeout``
+        # (or passes ≤0); honor an explicit value, clamped to the max cap.
+        timeout, timeout_clamped = _resolve_call_timeout(
+            args.get("timeout"), default_timeout, max_timeout
+        )
+        # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
+        # a newline), then resolve the spawn context (base env = getShellEnv,
+        # optionally rewritten by ``spawnHook``).
+        resolved_command = (
+            f"{command_prefix}\n{command}" if command_prefix else command
+        )
+        spawn_context = _resolve_spawn_context(resolved_command, cwd, spawn_hook)
+        # #657: close the planted-bare-repo path for the model's own git. After
+        # the spawn hook, so a hook's own GIT_CONFIG_* entries are preserved.
+        _inject_git_bare_repository_guard(spawn_context.env)
+        if not Path(spawn_context.cwd).is_dir():
+            return ToolResult(
+                content=[
+                    TextContent(
+                        text=f"bash: cwd {spawn_context.cwd!r} is not a directory"
+                    )
+                ],
+                is_error=True,
+            )
+        chunks: list[bytes] = []
+        try:
+            exit_result = await operations.exec(
+                spawn_context.command,
+                spawn_context.cwd,
+                on_data=chunks.append,
+                signal=getattr(ctx, "signal", None),
+                timeout=timeout,
+                env=spawn_context.env,
+            )
+        except asyncio.CancelledError as cancel:
+            # #673 (ADR-0290): the turn was cancelled and ``exec`` has ended the
+            # tree, so what it printed is all there will be. That and the stop go
+            # to the model. Nothing here may replace the cancel: output that
+            # cannot be assembled leaves the loop's default text.
+            try:
+                body, info, full_output_path = _assemble_cut_output(chunks)
+            except Exception:  # noqa: BLE001
+                _LOG.debug("assembling a cut command's output failed", exc_info=True)
+                raise cancel from None
+            raise ToolCancelled(
+                ToolResult(
+                    content=[TextContent(text=_append_status(body, _CUT_STATUS))],
+                    details=BashToolDetails(
+                        exit_code=None,
+                        truncation=info,
+                        full_output_path=full_output_path,
+                        output_unconfirmed=False,
+                    ),
+                    is_error=True,
+                )
+            ) from cancel
+        body, info, full_output_path = _assemble_output(chunks)
 
         # #260 — AFTER ``truncate_tail`` and its notice, so the kept tail can
         # never cut it, and before the status line, which stays last. An empty

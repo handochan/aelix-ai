@@ -284,12 +284,14 @@ status would be choosing by what THIS branch recorded, and another ``/tree``
 branch may have resumed the child since (ADR-0277 limit 2), so a status-based
 line could tell the child something false about its own transcript.
 
-"MAY OR MAY NOT HAVE RUN", not "did not complete": a child killed mid-tool
-leaves the call with no result, and the provider transform answers it with
-"No result provided" (``_transform_messages.py``, measured on the wire in the
-#610 survey) — but the parallel tool path drops the results of siblings that
-DID finish when it is cancelled (``loop.py``), so "did not run" would be false
-for those. The wording follows OpenCode's and Qwen's resume notes."""
+"MAY OR MAY NOT HAVE RUN", not "did not complete": a child SIGKILLed mid-tool,
+which is what stopping one does (``print_channel._eager_abort``, ``abort_child``),
+leaves the call with no result, and the provider transform answers it with "No
+result provided" (``_transform_messages.py``, measured on the wire in the #610
+survey). Its process had no turn to commit in, so results of siblings that DID
+finish are missing with it: ADR-0290's fix for a cancelled turn cannot reach a
+killed one, and "did not run" would be false for those. The wording follows
+OpenCode's and Qwen's resume notes."""
 
 _RESUME_INSTRUCTION_HEAD = "\n\nNext instruction:\n"
 
@@ -499,9 +501,9 @@ class SpawnRecordMeta:
     will need if it is CANCELLED.
 
     A cancelled ``agent`` call returns no ``ToolResult`` — the cancel propagates
-    through the tool, the turn ends, and the next turn's provider transform
-    answers the orphaned tool call with "No result provided". So the extension
-    passes a :class:`CallEnvelopes` here, ``_run`` fills it — the channel's
+    through the tool, the turn ends, and the loop's default cut result says only
+    that it was stopped (#673, ADR-0290). So the extension passes a
+    :class:`CallEnvelopes` here, ``_run`` fills it — the channel's
     envelope when one came back, one built from the live stream when the spawn
     was cancelled, and a way to build that one while the member is still
     running — and the extension's ``except asyncio.CancelledError`` reports

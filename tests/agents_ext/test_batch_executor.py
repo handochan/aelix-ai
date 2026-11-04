@@ -1277,7 +1277,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1970-1981``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:1972-1983``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1387,7 +1387,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1427``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:1429``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.
@@ -1542,7 +1542,7 @@ async def test_l2_stop_all_mid_batch_leaves_no_process_behind(
     ``list`` / ``status`` / ``stop`` and a second ``stop_all`` could never reach
     them again. Those children hold the parent's API keys, which is precisely
     what ADR-0197 forbids, and on the ``AgentHarness.reload()`` path
-    (``harness/core.py:4357``, which emits ``session_shutdown`` and never aborts
+    (``harness/core.py:4394``, which emits ``session_shutdown`` and never aborts
     or disposes) they survive indefinitely.
 
     The in-process fake cannot show it: with no real child, ``abort_child``

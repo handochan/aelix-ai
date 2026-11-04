@@ -66,6 +66,11 @@ over extension tools at harness assembly.
 This is the worked example shipped at
 `packages/aelix-coding-agent/src/aelix_coding_agent/examples/echo/echo.py`.
 
+### When the turn is stopped while your tool runs
+
+The cancel lands in your `execute` as `asyncio.CancelledError`: let it through, or raise
+`aelix_ai.tools.ToolCancelled` to say what got done. See [When you stop a tool](tools.md#when-you-stop-a-tool).
+
 ### Your tool goes through the approval prompt
 
 Aelix's permission gate treats every tool it did not build itself as one that

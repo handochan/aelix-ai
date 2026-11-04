@@ -39,6 +39,57 @@ A name or pattern that matches no tool loaded at launch is a warning at start
 takes `--tools` as the name), exclude nothing and say so at start. Delegated
 agents are started with the same `--exclude-tools`.
 
+## When you stop a tool
+
+Press Esc or Ctrl+C while tools run and the model is told what happened, in the next
+request and in the session when you reopen it. The same goes for RPC `abort`, a signal and
+quitting.
+
+| The tool | What the model reads |
+| --- | --- |
+| had finished | its result |
+| was running | an error saying it was stopped and may have partly run; `bash` adds what it had printed |
+| had not started | `No result provided` |
+
+A process killed outright (`kill -9`) writes nothing. An extension's tool can say what it
+got done: see [Writing a tool that can be stopped](#writing-a-tool-that-can-be-stopped).
+
+Stopping `bash` ends the command and the processes it started in its group. One it put in a
+session of its own, with `setsid` or a daemon's double fork, keeps running. Past 4 MiB of output
+the model reads the end of it and a note that its lines were not counted, and the whole of it
+goes to the file that note names, as the raw bytes, finishing a moment later.
+
+### Writing a tool that can be stopped
+
+Esc, Ctrl+C, RPC `abort`, a signal and quitting cancel the turn, and the cancel lands in your
+`execute` as `asyncio.CancelledError`. Let it through and the model reads an error result saying
+the user stopped the turn and the tool may have partly run. If your tool can say what it got done,
+raise `aelix_ai.tools.ToolCancelled` instead, as `bash` does with what it printed:
+
+```python
+try:
+    for row in rows:
+        await write_row(row)
+        done += 1
+except asyncio.CancelledError as cancel:
+    text = f"Wrote {done} of {len(rows)} rows."
+    raise ToolCancelled(ToolResult(content=[TextContent(text=text)])) from cancel
+```
+
+It is still a cancellation, so the turn ends, and it is always recorded as an error. Build it
+without awaiting: a second Esc can land in an await. `tool_result` handlers run on it with
+`is_error` true; if one raises, or a second cancel lands in it, the model gets the default text
+and none of your output. A handler with `error_mode="continue"` is the exception: its raise is
+swallowed and the output stays, so do not register a redactor that way.
+
+Do not catch the cancel and return, and do not call `uncancel()`. The task's cancel count is what
+says a stop came: `uncancel()` takes it back, and in a sequential batch the next call starts. A
+tool that ignores the cancel holds the turn until the next Esc; in a parallel batch that Esc stops
+waiting for it.
+
+On a signal the process aborts, waits 2 seconds and aborts again, so async cleanup in your
+`finally` gets those 2 seconds.
+
 ## The tool flags are locks
 
 `--no-tools` turns every tool off, `--no-builtin-tools` the built-ins, and

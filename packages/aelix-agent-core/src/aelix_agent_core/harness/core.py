@@ -578,6 +578,15 @@ _AUTO_COMPACT_RESERVE_TOKENS = 16384
 _AUTO_RETRY_MAX_ATTEMPTS = 3
 _AUTO_RETRY_BASE_DELAY_MS = 2000
 
+# What ``abort_until_idle`` gives a turn to end before it aborts it again, and how many
+# times it does (ADR-0290). The re-abort lands in whatever is still unwinding, a tool's
+# async cleanup included, so this is also how long that cleanup has under one SIGTERM. A
+# hook parked on a cut call ends in one such wait, inside the delegation reaper's 5 s
+# (``reaper.py``, ``DEFAULT_GRACE_SECONDS``). ``RpcClient.stop()`` gives its child 1 s
+# and then kills the group, so such a child dies there holding what the hook held.
+_REABORT_GRACE_SECONDS = 2.0
+_REABORTS = 4
+
 # pi parity (``isRetryableAssistantError``, ``packages/ai/src/utils/retry.ts`` @ 3daa20280, what
 # ``_isRetryableError`` calls): a case-insensitive regex over the error text; ``.?`` is pi's one-
 # or-no separator ("rate limit" / "rate-limit" / "ratelimit"). The statuses are pi's seven, ``520``
@@ -1982,7 +1991,15 @@ class AgentHarness:
         in-flight, call ``task.cancel()`` on it so any tool that ignores the
         cooperative signal still gets unwound. Pi does NOT cancel
         ``Promise.all`` on tool error; this is a strict superset (Pi-observing
-        tools would have cancelled anyway via the signal).
+        tools would have cancelled anyway via the signal). Since #672 and #673
+        (ADR-0290) that holds for what the model reads too: the cancel unwinds the
+        calls, and on its way out the loop commits a finished call's real result and a
+        cut call's result saying so, before :meth:`_run`'s close-out. A second call of
+        this method cancels again: it is the way out of a tool stuck on the first one,
+        of a hook holding a result's ``message_end`` (that result is lost) and of a
+        listener holding the close-out. In a parallel batch it also stops waiting for a
+        tool that ignores the first, which reads as stopped. A sequential tool that
+        ignores every cancel still holds the turn.
 
         Race-safety: read of ``self._current_turn_task`` → local copy →
         ``cancel()`` on a done-or-already-cancelled Task is a no-op in
@@ -4209,12 +4226,32 @@ class AgentHarness:
 
         await self._idle_event.wait()
 
+    async def abort_until_idle(self) -> None:
+        """Abort, and abort again while the harness is not idle, a few times at most.
+
+        #672, #673 (ADR-0290): how a process ends. The way out of a cut call runs hooks,
+        and one parked there takes another cancel, so one abort no longer ends every turn
+        and one SIGTERM still has to. A press of Esc is one abort: a person can press again.
+        """
+
+        await self.abort()
+        for _ in range(_REABORTS):
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.wait_for_idle(), _REABORT_GRACE_SECONDS)
+                return
+            with contextlib.suppress(Exception):
+                await self.abort()
+
     async def dispose(self) -> None:
-        """Tear down the harness — abort + wait + cleanups LIFO (D.1.13 M-4)."""
+        """Tear down the harness — abort + wait + cleanups LIFO (D.1.13 M-4).
+
+        After :meth:`abort_until_idle` it waits as it always did: what no cancel can
+        unblock is what the delegation reaper's grace and escalation are for.
+        """
 
         self._disposed = True
         if self._phase != "idle":
-            await self.abort()
+            await self.abort_until_idle()
             with contextlib.suppress(Exception):
                 await self.wait_for_idle()
         # #334 — nothing queued is lost at teardown: a prompt cancelled in its
@@ -5938,12 +5975,37 @@ class AgentHarness:
                             stop_reason="aborted",
                         )
                         self._state.messages.append(aborted_message)
+                        # #672, #673 (ADR-0290) — each emit in a task of its own,
+                        # held where ``abort()`` looks, because the loop task above
+                        # is finished: without this a listener parked here could not
+                        # be reached by any number of Esc presses. A cancel from
+                        # ``abort()`` ends that one emit and the next event goes on.
+                        # A cancel of this prompt itself comes up the ``await`` too,
+                        # and shows on this task's own count, and it propagates.
+                        prompt_task = asyncio.current_task()
+                        outer_cancels = prompt_task.cancelling() if prompt_task else 0
+
+                        async def emit_held(closure: AgentEvent) -> None:
+                            # Published from inside, not by the caller: a cancel before
+                            # a task's first step ends a coroutine that never ran, and
+                            # the event would reach nobody. An abort before this line
+                            # aims at a finished task and does nothing.
+                            self._current_turn_task = asyncio.current_task()
+                            await emit(closure)
+
                         for closure_event in (
                             TurnEndEvent(message=aborted_message, tool_results=[]),
                             AgentEndEvent(messages=list(self._state.messages)),
                         ):
                             try:
-                                await emit(closure_event)
+                                await asyncio.ensure_future(emit_held(closure_event))
+                            except asyncio.CancelledError:
+                                if prompt_task and prompt_task.cancelling() > outer_cancels:
+                                    raise
+                                _log.debug(
+                                    "a cancel ended the abort close-out's %s",
+                                    closure_event.type,
+                                )
                             except Exception as emit_exc:  # noqa: BLE001
                                 _log.debug(
                                     "emit during abort close-out raised: %r",
