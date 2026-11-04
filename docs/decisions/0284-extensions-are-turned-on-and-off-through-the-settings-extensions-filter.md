@@ -202,6 +202,36 @@ rebuild: … — nothing applied; /reload again or restart". Raised after it, th
 new harness runs: "⚠ /reload applied the new extensions, but <step> failed: …".
 The panel repeats the failure as a banner until a build succeeds.
 
+*2026-11-03 note (#663, ADR-0289):* "nothing applied" was not true — the old
+harness was already torn down, its Guardrail and Permission handlers cleared,
+and the session kept running on it. A raise in `settings` or `build` now builds
+the session again on the settings it was running with ("… — kept the previous
+settings; fix the cause, then /reload again"), or, when that build fails too,
+stops ("… — aelix is stopped until /reload succeeds. Fix the cause, then
+/reload, or restart."); the line never says "nothing applied".
+
+*2026-11-03 note (#664):* "caught instead of escaping" held for `Exception`
+only. An extension whose import or `setup()` raised `SystemExit` (`sys.exit(1)`)
+or `KeyboardInterrupt` went past the loader's `except Exception` and ended
+aelix — `-p` with no output, the TUI on `/reload`. The loader now makes
+`SystemExit` an ordinary load error naming the extension ("✖ flip.py failed to
+load: SystemExit: sys.exit(1) (see /extension)"; a `sys.exit("message")` says its
+message) and loads the rest, at launch and on every rebuild. A
+`KeyboardInterrupt` still ends the run, since a Ctrl+C during a slow `setup()`
+looks the same, but as one line naming the extension and the step ("aelix:
+interrupted while the extension … was running its setup()", exit 130) instead
+of a traceback. `asyncio.CancelledError` passes through unchanged. A deferred
+pack's first command treats `sys.exit` the same way.
+*Review round 1 (2026-11-03, Codex R10, verify V9):* the launch warning names
+the type too (`error='SystemExit: sys.exit(1)'`; a `sys.exit("message")` read as
+a bare `message`, which a `RuntimeError("message")` also reads as). An
+interrupt raised while one extension's `setup()` loads another keeps naming the
+inner extension and its step; it was wrapped again as the outer one's. Any
+other `BaseException` that is not an `Exception` — `GeneratorExit`, a custom
+subclass — passes through unchanged, as `CancelledError` does: such an
+exception is a control-flow signal the loader cannot interpret, and the
+owner's decision named `SystemExit` and `KeyboardInterrupt` only.
+
 ### D7. What waits for a restart (owner decision 10; Codex F10, F11)
 
 - **MCP servers a pack declares** are dialled once, at launch. Which plugin
@@ -347,7 +377,8 @@ parent's PROJECT file turned off (measured on both channels,
   not import it, its tools, commands, hooks and skills are gone, and its MCP
   tools are hidden.
 - A failed `/reload` no longer prints over the input or claims success; a
-  `/reload` that raises no longer escapes the input loop.
+  `/reload` that raises no longer escapes the input loop. (*2026-11-03, #663:*
+  and what runs after it is said — ADR-0289.)
 - Opening `/extension` and closing it now leaves one line ("Extensions: closed,
   nothing changed."), as `/skill` and `/tool` do.
 
@@ -366,3 +397,6 @@ parent's PROJECT file turned off (measured on both channels,
   loaded; an off one says "(no manifest)".
 - A `/reload` that fails in `build` leaves the session on a torn-down harness,
   as before; the line now says so and points at `/reload` or a restart.
+  *2026-11-03 note (#663, ADR-0289):* no longer — the line did not say so (it
+  said "nothing applied"), and the torn-down harness ran tool calls with no
+  gate. The runtime now rebuilds on the previous settings or stops.

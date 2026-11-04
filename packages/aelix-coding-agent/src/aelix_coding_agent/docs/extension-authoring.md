@@ -434,6 +434,36 @@ A pack whose manifest no longer parses is said there too (`✖ broken was not
 loaded: Invalid manifest …`). `/new`, `/fork` and `/resume` say what failed to
 load below the new session's banner instead of printing it over the input.
 
+An extension that raises in its import or `setup()` — `sys.exit()` included —
+is skipped with that line, and the rest load. A `KeyboardInterrupt` there (or
+Ctrl+C while a slow `setup()` runs) ends aelix with one line naming the
+extension. Any other `BaseException` that is not an `Exception` is not caught:
+raise an `Exception` for a failure.
+
+One extension failing is never a failed `/reload`. When the reload itself fails
+— re-reading `settings.json` or building the session raised — aelix builds the
+session again on the settings it was running with, with Guardrail, Permission
+and every extension's hooks, and says so:
+
+```
+✖ /reload failed during the rebuild: PermissionError: … — kept the previous settings; fix the cause, then /reload again
+```
+
+If that fails too, aelix stops rather than run anything without its checks:
+prompts, `!` lines, tool calls, steering and follow-up messages are refused
+with "aelix is stopped until /reload succeeds" until a `/reload` (or `/new`)
+works; `/`-commands still run. An extension's `ctx.reload()`, RPC
+`resources/reload` and a failed `/new`, `/resume`, `/fork` or `/import` raise
+`RebuildFailedError` with the same words (ADR-0289).
+
+One reload or session change runs at a time. A `ctx.reload()`,
+`ctx.new_session()`, `ctx.fork()` or `ctx.switch_session()` asked for while
+another runs waits for it — but one asked for from inside it (a
+`session_before_switch`, `session_shutdown`, `session_start` or
+`resources_discover` handler, or `setup()`) raises `RuntimeError` instead, since
+it would wait on itself. A `with_session` callback runs after the change is
+done, so it may start another.
+
 The panel writes the `extensions` list of `settings.json`, the same grammar as
 `skills` (see [skills-and-prompts](skills-and-prompts.md)): `-name` turns an
 extension off, `+name` back on, `!glob` turns off what matches, and the

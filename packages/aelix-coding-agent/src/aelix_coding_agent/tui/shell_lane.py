@@ -20,7 +20,9 @@ idle one included (Codex 596-01), and is written under the harness's
 starts meanwhile waits for it instead of forking the session away from it
 (Codex 596-02). A record for a session the user left (``/new``, ``/resume``,
 ``/fork``, ``/clone``, ``/import``) is dropped; one for the session a ``/reload``
-kept goes through the rebuilt harness (Codex 596-03, verify V2).
+kept goes through the rebuilt harness (Codex 596-03, verify V2). While aelix is
+stopped (#663, ADR-0289) no ``!`` runs, and a record waits for the ``/reload``
+that ends the stop, saying so in the pending area.
 
 One ``!`` command runs at a time, as in pi ("A bash command is already
 running"): the chrome refuses Enter on another while one runs (verify V10), and
@@ -37,6 +39,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from aelix_agent_core.runtime import TRANSITION_RUNNING_MESSAGE
 from rich.console import Console, Group
 from rich.text import Text
 
@@ -71,6 +74,8 @@ class ShellBlock:
     run: UserBashRun | None = None
     #: Shown in place of output: the command could not run.
     failure: str | None = None
+    #: Already moved into the transcript: only its record is left to write.
+    committed: bool = False
 
 
 class ShellLane:
@@ -164,13 +169,22 @@ class ShellLane:
         self._blocks.append(block)
         block.state = "running"
         self._redraw()
+        harness = self._current_harness()
+        stopped = _stopped_reason(harness)
         try:
-            block.run = await run_user_bash(
-                self._current_harness(),
-                block.command,
-                exclude_from_context=block.sigil == "!!",
-                cwd=cwd,
-            )
+            if stopped is not None:
+                # #663 (ADR-0289) — a stopped (or torn-down) harness has no
+                # ``user_bash`` handler left to run a ``!`` through: refused here,
+                # on every path that runs one — Enter during a turn or a command,
+                # Alt+Enter after the turn, an idle line.
+                block.failure = f"✖ {stopped}"
+            else:
+                block.run = await run_user_bash(
+                    harness,
+                    block.command,
+                    exclude_from_context=block.sigil == "!!",
+                    cwd=cwd,
+                )
         except asyncio.CancelledError:
             # Stopped with the TUI: nothing to show, nothing to record.
             self._blocks.remove(block)
@@ -209,19 +223,50 @@ class ShellLane:
                 if self._held(from_loop=from_loop, final=final):
                     self._watch()
                     return
-                self._blocks.remove(block)
                 harness = self._current_harness()
                 left = getattr(harness, "session", None) is not block.session
-                renderable = self._transcript(block, left=left)
-                if renderable is not None:
-                    self._commit(renderable)
+                unrecorded: str | None = None
+                if not left and _records(block) and _stopped_reason(harness) is not None:
+                    if not final:
+                        # #663 (ADR-0289) — a stopped (or torn-down) harness takes
+                        # no record: it waits for the build that replaces it
+                        # (/reload), or is dropped with a session the user leaves.
+                        # No watcher: only a command the input loop runs ends a
+                        # stop, and the loop settles after each one. Redrawn, so
+                        # its note says it waits (verify R1V4).
+                        self._redraw()
+                        return
+                    # The TUI is closing: the record is lost, its output is not
+                    # (verify R1V3 — it left no trace at all).
+                    unrecorded = (
+                        "not recorded: aelix was stopped"
+                        if _is_stopped(harness)
+                        else "not recorded: a reload or session change was running"
+                    )
+                self._blocks.remove(block)
+                if not block.committed:
+                    renderable = self._transcript(block, left=left, unrecorded=unrecorded)
+                    if renderable is not None:
+                        self._commit(renderable)
+                    block.committed = True
                 self._redraw()
-                if left or block.run is None or block.run.exclude_from_context:
+                if left or unrecorded or block.run is None or block.run.exclude_from_context:
                     continue
+                entered = False
                 try:
                     async with _idle_write(harness):
+                        entered = True
                         await record_user_bash(harness, block.run)
-                except Exception:  # noqa: BLE001 — never take the input loop down
+                except Exception as exc:  # noqa: BLE001 — never take the input loop down
+                    if not entered and getattr(exc, "code", None) == "invalid_state":
+                        # #663 (verify R1V1) — it waited for the drain lock while
+                        # a reload or session change began its teardown, and
+                        # ``idle_write`` found the harness disposed once it held
+                        # it. Its output is in the transcript; its record goes
+                        # back first in line, for the harness that replaces this
+                        # one — or is dropped with a session the user leaves.
+                        self._blocks.insert(0, block)
+                        return
                     _log.warning("could not record a ! command", exc_info=True)
 
     async def close(self) -> None:
@@ -293,13 +338,15 @@ class ShellLane:
         self._show(self._rows())
 
     def _rows(self) -> list[str]:
-        shown = [b for b in self._blocks if b.pending and b.state != "queued"]
-        shown += [b for b in self._blocks if b.pending and b.state == "queued"]
+        drawn = [b for b in self._blocks if b.pending and not b.committed]
+        shown = [b for b in drawn if b.state != "queued"]
+        shown += [b for b in drawn if b.state == "queued"]
         if not shown:
             return []
         theme = self._theme_now()
+        stopped = _is_stopped(self._current_harness())
         groups = [
-            [_command_line(block, _pending_note(block), theme, first_line_only=True)]
+            [_command_line(block, _pending_note(block, stopped), theme, first_line_only=True)]
             + self._preview(block)
             for block in shown
         ]
@@ -334,16 +381,19 @@ class ShellLane:
         more = Text(f"… {len(lines) - keep} more lines, in full once the turn is over", style="dim")
         return [more, *(Text(line) for line in lines[-keep:])]
 
-    def _transcript(self, block: ShellBlock, *, left: bool) -> object | None:
+    def _transcript(
+        self, block: ShellBlock, *, left: bool, unrecorded: str | None = None
+    ) -> object | None:
         body: Text | None = None
         if block.failure is not None:
             body = Text(block.failure, style="bold red")
         elif block.run is not None and block.run.output.strip():
             body = self._output_text(block.run.output)
-        if not block.pending and not left:
+        if not block.pending and not left and unrecorded is None:
             # An idle ``!``: its output alone, under the line it was typed on.
             return body
-        head = _command_line(block, _settled_note(block, left=left), self._theme_now())
+        note = _settled_note(block, left=left, unrecorded=unrecorded)
+        head = _command_line(block, note, self._theme_now())
         return head if body is None else Group(head, body)
 
     def _theme_now(self) -> Any:
@@ -363,6 +413,34 @@ def _is_idle(harness: Any) -> bool:
     return bool(getattr(harness, "is_idle", True))
 
 
+def _stopped_reason(harness: Any) -> str | None:
+    """#663 — why *harness* runs and records no ``!`` (it is disposed), or ``None``.
+
+    A stopped harness holds its turns with the stop's sentence. One a reload or
+    session change has torn down and not yet replaced holds none, and nothing is
+    stopped: it said "aelix is stopped" before a reload that then succeeded
+    (verify R1V2).
+    """
+
+    if getattr(harness, "disposed", False) is not True:
+        return None
+    return getattr(harness, "turns_held", None) or TRANSITION_RUNNING_MESSAGE
+
+
+def _is_stopped(harness: Any) -> bool:
+    """#663 — *harness* is stopped (``AgentHarness.stop``), not between a teardown and an install."""
+
+    return getattr(harness, "disposed", False) is True and bool(
+        getattr(harness, "turns_held", None)
+    )
+
+
+def _records(block: ShellBlock) -> bool:
+    """*block* has a record to write: a ``!`` command that ran."""
+
+    return block.run is not None and not block.run.exclude_from_context
+
+
 def _idle_write(harness: Any) -> contextlib.AbstractAsyncContextManager[Any]:
     hold = cast(
         "Callable[[], contextlib.AbstractAsyncContextManager[Any]] | None",
@@ -373,21 +451,27 @@ def _idle_write(harness: Any) -> contextlib.AbstractAsyncContextManager[Any]:
     return contextlib.nullcontext()
 
 
-def _pending_note(block: ShellBlock) -> str:
+def _pending_note(block: ShellBlock, stopped: bool = False) -> str:
+    # #663 (verify R1V4) — while aelix is stopped a queued line is refused when
+    # the input loop reads it, and a record waits for the /reload that ends it.
     if block.state == "queued":
-        return "runs after the turn"
+        return "refused while aelix is stopped" if stopped else "runs after the turn"
     if block.state == "running":
         return "running…"
+    if stopped and _records(block):
+        return "held until aelix runs again"
     return _settled_note(block, left=False)
 
 
-def _settled_note(block: ShellBlock, *, left: bool) -> str:
+def _settled_note(block: ShellBlock, *, left: bool, unrecorded: str | None = None) -> str:
     if block.failure is not None:
         return ""
     if block.sigil == "!!":
         return "the model won't see it"
     if left:
         return "not recorded: you left its session"
+    if unrecorded is not None:
+        return unrecorded
     return "the model sees the output next turn"
 
 

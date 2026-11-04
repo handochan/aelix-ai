@@ -1283,6 +1283,45 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **An extension that calls `sys.exit()` no longer ends aelix (#664).** A
+  `setup()` (or the import of an extension's module) that raised `SystemExit`
+  went past the loader: `aelix -p` ended with no output at all and exit 1, the
+  TUI never drew, and a `/reload` closed it. It is now that extension's load
+  error like any other — `Warning: extension load: … error='SystemExit:
+  sys.exit(1)'` at launch (a `sys.exit("message")` says `SystemExit: message`),
+  "✖ flip.py failed to load: SystemExit: sys.exit(1) (see /extension)" after
+  `/reload`, `/new`, `/resume` or `/fork` — and the other extensions load. A
+  `KeyboardInterrupt` there (Ctrl+C during a slow `setup()`, or the extension
+  raising one) still ends aelix, but with one line naming the extension instead
+  of a traceback — the extension that was interrupted, also when another
+  extension's `setup()` was loading it.
+
+- **A `/reload` that fails no longer leaves aelix running without its safety
+  checks (#663, ADR-0289).** `/reload` takes the running session apart before it
+  builds the new one. When re-reading the settings or the build then failed, the
+  session kept running on the taken-apart harness: the model's commands ran with
+  no approval dialog and no Guardrail (an `rm -rf` was not refused), while the
+  line said "nothing applied". RPC `resources/reload`, an extension's
+  `ctx.reload()`, and a `/new`, `/resume`, `/fork`, `/clone` or `/import` whose
+  build failed did the same. aelix now builds the session again on the settings
+  it was running with — on the model, tools and thinking level it ran with,
+  keeping any setting changed meanwhile — and says "kept the previous settings".
+  If that fails too, it stops: prompts, `!` lines, tool calls, steering and
+  follow-up messages, RPC `bash` and `/agents run` are refused with "aelix is
+  stopped until /reload succeeds" until a `/reload` (or `/new`) works, and the
+  line then says "aelix is running again". A `!` typed during a turn or a
+  command, or queued with Alt+Enter, is refused in its own block, and the output
+  of one that ran before the stop reaches the model after the `/reload` that
+  ends it (the pending area says it is held; quitting first loses it). A `!` or
+  `/agents run` while a reload or session change is still running says that,
+  not "aelix is stopped". Two reloads or session changes no
+  longer run at once — the second waits for the first, and one started from
+  inside the first is refused — and an RPC `prompt` sent while `new_session`
+  rebuilds is refused instead of running on the session being taken apart. A
+  failed `/reload` no longer leaves half-read settings behind, so `/new` after
+  it works, and with `AELIX_RELOAD_REBUILD=0` a `/reload` that raises says so
+  instead of closing the TUI.
+
 - **The `/` menu lists your skills and prompt templates (#508, ADR-0279 D12).**
   `/skill:<name>` and `/<template>` ran, but typing `/` never offered them:
   `/sk` showed only `/skill`, and `/skill:` and `/zz` showed nothing, so skills
@@ -1314,9 +1353,11 @@ unwritten. Add them with the next release.
   extension with `✓` because it read a copy taken at start. `/reload` now leaves
   one transcript line naming what failed — a manifest that no longer parses
   included — and `/extension` reads what the latest build loaded; `/new`,
-  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes: it says whether
-  anything was applied ("nothing applied; /reload again or restart", or which
-  later step failed), and `/extension` shows it until a build succeeds. A
+  `/fork` and `/resume` say it below their banner instead of over the input. A `/reload` that raises no longer escapes (an
+  extension's `sys.exit` or `KeyboardInterrupt` still did until #664): it says what
+  runs after it (which later step failed, or — since #663 — that the previous
+  settings were kept or that aelix stopped), and `/extension` shows it until a
+  build succeeds. A
   manifest pack that waits for its first command and then fails to start is
   shown as failed instead of loaded.
 

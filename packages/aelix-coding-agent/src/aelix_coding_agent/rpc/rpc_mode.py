@@ -361,7 +361,7 @@ async def _handle_prompt(
     images = _decode_images(cmd.images)
 
     # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
-    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1460-1465``), but it
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1497-1502``), but it
     # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
     # phase is the same public property ``get_state`` already reports, and this
     # check is synchronous with the ``create_task`` below — there is no ``await``
@@ -369,7 +369,7 @@ async def _handle_prompt(
     if harness.phase != "idle":
         # ``streamingBehavior`` is pi's own answer to a live turn: route the
         # message into the queue instead of rejecting it. Both queues are
-        # enqueue-only regardless of phase (``core.py:1448-1450``).
+        # enqueue-only regardless of phase (``core.py:1479-1481``).
         if cmd.streaming_behavior == "steer":
             await harness.steer(cmd.message, images=images)
             return RpcSuccessResponse(id=cmd.id, command="prompt")
@@ -627,6 +627,16 @@ async def _handle_bash(
     from aelix_coding_agent.tools._abort import AbortSignal
     from aelix_coding_agent.tools._truncate import truncate_tail
     from aelix_coding_agent.tools.bash import create_local_bash_operations
+
+    if getattr(harness, "disposed", False) is True:
+        # #663 (ADR-0289 D4, Codex R03) — no tool runs while aelix is stopped,
+        # the client's own command included: a stopped (or torn-down) harness
+        # answers with why, before anything is executed.
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="bash",
+            error=getattr(harness, "turns_held", None) or "AgentHarness has been disposed",
+        )
 
     ops = create_local_bash_operations()
     cwd = harness._options.cwd or "."
@@ -2472,7 +2482,7 @@ async def run_rpc_mode(
                         response = await _handle_command(capture.harness, payload, dispatch)
                     finally:
                         if counted:
-                            control.classic_done()
+                            control.classic_done(payload.get("type"))
             try:
                 _output(response.to_json())
             except BrokenPipeError:

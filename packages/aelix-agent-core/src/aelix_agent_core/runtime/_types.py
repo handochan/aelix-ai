@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
@@ -62,10 +62,16 @@ class ReloadSeed:
     §4.4): a factory keeps it when a hold removed its id from the published
     catalog, where a resume of the same session falls back, as pi's ``/reload``
     keeps its ``AgentSession`` and model (``agent-session.ts:3690-3729``@99fe148).
+
+    :attr:`restore` (#663, ADR-0289) marks the build that puts the session back
+    after a rebuild failed: the factory reuses what the session was running with
+    instead of reading it again (the CLI's skill and prompt catalogs), so the
+    restore does not trip over what the failed rebuild tripped over.
     """
 
     flag_values: Mapping[str, bool | str] | None = None
     model: Any = None
+    restore: bool = False
 
 
 HarnessFactory = Callable[..., Awaitable["AgentHarness"]]
@@ -253,6 +259,92 @@ class SessionImportFileNotFoundError(Exception):
     def __init__(self, file_path: str) -> None:
         super().__init__(f"File not found: {file_path}")
         self.file_path = file_path
+
+
+#: What :class:`RebuildFailedError` says the session runs on after it.
+RebuildState = Literal["kept", "stopped"]
+
+#: The turn gate (``AgentHarness.hold_turns``) of a stopped runtime, and what a
+#: surface says when it refuses a prompt then (#663, ADR-0289).
+STOPPED_MESSAGE = (
+    "aelix is stopped until /reload succeeds. Fix the cause, then /reload, or restart."
+)
+
+#: What a surface says when it refuses a ``!`` or ``/agents run`` on a harness a
+#: reload or session change has torn down and not yet replaced (#663, verify
+#: R1V2): nothing is stopped, and the change installs the next harness when it
+#: ends. Such a harness reads ``disposed`` and holds no turns.
+TRANSITION_RUNNING_MESSAGE = "a reload or session change is running — run it again when it ends"
+
+#: What a reload or session change started from inside another one is refused
+#: with (#663, ADR-0289 D7): one waiting on the other would never start.
+NESTED_TRANSITION_MESSAGE = (
+    "a reload or session change cannot start from inside another one (a"
+    " session_before_switch, session_shutdown, session_start or resources_discover"
+    " handler, an extension's setup(), or a surface's rebind); start it after that"
+    " one returns"
+)
+
+
+def _what(exc: BaseException) -> str:
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _also(cause: BaseException, again: BaseException | None) -> str:
+    """`` (<what the restore raised>)``, or nothing when it said what the cause did."""
+
+    if again is None or _what(again) == _what(cause):
+        return ""
+    return f" ({_what(again)})"
+
+
+class RebuildFailedError(RuntimeError):
+    """A rebuild tore the running harness down and could not install its own (#663).
+
+    Aelix-additive (ADR-0289). Raised by :meth:`AgentSessionRuntime.reload` and
+    by ``new_session`` / ``switch_session`` / ``fork`` / ``import_from_jsonl``
+    when the step between the teardown and the install raised — re-reading the
+    settings or building the new harness. :attr:`cause` is what raised.
+
+    :attr:`state` says what the session runs on now:
+
+    - ``"kept"`` — a harness was built again from the settings the session was
+      running with, on the session it was on, with every gate its extensions
+      install (Guardrail and Permission among them), its model, tool policy,
+      active tools and thinking level as they were, and was settled and bound.
+    - ``"stopped"`` — that build, or its settlement or rebind, failed too
+      (:attr:`restore_error`): every harness left behind refuses every turn and
+      every tool call, until a later rebuild succeeds
+      (:attr:`AgentSessionRuntime.stopped`).
+
+    The message is a sentence a surface can print after its own prefix.
+    """
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        phase: str,
+        cause: BaseException,
+        state: RebuildState,
+        restore_error: BaseException | None = None,
+    ) -> None:
+        self.operation = operation
+        self.phase = phase
+        self.cause = cause
+        self.state: RebuildState = state
+        self.restore_error = restore_error
+        if state == "stopped":
+            text = (
+                f"{_what(cause)}; rebuilding with the previous settings failed too"
+                f"{_also(cause, restore_error)} — {STOPPED_MESSAGE}"
+            )
+        elif operation == "reload":
+            text = f"{_what(cause)} — kept the previous settings"
+        else:
+            text = f"{_what(cause)} — stayed on this session and kept the previous settings"
+        super().__init__(text)
 
 
 @dataclass(frozen=True)

@@ -153,7 +153,10 @@ prompt has a line above and below it.
      session of the harness in force, since a swap replaces the harness and the old
      one keeps its session (Codex 596-03, verify V2: the record was written into the
      departed session file). A `/reload` keeps the session, and the record goes
-     through the rebuilt harness.
+     through the rebuilt harness. 2026-11-03 note (ADR-0289, #663): while aelix is
+     stopped no `!` runs on any of these paths — its block says "aelix is stopped
+     until /reload succeeds" — and a held record waits for the build that ends
+     the stop; `idle_write` refuses a disposed harness.
    - `!!` records nothing, here as at idle; its block is shown and moved all the
      same.
    - **One `!` command runs at a time**, as in pi (`interactive-mode.ts:3412`, "A

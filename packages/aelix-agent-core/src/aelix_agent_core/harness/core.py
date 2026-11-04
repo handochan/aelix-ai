@@ -889,6 +889,8 @@ class AgentHarness:
         self._pending_tasks: set[asyncio.Task[Any]] = set()
         # #367 (Aelix-additive) — the turn gate, see :meth:`hold_turns`.
         self._turn_gate: str | None = None
+        # #663 (Aelix-additive) — set by :meth:`dispose`, see :attr:`disposed`.
+        self._disposed = False
         # #376 (Aelix-additive) — can a turn run on the model? See
         # :meth:`set_prompt_check`. ``None``: nothing to ask (an embedder).
         self._prompt_check: Callable[[Model], str | None] | None = None
@@ -1145,6 +1147,35 @@ class AgentHarness:
     @property
     def is_idle(self) -> bool:
         return self._phase == "idle"
+
+    @property
+    def disposed(self) -> bool:
+        """Aelix-additive (#663, ADR-0289): :meth:`dispose` has begun, or :meth:`stop` ran.
+
+        Its HookBus is cleared then — Guardrail, Permission and every
+        extension's ``tool_call`` handler with it — so a disposed harness blocks
+        every tool call instead of running it ungated (:meth:`_before_tool_call_bridge`),
+        and refuses :meth:`prompt`, :meth:`steer` and :meth:`follow_up`.
+        """
+
+        return self._disposed
+
+    def stop(self, reason: str) -> None:
+        """Aelix-additive (#663, ADR-0289): refuse everything from now on, with ``reason``.
+
+        What ``AgentSessionRuntime`` does to every harness it gives up on — the
+        torn-down one a failed rebuild leaves installed, and a restored one
+        whose settlement failed, which a surface may already hold. Turns are
+        held (:meth:`hold_turns`) and the harness reads :attr:`disposed`, so a
+        tool call, :meth:`prompt`, :meth:`steer` and :meth:`follow_up` are
+        refused even before (or without) a completed :meth:`dispose`. Synchronous,
+        so it is in force before an interruption propagates; a later
+        :meth:`dispose` still runs the cleanups. The runtime replaces the
+        harness to end it.
+        """
+
+        self._disposed = True
+        self._turn_gate = reason
 
     def hold_turns(self, reason: str | None) -> None:
         """Aelix-additive (#367): while ``reason`` is set, no turn starts; ``None`` lifts it.
@@ -1457,6 +1488,12 @@ class AgentHarness:
             # claim, so nothing is sent and nothing is written. ``_refused_by``
             # is the gate's own refused turn (:meth:`_action_send_message`).
             raise AgentHarnessError("invalid_state", self._turn_gate)
+        if self._disposed and _refused_by is None:
+            # #663 (ADR-0289, verify V2) — a torn-down harness has no hooks left
+            # to run a turn through: a surface still holding it while a session
+            # change rebuilds (an RPC ``prompt`` between the teardown and the
+            # install) is refused here, before anything is sent or written.
+            raise AgentHarnessError("invalid_state", "AgentHarness has been disposed")
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
@@ -1879,6 +1916,7 @@ class AgentHarness:
         """
 
         # D.1.10: enqueue regardless of phase — Pi parity.
+        self._refuse_queue_if_disposed()
         content: list[Any] = [TextContent(text=text)]
         if images:
             content.extend(images)
@@ -1903,11 +1941,26 @@ class AgentHarness:
         :meth:`steer` for the rationale.
         """
 
+        self._refuse_queue_if_disposed()
         content: list[Any] = [TextContent(text=text)]
         if images:
             content.extend(images)
         self._follow_up_queue.enqueue(UserMessage(content=content))
         await self._emit_queue_update()
+
+    def _refuse_queue_if_disposed(self) -> None:
+        """#663 (ADR-0289, verify V1) — a disposed harness runs no turn to deliver a queued message.
+
+        Enqueued there, a steer or follow-up was answered ``success: true`` over
+        RPC and then lost when the next build replaced the harness. Refused
+        instead, with the stopped runtime's reason when there is one. An
+        :meth:`idle_write` is refused the same way.
+        """
+
+        if self._disposed:
+            raise AgentHarnessError(
+                "invalid_state", self._turn_gate or "AgentHarness has been disposed"
+            )
 
     async def abort(self, *, withdraw_unanswered: bool = False) -> None:
         """Signal a cooperative abort. Hook handlers should check the signal.
@@ -4119,13 +4172,23 @@ class AgentHarness:
           starts on another task — an extension's ``trigger_turn`` — waits.
         - A write that never returns blocks every drainer, :meth:`dispose`
           included.
+
+        #663 (ADR-0289): a :attr:`disposed` harness — torn down, or stopped
+        (:meth:`stop`) — takes no outside write. :class:`AgentHarnessError`
+        ``("invalid_state")`` with the stop's reason, raised before any await,
+        and again once the lock is held: a write that waited behind
+        :meth:`dispose`'s drain finds the harness torn down and writes nothing.
+        Nothing here waits for an ``AgentSessionRuntime`` transition, so a
+        teardown that waits for a held write is never waited on by it.
         """
 
+        self._refuse_queue_if_disposed()
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy", f"idle_write() requires idle harness (phase={self._phase!r})"
             )
         async with self._drain_lock:
+            self._refuse_queue_if_disposed()
             yield
 
     async def wait_for_idle(self) -> None:
@@ -4145,6 +4208,7 @@ class AgentHarness:
     async def dispose(self) -> None:
         """Tear down the harness — abort + wait + cleanups LIFO (D.1.13 M-4)."""
 
+        self._disposed = True
         if self._phase != "idle":
             await self.abort()
             with contextlib.suppress(Exception):
@@ -4654,13 +4718,13 @@ class AgentHarness:
         ``extensions/types.ts:333-364`` + ``:371``
         ``ReplacedSessionContext extends ExtensionCommandContext``):
 
-        - ``wait_for_idle`` / ``navigate_tree`` / ``reload`` live on the
-          :class:`AgentHarness` (this object — ``reload`` delegates to
-          :meth:`AgentHarness.reload`, Pi parity).
-        - ``new_session`` / ``fork`` / ``switch_session`` live on the
-          :class:`AgentSessionRuntime`; the runtime is threaded in via
-          ``runtime`` so post-replace work routes through the SAME
-          runtime that just replaced this harness.
+        - ``wait_for_idle`` / ``navigate_tree`` live on the
+          :class:`AgentHarness` (this object).
+        - ``new_session`` / ``fork`` / ``switch_session`` and ``reload``
+          (#663, Codex R09) live on the :class:`AgentSessionRuntime`; the
+          runtime is threaded in via ``runtime`` so post-replace work routes
+          through the SAME runtime that just replaced this harness. Without
+          one, ``reload`` is :meth:`AgentHarness.reload`.
 
         When ``runtime`` is ``None`` (the test-only / unattached path),
         the 6 commands become no-op stubs that raise
@@ -4706,9 +4770,9 @@ class AgentHarness:
         # methods. Pi ``extensions/types.ts:333-364``. ``wait_for_idle`` /
         # ``navigate_tree`` live on the harness; ``new_session`` / ``fork`` /
         # ``switch_session`` live on the runtime (threaded via ``runtime``
-        # kwarg from ``_finish_session_replacement``); ``reload`` delegates
-        # to :meth:`AgentHarness.reload` (Pi parity — ctx.reload ===
-        # AgentSession.reload via the runner's reloadHandler).
+        # kwarg from ``_finish_session_replacement``), and so does ``reload``
+        # when there is one (Pi parity — ctx.reload === AgentSession.reload via
+        # the runner's reloadHandler).
         async def _wait_for_idle() -> None:
             await self.wait_for_idle()
 
@@ -4718,12 +4782,17 @@ class AgentHarness:
         async def _reload() -> None:
             # Pi parity: ``ctx.reload`` === ``AgentSession.reload`` via the
             # runner's ``reloadHandler`` (``extensions/runner.ts:664-666`` →
-            # ``agent-session.ts:reload``). Delegate to the harness's
-            # already-implemented :meth:`reload` (raises
-            # ``AgentHarnessError("invalid_state")`` when no settings_manager
-            # is attached). The two Pi sub-steps still deferred to Phase 5b
-            # (``_resourceLoader.reload`` + full ``_buildRuntime``) live
-            # inside :meth:`reload` itself (P-380 #3/#5 TODOs).
+            # ``agent-session.ts:reload``). #663 (ADR-0289, Codex R09): with a
+            # runtime, that is ``AgentSessionRuntime.reload`` — the rebuild
+            # every other ``ctx.reload()`` runs, its failure path included —
+            # as ``ExtensionCommandContext.reload`` does. The legacy
+            # :meth:`reload` below rebuilt nothing and cleared the
+            # process-wide provider registry (``reset_api_providers``); it is
+            # left for a context with no runtime (raises
+            # ``AgentHarnessError("invalid_state")`` without a settings_manager).
+            if runtime is not None:
+                await runtime.reload()
+                return
             await self.reload()
 
         if runtime is not None:
@@ -5058,6 +5127,13 @@ class AgentHarness:
         mutation reach ``tool.execute`` and the after-callback.
         """
 
+        if self._disposed:
+            # #663 (ADR-0289) — the bus holds no gate any more: refuse, never run
+            # ungated. The reason is the turn gate's when there is one (a stopped
+            # runtime's, ``AgentSessionRuntime.stopped``).
+            return BeforeToolCallResult(
+                block=True, reason=self._turn_gate or "AgentHarness has been disposed"
+            )
         # Sprint 5b (ADR-0043 §C.2): dispatch to the tool-typed variant so
         # ``match event:`` narrowing works in handler bodies. Base
         # ``ToolCallHookEvent`` instances are still type-compatible (subclasses).

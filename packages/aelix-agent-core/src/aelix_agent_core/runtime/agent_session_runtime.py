@@ -73,17 +73,24 @@ Pi event line citations (W5 P-344 corrections — verified at SHA
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import contextvars
+import inspect
 import logging
 import os
-from collections.abc import Awaitable, Callable
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from aelix_agent_core.harness.hooks import SessionStartHookEvent
 from aelix_agent_core.runtime._types import (
+    NESTED_TRANSITION_MESSAGE,
     PI_STALENESS_MESSAGE,
+    STOPPED_MESSAGE,
     AgentSessionRuntimeDiagnostic,
     HarnessFactory,
+    RebuildFailedError,
     ReloadSeed,
     ReplacedSessionContext,
     RuntimeReplaceResult,
@@ -122,6 +129,13 @@ SessionContendedChoice = Literal["fork", "read_only", "cancel"]
 
 _log = logging.getLogger(__name__)
 
+#: #663 (ADR-0289 D7) — the transition (``AgentSessionRuntime._transition``) the
+#: running code is inside, if any. A context variable, so the tasks a transition
+#: starts while it runs carry it too.
+_IN_TRANSITION: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "aelix_runtime_transition", default=None
+)
+
 
 async def _emit_session_shutdown_event(
     extension_runner: Any,
@@ -155,6 +169,31 @@ async def _emit_session_shutdown_event(
         )
     )
     return True
+
+
+@dataclass(frozen=True)
+class _RestorePoint:
+    """What a failed rebuild puts back (#663, ADR-0289), read before the teardown.
+
+    The harness being torn down and the session it was on, the inputs
+    :meth:`AgentSessionRuntime.reload` already carried into its rebuild (flags,
+    model, the active-tool filter and what the registry and the tool policy
+    held), the effective tool policy itself, the thinking level, and the
+    settings in memory (``SettingsManager.snapshot``; ``None`` for a manager
+    without one).
+    """
+
+    harness: Any
+    session: Session | None
+    flag_values: Mapping[str, bool | str]
+    model: Any
+    active_tools: list[str] | None
+    registered: frozenset[str]
+    saved_off: frozenset[str]
+    tool_policy: Any
+    thinking_level: Any
+    settings_manager: Any
+    settings: Any
 
 
 def _extract_user_message_text(content: Any) -> str:
@@ -256,9 +295,18 @@ class AgentSessionRuntime:
             Callable[[str], Awaitable[SessionContendedChoice]] | None
         ) = None
         # #25 (ADR-0284, Codex F08) — the step :meth:`reload` was on; read when
-        # it raises, so a caller can tell "nothing applied" from "applied, then
-        # a later step failed". ``None`` before any reload.
+        # it raises, so a caller can name the step that failed (#663: what runs
+        # after it is :class:`RebuildFailedError`'s ``state``). ``None`` before
+        # any reload.
         self._reload_phase: str | None = None
+        # #663 (ADR-0289) — set when a rebuild and the restore after it both
+        # failed: the torn-down harness stays installed, holding its turns, until
+        # the next build succeeds (``_apply``). ``None`` otherwise.
+        self._stopped: str | None = None
+        # #663 (ADR-0289 D7, Codex R01) — one transition at a time
+        # (:meth:`_transition`), and the marker of the one running.
+        self._lifecycle = asyncio.Lock()
+        self._transition_marker: object | None = None
 
     # === Public getters (Pi `:79-97`) ===========================================
 
@@ -269,11 +317,33 @@ class AgentSessionRuntime:
 
         Aelix-additive (#25, Codex F08). The new harness is installed when
         ``build`` ends: a reload that raised in ``build`` or before it applied
-        nothing (and the old harness is already torn down); one that raised
-        after it runs the new harness.
+        nothing; one that raised after it runs the new harness. Since #663
+        (ADR-0289) a raise in ``settings`` or ``build`` — the old harness already
+        torn down — is a :class:`RebuildFailedError` saying whether the session
+        was built again on its previous settings or stopped; the phase stays
+        the one that failed.
         """
 
         return self._reload_phase
+
+    @property
+    def stopped(self) -> str | None:
+        """Why this runtime refuses every turn and tool call, or ``None`` (#663).
+
+        Aelix-additive (ADR-0289). Set when a rebuild — ``/reload``, ``/new``,
+        ``/resume``, ``/fork``, ``/import`` — failed after the old harness was
+        torn down AND putting the session back on the settings it was running
+        with failed too: its build, or the settlement and rebind after it
+        (:class:`RebuildFailedError` ``"stopped"``); and when an interruption
+        (a cancel, ``KeyboardInterrupt``, ``SystemExit``) ends one after the
+        teardown began. Every harness that leaves behind — the installed one
+        and the torn-down one a surface may still hold — refuses every turn,
+        tool call, steer and follow-up (``AgentHarness.stop``), so nothing runs
+        without the gates its extensions had installed; the next build that
+        succeeds clears it.
+        """
+
+        return self._stopped
 
     @property
     def harness(self) -> AgentHarness:
@@ -661,27 +731,37 @@ class AgentSessionRuntime:
         except Exception:
             _log.exception("AgentSessionRuntime.session_shutdown emit raised")
 
-        # Sprint 6h₅b (Phase 4.15, ADR-0083, P-363) — invalidate the OLD
-        # runner between EMIT and ``before_session_invalidate``. Pi parity
-        # (``runner.ts:466-473``): handlers that fire AFTER this point
-        # see ``ctx.assert_active()`` raise :class:`ExtensionError("stale")`
-        # carrying the Pi verbatim message from :data:`PI_STALENESS_MESSAGE`.
+        # #663 (ADR-0289, Codex R02) — from here the harness is being taken
+        # apart. Each step logs an ``Exception`` and goes on; an interruption
+        # (``CancelledError`` — a cancelled extension command's ``ctx.reload()``,
+        # ``KeyboardInterrupt``, ``SystemExit``, ``GeneratorExit``) that escapes
+        # one stops the runtime before it propagates, so the half-torn-down
+        # harness never runs a turn or a tool without its gates.
         try:
-            runner.invalidate(PI_STALENESS_MESSAGE)
-        except Exception:
-            _log.exception("AgentSessionRuntime.runner.invalidate raised")
-
-        if self._before_session_invalidate is not None:
+            # Sprint 6h₅b (Phase 4.15, ADR-0083, P-363) — invalidate the OLD
+            # runner between EMIT and ``before_session_invalidate``. Pi parity
+            # (``runner.ts:466-473``): handlers that fire AFTER this point
+            # see ``ctx.assert_active()`` raise :class:`ExtensionError("stale")`
+            # carrying the Pi verbatim message from :data:`PI_STALENESS_MESSAGE`.
             try:
-                self._before_session_invalidate()
+                runner.invalidate(PI_STALENESS_MESSAGE)
             except Exception:
-                _log.exception(
-                    "AgentSessionRuntime.before_session_invalidate raised"
-                )
-        try:
-            await self._harness.dispose()
-        except Exception:
-            _log.exception("AgentSessionRuntime.harness.dispose raised")
+                _log.exception("AgentSessionRuntime.runner.invalidate raised")
+
+            if self._before_session_invalidate is not None:
+                try:
+                    self._before_session_invalidate()
+                except Exception:
+                    _log.exception(
+                        "AgentSessionRuntime.before_session_invalidate raised"
+                    )
+            try:
+                await self._harness.dispose()
+            except Exception:
+                _log.exception("AgentSessionRuntime.harness.dispose raised")
+        except BaseException:
+            self._stop()
+            raise
 
     async def _apply(
         self, new_session: Session, *, reload_seed: ReloadSeed | None = None
@@ -707,6 +787,193 @@ class AgentSessionRuntime:
         else:
             new_harness = await self._create_harness(new_session)
         self._harness = new_harness
+        # #663 — a build that succeeded ends a stop: the gates are installed again.
+        self._stopped = None
+
+    def _restore_point(self) -> _RestorePoint:
+        """#663 (ADR-0289) — what :meth:`_restore_after` puts back, read before the teardown."""
+
+        harness = self._harness
+        active = harness.state.active_tool_names
+        settings_manager = harness.settings_manager
+        snapshot = getattr(settings_manager, "snapshot", None)
+        policy = getattr(harness, "tool_policy", None)
+        return _RestorePoint(
+            harness=harness,
+            session=harness.session,
+            # A shallow copy: it survives the dispose. pi :2384.
+            flag_values=harness.extension_runner.get_flag_values(),
+            # #434 — the model this session is on now (``ReloadSeed.model``).
+            model=harness.current_model,
+            # ``None`` => "all tools active"; a list => an explicit filter.
+            active_tools=list(active) if active is not None else None,
+            registered=frozenset(t.name for t in harness.state.tools),
+            # #510 — what the policy kept off by setting.
+            saved_off=frozenset(getattr(policy, "saved_off", frozenset())),
+            # Codex R05 — the policy in force, a session's own changes to it
+            # included: what a restore installs again. Immutable.
+            tool_policy=policy,
+            thinking_level=harness.state.thinking_level,
+            settings_manager=settings_manager,
+            settings=snapshot() if callable(snapshot) else None,
+        )
+
+    def _factory_takes_seed(self) -> bool:
+        try:
+            params = inspect.signature(self._create_harness).parameters.values()
+        except (TypeError, ValueError):
+            return True
+        return any(
+            p.name == "reload_seed" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+        )
+
+    def _stop(self, *also: Any) -> None:
+        """#663 (ADR-0289) — fail closed on every harness a failed transition leaves behind.
+
+        The installed one — the torn-down harness, or a restored one whose
+        settlement or rebind failed (Codex R04) — and ``also``, the torn-down
+        harness a surface may still hold. Its HookBus was cleared by the
+        dispose, so Guardrail, Permission and every extension's ``tool_call``
+        handler are gone from it. Each is stopped (``AgentHarness.stop``): its
+        turns are held (every ``prompt``, ``compact``, summarising
+        ``navigate_tree`` and an extension's ``trigger_turn`` is refused with
+        :data:`STOPPED_MESSAGE`) and it reads ``disposed``, so every tool call,
+        steer and follow-up is refused too.
+        """
+
+        self._stopped = STOPPED_MESSAGE
+        for harness in (self._harness, *also):
+            with contextlib.suppress(Exception):
+                stop = getattr(harness, "stop", None)
+                if callable(stop):
+                    stop(STOPPED_MESSAGE)
+                else:
+                    harness.hold_turns(STOPPED_MESSAGE)
+
+    async def _restore_after(
+        self, exc: Exception, *, operation: str, phase: str, point: _RestorePoint
+    ) -> NoReturn:
+        """#663 (ADR-0289, owner decision b) — the step between a teardown and an install raised.
+
+        The order stays pi's: the old harness is already torn down, its hooks
+        cleared. Put the settings back as the session was running with them
+        (``SettingsManager.restore``), build a harness again on the session it
+        was on — a ``reload``-shaped build, its seed marked ``restore`` — and
+        settle it as :meth:`reload` settles its own; raise
+        :class:`RebuildFailedError` ``"kept"``. When that build fails too, stop
+        (:meth:`_stop`) and raise it ``"stopped"``.
+        """
+
+        # A factory that never declared ``reload_seed`` is never handed it (the
+        # :data:`HarnessFactory` contract): a swap's restore is then built as
+        # the swap would have built it. The seed's model is the one the session
+        # ran on (Codex R06): a factory builds the restore on it exactly.
+        seed = (
+            ReloadSeed(flag_values=point.flag_values, model=point.model, restore=True)
+            if self._factory_takes_seed()
+            else None
+        )
+        try:
+            manager, snapshot = point.settings_manager, point.settings
+            restore = getattr(manager, "restore", None)
+            if snapshot is not None and callable(restore):
+                restore(snapshot)
+            if point.session is None:
+                raise RuntimeError("there is no session to rebuild")
+            await self._apply(point.session, reload_seed=seed)
+        except Exception as again:
+            self._stop(point.harness)
+            raise RebuildFailedError(
+                operation=operation, phase=phase, cause=exc, state="stopped", restore_error=again
+            ) from exc
+        except BaseException:
+            self._stop(point.harness)
+            raise
+        # Codex R04 — "kept" only once the restored harness is settled and
+        # bound: a raise in any step of that (the tool round trip, the rebind, a
+        # surface's after-start callback, ``reload_resources``), a cancel
+        # included, stops it and the torn-down harness a surface may still hold.
+        try:
+            from aelix_ai.models import clamp_thinking_level
+
+            from aelix_agent_core.session.context import build_session_context
+
+            # A fresh harness never seeds its transcript (#122), and the swap
+            # that failed would have rebuilt it; the level is the one it ran at,
+            # clamped to the model this build runs (verify V4: a factory that
+            # did not keep the model).
+            entries = await point.session.get_branch()
+            self._harness._state.messages = list(build_session_context(entries).messages)
+            level = point.thinking_level
+            model = self._harness.current_model
+            if level is not None:
+                if model is not None:
+                    level = clamp_thinking_level(model, level) or level
+                self._harness._state.thinking_level = level
+            await self._settle_rebuilt(point, track_phase=False, exact=True)
+        except Exception as again:
+            self._stop(point.harness)
+            raise RebuildFailedError(
+                operation=operation, phase=phase, cause=exc, state="stopped", restore_error=again
+            ) from exc
+        except BaseException:
+            self._stop(point.harness)
+            raise
+        raise RebuildFailedError(
+            operation=operation, phase=phase, cause=exc, state="kept"
+        ) from exc
+
+    @contextlib.asynccontextmanager
+    async def _transition(self) -> AsyncIterator[None]:
+        """#663 (ADR-0289 D7, Codex R01) — one reload or session change at a time.
+
+        :meth:`reload`, :meth:`new_session`, :meth:`switch_session`,
+        :meth:`fork` and :meth:`import_from_jsonl` each run inside this, from
+        their first read of the live harness through the teardown, the
+        install, the writer-lock move, the settlement and — when the build
+        fails — the restore or the stop. A second one waits for the first to
+        end, so the harness a transition supersedes is always one it tore down
+        itself, and no harness is left running beside the installed one.
+
+        One started from inside a running one — its hook handlers, an
+        extension's ``setup()`` in the factory, a surface's rebind or
+        after-start callback, and the tasks those start while it runs — is
+        refused with :data:`NESTED_TRANSITION_MESSAGE` (a ``RuntimeError``)
+        instead of waiting for a lock its own caller holds. ``with_session``
+        runs after the lock is released (:meth:`_run_with_session`).
+        """
+
+        current = _IN_TRANSITION.get()
+        if current is not None and current is self._transition_marker:
+            raise RuntimeError(NESTED_TRANSITION_MESSAGE)
+        async with self._lifecycle:
+            marker = object()
+            self._transition_marker = marker
+            token = _IN_TRANSITION.set(marker)
+            try:
+                yield
+            finally:
+                _IN_TRANSITION.reset(token)
+                self._transition_marker = None
+
+    async def _run_with_session(
+        self, with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None
+    ) -> None:
+        """P-358 — the caller's ``with_session`` on the NEW harness, after the transition.
+
+        Pi parity ``:172-173``: it receives a fresh :class:`ReplacedSessionContext`
+        handle (:meth:`AgentHarness.create_replaced_session_context`) so it
+        bypasses the OLD harness's stale guard. Sprint 6h₅b W6 (P-364 W5 MAJOR)
+        threads ``self`` so the context's lifecycle methods route through this
+        runtime. #663 (Codex R01/R09): run once the lifecycle lock is released —
+        it is the caller's own follow-up, and a ``ctx.reload()`` or
+        ``ctx.new_session()`` there is a transition of its own.
+        """
+
+        if with_session is None:
+            return
+        ctx = self._harness.create_replaced_session_context(runtime=self)
+        await with_session(ctx)
 
     async def _finish_session_replacement(
         self,
@@ -716,7 +983,6 @@ class AgentSessionRuntime:
         previous_session_file: str | None = None,
         target_session_file: str | None = None,
         setup: Callable[[Any], Awaitable[None]] | None = None,
-        with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
         writer_lock: SessionWriterLock | None = None,
     ) -> None:
         """Pi parity: ``finishSessionReplacement`` (``agent-session-runtime.ts:166-173``).
@@ -729,7 +995,9 @@ class AgentSessionRuntime:
           1. ``_teardown_current(reason, target_session_file)`` (Sprint
              6h₅a: emits ``session_shutdown`` FIRST per Pi, then
              ``before_session_invalidate``, then disposes OLD harness).
-          2. ``_apply`` (construct NEW harness from factory).
+          2. ``_apply`` (construct NEW harness from factory). #663 (ADR-0289):
+             when it raises, :meth:`_restore_after` builds the session this one
+             is leaving again and raises :class:`RebuildFailedError`.
           3. Sprint 6h₅b (Phase 4.15, ADR-0083, P-359) — ``setup`` callback
              AFTER ``_apply`` BEFORE rebind. Pi parity ``:226-229``: the
              optional setup runs against the NEW harness's
@@ -750,7 +1018,9 @@ class AgentSessionRuntime:
              handle built from :meth:`AgentHarness.create_replaced_session_context`
              on the NEW (post-replace) harness so the caller can run
              post-replacement work without tripping the OLD harness's
-             stale guard.
+             stale guard. #663 (ADR-0289 D7): the public method runs it
+             (:meth:`_run_with_session`) once its transition has ended, so
+             it is not a step of this method any more.
         """
 
         from aelix_agent_core.harness.hooks import SessionStartHookEvent
@@ -765,9 +1035,21 @@ class AgentSessionRuntime:
         # the NEW one from options alone, with no idea what level the user was
         # working at.
         previous_level = self._harness._state.thinking_level
+        # #663 (ADR-0289) — and what a failed build puts back: the session this
+        # one is leaving, with the settings it ran on.
+        point = self._restore_point()
 
         await self._teardown_current(reason, target_session_file)
-        await self._apply(new_session)
+        try:
+            await self._apply(new_session)
+        except Exception as exc:
+            # The old harness is torn down and the new one was never installed:
+            # the session goes back to the one it left, as a reload of it, or
+            # stops. The caller's ``_release_unadopted`` drops the target's lock.
+            await self._restore_after(exc, operation=reason, phase="build", point=point)
+        except BaseException:
+            self._stop()
+            raise
 
         # #137 / ADR-0244 — ownership moves in the same breath as the harness,
         # and here rather than at the four call sites. ``_apply`` has just put
@@ -880,17 +1162,6 @@ class AgentSessionRuntime:
         if self._after_session_start is not None:
             await self._after_session_start(self._harness, reason)
 
-        # P-358 — with_session AFTER rebind + session_start emit. Pi parity
-        # ``:172-173``. Receives a fresh ReplacedSessionContext handle on
-        # the NEW harness so the caller bypasses the OLD harness's stale
-        # guard. Sprint 6h₅b W6 (P-364 W5 MAJOR) threads ``self`` so the
-        # 6 ExtensionCommandContext methods (Pi ``:371`` extension) wire
-        # through to this runtime's command surface (``new_session`` /
-        # ``fork`` / ``switch_session``).
-        if with_session is not None:
-            ctx = self._harness.create_replaced_session_context(runtime=self)
-            await with_session(ctx)
-
     # === Public replace APIs (Pi `:175-364`) — Sprint 6h₄c real bodies ========
 
     async def switch_session(
@@ -923,83 +1194,84 @@ class AgentSessionRuntime:
 
         from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
-        # P-342 — snapshot BEFORE teardown (Pi line 184).
-        previous_session_file = (
-            self.session.session_file if self.session is not None else None
-        )
-
-        # Pi parity: load metadata + open + assert cwd FIRST (Pi lines 185-186).
-        metadata = await load_jsonl_session_metadata(self._fs, path)
-
-        # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
-        # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
-        # (``jsonl_storage.py:714`` reparents every later append onto it), so a
-        # turn the other terminal appends between our read and the moment we
-        # own the file is reparented away by our next append — which is #137
-        # itself, reproduced by the guard meant to prevent it. Review measured
-        # it end to end ("stored: shared, A-final, B-next; replay: shared,
-        # B-next"), and it is precisely the handoff
-        # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
-        # releases the lock *just after* writing its last turn. Locking first
-        # costs nothing — the metadata read above is a header sniff — and it
-        # needs no tail re-read, because after this line nobody else may
-        # append. ASKING about a contended file still happens below, after the
-        # cancel hook: taking a lock is silent, putting a question in front of
-        # a user an extension was about to overrule is not.
-        target_lock: SessionWriterLock | None = None
-        contended = False
-        if self._manages_writer_lock:
-            target_lock = self._acquire_writer_lock(path)
-            contended = target_lock is None
-
-        # From here the lock is live, so every exit path has to account for it.
-        try:
-            new_session = await self._repo.open(metadata)
-
-            # P-337 — Pi ``session-cwd.ts:1-59``. Run AFTER ``repo.open`` so
-            # ``new_session.session_file`` is populated; pass
-            # ``fallback_cwd=self.cwd`` for actionable diagnostic context.
-            await assert_session_cwd_exists(
-                new_session, fallback_cwd=self.cwd, fs=self._fs
+        async with self._transition():
+            # P-342 — snapshot BEFORE teardown (Pi line 184).
+            previous_session_file = (
+                self.session.session_file if self.session is not None else None
             )
 
-            # Pi parity: emit cancel hook SECOND (Pi line 189).
-            if await self._emit_before_switch(
-                reason="resume", target_session_file=path
-            ):
-                self._release_unadopted(target_lock)
-                return RuntimeReplaceResult(cancelled=True)
+            # Pi parity: load metadata + open + assert cwd FIRST (Pi lines 185-186).
+            metadata = await load_jsonl_session_metadata(self._fs, path)
 
-            # The contended question is the only step here that can change
-            # WHICH session we end up on — a "fork and continue" answer swaps
-            # in a different file — so the target path is re-read from the
-            # session we actually landed on. Handing the ORIGINAL path to
-            # ``_finish_session_replacement`` told every ``session_shutdown``
-            # handler this process had switched to the file it deliberately
-            # did not switch to, the one the other terminal still owns.
-            target_session_file = path
-            if contended:
-                resolved, target_lock = await self._resolve_contended_target(
-                    path, metadata, new_session
+            # #137 / ADR-0244 — take ownership BEFORE the read, not after it.
+            # ``repo.open`` snapshots the file's leaf into PROCESS-LOCAL state
+            # (``jsonl_storage.py:714`` reparents every later append onto it), so a
+            # turn the other terminal appends between our read and the moment we
+            # own the file is reparented away by our next append — which is #137
+            # itself, reproduced by the guard meant to prevent it. Review measured
+            # it end to end ("stored: shared, A-final, B-next; replay: shared,
+            # B-next"), and it is precisely the handoff
+            # ``DEFAULT_ACQUIRE_TIMEOUT`` exists to absorb: the other terminal
+            # releases the lock *just after* writing its last turn. Locking first
+            # costs nothing — the metadata read above is a header sniff — and it
+            # needs no tail re-read, because after this line nobody else may
+            # append. ASKING about a contended file still happens below, after the
+            # cancel hook: taking a lock is silent, putting a question in front of
+            # a user an extension was about to overrule is not.
+            target_lock: SessionWriterLock | None = None
+            contended = False
+            if self._manages_writer_lock:
+                target_lock = self._acquire_writer_lock(path)
+                contended = target_lock is None
+
+            # From here the lock is live, so every exit path has to account for it.
+            try:
+                new_session = await self._repo.open(metadata)
+
+                # P-337 — Pi ``session-cwd.ts:1-59``. Run AFTER ``repo.open`` so
+                # ``new_session.session_file`` is populated; pass
+                # ``fallback_cwd=self.cwd`` for actionable diagnostic context.
+                await assert_session_cwd_exists(
+                    new_session, fallback_cwd=self.cwd, fs=self._fs
                 )
-                if resolved is None:
-                    return RuntimeReplaceResult(cancelled=True)
-                new_session = resolved
-                target_session_file = new_session.session_file or path
 
-            await self._finish_session_replacement(
-                new_session,
-                reason="resume",
-                previous_session_file=previous_session_file,
-                target_session_file=target_session_file,
-                with_session=with_session,
-                writer_lock=target_lock,
-            )
-        except BaseException:
-            # The swap never adopted the lock, so this process is still on the
-            # old session and the target's kernel lock has no owner left.
-            self._release_unadopted(target_lock)
-            raise
+                # Pi parity: emit cancel hook SECOND (Pi line 189).
+                if await self._emit_before_switch(
+                    reason="resume", target_session_file=path
+                ):
+                    self._release_unadopted(target_lock)
+                    return RuntimeReplaceResult(cancelled=True)
+
+                # The contended question is the only step here that can change
+                # WHICH session we end up on — a "fork and continue" answer swaps
+                # in a different file — so the target path is re-read from the
+                # session we actually landed on. Handing the ORIGINAL path to
+                # ``_finish_session_replacement`` told every ``session_shutdown``
+                # handler this process had switched to the file it deliberately
+                # did not switch to, the one the other terminal still owns.
+                target_session_file = path
+                if contended:
+                    resolved, target_lock = await self._resolve_contended_target(
+                        path, metadata, new_session
+                    )
+                    if resolved is None:
+                        return RuntimeReplaceResult(cancelled=True)
+                    new_session = resolved
+                    target_session_file = new_session.session_file or path
+
+                await self._finish_session_replacement(
+                    new_session,
+                    reason="resume",
+                    previous_session_file=previous_session_file,
+                    target_session_file=target_session_file,
+                    writer_lock=target_lock,
+                )
+            except BaseException:
+                # The swap never adopted the lock, so this process is still on the
+                # old session and the target's kernel lock has no owner left.
+                self._release_unadopted(target_lock)
+                raise
+        await self._run_with_session(with_session)
         return RuntimeReplaceResult(cancelled=False)
 
     async def new_session(
@@ -1036,44 +1308,45 @@ class AgentSessionRuntime:
         three as keyword-only parameters for tighter pyright narrowing.
         """
 
-        if await self._emit_before_switch(
-            reason="new", target_session_file=None
-        ):
-            return RuntimeReplaceResult(cancelled=True)
-        cwd = self.cwd
-        if cwd is None:
-            raise RuntimeError(
-                "new_session requires the current harness session to have a cwd"
+        async with self._transition():
+            if await self._emit_before_switch(
+                reason="new", target_session_file=None
+            ):
+                return RuntimeReplaceResult(cancelled=True)
+            cwd = self.cwd
+            if cwd is None:
+                raise RuntimeError(
+                    "new_session requires the current harness session to have a cwd"
+                )
+
+            # P-342 — snapshot BEFORE teardown.
+            previous_session_file = (
+                self.session.session_file if self.session is not None else None
             )
 
-        # P-342 — snapshot BEFORE teardown.
-        previous_session_file = (
-            self.session.session_file if self.session is not None else None
-        )
-
-        new_session = await self._repo.create(
-            JsonlSessionCreateOptions(
-                cwd=cwd, parent_session_path=parent_session
+            new_session = await self._repo.create(
+                JsonlSessionCreateOptions(
+                    cwd=cwd, parent_session_path=parent_session
+                )
             )
-        )
-        # #137 — a file that has just been published cannot be contended, so
-        # this never prompts; what it DOES do is move ownership, so the
-        # session this terminal just walked away from becomes openable by
-        # another one.
-        new_lock = self._writer_lock_for_new_file(new_session)
-        try:
-            await self._finish_session_replacement(
-                new_session,
-                reason="new",
-                previous_session_file=previous_session_file,
-                target_session_file=None,
-                setup=setup,
-                with_session=with_session,
-                writer_lock=new_lock,
-            )
-        except BaseException:
-            self._release_unadopted(new_lock)
-            raise
+            # #137 — a file that has just been published cannot be contended, so
+            # this never prompts; what it DOES do is move ownership, so the
+            # session this terminal just walked away from becomes openable by
+            # another one.
+            new_lock = self._writer_lock_for_new_file(new_session)
+            try:
+                await self._finish_session_replacement(
+                    new_session,
+                    reason="new",
+                    previous_session_file=previous_session_file,
+                    target_session_file=None,
+                    setup=setup,
+                    writer_lock=new_lock,
+                )
+            except BaseException:
+                self._release_unadopted(new_lock)
+                raise
+        await self._run_with_session(with_session)
         return RuntimeReplaceResult(cancelled=False)
 
     async def reload(self) -> RuntimeReplaceResult:
@@ -1106,6 +1379,10 @@ class AgentSessionRuntime:
           5. ``_apply(session, reload_seed=ReloadSeed(flag_values=...))`` — factory
              re-discovers + rebuilds (pi :2391+:2393); the seed pre-seeds the fresh
              runtime's ``flag_values`` BEFORE each ``setup()`` re-runs (#24-FU).
+             When step 4 or 5 raises (#663, ADR-0289), :meth:`_restore_after`
+             builds the session again on the settings it was running with and
+             raises :class:`RebuildFailedError` — ``"kept"``, or ``"stopped"``
+             when that build fails too (:attr:`stopped`).
           6. ACTIVE-TOOL ROUND-TRIP — restore the pre-teardown active-tool filter,
              unioned with the rebuilt extension tools (pi ``reload`` passes
              ``includeAllExtensionTools: true``), intersected with the fresh registry
@@ -1122,80 +1399,98 @@ class AgentSessionRuntime:
         Reuses the SAME ``Session`` (no ``repo.create``/``fork``), so message history
         and lineage are preserved. Returns :class:`RuntimeReplaceResult` for symmetry
         with the other replace APIs; reload never cancels (no before-switch veto).
+        #663 (ADR-0289 D7): the whole of it is one transition (:meth:`_transition`)
+        — a second reload or session change waits for it to end, and one started
+        from inside it is refused.
+        """
+
+        async with self._transition():
+            session = self._harness.session
+            if session is None:
+                raise RuntimeError(
+                    "reload requires the current harness to have a session"
+                )
+
+            # 1. No mid-turn swap. ``dispose`` (step 4) also aborts+drains a live
+            #    turn, but assert idle first so reload is a clean, serialized op.
+            await self._harness.wait_for_idle()
+            self._reload_phase = "teardown"
+
+            # 2. Snapshot BEFORE teardown what the rebuild carries over — the flag
+            #    values (pi :2384), the model (#434, ``ReloadSeed.model``), the LIVE
+            #    active-tool filter (#24-FU), the registry (#25 review R04) and the
+            #    policy's saved-off set (#510) — and, for a rebuild that fails, the
+            #    settings in memory (#663).
+            point = self._restore_point()
+            settings_manager = point.settings_manager
+
+            # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
+            #    handlers still observe the OLD settings — then invalidate the old runner
+            #    and dispose the OLD harness.
+            await self._teardown_current("reload", None)
+
+            # 4. Reload settings AFTER the shutdown emit, BEFORE the rebuild (pi :2386),
+            #    so the fresh harness re-resolves its model against the new settings.
+            #    NOTE (adversarial-review HIGH): aelix deliberately does NOT call
+            #    ``reset_api_providers()`` here. That helper is CLEAR-ONLY — it empties
+            #    the process-global ``_PROVIDERS`` streaming-dispatch table with NO
+            #    re-register — and the factory rebuild never re-runs
+            #    ``register_providers()``, so clearing it would brick ALL model access
+            #    until a process restart (defeating the #53 moat). ``_PROVIDERS`` is a
+            #    stateless api→adapter dispatch table, unchanged across a reload, and
+            #    /new /fork /resume rebuild the harness without touching it either;
+            #    credential/setting changes are picked up via ``settings_manager.reload()``
+            #    + the rebuilt harness's per-stream ``get_api_key_and_headers`` resolve.
+            #
+            # 5. Rebuild via the factory over the SAME session — re-discovers on-disk
+            #    extensions, fresh _ExtensionRuntime + HookBus + tool registry. The
+            #    ReloadSeed (#24-FU) pre-seeds the fresh runtime's ``flag_values``
+            #    BEFORE each extension's ``setup()`` re-runs, so a ``setup()`` that
+            #    branches on a flag reads the user's restored value — mirroring pi
+            #    ``_buildRuntime`` which seeds ``runtime.flagValues`` before the new
+            #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
+            #    then skips the default).
+            #
+            #    #663 (ADR-0289) — either step raising leaves no harness with hooks:
+            #    the old one is torn down and the new one never installed. The session
+            #    is built again on the settings it was running with, or stops.
+            try:
+                self._reload_phase = "settings"
+                if settings_manager is not None:
+                    await settings_manager.reload()
+                self._reload_phase = "build"
+                await self._apply(
+                    session,
+                    reload_seed=ReloadSeed(flag_values=point.flag_values, model=point.model),
+                )
+            except Exception as exc:
+                await self._restore_after(
+                    exc, operation="reload", phase=self._reload_phase, point=point
+                )
+            except BaseException:
+                self._stop()
+                raise
+            await self._settle_rebuilt(point, track_phase=True)
+            self._reload_phase = "done"
+            return RuntimeReplaceResult(cancelled=False)
+
+    async def _settle_rebuilt(
+        self, point: _RestorePoint, *, track_phase: bool, exact: bool = False
+    ) -> None:
+        """Steps 6-10 of :meth:`reload` on the harness :meth:`_apply` just installed.
+
+        Shared with the build that puts a session back after a failed rebuild
+        (#663, :meth:`_restore_after`), which passes ``track_phase=False`` so
+        :attr:`reload_phase` keeps naming the step that failed, and ``exact``
+        (Codex R05): step 6 then installs the tool policy and the active set
+        the session ran with as they were, instead of a reload's union.
         """
 
         from aelix_agent_core.harness.hooks import SessionStartHookEvent
 
-        session = self._harness.session
-        if session is None:
-            raise RuntimeError(
-                "reload requires the current harness to have a session"
-            )
-
-        # 1. No mid-turn swap. ``dispose`` (step 4) also aborts+drains a live
-        #    turn, but assert idle first so reload is a clean, serialized op.
-        await self._harness.wait_for_idle()
-        self._reload_phase = "teardown"
-
-        # 2. Snapshot the OLD runtime's flag values + the shared SettingsManager
-        #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
-        #    survives the subsequent dispose. pi :2384.
-        previous_flag_values = self._harness.extension_runner.get_flag_values()
-        # #434 — the model this session is on now, which the rebuild keeps when a
-        # hold removed its id from the published catalog (``ReloadSeed.model``).
-        previous_model = self._harness.current_model
-        # Snapshot the LIVE active-tool filter BEFORE teardown so a user's runtime
-        # tool selection survives the rebuild (#24-FU). ``None`` => "all tools
-        # active"; a list => an explicit filter. Copied because ``state`` is a
-        # live reference disposed in step 3.
-        active_before = self._harness.state.active_tool_names
-        active_before = list(active_before) if active_before is not None else None
-        # #25 (review R04) — the registry too: a tool the rebuild newly REGISTERS
-        # (an MCP server's wrappers coming back when the extension that declared
-        # it is turned on again) is unioned into step 6 like an extension tool.
-        registered_before = {t.name for t in self._harness.state.tools}
-        # #510 — what the old policy kept off by setting, so step 6 can turn on
-        # what the reloaded settings no longer do.
-        saved_off_before = getattr(
-            getattr(self._harness, "tool_policy", None), "saved_off", frozenset()
-        )
-        settings_manager = self._harness.settings_manager
-
-        # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
-        #    handlers still observe the OLD settings — then invalidate the old runner
-        #    and dispose the OLD harness.
-        await self._teardown_current("reload", None)
-
-        # 4. Reload settings AFTER the shutdown emit, BEFORE the rebuild (pi :2386),
-        #    so the fresh harness re-resolves its model against the new settings.
-        #    NOTE (adversarial-review HIGH): aelix deliberately does NOT call
-        #    ``reset_api_providers()`` here. That helper is CLEAR-ONLY — it empties
-        #    the process-global ``_PROVIDERS`` streaming-dispatch table with NO
-        #    re-register — and the factory rebuild never re-runs
-        #    ``register_providers()``, so clearing it would brick ALL model access
-        #    until a process restart (defeating the #53 moat). ``_PROVIDERS`` is a
-        #    stateless api→adapter dispatch table, unchanged across a reload, and
-        #    /new /fork /resume rebuild the harness without touching it either;
-        #    credential/setting changes are picked up via ``settings_manager.reload()``
-        #    + the rebuilt harness's per-stream ``get_api_key_and_headers`` resolve.
-        self._reload_phase = "settings"
-        if settings_manager is not None:
-            await settings_manager.reload()
-
-        # 5. Rebuild via the factory over the SAME session — re-discovers on-disk
-        #    extensions, fresh _ExtensionRuntime + HookBus + tool registry. The
-        #    ReloadSeed (#24-FU) pre-seeds the fresh runtime's ``flag_values``
-        #    BEFORE each extension's ``setup()`` re-runs, so a ``setup()`` that
-        #    branches on a flag reads the user's restored value — mirroring pi
-        #    ``_buildRuntime`` which seeds ``runtime.flagValues`` before the new
-        #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
-        #    then skips the default).
-        self._reload_phase = "build"
-        await self._apply(
-            session,
-            reload_seed=ReloadSeed(flag_values=previous_flag_values, model=previous_model),
-        )
-        self._reload_phase = "tools"
+        if track_phase:
+            self._reload_phase = "tools"
+        active_before = point.active_tools
 
         # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).
         #    Restore the user's pre-reload active filter over the rebuilt
@@ -1213,11 +1508,27 @@ class AgentSessionRuntime:
         policy_now = getattr(rebuilt, "tool_policy", None)
         newly_on = [
             name
-            for name in sorted(saved_off_before)
+            for name in sorted(point.saved_off)
             if policy_now is not None and name not in policy_now.saved_off
         ]
         restore = getattr(rebuilt, "restore_active_tools", None)
-        if active_before is None:
+        if exact:
+            # #663 (Codex R05) — the restore puts back what ran, not what a
+            # reload would pick: the active set as it was and the policy in
+            # force with it (a session's own turning on of a saved-off tool
+            # included). No extension, newly-on or newly-registered union.
+            if callable(restore):
+                if point.tool_policy is not None:
+                    restore(active_before, policy=point.tool_policy)
+                else:
+                    restore(active_before)
+            else:
+                await rebuilt.set_active_tools(
+                    active_before
+                    if active_before is not None
+                    else [t.name for t in rebuilt.state.tools]
+                )
+        elif active_before is None:
             if callable(restore):
                 restore(None)
             elif rebuilt.state.active_tool_names is not None:
@@ -1235,7 +1546,7 @@ class AgentSessionRuntime:
             # server's tools). Without this an explicit filter left them
             # registered and inactive. The policy clamps them like the rest.
             newly_registered = [
-                t.name for t in rebuilt.state.tools if t.name not in registered_before
+                t.name for t in rebuilt.state.tools if t.name not in point.registered
             ]
             # (active_before ∩ current) ∪ (ext ∩ current) ∪ newly-on ∪
             # newly-registered, order-preserving and fully de-duplicated with
@@ -1259,15 +1570,17 @@ class AgentSessionRuntime:
         #    AFTER ``_apply`` and BEFORE the session_start emit so a handler
         #    reacting to session_start/reload reads the restored state.
         new_runner = self._harness.extension_runner
-        for name, value in previous_flag_values.items():
+        for name, value in point.flag_values.items():
             new_runner.set_flag_value(name, value)
 
         # 8. Swap subscribers / UI / command context onto the NEW harness. The TUI
         #    rebind skips its session-swap-only transcript + /stats resets on "reload".
-        self._reload_phase = "rebind"
+        if track_phase:
+            self._reload_phase = "rebind"
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, "reload")
-        self._reload_phase = "session_start"
+        if track_phase:
+            self._reload_phase = "session_start"
 
         # 9. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
         #    was disposed in step 4). pi :2407.
@@ -1285,10 +1598,9 @@ class AgentSessionRuntime:
 
         # 10. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
         #    :2411). Re-emits the resources_discover hook on the rebuilt harness.
-        self._reload_phase = "resources"
+        if track_phase:
+            self._reload_phase = "resources"
         await self._harness.reload_resources()
-        self._reload_phase = "done"
-        return RuntimeReplaceResult(cancelled=False)
 
     async def fork(
         self,
@@ -1334,66 +1646,67 @@ class AgentSessionRuntime:
              selected_text=selected_text)``.
         """
 
-        if await self._emit_before_fork(
-            entry_id=entry_id, position=position
-        ):
-            return RuntimeReplaceResult(cancelled=True)
-
-        if self.session is None:
-            raise RuntimeError("fork requires an active session")
-
-        selected_entry = await self.session.get_entry(entry_id)
-        if selected_entry is None:
-            raise ValueError("Invalid entry ID for forking")
-
-        selected_text: str | None = None
-        if position == "at":
-            target_leaf_id: ForkEntryId = selected_entry.id
-        else:
-            # position == "before"
-            if (
-                selected_entry.type != "message"
-                or selected_entry.message.role != "user"  # type: ignore[union-attr]
+        async with self._transition():
+            if await self._emit_before_fork(
+                entry_id=entry_id, position=position
             ):
+                return RuntimeReplaceResult(cancelled=True)
+
+            if self.session is None:
+                raise RuntimeError("fork requires an active session")
+
+            selected_entry = await self.session.get_entry(entry_id)
+            if selected_entry is None:
                 raise ValueError("Invalid entry ID for forking")
-            # `fork_at_leaf`, not the raw `parent_id`: the first entry in a
-            # file has none, and `entry_id=None` means "copy the whole
-            # source session" downstream (#300).
-            target_leaf_id = fork_at_leaf(selected_entry.parent_id)
-            selected_text = _extract_user_message_text(
-                selected_entry.message.content  # type: ignore[union-attr]
-            )
 
-        # P-342 — snapshot BEFORE teardown / get_metadata so the value
-        # comes from the OLD session.
-        previous_session_file = self.session.session_file
+            selected_text: str | None = None
+            if position == "at":
+                target_leaf_id: ForkEntryId = selected_entry.id
+            else:
+                # position == "before"
+                if (
+                    selected_entry.type != "message"
+                    or selected_entry.message.role != "user"  # type: ignore[union-attr]
+                ):
+                    raise ValueError("Invalid entry ID for forking")
+                # `fork_at_leaf`, not the raw `parent_id`: the first entry in a
+                # file has none, and `entry_id=None` means "copy the whole
+                # source session" downstream (#300).
+                target_leaf_id = fork_at_leaf(selected_entry.parent_id)
+                selected_text = _extract_user_message_text(
+                    selected_entry.message.content  # type: ignore[union-attr]
+                )
 
-        metadata = await self.session.get_metadata()
-        new_session = await self._repo.fork(
-            source=metadata,
-            options=ForkOptions(
-                cwd=metadata.cwd,
-                entry_id=target_leaf_id,
-                position="at",
-                parent_session_path=metadata.path,
-            ),
-        )
-        # #137 — same as ``new_session``: the fork is a fresh file, so this
-        # cannot contend, but the lock must follow us onto it and off the
-        # file we forked away from.
-        new_lock = self._writer_lock_for_new_file(new_session)
-        try:
-            await self._finish_session_replacement(
-                new_session,
-                reason="fork",
-                previous_session_file=previous_session_file,
-                target_session_file=None,  # Pi fork has no targetSessionFile
-                with_session=with_session,
-                writer_lock=new_lock,
+            # P-342 — snapshot BEFORE teardown / get_metadata so the value
+            # comes from the OLD session.
+            previous_session_file = self.session.session_file
+
+            metadata = await self.session.get_metadata()
+            new_session = await self._repo.fork(
+                source=metadata,
+                options=ForkOptions(
+                    cwd=metadata.cwd,
+                    entry_id=target_leaf_id,
+                    position="at",
+                    parent_session_path=metadata.path,
+                ),
             )
-        except BaseException:
-            self._release_unadopted(new_lock)
-            raise
+            # #137 — same as ``new_session``: the fork is a fresh file, so this
+            # cannot contend, but the lock must follow us onto it and off the
+            # file we forked away from.
+            new_lock = self._writer_lock_for_new_file(new_session)
+            try:
+                await self._finish_session_replacement(
+                    new_session,
+                    reason="fork",
+                    previous_session_file=previous_session_file,
+                    target_session_file=None,  # Pi fork has no targetSessionFile
+                    writer_lock=new_lock,
+                )
+            except BaseException:
+                self._release_unadopted(new_lock)
+                raise
+        await self._run_with_session(with_session)
         return RuntimeReplaceResult(
             cancelled=False, selected_text=selected_text
         )
@@ -1433,102 +1746,103 @@ class AgentSessionRuntime:
 
         from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
-        # Step 1 — resolve path.
-        resolved_path = await self._fs.absolute_path(path)
-        # Step 2 — existence probe.
-        if not await self._fs.exists(resolved_path):
-            raise SessionImportFileNotFoundError(resolved_path)
+        async with self._transition():
+            # Step 1 — resolve path.
+            resolved_path = await self._fs.absolute_path(path)
+            # Step 2 — existence probe.
+            if not await self._fs.exists(resolved_path):
+                raise SessionImportFileNotFoundError(resolved_path)
 
-        # Step 3 — destination under sessions root.
-        current_cwd = cwd or self.cwd
-        if current_cwd is None:
-            raise RuntimeError(
-                "import_from_jsonl requires a cwd (either explicit or via "
-                "the current harness session)"
+            # Step 3 — destination under sessions root.
+            current_cwd = cwd or self.cwd
+            if current_cwd is None:
+                raise RuntimeError(
+                    "import_from_jsonl requires a cwd (either explicit or via "
+                    "the current harness session)"
+                )
+            session_dir = await self._repo._get_session_dir(current_cwd)
+            await self._fs.create_dir(session_dir, recursive=True)
+            destination_path = await self._fs.join_path(
+                [session_dir, os.path.basename(resolved_path)]
             )
-        session_dir = await self._repo._get_session_dir(current_cwd)
-        await self._fs.create_dir(session_dir, recursive=True)
-        destination_path = await self._fs.join_path(
-            [session_dir, os.path.basename(resolved_path)]
-        )
 
-        # Step 4 — cancel hook.
-        if await self._emit_before_switch(
-            reason="resume", target_session_file=destination_path
-        ):
-            return RuntimeReplaceResult(cancelled=True)
+            # Step 4 — cancel hook.
+            if await self._emit_before_switch(
+                reason="resume", target_session_file=destination_path
+            ):
+                return RuntimeReplaceResult(cancelled=True)
 
-        # Step 5 — snapshot previous file.
-        previous_session_file = (
-            self.session.session_file if self.session is not None else None
-        )
+            # Step 5 — snapshot previous file.
+            previous_session_file = (
+                self.session.session_file if self.session is not None else None
+            )
 
-        # #137 / ADR-0244 — BEFORE the copy, not after. The destination is
-        # ``<sessions root>/<encoded cwd>/<source basename>``, so re-importing
-        # a file that has already been imported here targets a path another
-        # terminal may be writing to right now — and step 6's ``copy_file``
-        # replaces its destination wholesale (ADR-0242: staged in a temp, then
-        # renamed over). Resolving ownership afterwards would mean the other
-        # terminal's session is already gone by the time we ask.
-        #
-        # Deliberately no "fork and continue" here: the answer to an owned
-        # destination is to leave it alone, and an import already produces a
-        # new file whenever the basename is free.
-        import_lock: SessionWriterLock | None = None
-        if self._manages_writer_lock:
-            import_lock = self._acquire_writer_lock(destination_path)
-            if import_lock is None:
-                raise SessionError(
-                    "storage",
-                    "cannot import over a session that is open in another "
-                    f"terminal: {destination_path}",
+            # #137 / ADR-0244 — BEFORE the copy, not after. The destination is
+            # ``<sessions root>/<encoded cwd>/<source basename>``, so re-importing
+            # a file that has already been imported here targets a path another
+            # terminal may be writing to right now — and step 6's ``copy_file``
+            # replaces its destination wholesale (ADR-0242: staged in a temp, then
+            # renamed over). Resolving ownership afterwards would mean the other
+            # terminal's session is already gone by the time we ask.
+            #
+            # Deliberately no "fork and continue" here: the answer to an owned
+            # destination is to leave it alone, and an import already produces a
+            # new file whenever the basename is free.
+            import_lock: SessionWriterLock | None = None
+            if self._manages_writer_lock:
+                import_lock = self._acquire_writer_lock(destination_path)
+                if import_lock is None:
+                    raise SessionError(
+                        "storage",
+                        "cannot import over a session that is open in another "
+                        f"terminal: {destination_path}",
+                    )
+
+            # From here the lock is live and every exit path has to account for it
+            # — five awaits below can raise (``copy_file``, the metadata load,
+            # ``repo.open``, the cwd assertion, the replacement itself) and review
+            # found each of them dropping it on the floor: neither released nor
+            # stored, so the kernel held it for the life of the process with no
+            # object left to let go. A retried ``/import`` then hit its own
+            # orphan and was told the destination was "open in another terminal".
+            try:
+                # Step 6 — copy when paths differ.
+                if resolved_path != destination_path:
+                    await self._fs.copy_file(resolved_path, destination_path)
+
+                # Step 7 — load metadata + cwd override.
+                metadata = await load_jsonl_session_metadata(
+                    self._fs, destination_path
+                )
+                if cwd is not None:
+                    metadata = replace(metadata, cwd=cwd)
+
+                # Step 8 — open + assert cwd exists. Pi parity:
+                # ``SessionManager.open(path, dir, cwdOverride)`` threads the
+                # override into the loaded session's ``cwd`` field. Aelix routes
+                # the override via the repo-seam ``cwd_override`` keyword (Sprint
+                # 6h₅b W6 P-367 W5 MINOR fix) instead of mutating
+                # ``storage._metadata`` from outside the repo — the writeback
+                # now lives on the single owner (:meth:`JsonlSessionRepo.open`)
+                # so the private-attribute touch stays encapsulated.
+                new_session = await self._repo.open(
+                    metadata, cwd_override=cwd if cwd is not None else None
+                )
+                await assert_session_cwd_exists(
+                    new_session, fallback_cwd=current_cwd, fs=self._fs
                 )
 
-        # From here the lock is live and every exit path has to account for it
-        # — five awaits below can raise (``copy_file``, the metadata load,
-        # ``repo.open``, the cwd assertion, the replacement itself) and review
-        # found each of them dropping it on the floor: neither released nor
-        # stored, so the kernel held it for the life of the process with no
-        # object left to let go. A retried ``/import`` then hit its own
-        # orphan and was told the destination was "open in another terminal".
-        try:
-            # Step 6 — copy when paths differ.
-            if resolved_path != destination_path:
-                await self._fs.copy_file(resolved_path, destination_path)
-
-            # Step 7 — load metadata + cwd override.
-            metadata = await load_jsonl_session_metadata(
-                self._fs, destination_path
-            )
-            if cwd is not None:
-                metadata = replace(metadata, cwd=cwd)
-
-            # Step 8 — open + assert cwd exists. Pi parity:
-            # ``SessionManager.open(path, dir, cwdOverride)`` threads the
-            # override into the loaded session's ``cwd`` field. Aelix routes
-            # the override via the repo-seam ``cwd_override`` keyword (Sprint
-            # 6h₅b W6 P-367 W5 MINOR fix) instead of mutating
-            # ``storage._metadata`` from outside the repo — the writeback
-            # now lives on the single owner (:meth:`JsonlSessionRepo.open`)
-            # so the private-attribute touch stays encapsulated.
-            new_session = await self._repo.open(
-                metadata, cwd_override=cwd if cwd is not None else None
-            )
-            await assert_session_cwd_exists(
-                new_session, fallback_cwd=current_cwd, fs=self._fs
-            )
-
-            # Step 9 — finish replacement (Pi: no with_session for import).
-            await self._finish_session_replacement(
-                new_session,
-                reason="resume",
-                previous_session_file=previous_session_file,
-                target_session_file=destination_path,
-                writer_lock=import_lock,
-            )
-        except BaseException:
-            self._release_unadopted(import_lock)
-            raise
+                # Step 9 — finish replacement (Pi: no with_session for import).
+                await self._finish_session_replacement(
+                    new_session,
+                    reason="resume",
+                    previous_session_file=previous_session_file,
+                    target_session_file=destination_path,
+                    writer_lock=import_lock,
+                )
+            except BaseException:
+                self._release_unadopted(import_lock)
+                raise
         return RuntimeReplaceResult(cancelled=False)
 
     # === Dispose (Pi `:366-373`) ===============================================

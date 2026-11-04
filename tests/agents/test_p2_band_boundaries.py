@@ -51,8 +51,8 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1284``,
-# ``rpc/rpc_mode.py:1635``, ``extensions/command_context.py:116``), so a
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1285``,
+# ``rpc/rpc_mode.py:1645``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -687,6 +687,19 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # not, and a stopped child keeps its task because it never passes True —
         # ``test_kernel_has_no_subagent_surface`` still passes.
         "packages/aelix-agent-core/src/aelix_agent_core/session/session.py",
+        # ADR-0289, #663. ``runtime/__init__.py`` is NEW to this list, for three
+        # re-exports: ``RebuildFailedError``, ``RebuildState`` and
+        # ``STOPPED_MESSAGE``. ``runtime/_types.py`` (listed above) changed again
+        # to define them and a defaulted ``ReloadSeed.restore``;
+        # ``runtime/agent_session_runtime.py`` (listed above) changed again so a
+        # settings re-read or build that raises after the teardown builds the
+        # session again on its previous settings or stops the runtime
+        # (``stopped``, the turn gate); ``harness/core.py`` (listed above)
+        # changed again so a disposed harness blocks every tool call. A rebuild's
+        # failure path created the requirement; delegation did not. No
+        # ``aelix_agents`` import, no spawn site, no cap, no consent path, no
+        # registry surface — ``test_kernel_has_no_subagent_surface`` still passes.
+        "packages/aelix-agent-core/src/aelix_agent_core/runtime/__init__.py",
     }
 )
 

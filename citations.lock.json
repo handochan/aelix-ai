@@ -45,7 +45,7 @@
    "if end_index == -1:",
    "return {}, normalized, None"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1052-1118": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1054-1120": [
    "def _refresh_extension_tools(self) -> None:",
    "\"\"\"P0 #7 Wave 2 (item 3): recompute the live tool registry + active set.",
    "",
@@ -55,10 +55,10 @@
    "no-options path (``agent-session.ts:2238-2326``):",
    ""
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1357-1357": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1388-1388": [
    "def skills(self) -> list[Any]:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1438-1446": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1469-1477": [
    "async def prompt(",
    "self,",
    "text: str,",
@@ -68,12 +68,12 @@
    "on_accept: Callable[[str], None] | None = None,",
    "_refused_by: str | None = None,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1448-1450": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1479-1481": [
    "# branch_summary). steer()/follow_up() remain enqueue-only per Pi",
    "# parity (Pi ``agent-harness.ts`` steer paths enqueue regardless of",
    "# phase). See ADR-0023 phase-machine table."
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1460-1465": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1497-1502": [
    "if self._phase != \"idle\":",
    "raise AgentHarnessError(",
    "\"busy\",",
@@ -81,46 +81,46 @@
    "\"steer()/follow_up() while in a turn.\",",
    ")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1553-1554": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1590-1591": [
    "drained_next = self._next_turn_queue",
    "self._next_turn_queue = []"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1594-1594": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1631-1631": [
    "injected = await self._emit_before_agent_start(text)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1783-1783": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1820-1820": [
    "await self._check_auto_compaction(claim=claim)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1948-1949": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2001-2002": [
    "self._steering_queue.clear()",
    "self._follow_up_queue.clear()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1953-1955": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2006-2008": [
    "turn_task = self._current_turn_task",
    "if turn_task is not None and not turn_task.done():",
    "turn_task.cancel()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2171-2175": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2224-2228": [
    "rebuilt = build_session_context(",
    "await self._session.get_branch()",
    ").messages",
    "self._state.messages.clear()",
    "self._state.messages.extend(rebuilt)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2174-2174": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2227-2227": [
    "self._state.messages.clear()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2350-2350": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2403-2403": [
    "if exc.code == \"invalid_state\" and \"Nothing to compact\" in str(exc):"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2527-2531": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2580-2584": [
    "for listener in list(self._listeners):",
    "try:",
    "raw = listener(event)",
    "if inspect.isawaitable(raw):",
    "await raw"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2529-2531": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2582-2584": [
    "raw = listener(event)",
    "if inspect.isawaitable(raw):",
    "await raw"
@@ -131,10 +131,10 @@
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:284-284": [
    "thinking_level: str | None = None # Sprint 3b wired — flows into AgentState.thinking_level. Pi: types.ts:~576"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2908-2908": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2961-2961": [
    "async def set_model(self, model: Model) -> None:"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2954-2954": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3007-3007": [
    "\"hook\","
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:305-305": [
@@ -143,10 +143,10 @@
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:323-323": [
    "project_trusted: bool = True"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3848-3848": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3901-3901": [
    "self._next_turn_queue.append(message)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4202-4209": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4266-4273": [
    "async def reload_resources(self) -> None:",
    "\"\"\"Pi parity ``extendResourcesFromExtensions(\"reload\")``.",
    "",
@@ -156,13 +156,13 @@
    "",
    "await self._emit_resources_discover(\"reload\")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4289-4289": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4353-4353": [
    "await self._emit_session_shutdown(\"reload\")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4567-4567": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4631-4631": [
    "\"model\": self._state.model,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4776-4781": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4845-4850": [
    "def _current_system_prompt(self) -> str:",
    "\"\"\"F-10: prefer per-turn snapshot, else fall back to long-lived state.\"\"\"",
    "",
@@ -170,7 +170,7 @@
    "return self._turn_state.system_prompt",
    "return self._state.system_prompt"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4791-4805": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4860-4874": [
    "def _action_set_active_tools(self, names: list[str]) -> None:",
    "# F-9: non-destructive — record the active filter, don't drop tools.",
    "# #510 — a name the policy excludes is known too (it is never in the",
@@ -180,7 +180,7 @@
    "known = {t.name for t in self._state.tools}",
    "unknown = ["
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4791-4811": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4860-4880": [
    "def _action_set_active_tools(self, names: list[str]) -> None:",
    "# F-9: non-destructive — record the active filter, don't drop tools.",
    "# #510 — a name the policy excludes is known too (it is never in the",
@@ -190,7 +190,7 @@
    "known = {t.name for t in self._state.tools}",
    "unknown = ["
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4797-4805": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4866-4874": [
    "known = {t.name for t in self._state.tools}",
    "unknown = [",
    "n for n in names if n not in known and self._tool_policy.excluded(n) is None",
@@ -200,36 +200,36 @@
    "\"invalid_argument\",",
    "f\"set_active_tools: unknown tool name(s): {unknown!r}\","
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4858-4859": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4927-4928": [
    "def _action_get_system_prompt(self) -> str:",
    "return self._current_system_prompt()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5000-5000": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5069-5069": [
    "self._next_turn_queue.append(msg)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5056-5058": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5125-5127": [
    "Per D.1.5 we pass ``ctx.args`` by reference — no defensive copy. This",
    "is the contract that lets a handler mutate the dict and have the",
    "mutation reach ``tool.execute`` and the after-callback."
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5519-5522": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5595-5598": [
    "if self._session is not None:",
    "session_ctx = await self._session.build_context()",
    "turn_messages: list[AgentMessage] = list(session_ctx.messages)",
    "turn_session_id = self._state.session_id"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5520-5520": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5596-5596": [
    "session_ctx = await self._session.build_context()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5523-5525": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5599-5601": [
    "else:",
    "turn_messages = list(self._state.messages)",
    "turn_session_id = self._state.session_id"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5572-5572": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5648-5648": [
    "reasoning=("
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5572-5577": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5648-5653": [
    "reasoning=(",
    "self._state.thinking_level",
    "if self._state.thinking_level",
@@ -237,7 +237,7 @@
    "else None",
    "),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5579-5585": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5655-5661": [
    "# F-9: apply the active-tool filter without mutating ``_state.tools``.",
    "active = self._state.active_tool_names",
    "if active is None:",
@@ -250,7 +250,7 @@
    "_AUTO_RETRY_MAX_ATTEMPTS = 3",
    "_AUTO_RETRY_BASE_DELAY_MS = 2000"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5791-5797": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5867-5873": [
    "agent_loop(",
    "prompts,",
    "context,",
@@ -259,7 +259,7 @@
    "stream_fn=effective_stream_fn,",
    ")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5839-5855": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5915-5931": [
    "aborted_message = AssistantMessage(",
    "content=[],",
    "stop_reason=\"aborted\",",
@@ -269,7 +269,7 @@
    "TurnEndEvent(message=aborted_message, tool_results=[]),",
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5839-5856": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5915-5932": [
    "aborted_message = AssistantMessage(",
    "content=[],",
    "stop_reason=\"aborted\",",
@@ -279,17 +279,17 @@
    "TurnEndEvent(message=aborted_message, tool_results=[]),",
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5846-5846": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5922-5922": [
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5887-5891": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5963-5967": [
    "yield MessageEndEvent(message=failure)",
    "yield TurnEndEvent(message=failure, tool_results=[])",
    "# Build after message_end committed the failure/replacement.",
    "yield AgentEndEvent(messages=list(self._state.messages))",
    ""
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5906-5907": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:5982-5983": [
    "except Exception as exc: # noqa: BLE001",
    "_log.debug(\"settled hook handler raised: %r\", exc, exc_info=True)"
   ],
@@ -332,7 +332,7 @@
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:849-849": [
    "self._action_set_active_tools(list(options.active_tool_names))"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:909-917": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:911-919": [
    "# Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) — wire the HookBus",
    "# bridge callables so ``ExtensionRunner.emit`` / ``has_handlers``",
    "# delegate to the harness's tested reducer/observer pipeline (Pi",
@@ -342,7 +342,7 @@
    "extensions=self._extensions,",
    "_emit=self._hooks.emit,"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:916-917": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:918-919": [
    "_emit=self._hooks.emit,",
    "_has_handlers=self._hooks.has_handlers,"
   ],
@@ -599,7 +599,10 @@
   "packages/aelix-agent-core/src/aelix_agent_core/loop.py:905-905": [
    "ordered_results: list[_Finalized] = await asyncio.gather("
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1200-1245": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1042-1042": [
+   "await self._teardown_current(reason, target_session_file)"
+  ],
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1495-1540": [
    "# 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).",
    "# Restore the user's pre-reload active filter over the rebuilt",
    "# registry, unioned with the current extension tools — pi ``reload``",
@@ -609,7 +612,7 @@
    "# registry lacks (a REMOVED extension's) drop out, and the factory",
    "# installed a fresh policy, so the commit clamps the union: under"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:298-308": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:368-378": [
    "@property",
    "def cwd(self) -> str | None:",
    "\"\"\"Pi parity (``:87-89``). Reads through harness session metadata.\"\"\"",
@@ -619,13 +622,10 @@
    "if session is None:",
    "return None"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:306-308": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:376-378": [
    "storage = session.get_storage()",
    "metadata = getattr(storage, \"_metadata\", None)",
    "return getattr(metadata, \"cwd\", None) if metadata is not None else None"
-  ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:769-769": [
-   "await self._teardown_current(reason, target_session_file)"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/session/compaction.py:1038-1045": [
    "total = usage.get(\"total_tokens\") or usage.get(\"totalTokens\") or 0",
@@ -833,7 +833,7 @@
   "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:110-110": [
    "if py_field is None:"
   ],
-  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1213-1222": [
+  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1352-1361": [
    "def _save(self) -> None:",
    "\"\"\"Pi parity: ``settings-manager.ts:524-538`` ``save``.",
    "",
@@ -843,7 +843,7 @@
    "self._settings = deep_merge_settings(",
    "self._global_settings, self._project_settings"
   ],
-  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1691-1691": [
+  "packages/aelix-ai/src/aelix_ai/settings/settings_manager.py:1830-1830": [
    "def get_shell_path(self) -> str | None:"
   ],
   "packages/aelix-ai/src/aelix_ai/settings/storage.py:369-369": [
@@ -1900,7 +1900,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/config.py:95-95": [
    "return str(Path.home() / CONFIG_DIR_NAME / \"agent\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1152-1174": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1154-1176": [
    "def _resolve_active_tools(parsed: Args) -> list[str] | None:",
    "\"\"\"Pi ``main.ts:369-375`` tool gating → harness ``active_tool_names``.",
    "",
@@ -1910,7 +1910,7 @@
    "- else → ``None`` (all tools active — the Aelix default).",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1497-1540": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1499-1542": [
    "def _resolve_skill_tiers(",
    "parsed: Args, cwd: str, project_trusted: bool",
    ") -> list[SkillSource]:",
@@ -1920,7 +1920,7 @@
    "``cwd`` when relative). Aelix has no skill package-manager, so ``--skill``",
    "is a path to a skill directory (or a ``SKILL.md`` whose parent is"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1537-1543": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1539-1545": [
    "for entry in parsed.skills:",
    "path = Path(entry)",
    "if not path.is_absolute():",
@@ -1929,13 +1929,13 @@
    "path = path.parent",
    "sources.append(SkillSource(\"cli\", str(path)))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1550-1550": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1552-1552": [
    "sources.append(SkillSource(\"global\", str(Path(get_agent_dir()) / \"skills\")))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1958-1958": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1960-1960": [
    "append: list[str] = list(parsed.append_system_prompt)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1958-1996": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1960-1998": [
    "append: list[str] = list(parsed.append_system_prompt)",
    "parsed.append_system_prompt_source_path = None",
    "# A profile body is an identity chunk, not a user-supplied append flag.",
@@ -1945,7 +1945,16 @@
    "{\"append_system_prompt\", \"append_system_prompt_files\"} & parsed.provided",
    "or parsed.append_system_prompt_files"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:197-213": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1977-1977": [
+   "if not parsed.no_context_files:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1977-1980": [
+   "if not parsed.no_context_files:",
+   "context = discover_context_files(cwd)",
+   "if context:",
+   "append.append(context)"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:199-215": [
    "def resolve_app_mode(parsed: Args, stdin_is_tty: bool) -> AppMode:",
    "\"\"\"Pi parity: ``resolveAppMode`` (``main.ts:96-113``).",
    "",
@@ -1955,16 +1964,7 @@
    "3. ``--print`` OR piped stdin → ``\"print\"``.",
    "4. Otherwise → ``\"interactive\"``."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1975-1975": [
-   "if not parsed.no_context_files:"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:1975-1978": [
-   "if not parsed.no_context_files:",
-   "context = discover_context_files(cwd)",
-   "if context:",
-   "append.append(context)"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2091-2104": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2097-2110": [
    "tools.extend(mcp_tools)",
    "# --tools / --no-tools gating (Pi ``main.ts:369-375``).",
    "#",
@@ -1974,26 +1974,26 @@
    "# ``_action_set_active_tools`` raises inside ``AgentHarness`` construction",
    "# (core.py) — and reload() has ALREADY disposed the old harness by then, so the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2130-2132": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2136-2138": [
    "# Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like",
    "# ``rm -rf`` short-circuit via first-block-wins BEFORE the permission",
    "# prompt) PREPENDED ahead of on-disk + explicit ``--extension`` paths."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2165-2167": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2171-2173": [
    "# an explicit ``-e``. ``agents_ext is None`` is the ordinary state — P2 is",
    "# default-off (``[features] agents``), and ``_agents_delegation_enabled``",
    "# decides that once, in ``_async_main``."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2176-2176": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2182-2182": [
    "# only channel through which the tool ever sees a cwd or an active tool set."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2183-2183": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2189-2189": [
    "print(f\"Warning: aelix-status unavailable: {exc}\", file=sys.stderr)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2199-2199": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2205-2205": [
    "loaded = await discover_and_load_extensions("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2258-2263": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2273-2278": [
    "# ``default_provider`` carries settings.json ``defaultProvider`` as a VALUE",
    "# rather than being read from ``settings_manager`` here: a per-call read is",
    "# free to drift between the three resolve sites, and it must reach",
@@ -2001,16 +2001,16 @@
    "# or it impersonates an explicit ``--provider`` and switches off the",
    "# ``<provider>/<model>`` shorthand and the whole pi order with it (#98)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2848-2848": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2868-2868": [
    "# ADR-0162: scope --list-models to the persisted enabled_models"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2904-2904": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2924-2924": [
    "if prompt_file_error is not None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2964-2964": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2984-2984": [
    "stdin_content = await _read_piped_stdin("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:315-425": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:317-427": [
    "async def _read_piped_stdin(*, required: bool = True) -> str | None:",
    "\"\"\"Pi parity: ``readPipedStdin`` — plus an aelix-original hang guard.",
    "",
@@ -2020,10 +2020,10 @@
    "",
    "Issue #57 (aelix-original hardening — pi DECLINED the same report,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3205-3205": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3225-3225": [
    "# override is set (``--approve``/``--no-approve`` short-circuits at step 1) or"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3304-3320": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3324-3340": [
    "#",
    "# Placed AFTER the trust gate rather than beside ``permission_ext``: three of",
    "# the four constructor arguments are not knowable earlier. Nothing between",
@@ -2033,7 +2033,7 @@
    "session_host: dict[str, Any] = {} # #199 — the runtime host, once built (below)",
    "if _agents_delegation_enabled(parsed, settings_manager):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3337-3344": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3357-3364": [
    "#",
    "# A LAMBDA, NOT ``parsed.no_context_files``. ``/agents use``",
    "# rewrites this same ``Args`` OBJECT in place",
@@ -2043,7 +2043,7 @@
    "# turns the flag on, and keep it on after the profile is reset.",
    "# Measured on one object: same ``id()``, False→True on the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3337-3435": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3357-3455": [
    "#",
    "# A LAMBDA, NOT ``parsed.no_context_files``. ``/agents use``",
    "# rewrites this same ``Args`` OBJECT in place",
@@ -2053,7 +2053,7 @@
    "# turns the flag on, and keep it on after the profile is reset.",
    "# Measured on one object: same ``id()``, False→True on the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:367-422": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:369-424": [
    "if sys.stdin.isatty():",
    "return None",
    "if sys.platform != \"win32\":",
@@ -2063,7 +2063,7 @@
    "stdin_fd: int | None",
    "try:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:369-378": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:371-380": [
    "if sys.platform != \"win32\":",
    "timeout = _env_float(\"AELIX_STDIN_TIMEOUT\")",
    "if timeout is None:",
@@ -2073,7 +2073,7 @@
    "stdin_fd = sys.stdin.fileno()",
    "except (AttributeError, ValueError, OSError):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:370-378": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:372-380": [
    "timeout = _env_float(\"AELIX_STDIN_TIMEOUT\")",
    "if timeout is None:",
    "timeout = 30.0 if required else 5.0",
@@ -2083,7 +2083,7 @@
    "except (AttributeError, ValueError, OSError):",
    "stdin_fd = None # fake/captured stdin — nothing selectable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3900-3905": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3920-3925": [
    "if (",
    "not project_trusted",
    "and app_mode != \"interactive\"",
@@ -2091,10 +2091,10 @@
    "):",
    "_print_untrusted_project_notice()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3921-3921": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3941-3941": [
    "# Issue #12: load skills ONCE (the dirs are stable for the process) and"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4044-4316": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4064-4336": [
    "async def _build_harness(",
    "new_session: Session, *, reload_seed: ReloadSeed | None = None",
    ") -> AgentHarness:",
@@ -2104,15 +2104,15 @@
    "# ``/reload`` all build here. pi's ``hasExistingSession`` is",
    "# ``messages.length > 0`` (``core/sdk.ts:210-211``), so ``/new`` (an empty"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4280-4280": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4303-4303": [
    "# process-global login registry so they appear in the /login method list"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4353-4355": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4376-4378": [
    "async def _harness_factory(",
    "new_session: Session, *, reload_seed: ReloadSeed | None = None",
    ") -> AgentHarness:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4430-4451": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4462-4483": [
    "agent_service_kwarg: dict[str, Any] = (",
    "{\"agent_service\": agent_service} if agent_service is not None else {}",
    ")",
@@ -2122,10 +2122,10 @@
    "# same ``parsed.tools``) used to escape from here as a raw traceback in every",
    "# one of those modes. The issue reported it as \"the CLI path\" and noted the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4431-4431": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4463-4463": [
    "{\"agent_service\": agent_service} if agent_service is not None else {}"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4810-4827": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4842-4859": [
    "# extension-registered provider onto ``model_registry``, so",
    "# ``get_available()`` can see all six auth layers. Anything earlier would",
    "# nag an issue-#77 user on every launch.",
@@ -2135,7 +2135,7 @@
    "model_registry,",
    "stdin_is_tty=stdin_is_tty,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4823-4839": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4855-4871": [
    "app_mode == \"interactive\"",
    "and startup_model is not None",
    "and not is_runnable(startup_model)",
@@ -2145,13 +2145,13 @@
    "# advice is actively wrong when ``get_available()`` is empty (the picker",
    "# would open onto nothing). It stays for the configured-but-typo'd user,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4892-4892": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4924-4924": [
    "# The [tui] extra (prompt-toolkit + rich) is not installed."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5160-5160": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:5192-5192": [
    "print(format_no_model_selected_message(), file=sys.stderr)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:70-75": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:71-76": [
    "from aelix_coding_agent.agents import (",
    "AgentProfile,",
    "ProfileError,",
@@ -2159,7 +2159,7 @@
    "resolve_profile,",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:996-1001": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:998-1003": [
    "print(",
    "\"Notice: project-local .aelix resources (extensions, skills, agent \"",
    "\"profiles, settings) and .agents/skills skipped in an untrusted \"",
@@ -2523,51 +2523,12 @@
    "@overload",
    "def set_widget("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1075-1078": [
-   "# 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).",
-   "# Issue #91: this tier no longer imports anything — endpoints are resolved",
-   "# from installed metadata, so it is safe for the metadata-only scan too.",
-   "if not no_discovery:"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1475-1479": [
-   "def __repr__(self) -> str:",
-   "return (",
-   "f\"_ManifestEntry(plugin={self.manifest.plugin.id!r}, \"",
-   "f\"pkg_dir={str(self.pkg_dir)!r})\"",
-   ")"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1753-1753": [
-   "eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:2151-2154": [
-   "if isinstance(entry, _EntryPointEntry):",
-   "factory = _factory_from_entry_point(entry, cwd=cwd)",
-   "display = getattr(factory, \"__qualname__\", None) or type(factory).__name__",
-   "return factory, display, None"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:358-358": [
-   "extension.resolved_path = str(entry.pkg_dir)"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:485-495": [
-   "if shell.shortcuts:",
-   "# W1 limitation (adversarial-review MEDIUM): the TUI enumerates",
-   "# shortcut KEYS once at chrome build, so keys from a lazily-activated",
-   "# factory cannot bind until the next TUI start. Say so loudly.",
-   "logger.warning(",
-   "\"plugin %r registered %d shortcut(s) during lazy activation; \"",
-   "\"they will bind on the next TUI start (key bindings are built \"",
-   "\"once at startup)\","
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:541-542": [
-   "1. ``cwd / .aelix / extensions /`` — project-local files / packages.",
-   "2. ``<agent_dir> / extensions /`` — user globals. **In every shipped"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:973-975": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1027-1029": [
    "home_aelix = Path.home() / \".aelix\" if agent_dir is None else agent_dir",
    "global_dir = (home_aelix / \"extensions\").resolve(strict=False)",
    "for discovered in _discover_in_dir(global_dir, errors=errors, packages=packages):"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:978-1072": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1032-1126": [
    "# 3. Explicit configured paths.",
    "seen_modules: set[str] = set()",
    "refused_shadowed: set[str] = set()",
@@ -2577,7 +2538,7 @@
    "if callable(entry) and not isinstance(entry, (str, Path)):",
    "_add(entry, \"cli\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:981-1072": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1035-1126": [
    "for entry in configured_paths:",
    "# Callables/factories pass through (P-21 — explicit takes precedence",
    "# over entry_points but loses to local/global directories).",
@@ -2586,6 +2547,45 @@
    "continue",
    "# Issue #114: a dotted module reference (\"pkg.mod\", \"pkg.mod:factory\")",
    "# passes through AS A STRING so _resolve_factory reaches"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1129-1132": [
+   "# 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).",
+   "# Issue #91: this tier no longer imports anything — endpoints are resolved",
+   "# from installed metadata, so it is safe for the metadata-only scan too.",
+   "if not no_discovery:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1529-1533": [
+   "def __repr__(self) -> str:",
+   "return (",
+   "f\"_ManifestEntry(plugin={self.manifest.plugin.id!r}, \"",
+   "f\"pkg_dir={str(self.pkg_dir)!r})\"",
+   ")"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:1807-1807": [
+   "eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:2205-2208": [
+   "if isinstance(entry, _EntryPointEntry):",
+   "factory = _factory_from_entry_point(entry, cwd=cwd)",
+   "display = getattr(factory, \"__qualname__\", None) or type(factory).__name__",
+   "return factory, display, None"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:403-403": [
+   "extension.resolved_path = str(entry.pkg_dir)"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:539-549": [
+   "if shell.shortcuts:",
+   "# W1 limitation (adversarial-review MEDIUM): the TUI enumerates",
+   "# shortcut KEYS once at chrome build, so keys from a lazily-activated",
+   "# factory cannot bind until the next TUI start. Say so loudly.",
+   "logger.warning(",
+   "\"plugin %r registered %d shortcut(s) during lazy activation; \"",
+   "\"they will bind on the next TUI start (key bindings are built \"",
+   "\"once at startup)\","
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/loader.py:595-596": [
+   "1. ``cwd / .aelix / extensions /`` — project-local files / packages.",
+   "2. ``<agent_dir> / extensions /`` — user globals. **In every shipped"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/extensions/subprocess_hooks.py:178-178": [
    "proc = await asyncio.create_subprocess_shell("
@@ -2683,21 +2683,21 @@
    "tree.close()",
    "self._tree = None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:1635-1635": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:1645-1645": [
    "result = await runtime_host.fork(cmd.entry_id)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2262-2265": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2272-2275": [
    "raise RuntimeError(",
    "\"repo and fs must not be supplied when runtime_host is \"",
    "\"explicit — the runtime owns them\"",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2412-2414": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:2422-2424": [
    "def _on_line(line: str) -> None:",
    "if not line.strip():",
    "return"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:663-663": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/rpc/rpc_mode.py:673-673": [
    "body, info = truncate_tail(raw, max_lines=256, max_bytes=32 * 1024)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/subagent_contract.py:120-131": [
@@ -2912,17 +2912,17 @@
    "if gate_visible:",
    "cond = cond & Condition(lambda: self._working_visible or self._running)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1436-1437": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1449-1450": [
    "for renderable in _render_subagent_result(result):",
    "ctx.commit(renderable)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1837-1837": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:1850-1850": [
    "\"\"\"``/trust`` — decide project trust for this folder (ignores args)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2386-2386": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2399-2399": [
    "BuiltinCommand(\"login\", \"Sign in / add a provider API key\", _login_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2387-2387": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2400-2400": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1000-1003": [
@@ -3062,10 +3062,10 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:341-341": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1284-1284": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1285-1285": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:188-204": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:189-205": [
    "",
    "def _reload_rebuild_enabled() -> bool:",
    "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
@@ -3075,7 +3075,7 @@
    "agent-written extension goes live WITHOUT a process restart (the #53 moat).",
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2247-2264": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2248-2265": [
    "settings_manager=settings_manager,",
    ")",
    "",
@@ -3085,33 +3085,33 @@
    "# / Activity / Efficiency tabs). The flow lives in",
    "# stats_dashboard.run_stats (dependency-injected so it is unit-testable"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2943-2943": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2944-2944": [
    "# call would leave the prompt looking frozen. Drive the \"Working…\" row from"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3138-3140": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3139-3141": [
    "# P-302 factory), so bind_ui + command_ctx repoint are equally required.",
    "with contextlib.suppress(Exception):",
    "new_harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3523-3523": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3524-3524": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3608-3608": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3609-3609": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4028-4028": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4029-4029": [
    "event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4137-4137": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4138-4138": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4137-4140": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4138-4141": [
    "# \"AGENTS.md\" whenever a file existed. Two defects, both measured:",
    "#",
    "# (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at",
-   "# ``cli/entry.py:1975``, ABOVE discovery, so the banner announced"
+   "# ``cli/entry.py:1977``, ABOVE discovery, so the banner announced"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4188-4205": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:4189-4206": [
    "if tool_names:",
    "preview = \", \".join(tool_names[:4])",
    "if len(tool_names) > 4:",
@@ -3121,7 +3121,7 @@
    "tools_label = \"none\"",
    ""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:818-818": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:819-819": [
    "# through the same queue as committed lines keeps them ordered — otherwise a"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/statusline_picker.py:96-96": [

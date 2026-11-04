@@ -660,7 +660,7 @@ class _ExtensionRuntime:
         3. DEPTH (finding I4). Product-core will not HOLD a runtime inside a
            delegated child, regardless of which extension tier produced it.
            This is the fork-bomb invariant living in the seam rather than in
-           one extension's constructor — ``extensions/loader.py:1075-1078`` drops
+           one extension's constructor — ``extensions/loader.py:1129-1132`` drops
            tier-4 entry points under ``--no-extensions`` and
            ``agents/profile.py:408-413`` bans ``extensions:`` at project
            scope, but a user-scope tier-1 extension still loads in a child

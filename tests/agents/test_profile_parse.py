@@ -209,7 +209,7 @@ def test_csv_and_list_forms_equivalent() -> None:
 def test_skill_paths_resolve_against_profile_dir(tmp_path: Path) -> None:
     """Relative entries anchor to the PROFILE's directory, never cwd.
 
-    aelix's ``--skill`` takes a PATH (``entry.py:1497-1540``), so a profile must
+    aelix's ``--skill`` takes a PATH (``entry.py:1499-1542``), so a profile must
     mean the same thing from any working directory. The decoy below is what a
     cwd-relative implementation would have picked.
     """
@@ -254,7 +254,7 @@ def test_missing_skill_path_is_warning_at_parse(tmp_path: Path) -> None:
 def test_project_scope_extensions_is_error() -> None:
     """THE RCE CUT.
 
-    ``extensions/loader.py:978-1072`` exec_module's explicit extension paths
+    ``extensions/loader.py:1032-1126`` exec_module's explicit extension paths
     outside BOTH the ``no_discovery`` and ``no_project_local`` guards, so a
     checked-in project profile declaring ``extensions:`` would run arbitrary
     code that Project Trust never sees.

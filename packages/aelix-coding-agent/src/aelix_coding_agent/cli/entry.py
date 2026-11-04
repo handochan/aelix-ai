@@ -66,6 +66,7 @@ from aelix_agent_core.session.session import Session
 from aelix_agent_core.session.session_lock import SessionWriterLock
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
+from aelix_ai.utils.terminal_text import safe_for_terminal
 
 from aelix_coding_agent.agents import (
     AgentProfile,
@@ -133,6 +134,7 @@ from aelix_coding_agent.core.tool_selection import (
     resolve_saved_off,
 )
 from aelix_coding_agent.extensions.loader import (
+    ExtensionInterrupted,
     discover_and_load_extensions,
     discover_extension_records,
     gate_manifest_mcp_contribs,
@@ -2046,6 +2048,10 @@ async def _build_harness_options(
     # #434 — ``/reload``'s current model (``ReloadSeed.model``): kept when a hold
     # removed its id, where the restore below would fall back (ADR-0264 §4.4).
     keep_model: Model | None = None,
+    # #663 (ADR-0289 D3, Codex R06) — the build that puts a session back after a
+    # failed rebuild (``ReloadSeed.restore``): ``keep_model`` is then the model
+    # the session ran on, kept as it is, whatever the launch inputs say.
+    keep_exactly: bool = False,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -2227,7 +2233,16 @@ async def _build_harness_options(
         # transcript line naming each failure instead — this print landed raw
         # on the input row, inside an open panel; ``/new``, ``/fork`` and
         # ``/resume`` commit theirs below the new banner (verify V11).
+        exits = {
+            id(o.error)
+            for o in loaded.outcomes
+            if o.error is not None and o.error_type == "SystemExit"
+        }
         for err in loaded.errors:
+            if id(err) in exits:
+                # #664 (verify V9) — named, as /extension names it: a
+                # ``sys.exit("msg")`` read as a bare "msg", a RuntimeError's text.
+                err = dataclasses.replace(err, error=f"SystemExit: {err.error}")
             print(f"Warning: extension load: {err}", file=sys.stderr)
     # #344 / ADR-0249 (X1) — bind the registry to THIS build's runtime before the
     # model is resolved, so an extension ``register_provider`` made during
@@ -2275,9 +2290,14 @@ async def _build_harness_options(
     # decides as it always has: that is the fallback.
     route = (
         restore_session_route(restore_selection, model_registry)
-        if restore_selection is not None
+        if restore_selection is not None and not (keep_exactly and keep_model is not None)
         else None
     )
+    if keep_exactly and keep_model is not None:
+        # #663 (Codex R06) — a ``set_model`` choice is no session record and no
+        # launch input: without this the restore came back on ``--model``. A
+        # restored route, so no late-provider hold is applied after it either.
+        route = ResolvedRoute(keep_model, "session")
     if (
         route is None
         and keep_model is not None
@@ -4060,13 +4080,15 @@ async def _async_main(argv: list[str]) -> int:
             entries = await new_session.get_branch()
             if build_session_context(entries).messages:
                 restore_selection = resolve_resumed_model(entries)
-        if reload_seed is not None:
+        if reload_seed is not None and not reload_seed.restore:
             # #511 (ADR-0279 D10) — ``/reload`` rescans the skill and prompt
             # directories as pi does; the runtime reloaded the settings files
             # just before this build. Before #511 an edited SKILL.md or a new
             # skill directory needed a restart, while ``resource_commands``
             # said ``/reload`` was enough. Load warnings are not reprinted: this
-            # runs under the TUI, and they were said once at launch.
+            # runs under the TUI, and they were said once at launch. Not for the
+            # build that puts a session back after a failed one (#663): that one
+            # keeps the catalogs the session ran with (``_harness_factory``).
             skills_holder["result"] = _load_skill_catalog(
                 parsed, cwd, project_trusted, settings_manager
             )
@@ -4091,6 +4113,7 @@ async def _async_main(argv: list[str]) -> int:
             restore_selection=restore_selection,
             restore_report=restore_report,
             keep_model=getattr(reload_seed, "model", None),
+            keep_exactly=bool(getattr(reload_seed, "restore", False)),
             mcp_tools=mcp_launch_record.visible(mcp_tools, mcp_hidden),
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
@@ -4364,7 +4387,16 @@ async def _async_main(argv: list[str]) -> int:
         """
 
         with selection_apply_gate:
-            return await _build_harness(new_session, reload_seed=reload_seed)
+            # #663 (ADR-0289) — a build that raises leaves the catalogs as the
+            # running session has them: a reload's rescan above is undone, so
+            # the build that puts the session back (``ReloadSeed.restore``) and
+            # every later one read what the session was running with.
+            catalogs = (skills_holder["result"], prompt_holder["result"])
+            try:
+                return await _build_harness(new_session, reload_seed=reload_seed)
+            except BaseException:
+                skills_holder["result"], prompt_holder["result"] = catalogs
+                raise
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
     # harness so it shares the SAME ``parsed`` object the factory closes over: a
@@ -5318,6 +5350,15 @@ def main_sync() -> None:
         # ``process.exit(129)``; Python pipelines conventionally use 141.)
         _stdout_to_devnull()
         sys.exit(141)
+    except ExtensionInterrupted as exc:
+        # #664 — a ``KeyboardInterrupt`` while an extension's import or
+        # ``setup()`` ran (Ctrl+C, or the extension raising one): the run ends
+        # as it always did (130, 128+SIGINT), with one line naming the extension
+        # instead of a traceback.
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+        print(f"aelix: {safe_for_terminal(str(exc))}", file=sys.stderr)
+        sys.exit(130)
     except BaseException:
         # Ctrl+C / SystemExit / crashes keep their exact semantics — but
         # flush NOW and devnull stdout on EPIPE so a dirty buffer + dead

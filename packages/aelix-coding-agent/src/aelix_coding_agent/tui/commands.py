@@ -445,7 +445,7 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     signals it by RAISING ``AgentHarnessError(code="invalid_state",
     "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
     discriminate that one raise (duck-typed on ``.code`` + message, mirroring
-    the harness's own auto-compaction guard at ``core.py:2350``) and render it
+    the harness's own auto-compaction guard at ``core.py:2403``) and render it
     NEUTRAL yellow, while every genuine failure still surfaces in red.
     """
 
@@ -516,7 +516,7 @@ def active_tool_views(harness: object) -> list[object]:
 
     ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
     tool — but a turn sends only the tools that survive the active filter
-    (``harness/core.py:5579-5585`` intersects ``_state.tools`` with
+    (``harness/core.py:5655-5661`` intersects ``_state.tools`` with
     ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
     two lists differ, so a readout built on the registered list advertises
     tools the model does not have.
@@ -690,7 +690,7 @@ def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
-    made ``--tools ''`` enable everything (``entry.py:1152-1174``).
+    made ``--tools ''`` enable everything (``entry.py:1154-1176``).
 
     #155 — annotated when a name in the allowlist is not registered in THIS
     session. A profile's ``tools:`` is the persistent form of that defect: an
@@ -903,7 +903,7 @@ def _render_agent_profile(
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:4188-4205`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:4189-4206`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -1034,7 +1034,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:3608`` binds the real TUI context onto
+    UI seam instead — ``shell.py:3609`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:3019``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1353,6 +1353,19 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
         return
 
     if sub == "run":
+        if getattr(ctx.harness, "disposed", False) is True:
+            # #663 (verify V7) — a stopped runtime's harness unbound the
+            # delegation seam: say the stop, not "Relaunch with --agents". One a
+            # reload or session change is replacing holds no turns and is not
+            # stopped (verify R1V2).
+            from aelix_agent_core.runtime import TRANSITION_RUNNING_MESSAGE
+
+            from aelix_coding_agent.tui.shell import _reload_text
+            from aelix_coding_agent.tui.width import terminal_columns
+
+            reason = getattr(ctx.harness, "turns_held", None) or TRANSITION_RUNNING_MESSAGE
+            ctx.commit(_reload_text([("bold red", f"✖ {reason}")], terminal_columns(ctx.chrome)))
+            return
         runtime = _subagent_runtime(ctx)
         if runtime is None:
             ctx.commit(Text(_DELEGATION_UNAVAILABLE, style="yellow"))
@@ -2129,11 +2142,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
     #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
     #
-    # The double count was the same text twice over: ``cli/entry.py:1975-1978``
+    # The double count was the same text twice over: ``cli/entry.py:1977-1980``
     # appends the chunk to ``append_system_prompt`` and ``harness/core.py:750-756``
     # joins it INTO the very string ``system_prompt`` already holds. The phantom
     # was that discovery never sees ``--no-context-files`` — that gate sits one
-    # level up, at ``cli/entry.py:1975``.
+    # level up, at ``cli/entry.py:1977``.
     #
     # :func:`split_project_context` answers from the assembled prompt instead,
     # and by CONTAINMENT rather than by recognising a header (its module

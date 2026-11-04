@@ -102,6 +102,36 @@ class ExtensionLoadError:
     verify_applies: bool = field(default=True, repr=False, compare=False)
 
 
+class ExtensionInterrupted(KeyboardInterrupt):
+    """A ``KeyboardInterrupt`` raised while an extension's import or ``setup()`` ran (#664).
+
+    Still a ``KeyboardInterrupt`` — the loader cannot tell a Ctrl+C during a slow
+    ``setup()`` from an extension raising one, so it ends the run as before —
+    but it names the extension, and ``main_sync`` prints this one line instead
+    of a traceback.
+    """
+
+    def __init__(self, extension: str, during: str) -> None:
+        self.extension = extension
+        self.during = during
+        super().__init__(f"interrupted while the extension {extension} was running its {during}")
+
+
+def _load_error_text(exc: BaseException) -> str:
+    """What a load error says for ``exc``; ``EntryOutcome.error_type`` names its class.
+
+    #664: ``SystemExit(1)`` reads ``1`` as text, so it says ``sys.exit(1)``; a
+    ``sys.exit("message")`` says its message.
+    """
+
+    if isinstance(exc, SystemExit):
+        code = exc.code
+        if isinstance(code, str):
+            return code
+        return "sys.exit()" if code is None else f"sys.exit({code!r})"
+    return str(exc)
+
+
 @dataclass
 class EntryOutcome:
     """What :func:`load_extensions` made of one entry (#25): the extension, the
@@ -324,32 +354,47 @@ async def load_extensions(
                     ", ".join(entry.manifest.activation.on_command) or "a command",
                 )
             continue
+        # Issue #91 review: label a manifest entry by its plugin id (what the
+        # sibling handler below already uses) rather than by the carrier's repr.
+        # Both this string and ``error`` are printed to stderr verbatim by
+        # cli/entry.py, so the label must stay short and must never carry
+        # manifest payload.
+        label = (
+            entry.manifest.plugin.id
+            if isinstance(entry, _ManifestEntry)
+            else str(entry)
+        )
+        # #664 — ``SystemExit`` (an extension calling ``sys.exit``) is a load
+        # error like any other: that extension is skipped and the rest load. A
+        # ``KeyboardInterrupt`` still ends the run, naming the extension; an
+        # ``asyncio.CancelledError`` and any other ``BaseException`` pass through
+        # unchanged. An ``ExtensionInterrupted`` already names the extension it
+        # interrupted — one this one loads in turn (Codex R10) — and stays as it is,
+        # as in :func:`activate_pending_extension`.
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
-        except Exception as exc:  # noqa: BLE001 — surface as load error
-            # Issue #91 review: label a manifest entry by its plugin id (what
-            # the sibling handler below already uses) rather than by the
-            # carrier's repr. Both this string and ``error`` are printed to
-            # stderr verbatim by cli/entry.py, so the label must stay short
-            # and must never carry manifest payload.
-            label = (
-                entry.manifest.plugin.id
-                if isinstance(entry, _ManifestEntry)
-                else str(entry)
-            )
-            failure = ExtensionLoadError(path=label, error=str(exc))
+        except ExtensionInterrupted:
+            raise
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
+            failure = ExtensionLoadError(path=label, error=_load_error_text(exc))
             result.errors.append(failure)
             result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
+        except KeyboardInterrupt as exc:
+            raise ExtensionInterrupted(label, "import") from exc
         try:
             extension = await _invoke_factory(
                 factory, runtime, name=name, manifest=manifest
             )
-        except Exception as exc:  # noqa: BLE001 — surface as load error
-            failure = ExtensionLoadError(path=name, error=str(exc))
+        except ExtensionInterrupted:
+            raise
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — surface as load error
+            failure = ExtensionLoadError(path=name, error=_load_error_text(exc))
             result.errors.append(failure)
             result.outcomes.append(EntryOutcome(error=failure, error_type=type(exc).__name__))
             continue
+        except KeyboardInterrupt as exc:
+            raise ExtensionInterrupted(name, "setup()") from exc
         # Issue #21 themes (ADR-0184) — record the plugin directory so the
         # manifest theme adapter can resolve a ``ThemeContrib.path`` (a
         # plugin-root-relative file) against it. ``resolved_path`` was a
@@ -441,10 +486,12 @@ async def activate_pending_extension(
     if pending is None:
         return None
     shell = pending.extension
+    during = "import"
     try:
         factory, _display, manifest = await _resolve_factory(
             pending.entry, cwd=pending.cwd
         )
+        during = "setup()"
         await _invoke_factory(
             factory,
             runtime,
@@ -456,7 +503,7 @@ async def activate_pending_extension(
         # #25 (Codex F09): remembered, so ``/extension`` shows the pack as
         # failed instead of deferred — one-shot, so it stays failed until the
         # next (re)build re-defers it.
-        runtime.activation_failures[shell.name] = f"{type(exc).__name__}: {exc}"
+        runtime.activation_failures[shell.name] = f"{type(exc).__name__}: {_load_error_text(exc)}"
         # ROLLBACK (adversarial-review HIGH): a factory that registered SOME
         # surfaces before raising must not leave a half-activated plugin —
         # its partial commands would execute on the next keystroke and its
@@ -477,6 +524,13 @@ async def activate_pending_extension(
         shell.message_renderers.clear()
         runtime.actions.refresh_tools()
         runtime.actions.refresh_hooks()
+        # #664 — as at load time: a ``sys.exit`` in the deferred ``setup()`` is
+        # this plugin's failure, said by the dispatch layer, not the end of the
+        # session; a ``KeyboardInterrupt`` ends it naming the plugin.
+        if isinstance(exc, SystemExit):
+            raise RuntimeError(f"SystemExit: {_load_error_text(exc)}") from exc
+        if isinstance(exc, KeyboardInterrupt) and not isinstance(exc, ExtensionInterrupted):
+            raise ExtensionInterrupted(shell.name, during) from exc
         raise
     # Late registrations reach the constructed harness through the two
     # refresh actions (no-ops when no harness is bound yet — tests/embedders).
@@ -542,7 +596,7 @@ async def discover_and_load_extensions(
     2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
        configuration this is ``~/.aelix/agent/extensions/``**, not
        ``~/.aelix/extensions/``: both production call sites
-       (``cli/entry.py:2199`` and ``:3205``) pass
+       (``cli/entry.py:2205`` and ``:3225``) pass
        ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
        (``cli/config.py:85-95``) returns ``$AELIX_CODING_AGENT_DIR`` or
        ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
@@ -2834,6 +2888,7 @@ async def _invoke_factory(
 
 
 __all__ = [
+    "ExtensionInterrupted",
     "ExtensionLoadError",
     "LoadExtensionsResult",
     "discover_and_load_extensions",

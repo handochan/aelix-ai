@@ -53,6 +53,7 @@ from aelix_coding_agent.core.extension_selection import (
     failure_lines,
     reload_failure_text,
     reload_lines,
+    reload_outcome,
 )
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import ContextUsage, MessageRenderOptions
@@ -2030,7 +2031,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:4892``) always passes one, so this is
+            # production caller (``entry.py:4924``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2498,7 +2499,7 @@ async def run_tui(
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
     # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5846`` and the hook-fail one ``:5846``)
+    # the abort close-out ``core.py:5922`` and the hook-fail one ``:5922``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2636,7 +2637,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2908``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2961``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2644,7 +2645,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:2954``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3007``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2992,11 +2993,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2174``), so the refresh below is
+                # ``_state.messages`` (``core.py:2227``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1783``), so this never discards a figure a running
+                # ``core.py:1820``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3074,7 +3075,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5906-5907`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:5982-5983`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3102,7 +3103,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:2954``).
+        # the model is already swapped in (``core.py:3007``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -4137,11 +4138,11 @@ def _build_banner(
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1975``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1977``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1958`` already printed at startup, and one that
+    #       what ``entry.py:1960`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -4158,7 +4159,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4858-4859``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4927-4928``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4516,20 +4517,26 @@ async def _input_loop(
                     extension_control.inventory() if extension_control is not None else None
                 )
                 before_harness = runtime_host.harness
+                was_stopped = isinstance(getattr(runtime_host, "stopped", None), str)
                 try:
                     await runtime_host.reload()
                 except Exception as exc:  # noqa: BLE001 — said, never raised into the loop
-                    applied = runtime_host.harness is not before_harness
+                    # #663 (ADR-0289) — the line says what runs now: the new
+                    # build, the previous settings, or nothing until /reload works.
+                    outcome = reload_outcome(
+                        exc, replaced=runtime_host.harness is not before_harness
+                    )
                     failure = reload_failure_text(
                         _RELOAD_PHASE_WORDS.get(str(getattr(runtime_host, "reload_phase", "") or "")),
                         exc,
-                        applied,
+                        outcome,
                     )
-                    lines = [("yellow" if applied else "bold red", failure)]
+                    lines = [("yellow" if outcome == "applied" else "bold red", failure)]
                     if extension_control is not None:
                         extension_control.holder["reload_failure"] = failure
-                        if applied:
-                            # The new build was committed: what it changed is true.
+                        if outcome != "stopped":
+                            # A build was committed (the new one, or the one on the
+                            # previous settings): what it changed is true.
                             lines += reload_lines(
                                 before_inventory,
                                 extension_control.inventory(),
@@ -4539,7 +4546,18 @@ async def _input_loop(
                     output_queue.put_nowait(
                         ("commit", _reload_text(lines, terminal_columns(chrome)))
                     )
+                    if was_stopped and getattr(runtime_host, "stopped", None) is None:
+                        # #663 (verify V6) — a build was installed, the new one or
+                        # the one on the previous settings: the stop is over too.
+                        output_queue.put_nowait(
+                            ("commit", Text("✓ aelix is running again", style="green"))
+                        )
                     continue
+                if was_stopped:
+                    # #663 — the stop the last failure announced is over.
+                    output_queue.put_nowait(
+                        ("commit", Text("✓ /reload succeeded — aelix is running again", style="green"))
+                    )
                 if extension_control is not None:
                     extension_note = reload_lines(
                         before_inventory,
@@ -4560,7 +4578,14 @@ async def _input_loop(
                         ("commit", Text(f"Warning: {fallback}", style="yellow"))
                     )
             else:
-                await harness.reload_resources()
+                try:
+                    await harness.reload_resources()
+                except Exception as exc:  # noqa: BLE001 — #663: said, never raised into the loop
+                    failure = reload_failure_text(_RELOAD_PHASE_WORDS["resources"], exc, "kept")
+                    output_queue.put_nowait(
+                        ("commit", _reload_text([("bold red", failure)], terminal_columns(chrome)))
+                    )
+                    continue
             # #240 — AFTER both arms, because NEITHER reaches ``_load_models``:
             # the rebuild arm calls ``AgentSessionRuntime.reload`` (not
             # ``AgentHarness.reload``, whose ``reset()`` leg is dead code —
@@ -4675,6 +4700,23 @@ async def _input_loop(
             # receives. Echoing the expansion would paste a whole SKILL.md body
             # into the transcript on every invocation.
             prompt_text = expanded
+        # #663 (ADR-0289) — a stopped runtime: the harness still installed was
+        # torn down by a rebuild that failed, gates and all. Every line that
+        # would run something is refused; the /-commands above still work. An
+        # Alt+Enter ``!`` queued before the stop is refused in its own block, so
+        # it leaves the pending area (#596).
+        stopped = getattr(runtime_host, "stopped", None)
+        if isinstance(stopped, str) and parsed.kind in ("bash", "bash_transient", "prompt"):
+            if after_turn is not None:
+                lane.refuse(after_turn, f"✖ {stopped}")
+            else:
+                output_queue.put_nowait(
+                    (
+                        "commit",
+                        _reload_text([("bold red", f"✖ {stopped}")], terminal_columns(chrome)),
+                    )
+                )
+            continue
         # #137 / ADR-0244 — read-only. Everything that only READS has already
         # run and ``continue``d above: ``/``-commands, /quit, /reload, the
         # descriptor modals. What is left is the two kinds of line that append
@@ -4741,7 +4783,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and turn_refusal(turn_model) is not None:
-            # Two audiences, discriminated exactly as entry.py:4823-4839 and
+            # Two audiences, discriminated exactly as entry.py:4855-4871 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider
