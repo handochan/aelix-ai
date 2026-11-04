@@ -2172,26 +2172,36 @@ def _classify_recursive_mutator(command: Any) -> Verdict:
     return Verdict.ASK
 
 
+# Every operator tree-sitter-bash emits as a clean ``file_redirect`` token that
+# OPENS A FILE for writing. ``&>>`` (append stdout+stderr, bash 4 / zsh) was
+# missing, so ``echo … &>> ~/.ssh/authorized_keys`` was ALLOW while the ``>>``
+# form was DENY (#677). A numbered form (``2>>``, ``1>|``) carries the same
+# operator token with the fd in a separate child, so it is covered. ``>&-`` /
+# ``<&-`` close a descriptor and open no file (no target); ``&>|`` / ``>>|`` /
+# ``<>`` are parse errors tree-sitter reports as ``has_error`` → the gate
+# already ASKs. ``>&`` / ``<&`` with a NUMBER are fd dups (no file).
+_WRITE_REDIRECT_OPS = frozenset({">", ">>", "&>", "&>>", ">&", ">|"})
+_READ_REDIRECT_OPS = frozenset({"<", "<<", "<<<", "<&"})
+
+
 def _redirect_verdict(redirect: Any) -> Verdict:
     """A write ``file_redirect`` to a protected path → DENY, else ASK.
 
-    Only WRITE redirects gate (``>`` / ``>>`` / ``&>``); a read redirect
-    (``<``) is benign. The target path literal is matched against the protected
-    prefixes; a dynamic target → ASK.
+    Only WRITE redirects gate (``>`` / ``>>`` / ``&>`` / ``&>>`` / ``>|``); a
+    read redirect (``<``) is benign. The target path literal is matched against
+    the protected prefixes; a dynamic target → ASK.
     """
 
-    write_ops = (">", ">>", "&>", ">&", ">|")
-    read_ops = ("<", "<<", "<<<", "<&")
     op = ""
     target: Any | None = None
     for child in redirect.children:
         ct = child.type
-        if ct in write_ops or ct in read_ops:
+        if ct in _WRITE_REDIRECT_OPS or ct in _READ_REDIRECT_OPS:
             op = ct
         elif ct not in ("&", "|"):
             target = child
-    if not op or op in read_ops:
-        return Verdict.ALLOW  # read redirect — benign
+    if not op or op in _READ_REDIRECT_OPS:
+        return Verdict.ALLOW  # read redirect / fd-closing form — no file written
     if target is None:
         return Verdict.ASK
     path = _node_literal(target)

@@ -63,6 +63,11 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     body, a here-string and a redirect target, whose command substitutions run
     (`cat <<EOF` + `$(rm -rf ~)` read as ALLOW before). ADR-0288 has the
     details.
+  - **Dated note 2026-11-04 (#677).** The write-redirect set above gained
+    `&>>` (append stdout+stderr): it was missing, so `echo … &>> <protected>`
+    was ALLOW while `>>` was DENY. `_WRITE_REDIRECT_OPS` / `_READ_REDIRECT_OPS`
+    in `bash_classifier.py` now name the whole operator set tree-sitter-bash
+    emits; a descriptor-closing `>&-` and a dup `2>&1` open no file.
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any
