@@ -44,6 +44,37 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
   else ASK; a READ_ONLY allowlist → ALLOW; pipe-into-shell at any non-first stage
   (`sh/bash/zsh/dash/ksh/fish`) → DENY; write-redirect to `/etc /dev /boot /sys /usr /bin ~/.ssh
   /root /.git` → DENY else ASK; unknown command → ASK.
+  - **Dated note 2026-11-03 (#657, ADR-0288).** The ALLOW tier now READS the
+    arguments of `git` and of the read-only names whose arguments can write or
+    execute, so the git ALLOW set is narrowed and the leading-`A=1`-is-skipped
+    line above is superseded: a `VAR=value` prefix now forces ASK on every
+    command (DENY still wins). Every `git -c`/`--config-env` and
+    `-C`/`--git-dir`/`--work-tree`/`GIT_DIR` asks (no safe-key list); `git
+    config` asks unless it is a read form; `ls-remote`, `--output`/`--ext-diff`
+    and branch/tag/remote/reflog mutations ask; `env <cmd>`, `rg --pre`, `uniq
+    in out`, `tree -o`, `yq -i`, `file -C` ask. See `_classify_git`,
+    `_classify_by_name` and `_classify_arg_sensitive_read_only` in
+    `bash_classifier.py`. This is a NARROWING of the ALLOW allowlist, done with
+    the full corpus re-run the "Open risks" note below requires.
+    Review round 1 (2026-11-04) narrowed it again, with the Codex and verify
+    corpora re-run: an assignment written as a statement or made inside an
+    expansion asks; `find`/`fd` read static words (`-de\lete` is DENY) and
+    `-fprint0` joins the DENY set; and the walk now visits a here-document
+    body, a here-string and a redirect target, whose command substitutions run
+    (`cat <<EOF` + `$(rm -rf ~)` read as ALLOW before). ADR-0288 has the
+    details.
+  - **Dated note 2026-11-04 (#677).** The write-redirect set above gained
+    `&>>` (append stdout+stderr): it was missing, so `echo … &>> <protected>`
+    was ALLOW while `>>` was DENY. `_WRITE_REDIRECT_OPS` / `_READ_REDIRECT_OPS`
+    in `bash_classifier.py` now name the whole operator set tree-sitter-bash
+    emits; a descriptor-closing `>&-` and a dup `2>&1` open no file.
+  - **Dated note 2026-11-04 (#678).** The `/dev` entry in the protected-prefix
+    list above refused EVERY write under `/dev`, including `2>/dev/null` and
+    `>/dev/null`, which blocked common reads such as `rg foo 2>/dev/null`. A
+    write redirect to exactly `/dev/null`, `/dev/stdout` or `/dev/stderr`
+    (`_SINK_DEVICES`) is now ALLOW as a redirect — it changes no file — while
+    any other `/dev` target stays DENY and the command's own verdict still
+    applies (`rm -rf / >/dev/null` is DENY).
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any

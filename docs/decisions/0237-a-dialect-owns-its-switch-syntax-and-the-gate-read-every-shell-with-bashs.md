@@ -14,6 +14,20 @@ kind, so nothing here is a divergence to justify).
 Issue: #204 (this ADR), #110 (the AUTO posture epic it closes a leg of).
 Design spec: `.omc/specs/204-design-2026-09-04.md`.
 
+> **Dated note 2026-11-03 (#657, ADR-0288).** This ADR read a known read-only
+> NAME's arguments with a dialect's switch table, but only for `sort` / `date`
+> / `hostname`. #657 extends the same "never ALLOW an argument we did not read"
+> doctrine to `git` (its global options and each read-only subcommand's own
+> arguments), to a `VAR=value` assignment prefix on any command, and to six
+> more read-only names (`env`, `rg`, `uniq`, `tree`, `yq`, `file`). The dialect
+> tables here are untouched; the new reading is dialect-independent (git and
+> these tools mean the same thing whatever POSIX shell runs them, and `cmd` /
+> `powershell` still route them through their own tables, where they are
+> unknown and already ASK). Review round 1 (2026-11-04): the tokens these
+> tables read are now static shell words (quote and backslash removal), and a
+> glob that could expand into a switch is unknown, so `sort *` asks — a planted
+> file named `-o` would make it a write.
+
 AUTO mode read every command with a bash grammar and then ran it in whatever
 shell `_resolve_shell` returned. On Windows that is PowerShell or `cmd`. The
 gate's answer and the shell's behaviour were two unrelated facts about the same

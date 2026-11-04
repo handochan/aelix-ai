@@ -70,6 +70,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
   command, or queued with Alt+Enter, is refused in its block while stopped; a `!` record held then
   waits for the `/reload` that ends the stop; `idle_write` refuses a disposed harness, and the
   lock order is transition → drain lock. Amends ADR-0284 D6/Limits, ADR-0177, ADR-0287.
+- [0288 — AUTO mode reads a command's arguments, not just its name](0288-auto-mode-reads-a-commands-arguments-not-just-its-name.md)
+  (Accepted 2026-11-03; #657). The AUTO classifier allowed `git` by subcommand name and the other
+  read-only commands by name alone. Now it reads the arguments: every `git -c`/`--config-env` and
+  `-C`/`--git-dir`/`GIT_DIR` asks (decisions 1–2), a `VAR=value` prefix asks on any command
+  (decision 3), and `git config` writes, `ls-remote`, `--output`/`--ext-diff`, branch/tag/remote/
+  reflog mutations, `env <cmd>`, `rg --pre`, `uniq in out`, `tree -o`, `yq -i`, `file -C` ask
+  (decision 4) — while ordinary reads stay ALLOW. The bash tool also exports
+  `safe.bareRepository=explicit` to the model's `git` so a planted bare-repo folder is not
+  auto-discovered. Amends ADR-0158 (narrows the git ALLOW), ADR-0237 (extends its argument-reading
+  doctrine), ADR-0197 §(e) (the same gate refuses a headless child). Review round 1 (2026-11-04):
+  arguments are read as static shell words with each tool's own option grammar (a non-static
+  argument asks), `git config`/`branch`/`tag`/`remote` allow only proven read shapes, and an
+  assignment written as a statement or made inside an expansion asks.
 - [0286 — Esc withdraws the input the model never answered](0286-esc-withdraws-the-input-the-model-never-answered.md)
   (Accepted 2026-11-03; #654). On Esc, Ctrl+C or RPC `abort`, every input committed since the
   last answer (a successful assistant message or a tool result) leaves context: live state, the

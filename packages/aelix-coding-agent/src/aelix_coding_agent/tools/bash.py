@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import secrets
 import subprocess
 import sys
@@ -63,7 +64,7 @@ from aelix_coding_agent.tools._truncate import (
 from aelix_coding_agent.tools.provenance import mark_builtin
 from aelix_coding_agent.util.shell_env import get_shell_env
 
-_log = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 # Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB.
 _DEFAULT_MAX_LINES = DEFAULT_MAX_LINES
@@ -918,6 +919,98 @@ def _resolve_spawn_context(
     return spawn_hook(base) if spawn_hook else base
 
 
+# git reads ``GIT_CONFIG_COUNT`` as a base-10 ``strtoul``: leading blanks and a
+# ``+`` pass, anything after the digits does not. Measured on git 2.54: ``bad``,
+# ``-1``, ``1 ``, ``0x1``, ``1.0`` and a 20-digit count all stop git with "bogus
+# count" / "too many entries" before it reads a repository or runs anything, and
+# an empty value counts as no entries.
+_GIT_CONFIG_COUNT_FORM = re.compile(r"[ \t\n\v\f\r]*\+?[0-9]+")
+
+
+def _env_names_fold_case() -> bool:
+    """Whether environment names are case-insensitive on this platform (Windows)."""
+
+    return sys.platform == "win32"
+
+
+def _env_key(env: dict[str, str], name: str) -> str | None:
+    """The key ``name`` is stored under in ``env``, or ``None`` (#657 F07).
+
+    On Windows ``git_config_count`` IS ``GIT_CONFIG_COUNT``: a spawn hook may
+    hand back mixed-case names, and when the child starts two spellings of one
+    name collapse into one variable, CPython keeping whichever came later. Two
+    spellings at once raise ``ValueError``, because which one git would see is
+    not ours to guess.
+    """
+
+    if not _env_names_fold_case():
+        return name if name in env else None
+    hits = [key for key in env if key.upper() == name]
+    if len(hits) > 1:
+        raise ValueError(name)
+    return hits[0] if hits else None
+
+
+def _inject_git_bare_repository_guard(env: dict[str, str]) -> None:
+    """Make the MODEL's ``git`` refuse to auto-discover a planted bare repo (#657).
+
+    The classifier now ASKs on ``-C`` / ``--git-dir`` / ``GIT_DIR`` and on a
+    ``VAR=value`` prefix, but a FLAGLESS ``git status`` whose ``cwd`` (or a plain
+    folder reached by ``git -C`` — itself now ASKed) holds ``HEAD`` / ``config``
+    / ``objects`` / ``refs`` is still read as a bare repository under git's
+    default ``safe.bareRepository=all``, and its ``core.fsmonitor`` /
+    ``core.hooksPath`` then execute. Appending ``safe.bareRepository=explicit``
+    (git 2.38+) makes git refuse a bare repo that was not named by an explicit
+    ``--git-dir`` / ``GIT_DIR``, closing that flagless path while leaving an
+    ordinary repo (``.git`` dir), a worktree / submodule (``.git`` FILE) and an
+    explicitly named bare repo working.
+
+    git reads ``GIT_CONFIG_KEY_<n>`` / ``GIT_CONFIG_VALUE_<n>`` for ``n`` in
+    ``[0, GIT_CONFIG_COUNT)``. This APPENDS one entry at index ``COUNT`` and
+    bumps the count, so any ``GIT_CONFIG_*`` the user already exported is kept,
+    not clobbered. The environment is left exactly as it is when:
+
+    - the count is one git refuses (``_GIT_CONFIG_COUNT_FORM``) — git then stops
+      before it runs anything, so it fails closed on its own (F08);
+    - ``KEY_<COUNT>`` or ``VALUE_<COUNT>`` is already set — an entry past the
+      count that git ignores but someone put there; it is never overwritten, and
+      the skip is logged (F08);
+    - on Windows, one name is set under two spellings (F07).
+
+    The keys are tiny, so they never approach the win32 32 767-char environment
+    limit (#656).
+
+    Applied ONLY to the bash tool's child env — never to the REPL/TUI ``!``
+    escape (the user acting as themselves, ungated) nor to the raw
+    ``operations.exec`` callers such as RPC ``bash``, because the threat is the
+    MODEL running attacker-influenced input.
+    """
+
+    try:
+        count_key = _env_key(env, "GIT_CONFIG_COUNT")
+        raw = env[count_key] if count_key is not None else ""
+        if raw and not _GIT_CONFIG_COUNT_FORM.fullmatch(raw):
+            return
+        count = int(raw) if raw else 0
+        slot = (f"GIT_CONFIG_KEY_{count}", f"GIT_CONFIG_VALUE_{count}")
+        taken = [name for name in slot if _env_key(env, name) is not None]
+    except ValueError as exc:
+        _LOG.warning("bash: %s is set under two spellings; safe.bareRepository not added", exc)
+        return
+    if taken:
+        _LOG.warning(
+            "bash: %s is already set past GIT_CONFIG_COUNT=%d; safe.bareRepository not added",
+            taken[0],
+            count,
+        )
+        return
+    if count_key is not None:
+        del env[count_key]
+    env[slot[0]] = "safe.bareRepository"
+    env[slot[1]] = "explicit"
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+
+
 def _write_full_output(raw: str) -> str:
     """Pi parity ``OutputAccumulator.ensureTempFile`` — persist the FULL,
     untruncated raw output to ``<tmpdir>/pi-bash-<hex>.log``.
@@ -951,7 +1044,7 @@ def _write_raw_output_in_background(chunks: list[bytes]) -> str:
                 for chunk in chunks:
                     stream.write(chunk)
         except OSError:
-            _log.debug("writing a cut command's full output failed", exc_info=True)
+            _LOG.debug("writing a cut command's full output failed", exc_info=True)
 
     threading.Thread(target=write_all, name="aelix-bash-cut-output", daemon=True).start()
     return str(path)
@@ -1359,6 +1452,9 @@ def create_bash_tool(
             f"{command_prefix}\n{command}" if command_prefix else command
         )
         spawn_context = _resolve_spawn_context(resolved_command, cwd, spawn_hook)
+        # #657: close the planted-bare-repo path for the model's own git. After
+        # the spawn hook, so a hook's own GIT_CONFIG_* entries are preserved.
+        _inject_git_bare_repository_guard(spawn_context.env)
         if not Path(spawn_context.cwd).is_dir():
             return ToolResult(
                 content=[
@@ -1386,7 +1482,7 @@ def create_bash_tool(
             try:
                 body, info, full_output_path = _assemble_cut_output(chunks)
             except Exception:  # noqa: BLE001
-                _log.debug("assembling a cut command's output failed", exc_info=True)
+                _LOG.debug("assembling a cut command's output failed", exc_info=True)
                 raise cancel from None
             raise ToolCancelled(
                 ToolResult(
