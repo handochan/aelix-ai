@@ -3150,10 +3150,10 @@ async def run_tui(
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
         command_ctx.harness = new_harness
-        # Issue #24 — a "reload" reuses the SAME Session and keeps the SAME visible
-        # transcript on screen, so the session-swap-only resets below must NOT run:
-        # /expand ids still point at live transcript entries and the /stats lifetime
-        # continues. Only a real session swap (new/resume/fork) clears them.
+        # Issue #24 — a "reload" keeps the SAME Session and visible transcript: /expand
+        # ids still point at live entries and the /stats lifetime goes on; only a real
+        # session swap (new/resume/fork) clears them, below. #679: the footer, at once.
+        context._refresh_footer()
         if reason == "reload":
             return
         # /expand ids are scoped to the visible transcript, which a swap clears —

@@ -59,9 +59,12 @@ class ReloadSeed:
     tool registry — which only exists after the rebuild.
 
     :attr:`model` is the harness's current model at the reload (#434, ADR-0264
-    §4.4): a factory keeps it when a hold removed its id from the published
-    catalog, where a resume of the same session falls back, as pi's ``/reload``
-    keeps its ``AgentSession`` and model (``agent-session.ts:3690-3729``@99fe148).
+    §4.4; #679): a factory builds the reload on it as it is — a ``set_model``
+    choice over the launch ``--model``, and an id a hold removed from the
+    published catalog, where a resume of the same session falls back — as pi's
+    ``/reload`` keeps its ``AgentSession`` and model
+    (``agent-session.ts:3690-3729``@99fe148). The runtime puts the thinking
+    level back itself, after the build.
 
     :attr:`restore` (#663, ADR-0289) marks the build that puts the session back
     after a rebuild failed: the factory reuses what the session was running with

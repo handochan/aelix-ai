@@ -11,7 +11,8 @@ triggers, and what its live checks changed; #609's opt-in manual mode) and 2026-
 #172's catalog repository, its first publication and §8's last checks, as measured) and 2026-10-30
 (§10: #617, the owner's floor policy: a thinking level an older client lacks raises no floor;
 #616, the publishing pipeline's gaps: a run queued behind a rollback stops on its hold, a failed
-fetch says why, the release check lists the fields it keeps, and the publish job has tests).
+fetch says why, the release check lists the fields it keeps, and the publish job has tests) and
+2026-11-04 (§4.4: #679, `/reload` keeps the session's model on any id, not only a removed one).
 Date: 2026-10-14; rewritten 2026-10-15; decisions recorded 2026-10-17 and 2026-10-19; accepted
 2026-10-20
 Issue: #172 (the publishing pipeline), #434 (Phase 1-2: the store, the refresh contract, the client
@@ -844,7 +845,8 @@ Anthropic key nothing moves.
 **A resumed session whose model a hold removed falls back to the default model as pi's resume picks
 it** (`core/sdk.ts:223-251`@99fe148; the owner's choice of 2026-10-19), never to a removed id, and
 `/reload` keeps the open session's model. At `bc83e0bc` a resume restores it as a custom id
-(MEASURED, `r8/out/restore_after_rollback.txt`).
+(MEASURED, `r8/out/restore_after_rollback.txt`). *(2026-11-04, #679: `/reload` keeps it on any id
+now, not only a removed one — ADR-0239 decision 3.)*
 
 - The client knows from the index. A check that persists an index carrying `hold` (§4.2) adds to the
   hosted entry's `removed`, per provider, each id a revision of the stored index named and none of

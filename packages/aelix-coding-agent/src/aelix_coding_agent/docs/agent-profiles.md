@@ -497,8 +497,9 @@ job is text.
   — switches the model too; `provider:` alone is enough, so a profile whose
   `model:` your `--model` overrides but whose `provider:` applies switches to
   your `--model` on that provider. When a use switches the model, `/new`
-  after it starts on that same provider and model, and so do `/fork`,
-  `/resume` and `/reload` where they do not bring back a session's own model:
+  after it starts on that same provider and model, and so do `/fork` and
+  `/resume` where they do not bring back a session's own model (`/reload`
+  keeps the model the session is on):
   a profile's `model: openrouter/auto` stays OpenRouter's `auto`, not its other
   id `openrouter/auto` (that one is what `provider: openrouter` beside your
   `--model openrouter/auto` names, as `--provider openrouter` does). Two

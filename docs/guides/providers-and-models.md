@@ -55,10 +55,12 @@ RPC mode with a model registry) rotates only through models the rule leaves;
 ### A resumed session keeps its model
 
 Opening a session that already has a conversation — `--continue`, `--resume`,
-`--session`, `--fork`, and inside a session `/resume`, `/fork`, `/clone`,
-`/import` and `/reload` (RPC: `switch_session`, `fork`, `clone`) — puts you back
+`--session`, `--fork`, and inside a session `/resume`, `/fork`, `/clone` and
+`/import` (RPC: `switch_session`, `fork`, `clone`) — puts you back
 on the model it last ran on: whichever the session recorded last, a `/model`
-pick or the model that wrote an answer. A pick is recorded when you make it, so
+pick or the model that wrote an answer. `/reload` (RPC: `resources/reload`)
+keeps the model and the thinking level the session is on, as pi's does, also
+when `--model` named another one at launch. A pick is recorded when you make it, so
 `/model` then quitting comes back on that model. The same goes for RPC's `set_model`
 and `cycle_model`, which also fire `model_select` for your extensions. A new session records the model
 it starts on as well, as pi does — at launch, on `/new`, and on a `/fork` before
@@ -604,7 +606,7 @@ fitted), so a `-p`, `--mode json` or `--mode rpc` session takes the default of
 its next launch. A `session_start` extension handler sees the level: one it sets
 is recorded only if it changes it, and a model it switches to keeps it, as
 `/model` does. `/new` keeps the level and records it unless `off`; `/reload`
-goes back to `--thinking`'s level or `off`.
+keeps the level and records nothing.
 
 Compaction (`/compact` and the automatic one) and the summary `/tree` writes
 when you leave a branch ask the model at the session's level too, fitted to the
