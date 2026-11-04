@@ -32,6 +32,9 @@ amended in place, D7 added; the measured inputs are in
 `.omc/specs/663-impl-codex-review.md` and `.omc/specs/663-verify-report.md`.
 Review round 2 (2026-11-04, verify R1V1–R1V4): D4 and D7 amended in place
 (`.omc/specs/663-verify-r1-report.md`).
+Amended 2026-11-04 (#680): a swap that ends "kept" or "stopped" removes the
+session file it made, and so does one whose new file's lock cannot be taken at
+all. See `## Amendment (2026-11-04, #680)`.
 
 ## Context
 
@@ -87,6 +90,8 @@ old settings). When the step between the teardown and the install raises —
 A swap that fails goes back to the session it was leaving, never the target:
 the target's writer lock is released by the caller as before, and the lock this
 terminal holds on its own session is still installed.
+(2026-11-04, #680) The target file the swap made goes with it, removed before
+that lock is released.
 
 ### D2. "The previous settings" are the in-memory snapshot
 
@@ -306,3 +311,44 @@ surfaces, a disposed harness refuses `prompt` itself (D4).
 - A successful RPC `resources/reload` still comes back on the launch `--model`
   rather than a `set_model` choice (older than #663; the restore keeps the
   choice, D3).
+
+## Amendment (2026-11-04, #680) — a failed swap leaves no file of its own
+
+`/new`, `/fork`, `/clone`, an `/import` copy and a contended `/resume`'s "fork
+and continue" make their target file before the build (`repo.create`,
+`repo.fork`, `copy_file`, `repo.fork_from`). D1 sent the session back and
+released the target's lock, but the file stayed: the newest in the folder, so
+`aelix -c` (`find_most_recent`, by mtime) opened it — a header alone after
+`/new`, a copy after `/clone` — and `/resume` listed it (measured in
+`.omc/specs/663-followups-evidence/out/p1_*`).
+
+`AgentSessionRuntime._discard_unadopted_file` removes it when the swap raises
+and this process is not running on it — "kept", "stopped", and any raise before
+the new harness went live — and the caller does so before `_release_unadopted`,
+so no other terminal can have opened it in between. A swap that raised after its
+harness went live (a rebind, a `setup`) keeps the file it now runs on. An
+`/import` removes its copy only when the copy made the destination: one that
+replaced a session already there leaves it. A file another terminal opened
+first (`_writer_lock_for_new_file` raises) is not ours and stays.
+
+The new file's own lock (Codex review): `/new`, `/fork`, `/clone` and the
+contended `/resume`'s fork take it right after making the file, outside the
+cleanup above, so a sidecar nobody can use — a directory where `.jsonl.lock`
+goes, no permission to open it — raised there and left the file. That raise is
+not contention: `_acquire_writer_lock` raises only when it cannot take the lock
+at all, and no other terminal can open the file through that sidecar either, so
+`_writer_lock_for_new_file` removes the file before it raises. Contention (the
+lock is someone else's) still leaves it.
+
+On Windows a file just written can be held for a moment by a scanner or the
+indexer, and its delete is refused with `PermissionError`: the delete is retried
+for about a second, as `session/fs.py`'s `_replace` retries a rename (Codex
+review, fault-injected on macOS). A delete that still fails — a handle held
+longer than that — is logged and the file stays, as before this amendment.
+
+pi writes a session file only once the conversation has something in it
+(`packages/coding-agent/src/core/session-manager.ts` `_persist`, `eebd5d90c`),
+so its `/new` leaves no file at all. aelix still writes the header at `/new`
+(a successful `/new` that is never used still leaves one, as before); only a
+failed swap now cleans up after itself.
+Tests: `tests/runtime/test_failed_swap_leaves_no_file_680.py`.

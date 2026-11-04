@@ -19,7 +19,7 @@ failure modes an "obvious" implementation walks into:
 3. ``--tools`` still intersects — the allowlist applies, it just cannot readmit
    a built-in;
 4. the filter survives ``AgentSessionRuntime.reload()``, whose step 6
-   (``agent_session_runtime.py:1495-1540``) restores
+   (``agent_session_runtime.py:1563-1608``) restores
    ``(active_before ∩ current) ∪ (ext ∩ current)``.
 
 Everything is driven through the REAL ``_async_main`` because the filter lives
