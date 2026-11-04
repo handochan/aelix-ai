@@ -2182,6 +2182,8 @@ def _classify_recursive_mutator(command: Any) -> Verdict:
 # already ASKs. ``>&`` / ``<&`` with a NUMBER are fd dups (no file).
 _WRITE_REDIRECT_OPS = frozenset({">", ">>", "&>", "&>>", ">&", ">|"})
 _READ_REDIRECT_OPS = frozenset({"<", "<<", "<<<", "<&"})
+# The standard sink devices: a write redirect to one changes no file (#678).
+_SINK_DEVICES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 
 
 def _redirect_verdict(redirect: Any) -> Verdict:
@@ -2208,6 +2210,13 @@ def _redirect_verdict(redirect: Any) -> Verdict:
     if path is None:
         return Verdict.ASK
     norm = path.replace("\\", "/")
+    # A write redirect to the three standard sink devices changes no file, so it
+    # is ALLOW as a REDIRECT (the command's own verdict still applies) — ``/dev``
+    # being a protected prefix otherwise refused ``rg foo src 2>/dev/null`` and
+    # ``git log … 2>/dev/null | head``, common reads (#678). Anything else under
+    # ``/dev`` (``/dev/sda``, …) stays DENY.
+    if norm in _SINK_DEVICES:
+        return Verdict.ALLOW
     for prefix in _PROTECTED_WRITE_PREFIXES:
         if norm == prefix or norm.startswith(prefix.rstrip("/") + "/"):
             return Verdict.DENY

@@ -68,6 +68,13 @@ tree-sitter-bash AST (`Verdict.ALLOW < ASK < DENY`, so `max` picks the worst):
     was ALLOW while `>>` was DENY. `_WRITE_REDIRECT_OPS` / `_READ_REDIRECT_OPS`
     in `bash_classifier.py` now name the whole operator set tree-sitter-bash
     emits; a descriptor-closing `>&-` and a dup `2>&1` open no file.
+  - **Dated note 2026-11-04 (#678).** The `/dev` entry in the protected-prefix
+    list above refused EVERY write under `/dev`, including `2>/dev/null` and
+    `>/dev/null`, which blocked common reads such as `rg foo 2>/dev/null`. A
+    write redirect to exactly `/dev/null`, `/dev/stdout` or `/dev/stderr`
+    (`_SINK_DEVICES`) is now ALLOW as a redirect — it changes no file — while
+    any other `/dev` target stays DENY and the command's own verdict still
+    applies (`rm -rf / >/dev/null` is DENY).
 - **fail-safe to ASK** — the grammar import is wrapped in a try/except at module load; on
   ImportError / ABI mismatch the parser stays `None` and `classify` returns ASK for every command.
   At call time `root_node.has_error` (malformed/partial input) → ASK, empty command → ASK, any

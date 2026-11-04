@@ -968,6 +968,30 @@ def test_677_benign_descriptor_and_dup_forms() -> None:
     assert classify("echo x >>| f") is Verdict.ASK
 
 
+# #678: a write redirect to a sink device changes no file, so it is ALLOW as a
+# redirect — ``/dev`` being a protected prefix otherwise refused common reads.
+_SINK_REDIRECTS = (
+    "rg -w foo src 2>/dev/null",
+    "git log --oneline 2>/dev/null",
+    "ls > /dev/null",
+    "echo x > /dev/stdout",
+    "echo x >> /dev/stderr",
+)
+
+
+@pytest.mark.parametrize("command", _SINK_REDIRECTS)
+def test_678_sink_device_redirects_are_not_denied(command: str) -> None:
+    assert classify(command) is not Verdict.DENY, command
+
+
+def test_678_other_dev_targets_and_the_command_verdict_are_unchanged() -> None:
+    """Only the three sinks; the command's own verdict still applies."""
+
+    assert classify("echo x > /dev/sda") is Verdict.DENY  # a real device
+    assert classify("rm -rf / > /dev/null") is Verdict.DENY  # rm is still DENY
+    assert classify("echo x > /dev/null") is Verdict.ALLOW
+
+
 def test_module_reimport_is_clean() -> None:
     """Re-importing must not raise (the parser is built once, inside try/except).
 
