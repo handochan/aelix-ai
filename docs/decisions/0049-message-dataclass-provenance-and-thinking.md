@@ -128,7 +128,8 @@ originating `ToolCallContent.tool_name` on orphan-result synthesis.
 - Same for `ToolResultMessage.tool_name` — the Sprint 6a Anthropic
   adapter never constructed `ToolResultMessage` so no retrofit is
   needed; only the new shared `_transform_messages` orphan path
-  populates the field.
+  populates the field. *(2026-11-04, #686: the loop now names every result, and the
+  transform fills an empty name from the call for sessions saved before that.)*
 
 ## Alternatives considered
 

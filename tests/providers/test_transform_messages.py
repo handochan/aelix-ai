@@ -222,3 +222,84 @@ def test_text_content_cloned_for_cross_model_replay() -> None:
     out = transform_messages([assistant], _model())
     assert isinstance(out[0], AssistantMessage)
     assert out[0].content[0] == TextContent(text="hi")
+
+
+# ---------------------------------------------------------------------------
+# #686 — an empty ``tool_name`` on a result, as a session saved before results
+# had names reads back, is filled from the matching call.
+# ---------------------------------------------------------------------------
+
+
+def _called(*calls: tuple[str, str]) -> AssistantMessage:
+    return AssistantMessage(
+        content=[
+            ToolCallContent(tool_call_id=call_id, tool_name=name, input={})
+            for call_id, name in calls
+        ],
+        stop_reason="tool_use",
+    )
+
+
+def _answer(call_id: str, name: str = "") -> ToolResultMessage:
+    return ToolResultMessage(
+        tool_call_id=call_id, content=[TextContent(text="r")], tool_name=name
+    )
+
+
+def test_an_empty_result_name_is_filled_from_its_call_on_a_copy() -> None:
+    stored = _answer("c1")
+    out = transform_messages([_called(("c1", "read")), stored], _model())
+
+    assert out[1].tool_name == "read"
+    assert out[1] is not stored
+    assert stored.tool_name == ""
+
+
+def test_a_result_name_already_there_is_the_same_message() -> None:
+    stored = _answer("c1", "read")
+    out = transform_messages([_called(("c1", "read")), stored], _model(vision=True))
+
+    assert out[1] is stored
+
+
+def test_a_name_the_call_does_not_agree_with_is_left_alone() -> None:
+    stored = _answer("c1", "theirs")
+    out = transform_messages([_called(("c1", "ours")), stored], _model())
+
+    assert out[1].tool_name == "theirs"
+
+
+def test_an_id_used_again_takes_the_name_of_the_call_it_answers() -> None:
+    out = transform_messages(
+        [
+            _called(("call_1", "first")),
+            _answer("call_1"),
+            UserMessage(content="next"),
+            _called(("call_1", "second")),
+            _answer("call_1"),
+        ],
+        _model(),
+    )
+
+    names = [m.tool_name for m in out if isinstance(m, ToolResultMessage)]
+    assert names == ["first", "second"]
+
+
+def test_a_result_no_call_matches_keeps_its_empty_name() -> None:
+    stored = _answer("elsewhere")
+    out = transform_messages(
+        [_called(("c1", "read")), _answer("c1", "read"), stored], _model(vision=True)
+    )
+
+    assert out[2] is stored
+
+
+def test_the_name_is_filled_on_a_rewritten_id_too() -> None:
+    assistant = _called(("long-id", "read"))
+    stored = _answer("long-id")
+    out = transform_messages(
+        [assistant, stored], _model(), normalize_tool_call_id=lambda _i, _m, _a: "short"
+    )
+
+    assert (out[1].tool_call_id, out[1].tool_name) == ("short", "read")
+    assert (stored.tool_call_id, stored.tool_name) == ("long-id", "")

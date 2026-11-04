@@ -735,10 +735,10 @@
   "packages/aelix-ai/src/aelix_ai/providers/_openai_responses_shared.py:725-725": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_transform_messages.py:177-177": [
+  "packages/aelix-ai/src/aelix_ai/providers/_transform_messages.py:182-182": [
    "if isinstance(block, ThinkingContent):"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/_transform_messages.py:185-188": [
+  "packages/aelix-ai/src/aelix_ai/providers/_transform_messages.py:190-193": [
    "if not block.thinking.strip():",
    "continue",
    "if same_model:",

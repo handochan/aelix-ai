@@ -1283,6 +1283,14 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A tool's result now carries the tool's name (#686).** Google's `functionResponse.name` went
+  out empty for every result a tool produced, and a Gemini model gets no id on it either, so
+  nothing said which call a response answered. An OpenAI-compatible provider marked
+  `requires_tool_result_name` got no `name` at all. Every result is now named after its call,
+  a result kept or cut by a stop included, and a session saved before this goes out named from
+  the matching call, the file left as it is. A session saved from now on also replays an
+  extension's `tool-renderer-desc` view on `--continue` and `/resume`, as it drew live. How the
+  real Gemini API took the empty name was not measured: there is no Google key here (#61).
 - **A tool you stop now gets a result that says so, with what it printed (#673, ADR-0290).**
   `bash` killed by Esc left no result at all: the next request told the model `No result
   provided`, exactly what a call that never began reads, so it could not know the command had

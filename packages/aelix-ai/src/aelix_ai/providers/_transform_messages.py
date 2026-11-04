@@ -27,6 +27,11 @@ transform — it handles the provider-agnostic hygiene Pi applies to every
    message's ``stop_reason`` is ``"error"`` or ``"aborted"`` Pi drops
    the entire turn from the replay so the next request doesn't carry
    over partial reasoning that would confuse the next call.
+6. **Name a nameless tool result** (#686, not in Pi) — a session saved
+   before the loop named its results reads back with an empty
+   ``tool_name``. A copy takes the name of the call it answers, because
+   Google sends it as ``functionResponse.name`` and a Gemini model's
+   response has nothing else to say which call it answers.
 
 This helper is the boundary the Sprint 6d retrofit (P-50-followup) will
 route the Anthropic adapter through; today only the OpenAI Completions
@@ -255,10 +260,14 @@ def transform_messages(
     Returns:
         A new list with the Pi rules applied — image downgrades, thinking
         block normalization, tool-call id rewrites, orphan tool-call
-        synthesis, and errored-turn drops.
+        synthesis, and errored-turn drops — and a nameless tool result
+        named after its call. No message of ``messages`` is changed.
     """
 
     tool_call_id_map: dict[str, str] = {}
+    # The latest call for an id, as ids do come round again: some providers count
+    # from ``call_1`` in every response.
+    tool_call_names: dict[str, str] = {}
     image_aware = _downgrade_unsupported_images(messages, model)
 
     # First pass — transform messages in place. Tool-call ids may be
@@ -269,12 +278,19 @@ def transform_messages(
         if isinstance(msg, UserMessage):
             transformed.append(msg)
         elif isinstance(msg, ToolResultMessage):
+            named = msg
+            call_name = tool_call_names.get(msg.tool_call_id)
+            if call_name and not msg.tool_name:
+                named = replace(msg, tool_name=call_name)
             mapped = tool_call_id_map.get(msg.tool_call_id)
             if mapped is not None and mapped != msg.tool_call_id:
-                transformed.append(replace(msg, tool_call_id=mapped))
+                transformed.append(replace(named, tool_call_id=mapped))
             else:
-                transformed.append(msg)
+                transformed.append(named)
         elif isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, ToolCallContent):
+                    tool_call_names[block.tool_call_id] = block.tool_name
             new_content = _transform_assistant_content(
                 msg, model, tool_call_id_map, normalize_tool_call_id
             )

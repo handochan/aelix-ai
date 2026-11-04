@@ -866,7 +866,7 @@ async def _execute_tool_calls_sequential(
             # ordering appended the message BEFORE the end event and never
             # emitted ``message_start`` / ``message_end`` at all.
             await _emit_tool_end(tc.tool_call_id, prepared.tool_name, prepared.result, emit)
-            msg = await _commit_tool_result(tc.tool_call_id, prepared.result, emit)
+            msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, prepared.result, emit)
             if msg is not None:
                 result_messages.append(msg)
             _raise_if_cancel_pending()
@@ -887,7 +887,7 @@ async def _execute_tool_calls_sequential(
         # then the tool-result message ``message_start`` / ``message_end``
         # pair via the shared helper, then we append to the batch list.
         await _emit_tool_end(tc.tool_call_id, tc.tool_name, result, emit)
-        msg = await _commit_tool_result(tc.tool_call_id, result, emit)
+        msg = await _commit_tool_result(tc.tool_call_id, tc.tool_name, result, emit)
         if msg is not None:
             result_messages.append(msg)
         # What stops the batch: a cut call's, or one a tool or a sink swallowed.
@@ -1074,7 +1074,10 @@ async def _execute_tool_calls_parallel(
         # ``_is_replacement`` + ``isinstance(ToolResultMessage)``.
         try:
             msg = await _commit_tool_result(
-                finalized.tool_call.tool_call_id, finalized.result, emit
+                finalized.tool_call.tool_call_id,
+                finalized.tool_call.tool_name,
+                finalized.result,
+                emit,
             )
         except Exception:
             # With a failure on its way up, a sink's own must not take its place or
@@ -1123,12 +1126,17 @@ def _raise_if_cancel_pending() -> None:
         raise asyncio.CancelledError()
 
 
-def _to_tool_result_message(tool_call_id: str, result: ToolResult) -> ToolResultMessage:
+def _to_tool_result_message(
+    tool_call_id: str, tool_name: str, result: ToolResult
+) -> ToolResultMessage:
+    """The call's name goes on the result (#686): a Gemini model's response has nothing else."""
+
     return ToolResultMessage(
         tool_call_id=tool_call_id,
         content=list(result.content),
         is_error=result.is_error,
         timestamp=time.time(),
+        tool_name=tool_name,
     )
 
 
@@ -1223,6 +1231,7 @@ async def _emit_tool_end(
 
 async def _commit_tool_result(
     tool_call_id: str,
+    tool_name: str,
     result: ToolResult,
     emit: AgentEventSink,
 ) -> ToolResultMessage | None:
@@ -1237,7 +1246,7 @@ async def _commit_tool_result(
     there costs nothing (:func:`_emit_tool_result_message`).
     """
 
-    msg = _to_tool_result_message(tool_call_id, result)
+    msg = _to_tool_result_message(tool_call_id, tool_name, result)
     try:
         return await _emit_tool_result_message(msg, emit)
     except asyncio.CancelledError:

@@ -143,12 +143,14 @@ class AssistantMessage:
 class ToolResultMessage:
     """Pi parity: ``ToolResultMessage``.
 
-    Sprint 6b adds the ``tool_name`` field (P-75) so adapters that need
-    to wrap tool results with the function name (Moonshot, Together,
-    Cloudflare AI Gateway) can read it directly. The
-    :mod:`aelix_ai.providers._transform_messages` orphan-synthesis path
-    populates it from the originating :class:`ToolCallContent`. Default
-    ``""`` preserves pre-6b call sites.
+    ``tool_name`` (Sprint 6b, P-75) is the name of the call this answers. Google
+    sends it as ``functionResponse.name``, and an OpenAI-compatible provider marked
+    ``requires_tool_result_name`` as ``name``. The agent loop sets it on every result
+    it makes (#686), and the :mod:`aelix_ai.providers._transform_messages` orphan
+    synthesis on each one it makes. The default ``""`` is what a session saved before
+    #686 reads back: that same transform fills a copy from the originating
+    :class:`ToolCallContent` on the way to the wire, and the stored message stays as
+    it was.
     """
 
     tool_call_id: str = ""

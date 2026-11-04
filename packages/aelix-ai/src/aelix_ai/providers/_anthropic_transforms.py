@@ -143,7 +143,7 @@ def _content_blocks_to_anthropic(
                 # UNCONDITIONAL (pi's inline "allowEmptySignature" behavior,
                 # anthropic.ts:1069) — NOT compat-gated. Still reachable after
                 # the shared transform, which KEEPS a same-model non-empty
-                # unsigned thinking block (_transform_messages.py:185-188).
+                # unsigned thinking block (_transform_messages.py:190-193).
                 out.append({"type": "text", "text": block.thinking})
             else:
                 out.append(
