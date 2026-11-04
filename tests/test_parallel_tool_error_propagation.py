@@ -1,8 +1,8 @@
 """Sprint 3c G.4 — one tool raises → isError; siblings complete.
 
 Pi parity (`agent-loop.ts:609-637, 651-680`): per-tool ``try/except`` makes
-``Promise.all`` reject path unreachable. Aelix uses
-``asyncio.gather(*coros, return_exceptions=False)``; siblings MUST complete.
+``Promise.all`` reject path unreachable. Aelix holds a task per call and waits
+on them (ADR-0290); siblings MUST complete.
 """
 
 from __future__ import annotations

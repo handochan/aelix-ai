@@ -232,7 +232,7 @@ def _live_context_usage(message: object, model: object) -> ContextUsage | None:
     """#249 — the meter's MID-TURN figure, read straight off a finished message.
 
     The fresh number is in the ``message_end`` payload, and reading it avoids
-    a stats walk for every provider round-trip (``loop.py:245``). Before #320,
+    a stats walk for every provider round-trip (``loop.py:257``). Before #320,
     state was appended only after the whole loop returned, so those walks also
     repainted the pre-turn number. State now commits at each message_end, while
     reading this payload remains O(1): measured
@@ -2445,16 +2445,17 @@ async def run_tui(
             # read by the input loop only once its current await returns, and
             # that await is ``harness.prompt`` (or a cancellable command): with
             # no time limit on a delegation, a SIGTERM mid-delegation used to
-            # wait for the child to finish. The turn is aborted through the same
-            # ``_safe_abort`` Esc uses, keeping its input (#654: the editor is about
-            # to go, so nothing could be given back); a command through its own
-            # interrupt, so its handler reports the stop and returns instead of
-            # unwinding.
+            # wait for the child to finish. The turn is aborted, keeping its input
+            # (#654: the editor is about to go, so nothing could be given back),
+            # and again if a hook holds it, since nobody is there to press Esc
+            # twice and ``dispose()`` is behind that same await (ADR-0290); a
+            # command through its own interrupt, so its handler reports the stop
+            # and returns instead of unwinding.
             cancel_command = running_command["cancel"]
             if cancel_command is not None:
                 cancel_command()
             elif out_chrome.running:
-                asyncio.ensure_future(_safe_abort(runtime_host.harness))
+                asyncio.ensure_future(_safe_abort_until_idle(runtime_host.harness))
             # Request a clean shutdown: EOF the input loop + stop the chrome so
             # run_tui's finally runs full teardown (unbind UI, unsubscribe,
             # dispose, restore terminal). Avoids sys.exit from a detached task,
@@ -2498,8 +2499,8 @@ async def run_tui(
     # figure directly, avoiding a repeated stats walk at every tool iteration.
     # Before #320 those walks also estimated over the pre-turn list. While
     # this is set ``turn_end`` skips the walk;
-    # ``agent_end`` (one per PROMPT — ``loop.py:226``, ``:265``, ``:276``, plus
-    # the abort close-out ``core.py:5922`` and the hook-fail one ``:5922``)
+    # ``agent_end`` (one per PROMPT — ``loop.py:235``, ``:277``, ``:288``, plus
+    # the abort close-out ``core.py:5977`` and the hook-fail one ``:6028``)
     # clears it. NOT ``settled``: that hook never fires on the abort or
     # hook-fail paths, which return/raise before the success settlement hook.
     live_tokens: dict[str, int | None] = {"n": None}
@@ -2637,7 +2638,7 @@ async def run_tui(
         cannot reach share (#559).
 
         Registered on the harness's own ``model_select`` hook rather than in
-        ``/model``'s handler, because ``harness.set_model`` (``core.py:2961``)
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2978``)
         is the single funnel: ``/model``, the model picker, the pick offered
         after ``/login``, and an extension's ``ctx.set_model`` all reach it.
         Without this the window in the denominator changed and the percentage
@@ -2645,7 +2646,7 @@ async def run_tui(
 
         What must hold: a footer bug must not report a successful switch as a
         failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
-        AFTER ``_state.model`` is already replaced (``core.py:3007``), and
+        AFTER ``_state.model`` is already replaced (``core.py:3004``), and
         ``/model`` prints that as ``✖ model switch failed``.
 
         The registration's ``error_mode="continue"`` is the load-bearing half —
@@ -2993,11 +2994,11 @@ async def run_tui(
                 # reported the new, smaller figure.
                 #
                 # #249 — drop the live figure FIRST. Compaction rebuilds
-                # ``_state.messages`` (``core.py:2227``), so the refresh below is
+                # ``_state.messages`` (``core.py:2244``), so the refresh below is
                 # the authoritative one and the pre-compaction live number is now
                 # the larger, wrong one. Compaction cannot land mid-turn
                 # (``_check_auto_compaction`` is awaited after ``_run`` returns —
-                # ``core.py:1820``), so this never discards a figure a running
+                # ``core.py:1829``), so this never discards a figure a running
                 # turn still needs.
                 live_tokens["n"] = None
                 _schedule_context_usage_refresh()
@@ -3022,7 +3023,7 @@ async def run_tui(
             # unconditional and opens with its own ``get_session_stats``, so a
             # thirty-tool turn still performs thirty of them for the ``/stats``
             # history row. ``turn_end`` is per provider round-trip
-            # (``loop.py:245``, inside the ``loop.py:192`` tool-call loop), so
+            # (``loop.py:257``, inside the ``loop.py:201`` tool-call loop), so
             # the meter used to walk once per round-trip too — and every one of
             # those walks formerly estimated over a message list the harness
             # only extended when the loop returned (fixed by #320). Each
@@ -3075,7 +3076,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:5982-5983`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:6044-6045`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -3103,7 +3104,7 @@ async def run_tui(
         # too, so the registration has to move even though the session does not.
         # ``error_mode="continue"`` because the bus default is "throw" and
         # ``set_model`` converts a handler error into ``AgentHarnessError`` after
-        # the model is already swapped in (``core.py:3007``).
+        # the model is already swapped in (``core.py:3004``).
         prior_model_select = model_select_unsub_holder["u"]
         if prior_model_select is not None:
             with contextlib.suppress(Exception):
@@ -4159,7 +4160,7 @@ def _build_banner(
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:4927-4928``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:4964-4965``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -4884,6 +4885,11 @@ async def _input_loop(
 async def _safe_abort(harness: AgentHarness, *, withdraw_unanswered: bool = False) -> None:
     with contextlib.suppress(Exception):
         await harness.abort(withdraw_unanswered=withdraw_unanswered)
+
+
+async def _safe_abort_until_idle(harness: AgentHarness) -> None:
+    with contextlib.suppress(Exception):
+        await harness.abort_until_idle()
 
 
 class _RouteAuthView:

@@ -51,7 +51,7 @@ BASH_EXECUTION_TYPE = "bash_execution"
 #: ``DEFAULT_MAX_BYTES`` in ``core/tools/truncate.ts:11-12``), this function is
 #: a port of that path, and the two sibling bash surfaces here already cap at
 #: the same order (the model-facing tool at these exact numbers,
-#: ``tools/bash.py:64``; ad-hoc RPC bash tighter at 256 lines / 32KB,
+#: ``tools/bash.py:68``; ad-hoc RPC bash tighter at 256 lines / 32KB,
 #: ``rpc/rpc_mode.py:673``). Uncapped, one ``!cat server.log`` is re-sent on
 #: every later turn of the session and on every ``--continue``: measured before
 #: this cap, ``!python3 -c "print('x'*1000000)"`` wrote a 1,000,047-char
@@ -100,7 +100,7 @@ def _truncation_notice(info: TruncationInfo) -> str:
     """The bracketed line that makes the cut VISIBLE in the record.
 
     Same shape as the model-facing bash tool's notice
-    (``tools/bash.py:920`` ``_format_truncation_notice``) and of pi's
+    (``tools/bash.py:975`` ``_format_truncation_notice``) and of pi's
     ``[Output truncated. Full output: …]``, with the one substitution this
     path forces: there is no ``fullOutputPath`` to cite, so the sentence names
     where the rest went instead. Silence here would be the defect #299 is
@@ -240,7 +240,7 @@ def bash_execution_to_text(
     :func:`_recorded_command`, so no caller can put an unbounded one in the
     record.
 
-    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:232``, which
+    ``exit_code`` is ``BashOperations.exec``'s (``tools/bash.py:247``, which
     returns an :class:`ExecExitResult`, not just the byte stream) or the one
     an intercepting extension's ``result`` carries. Without it ``!test -f
     missing`` and ``!test -f present`` both reach the model as
@@ -288,7 +288,7 @@ async def handle_user_bash(
       is what the next ``prompt()`` sends, this turn and on every later
       resume, because ``AgentHarness._run`` derives the turn's messages from
       ``session.build_context()`` whenever a session is attached
-      (``harness/core.py:5595-5598``, pinned by
+      (``harness/core.py:5632-5635``, pinned by
       ``tests/test_state_messages_derived.py``);
     * ``harness.messages`` gets the same ``UserMessage`` now, which is what
       carries the output on the ``--no-session`` path — there ``_state.messages``
@@ -442,7 +442,7 @@ async def record_user_bash(harness: AgentHarness, run: UserBashRun) -> None:
         # attached the turn's messages come from ``build_context()``, so a
         # failed write costs THIS turn as well as the next resume — the live
         # append below keeps the output in ``_state.messages``, which
-        # ``_run`` then does not read (``harness/core.py:5595-5598``). Measured
+        # ``_run`` then does not read (``harness/core.py:5632-5635``). Measured
         # with ``append_custom_message_entry`` raising:
         # ``in _state.messages=True reached provider=False``.
         with contextlib.suppress(Exception):

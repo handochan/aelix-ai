@@ -59,10 +59,15 @@ end is not what they are taking back.
 | before any output, mid-stream, during an in-flight retry attempt | whole prompt withdrawn |
 | TUI Esc in the retry countdown | whole prompt withdrawn, the failed answer off the path with it |
 | tool running, or tool done and next response pending | nothing withdrawn |
+| a batch with a call still running, others finished (ADR-0290) | nothing withdrawn; the finished results stay, and the cut call gets a result saying so |
 | `[.., tool result, STEER]` pending | STEER withdrawn, the rest stays |
 | `[.., answer, FOLLOW_UP]` pending | FOLLOW_UP withdrawn, the rest stays |
 | after a compaction inside this prompt committed (overflow recovery) | nothing withdrawn (limit 1) |
 | during that compaction's summary, before it commits | whole prompt withdrawn, no compaction |
+
+*Amended 2026-11-04 (ADR-0290, #672, #673): results committed on the way out of a cancelled batch
+run before `_run`'s close-out, so each is an answer, input before them stays, and no steer can commit
+after them, because `abort()` has cleared the queue.*
 
 ### 2. The API defaults to keeping
 
@@ -234,6 +239,8 @@ by hand is the same state and is refused too, where pi, reading `fileEntries`, c
     `tui/chrome.py`), so the Esc that stopped a turn, pressed twice, does not wipe a queued `!`
     line it just gave back. A `!` draft that was never given back still clears on a second
     Esc: it opens no window, and ADR-0287 says Esc clears a `!` line.
+17. **A result a second Esc costs (ADR-0290 limit 3) changes nothing here.** The assistant message
+    that asked for the call had already answered the input, so it stays.
 
 ## Verification
 

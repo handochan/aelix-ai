@@ -448,7 +448,10 @@ If the model had not answered yet, `Esc` also takes your message back: it leaves
 context, so the next request does not carry it, and returns to the input box as you
 typed it, ahead of any lines you queued and anything you were typing. What already ran
 stays: once a tool has run, its call and result and the message behind them are still in
-context, and only a steer or follow-up sent after them comes back. A large paste comes
+context, and only a steer or follow-up sent after them comes back. That holds for a batch
+of tools with one still running: those that finished keep their results, and the model reads
+that the running one was stopped and may have partly run, with what `bash` had printed. A
+large paste comes
 back as its `[Pasted text #N +M lines]` placeholder, in its place among your words, and
 submits byte for byte; a large queued line comes back as one placeholder. A second
 `Ctrl+C` within two seconds leaves the text alone, as does `Esc` on a `!` line; after that

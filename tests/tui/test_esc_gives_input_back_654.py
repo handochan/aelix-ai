@@ -268,6 +268,29 @@ async def test_a_termination_signal_keeps_the_input(monkeypatch: pytest.MonkeyPa
         assert [m for m in tui.harness.messages if isinstance(m, UserMessage)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="run_tui installs no signal handler on win32")
+async def test_one_termination_signal_gets_past_a_hook_holding_the_way_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0290. ``dispose()`` is behind the prompt's await here, so the handler aborts again."""
+
+    import signal
+
+    handlers = _capture_signal_handlers(monkeypatch)
+    async with _Tui(_Provider("hang"), signals=True) as tui:
+        parked = asyncio.Event()
+
+        async def park(_event: object, _ctx: object) -> None:
+            parked.set()
+            await asyncio.Event().wait()
+
+        tui.harness.hooks.on("turn_end", park)
+        await tui.send_until_request("held by a hook")
+        handlers[signal.SIGTERM]()
+        assert await _quit_within(tui.task) == 0
+        assert parked.is_set()
+
+
 # === Review round 1 ===========================================================
 
 _ALT_ENTER = "\x1b\r"

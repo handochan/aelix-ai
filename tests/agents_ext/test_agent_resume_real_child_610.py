@@ -1,9 +1,10 @@
 """#610 against a REAL child: a stopped tool call reaches the resumed child's model as
 "No result provided" — an error, never a success.
 
-THE QUESTION (design D14, test 7). A child stopped while a tool runs leaves its
-file ending in ``assistant(toolCall)`` with no result and no abort marker — the
-harness keeps the abort off the session write path. Resuming it on that file
+THE QUESTION (design D14, test 7). A child stopped while a tool runs is SIGKILLed,
+so it has no turn left to write a result in (ADR-0290 reaches only a turn that gets
+to unwind), and its file ends in ``assistant(toolCall)`` with no result and no abort
+marker — the harness keeps the abort off the session write path. Resuming it on that file
 must not hand its model a call that silently succeeded. aelix does not repair
 on load; the provider transform (``_transform_messages``) answers the orphaned
 call with ``ToolResultMessage("No result provided", is_error=True)`` in the next

@@ -39,6 +39,26 @@ A name or pattern that matches no tool loaded at launch is a warning at start
 takes `--tools` as the name), exclude nothing and say so at start. Delegated
 agents are started with the same `--exclude-tools`.
 
+## When you stop a tool
+
+Press Esc or Ctrl+C while tools run and the model is told what happened, in the next
+request and in the session when you reopen it. The same goes for RPC `abort`, a signal and
+quitting.
+
+| The tool | What the model reads |
+| --- | --- |
+| had finished | its result |
+| was running | an error saying it was stopped and may have partly run; `bash` adds what it had printed |
+| had not started | `No result provided` |
+
+A process killed outright (`kill -9`) writes nothing. An extension's tool can say what it
+got done: see [Writing an Extension](extension-authoring.md).
+
+Stopping `bash` ends the command and the processes it started in its group. One it put in a
+session of its own, with `setsid` or a daemon's double fork, keeps running. Past 4 MiB of output
+the model reads the end of it and a note that its lines were not counted, and the whole of it
+goes to the file that note names, as the raw bytes, finishing a moment later.
+
 ## The tool flags are locks
 
 `--no-tools` turns every tool off, `--no-builtin-tools` the built-ins, and

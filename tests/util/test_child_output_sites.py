@@ -15,13 +15,14 @@ either.
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 import sys
 from pathlib import Path
 
 import pytest
 from aelix_agents.print_channel import StderrRing
-from aelix_ai.tools import ToolExecutionContext
+from aelix_ai.tools import ToolCancelled, ToolExecutionContext
 from aelix_ai.utils import _child_output
 from aelix_ai.utils._child_output import decode_child_output
 from aelix_coding_agent.tools.bash import ExecExitResult, create_bash_tool
@@ -97,6 +98,30 @@ async def test_the_bash_tool_reads_its_cut_tail_as_ragged(korean_console, tmp_pa
     assert "ok: 한\ufffd" in result.content[0].text
     # Without the flag the same bytes come back as ``ok: 한湲``.
     assert decode_child_output(cut, fallbacks=("cp949",)) == "ok: 한湲"
+
+
+async def test_the_tail_of_a_flood_the_bash_tool_cut_reads_as_ragged_too(
+    korean_console, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#673 (ADR-0290): over the cap the cut path reads only the tail, under the same claim."""
+
+    monkeypatch.setattr("aelix_coding_agent.tools.bash._CUT_WHOLE_READ_BYTES", 1000)
+    reached = asyncio.Event()
+
+    class _Ops:
+        async def exec(self, command, cwd, *, on_data, **kwargs):
+            on_data(b"x\n" * 2000 + _CUT_UTF8)
+            reached.set()
+            await asyncio.Event().wait()
+
+    tool = create_bash_tool(str(tmp_path), {"operations": _Ops(), "max_bytes": 100})
+    task = asyncio.create_task(tool.execute({"command": "x"}, ToolExecutionContext(tool_call_id="t")))
+    await asyncio.wait_for(reached.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(ToolCancelled) as cut:
+        await task
+
+    assert "ok: 한\ufffd\n" in cut.value.result.content[0].text  # type: ignore[union-attr]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="drives the POSIX `sh -c` candidate")

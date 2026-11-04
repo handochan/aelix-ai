@@ -486,7 +486,7 @@ async def test_calling_it_twice_changes_nothing() -> None:
 
 
 async def test_invented_arguments_are_ignored_rather_than_honoured() -> None:
-    """``validate_tool_arguments`` preserves unknown keys (``tools.py:317``).
+    """``validate_tool_arguments`` preserves unknown keys (``tools.py:347``).
 
     So a model that invents ``{"verbose": true}`` reaches ``execute`` with it.
     The tool has no input at all, which is what makes "read-only" checkable.

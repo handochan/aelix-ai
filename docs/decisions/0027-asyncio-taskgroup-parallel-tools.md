@@ -4,6 +4,11 @@ Status: Accepted (Sprint 3c, Phase 2.1.3) — DECISION REVERSED from TaskGroup t
 
 Relates to: ADR-0021 (Parallel-Mode Tool Execution)
 
+*Amended 2026-11-04 by [ADR-0290](0290-a-cancelled-turn-keeps-what-ran.md) (#672, #673): the batch now
+holds a task per call and waits with `asyncio.wait`, because a `gather` hands a repeated cancel to its
+children and never wakes its caller. The decision stands: no `TaskGroup`, and a tool's error, which is a
+result, never cancels a sibling. A cancel or a harness failure does, as it always should have.*
+
 ## Context
 
 ADR-0021 schedules parallel tool execution for Sprint 3c (Phase 2.1.3).

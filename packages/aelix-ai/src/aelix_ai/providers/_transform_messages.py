@@ -289,25 +289,43 @@ def transform_messages(
     result: list[Message] = []
     pending_tool_calls: list[ToolCallContent] = []
     existing_tool_result_ids: set[str] = set()
+    # Where the batch's results start in ``result``: right after its assistant.
+    batch_start = 0
 
     def _flush_synthetic() -> None:
         if not pending_tool_calls:
             return
-        for tc in pending_tool_calls:
-            if tc.tool_call_id in existing_tool_result_ids:
-                continue
-            # Sprint 6b (P-75): propagate ``tool_name`` onto the
-            # synthetic result so adapters that wrap tool responses with
-            # the function name (Moonshot, Together, Cloudflare AI
-            # Gateway) can read it directly.
-            result.append(
-                ToolResultMessage(
-                    tool_call_id=tc.tool_call_id,
-                    content=[TextContent(text="No result provided")],
-                    is_error=True,
-                    tool_name=tc.tool_name,
+        if any(tc.tool_call_id not in existing_tool_result_ids for tc in pending_tool_calls):
+            # #672 (ADR-0290): a batch with a hole reads in the order the assistant
+            # called. Pi appends the synthetic results after the real ones, and a
+            # cancelled turn is what makes a real result sit after a hole. A batch
+            # with no hole is left exactly as it arrived, whatever its order.
+            called = {tc.tool_call_id for tc in pending_tool_calls}
+            real: dict[str, list[Message]] = {}
+            others: list[Message] = []
+            for message in result[batch_start:]:
+                if isinstance(message, ToolResultMessage) and message.tool_call_id in called:
+                    real.setdefault(message.tool_call_id, []).append(message)
+                else:
+                    others.append(message)
+            del result[batch_start:]
+            for tc in pending_tool_calls:
+                if tc.tool_call_id in existing_tool_result_ids:
+                    result.extend(real.pop(tc.tool_call_id, []))
+                    continue
+                # Sprint 6b (P-75): propagate ``tool_name`` onto the
+                # synthetic result so adapters that wrap tool responses with
+                # the function name (Moonshot, Together, Cloudflare AI
+                # Gateway) can read it directly.
+                result.append(
+                    ToolResultMessage(
+                        tool_call_id=tc.tool_call_id,
+                        content=[TextContent(text="No result provided")],
+                        is_error=True,
+                        tool_name=tc.tool_name,
+                    )
                 )
-            )
+            result.extend(others)
         pending_tool_calls.clear()
         existing_tool_result_ids.clear()
 
@@ -323,6 +341,7 @@ def transform_messages(
                 pending_tool_calls.extend(tool_calls)
                 existing_tool_result_ids.clear()
             result.append(msg)
+            batch_start = len(result)
         elif isinstance(msg, ToolResultMessage):
             existing_tool_result_ids.add(msg.tool_call_id)
             result.append(msg)

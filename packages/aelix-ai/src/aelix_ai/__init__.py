@@ -50,6 +50,7 @@ from aelix_ai.streaming import (
 )
 from aelix_ai.tools import (
     Tool,
+    ToolCancelled,
     ToolContent,
     ToolExecute,
     ToolExecutionContext,
@@ -87,6 +88,7 @@ __all__ = [
     "ToolCallDeltaEvent",
     "ToolCallEndEvent",
     "ToolCallStartEvent",
+    "ToolCancelled",
     "ToolContent",
     "ToolExecute",
     "ToolExecutionContext",

@@ -36,6 +36,19 @@ advances permitted starting B 단계 per ADR-0034 update policy. — *핀은 끝
 
 ## Index
 
+- [0290 — A cancelled turn keeps what ran](0290-a-cancelled-turn-keeps-what-ran.md)
+  (Accepted 2026-11-04; #672, #673). Whatever cancels a turn, a call that finished keeps its real
+  result, and a call the cancel cut gets an error result saying it was stopped and may have partly run,
+  with what it printed so far if it can say (`aelix_ai.tools.ToolCancelled`; `bash` does). The parallel
+  path holds a task per call, and on a cancel waits for them and commits every finalized entry in source
+  order through `message_end` before the cancel goes on. `after_tool_call` runs on a cut result, already an
+  error, and if it raises or is cancelled the default text stands in with no output. A later or never-started call
+  stays the wire's `No result provided`, and a batch with such a hole reads in call order there. What says
+  a cancel came is the task's own count: a `CancelledError` nobody sent is a tool error and the turn goes on, and
+  one somebody swallowed still stops the batch and the next request. A failure in one call commits the others
+  first. A second cancel stops waiting for a parallel tool that ignores the first, and skips the one
+  `message_end` it landed in; a further cancel ends the close-out, and one SIGTERM aborts as often as it takes.
+  Not pi's signal route, the same outcome. Narrows ADR-0276 D14 and ADR-0277 D14 and limit 5.
 - [0289 — A rebuild that fails after the teardown puts the session back on its previous settings, or stops](0289-a-rebuild-that-fails-after-the-teardown-puts-the-session-back-or-stops.md)
   (Accepted 2026-11-03; #663, owner decision (b)). `/reload`, `/new`, `/resume`, `/fork`,
   `/clone`, `/import`, RPC `resources/reload` / `new_session` / `fork` / `switch_session` and an

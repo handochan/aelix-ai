@@ -370,7 +370,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:5125-5127``
+    smuggled through ``event.args`` even though ``harness/core.py:5162-5164``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -614,7 +614,7 @@ class AgentsExtension:
 
         ``ExtensionAPI.get_active_tools`` calls
         ``runtime.actions.get_active_tools`` — literally the same bound method
-        ``_make_context_kwargs`` puts on the context (``core.py:817``), only on
+        ``_make_context_kwargs`` puts on the context (``core.py:826``), only on
         the CURRENT harness rather than a dead one, since ``self._api`` is
         replaced by ``_invoke_factory`` on every rebuild while ``self._ctx`` is
         not. An unbound runtime raises ``ExtensionError`` (measured), so a host
@@ -725,7 +725,7 @@ class AgentsExtension:
         the value was "re-read every time a context is built … the model the
         parent's own next turn would use". Only the first half holds:
         ``_make_context_kwargs`` passes ``"model": self._state.model`` BY VALUE
-        (``core.py:4631``) and ``ExtensionContext.model`` hands back
+        (``core.py:4668``) and ``ExtensionContext.model`` hands back
         ``object.__getattribute__(self, "_model")`` — a snapshot frozen at that
         hook. Contexts are built by HOOKS, and ``/agents run`` and ``/model``
         are slash commands that fire none, so the parent's next turn could
@@ -874,7 +874,7 @@ class AgentsExtension:
         """Refresh the roster, reset the delegation budget, drop stale grants,
         and take down a panel a cancelled call left on screen (ADR-0278 D7).
 
-        ``before_agent_start`` (``harness/core.py:1631``) runs BEFORE the
+        ``before_agent_start`` (``harness/core.py:1640``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
@@ -886,7 +886,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1054-1120``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:1063-1129``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -926,7 +926,7 @@ class AgentsExtension:
 
         Everything that can refuse a delegation refuses HERE, where the kernel
         renders the refusal as a model-readable blocked tool call
-        (``loop.py:534-547``) and where no process has been created yet. On
+        (``loop.py:571-584``) and where no process has been created yet. On
         success the approval is filed under ``event.tool_call_id`` and the hook
         returns ``None`` — observationally identical to not having run.
         """
@@ -987,7 +987,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:1418-1426``),
+        # inside ``runtime._run``'s admission block (``runtime.py:1420-1428``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -1413,7 +1413,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:5125-5127``
+        security property rather than a style rule. ``harness/core.py:5162-5164``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``
@@ -1493,7 +1493,7 @@ class AgentsExtension:
         # and it is what makes ADR-0199 §3.6's "no batch id on
         # ``SubagentProgress``" answer implementable. ``spawn_id`` is minted
         # INSIDE ``runtime._run``
-        # (``runtime.py:1427``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:1429``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -1515,7 +1515,7 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:1916-1920``) with no ``await`` between them, so THIS
+            # (``runtime.py:1918-1922``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between the panel and a
@@ -1665,14 +1665,14 @@ class AgentsExtension:
                 wall_ms=outcome.wall_ms,
             )
         except asyncio.CancelledError:
-            # ESC GIVES THE MODEL NOTHING without this (design critique 1). The
-            # cancel goes up through the tool, no ``ToolResult`` is returned,
-            # and on the next turn the provider transform answers the orphaned
-            # tool call with "No result provided" — so the model learns nothing
-            # about work it paid for and is likely to delegate it again from
-            # scratch, the outcome #604 exists to prevent. What the children
-            # had done is queued for that next turn instead, then the cancel
-            # goes on exactly as before.
+            # ESC TELLS THE MODEL ONLY THAT IT STOPPED without this (design
+            # critique 1). The cancel goes up through the tool and the loop answers
+            # the call with its default cut result (#673, ADR-0290), which says the
+            # call was stopped and may have partly run and nothing about what it
+            # did — so the model is likely to delegate the work it paid for again
+            # from scratch, the outcome #604 exists to prevent. What the children
+            # had done is queued for that next turn, then the cancel goes on
+            # exactly as before.
             #
             # ONE snapshot of the envelopes for both: the report the model gets
             # and the frame the user sees (ADR-0278 D7) cannot disagree about

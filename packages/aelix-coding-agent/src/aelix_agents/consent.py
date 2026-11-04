@@ -26,9 +26,9 @@ run. The gate has to live here, keyed on what actually varies.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:526-547``, driven
-from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
-(``loop.py:905``) with ``tool_execution = "parallel"`` by default
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:563-584``, driven
+from ``:813-823``) while ``execute()`` runs in a task per call
+(``loop.py:1006-1009``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:305``). Two modals from one batch would collide on
 ``tui/chrome.py:871``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
@@ -921,7 +921,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:850-853``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:852-855``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The

@@ -35,6 +35,8 @@ place of D11's retry sentence; D14's report head now says the stop was intended
 and to resume or repeat the work only if the user asks; and a success with a
 session carries one `Session:` line, so D18's "every success byte for byte"
 holds only for one without — see the dated notes under D11, D14 and D18.**
+**Amended 2026-11-04 (ADR-0290, #673): a cancelled `agent` call now has a result,
+see the dated note under D14.**
 
 ## Context
 
@@ -530,6 +532,14 @@ the agent; under `-p` a real model given that call after a kill resumed the
 agent unasked (ADR-0277 D4). A cancel is the user's decision, and the head says
 so before anything it fences, in words that fit a batch's report too. Nothing
 else in the report changes.*
+
+*Amended 2026-11-04 by [ADR-0290](0290-a-cancelled-turn-keeps-what-ran.md)
+([#673](https://github.com/handochan/aelix-ai/issues/673)): the premise above no longer holds. The
+loop answers a cancelled call with `Cancelled: the user stopped the turn while this tool ran, so it
+may have partly run.`, committed to the session, in place of the transform's "No result provided".
+This report is still what tells the model what the call did: nothing here changes, and the two agree
+(measured on a real delegation, ADR-0290 Verification). The Verification below is what was measured
+on 2026-10-28.*
 
 Refined in review round 2 — **a member that ran and then failed is not "never
 started".** A member whose run had a process and then ended on an exception

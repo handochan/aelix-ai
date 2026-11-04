@@ -220,7 +220,7 @@ def _escape_text(value: str) -> str:
 #
 # Pi's leading ``"\n\n"`` is deliberately NOT reproduced: this function returns
 # an append CHUNK and the harness already joins chunks with ``"\n\n"``
-# (``harness/core.py:750-751``). Emitting it here would double the gap.
+# (``harness/core.py:759-760``). Emitting it here would double the gap.
 _FENCE_OPEN = "<project_context>\n\nProject-specific instructions and guidelines:\n\n"
 _FENCE_CLOSE = "</project_context>\n"
 _INSTRUCTIONS_CLOSE = "\n</project_instructions>\n\n"
@@ -820,12 +820,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:4138``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:4139``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
     # (0/false/no/off, ``shell.py:189-205``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:4266-4273``) and never re-scans the extension dirs.
+    # (``harness/core.py:4303-4310``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]
