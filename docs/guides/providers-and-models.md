@@ -473,6 +473,12 @@ also holds the queued steer and follow-up lines the abort cleared, last, so a ho
 those back too; when no prompt is running it holds only them and `prompt_withdrawn` is
 false. `get_fork_messages` still lists a withdrawn message: forking there returns its text
 and the context stays without it. An rpc `abort_retry` keeps it and only stops retrying.
+A `new_session`, `switch_session`, `fork` or `clone` sends the same event, `prompt_withdrawn`
+false, for what is still queued — steer and follow-up lines (after a failed turn, say)
+and user messages for the next turn, such as a prompt cancelled before it was sent; an
+extension's custom message is dropped, as in pi — before it leaves the session, and again
+for a line queued while it is taken apart. `resources/reload` keeps them queued
+(`pendingMessageCount` stays), as pi's reload does.
 
 rpc `set_auto_retry` sets `retry.enabled` in the global `settings.json`, as pi
 does, so it outlasts the session: `set_auto_retry false` sent for one rpc

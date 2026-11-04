@@ -201,7 +201,14 @@ is not in it, because the next prompt asks you again. It is observational. On a 
 abort it comes before that turn's `turn_end` and `agent_end`; on an abort between runs, such
 as in the retry countdown, it comes after them; with no prompt running it comes from the
 abort itself, for those lines alone. An `abort` handler does not tell you this: it fires
-for every abort, and clears the queues.
+for every abort, and clears the queues. A session swap (`/new`, `/resume`, `/fork`,
+`/clone`, `/import`, and their RPC commands) sends it too, with `prompt_withdrawn` false,
+for the steer and follow-up lines still queued and the user messages queued for the next
+turn (a text you queued with `send_message(..., deliver_as="next_turn")` among them),
+before `session_shutdown`; a `/reload` carries them to the rebuilt session instead. A
+custom message you queued for the next turn is not given back: a swap drops it with the
+old session, as pi does. A line queued from a `session_shutdown` handler goes back to the
+TUI or the RPC host after the teardown, on an event your handlers no longer receive.
 
 A `model_select` or `thinking_level_select` handler runs after the change: the
 model or level is already in force. Raising there does not undo it. The command

@@ -6150,6 +6150,65 @@ class AgentHarness:
         self._retry_attempt = 0
         await self._emit_to_subscribers(AutoRetryEndEvent(success=True, attempt=attempt))
 
+    def take_queued_messages(
+        self,
+    ) -> tuple[list[AgentMessage], list[AgentMessage], list[AgentMessage]]:
+        """Aelix-additive (#681): the steer, follow-up and next-turn queues, taken out.
+
+        What :meth:`AgentSessionRuntime.reload` carries from the harness it tore
+        down to the one it built (:meth:`adopt_queued_messages`): pi's
+        ``reload`` keeps its ``AgentSession`` and with it every queue. No event:
+        the lines are not leaving the session, only the harness.
+        """
+
+        steer, self._steering_queue._messages = self._steering_queue._messages, []
+        follow_up, self._follow_up_queue._messages = self._follow_up_queue._messages, []
+        next_turn, self._next_turn_queue = self._next_turn_queue, []
+        return steer, follow_up, next_turn
+
+    def adopt_queued_messages(
+        self,
+        steer: list[AgentMessage],
+        follow_up: list[AgentMessage],
+        next_turn: list[AgentMessage],
+    ) -> None:
+        """Aelix-additive (#681): queue what :meth:`take_queued_messages` took, ahead of anything here."""
+
+        self._steering_queue._messages = [*steer, *self._steering_queue._messages]
+        self._follow_up_queue._messages = [*follow_up, *self._follow_up_queue._messages]
+        self._next_turn_queue = [*next_turn, *self._next_turn_queue]
+
+    async def give_back_queued(self) -> None:
+        """Aelix-additive (#681): the queued steer and follow-up lines come back, as an Esc gives them.
+
+        A session swap (``/new``, ``/resume``, ``/fork``, ``/clone``, ``/import``)
+        replaces this harness, and the lines queued on it would never reach a
+        model — though ``steer`` and ``follow_up`` answered success, and a
+        torn-down idle harness is not aborted, so nothing said so. They leave the
+        queues and come back on ``input_withdrawn`` with ``prompt_withdrawn``
+        false (ADR-0286): the TUI puts them in the input box, RPC sends the
+        event. Nothing happens when nothing is queued.
+
+        The user messages on the next-turn queue come first, in the order the
+        next prompt would have sent them: a prompt a cancelled turn put back
+        there before it committed (#320), a ``next_turn`` text, a text an
+        extension queued there (as its steer and follow-up lines come back). An
+        extension's custom message (role ``custom``) is no line anyone could
+        type and is left to the teardown, as pi's new ``AgentSession`` starts
+        without the old one's ``_pendingNextTurnMessages``.
+        """
+
+        users = [m for m in self._next_turn_queue if isinstance(m, UserMessage)]
+        queued = [*users, *self._steering_queue._messages, *self._follow_up_queue._messages]
+        if not queued:
+            return
+        self._next_turn_queue = [m for m in self._next_turn_queue if not isinstance(m, UserMessage)]
+        self._steering_queue._messages, self._follow_up_queue._messages = [], []
+        self._withdrawn_queued.extend(queued)
+        await self._emit_input_withdrawn([], prompt_withdrawn=False)
+        with contextlib.suppress(AgentHarnessError):
+            await self._emit_queue_update()
+
 
 # === AgentEvent → HookEvent mapping ===
 

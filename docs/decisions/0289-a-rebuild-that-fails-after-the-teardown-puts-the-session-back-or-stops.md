@@ -37,6 +37,9 @@ session file it made, and so does one whose new file's lock cannot be taken at
 all. See `## Amendment (2026-11-04, #680)`.
 Amended 2026-11-04 (#679): a successful reload keeps the model and thinking
 level too (Limits).
+Amended 2026-11-04 (#681): a reload, and the build that keeps a session, carry
+the lines queued on the harness they replace (D1 step 3); a swap gives them back
+first (ADR-0286 amendment).
 
 ## Context
 
@@ -79,7 +82,9 @@ old settings). When the step between the teardown and the install raises —
    `reload_seed` is called without it, as `HarnessFactory` promises;
 3. settles it as a successful `/reload` settles its own — the flag round trip,
    the rebind, `session_start(reload)`, the after-start callback,
-   `reload_resources()` — and rebuilds its transcript from the session. Three
+   `reload_resources()` — and rebuilds its transcript from the session
+   (2026-11-04, #681: and takes over the steer, follow-up and next-turn lines
+   queued on the torn-down harness, as a successful reload does). Three
    things are put back exactly rather than as a reload would pick them: the
    active-tool set and the tool policy in force with it (a session's own
    turning on of a tool `defaultTools` keeps off included; no union with the

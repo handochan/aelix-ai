@@ -971,6 +971,39 @@ class AgentSessionRuntime:
             operation=operation, phase=phase, cause=exc, state="kept"
         ) from exc
 
+    def _carry_queued(self, old: Any) -> None:
+        """#681 — move what ``old`` has queued to the harness just installed."""
+
+        new = self._harness
+        has_take = callable(getattr(old, "take_queued_messages", None))
+        has_adopt = callable(getattr(new, "adopt_queued_messages", None))
+        if old is new or not has_take or not has_adopt:
+            return
+        new.adopt_queued_messages(*old.take_queued_messages())
+
+    async def _give_back_queued(self) -> None:
+        """#681 — a swap gives the lines queued on the harness it replaces back, as an Esc does.
+
+        They were answered success and would reach no model: the new session is
+        another conversation, and the teardown's ``dispose`` neither delivers
+        nor reports them. ``input_withdrawn`` (``prompt_withdrawn`` false) goes
+        out while the surfaces still listen to this harness — the TUI puts the
+        lines in the input box, RPC sends the event — before the teardown, so a
+        swap that then fails has given them back too. A swap an extension
+        cancelled never comes here.
+
+        Called once more after the teardown, for what it queued on that harness
+        itself; the surfaces listen to it until the rebind, the extensions'
+        handlers (its hook bus is gone) no longer do.
+        """
+
+        harness = self._harness
+        if callable(getattr(harness, "give_back_queued", None)):
+            try:
+                await harness.give_back_queued()
+            except Exception:
+                _log.exception("AgentSessionRuntime.give_back_queued raised")
+
     def _keep_level(self, point: _RestorePoint) -> None:
         """The thinking level the session ran at, on the harness a rebuild just installed.
 
@@ -1098,6 +1131,8 @@ class AgentSessionRuntime:
             resolve_resumed_thinking_level,
         )
 
+        # #681 — what is queued on the harness this swap replaces goes back first.
+        await self._give_back_queued()
         # #198 — snapshot the live thinking level BEFORE teardown, for the same
         # reason ``previous_session_file`` is snapshotted at the call sites: the
         # OLD harness is gone after ``_teardown_current`` and the factory builds
@@ -1109,6 +1144,10 @@ class AgentSessionRuntime:
         point = self._restore_point()
 
         await self._teardown_current(reason, target_session_file)
+        # #681 — and what the teardown queued there after that: a
+        # ``session_shutdown`` handler's line, or a prompt the teardown's abort
+        # cancelled before it committed (requeued for the next turn, #320).
+        await self._give_back_queued()
         try:
             await self._apply(new_session)
         except Exception as exc:
@@ -1573,6 +1612,11 @@ class AgentSessionRuntime:
 
         from aelix_agent_core.harness.hooks import SessionStartHookEvent
 
+        # #681 — the lines queued on the harness this replaced come with it, as
+        # pi's reload keeps its session and its queue: a steer or follow-up
+        # answered success, and a ``send_message`` for the next turn. First, so
+        # a raise in any later step leaves them on the harness that is installed.
+        self._carry_queued(point.harness)
         if track_phase:
             self._reload_phase = "tools"
         active_before = point.active_tools
