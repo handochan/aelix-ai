@@ -709,6 +709,11 @@ async def _reload_with_a_follow_up_queued(
             pipe.send_text("/reload\n")
             await _wait(lambda: rig.runtime.harness is not old)
             await _wait(lambda: _input_loop_is_idle(chrome))
+            if not carry:
+                # The area reaches the chrome through the output queue's next
+                # drain, which on a coarse clock (Windows py<=3.12) can come
+                # after the input loop is idle again: wait for the row to go.
+                await _wait(lambda: "Follow-up: SAVE_THIS_FOLLOWUP" not in pending())
             after_reload = pending()
             new = rig.runtime.harness
             pipe.send_text("next prompt\n")
