@@ -51,3 +51,12 @@ built-in extension** 형태로 제공합니다.
 - `03-architecture-principles.md`의 Principle 3, 3.1은 "core가 강제"가 아니라
   "built-in extension이 hook으로 강제"로 표현을 갱신해야 합니다.
 
+
+> **Dated note 2026-11-04 (#675, #657 후속).** 기본 guardrail의 디렉터리 쓰기
+> 규칙(`write.git_dir`, `write.node_modules`, `write.pycache`)은 경로 조각을
+> 그대로 비교해서, macOS APFS와 NTFS에서 같은 파일인 `.GIT/config`·`.git /config`·
+> `.git./config`·`.git::$DATA/config`를 막지 못했다. `auto`에서 이 이름으로 쓴
+> `core.fsmonitor`가 실제 `.git/config`에 들어갔고, 다음 `git status`가 그것을
+> 실행했다(측정). 이제 각 조각을 `.env` 규칙과 같은 `_guard_key`(대소문자,
+> 끝의 공백·점, NTFS 스트림)로 접은 뒤 비교한다
+> (`builtin/guardrail.py`의 `_has_component`).

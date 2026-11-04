@@ -3249,6 +3249,14 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **A write into `.git` spelled with other letter case, or with a trailing space,
+  dot or `::$DATA`, is now refused like `.git` itself (#675).** The built-in
+  guardrail refused `.git/config` but let `.GIT/config`, `.Git/hooks/x`,
+  `.git /config`, `.git./config` and `.git::$DATA/config` through. On macOS
+  and Windows each of these is the same file, so under `auto` the write tool
+  changed the real `.git/config` without a prompt, and the next `git status`
+  ran a program that had been planted there. The `node_modules` and
+  `__pycache__` rules fold the same way.
 - **`auto` now reads a command's arguments before running it, so a read-only
   name whose arguments write or execute asks first (#657, ADR-0288).** The
   AUTO-mode classifier allowed `git` by its subcommand name and the other

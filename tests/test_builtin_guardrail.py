@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.harness.hooks import ToolCallHookEvent, ToolCallResult
 from aelix_agent_core.types import AgentTool
@@ -147,6 +148,42 @@ async def test_default_blocks_write_to_git_dir() -> None:
 async def test_default_blocks_write_to_pycache() -> None:
     g = GuardrailExtension()
     assert _should_block(g, _write_event("src/__pycache__/module.pyc"))
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # #675: one file as .git/config on APFS and NTFS; the guardrail is a
+        # string comparison, so each reproduces on any host.
+        ".GIT/config",
+        ".Git/hooks/x",
+        ".git /config",
+        ".git./config",
+        ".git::$DATA/config",
+        "sub/.GIT/config",
+        "sub\\.GIT\\config",
+    ],
+)
+@pytest.mark.parametrize("tool", ["write", "edit"])
+def test_a_case_or_trailing_spelling_of_git_is_still_git(path: str, tool: str) -> None:
+    assert _should_block(GuardrailExtension(), _write_event(path, tool_name=tool)), path
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["NODE_MODULES/x/index.js", "node_modules./x.js", "src/__PYCACHE__/m.cpython-312.pyc"],
+)
+def test_the_other_directory_rules_fold_the_same_way(path: str) -> None:
+    """``node_modules`` and ``__pycache__`` are the same shape of rule (#675)."""
+
+    assert _should_block(GuardrailExtension(), _write_event(path)), path
+
+
+@pytest.mark.parametrize(
+    "path", [".gitignore", ".github/workflows/ci.yml", "src/x.git/y", ".gitattributes"]
+)
+def test_a_name_that_only_starts_like_git_is_not_refused(path: str) -> None:
+    assert not _should_block(GuardrailExtension(), _write_event(path)), path
 
 
 # ============================================================
