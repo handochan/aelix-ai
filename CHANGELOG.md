@@ -1283,6 +1283,20 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **`/reload` keeps the model and thinking level you are on (#679, ADR-0239,
+  ADR-0289).** A `/reload` that succeeded put the thinking level back to `off`
+  (or `--thinking`'s level), dropping a `/thinking` choice and the settings
+  `defaultThinkingLevel`, and in a run launched with `--model` (or `--provider`,
+  `--api-key`, an agent profile's model) it put the model back to that one,
+  dropping a `/model` choice. The TUI footer kept showing your choice until the
+  next answer ended, so the change showed only in the request. `/reload` now
+  keeps both, as pi's does, and writes no model or level entry, and the footer
+  is repainted as the reload ends; RPC `resources/reload` and an extension's
+  `ctx.reload()` do the same. A session held on a placeholder because its launch model's
+  provider was registered late (ADR-0250) is the exception: there the reload
+  resolves the launch model again, as before. A provider a reloaded extension
+  now registers is used once you pick it with `/model`, or by the next `/new`.
+
 - **A `/new`, `/fork`, `/clone` or `/import` that fails no longer leaves a new
   session file behind (#680, ADR-0289).** Each one made its session file before
   building the session for it. When that build failed and aelix said "stayed on

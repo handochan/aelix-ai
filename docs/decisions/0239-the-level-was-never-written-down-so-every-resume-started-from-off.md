@@ -1,6 +1,6 @@
 # 0239. The level was never written down, so every resume started from `off`
 
-Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted — amended 2026-11-03 (#654, ADR-0286): decision 8's conversation is asked of the branch, not the file
+Status: Accepted (2026-09-08) — amended 2026-10-08 (#376): decision 7 superseded, the model is restored too — amended 2026-10-14 (#413): a new session records the model it starts on — amended 2026-10-14 (#412): a route-less `/agents use` (no `model:`/`provider:` of the profile applies, or `--none`) keeps the restored model and writes no model record — amended 2026-10-14 (#286, narrowed 2026-10-15): every mode applies `defaultThinkingLevel`, clamped to the model; what a launch records is unchanged but where a `session_start` handler sets the level or the model; decision 5 retired — amended 2026-10-22 (#415): RPC `set_model` and `cycle_model` record the pick, fire `model_select` and fit the level to the model — amended 2026-10-26 (#397): a fitted `off` on a model that cannot switch reasoning off lands on a level the model takes; an explicit `off` stays unfitted — amended 2026-11-03 (#654, ADR-0286): decision 8's conversation is asked of the branch, not the file — amended 2026-11-04 (#679): `/reload` keeps the live model and level, as pi's does (decision 3, Limits)
 Date: 2026-09-08
 Superseded by: [ADR-0263](0263-configured-request-auth-before-new-prompt-records.md)
 (2026-10-12, #416: decision 5's header/token/ADC limit and decision 6's
@@ -228,6 +228,13 @@ a local recorder; driver and outputs in `.omc/probes/376-live/impl/`):
    anthropic --model claude-haiku-4-5`, `/model claude-sonnet-4-5`, `/reload`,
    and the next request went out as haiku), when the session has no
    conversation yet, and when the record cannot run (decision 5's fallback).
+   *(2026-11-04, #679: no longer for `/reload`. It runs on the live model, as
+   pi's does — the CLI factory builds it on `ReloadSeed.model` as it is, over
+   `--model` and over the record — and at the live level (`AgentSessionRuntime._keep_level`,
+   clamped to that model, nothing recorded). The one exception is a hold's or a
+   pending launch's placeholder (`api='unknown'`), which is no model to keep: that
+   reload resolves the launch inputs again and is held where they land (ADR-0250
+   §2.11). Every other rebuild is as above.)*
 4. **What "can run" means** (`runtime_bootstrap.restore_session_route`). The
    record is an exact provider and id, so none of the launch's inference runs
    (no prefix reading, no swap, no guard 2, no `defaultProvider`). A model the
@@ -899,7 +906,10 @@ thinking level is not recorded beside it" stand.
   consequence "`/reload` is a third rebuild seam and is untouched"): measured
   in the TUI after this change exactly as before it (`fix-tui.out`,
   `base-tui.out`: `/reload`, then a prompt sent `none`). pi keeps the live
-  level across a reload.
+  level across a reload. *(2026-11-04, #679: closed — `/reload` keeps the
+  level, clamped to the model it runs; the TUI footer, which a reload did not
+  redraw, had shown the dropped level until the next turn ended, and the rebind
+  now repaints it as the reload ends.)*
 - `/agents use` of a profile with `thinking:` still skips a level the model
   does not list (`agents/service.py`), the rule decision 2 replaced for the
   default, and its comment still names the TUI seed that is gone.

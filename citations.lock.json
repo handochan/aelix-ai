@@ -599,10 +599,10 @@
   "packages/aelix-agent-core/src/aelix_agent_core/loop.py:905-905": [
    "ordered_results: list[_Finalized] = await asyncio.gather("
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1099-1099": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1111-1111": [
    "await self._teardown_current(reason, target_session_file)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1563-1608": [
+  "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py:1580-1625": [
    "# 6. ACTIVE-TOOL ROUND-TRIP (#24-FU), under the REBUILT policy (#510).",
    "# Restore the user's pre-reload active filter over the rebuilt",
    "# registry, unioned with the current extension tools — pi ``reload``",
@@ -2100,9 +2100,9 @@
    ") -> AgentHarness:",
    "# #376 — the session's own model, when it has history and the user named",
    "# none: startup ``--continue``/``--resume``/``--session``/``--fork``,",
-   "# ``/resume``, ``/fork``, ``/import``, RPC ``switch_session`` and",
-   "# ``/reload`` all build here. pi's ``hasExistingSession`` is",
-   "# ``messages.length > 0`` (``core/sdk.ts:210-211``), so ``/new`` (an empty"
+   "# ``/resume``, ``/fork``, ``/import`` and RPC ``switch_session`` build here.",
+   "# pi's ``hasExistingSession`` is ``messages.length > 0``",
+   "# (``core/sdk.ts:210-211``), so ``/new`` (an empty session) keeps the"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:4303-4303": [
    "# process-global login registry so they appear in the /login method list"

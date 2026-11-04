@@ -35,6 +35,8 @@ Review round 2 (2026-11-04, verify R1V1–R1V4): D4 and D7 amended in place
 Amended 2026-11-04 (#680): a swap that ends "kept" or "stopped" removes the
 session file it made, and so does one whose new file's lock cannot be taken at
 all. See `## Amendment (2026-11-04, #680)`.
+Amended 2026-11-04 (#679): a successful reload keeps the model and thinking
+level too (Limits).
 
 ## Context
 
@@ -310,7 +312,11 @@ surfaces, a disposed harness refuses `prompt` itself (D4).
   no `session_shutdown` until the next transition tears it down.
 - A successful RPC `resources/reload` still comes back on the launch `--model`
   rather than a `set_model` choice (older than #663; the restore keeps the
-  choice, D3).
+  choice, D3). *(2026-11-04, #679: closed — a successful reload runs on the
+  model and level the session is on too, on every surface (the TUI's footer,
+  never redrawn by a reload, had kept showing the choice the reload dropped). D3's
+  `keep_exactly` is now every reload's; only a hold's placeholder is resolved
+  again.)*
 
 ## Amendment (2026-11-04, #680) — a failed swap leaves no file of its own
 

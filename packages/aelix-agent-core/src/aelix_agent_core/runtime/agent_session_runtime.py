@@ -951,22 +951,13 @@ class AgentSessionRuntime:
         # surface's after-start callback, ``reload_resources``), a cancel
         # included, stops it and the torn-down harness a surface may still hold.
         try:
-            from aelix_ai.models import clamp_thinking_level
-
             from aelix_agent_core.session.context import build_session_context
 
             # A fresh harness never seeds its transcript (#122), and the swap
-            # that failed would have rebuilt it; the level is the one it ran at,
-            # clamped to the model this build runs (verify V4: a factory that
-            # did not keep the model).
+            # that failed would have rebuilt it.
             entries = await point.session.get_branch()
             self._harness._state.messages = list(build_session_context(entries).messages)
-            level = point.thinking_level
-            model = self._harness.current_model
-            if level is not None:
-                if model is not None:
-                    level = clamp_thinking_level(model, level) or level
-                self._harness._state.thinking_level = level
+            self._keep_level(point)
             await self._settle_rebuilt(point, track_phase=False, exact=True)
         except Exception as again:
             self._stop(point.harness)
@@ -979,6 +970,27 @@ class AgentSessionRuntime:
         raise RebuildFailedError(
             operation=operation, phase=phase, cause=exc, state="kept"
         ) from exc
+
+    def _keep_level(self, point: _RestorePoint) -> None:
+        """The thinking level the session ran at, on the harness a rebuild just installed.
+
+        A reload (#679) and the build that puts a session back (#663) both run at
+        it, as pi's ``/reload`` keeps its ``AgentSession`` and level: the factory
+        builds from the launch inputs (``--thinking``, else ``off``), and the
+        settings ``defaultThinkingLevel`` and the session's record are read at
+        launch only. Clamped to the model this build runs (verify V4: a factory
+        that did not keep the model). Assigned, not ``set_thinking_level``: no
+        ``thinking_level_select`` for a choice nobody made, no session entry.
+        """
+
+        from aelix_ai.models import clamp_thinking_level
+
+        level = point.thinking_level
+        model = self._harness.current_model
+        if level is not None:
+            if model is not None:
+                level = clamp_thinking_level(model, level) or level
+            self._harness._state.thinking_level = level
 
     @contextlib.asynccontextmanager
     async def _transition(self) -> AsyncIterator[None]:
@@ -1446,7 +1458,10 @@ class AgentSessionRuntime:
              with no re-register would brick streaming — see the step-4 note).
           5. ``_apply(session, reload_seed=ReloadSeed(flag_values=...))`` — factory
              re-discovers + rebuilds (pi :2391+:2393); the seed pre-seeds the fresh
-             runtime's ``flag_values`` BEFORE each ``setup()`` re-runs (#24-FU).
+             runtime's ``flag_values`` BEFORE each ``setup()`` re-runs (#24-FU),
+             and carries the model the session is on, which the build runs on
+             (#679); the thinking level it ran at is put back right after
+             (:meth:`_keep_level`) — pi's reload touches neither.
              When step 4 or 5 raises (#663, ADR-0289), :meth:`_restore_after`
              builds the session again on the settings it was running with and
              raises :class:`RebuildFailedError` — ``"kept"``, or ``"stopped"``
@@ -1538,6 +1553,8 @@ class AgentSessionRuntime:
             except BaseException:
                 self._stop()
                 raise
+            # #679 — at the level it ran at, on the model it ran on (the seed).
+            self._keep_level(point)
             await self._settle_rebuilt(point, track_phase=True)
             self._reload_phase = "done"
             return RuntimeReplaceResult(cancelled=False)
