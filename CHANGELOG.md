@@ -1283,6 +1283,25 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **A steering or follow-up message waiting in the queue is no longer lost on
+  `/reload` or a session change (#681, ADR-0286, ADR-0289).** Lines you queue
+  stay queued when the turn they waited for ends in an error, and RPC
+  `steer`/`follow_up` queue while nothing runs. A `/reload` (RPC
+  `resources/reload`, an extension's `ctx.reload()`) dropped them —
+  `pendingMessageCount` went from 1 to 0 and they never reached the model — and
+  so did `/new`, `/resume`, `/fork`, `/clone`, `/import` and their RPC commands,
+  though each line had been answered `success: true`, with no word to the host.
+  A `/reload` now keeps them queued, as pi's does, and the next turn takes them;
+  so does a failed `/reload` that kept the session. A session change gives them
+  back as Esc does: in the TUI they return to the input box, and RPC sends
+  `input_withdrawn` with the lines and `prompt_withdrawn: false` — with them a
+  prompt whose turn was cancelled before it was sent, and a line an extension
+  queued while the old session was taken apart. A custom message an extension
+  queued for the next turn goes with the session left behind, as in pi. When
+  one change gives back twice — lines you queued, then a line a
+  `session_shutdown` handler queued — the TUI input box shows the handler's
+  line first; RPC sends them in order, as two events.
+
 - **`/reload` keeps the model and thinking level you are on (#679, ADR-0239,
   ADR-0289).** A `/reload` that succeeded put the thinking level back to `off`
   (or `--thinking`'s level), dropping a `/thinking` choice and the settings

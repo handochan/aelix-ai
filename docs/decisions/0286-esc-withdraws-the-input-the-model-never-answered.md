@@ -1,6 +1,6 @@
 # 0286. Esc withdraws the input the model never answered
 
-Status: Accepted (2026-11-03, #654)
+Status: Accepted (2026-11-03, #654) — amended 2026-11-04 (#681): a session swap gives the queued lines back on the same event, the user messages on the next-turn queue and what its teardown queued included; see `## Amendment (2026-11-04, #681)`
 Date: 2026-11-03
 Issue: #654. Design and the owner's four decisions (2026-11-03):
 `.omc/specs/654-design-2026-11-03.md`. Batch B6, P1.
@@ -294,3 +294,57 @@ Review round 2, the same way, under `.omc/probes/654/fix-r2/`:
 - Against a local server: an overflow, the summary held, a steer and a follow-up queued, Esc, the
   summary released. The sentence printed once, with no compaction entry, and the next run's Esc
   printed it again for that run.
+
+## Amendment (2026-11-04, #681) — a swap gives the queued lines back; a reload keeps them
+
+`steer` and `follow_up` queue while the harness is idle too (pi parity), and a turn that
+ends in an error leaves the lines queued for the next prompt (#345). A swap — `/new`,
+`/resume`, `/fork`, `/clone`, `/import`, RPC `new_session`, `switch_session`, `fork`,
+`clone`, an extension's `ctx.new_session()` and the rest — and `/reload` build a new
+harness, and the queues stayed on the torn-down one: RPC had answered `success: true`,
+`pendingMessageCount` went from 1 to 0, and nothing said where the line went
+(`.omc/specs/663-followups-evidence/out/p4_*`). A torn-down idle harness is not aborted
+(`dispose` aborts only a running turn), so this ADR's event never fired for them.
+
+- **A swap gives them back** (`AgentSessionRuntime._give_back_queued` →
+  `AgentHarness.give_back_queued`): `input_withdrawn` with the queued steer and
+  follow-up lines and `prompt_withdrawn` false — what §5 already sends for an idle abort
+  — at the start of `_finish_session_replacement`, while the surfaces still listen to
+  the harness being replaced: the TUI puts them in the input box (§6), RPC sends the
+  event. Before the teardown, so a swap whose build then fails (ADR-0289 "kept") has
+  given them back as well; a swap an extension cancels never gets there and leaves them
+  queued. Moving them into the new session was the other choice the issue left open; it
+  was not taken, because the new session is another conversation the lines were not
+  written for — given back, the user decides, as after an Esc. pi drops them with the
+  disposed `AgentSession`.
+- **A reload carries them** (`take_queued_messages` / `adopt_queued_messages`, the first
+  step of `_settle_rebuilt`): steer, follow-up and the next-turn queue go to the rebuilt
+  harness — and to the one a failed reload builds on the previous settings — as pi's
+  `reload` keeps its `AgentSession` and its queues. A stopped runtime keeps them on the
+  harness it holds (ADR-0289 D4), where Alt+Up or an RPC `abort` gives them back.
+
+The next-turn queue (Codex review): its user messages come back on the same event, first,
+in the order the next prompt would have sent them — a prompt a cancelled turn requeued
+there before it committed (§1's uncommitted remainder), a `next_turn` text, and a text an
+extension queued with `send_message(..., deliver_as="next_turn")`, as its steer and
+follow-up lines already come back. An extension's custom message there (role `custom`) is
+no line anyone could type into the input box: it goes with the old harness, as pi's new
+`AgentSession` starts without the old one's `_pendingNextTurnMessages`. A reload carries it.
+
+What the teardown itself queues comes back too: the swap gives back once more after
+`_teardown_current`, for a line a `session_shutdown` handler queued (Codex review: lost
+after the first give-back) and for a prompt the teardown's abort cancelled before it
+committed. The TUI and RPC still listen to that harness until the rebind and get the
+second event; an extension's `input_withdrawn` handler does not, since the teardown
+disposed its hook bus.
+
+Limit, left as it is: the TUI puts each event's text ahead of what the box holds (§6), so
+when one swap gives back twice — lines queued before the teardown, then a line a
+`session_shutdown` handler queued — the box reads `SHUTDOWN-LINE` above `QUEUED-LINE`, the
+reverse of queue order, and Enter sends them that way. Nothing is lost or repeated; RPC gets
+them in order, as two events (`.omc/specs/b6-session-verify-r2-probes/out/tui-g3both-head.txt`).
+
+Tests: `tests/runtime/test_queued_lines_across_rebuilds_681.py`,
+`tests/rpc/test_queued_lines_rpc_681.py`, `tests/tui/test_queued_line_after_an_error_681.py`
+(the #345 path: a line steered into a turn that ends in a `400` survives `/reload` and comes
+back to the input box on `/new`).
