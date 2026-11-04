@@ -75,18 +75,24 @@ def submitted_input(typed: str, expand: Callable[[str], str]) -> ParsedInput:
     stays literal text. A placeholder at the start whose paste begins with
     ``!`` is a prompt, as drawn (#596 verify V1: it ran every pasted line in
     the shell); ``!`` typed before a paste that begins with ``!`` runs the
-    paste as a ``!`` command, not as a ``!!`` one (Codex 596-06). Everything
-    else is :func:`parse_input_line` of the expanded text, as before.
+    paste as a ``!`` command, not as a ``!!`` one (Codex 596-06).
+
+    A command is read off the typed buffer too (#667): a line that does not
+    begin with a typed ``/`` is a prompt whatever its pastes begin with, so a
+    paste beginning ``/quit`` or ``/Users/…`` reaches the model as drawn,
+    marked :attr:`~.input.ParsedInput.literal` for the input loop. A command
+    typed before a paste (``/name [Pasted text …]``) takes the paste as its
+    argument: that is :func:`parse_input_line` of the expanded text, as before.
     """
 
     drawn = parse_input_line(typed)
     if drawn.kind in ("bash", "bash_transient"):
         return ParsedInput(drawn.kind, expand(drawn.text).strip())
     expanded = expand(typed)
-    parsed = parse_input_line(expanded)
-    if parsed.kind in ("bash", "bash_transient"):
-        return ParsedInput("prompt", expanded.strip())
-    return parsed
+    if drawn.kind == "prompt" and not drawn.text.startswith("/") and expanded.strip():
+        text = expanded.strip()
+        return ParsedInput("prompt", text, literal=text.startswith("/"))
+    return parse_input_line(expanded)
 
 
 class SubmittedLine(str):

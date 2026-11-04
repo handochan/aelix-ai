@@ -1239,7 +1239,8 @@ class AelixChrome:
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(submit_text)
                 self._reset_paste_state()
-                self.on_steer(submit_text)
+                # #667 — with its classification, should the turn end first.
+                self.on_steer(SubmittedLine(submit_text, parsed))
                 return
             self.buffer.reset()
             # The queue accept path bypasses prompt-toolkit's normal handler, so
@@ -1286,7 +1287,7 @@ class AelixChrome:
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(submit_text)
                 self._reset_paste_state()
-                self.on_follow_up(submit_text)
+                self.on_follow_up(SubmittedLine(submit_text, parsed))
                 return
 
         @kb.add("c-t")  # Toggle thinking-block visibility (Sprint 6h₁₅).

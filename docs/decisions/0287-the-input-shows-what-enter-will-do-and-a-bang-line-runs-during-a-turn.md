@@ -9,6 +9,7 @@ with three more owner decisions: a `!` block run during a turn waits in a
 pending area under the stream (D6), Alt+Enter on a `!` line during a turn queues
 a shell command that runs after it (D6), and the default theme's footer keeps
 `grey70`, a light terminal being the `light` theme's (D8).
+Amended 2026-11-04 by dated notes: #667 (D2, a paste beginning with `/`).
 Date: 2026-11-03
 Issue: #596. The prototype hand-back, with what pi and Claude Code do and the
 three options: `.omc/specs/596-proto-report.md`; the grids the owner compared:
@@ -25,7 +26,7 @@ ADR-0023 (an outside writer takes the drain lock: `AgentHarness.idle_write`)
 pi: `earendil-works/pi@9c9ce8547` (2026-11-03). Claude Code: the shipped 2.1.314
 binary's embedded JS, read by the prototype (nothing recalled).
 Tests: `tests/tui/test_input_marks_596.py`, `tests/tui/test_shell_mid_turn_596.py`,
-`tests/harness/test_idle_write_596.py`;
+`tests/harness/test_idle_write_596.py`, `tests/tui/test_paste_is_not_a_command_667.py`;
 the rows the frame moves in `tests/tui/test_bottom_pin_632.py`,
 `tests/tui/test_input_box_height.py` and `tests/tui/test_input_hidden_on_modal.py`.
 
@@ -82,6 +83,22 @@ prompt has a line above and below it.
    classification travels to the input loop with the expanded text
    (`SubmittedLine`), so the loop does not re-read it; a steer re-routed because the
    turn ended first is a prompt for the same reason.
+   *2026-11-04 note (#667, the owner's decision (a)):* a command is read off the
+   typed buffer too. A line that does not begin with a typed `/` is a prompt
+   whatever its collapsed paste begins with — `/quit`, `/new`, `/export`, an
+   extension command, a template, a skill or a stack trace beginning `/Users/…` —
+   and goes to the model as drawn (`ParsedInput.literal`, which the input loop's
+   command branch skips): a line that begins with a collapsed paste is not run as
+   a command, whatever the paste begins with. Before, the expanded text was
+   classified: a paste beginning `/quit` closed the TUI, `/new` swapped the
+   session, `/export` wrote a file named after the pasted lines, `/name` named the
+   session after them, and a path was dropped as "Unknown command". A command
+   typed before a paste (`/name [Pasted text …]`) takes the paste as its
+   argument, as before (and a typed `/` alone takes its name from the paste:
+   Limits). The steer and follow-up
+   callbacks get the `SubmittedLine` too, so a steer re-routed because the turn
+   ended first keeps what the input drew: a paste beginning `/quit` stays a
+   prompt, a typed `/quit` stays a quit (it was re-read from its text).
 
 3. **Esc in shell mode clears the whole input** while nothing runs — pi's, not
    Claude Code's, which removes only the `!`. It is the clear idle Ctrl+C gives a
@@ -258,7 +275,13 @@ prompt has a line above and below it.
   the one for a light terminal. A palette-relative "a little dimmer" has no ANSI
   name.
 - History stores the expanded line, so a recalled paste is classified as its text
-  reads (and drawn so): a paste that began with `!` comes back as a shell line.
+  reads (and drawn so): a paste that began with `!` comes back as a shell line,
+  one that began with `/` as a command (#667).
+- A `/` typed before a collapsed paste makes the line a command whose name the
+  paste supplies, as before #667: `/` followed by a paste beginning `quit` and a
+  newline still quits (#667 verify r1). The owner's decision covers a line that
+  begins with a paste; this one begins with a typed `/`, though the name it runs
+  is not on screen.
 - The pending area shows up to three lines of a finished block's output (past
   three, "… N more lines, in full once the turn is over" and the last two) and at
   most eight rows in all, the oldest blocks dropped whole; the rest is in the

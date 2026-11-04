@@ -406,7 +406,7 @@ def test_prompt_says_reload_is_the_users_keystroke() -> None:
 def test_reload_instruction_is_mode_agnostic() -> None:
     """(d) ``/reload`` does not exist outside the interactive surfaces.
 
-    It is parsed ONLY in the TUI (``tui/input.py:47-48``) and the basic REPL
+    It is parsed ONLY in the TUI (``tui/input.py:50-51``) and the basic REPL
     (``cli/repl.py:519``) — this test greps the tree for its dispatch sites so a
     third surface (or a removal) forces the wording to be revisited. Yet this
     block is emitted for ``--print`` / ``--mode json`` / ``--mode rpc`` and for
@@ -445,7 +445,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:4139-4142`` gates the factory rebuild on
+    ``tui/shell.py:4142-4145`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover

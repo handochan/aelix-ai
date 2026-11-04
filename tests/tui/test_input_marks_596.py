@@ -246,7 +246,8 @@ _PASTE = "[Pasted text #1 +6 lines]"
         # Unchanged where typed and expanded agree.
         ("!ls", "", ParsedInput("bash", "ls")),
         (f"hello {_PASTE}", "world", ParsedInput("prompt", "hello world")),
-        (_PASTE, "/quit\n", ParsedInput("quit")),
+        # #667: a paste that begins with ``/`` is a prompt too, as drawn.
+        (_PASTE, "/quit\n", ParsedInput("prompt", "/quit", literal=True)),
     ],
 )
 def test_enter_reads_shell_mode_off_the_typed_buffer(
