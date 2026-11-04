@@ -59,8 +59,8 @@ def _run_pytest(
     (``Session.collect`` adds an argument's parents while ``_is_in_confcutdir``
     holds), listing each one and running the ignore and collect hooks for every
     entry in it. One of those directories is the parent run's basetemp, which
-    holds a directory for every test so far: about 20,000 when this gate runs
-    in the full suite. On Windows that collection alone took 5-20 s against the
+    then held a directory for every test so far, about 20,000 in the full suite
+    (since #459, one for each test that asks for ``tmp_path``). On Windows that collection alone took 5-20 s against the
     15 s budget, while the rest of the child took about 1.8 s. Bounding the walk
     at ``tmp_path`` makes the child's work independent of where the parent run is.
     """

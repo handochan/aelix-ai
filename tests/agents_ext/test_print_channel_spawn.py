@@ -24,7 +24,7 @@ forks a session-leader grandchild. A real aelix child cannot be made to produce
 any of those on demand. The four tests that DO launch ``-m aelix_coding_agent``
 are the ones whose subject is aelix's own behaviour (project trust, skills).
 
-HERMETICITY (finding I10): ``tests/conftest.py:133-142``'s download guard is an
+HERMETICITY (finding I10): ``tests/conftest.py:161-177``'s download guard is an
 in-process ``monkeypatch.setattr`` and does NOT reach a child interpreter. Every
 real-aelix child below therefore gets an EXPLICIT environment — ``HOME``,
 ``XDG_CONFIG_HOME`` and ``AELIX_CODING_AGENT_DIR`` under ``tmp_path``,
@@ -119,7 +119,7 @@ linux_only = pytest.mark.skipif(
 # before the state under test exists) nor the concept of an ignore disposition
 # that survives ``exec``. The OS physically refuses to CONSTRUCT the
 # precondition, which is the same carve-out ``tests/conftest.py``
-# (``_no_real_tool_downloads``' docstring, "SKIPPING IS RIGHT HERE") makes;
+# (``mkdir_or_skip``'s docstring, "SKIPPING IS RIGHT HERE") makes;
 # precedent ``tests/oauth/test_auth_storage.py:64``. No product change can make
 # this fixture buildable, so unlike the ``escalation_reachable`` sites this one
 # is not waiting on #202.

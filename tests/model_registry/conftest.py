@@ -12,12 +12,14 @@ regardless); this only covers the default-path factory call.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_dir(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    agent_dir = tmp_path_factory.mktemp("aelix_agent")
+def _isolate_agent_dir(_per_test_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Not ``tmp_path_factory.mktemp``: that lists the whole basetemp per test (#459).
+    agent_dir = _per_test_dir / "agent"
+    agent_dir.mkdir(parents=True)
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))

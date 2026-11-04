@@ -741,11 +741,11 @@ def test_fd_binary_agrees_with_the_find_tool(monkeypatch: Any, tmp_path: Path) -
     _stage_fd_binary(tmp_path / "elsewhere")
     _fd_lookup_seams(monkeypatch, tmp_path, bin_dir, tmp_path / "elsewhere")
     # ``tools_manager`` reads the bin dir through its OWN ``_bin_dir``, which the
-    # session-wide ``_no_real_tool_downloads`` fixture redirects to a per-session
-    # temp dir; without pointing it at the same directory this case would compare
+    # autouse ``_no_real_tool_downloads`` fixture redirects to a temp dir of the
+    # test's own; without pointing it at the same directory this case would compare
     # two different bin dirs and not the resolution ORDER it is here to pin
     # (``monkeypatch`` is function-scoped and the last write wins, so this
-    # re-stub overrides the session fixture for this case and is undone with
+    # re-stub overrides the autouse fixture for this case and is undone with
     # it).
     monkeypatch.setattr(tools_manager, "_bin_dir", lambda: str(bin_dir))
     assert Path(get_tool_path("fd") or "") == Path(managed)
