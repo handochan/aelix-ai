@@ -1283,6 +1283,18 @@ unwritten. Add them with the next release.
 
 ### Fixed
 
+- **While aelix is stopped, a `!` line says it will be refused, and a refused one
+  shows its command (#682, ADR-0289).** After a `/reload` whose rebuild and
+  restore both failed, every `!` line is refused, but the row under a `!` line
+  still said "Enter runs it · the model sees the output"; it now says "aelix is
+  stopped · Enter is refused until /reload succeeds", and a narrow terminal keeps
+  at least "aelix is stopped". Enter on a `!` line printed
+  only "✖ aelix is stopped …", with the command nowhere on screen; the command
+  is now shown above it. A `!` refused while a `/reload` ran waited under the
+  output of a `!` held for the stop and reached the transcript only after the
+  `/reload` that ended the stop, under "aelix is running again"; it now goes to
+  the transcript once that `/reload` is over, and the held one keeps waiting.
+
 - **The `@` file menu no longer opens on a `!` line (#670, ADR-0287).** On a line
   the input draws in shell mode, `!cat @READ` + Tab put `@README.md` into the
   command, which then ran `cat @README.md` and failed with "No such file or

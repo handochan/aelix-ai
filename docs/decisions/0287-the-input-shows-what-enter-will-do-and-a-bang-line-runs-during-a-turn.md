@@ -10,7 +10,8 @@ pending area under the stream (D6), Alt+Enter on a `!` line during a turn queues
 a shell command that runs after it (D6), and the default theme's footer keeps
 `grey70`, a light terminal being the `light` theme's (D8).
 Amended 2026-11-04 by dated notes: #667 (D2, a paste beginning with `/`), #670
-(D4 and Limits, no `@` menu in shell mode).
+(D4 and Limits, no `@` menu in shell mode), #682 (D1, the hint while aelix is
+stopped).
 Date: 2026-11-03
 Issue: #596. The prototype hand-back, with what pi and Claude Code do and the
 three options: `.omc/specs/596-proto-report.md`; the grids the owner compared:
@@ -66,6 +67,15 @@ prompt has a line above and below it.
    won't see the output" (verify V8: it was dropped first). A bare sigil runs
    nothing, so its hint makes no promise about Enter. While a `!` command runs the
    Enter clause gives way to "a ! command is already running" (D6).
+   *2026-11-04 note (#682):* while aelix is stopped (ADR-0289 D4) every `!` line
+   is refused, and the hint says so instead: `! shell · aelix is stopped · Enter
+   is refused until /reload succeeds · Esc to clear`, with no Enter or model
+   clause, fitted the same way (50 columns keep `! shell · aelix is stopped ·
+   Esc to clear`). The stop outranks a `!` command still running, and the mode,
+   which the sigil drawn as the marker still shows: below the 26 columns
+   `! shell · aelix is stopped` takes (27 for `!!`), the row keeps
+   `aelix is stopped` (Codex r1: at 24 columns it kept `! shell · Esc to clear`
+   and dropped the stop).
 
 2. **The sigil stays in the text.** History, `!!`, paste placeholders, Ctrl+G and
    the submit path read the buffer and are unchanged; only the drawing takes the

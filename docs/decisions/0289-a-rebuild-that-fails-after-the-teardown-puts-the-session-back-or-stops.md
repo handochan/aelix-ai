@@ -1,6 +1,8 @@
 # 0289. A rebuild that fails after the teardown puts the session back on its previous settings, or stops
 
 Status: Accepted (2026-11-03; owner decision (b) settled 2026-11-03)
+Amended 2026-11-04 by dated notes: #682 (D4, what a stopped TUI says on its `!`
+paths; Limits, what the line after a failure names).
 Date: 2026-11-03
 Issue: #663 (a #25 follow-up). One lane, one commit.
 Amends: ADR-0284 D6 (the failure line — dated note) and Limits (the torn-down
@@ -26,7 +28,8 @@ Tests: `tests/runtime/test_failed_rebuild_663.py`,
 `tests/rpc/test_failed_reload_gate_663.py`,
 `tests/tui/test_failed_reload_tui_663.py`,
 `tests/tui/test_stopped_shell_lane_663.py`,
-`tests/cli/test_failed_reload_factory_663.py`.
+`tests/cli/test_failed_reload_factory_663.py`,
+`tests/tui/test_stopped_hint_and_refusals_682.py` (#682).
 Review round 1 (2026-11-03, Codex R01–R09 and verify V1–V8): D2, D3, D4 and D5
 amended in place, D7 added; the measured inputs are in
 `.omc/specs/663-impl-codex-review.md` and `.omc/specs/663-verify-report.md`.
@@ -191,6 +194,19 @@ everything that would run without its gates:
   by then, so that commit is not printed either; what stays on the terminal is
   the chrome's last frame, the block's command and its last rows (measured,
   fix round 2).
+  *2026-11-04 note (#682):* three of these still read as if the `!` ran, and
+  no longer do. The shell hint under a `!` line said "Enter runs it · the model
+  sees the output"; while stopped it says `! shell · aelix is stopped · Enter is
+  refused until /reload succeeds · Esc to clear`, fitted to the width as
+  ADR-0287 D1's (the chrome reads `AgentSessionRuntime.stopped`). A block with
+  nothing to record — a `!` refused while a command such as a failing `/reload`
+  ran, a `!!` — waited in the pending area behind a record held for the stop and
+  reached the transcript only after the `/reload` that ended it, under "aelix is
+  running again"; `ShellLane.settle` now lets it past the held record, which
+  keeps its place. And Enter on an idle `!` line printed the sentence alone,
+  the command nowhere (the input clears on Enter); its block now shows the
+  command over the sentence (`ShellLane.refuse_line`). A bare `!` and a prompt
+  still get the sentence alone.
 
 A harness a reload or session change has torn down and not yet replaced reads
 `disposed` too, but holds no turns: nothing is stopped. A `!` refused on it, and
@@ -305,6 +321,14 @@ surfaces, a disposed harness refuses `prompt` itself (D4).
 - The restore re-imports extensions from disk: an extension file edited since
   the session started runs in its edited form, and the line that follows the
   failure names what that build changed.
+  *2026-11-04 note (#682):* not an edit — nothing says the edited form runs.
+  The line names an extension the build turned on or off, added or failed to
+  load, an MCP server, a provider or a shortcut (`reload_lines`, ADR-0284 D6),
+  and an edited extension that was on stays on. Measured by the #682 fact-check
+  (`.omc/specs/663-followups-evidence/out/pL2_tui-head.txt`): `/ver` answered
+  `ver v1`, a `/reload` failed with only `✖ /reload failed during the rebuild:
+  PermissionError: … — kept the previous settings; …`, and `/ver` then answered
+  `ver v2`.
 - A swap's restore is reload-shaped: extensions saw `session_shutdown(new)` (or
   `resume`, `fork`) and then `session_start(reload)` on the session they were
   already on.

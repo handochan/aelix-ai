@@ -298,7 +298,13 @@ async def test_a_stopped_runtime_refuses_prompts_and_bang_lines_but_not_commands
         pipe.send_text("hello\n")
         pipe.send_text("!echo hi\n")
         pipe.send_text("!!echo hi\n")
-        await _wait(lambda: sum(f"✖ {STOPPED_MESSAGE}" == " ".join(c.split()) for c in commits) >= 3)
+        # #682 — a refused ``!`` / ``!!`` line shows its command over the sentence.
+        refusals = (
+            f"✖ {STOPPED_MESSAGE}",
+            f"! echo hi ✖ {STOPPED_MESSAGE}",
+            f"!! echo hi ✖ {STOPPED_MESSAGE}",
+        )
+        await _wait(lambda: all(r in [" ".join(c.split()) for c in commits] for r in refusals))
         pipe.send_text("/reload\n")
         await _wait(lambda: runtime.reloads >= 1)
         pipe.send_text("/quit\n")

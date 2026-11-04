@@ -468,7 +468,9 @@ and every extension's hooks, and says so:
 If that fails too, aelix stops rather than run anything without its checks:
 prompts, `!` lines, tool calls, steering and follow-up messages are refused
 with "aelix is stopped until /reload succeeds" until a `/reload` (or `/new`)
-works; `/`-commands still run. An extension's `ctx.reload()`, RPC
+works; `/`-commands still run. In the TUI the row under a `!` line says
+"aelix is stopped · Enter is refused until /reload succeeds", and a refused `!`
+line shows its command over the sentence. An extension's `ctx.reload()`, RPC
 `resources/reload` and a failed `/new`, `/resume`, `/fork` or `/import` raise
 `RebuildFailedError` with the same words (ADR-0289).
 
