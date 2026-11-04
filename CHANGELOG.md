@@ -3249,6 +3249,15 @@ unwritten. Add them with the next release.
 
 ### Security
 
+- **`auto` now refuses `echo … &>> ~/.ssh/authorized_keys` like the `>>` form
+  (#677).** The classifier's write-redirect set listed `>`, `>>`, `&>`, `>&`
+  and `>|` but not `&>>` (append stdout and stderr, bash 4+/zsh), so a `&>>`
+  into a protected path such as `~/.ssh/authorized_keys`, `~/.bashrc` or
+  `/etc/...` was ALLOW and ran with no prompt under `auto`, while every other
+  append form was DENY. `&>>` now gates like `>>`: DENY into a protected path,
+  ASK elsewhere. The whole operator set tree-sitter-bash can emit was checked,
+  including the numbered forms (`2>>`, `1>|`); a descriptor-closing `>&-` and a
+  dup like `2>&1` open no file and stay as they were.
 - **A write into `.git` spelled with other letter case, or with a trailing space,
   dot or `::$DATA`, is now refused like `.git` itself (#675).** The built-in
   guardrail refused `.git/config` but let `.GIT/config`, `.Git/hooks/x`,

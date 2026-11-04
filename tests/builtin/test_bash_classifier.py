@@ -946,6 +946,28 @@ def test_657_r1_fd_clusters_holding_x_ask() -> None:
     assert classify("fd -H foo") is Verdict.ALLOW
 
 
+# #677: every write-redirect operator tree-sitter-bash emits gates like ``>``.
+_WRITE_REDIRECT_OPERATORS = (">", ">>", "&>", "&>>", ">|")
+
+
+@pytest.mark.parametrize("op", _WRITE_REDIRECT_OPERATORS)
+def test_677_write_redirect_operators_deny_a_protected_target(op: str) -> None:
+    """``&>>`` was missing from the write set, so ``&>> ~/.ssh/…`` was ALLOW."""
+
+    assert classify(f"echo x {op} ~/.ssh/authorized_keys") is Verdict.DENY, op
+    assert classify(f"echo x {op} out.txt") is Verdict.ASK, op
+
+
+def test_677_benign_descriptor_and_dup_forms() -> None:
+    """A closing form writes no file; ``2>&1`` is a dup, not a file write."""
+
+    assert classify("echo x >&-") is Verdict.ALLOW
+    assert classify("echo x 2>&-") is Verdict.ALLOW
+    # ``&>|`` / ``>>|`` / ``<>`` are parse errors → ASK via has_error.
+    assert classify("echo x &>| f") is Verdict.ASK
+    assert classify("echo x >>| f") is Verdict.ASK
+
+
 def test_module_reimport_is_clean() -> None:
     """Re-importing must not raise (the parser is built once, inside try/except).
 
